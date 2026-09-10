@@ -685,6 +685,7 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     dx12_hook_g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
 }
 void CleanupRTVs() {
+    dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.store(nullptr, std::memory_order_release);
     // FG-SAFE: backBuffers no longer holds references (released at create time)
     dx12_hook_g_State.backBuffers.clear();
     if (g_DummyBackBuffer) {

@@ -23,20 +23,20 @@ namespace ce::dx12_overlay_policy {
 // warmup protect DLSS-G's fragile init against CE's first overlay ECL. The DOCUMENTED GTA hang family
 // (GetState-only) corrupts DLSS-G because GTA creates a SEPARATE runtime-owned swapchain/queue during
 // init and CE's ECL lands on that separate proxy-init pipeline (guardrails.md: GTA pure-DLSS startup
-// "moves to a runtime-owned swapchain"). When DLSS FG instead runs entirely on the GAME'S OWN single
-// queue (scQueue==origGame, no separate command/SL-wrapper queue — observed in Talos:
-// `PostSL locked to queue X (origGame=X scQueue=X cmdQueue=X slWrapper=0)`), there is NO separate
-// proxy-init pipeline for CE's ECL to corrupt: the overlay ECL is just another submit on the game's
-// own queue (the no-FG route, what RTSS does). Render from the first callback for this topology only.
-// Re-evaluated every callback, so if a title transiently looks same-queue and then creates a separate
-// runtime queue (GTA), this flips false and the countdown/warmup resume — no init-corruption window.
+// "moves to a runtime-owned swapchain"). When PostSL remains on the GAME'S PROVEN ORIGINAL PRESENT
+// queue, there is no separate proxy-init pipeline for CE's ECL to corrupt: the overlay ECL is another
+// submit on the queue where this exact swapchain already accepted CE's normal overlay. A separately
+// discovered render/primary command queue does not invalidate that stronger proof; a Streamline
+// wrapper queue or a different swapchain queue does. Render from the first callback for this topology.
 // device-removed is still caught by the PostSL render's pre-submit GetDeviceRemovedReason bail; a pure
 // GPU hang is caught by the freeze watchdog. GTA-unvalidated; excludes the documented separate-queue
 // hang by construction.
 inline bool ShouldTreatSameQueuePureDLSSColdStartAsSafe(bool hadFSRFGPhase, bool swapchainQueueIsOriginalGameQueue,
-                                                        bool noSeparateCommandQueue, bool hasSeparateSLWrapperQueue,
-                                                        bool deviceRemoved) {
-    return !hadFSRFGPhase && swapchainQueueIsOriginalGameQueue && noSeparateCommandQueue &&
+                                                        bool noSeparateCommandQueue,
+                                                        bool exactNormalOverlayOriginalQueueSwapchainProof,
+                                                        bool hasSeparateSLWrapperQueue, bool deviceRemoved) {
+    return !hadFSRFGPhase && swapchainQueueIsOriginalGameQueue &&
+           (noSeparateCommandQueue || exactNormalOverlayOriginalQueueSwapchainProof) &&
            !hasSeparateSLWrapperQueue && !deviceRemoved;
 }
 

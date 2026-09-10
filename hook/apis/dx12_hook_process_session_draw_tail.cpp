@@ -212,6 +212,19 @@ return ProcessFrameFlow::kSkipSteamFence;
                             }
                             if (overlayDrawRecorded) {
                                 NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+                                if (!useDedicated && pSwapChain && eclQueue == dx12_hook_g_OriginalGameQueue) {
+                                    IDXGISwapChain* previous =
+                                        dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_relaxed);
+                                    if (previous != pSwapChain &&
+                                        dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.compare_exchange_strong(
+                                            previous, pSwapChain, std::memory_order_release,
+                                            std::memory_order_relaxed)) {
+                                        HookLogImportant(
+                                            "DX12: Proven successful normal-overlay submit on exact original-queue "
+                                            "swapchain %p (queue=%p previous=%p)",
+                                            pSwapChain, eclQueue, previous);
+                                    }
+                                }
                             }
 
                             // SL/FSR FG diagnostic: log after ECL submission

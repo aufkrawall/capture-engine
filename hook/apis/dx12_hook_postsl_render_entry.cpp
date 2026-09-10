@@ -107,6 +107,8 @@ if (keepAliveRenderAfterExplicitOff) {
     }
 }
 bool sameQueuePureDLSSColdStartSafe = false;
+bool noSeparateCommandQueueForPureDLSSColdStart = false;
+bool exactNormalOverlayOriginalQueueSwapchainProof = false;
 {
     ID3D12CommandQueue* sqScQueue = nullptr;
     ID3D12CommandQueue* sqOrigQueue = nullptr;
@@ -120,9 +122,18 @@ bool sameQueuePureDLSSColdStartSafe = false;
     ID3D12CommandQueue* sqSLWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
     auto* sqDev = g_Device.load(std::memory_order_acquire);
     const bool sqDeviceRemoved = sqDev && FAILED(sqDev->GetDeviceRemovedReason());
+    exactNormalOverlayOriginalQueueSwapchainProof =
+        pSwapChain != nullptr &&
+        dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.load(std::memory_order_acquire) == pSwapChain &&
+        dx12_hook_g_LastProvenOriginalQueueSwapchain.load(std::memory_order_acquire) == pSwapChain &&
+        dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire) == pSwapChain &&
+        dx12_hook_g_State.cachedSwapChain == pSwapChain && dx12_hook_g_State.overlayInit &&
+        dx12_hook_g_State.syncInit;
+    noSeparateCommandQueueForPureDLSSColdStart = sqCmdQueue == nullptr || sqCmdQueue == sqOrigQueue;
     sameQueuePureDLSSColdStartSafe = ce::dx12_overlay_policy::ShouldTreatSameQueuePureDLSSColdStartAsSafe(
         dx12_hook_g_HadFSRFGPhase, sqScQueue != nullptr && sqScQueue == sqOrigQueue,
-        sqCmdQueue == nullptr || sqCmdQueue == sqOrigQueue, sqSLWrapperQueue != nullptr, sqDeviceRemoved);
+        noSeparateCommandQueueForPureDLSSColdStart, exactNormalOverlayOriginalQueueSwapchainProof,
+        sqSLWrapperQueue != nullptr, sqDeviceRemoved);
 }
 bool syntheticStartupActivatedThisCall = false;
 bool immediateSameQueueStartupTakeover = false;
@@ -200,19 +211,16 @@ bool immediateSameQueueStartupTakeover = false;
                 s_explicitEnableCountdownBypassLogCount++;
                 dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
             } else if (sameQueuePureDLSSColdStartSafe) {
-                // Same-queue pure-DLSS cold start (Talos): DLSS FG runs on the game's OWN single
-                // queue (scQueue==origGame, no separate command/SL-wrapper queue), so there is no
-                // separate DLSS-G proxy-init pipeline for CE's ECL to corrupt — activate from
-                // callback #1 instead of blanking through the countdown. The documented GTA hang
-                // family creates a SEPARATE runtime-owned queue during init (this proof is re-checked
-                // every callback and flips false the moment that happens, restoring the countdown).
+                // Same-present-queue pure-DLSS cold start: PostSL remains on the game's original
+                // swapchain queue. Either there is no separate command queue, or this exact
+                // swapchain has already accepted CE's normal overlay on the original queue.
                 static int s_sameQueueColdStartCountdownBypassLogCount = 0;
                 if (s_sameQueueColdStartCountdownBypassLogCount < 10) {
                     HookLogImportant(
-                        "DX12: PostSL synthetic startup bypassing pure-DLSS countdown — same-queue topology "
-                        "(scQueue==origGame, no separate command/SL-wrapper queue): overlay ECL lands on the "
-                        "game's own queue, not a separate DLSS-G init pipeline (cooldown=%d)",
-                        cooldownLeft);
+                        "DX12: PostSL synthetic startup bypassing pure-DLSS countdown — proven original "
+                        "present-queue topology (noSeparateCmd=%d exactNormalOverlayProof=%d cooldown=%d)",
+                        noSeparateCommandQueueForPureDLSSColdStart ? 1 : 0,
+                        exactNormalOverlayOriginalQueueSwapchainProof ? 1 : 0, cooldownLeft);
                 }
                 s_sameQueueColdStartCountdownBypassLogCount++;
                 dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);

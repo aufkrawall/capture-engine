@@ -525,22 +525,24 @@ TEST(DXGISharedTest, SameQueuePureDLSSColdStartIsSafeToRenderEarly) {
     // the 437ms countdown+warmup blank.
     EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(
         /*hadFSRFGPhase=*/false, /*swapchainQueueIsOriginalGameQueue=*/true, /*noSeparateCommandQueue=*/true,
-        /*hasSeparateSLWrapperQueue=*/false, /*deviceRemoved=*/false));
+        /*exactNormalOverlayOriginalQueueSwapchainProof=*/false, /*hasSeparateSLWrapperQueue=*/false,
+        /*deviceRemoved=*/false));
 
     // FSR history -> the post-FSR bootstrap proof path owns it, not this.
-    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(true, true, true, false, false));
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(true, true, true, true, false, false));
     // A SEPARATE swapchain/runtime queue (the documented GTA pure-DLSS startup) -> keep the countdown +
     // warmup; CE's ECL on a separate proxy-init queue is the documented corruption/hang.
     EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, /*swapchainQueueIsOriginalGameQueue=*/false, true,
-                                                             false, false));
-    // A separate command queue -> not the single-queue topology; keep protections.
-    EXPECT_FALSE(
-        ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, /*noSeparateCommandQueue=*/false, false, false));
+                                                             true, false, false));
+    // A separate discovered render queue is safe only after an exact normal-overlay submit proved this
+    // swapchain on the original Present queue (Talos session 20260910_075304).
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, false, false, false));
+    EXPECT_TRUE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, false, true, false, false));
     // A separate SL wrapper queue exists -> there IS a separate runtime pipeline; keep protections.
     EXPECT_FALSE(
-        ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, /*hasSeparateSLWrapperQueue=*/true, false));
+        ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, true, /*hasSeparateSLWrapperQueue=*/true, false));
     // Device removed -> never render.
-    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, false, /*deviceRemoved=*/true));
+    EXPECT_FALSE(ShouldTreatSameQueuePureDLSSColdStartAsSafe(false, true, true, true, false, /*deviceRemoved=*/true));
 }
 
 TEST(DXGISharedTest, SameQueuePureDLSSColdStartBypassesReactivationWarmup) {

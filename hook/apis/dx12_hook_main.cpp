@@ -521,6 +521,7 @@ void DX12Hook::Shutdown() {
     dx12_hook_g_HadSuccessfulPostSLPhase.store(false, std::memory_order_release);
     dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
     dx12_hook_g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
+    dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.store(nullptr, std::memory_order_release);
     dx12_hook_g_LastKnownSwapchainHDRStateValid.store(false, std::memory_order_release);
     dx12_hook_g_LastKnownSwapchainIsHDR.store(false, std::memory_order_release);
     dx12_hook_g_LastKnownSwapchainColorSpace.store(-1, std::memory_order_release);

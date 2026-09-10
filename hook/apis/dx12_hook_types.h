@@ -514,6 +514,7 @@ extern std::atomic<bool> dx12_hook_g_KnownDLSSFGModuleSeen;
 extern IDXGISwapChain* dx12_hook_g_LastSwapChain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastSwapchainQueueCaptureSwapchain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastProvenOriginalQueueSwapchain;
+extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastSuccessfulNormalOverlaySwapchain;
 extern IDXGISwapChain* dx12_hook_g_PendingSwapChainCleanup;
 extern std::atomic<bool> dx12_hook_g_LastKnownSwapchainHDRStateValid;
 extern std::atomic<bool> dx12_hook_g_LastKnownSwapchainIsHDR;

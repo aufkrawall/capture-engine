@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-09-10 - Repeated-start validation closes the FSR rate split; exact Present-queue proof closes DLSS startup blank
+
+Talos session `installed/captureengine/logs/20260910_075304` exercises build `0.1.6518` over eight
+starts. Six FSR-FG starts cover both discovery phases (`d3d12=0` and `d3d12=1`) without the former
+slow/fast split: settled output windows span 92.8-95.2 fps at 99-100% GPU load in this scene, with
+zero uncovered FSR presents, unresolved pacing matches, staging drops, overload rows, device
+removals, dumps, or hook failures. The 2.4-fps spread is ordinary GPU-saturated scene variance, not
+the previous repeatable roughly eight-percent bimodality. Every process used WARP-only synthetic
+DX12 discovery and six grouped hook batches (43 prepared/installed, zero independent/failing), so
+the injection-startup isolation is runtime-validated across early and late D3D12 discovery.
+
+The session did expose one separate strict-visibility regression. Both pure DLSS-FG cold starts
+(PIDs 7068 and 11792) identically reported 29 uncovered presents over 157 ms, from
+`postsl-inactive` through `postsl-reactivation-warmup`. Talos enables through GetState, so the
+explicit-SetOptions proof is unavailable. PostSL nevertheless selected the exact original Present
+queue and swapchain with no Streamline wrapper and a healthy device. The old same-queue predicate
+rejected this because `g_CommandQueue` held a different execution-discovered render/primary queue;
+that queue is not the owner of the presented backbuffer and must not outweigh exact Present-route
+evidence. The in-process FSR-to-DLSS transition remained fully covered through its existing proof.
+
+The normal overlay path now publishes a non-owning exact-swapchain proof only after a successful ECL
+submit on the retained original game queue; RTV cleanup clears it. A pure-DLSS cold start can bypass
+the countdown and warmup when the PostSL swapchain queue still equals that original queue and the
+successful-normal-overlay, original-queue ownership, and swapchain-queue capture identities all
+match the current swapchain and its overlay/sync backend remains live. A separately discovered
+command queue no longer vetoes this stronger
+proof. FSR history, a different/runtime swapchain queue, an SL wrapper queue, missing exact proof,
+or device removal still preserves the conservative startup guards, so the documented GTA
+separate-proxy-init hang family remains excluded. Expected Talos diagnostics are
+`Proven successful normal-overlay submit on exact original-queue swapchain`, immediate synthetic
+startup takeover with `exactNormalOverlayProof=1`, warmup bypass, and zero visibility interruption.
+Runtime re-validation of the post-session change is pending.
+
 ### 2026-09-09 - Isolate injection bootstrap from D3D12/FSR graphics startup
 
 The controlled build-0.1.6515 pair in `20260909_063715` supersedes the narrower

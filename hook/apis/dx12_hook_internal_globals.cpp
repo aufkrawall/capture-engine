@@ -251,6 +251,8 @@ std::atomic<IDXGISwapChain*> dx12_hook_g_LastSwapchainQueueCaptureSwapchain{null
 
 std::atomic<IDXGISwapChain*> dx12_hook_g_LastProvenOriginalQueueSwapchain{nullptr};
 
+std::atomic<IDXGISwapChain*> dx12_hook_g_LastSuccessfulNormalOverlaySwapchain{nullptr};
+
 IDXGISwapChain* dx12_hook_g_PendingSwapChainCleanup = nullptr;
 
 std::atomic<bool> dx12_hook_g_LastKnownSwapchainHDRStateValid{false};
