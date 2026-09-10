@@ -494,6 +494,22 @@ short-range AO at full resolution).
   (1-sample stochastic) with no perceptible difference in most content, and Epic's own High scalability uses `1`. A
   stochastic signal is also what an RR denoiser expects - bilinear interpolation is pre-smoothed input - so `light`
   and up now write `1`, with `SpatialFilterNumPasses=3` left on to absorb the extra per-frame noise.
+  - What this can and cannot affect, since "cheaper" here is paid in per-frame variance: the change is in the final
+    gather's diffuse-indirect fetch (`LumenScreenProbeGather/SupportImportanceSampleBRDF`), so the added variance is
+    proportional to how much the four nearest screen probes differ at that pixel - near the camera they are usually
+    on the same surface, while mid-distance detail, probe-grid boundaries, thin geometry and disocclusions are where
+    it shows. It cannot touch the dedicated full-resolution short-range AO pass (`ShortRangeAO.*`), which has its own
+    screen/HWRT trace and its own temporal filter, so contact-area AO boiling is not this entry.
+  - The escape hatch is one CVar and needs no rebuild:
+    `custom_cvar_overrides=r.Lumen.ScreenProbeGather.StochasticInterpolation=0` restores the pre-2026-09-10 `full`
+    behaviour exactly. Counter-intuitively it is the *more expensive* direction, so reverting it gives back the
+    original 10-15% question rather than a cheaper frame.
+  - The counter-pressure that suppresses boiling is already in the same levels: the 16-frame history floor, the
+    disabled normal rejection and disabled neighbourhood clamp (both at `high` and up) keep far more history alive
+    than the engine default, and RR's own temporal reconstruction consumes the stochastic signal. The failure mode
+    to watch for instead is *ghosting* on moving geometry, which is the same tolerances working as intended. Open
+    question: no in-game A/B has been run, and RR preset F (2nd-gen transformer, detail-preserving) is expected to
+    keep per-frame variance visible longer than preset E, so a shimmer report with F should first be re-tested on E.
 - **Which paid entries actually cost anything is title-dependent, so the classification above is per-CVar, not
   global.** `RadianceCache.ProbeResolution` registers at 32 but UE's own scalability lowers it at reduced GI quality
   (measured: 16), so raising it is a real cost step there and a no-op elsewhere; `NumProbesToTraceBudget` is a
