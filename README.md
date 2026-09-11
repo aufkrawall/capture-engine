@@ -4,10 +4,11 @@ Game capture, recording, overlays, graphics overrides, and frame pacing for Wind
 
 ![CaptureEngine recording screenshot](.github/crrec.png)
 
-CaptureEngine records game video and multiple audio sources to Matroska files or sends low-latency RTMP/RTMPS live
-streams. It supports non-injected Windows Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected,
-API-aware capture path. The project includes custom overlay renderers, constant-frame-rate scheduling, hardware
-encoding, per-application profiles, and native FPS limiter integrations.
+CaptureEngine records game video and multiple audio sources to Matroska files, sends low-latency RTMP/RTMPS live
+streams, and captures in-game benchmark runs with interactive HTML reports. It supports non-injected
+Windows Graphics Capture (WGC) and DXGI Desktop Duplication as well as an injected, API-aware capture path. The
+project includes custom overlay renderers, constant-frame-rate scheduling, hardware encoding, per-application
+profiles, and native FPS limiter integrations.
 
 The capture, overlay, synchronization, and pacing code is developed in this repository. FFmpeg provides codec and
 container support, while Windows and GPU-vendor APIs provide the platform interfaces. The overlay and its frame-time
@@ -37,10 +38,13 @@ expectations](#bug-reports-and-support-expectations).
 - Native HDR video and screenshots, with optional HDR-to-SDR tone mapping for either output
 - Multiple system-output, microphone, and per-application audio sources, with routing and mixing into separate tracks
 - Optional USB/webcam face-camera overlay with GPU-composited positioning, cropping, shapes, borders, and HDR mapping
+- In-game benchmark recording with an overlay HUD and self-contained interactive HTML reports
 - Low-latency YouTube, Twitch, and custom RTMP/RTMPS streaming through the same CFR/audio synchronization pipeline
-- Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering and DLSS/FSR frame-generation integration
-  and NVIDIA Smooth Motion (driver-based frame generation) status, plus a non-injected desktop recording indicator
-  for WGC/DXGI sessions
+- Custom DX9-DX12, Vulkan, and OpenGL overlays with HDR-aware rendering, display-change frame timing, PC-latency
+  metrics, DLSS/FSR frame-generation integration, and NVIDIA Smooth Motion (driver-based frame generation) status,
+  plus a non-injected desktop recording indicator for WGC/DXGI sessions
+- Optional LibreHardwareMonitor CPU/GPU temperature, package power, fan, clock, and voltage telemetry, with bundled
+  pinned runtime files and optional PawnIO setup for CPU sensors
 - General FPS limiting and recording-aware capture sync through a local timer or NVIDIA Reflex
 - Forced anisotropic filtering, mip filtering/bias, queue-depth controls, V-Sync overrides, and selected DLSS overrides
 - Session-scoped diagnostics, crash/freeze dumps, archived matching symbols, and automated capture analysis
@@ -55,7 +59,9 @@ expectations](#bug-reports-and-support-expectations).
   Foundation). CaptureEngine never silently switches encoders; if the selected encoder is unavailable, encoding fails
   with a clear log entry.
 - Administrator rights are not required for normal use. Some `[Performance]` options (for example `high` or
-  `realtime` GPU scheduling priority) may require them.
+  `realtime` GPU scheduling priority) may require them. CPU temperature, CPU package power, and CPU core-clock
+  sensors also require an elevated CaptureEngine and the separate PawnIO driver; see [Optional LibreHardwareMonitor
+  sensors](#optional-librehardwaremonitor-sensors).
 - MKV is the default and the only actively tested container. MP4 and MOV are available as compatibility options.
 - An x64 host. 32-bit games are supported through the x86 compatibility hook.
 
@@ -65,10 +71,12 @@ Unpack the release folder and start `CaptureEngine.exe`. On first run it creates
 an existing file is never overwritten. Left-click the tray icon to open `config.ini`; right-click exits the program.
 The generated file is the full user reference and ends with safe/unsafe application-profile examples.
 
-Default hotkeys: Ctrl+9 starts/stops a recording (F9 is the fallback if the hotkey is disabled), Ctrl+8 toggles the FPS
-display, Ctrl+0 takes a screenshot, and Ctrl+Minus records audio only. Recordings and screenshots go to `captures/`
-and `screenshots/` next to the executable unless `[Output]` redirects them; logs go to `logs/`. Run
-`CaptureEngine.exe --list-monitors` to print copyable stable monitor IDs for `monitor=id:<stable-id>`.
+Default hotkeys: Ctrl+9 starts/stops a recording (F9 is the fallback if the hotkey is disabled), Ctrl+8 toggles the
+injected overlay, Ctrl+0 takes a screenshot, Ctrl+Minus records audio only, and Ctrl+7 starts, stops, or clears an
+in-game benchmark. Recordings and screenshots go to `captures/` and `screenshots/` next to the executable unless
+`[Output]` redirects them; benchmark HTML reports go to `benchmarks/` unless `[Benchmark] output_dir` redirects them;
+logs go to `logs/`. Run `CaptureEngine.exe --list-monitors` to print copyable stable monitor IDs for
+`monitor=id:<stable-id>`.
 
 The default configuration records through WGC or DXGI Desktop Duplication without injection, and the non-injected
 desktop overlay can show recording status while those paths are active. Before enabling injected capture, overlays, or
@@ -112,6 +120,19 @@ output-relative size and margin, rectangle/rounded/circle masks, aspect-preservi
 border, and frozen-frame timeout. The same pre-encode compositor is shared by WGC/DXGI and inject capture and by local
 recording and live output. Camera and cursor state are redrawn on CFR repeated game frames, so the face camera does not
 freeze when an overloaded game frame must be held.
+
+### In-game benchmark recording
+
+Press Ctrl+7 in an injected application to start a benchmark. `[Benchmark] start_delay_seconds` adds an optional
+countdown before capture begins, and `duration_seconds=0` keeps recording until Ctrl+7 is pressed again; a non-zero
+value stops automatically. Stopping computes the run and writes a self-contained interactive HTML report to
+`[Benchmark] output_dir`, or to `benchmarks/` next to the executable when that path is empty. The overlay then shows
+a results card until the next Ctrl+7 press clears it.
+
+The report uses the same live per-frame metrics as the overlay: average, maximum, and minimum FPS; 1% and 0.1% low
+FPS; average frame time; and available CPU/GPU/RAM/VRAM load and hardware-sensor telemetry. Timing is available from
+both presentation callbacks and display-change screen timestamps. Benchmark runs require an injected hook process
+(for example `video_capture=inject` or `dll_injection=always`) and do not modify game files or capture settings.
 
 ### Release verification
 
@@ -172,27 +193,26 @@ DLSS.dlss_fg_factor=3x
 
 The following example is a full-featured injected profile for STALKER 2: app audio capture on track 1, forced
 V-Sync, forced 16x anisotropic filtering, DLSS super-resolution, frame-generation, and Streamline DLL overrides,
-a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, and the UE5 Ray Reconstruction
+a forced 3x DLSS FG factor and DLSS FG preset, the DLSS debug overlay, and the full UE5 Ray Reconstruction
 optimal-settings bundle with RR preset E:
 
 ```ini
 [Profile.stalker]
 process=Stalker2-Win64-Shipping.exe
 video_capture=inject
-dll_injection=always
 audio_enabled=true
 audio_track=1
-vsync_mode=fifo
-;cpu_prerender_limit=1
-anisotropic_filtering=16x
-dlss_sr_dll_path=C:\path\to\dlls\folder
-dlss_fg_dll_path=C:\path\to\dlls\folder
-streamline_dll_path=C:\path\to\dlls\folder
-dlss_fg_factor=3x
-dlss_fg_preset=b
-dlss_debug_overlay=on
-UE5.ray_reconstruction_optimal_settings=on
-dlss_rr_preset=e
+Graphics.vsync_mode=fifo
+;Graphics.cpu_prerender_limit=1
+Graphics.anisotropic_filtering=16x
+DLSS.dlss_sr_dll_path=C:\path\to\dlls\folder
+DLSS.dlss_fg_dll_path=C:\path\to\dlls\folder
+DLSS.streamline_dll_path=C:\path\to\dlls\folder
+DLSS.dlss_fg_factor=3x
+DLSS.dlss_fg_preset=b
+DLSS.dlss_debug_overlay=on
+UE5.ray_reconstruction_optimal_settings=full
+DLSS.dlss_rr_preset=e
 ```
 
 `process=` is the executable name and is matched case-insensitively; the profile name is only a label. Any setting
@@ -226,8 +246,8 @@ and carries the same anti-cheat warnings as every other injected feature.
 
 For software protected by anti-cheat, start with WGC or DXGI Desktop Duplication and explicitly set
 `dll_injection=never`. This is the likely-compatible configuration, not a universal guarantee. Before configuring a
-game, read the [safe and unsafe application-profile examples near the end of
-`config.ini`](captureengine/config.ini.template#L621-L663).
+game, read the safe and unsafe application-profile examples near the end of
+[`config.ini`](captureengine/config.ini.template).
 
 ## Multi-process architecture
 
@@ -240,7 +260,7 @@ flowchart LR
     Inject["Inject host<br/>injection and shared-state owner"]
     Media["Disposable media process<br/>capture, mix, encode, mux, validate"]
     Limiter["Optional limiter process"]
-    Aux["Logger and sensor processes"]
+    Aux["Logger, sensor, and display-timing services"]
     AppAudio["App audio workers<br/>disposable per-source process-loopback workers"]
     Hook["Hook DLL<br/>inside the game"]
     Shared["Exact-version shared-memory ABI<br/>state, telemetry, frame leases, log ring"]
@@ -265,8 +285,8 @@ flowchart LR
 - **Media process:** is disposable per recording. It owns WGC/DXGI capture when selected, audio capture/mixing, encoding,
   muxing, post-write validation, and the recording's immutable diagnostic files. System-output and microphone sources
   are captured in-process through WASAPI loopback/input devices.
-- **Logger and sensor processes:** consume the shared ABI for hook logs and CPU/GPU/RAM/VRAM telemetry without putting
-  that work on the game's render thread.
+- **Logger, sensor, and display-timing services:** consume the shared ABI for hook logs, CPU/GPU/RAM/VRAM telemetry,
+  and the optional ETW screen-change sample ring without putting that work on the game's render thread.
 - **App audio workers:** per-application process-loopback capture runs in disposable CaptureEngine worker processes
   spawned by the media process. The AudioSes COM graph stays out of the long-lived media process; only ordered packet
   records cross a private shared-ring/event boundary, and workers are recycled on target-process or activation
@@ -428,14 +448,25 @@ rate, while injected capture targets the application's real rendered frames.
 ## Overlay and frame generation
 
 The overlay has custom renderers for DX9-DX12, Vulkan, and OpenGL, a custom font rasterizer, and precompiled shaders;
-the frame-time graph and optional PC-latency row use that renderer. Reflex/PCL markers improve frame correlation
-(`PC Latency~`); without them, `Latency est.` combines measured Present-to-display timing with frame cadence.
-Neither includes peripheral latency or physical display scanout. Layout/font rendering scales per monitor, while
-presentation-color tracking keeps SDR, scRGB, and HDR10 output correct; texture format alone is not treated as HDR.
+the frame-time graph and optional PC-latency row use that renderer. It also renders the benchmark countdown, live
+recording badge, and results card. Reflex/PCL markers improve frame correlation (`PC Latency~`); without them,
+`Latency est.` combines measured Present-to-display timing with frame cadence. Both account for dropped frames and
+the frame-generation base cadence and fail closed below the estimator's supported rate; neither includes peripheral
+latency or physical display scanout. Layout/font rendering scales per monitor, while presentation-color tracking
+keeps SDR, scRGB, and HDR10 output correct; texture format alone is not treated as HDR.
+
+Frame time, FPS, 1% lows, variance, graph samples, and stutter state default to
+`[Overlay] frametime_source=display_change`. A dedicated timing service traces graphics-kernel screen-change events
+through ETW and publishes a lock-free ring that each DXGI and Vulkan overlay consumes independently, so generated
+frames and variable-refresh scanout are included. NVIDIA scheduled-flip announcements correct deferred flip
+completions, removing the presentation sawtooth that DLSS multi-frame generation can otherwise show. If that display
+stream is unavailable, denied, failed, or stale, the overlay falls back automatically to application
+`presentation` timing.
 
 The frame-time graph scales its vertical ceiling dynamically instead of using a fixed 0-to-X axis: the ceiling
 follows the recent average and minimum with at least 50% headroom above the average, a minimum 33 ms range so the
-30 FPS threshold stays visible, and padding below the lowest samples so the line stays vertically centered. The
+30 FPS threshold stays visible, and padding below the lowest samples so the line stays vertically centered. It
+scrolls by drawn frames rather than sample arrival, so it keeps moving smoothly under frame generation, and the
 current ceiling is shown as a small scale marker next to the graph and refreshes at most every two seconds to avoid
 flicker.
 
@@ -445,9 +476,11 @@ application's present-callback contract. Explicit transition state machines and 
 and FSR FG switching without intentionally blanking the overlay. Real compatibility still depends on the game,
 runtime, driver, other injected overlays, and transition sequence; no README claim can guarantee every combination.
 
-The injected overlay is compatible with various third-party overlays, such as Steam or Rockstar Social, but
-incompatible with others like RTSS. Whether a combination works still depends on the game, runtime, driver, and
-the overlay versions involved.
+The injected overlay has validated coexistence with Steam and RTSS on DX12. It stays out of a foreign Present-hook
+entry and composites below the chain rather than re-patching it, which is intended to cover other established
+overlays as well. Coexistence is still best effort and order-dependent: an overlay that loads after CaptureEngine or
+wraps the swapchain object itself can change the layering, and whether a combination works still depends on the game,
+API, runtime, driver, and overlay versions involved.
 
 NVIDIA Smooth Motion (driver-based frame generation) is recognized alongside DLSS and FSR frame generation, and the
 FG status line follows the same transition state machines.
@@ -463,8 +496,9 @@ LibreHardwareMonitor bridge, and CPU/GPU core clock, GPU memory clock and GPU co
 rows, each shown only while at least one of its sensors is readable. The bridge is compiled into `captureengine.exe`:
 the dedicated sensor service launches the same executable in a contained bridge role that hosts the .NET Framework
 runtime already present on Windows and drives the managed library directly, so no script, interpreter, or additional
-binary is involved. No LibreHardwareMonitor code enters the game or hook DLL, and CaptureEngine does not bundle the
-third-party binaries.
+binary is involved. No LibreHardwareMonitor code enters the game or hook DLL. The build installs only the four pinned
+runtime files plus the PawnIO installer under `plugins/LibreHardwareMonitor`; other files from that release (GUI,
+PDBs, storage/SMBus helpers) are deliberately not packaged.
 
 CaptureEngine installs the four LibreHardwareMonitor runtime files itself. The build fetches them from the official
 [v0.9.6 release](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6), verifies the
@@ -476,28 +510,35 @@ licenses are recorded in [LibreHardwareMonitor_NOTICE.txt](tools/licenses/LibreH
 instead contain an exact LibreHardwareMonitor identifier, or `off`. A metric the driver cannot read is reported as
 unavailable rather than as a zero, so an unreadable sensor simply stays blank.
 
-GPU sensors work out of the box. CPU temperature, package power and core clock additionally require
+GPU sensors work out of the box. CPU temperature, package power, and core clock additionally require
 [PawnIO](https://pawnio.eu/) - a separate Microsoft-signed kernel driver LibreHardwareMonitor reads those rails
-through - and CaptureEngine to be running as administrator. CaptureEngine neither bundles nor downloads that driver:
-when it is missing and CPU sensors are requested, CaptureEngine asks once at startup and, only if you agree, hands the
-installation to the Windows Package Manager under a single administrator prompt. The dialog offers install now, not
-now, and don't ask again. CaptureEngine never elevates itself for anything else and never substitutes a guessed value.
-See the installed plugin `README.txt` and `config.ini` for the complete setup and selector behavior.
+through - and CaptureEngine to be running as administrator. The build verifies and packages the official
+Microsoft-signed `PawnIO_setup.exe` in `plugins/LibreHardwareMonitor`; CaptureEngine does not download or run a driver
+binary from an untrusted source. When the driver is missing and CPU sensors are requested, CaptureEngine asks once at
+startup (install now, not now, or don't ask again), re-verifies the installer's signature and pinned SHA-256, and runs
+it under a single administrator prompt. The same action is available from the tray menu (`Install PawnIO` /
+`Uninstall PawnIO`) or with `CaptureEngine.exe --install-pawnio` / `--uninstall-pawnio`, which request elevation when
+needed. CaptureEngine never substitutes a guessed sensor value; unreadable rails stay unavailable. See the installed
+plugin `README.txt` and `config.ini` for the complete setup and selector behavior.
 
 ## Known issues and limitations
 
 The following issues are currently known. They are not hidden by the feature descriptions elsewhere in this
 document:
 
-- The frame-generation overlay indicator can show a stale FPS value in some configurations.
+- Display-change timing traces graphics-kernel and NVIDIA display-driver ETW payloads. NVIDIA's scheduled-flip
+  provider has no registered manifest; CaptureEngine decodes it positionally and revalidates every sample, so an
+  unrecognized or moved field disables only that correction instead of producing a wrong one. If the screen-change
+  stream is unavailable, denied, failed, or stale, the overlay falls back to application presentation timing, which
+  cannot reflect the real display cadence under frame generation or variable refresh.
 - FPS limiting with frame generation is still incomplete and subject to change; FG-aware pacing may not hold the
   intended cadence in every game, runtime, or frame-generation combination.
 - The overlay can have issues after frame-generation switching sequences (for example switching between DLSS
-  Frame Generation and FSR Frame Generation). Recovery is not guaranteed in every game, runtime, driver, and
-  transition-sequence combination.
-- Smooth capture with DLSS 4.0+ frame generation is hard to fix and possibly impossible with the currently
-  available public interfaces, because frame pacing there is largely controlled by the game, Streamline, and the
-  driver rather than by CaptureEngine.
+  Frame Generation and FSR Frame Generation). Transition tests cover the supported paths, but recovery is not
+  guaranteed in every game, runtime, driver, and third-party-overlay combination.
+- Third-party overlay coexistence remains best effort. Steam and RTSS are validated on DX12, but an overlay that
+  loads after CaptureEngine, or an object-wrapping DX11 graphics proxy, can still change drawing order or visibility.
+  Whether a combination works depends on the game, API, runtime, driver, and overlay versions involved.
 - Classic D3D9 inject capture commonly falls back to a GPU→CPU readback staging path, which is slow at high
   resolutions and frame rates (for example 4K/120) and can severely affect game performance. Running the game through
   DXVK avoids this staging path; native D3D9Ex is already fast without DXVK. See
@@ -612,7 +653,10 @@ review its contents before sharing.
 There is no separate usage wiki. The generated `config.ini` is the user reference: it documents every normal option,
 valid values, safety notes, and complete application-profile examples. The authored source is
 [captureengine/config.ini.template](captureengine/config.ini.template), and its exact contents are embedded into
-CaptureEngine for first-run creation.
+CaptureEngine for first-run creation. The current sections include `[Streaming]`, `[FaceCamera]`, `[Benchmark]`,
+`[HardwareSensors]`, `[Overlay]` with `frametime_source=display_change|presentation`, and `[DesktopOverlay]` for
+non-injected sessions, alongside the capture, encoding, audio, graphics, DLSS, and UE5 options described elsewhere in
+this document.
 
 See the [app profile example](#app-profile-example) for a minimal per-game setup.
 
@@ -642,6 +686,10 @@ all game-authored post-process materials merely to catch a possible custom sharp
 can also implement gameplay, damage, underwater, and accessibility effects. Every exact injected CVar/value is listed
 beside these settings in the generated `config.ini`.
 
+`custom_cvar_overrides` accepts a comma-separated list of typed `CVar=value` entries. Valid entries take precedence
+over the Ray Reconstruction presets and the dedicated UE5 options for that process, which allows narrowly targeted
+engine-tuning experiments without leaving a game-file modification behind.
+
 While CaptureEngine is running, it checks `config.ini` for live changes and applies them where possible — for
 example switching the FPS limiter on or off or changing the target FPS. Settings that are used when a recording
 starts take effect the next time recording starts.
@@ -667,7 +715,9 @@ and resources, the native graphics test applications, and the unit-test binaries
 product build atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z`; native Windows
 builds also create `build/packages/ffmpeg-corresponding-source.7z`. The product
 archive contains a clean `captureengine/` folder without local logs, captures, backups, stale files, or the current
-user configuration. The separate `testapps/` archive contains only first-party executables/PDBs plus a runtime note;
+user configuration. It includes the pinned LibreHardwareMonitor runtime files and PawnIO installer under
+`plugins/LibreHardwareMonitor`. The separate `testapps/` archive contains only first-party executables/PDBs plus a
+runtime note;
 it does not redistribute the FSR, Streamline, DLSS/NGX, Reflex, or driver DLLs staged for local validation. The source
 archive contains the exact pinned, locally patched FFmpeg tree, its release build inputs, and verified source archives
 for the bundled LGPL libiconv runtime.
@@ -675,7 +725,9 @@ for the bundled LGPL libiconv runtime.
 Dependency handling is deliberately reproducible and fail-closed. The MSYS2 bootstrap is authenticated using its
 detached signature and a pinned signing key. Source packages and upstream archives are checked against pinned
 signatures, fingerprints, and SHA-256 hashes, then the FFmpeg dependency closure and the project's customized FFmpeg
-are built into a private prefix. Runtime DLLs are staged only from that prefix. Unexpected PE imports, missing
+are built into a private prefix. FFmpeg runtime DLLs are staged only from that prefix; the LibreHardwareMonitor
+runtime files and PawnIO installer are installed by the separate pinned hardware-sensor plugin step. Unexpected PE
+imports, missing
 licenses, a changed patch/configuration fingerprint, or an unverifiable dependency cause a rebuild or a hard failure
 instead of silently using an arbitrary system copy.
 
@@ -712,8 +764,10 @@ MSYS2 and source-built dependencies when required.
 ## Testing
 
 The repository contains GoogleTest coverage for capture scheduling, audio timing and codecs, FPS limiting,
-frame-generation transitions, shared-memory/IPC validation, graphics overrides, crash-dump policy, mux invariants, and
-configuration parsing. Synthetic x86/x64 test applications cover every supported graphics API (DirectDraw,
+frame-generation transitions, shared-memory/IPC validation, graphics overrides, crash-dump policy, mux invariants,
+configuration parsing, display-change timing and correlation policy, benchmark state/statistics and HTML report
+generation, hardware-sensor selection, and PawnIO setup policy. Synthetic x86/x64 test applications cover every
+supported graphics API (DirectDraw,
 D3D6-D3D12, OpenGL, Vulkan) and every frame-generation path (FSR FG, DLSS FG, and DX12/Vulkan FG switching), plus a
 deterministic A/V stimulus harness. DirectDraw and the D3D6-D3D8 range are exercised only through those synthetic
 applications — the prehistoric APIs have not been validated against real games yet. The verification pipeline also
@@ -735,7 +789,7 @@ and clang-tidy/file-size findings are content-addressed and ratcheted so regress
 - **Vulkan:** capture and overlay run as a real explicit Vulkan layer (`VK_LAYER_CE_overlay`, x86 and x64),
   registered per-user or all-users with both registry views, and bridge into the same shared-memory/IPC contract as
   the hook DLL. DXVK transport uses encoder-owned KMT textures with no CPU round trip.
-- **Shared-memory ABI:** the layout is versioned (currently 38) and every field offset is mixed into a fingerprint
+- **Shared-memory ABI:** the layout is versioned (currently 58) and every field offset is mixed into a fingerprint
   hash, so mixed or stale binaries fail closed instead of reading shifted fields. Configuration reloads use sequence
   locks; the inject frame ring publishes only the longest contiguous completed prefix so out-of-order GPU work can
   never recycle encoder-owned textures; the log path is a bounded lock-free ring.
@@ -750,9 +804,11 @@ and clang-tidy/file-size findings are content-addressed and ratcheted so regress
 - **Crash and dump engineering:** rich minidump flags with automatic compatibility fallback, out-of-stack dump
   workers, an engine-aware freeze watchdog, mirroring of external `MiniDumpWriteDump` calls with storm protection,
   and recoverable execute-fault handling for lazy trampoline DEP faults.
-- **Security:** DLLs load only from application, System32, and one private runtime directory—never the current
-  directory or PATH; child processes inherit only explicitly listed handles; private channels are authenticated per
-  child with a 128-bit nonce; config and IPC parsers are fuzz-tested and fail closed.
+- **Security:** CaptureEngine's own runtime DLLs load only from the application directory, System32, and one private
+  runtime directory—never the current directory or PATH. Configured user DLLs under `[DLSS]` and `[ThirdParty]` and
+  the packaged LibreHardwareMonitor/PawnIO files are explicit, separately validated exceptions. Child processes
+  inherit only explicitly listed handles; private channels are authenticated per child with a 128-bit nonce; config
+  and IPC parsers are fuzz-tested and fail closed.
 - **Scheduling:** capture/encoder workers use checked MMCSS QoS, D3D11 device priority is persisted, process
   scheduling priority resolves against the adapter's actual HAGS state, and sub-processes opt out of Windows 11
   power throttling to avoid jitter.
@@ -763,11 +819,9 @@ These are exploratory directions, not promises or a release schedule. Items are 
 feasible:
 
 - PresentMon plug-in support
-- managed loading of OptiScaler, ReShade, or Special K DLLs as add-ons
-- proper late inject / early deject support
-- improved compatibility with further third-party overlays, such as RTSS
+- completing and validating the experimental Streamline 1.x-to-2.x upgrade bridge, which is currently non-functioning
+- extending overlay coexistence to object-wrapping DX11 proxies and further third-party combinations
 - XeSS frame generation support
-- evaluating Unreal Engine settings overrides
 - evaluating a standalone GUI or an in-overlay GUI
 - D3D12VA video encoding
 - additionally offering an FFmpeg Vulkan video path instead of D3D11
@@ -804,8 +858,10 @@ or damage to your system, data, or hardware. Injected features carry additional 
 
 ## License
 
-CaptureEngine is licensed under the [MIT License](LICENSE). Bundled FFmpeg components and the FFmpeg patches retain
-their applicable LGPL licensing; see [tools/licenses/](tools/licenses/) and
-[tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md). The optional, user-supplied LibreHardwareMonitor
-library is MPL-2.0 and is not included in CaptureEngine archives; its separation and redistribution references are
-documented in [LibreHardwareMonitor_NOTICE.txt](tools/licenses/LibreHardwareMonitor_NOTICE.txt).
+CaptureEngine is licensed under the [MIT License](LICENSE). Bundled FFmpeg components, the FFmpeg patches, and the
+bundled libiconv runtime are distributed under their applicable LGPL licensing; see [tools/licenses/](tools/licenses/)
+and [tools/patches/ffmpeg/README.md](tools/patches/ffmpeg/README.md). CaptureEngine also redistributes four pinned
+LibreHardwareMonitor runtime files under MPL-2.0 and MIT as well as the Microsoft-signed PawnIO installer under
+GPL-2.0-or-later with its Device IO Control Interface Exception; complete notices, corresponding-source references,
+and packaging boundaries are in [LibreHardwareMonitor_NOTICE.txt](tools/licenses/LibreHardwareMonitor_NOTICE.txt),
+[PawnIO_NOTICE.txt](tools/licenses/PawnIO_NOTICE.txt), and [GPLv2_PawnIO.txt](tools/licenses/GPLv2_PawnIO.txt).
