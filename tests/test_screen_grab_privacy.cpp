@@ -58,6 +58,64 @@ TEST(ScreenGrabPrivacyTest, RootWindowNormalizationMatchesChildToCaptureTarget) 
     DestroyWindow(root);
 }
 
+TEST(ScreenGrabPrivacyTest, CloakedAndVirtualDesktopAndShellClassification) {
+    EXPECT_FALSE(privacy::IsWindowCloaked(nullptr));
+    EXPECT_FALSE(privacy::IsWindowCloaked(reinterpret_cast<HWND>(static_cast<uintptr_t>(0x12345))));
+    EXPECT_FALSE(privacy::IsWindowOnCurrentVirtualDesktop(nullptr));
+    EXPECT_FALSE(privacy::IsWindowOnCurrentVirtualDesktop(reinterpret_cast<HWND>(static_cast<uintptr_t>(0x12345))));
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(nullptr));
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(reinterpret_cast<HWND>(static_cast<uintptr_t>(0x12345))));
+
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const HWND normalWindow =
+        CreateWindowExW(0, L"STATIC", L"NormalApp", WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(normalWindow, nullptr);
+
+    EXPECT_FALSE(privacy::IsWindowCloaked(normalWindow));
+    EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(normalWindow));
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(normalWindow));
+
+    DestroyWindow(normalWindow);
+}
+
+TEST(ScreenGrabPrivacyTest, TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry) {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = instance;
+    wc.lpszClassName = L"WorkerW";
+    ATOM atom = RegisterClassExW(&wc);
+    if (!atom && GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+        atom = 1;
+    }
+    ASSERT_NE(atom, 0u);
+
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    const HWND desktopWindow = CreateWindowExW(0, L"WorkerW", L"", WS_POPUP | WS_VISIBLE, 0, 0,
+                                               screenWidth, screenHeight, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(desktopWindow, nullptr);
+
+    EXPECT_TRUE(privacy::IsIgnoredShellWindow(desktopWindow));
+    EXPECT_FALSE(privacy::IsWindowFullscreenLike(desktopWindow));
+    DestroyWindow(desktopWindow);
+    UnregisterClassW(L"WorkerW", instance);
+
+    wc.lpszClassName = L"XamlExplorerHostIslandWindow";
+    ATOM atom2 = RegisterClassExW(&wc);
+    if (!atom2 && GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+        atom2 = 1;
+    }
+    ASSERT_NE(atom2, 0u);
+    const HWND taskViewWindow = CreateWindowExW(0, L"XamlExplorerHostIslandWindow", L"", WS_POPUP | WS_VISIBLE,
+                                                0, 0, screenWidth, screenHeight, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(taskViewWindow, nullptr);
+    EXPECT_TRUE(privacy::IsIgnoredShellWindow(taskViewWindow));
+    EXPECT_FALSE(privacy::IsWindowFullscreenLike(taskViewWindow));
+    DestroyWindow(taskViewWindow);
+    UnregisterClassW(L"XamlExplorerHostIslandWindow", instance);
+}
+
 TEST(ScreenGrabPrivacyTest, GateFailsClosedAndWaitsForPostFocusFrame) {
     privacy::FocusPrivacyGate gate;
     gate.Reset(true);

@@ -10,12 +10,16 @@ void ScreenGrabPrivacyRuntime::Reset(bool enabled) {
     gate_.Reset(enabled);
     blackTexture_.Reset();
     repeatCacheIsBlack_ = false;
+    capturedMonitorWindow_ = nullptr;
+    capturedMonitorPid_ = 0;
 }
 
 void ScreenGrabPrivacyRuntime::ResetSource() {
     gate_.ResetTarget();
     blackTexture_.Reset();
     repeatCacheIsBlack_ = false;
+    capturedMonitorWindow_ = nullptr;
+    capturedMonitorPid_ = 0;
     ResetMediaRepeatCache();
 }
 
@@ -31,8 +35,52 @@ ScreenGrabPrivacyRuntime::FocusObservation ScreenGrabPrivacyRuntime::SampleFocus
     observation.observationQpc = observationQpc.QuadPart;
     observation.reliable = stableCaptureTarget && focus.stable && focus.classificationReliable &&
                            IsCaptureTargetValid(targetWindow, targetMonitor);
-    observation.matchingFullscreen =
-        observation.reliable && SnapshotMatchesCaptureTarget(focus, targetWindow, targetMonitor);
+    if (!observation.reliable) {
+        return observation;
+    }
+
+    if (targetWindow) {
+        observation.matchingFullscreen = SnapshotMatchesCaptureTarget(focus, targetWindow, targetMonitor);
+        return observation;
+    }
+
+    // Monitor-scope capture (dxgi_dup / WGC monitor):
+    // Once a target application establishes verified fullscreen focus on the captured monitor,
+    // only windows of that same application/process may reveal frames while that target window
+    // remains alive. Switching to another virtual desktop or secondary workspace containing an
+    // unrelated fullscreen application must not reveal pixels.
+    if (capturedMonitorWindow_) {
+        if (!IsWindow(capturedMonitorWindow_)) {
+            LogInfo("[PrivacyBlackout] Established monitor target window 0x%p closed; clearing lock",
+                    capturedMonitorWindow_);
+            capturedMonitorWindow_ = nullptr;
+            capturedMonitorPid_ = 0;
+        } else {
+            DWORD foregroundPid = 0;
+            if (focus.foregroundRoot) {
+                GetWindowThreadProcessId(focus.foregroundRoot, &foregroundPid);
+            }
+            const bool sameApplication =
+                (focus.foregroundRoot == capturedMonitorWindow_) ||
+                (capturedMonitorPid_ != 0 && foregroundPid == capturedMonitorPid_);
+            if (!sameApplication) {
+                observation.matchingFullscreen = false;
+                return observation;
+            }
+        }
+    }
+
+    observation.matchingFullscreen = SnapshotMatchesCaptureTarget(focus, targetWindow, targetMonitor);
+    if (observation.matchingFullscreen && focus.foregroundRoot) {
+        if (capturedMonitorWindow_ != focus.foregroundRoot) {
+            DWORD newPid = 0;
+            GetWindowThreadProcessId(focus.foregroundRoot, &newPid);
+            LogInfo("[PrivacyBlackout] Locked monitor capture target: root=0x%p pid=%lu",
+                    focus.foregroundRoot, static_cast<unsigned long>(newPid));
+            capturedMonitorWindow_ = focus.foregroundRoot;
+            capturedMonitorPid_ = newPid;
+        }
+    }
     return observation;
 }
 

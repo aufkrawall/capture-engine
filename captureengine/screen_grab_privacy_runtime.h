@@ -31,6 +31,12 @@ public:
     bool RepeatCacheIsBlack() const {
         return repeatCacheIsBlack_;
     }
+    HWND CapturedMonitorWindow() const {
+        return capturedMonitorWindow_;
+    }
+    DWORD CapturedMonitorPid() const {
+        return capturedMonitorPid_;
+    }
 
 private:
     struct FocusObservation {
@@ -39,8 +45,8 @@ private:
         int64_t observationQpc = 0;
     };
 
-    static FocusObservation SampleFocusObservation(HWND targetWindow, HMONITOR targetMonitor, bool stableCaptureTarget,
-                                                   const FullscreenFocusSnapshot& focus);
+    FocusObservation SampleFocusObservation(HWND targetWindow, HMONITOR targetMonitor, bool stableCaptureTarget,
+                                            const FullscreenFocusSnapshot& focus);
     void LogGateTransitions(const GateDecision& decision, const FocusObservation& observation, HWND targetWindow,
                             HMONITOR targetMonitor, const char* phase, bool hasFreshFrame, int64_t freshFrameQpc) const;
     void ResetMediaRepeatCache();
@@ -48,6 +54,8 @@ private:
     FocusPrivacyGate gate_;
     BlackFrameTextureCache blackTexture_;
     bool repeatCacheIsBlack_ = false;
+    HWND capturedMonitorWindow_ = nullptr;
+    DWORD capturedMonitorPid_ = 0;
 };
 
 }  // namespace ce::screen_grab_privacy

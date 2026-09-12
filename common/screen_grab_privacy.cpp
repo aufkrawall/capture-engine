@@ -1,6 +1,11 @@
 #include "screen_grab_privacy.h"
 
+#include <shobjidl.h>
+#include <wrl/client.h>
 #include <algorithm>
+#include <cctype>
+#include <string>
+#include "process_identity.h"
 
 namespace ce::screen_grab_privacy {
 
@@ -11,6 +16,120 @@ bool IsSupportedBlackFormat(DXGI_FORMAT format) {
            format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
+}  // namespace
+
+bool IsWindowCloaked(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        return false;
+    }
+
+    HWND root = NormalizeRootWindow(hwnd);
+    if (!root) {
+        root = hwnd;
+    }
+
+    typedef HRESULT(WINAPI* PFN_DwmGetWindowAttribute)(HWND, DWORD, PVOID, DWORD);
+    static const auto pfnDwmGetWindowAttribute = []() -> PFN_DwmGetWindowAttribute {
+        HMODULE hDwm = GetModuleHandleW(L"dwmapi.dll");
+        if (!hDwm) {
+            hDwm = LoadLibraryW(L"dwmapi.dll");
+        }
+        return hDwm ? reinterpret_cast<PFN_DwmGetWindowAttribute>(GetProcAddress(hDwm, "DwmGetWindowAttribute"))
+                    : nullptr;
+    }();
+
+    if (!pfnDwmGetWindowAttribute) {
+        return false;
+    }
+
+    DWORD cloaked = 0;
+    // DWMWA_CLOAKED = 14
+    const HRESULT hr = pfnDwmGetWindowAttribute(root, 14, &cloaked, sizeof(cloaked));
+    return SUCCEEDED(hr) && cloaked != 0;
+}
+
+bool IsWindowOnCurrentVirtualDesktop(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        return false;
+    }
+    if (IsWindowCloaked(hwnd)) {
+        return false;
+    }
+
+    HWND root = NormalizeRootWindow(hwnd);
+    if (!root) {
+        root = hwnd;
+    }
+
+    static const GUID clsidVirtualDesktopManager = {
+        0xaa509086, 0x5ca9, 0x4c25, {0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a}};
+    static const GUID iidVirtualDesktopManager = {
+        0xa5cd92ff, 0x29be, 0x454c, {0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b}};
+
+    static thread_local bool attemptedCom = false;
+    static thread_local Microsoft::WRL::ComPtr<IVirtualDesktopManager> vdm;
+    if (!attemptedCom) {
+        attemptedCom = true;
+        CoCreateInstance(clsidVirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
+                         iidVirtualDesktopManager, reinterpret_cast<void**>(vdm.GetAddressOf()));
+    }
+
+    if (vdm) {
+        BOOL onCurrent = TRUE;
+        if (SUCCEEDED(vdm->IsWindowOnCurrentVirtualDesktop(root, &onCurrent)) && !onCurrent) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool IsIgnoredShellWindow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        return false;
+    }
+
+    HWND root = NormalizeRootWindow(hwnd);
+    if (!root) {
+        root = hwnd;
+    }
+
+    char className[128] = {};
+    if (GetClassNameA(root, className, static_cast<int>(sizeof(className))) > 0) {
+        std::string lowerClass = className;
+        for (char& c : lowerClass) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (lowerClass == "progman" || lowerClass == "workerw" || lowerClass == "shell_traywnd" ||
+            lowerClass == "shell_secondarytraywnd" || lowerClass == "xamlexplorerhostislandwindow" ||
+            lowerClass == "tasklistthumbnailwnd") {
+            return true;
+        }
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(root, &pid);
+    if (pid != 0) {
+        const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
+        if (identity) {
+            std::string lowerName = identity.imageName;
+            for (char& c : lowerName) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (lowerName == "explorer.exe" || lowerName == "xamlexplorerhost.exe" ||
+                lowerName == "shellexperiencehost.exe" || lowerName == "startmenuexperiencehost.exe" ||
+                lowerName == "searchhost.exe" || lowerName == "textinputhost.exe" ||
+                lowerName == "captureengine.exe") {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+namespace {
+
 bool TryClassifyWindowFullscreenLike(HWND hwnd, HMONITOR* classifiedMonitor, bool* fullscreenLike) {
     if (classifiedMonitor) {
         *classifiedMonitor = nullptr;
@@ -18,7 +137,8 @@ bool TryClassifyWindowFullscreenLike(HWND hwnd, HMONITOR* classifiedMonitor, boo
     if (fullscreenLike) {
         *fullscreenLike = false;
     }
-    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) || IsWindowCloaked(hwnd) ||
+        !IsWindowOnCurrentVirtualDesktop(hwnd) || IsIgnoredShellWindow(hwnd)) {
         return false;
     }
 

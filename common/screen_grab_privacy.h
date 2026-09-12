@@ -22,6 +22,9 @@ bool IsFullscreenGeometry(const RECT* windowRect, const RECT* clientRect, const 
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect);
 HWND NormalizeRootWindow(HWND hwnd);
 bool IsWindowFullscreenLike(HWND hwnd);
+bool IsWindowCloaked(HWND hwnd);
+bool IsWindowOnCurrentVirtualDesktop(HWND hwnd);
+bool IsIgnoredShellWindow(HWND hwnd);
 FullscreenFocusSnapshot CaptureStableFullscreenFocus();
 bool IsCaptureTargetValid(HWND targetWindow, HMONITOR targetMonitor);
 bool SnapshotMatchesCaptureTarget(const FullscreenFocusSnapshot& snapshot, HWND targetWindow, HMONITOR targetMonitor);
