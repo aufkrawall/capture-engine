@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-12 - Screen grab privacy: Virtual desktop switching and Task View privacy blackout improvements
+
+Investigated delayed/unreliable video blackening under `black_when_no_fullscreen_focus=true` with `dxgi_dup` monitor capture when switching Windows virtual desktops (`Win+Tab` hotkey or desktop navigation). Root causes identified:
+1. When switching virtual desktops, Windows cloaks windows on inactive desktops using DWM cloaking (`DWM_CLOAKED_SHELL` 0x02 via `DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ...)`), but `IsWindowVisible()` remains `TRUE` and `IsIconic()` remains `FALSE`. Because Windows focus handover to the new desktop lags by 100-500 ms, `TryClassifyWindowFullscreenLike()` previously continued treating the invisible/cloaked game window on Desktop 1 as an active fullscreen foreground window while `dxgi_dup` was already duplicating the physical display showing Desktop 2.
+2. `Win+Tab` opens Task View (`XamlExplorerHostIslandWindow` / `Windows.UI.Core.CoreWindow`, owned by `explorer.exe` or `xamlexplorerhost.exe`), which spans the entire monitor and was previously classified as `fullscreenLike = true`.
+3. Inactive desktop backgrounds (`WorkerW` / `Progman`) and taskbars could be classified as fullscreen-like if focused on Virtual Desktop 2.
+4. In monitor-scope capture (`dxgi_dup`), once a game establishes verified fullscreen focus on the captured monitor, switching to another virtual desktop that contains another fullscreen window (e.g., browser or document viewer) previously had no process continuity check while the target game remained alive.
+
+Fixes implemented:
+- Added `IsWindowCloaked()`, `IsWindowOnCurrentVirtualDesktop()`, and `IsIgnoredShellWindow()` to `common/screen_grab_privacy.*`. `TryClassifyWindowFullscreenLike()` now immediately rejects cloaked windows, windows not on the current virtual desktop, and shell/system UI classes/processes (`explorer.exe`, `xamlexplorerhost.exe`, `shellexperiencehost.exe`, `startmenuexperiencehost.exe`, `searchhost.exe`, `textinputhost.exe`, `WorkerW`, `Progman`, etc.).
+- Added target continuity tracking (`capturedMonitorWindow_`, `capturedMonitorPid_`) to `ScreenGrabPrivacyRuntime`. In monitor-scope capture, once verified fullscreen focus is established, only windows from that same application/process can satisfy fullscreen focus while that target window remains alive. If the target closes, the lock releases cleanly.
+- Added regression tests in `tests/test_screen_grab_privacy.cpp` for cloaked, virtual desktop, and shell class rejection.
+- Validation: Complete `--verify --skip-updates --concise` gate passed with zero regressions (content-validated build, all unit tests, Python self-tests, clang-tidy ratchet clean, ASan/UBSan clean).
+
 ### 2026-09-10 - RR preset ladder re-ranked by cost with a new `high` level
 
 The 10-15% frame-time delta between `ray_reconstruction_optimal_settings=medium` and `=full` was attributed to the
