@@ -36,7 +36,6 @@ private:
     bool retireOfficialUiCoverageAfterExactDraw;
     ID3D12CommandQueue* queue;
     ID3D12CommandQueue* scQueue;
-    IDXGISwapChain3* sc3;
     UINT bufIdx;
     ID3D12Resource* bb;
     int idx;

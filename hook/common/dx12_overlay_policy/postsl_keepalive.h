@@ -113,6 +113,46 @@ inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatch
     return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
 }
 
+enum class PostSLPresentedCaptureRoute {
+    kNone,
+    kFinalGeneratedOutput,
+    kSuspendedBaseOutput,
+};
+
+inline PostSLPresentedCaptureRoute ChoosePostSLPresentedCaptureRoute(bool presentedOutputCallback,
+                                                                      bool streamlineFGRunning) {
+    // Only callbacks attached to a real Present may publish a frame. Retained
+    // startup/service callbacks can render successfully but do not represent a
+    // new output. Once DLSS-G suspends, that same real-Present callback belongs
+    // to the base-output clock and must not retain final-generated metadata.
+    if (!presentedOutputCallback) {
+        return PostSLPresentedCaptureRoute::kNone;
+    }
+    return streamlineFGRunning ? PostSLPresentedCaptureRoute::kFinalGeneratedOutput
+                               : PostSLPresentedCaptureRoute::kSuspendedBaseOutput;
+}
+
+inline bool ShouldPostSLOwnScreenshotOrdering(bool showOverlay, bool postSLActive, bool postSLConfirmed,
+                                               bool streamlineFGRunning, bool presentedOutputCallback,
+                                               bool inactivePostSLDrawSubmittedThisPresent) {
+    // Active DLSS-G routes every output through PostSL. During a suspended
+    // interval, global active/confirmed latches alone are insufficient: a
+    // cooldown or render-lock miss may prevent this Present from drawing. Own
+    // the request inside the actual callback, or after a proven inactive draw;
+    // otherwise let ProcessFrame take the pending screenshot on its live route.
+    if (!showOverlay) {
+        return false;
+    }
+    if (presentedOutputCallback) {
+        // Reaching the submit chunk inside a real output callback is stronger
+        // evidence than the activation latches; it also covers the very first
+        // successful callback before confirmation is published at its tail.
+        return true;
+    }
+    return postSLActive && postSLConfirmed &&
+           (streamlineFGRunning || inactivePostSLDrawSubmittedThisPresent);
+}
+
 inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(bool keepAliveLatched, bool streamlineFGRunning,
                                                             bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
                                                             bool protectedOfficialFFXStartup,

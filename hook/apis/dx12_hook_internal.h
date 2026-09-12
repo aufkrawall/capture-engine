@@ -543,16 +543,19 @@ bool IsDX12ObserverPolicyOnlyModeActive(SharedMemoryLayout* shm);
 bool IsDX12ObserverStartupPresentOnlyModeActive(SharedMemoryLayout* shm);
 void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow = false);
 bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg);
-void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLayout* shm, uint64_t requestId, ID3D12CommandQueue* queueOverride = nullptr);
+void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayout* shm, uint64_t requestId,
+                                    ID3D12CommandQueue* queueOverride = nullptr);
 struct DX12FinalOutputCapturePlan {
     FrameCaptureMetadata metadata{};
     bool captureCandidate = false;
     bool includeOverlay = false;
     bool claimEvaluated = false;
+    bool basePresentedOutput = false;
 };
 void DX12_NoteSkippedStreamlineFinalOutput();
 DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
-                                                                 const OverlayConfig& overlayConfig);
+                                                                 const OverlayConfig& overlayConfig,
+                                                                 bool streamlineFGRunning);
 bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan);
 void DX12_ObserveApplicationSourcePresentTiming();
 void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason);

@@ -89,7 +89,9 @@ extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
 
 // Marks callbacks invoked for a real Streamline runtime Present. PostSL also
 // has retained-swapchain startup/warmup service calls that may draw successfully
-// but do not represent a new final output and therefore must not be recorded.
+// but do not represent a new output and therefore must not be recorded. The
+// callback is a final generated output while DLSS-G runs and a base output while
+// that same runtime route is suspended.
 void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, IDXGISwapChain* swapChain);
 bool IsPostSLFinalOutputPresentCallback();
 
@@ -114,6 +116,8 @@ void BeginPostSLOffKeepAlivePresentScope();
 void EndPostSLOffKeepAlivePresentScope();
 void MarkPostSLOffKeepAlivePrePresentDrawn();
 bool WasPostSLOffKeepAlivePrePresentDrawn();
+void MarkPostSLPresentedOutputCaptureRouted();
+bool WasPostSLPresentedOutputCaptureRouted();
 
 // Initialization
 void Init();

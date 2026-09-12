@@ -388,6 +388,7 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
         ReleaseScreenshotDx12Readback(readback);
         ReleaseScreenshotWorkerSlot();
         HookLog("[Screenshot] D3D12 readback resource creation failed: hr=0x%08X", static_cast<unsigned>(hr));
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
         return false;
     }
 
@@ -415,6 +416,7 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
         ReleaseScreenshotDx12Readback(readback);
         ReleaseScreenshotWorkerSlot();
         HookLog("[Screenshot] D3D12 readback command list close failed: hr=0x%08X", static_cast<unsigned>(hr));
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
         return false;
     }
 
@@ -430,6 +432,7 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
         readback.Disown();
         ReleaseScreenshotWorkerSlot();
         HookLog("[Screenshot] D3D12 readback fence signal failed; abandoning the request");
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
         return false;
     }
     readback.submitted = true;

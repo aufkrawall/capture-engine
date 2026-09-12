@@ -346,13 +346,23 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     captureOverlayCfg = GetActiveDX12OverlayConfig(captureShm);
     captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
     // Once PostSL has proved the final Streamline route, both overlay variants
-    // are captured there so generated outputs are preserved. processCapture is
-    // already false on this outer/base-frame path in that state.
-    captureUsePostSL = g_IPC && g_IPC->IsRecording() && DX12_ShouldUseStreamlineFinalOutputCapture();
-    captureAfterOverlay = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
-                                     !captureUsePostSL && !holdFocusLossBackbufferWork;
+    // are captured there so generated outputs are preserved. During a suspended
+    // output, only a claim made inside this Present suppresses the base route;
+    // the global active/confirmed latches are deliberately insufficient.
+    const bool recording = g_IPC && g_IPC->IsRecording();
+    captureUsePostSL = recording &&
+                       (DX12_ShouldUseStreamlineFinalOutputCapture() ||
+                        DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+    // Evaluate base cadence only after Phase1 has had the opportunity to route
+    // a suspended output through its exact PostSL queue. This prevents both
+    // routes from consuming the same cadence budget at the transition seam.
+    if (processCapture && recording && !captureUsePostSL && ShouldSkipCaptureForTargetCadence()) {
+        processCapture = false;
+    }
+    captureAfterOverlay = processCapture && recording && captureWantsOverlay &&
+                                      !captureUsePostSL && !holdFocusLossBackbufferWork;
     captureBeforeOverlay =
-        processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay && !captureUsePostSL &&
+        processCapture && recording && !captureWantsOverlay && !captureUsePostSL &&
         !holdFocusLossBackbufferWork;
     delayOverlayRenderAfterSyncInit = false;
     suppressOverlayRenderForLoadedStartupOverlay = false;

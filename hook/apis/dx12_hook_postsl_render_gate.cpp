@@ -352,17 +352,17 @@ if (dx12_hook_g_State.syncDevice) {
         queueDevice->Release();
     }
 }
-sc3 = nullptr;
-if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+IDXGISwapChain3* swapChain3 = nullptr;
+if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) || !swapChain3) {
     if (s_callsSinceReactivation <= 20)
         HookLogImportant("DX12: PostSL EARLY-EXIT: QI for IDXGISwapChain3 failed (call#%d)",
                          s_callsSinceReactivation);
         return PostSLFlow::kReturn;
 }
-bufIdx = sc3->GetCurrentBackBufferIndex();
+bufIdx = swapChain3->GetCurrentBackBufferIndex();
 bb = nullptr;
-HRESULT getBufHr = sc3->GetBuffer(bufIdx, IID_PPV_ARGS(&bb));
-sc3->Release();
+HRESULT getBufHr = swapChain3->GetBuffer(bufIdx, IID_PPV_ARGS(&bb));
+swapChain3->Release();
 if (FAILED(getBufHr) || !bb) {
     if (s_callsSinceReactivation <= 20)
         HookLogImportant("DX12: PostSL EARLY-EXIT: GetBuffer(%u) failed hr=0x%08X (call#%d)", bufIdx, getBufHr,
@@ -556,4 +556,3 @@ auto slWrapperQueueReleaseGuard = ce::make_scope_guard([&]() {
 });
     return PostSLFlow::kContinue;
 }
-

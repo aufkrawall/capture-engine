@@ -26,6 +26,22 @@ TEST(FinalOutputCaptureTimingTest, RuntimePresentScopeExcludesSyntheticPostSLSer
     EXPECT_FALSE(DXGIShared::IsPostSLFinalOutputPresentCallback());
 }
 
+TEST(FinalOutputCaptureTimingTest, SuspendedCaptureClaimIsBoundedToTheEnclosingPresent) {
+    EXPECT_FALSE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+    DXGIShared::BeginPostSLOffKeepAlivePresentScope();
+    EXPECT_FALSE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+    DXGIShared::MarkPostSLPresentedOutputCaptureRouted();
+    EXPECT_TRUE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+
+    DXGIShared::BeginPostSLOffKeepAlivePresentScope();
+    EXPECT_TRUE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+    DXGIShared::EndPostSLOffKeepAlivePresentScope();
+    EXPECT_TRUE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+
+    DXGIShared::EndPostSLOffKeepAlivePresentScope();
+    EXPECT_FALSE(DXGIShared::WasPostSLPresentedOutputCaptureRouted());
+}
+
 TEST(FinalOutputCaptureTimingTest, CpuBurstIsSpreadAcrossOutputIntervals) {
     policy::FinalOutputTimelineState state;
     constexpr int64_t kFrequency = 10'000'000;

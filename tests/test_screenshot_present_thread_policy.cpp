@@ -321,3 +321,71 @@ TEST(ScreenshotPresentThreadPolicyTest, FinalStreamlineRecordingCoversGeneratedO
     }
     EXPECT_EQ(routedBaseCaptures, 2u) << "both ProcessFrameExternal overloads must yield base capture to PostSL";
 }
+
+TEST(ScreenshotPresentThreadPolicyTest, SuspendedStreamlineOutputKeepsCaptureOrderedButReturnsToBaseClock) {
+    const std::string capture =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_final_output_capture.cpp");
+    const std::string submit =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+    const std::string phase4 =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process_session_phase4.cpp");
+    const std::string process = ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process.cpp");
+    const std::string prePresent =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_overlay_present.cpp");
+    const std::string phase1 =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process_session_phase1.cpp");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(submit.empty());
+    ASSERT_FALSE(phase4.empty());
+    ASSERT_FALSE(process.empty());
+    ASSERT_FALSE(prePresent.empty());
+    ASSERT_FALSE(phase1.empty());
+
+    EXPECT_NE(capture.find("PostSLPresentedCaptureRoute::kSuspendedBaseOutput"), std::string::npos);
+    EXPECT_NE(capture.find("plan.basePresentedOutput"), std::string::npos);
+    const size_t baseBranch = capture.find("if (plan.basePresentedOutput)");
+    const size_t baseReturn = capture.find("return plan;", baseBranch);
+    const size_t finalOutputFlag = capture.find("SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT", baseBranch);
+    ASSERT_NE(baseBranch, std::string::npos);
+    ASSERT_NE(baseReturn, std::string::npos);
+    ASSERT_NE(finalOutputFlag, std::string::npos);
+    EXPECT_LT(baseReturn, finalOutputFlag)
+        << "suspended frames must leave metadata at zero and return before final-output tagging";
+    EXPECT_NE(capture.find("MarkPostSLPresentedOutputCaptureRouted"), std::string::npos);
+    EXPECT_NE(capture.find("return !ShouldSkipCaptureForTargetCadence();"), std::string::npos)
+        << "the suspended route must share the ordinary base-capture cadence gate";
+    EXPECT_NE(phase4.find("WasPostSLPresentedOutputCaptureRouted"), std::string::npos);
+    EXPECT_NE(phase4.find("ShouldSkipCaptureForTargetCadence()"), std::string::npos);
+    EXPECT_EQ(process.find("ShouldSkipCaptureForTargetCadence()"), std::string::npos)
+        << "base cadence cannot be consumed before Phase1 chooses the suspended PostSL route";
+    EXPECT_NE(submit.find("MarkPostSLOffKeepAlivePrePresentDrawn"), std::string::npos);
+
+    constexpr const char* kPresentedCallback =
+        "InvokePostSLCallbackForFinalOutputPresent(&PostSLOverlayRenderGated, pSwapChain);";
+    EXPECT_NE(prePresent.find(kPresentedCallback), std::string::npos);
+    EXPECT_NE(phase1.find(kPresentedCallback), std::string::npos);
+}
+
+TEST(ScreenshotPresentThreadPolicyTest, D3D12ScreenshotUsesTheExactSwapchainResourceDeviceAndQueueIdentity) {
+    const std::string source =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_screenshot.cpp");
+    const std::string submit =
+        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(submit.empty());
+
+    const size_t begin = source.find("void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain");
+    const size_t end = source.find("bool PublishDX12CapturedFrame(", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = source.substr(begin, end - begin);
+    EXPECT_NE(body.find("GetPendingScreenshotRequestId(shm) != requestId"), std::string::npos);
+    EXPECT_NE(body.find("backBuffer->GetDevice"), std::string::npos);
+    EXPECT_NE(body.find("queue->GetDevice"), std::string::npos);
+    EXPECT_NE(body.find("SameComIdentity(backBufferDevice.Get(), queueDevice.Get())"), std::string::npos);
+    EXPECT_EQ(body.find("g_Device.load"), std::string::npos)
+        << "a transition can rotate the global device independently of the requested backbuffer";
+    EXPECT_EQ(submit.find("CaptureRequestedDX12Screenshot(sc3"), std::string::npos)
+        << "PostSL must not reuse an IDXGISwapChain3 interface after releasing it";
+    EXPECT_NE(submit.find("CaptureRequestedDX12Screenshot(pSwapChain"), std::string::npos);
+}

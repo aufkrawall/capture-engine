@@ -72,3 +72,32 @@ TEST(DXGISharedSourceTest, ExactPostSLOffKeepAliveRunsBeforeEveryTopLevelDX12Pre
     EXPECT_LT(present1Scope, present1KeepAlive);
     EXPECT_LT(present1KeepAlive, present1Routing);
 }
+
+TEST(DXGISharedTest, RealPostSLPresentsUseFinalClockOnlyWhileDlssGenerationRuns) {
+    using Route = ce::dx12_overlay_policy::PostSLPresentedCaptureRoute;
+    using ce::dx12_overlay_policy::ChoosePostSLPresentedCaptureRoute;
+
+    EXPECT_EQ(ChoosePostSLPresentedCaptureRoute(false, false), Route::kNone);
+    EXPECT_EQ(ChoosePostSLPresentedCaptureRoute(false, true), Route::kNone)
+        << "retained startup service draws are not output frames";
+    EXPECT_EQ(ChoosePostSLPresentedCaptureRoute(true, true), Route::kFinalGeneratedOutput);
+    EXPECT_EQ(ChoosePostSLPresentedCaptureRoute(true, false), Route::kSuspendedBaseOutput)
+        << "a cutscene suspension must return to the base-present timestamp domain";
+}
+
+TEST(DXGISharedTest, SuspendedPostSLScreenshotOwnershipRequiresThisPresentEvidence) {
+    using ce::dx12_overlay_policy::ShouldPostSLOwnScreenshotOrdering;
+
+    EXPECT_TRUE(ShouldPostSLOwnScreenshotOrdering(true, true, true, true, false, false));
+    EXPECT_TRUE(ShouldPostSLOwnScreenshotOrdering(true, true, true, false, true, false))
+        << "the actual suspended-output callback owns its before/after ordering";
+    EXPECT_TRUE(ShouldPostSLOwnScreenshotOrdering(true, true, true, false, false, true))
+        << "ProcessFrame must yield after a proven pre-routing draw";
+    EXPECT_TRUE(ShouldPostSLOwnScreenshotOrdering(true, false, false, false, true, false))
+        << "reaching a real callback's submit chunk is stronger than not-yet-published confirmation";
+    EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(true, true, true, false, false, false))
+        << "stale active/confirmed latches must not strand a screenshot after a cooldown miss";
+    EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(true, false, true, true, false, true));
+    EXPECT_FALSE(ShouldPostSLOwnScreenshotOrdering(true, true, false, true, false, true));
+}

@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-09-12 - DLSS-suspended PostSL capture and screenshot ordering
+
+Static reconstruction found one shared transition seam behind ignored inject screenshots and overlay pixels in
+`capture_include_overlay=false` recordings. A real PostSL callback can remain the exact output/overlay owner after a
+game suspends DLSS-G for a cutscene, but final-output capture previously required the active FG signal. The callback
+could therefore draw first while capture either disappeared or later used the nominally overlay-free ProcessFrame
+location. Screenshot routing had the complementary error: global PostSL active/confirmed latches made ProcessFrame
+yield even when the current callback returned on scene cooldown or render-lock contention, leaving the request
+Pending with no producer.
+
+Real presented-output callbacks now choose a final-generated or suspended-base capture domain from the live DLSS-G
+signal. Both domains retain same-queue before/after-overlay ordering; the suspended domain publishes ordinary base
+metadata and shares the base cadence gate. A Present-scoped capture claim prevents duplicate ProcessFrame capture,
+and base gating occurs only after Phase1 route selection. Screenshot ownership during suspension requires the actual
+callback or a successful PostSL draw in this Present, while the post-ProcessFrame include path rechecks request state.
+The D3D12 screenshot producer also derives its device from the exact backbuffer, retains and validates the submission
+queue's COM device identity, passes a live swapchain rather than a released `IDXGISwapChain3`, completes post-claim
+readback setup failures explicitly, and emits rate-limited stage diagnostics. Focused DXGI, final-output, and
+screenshot policy/regression suites pass; proprietary-driver/game validation remains pending.
+
 ### 2026-09-12 - Screen grab privacy: Virtual desktop switching and Task View privacy blackout improvements
 
 Investigated delayed/unreliable video blackening under `black_when_no_fullscreen_focus=true` with `dxgi_dup` monitor capture when switching Windows virtual desktops (`Win+Tab` hotkey or desktop navigation). Root causes identified:

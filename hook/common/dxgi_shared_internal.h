@@ -164,6 +164,14 @@ bool WasPostSLOffKeepAlivePrePresentDrawn();
 }
 
 namespace DXGIShared {
+void MarkPostSLPresentedOutputCaptureRouted();
+}
+
+namespace DXGIShared {
+bool WasPostSLPresentedOutputCaptureRouted();
+}
+
+namespace DXGIShared {
 bool IsRecursivePresent();
 }
 

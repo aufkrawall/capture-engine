@@ -19,10 +19,11 @@ if (!dx12_hook_g_PostSLRenderMutex.try_lock()) {
 }
 auto renderLockGuard = ce::make_scope_guard([]() { dx12_hook_g_PostSLRenderMutex.unlock(); });
 SharedMemoryLayout* finalOutputShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-finalOutputCapture =
-    DX12_PlanStreamlineFinalOutputCapture(finalOutputShm, GetActiveDX12OverlayConfig(finalOutputShm));
-entryLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 cachedSLFGActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+finalOutputCapture =
+    DX12_PlanStreamlineFinalOutputCapture(finalOutputShm, GetActiveDX12OverlayConfig(finalOutputShm),
+                                          cachedSLFGActive);
+entryLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
 const ULONGLONG nowMs = GetTickCount64();
 const ULONGLONG lastProcessFrameTickMs = dx12_hook_g_LastProcessFrameTickMs.load(std::memory_order_acquire);

@@ -227,9 +227,14 @@ thread_local bool s_postSLOffKeepAlivePrePresentDrawn = false;
 }
 
 namespace DXGIShared {
+thread_local bool s_postSLPresentedOutputCaptureRouted = false;
+}
+
+namespace DXGIShared {
 void BeginPostSLOffKeepAlivePresentScope() {
     if (s_postSLOffKeepAlivePresentScopeDepth++ == 0) {
         s_postSLOffKeepAlivePrePresentDrawn = false;
+        s_postSLPresentedOutputCaptureRouted = false;
     }
 }
 }
@@ -239,7 +244,8 @@ void EndPostSLOffKeepAlivePresentScope() {
     if (s_postSLOffKeepAlivePresentScopeDepth != 0) {
         --s_postSLOffKeepAlivePresentScopeDepth;
         if (s_postSLOffKeepAlivePresentScopeDepth == 0) {
-        s_postSLOffKeepAlivePrePresentDrawn = false;
+            s_postSLOffKeepAlivePrePresentDrawn = false;
+            s_postSLPresentedOutputCaptureRouted = false;
         }
     }
 }
@@ -256,6 +262,20 @@ void MarkPostSLOffKeepAlivePrePresentDrawn() {
 namespace DXGIShared {
 bool WasPostSLOffKeepAlivePrePresentDrawn() {
     return s_postSLOffKeepAlivePresentScopeDepth != 0 && s_postSLOffKeepAlivePrePresentDrawn;
+}
+}
+
+namespace DXGIShared {
+void MarkPostSLPresentedOutputCaptureRouted() {
+    if (s_postSLOffKeepAlivePresentScopeDepth != 0) {
+        s_postSLPresentedOutputCaptureRouted = true;
+    }
+}
+}
+
+namespace DXGIShared {
+bool WasPostSLPresentedOutputCaptureRouted() {
+    return s_postSLOffKeepAlivePresentScopeDepth != 0 && s_postSLPresentedOutputCaptureRouted;
 }
 }
 

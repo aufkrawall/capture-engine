@@ -53,9 +53,6 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     if (applicationSourcePresent && !isInterpolatedFrame)
         DX12_ObserveApplicationSourcePresentTiming();
     bool processCapture = !isInterpolatedFrame && !DX12_ShouldUseStreamlineFinalOutputCapture();
-    if (processCapture && ShouldSkipCaptureForTargetCadence()) {
-        processCapture = false;
-    }
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
     const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm);
@@ -68,7 +65,8 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);
-    if (screenshotWantsOverlay && !screenshotUsePostSL) {
+    if (screenshotWantsOverlay && !screenshotUsePostSL &&
+        GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     sc3->Release();
@@ -702,9 +700,6 @@ if (!isInterpolatedFrame &&
 }
 bool processCapture = !isInterpolatedFrame && !protectedOfficialFFXStartupOverlayOnly &&
                       !DX12_ShouldUseStreamlineFinalOutputCapture();
-if (processCapture && ShouldSkipCaptureForTargetCadence()) {
-    processCapture = false;
-}
 
 SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
 OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
@@ -735,7 +730,8 @@ if (diagnostics) {
     diagnostics->innerUs = PerfLogger::GetQpcUs() - innerStartUs;
 }
 
-if (screenshotWantsOverlay && !screenshotUsePostSL) {
+if (screenshotWantsOverlay && !screenshotUsePostSL &&
+    GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
     const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
     CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     if (diagnostics) {

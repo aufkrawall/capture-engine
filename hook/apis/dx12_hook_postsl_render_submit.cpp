@@ -40,7 +40,7 @@ auto captureBeforeOverlay = [&](ID3D12CommandQueue* overlaySubmitQueue,
     if (!overlaySubmitQueue)
         return;
     if (overlayFreeRequestId != 0) {
-        CaptureRequestedDX12Screenshot(sc3, overlayFreeShm, overlayFreeRequestId, overlaySubmitQueue);
+        CaptureRequestedDX12Screenshot(pSwapChain, overlayFreeShm, overlayFreeRequestId, overlaySubmitQueue);
         overlayFreeRequestId = 0;
     }
     if (!finalOutputCapture.includeOverlay && DX12_TryClaimStreamlineFinalOutputCapture(finalOutputCapture)) {
@@ -408,7 +408,7 @@ if (rendered) {
     const uint64_t postSLScreenshotRequestId = GetPendingScreenshotRequestId(postSLShm);
     if (postSLScreenshotRequestId != 0 && postSLOverlayCfg.showOverlay &&
         postSLOverlayCfg.screenshotIncludeOverlay) {
-        CaptureRequestedDX12Screenshot(sc3, postSLShm, postSLScreenshotRequestId, submittedQueue);
+        CaptureRequestedDX12Screenshot(pSwapChain, postSLShm, postSLScreenshotRequestId, submittedQueue);
     }
 }
 bool slFGSubmit = cachedSLFGActive;
@@ -454,6 +454,12 @@ int renderNum = s_postSLRenderCount.fetch_add(1, std::memory_order_relaxed) + 1;
 s_postSLRenders.fetch_add(1, std::memory_order_relaxed);
 HRESULT postDevReason = dev->GetDeviceRemovedReason();
 if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
+    if (finalOutputCapture.basePresentedOutput) {
+        // The overlay and any capture copy were ordered on this real suspended
+        // output. Let the later ProcessFrame route distinguish that proof from
+        // the stale global PostSL-active latch.
+        DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
+    }
     ++dx12_hook_s_PostSLSuccessfulSubmitSequence;
     if (!dx12_hook_g_HadSuccessfulPostSLPhase.exchange(true, std::memory_order_acq_rel)) {
         HookLogImportant(

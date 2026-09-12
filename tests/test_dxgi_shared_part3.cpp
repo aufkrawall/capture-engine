@@ -186,7 +186,8 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     const size_t preRoutingCoverage = text.find("DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn()", recoveryDecision);
     const size_t dedupDecision = text.find("ShouldSubmitInactiveDLSSExactPostSLKeepAlive(", preRoutingCoverage);
     const size_t fallbackSubmitGuard = text.find("if (shouldSubmitKeepAlive)", dedupDecision);
-    const size_t exactPostSLKeepAlive = text.find("PostSLOverlayRenderGated(pSwapChain);", fallbackSubmitGuard);
+    const size_t exactPostSLKeepAlive = text.find(
+        "InvokePostSLCallbackForFinalOutputPresent(&PostSLOverlayRenderGated, pSwapChain);", fallbackSubmitGuard);
     const size_t directDrawSuccess = text.find("fallbackKeepAliveDrawSucceeded =", exactPostSLKeepAlive);
     const size_t directDrawSuccessGuard = text.find("if (fallbackKeepAliveDrawSucceeded)", directDrawSuccess);
     const size_t markPrePresentDraw =
@@ -465,7 +466,8 @@ TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepA
     const size_t samePresentDedup = text.find("WasPostSLOffKeepAlivePrePresentDrawn()", latch);
     const size_t queueLock = text.find("g_CommandQueueMutex", samePresentDedup);
     const size_t exactPolicy = text.find("ShouldDriveExactPostSLOffKeepAliveBeforePresent(", queueLock);
-    const size_t submit = text.find("PostSLOverlayRenderGated(pSwapChain);", exactPolicy);
+    const size_t submit = text.find(
+        "InvokePostSLCallbackForFinalOutputPresent(&PostSLOverlayRenderGated, pSwapChain);", exactPolicy);
     const size_t success = text.find("const bool submitted", submit);
     const size_t mark = text.find("DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();", success);
     ASSERT_NE(helper, std::string::npos);

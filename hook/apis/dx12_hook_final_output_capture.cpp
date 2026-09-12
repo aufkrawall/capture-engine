@@ -53,20 +53,40 @@ void DX12_NoteSkippedStreamlineFinalOutput() {
 }
 
 DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
-                                                                 const OverlayConfig& overlayConfig) {
+                                                                 const OverlayConfig& overlayConfig,
+                                                                 bool streamlineFGRunning) {
     DX12FinalOutputCapturePlan plan;
     // Publish route capability before captureRequested becomes live. Media's
     // inject handshake can arrive several seconds after capture sync begins;
     // deriving source semantics from that handshake made the limiter retarget
     // from final-output 120 to base-frame 120 (driver 480 under 4x MFG).
     DX12_ShouldUseStreamlineFinalOutputCapture();
-    if (!DXGIShared::IsPostSLFinalOutputPresentCallback() ||
-        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
+    const auto captureRoute = ce::dx12_overlay_policy::ChoosePostSLPresentedCaptureRoute(
+        DXGIShared::IsPostSLFinalOutputPresentCallback(), streamlineFGRunning);
+    if (captureRoute == ce::dx12_overlay_policy::PostSLPresentedCaptureRoute::kNone)
         return plan;
 
     plan.captureCandidate = shm && g_IPC && g_IPC->IsRecording() &&
                             shm->runtimeState.IsInjectVideoCaptureRequested();
     plan.includeOverlay = overlayConfig.showOverlay && overlayConfig.captureIncludeOverlay;
+    plan.basePresentedOutput =
+        captureRoute == ce::dx12_overlay_policy::PostSLPresentedCaptureRoute::kSuspendedBaseOutput;
+    if (plan.basePresentedOutput) {
+        // The proven PostSL queue still owns ordering while DLSS-G is suspended,
+        // but this is a base Present. A zero timestamp and no final-output flag
+        // preserve the ordinary capture clock across the media transition.
+        static std::atomic<uint64_t> s_suspendedOutputPlanCount{0};
+        const uint64_t planCount = s_suspendedOutputPlanCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (planCount <= 20 || (planCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Suspended Streamline output #%llu planned on PostSL ordering route "
+                "(capture=%d includeOverlay=%d flags=base)",
+                static_cast<unsigned long long>(planCount), plan.captureCandidate ? 1 : 0,
+                plan.includeOverlay ? 1 : 0);
+        }
+        return plan;
+    }
+
     if (ce::capture_policy::UpdateFinalOutputCaptureEpoch(g_finalOutputTimeline,
                                                            plan.captureCandidate)) {
         g_finalOutputCadenceGate.Reset();
@@ -133,6 +153,13 @@ bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan)
     plan.claimEvaluated = true;
     if (!plan.captureCandidate)
         return false;
+
+    if (plan.basePresentedOutput) {
+        // Claim the present before cadence evaluation so the later normal route
+        // cannot publish the same output (or consume a second cadence budget).
+        DXGIShared::MarkPostSLPresentedOutputCaptureRouted();
+        return !ShouldSkipCaptureForTargetCadence();
+    }
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const int64_t timestampUs = DisplayTimingQpcToUs(plan.metadata.timestampQpc, GetQpcFrequency());

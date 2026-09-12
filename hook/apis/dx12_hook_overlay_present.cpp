@@ -113,7 +113,7 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
         auto inlineCoverageOwnerGuard = ce::make_scope_guard([previousInlineCoverageOwner]() {
             dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousInlineCoverageOwner;
         });
-        PostSLOverlayRenderGated(pSwapChain);
+        DXGIShared::InvokePostSLCallbackForFinalOutputPresent(&PostSLOverlayRenderGated, pSwapChain);
     }
     const uint64_t successfulSubmitSequenceAfter = dx12_hook_s_PostSLSuccessfulSubmitSequence;
     const bool submitted = successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;

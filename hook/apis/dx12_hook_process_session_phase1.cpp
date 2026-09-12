@@ -382,7 +382,7 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
                 auto inlineCoverageOwnerGuard = ce::make_scope_guard([previousInlineCoverageOwner]() {
                     dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent = previousInlineCoverageOwner;
                 });
-                PostSLOverlayRenderGated(pSwapChain);
+                DXGIShared::InvokePostSLCallbackForFinalOutputPresent(&PostSLOverlayRenderGated, pSwapChain);
                 successfulSubmitSequenceAfter = dx12_hook_s_PostSLSuccessfulSubmitSequence;
                 fallbackKeepAliveDrawSucceeded =
                     successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;
