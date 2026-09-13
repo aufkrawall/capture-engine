@@ -152,10 +152,10 @@ TEST_F(FpsLimiterTest, FreshGameSleepGetsOneDriverOwnedWarmupFrameThenFallbackRe
     mockShm->fpsLimiter.SetGeneralFps(120);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
 
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     EXPECT_FALSE(limiter.IsActivelyLimiting());
 
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     EXPECT_TRUE(limiter.IsActivelyLimiting())
         << "unchanged merely-recent Sleep evidence must not extend driver-only warmup";
     g_ReflexLimiter.Shutdown();
@@ -188,7 +188,7 @@ TEST_F(FpsLimiterTest, NominalDLSSFGDoesNotDivideUntilRecentGameSleepEvidence) {
     g_FGCompat.SetDLSSFGActive(true);
 
     for (int i = 0; i < 4; ++i) {
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
     }
     EXPECT_EQ(limiter.GetPacedGroupCount(), 4u);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 0u);
@@ -196,7 +196,7 @@ TEST_F(FpsLimiterTest, NominalDLSSFGDoesNotDivideUntilRecentGameSleepEvidence) {
     ConfirmDLSSFGPacing();
     const uint32_t pacedBeforeConfirmation = limiter.GetPacedGroupCount();
     for (int i = 0; i < 4; ++i) {
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
     }
     EXPECT_EQ(limiter.GetPacedGroupCount(), pacedBeforeConfirmation + 1);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 3u);
@@ -205,7 +205,7 @@ TEST_F(FpsLimiterTest, NominalDLSSFGDoesNotDivideUntilRecentGameSleepEvidence) {
     const uint32_t pacedBeforeSuspend = limiter.GetPacedGroupCount();
     const uint32_t generatedBeforeSuspend = limiter.GetGeneratedSlotPassCount();
     for (int i = 0; i < 4; ++i) {
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
     }
     EXPECT_EQ(limiter.GetPacedGroupCount(), pacedBeforeSuspend + 4);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), generatedBeforeSuspend)

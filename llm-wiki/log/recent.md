@@ -1,5 +1,51 @@
 # llm-wiki Log
 
+### 2026-09-13 - SB DX12 fps limiter: the 2 ms duplicate-present window ate 46 genuine frames/s
+
+Session `20260913_122208` (Strange Brigade DX12, `FpsLimiter.general_fps=90`, `general_limiter_mode=basic`, inject
+capture): the game presented ~130 fps with alternating short/long frame times while `fps_limiter_trace.log` reported
+a flawless cadence - `waited=120 late=0 avgFps=90.0` every window. Both halves were true. Apply() ran 129 times/s
+(2160 paced + 1126 `activeDedup` over 25.5 s, matching the 3448 perf-CSV present rows over 26.7 s and the overlay's
+own `source_current_fps` of ~128.9). The escapes were the whole gap: ~88 paced/s + ~46 deduped/s = the observed rate.
+
+Root cause: the non-boundary Apply() path classified a call as a duplicate present by wall clock - a 2 ms window
+since the last Apply return. Strange Brigade DX12 renders a frame in 1-2 ms, so a genuine next present repeatedly
+landed inside that window, returned without taking a grid slot, and reached the swapchain unpaced. The logged
+`sinceReturnUs` values cluster at 1.1-1.95 ms, not the tens of microseconds a real Present+PresentEx duplicate
+takes. The dedup never updates `lastApplyReturnQpc`, so the pattern is "paced frame, short unpaced frame ~1.5 ms
+later, wait to the next slot" - exactly the short/long alternation the user saw.
+
+The window could only misfire there: `IsRecursivePresent()` (`dxgi_shared_g_presentThreadId`/`presentDepth`) and the
+`IsInWrapperPresent()` early return already reject every nested, cross-thread and wrapper-owned re-entry before
+`ExecutePresentCore` reaches Apply(), so a second Apply() for one presented frame is structurally impossible on the
+DXGI path. This is the same defect already fixed for Strange Brigade Vulkan in 2026-08 (`gateEveryPresent`), which
+never reached the D3D sites.
+
+Fix: `Apply()`'s second parameter is now `ce::fps_limiter_policy::PresentSite` - a structural call-site contract
+instead of a bool. `kDuplicateProne` keeps the legacy window for sites whose second call genuinely is the same frame
+(DXVK Present+PresentEx, the D3D9/D3D8/DDraw/OpenGL wrappers). `kFinalOutputBoundary` is the old `gateEveryPresent`,
+unchanged, and stays the only contract allowed to own `OutputGroupAdmission`. The new `kUniqueApplicationPresent`
+covers the four DXGI top-level boundaries (`DetourPresent`, `DetourPresent1`, `CWrapDXGISwapChain::Present`/
+`Present1`): the duplicate window is skipped entirely and every entry takes a cadence-grid slot under the blocking
+cadence lock.
+
+Deliberate boundary: while frame generation is producing, a `kUniqueApplicationPresent` site keeps the established
+window. That DXGI stream also carries runtime-owned generated presents (FFX presents an interpolated frame from its
+own proxy swapchain) that CE cannot classify structurally there yet; gating every entry would spend a base-rate grid
+slot on a generated present AND block the runtime's presenter thread inside CE's cadence lock - the documented FFX
+freeze class. This is not the rejected `strictGrid = boundary && !FGActive` escape from Portal RTX: a real
+final-output boundary stays unconditionally strict. Classifying generated presents on the DXGI path the way the
+Vulkan boundary does is the open follow-up.
+
+Diagnostics: the `LOCAL timer cadence active` / `LOCAL timer start` lines now carry `site=` and `strictGrid=`.
+A fixed run must show `activeDedup=0` in the DX12 stats lines.
+
+Tests: `tests/test_fps_limiter_present_site.cpp` (the bug as a requirement - an immediate second Apply on a unique
+site must take a grid slot; the FG-active site must keep the window; the inactive fast path must not stall; pure
+policy table for `ShouldGateEveryApplyOnCadenceGrid`) and a `PresentPacingPolicySourceTest` that pins the contract
+at all four DXGI call sites. Hardware run pending.
+
+
 ### 2026-09-13 - DX12 dynamic glyph boxes were an upload/allocator ownership race
 
 A supplied DLSS-G 4x screenshot showed the first `3` of the graph's dynamic `33 ms` ceiling label as a box while

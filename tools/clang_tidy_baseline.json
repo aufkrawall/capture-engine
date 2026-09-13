@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 737,
+    "entries": 738,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -648,6 +648,7 @@
       "tests/test_fps_limiter.cpp",
       "tests/test_fps_limiter_output_groups.cpp",
       "tests/test_fps_limiter_part2.cpp",
+      "tests/test_fps_limiter_present_site.cpp",
       "tests/test_frame_queue.cpp",
       "tests/test_frame_timing_utils.cpp",
       "tests/test_globals.cpp",

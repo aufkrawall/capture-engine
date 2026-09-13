@@ -147,7 +147,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // (concurrent present streams); gating only the first present let the other
     // images through unpaced, so the displayed rate stayed at 2x the configured
     // target with alternating short/long frame times and bad 1% lows. The
-    // limiter's gateEveryPresent mode serializes concurrent presents onto the
+    // limiter's final-output-boundary site serializes concurrent presents onto the
     // cadence grid: exactly one present per target interval, evenly spaced.
     // Basic pacing waits before the driver call; native pacing keeps FIFO
     // untouched and hands the interval to the game's pre-input sleep or CE's
@@ -162,7 +162,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         g_SharedFpsLimiter.SetIPCClient(&g_IPCClient);
         g_SharedFpsLimiter.SetNativePacingBackend(GetVulkanNativeFpsPacingBackend());
         ce::vulkan_present_boundary::ReportPresentTimeLimiterBoundary(sd, nativeVulkanPresent);
-        g_SharedFpsLimiter.Apply(true, nativeVulkanPresent);
+        g_SharedFpsLimiter.Apply(true,
+                                 nativeVulkanPresent
+                                     ? ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary
+                                     : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
         perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
     }
 

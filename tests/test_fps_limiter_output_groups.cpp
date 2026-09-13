@@ -293,7 +293,7 @@ TEST_F(FpsLimiterTest, ThreeTimesSixCallbackBurstPacesExactlyTwoGroups) {
     for (int i = 0; i < 6; ++i) {
         LARGE_INTEGER start, end;
         QueryPerformanceCounter(&start);
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
         QueryPerformanceCounter(&end);
         elapsedMs.push_back(ElapsedMs(start, end, freq));
     }
@@ -327,7 +327,7 @@ TEST_F(FpsLimiterTest, NoFGRealBoundaryAdmitsEveryCallbackAsGroupOwner) {
     const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
     const uint32_t concurrentSkipsBefore = limiter.GetConcurrentApplySkipCount();
     for (int i = 0; i < 4; ++i) {
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
     }
     EXPECT_EQ(limiter.GetBoundaryCallbackCount() - boundaryBefore, 4u);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 4u);
@@ -371,8 +371,8 @@ TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(false, true);  // owner
-    limiter.Apply(false, true);  // generated pass
+    limiter.Apply(false, kFinalOutputSite);  // owner
+    limiter.Apply(false, kFinalOutputSite);  // generated pass
     ASSERT_EQ(limiter.GetPacedGroupCount(), 1u);
 
     const uint32_t resetsBefore = limiter.GetGroupAdmissionResetCount();
@@ -380,7 +380,7 @@ TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
 
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);  // clean group owner after the reset
+    limiter.Apply(false, kFinalOutputSite);  // clean group owner after the reset
     QueryPerformanceCounter(&end);
 
     EXPECT_GE(ElapsedMs(start, end, freq), 8.0) << "first cadence slot of the new grid (~12.5 ms half-interval)";
@@ -400,12 +400,12 @@ TEST_F(FpsLimiterTest, DeactivationResetsPartialGroupAdmission) {
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(false, true);  // owner
-    limiter.Apply(false, true);  // generated pass -> partial group pending
+    limiter.Apply(false, kFinalOutputSite);  // owner
+    limiter.Apply(false, kFinalOutputSite);  // generated pass -> partial group pending
     ASSERT_EQ(limiter.GetPacedGroupCount(), 1u);
 
     mockShm->fpsLimiter.SetGeneralEnabled(false);
-    limiter.Apply(false, true);  // inactive fast path
+    limiter.Apply(false, kFinalOutputSite);  // inactive fast path
 
     EXPECT_EQ(limiter.GetGroupAdmissionResetCount(), 1u);
     EXPECT_FALSE(limiter.IsActivelyLimiting());
@@ -415,7 +415,7 @@ TEST_F(FpsLimiterTest, DeactivationResetsPartialGroupAdmission) {
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     QueryPerformanceCounter(&end);
     EXPECT_GE(ElapsedMs(start, end, freq), 3.0);
     EXPECT_EQ(limiter.GetGroupAdmissionResetCount() - resetsBefore, 0u) << "already clean from deactivation";
@@ -440,13 +440,13 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(true, true);  // owner: arms the native backend + pending post-present sleep
+    limiter.Apply(true, kFinalOutputSite);  // owner: arms the native backend + pending post-present sleep
     EXPECT_EQ(mock.setTargetCalls, 1);
     EXPECT_EQ(mock.targetFps, 240) << "the DLSS-G-aware driver interval takes the output rate";
     EXPECT_EQ(mock.sleepCalls, 0);
 
-    limiter.Apply(true, true);  // generated slot
-    limiter.Apply(true, true);  // generated slot
+    limiter.Apply(true, kFinalOutputSite);  // generated slot
+    limiter.Apply(true, kFinalOutputSite);  // generated slot
     EXPECT_EQ(mock.setTargetCalls, 1) << "generated slots must not arm";
     EXPECT_EQ(mock.sleepCalls, 0);
 
@@ -480,7 +480,7 @@ TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     QueryPerformanceCounter(&end);
     EXPECT_GE(ElapsedMs(start, end, freq), 15.0);
 
@@ -492,7 +492,7 @@ TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     LARGE_INTEGER start2, end2;
     limiter.Shutdown();
     QueryPerformanceCounter(&start2);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     QueryPerformanceCounter(&end2);
     const double injectMs = ElapsedMs(start2, end2, freq);
     EXPECT_GE(injectMs, 3.0);
@@ -520,7 +520,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingReceivesOutputRateUnderDlssFrameGenerat
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(true, true);
+    limiter.Apply(true, kFinalOutputSite);
     EXPECT_EQ(mock.setTargetCalls, 1);
     EXPECT_EQ(mock.targetFps, 130) << "the driver stretches the render loop by the MFG factor itself";
 
@@ -543,7 +543,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingKeepsBaseRateUnderThirdPartyFrameGenera
     g_FGCompat.SetFSRFGActive(true);
     ASSERT_EQ(g_FGCompat.GetFGMultiplier(), 2);
 
-    limiter.Apply(true, true);
+    limiter.Apply(true, kFinalOutputSite);
     EXPECT_EQ(mock.setTargetCalls, 1);
     EXPECT_EQ(mock.targetFps, 65) << "FSR FG generated frames never reach the NVIDIA driver cap";
 
@@ -568,7 +568,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingScalesInjectCaptureSyncTargetToOutputRa
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(true, true);
+    limiter.Apply(true, kFinalOutputSite);
     EXPECT_EQ(mock.setTargetCalls, 1);
     EXPECT_EQ(mock.targetFps, 180) << "60 rendered fps through a 3x output-rate driver cap";
 
@@ -588,9 +588,9 @@ TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    limiter.Apply(false, true);  // group 1 owner
-    limiter.Apply(false, true);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);  // group 1 owner
+    limiter.Apply(false, kFinalOutputSite);
+    limiter.Apply(false, kFinalOutputSite);
     ASSERT_EQ(limiter.GetPacedGroupCount(), 1u);
     ASSERT_EQ(limiter.GetGeneratedSlotPassCount(), 2u);
 
@@ -603,23 +603,23 @@ TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
     const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);  // late group-2 owner: deadline already passed
+    limiter.Apply(false, kFinalOutputSite);  // late group-2 owner: deadline already passed
     QueryPerformanceCounter(&end);
     EXPECT_LT(ElapsedMs(start, end, freq), 3.0)
         << "a late owner re-bases the cadence without a short catch-up wait";
 
-    limiter.Apply(false, true);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
+    limiter.Apply(false, kFinalOutputSite);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 1u) << "exactly one owner per group after the hitch";
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount() - generatedBefore, 2u);
 
     // The next group's owner paces on the re-based grid.
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     QueryPerformanceCounter(&end);
     EXPECT_GE(ElapsedMs(start, end, freq), 8.0) << "the re-based cadence still paces its group owners";
-    limiter.Apply(false, true);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
+    limiter.Apply(false, kFinalOutputSite);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 2u);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount() - generatedBefore, 4u);
     EXPECT_EQ(limiter.GetConcurrentApplySkipCount(), 0u);
@@ -656,7 +656,7 @@ TEST_F(FpsLimiterTest, ConcurrentCallersProduceExactGroupOwnersWithoutContention
                 // Bounded startup spin: all threads release within microseconds.
             }
             for (int i = 0; i < kCallbacksPerThread; ++i) {
-                limiter.Apply(false, true);
+                limiter.Apply(false, kFinalOutputSite);
             }
         });
     }

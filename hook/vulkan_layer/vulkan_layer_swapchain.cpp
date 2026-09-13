@@ -279,7 +279,10 @@ SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
         // gate every acquire on the cadence grid instead.
         const bool groupedAdmission = !IsDXVKD3D11WrapperLoaded();
         ce::vulkan_present_boundary::ReportAcquireTimeLimiterBoundary(sd, groupedAdmission);
-        g_SharedFpsLimiter.Apply(false, groupedAdmission);
+        g_SharedFpsLimiter.Apply(false,
+                                 groupedAdmission
+                                     ? ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary
+                                     : ce::fps_limiter_policy::PresentSite::kDuplicateProne);
     }
     return sd;
 }

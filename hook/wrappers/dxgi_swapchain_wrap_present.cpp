@@ -445,10 +445,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // cadence is finished after Present returns so the wait happens before the
     // game starts building the next frame.
     // This applies to both DX11 and DX12.
+    //
+    // Unique application-present boundary: the DXGI detours take their
+    // IsInWrapperPresent() early return while this wrapper owns the present,
+    // so exactly one Apply() runs per presented frame and the cadence grid
+    // gates every entry instead of a duplicate-present time window.
     const int64_t limiterStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
         DXGIShared::ApplyPresentFrameLatencyOverrides(pRealCached);
     }
 
@@ -678,10 +683,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
     // cadence is finished after Present returns so the wait happens before the
     // game starts building the next frame.
-    // This applies to both DX11 and DX12.
+    // This applies to both DX11 and DX12. Unique application-present boundary
+    // for the same reason as Present().
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
         DXGIShared::ApplyPresentFrameLatencyOverrides(pReal1Cached);
     }
 

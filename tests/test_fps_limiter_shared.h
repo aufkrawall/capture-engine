@@ -14,6 +14,14 @@
 #include "../hook/common/freeze_watchdog.h"
 #include "../hook/common/overlay_compat.h"
 
+// Call-site contracts under test. See ce::fps_limiter_policy::PresentSite.
+inline constexpr ce::fps_limiter_policy::PresentSite kFinalOutputSite =
+    ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary;
+inline constexpr ce::fps_limiter_policy::PresentSite kUniquePresentSite =
+    ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent;
+inline constexpr ce::fps_limiter_policy::PresentSite kDuplicateProneSite =
+    ce::fps_limiter_policy::PresentSite::kDuplicateProne;
+
 class FpsLimiterTest : public ::testing::Test {
 protected:
     std::unique_ptr<SharedMemoryLayout> mockShm;

@@ -585,7 +585,18 @@ TEST(OverlaySubmitQueuePolicySourceTest, VulkanReflexUsesDriverSignaledPostPrese
     EXPECT_NE(reflex.find("kSetSleepModeId = 0x2acfd162"), std::string::npos);
     EXPECT_NE(reflex.find("kSleepId = 0x36732b1e"), std::string::npos);
     EXPECT_NE(reflex.find("fp_vkWaitSemaphores"), std::string::npos);
-    EXPECT_NE(present.find("g_SharedFpsLimiter.Apply(true, nativeVulkanPresent)"), std::string::npos);
+    // The native-Vulkan present is a real final-output boundary: every present,
+    // generated frames included, reaches this hook, so it must hand the limiter
+    // that contract instead of the legacy duplicate-present window. A DXVK
+    // D3D11 wrapper present is not that boundary and keeps the legacy site.
+    const size_t vulkanApply = present.find("g_SharedFpsLimiter.Apply(true,");
+    ASSERT_NE(vulkanApply, std::string::npos);
+    const size_t vulkanApplyEnd = present.find(");", vulkanApply);
+    ASSERT_NE(vulkanApplyEnd, std::string::npos);
+    const std::string vulkanApplyCall = present.substr(vulkanApply, vulkanApplyEnd - vulkanApply);
+    EXPECT_NE(vulkanApplyCall.find("nativeVulkanPresent"), std::string::npos);
+    EXPECT_NE(vulkanApplyCall.find("PresentSite::kFinalOutputBoundary"), std::string::npos);
+    EXPECT_NE(vulkanApplyCall.find("PresentSite::kDuplicateProne"), std::string::npos);
     EXPECT_NE(present.find("g_SharedFpsLimiter.ApplyPostPresent()"), std::string::npos);
     EXPECT_NE(entry.find("Capture_vkSetLatencySleepModeNV"), std::string::npos);
     EXPECT_NE(entry.find("Capture_vkLatencySleepNV"), std::string::npos);

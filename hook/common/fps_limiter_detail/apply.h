@@ -5,7 +5,11 @@
 
 #include "../fps_limiter.h"
 
-inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEveryPresent) {
+inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limiter_policy::PresentSite site) {
+    // Only a site that observes every final presented output may own
+    // multiplier-sized output-group admission and the output-domain cadence
+    // grid; see ce::fps_limiter_policy::PresentSite.
+    const bool finalOutputBoundary = site == ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary;
     SharedMemoryLayout* shm = nullptr;
     if (dbgShm) {
         shm = dbgShm;
@@ -174,7 +178,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
         targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
     const int cadenceScale = ce::fps_limiter_policy::ResolveCadenceScaleMultiplier(
-        fgActive, fgMultiplier, scaleForFrameGeneration && gateEveryPresent);
+        fgActive, fgMultiplier, scaleForFrameGeneration && finalOutputBoundary);
     const int cadenceTargetFps = (cadenceScale > 1) ? targetFps : effectiveTargetFps;
     // A driver-owned low-latency interval that already accounts for NVIDIA's
     // generated frames takes the OUTPUT rate, never the FG-divided base target
@@ -189,7 +193,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // first callback of a new configuration owns a clean cadence slot, and a
     // reset can never discard the group the current callback just opened.
     const uint32_t admissionKey = (limiterActive ? 1u : 0u) | (usingCaptureSync ? 2u : 0u) |
-                                  (fgActive ? 4u : 0u) | (gateEveryPresent ? 8u : 0u) |
+                                  (fgActive ? 4u : 0u) | (finalOutputBoundary ? 8u : 0u) |
                                   (static_cast<uint32_t>(fgMultiplier & 0x7) << 4) |
                                   (static_cast<uint32_t>(std::clamp(cadenceTargetFps, 0, 0xFFFF)) << 7) |
                                   (static_cast<uint32_t>(std::clamp(cadenceScale, 0, 0x7)) << 23);
@@ -211,7 +215,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
         // legacy dedup window cannot be confused with generated spillover -
         // the escape that let Portal RTX admit whole unpaced groups and run
         // ~146 fps against a 130 cap.
-        if (gateEveryPresent) {
+        if (finalOutputBoundary) {
             boundaryCallbackCount_.fetch_add(1, std::memory_order_relaxed);
             if (groupAdmission_.Classify(ce::fps_limiter_policy::ResolveOutputGroupAdmissionMultiplier(
                     fgActive, fgMultiplier)) ==
@@ -232,7 +236,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     // the swapchain unpaced. The legacy try-lock path keeps its non-blocking
     // behavior for call sites whose second call is a duplicate of the same
     // frame (DXVK Present+PresentEx).
-    const bool strictGrid = gateEveryPresent;
+    const bool strictGrid = ce::fps_limiter_policy::ShouldGateEveryApplyOnCadenceGrid(site, fgActive);
     std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
     if (strictGrid) {
         LARGE_INTEGER lockStart, lockEnd, lockFreq;
@@ -742,12 +746,15 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, bool gateEvery
     if (localCadenceFirstFrame) {
         TraceLog(
             "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "
-            "events=%d/%d firstWaitUs=%lld firstLateUs=%lld",
+            "events=%d/%d firstWaitUs=%lld firstLateUs=%lld site=%u strictGrid=%d",
             usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps, effectiveTargetFps,
             cadenceTargetFps, cadenceScale, releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs,
-            cadence.lateUs);
-        HookLog("FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d)",
-                usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps);
+            cadence.lateUs, static_cast<unsigned>(site), strictGrid ? 1 : 0);
+        HookLog(
+            "FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d, site=%u, "
+            "strictGrid=%d)",
+            usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps,
+            static_cast<unsigned>(site), strictGrid ? 1 : 0);
     }
     if (cadence.emitStats) {
         TraceLog(

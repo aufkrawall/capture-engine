@@ -250,3 +250,42 @@ TEST(PresentPacingPolicySourceTest, AllInnerDXGIVSyncPathsRespectNativeFGOutputO
     ASSERT_NE(apply, std::string::npos);
     EXPECT_LT(unchanged, apply);
 }
+
+// Strange Brigade DX12, session installed/captureengine/logs/20260913_122208:
+// the game presented ~130 fps against a 90 fps cap with alternating short/long
+// frame times while the limiter's own stats read a perfect
+// "waited=120 late=0 avgFps=90.0". The game renders a frame in 1-2 ms, so a
+// genuine next present kept landing inside the limiter's 2 ms duplicate-present
+// window and reached the swapchain completely unpaced (46 escapes/s, exactly
+// the 130-90 gap).
+//
+// The DXGI detours and the swapchain wrapper are mutually exclusive
+// (IsInWrapperPresent) and guarded by IsRecursivePresent(), so a second Apply()
+// for one presented frame structurally cannot reach them. They must therefore
+// declare the unique-application-present contract and let the cadence grid gate
+// every entry, instead of letting a wall-clock window decide what a duplicate
+// is.
+TEST(PresentPacingPolicySourceTest, DXGIPresentBoundariesGateEveryApplyOnTheCadenceGrid) {
+    struct Boundary {
+        const char* path;
+        int expectedSites;
+    };
+    const Boundary boundaries[] = {
+        {"hook/common/dxgi_shared_present_core.cpp", 1},
+        {"hook/common/dxgi_shared_present1.cpp", 1},
+        {"hook/wrappers/dxgi_swapchain_wrap_present.cpp", 2},
+    };
+
+    for (const Boundary& boundary : boundaries) {
+        const std::string source = ReadProjectSource(boundary.path);
+        ASSERT_FALSE(source.empty()) << boundary.path;
+
+        int sites = 0;
+        for (size_t pos = source.find("PresentSite::kUniqueApplicationPresent"); pos != std::string::npos;
+             pos = source.find("PresentSite::kUniqueApplicationPresent", pos + 1)) {
+            ++sites;
+        }
+        EXPECT_EQ(sites, boundary.expectedSites)
+            << boundary.path << " must pace its top-level present through the cadence grid";
+    }
+}

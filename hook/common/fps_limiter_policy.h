@@ -246,6 +246,63 @@ inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseT
     return configuredTargetFps * clampedMultiplier;
 }
 
+// What a call site can promise about its own Apply() entries. This is a
+// structural contract owned by the hook that calls Apply(), never a property
+// measured from a clock.
+//
+// kDuplicateProne is the legacy default: the site can fire more than once for
+// a single logical frame (DXVK Present+PresentEx, the D3D9/D3D8/DDraw/OpenGL
+// wrappers), so the extra call really is the same frame and the duplicate-
+// present time window still owns the classification.
+//
+// kUniqueApplicationPresent is a site that structurally cannot deliver a
+// second entry for one application present: DXGI's Present/Present1 detours
+// and the swapchain wrapper are mutually exclusive (IsInWrapperPresent) and
+// guarded by IsRecursivePresent(), so nested and cross-thread re-entries
+// return before Apply() is ever reached. Those sites must be gated by the
+// cadence grid, because a duplicate window there can only misfire: Strange
+// Brigade DX12 renders a new frame in 1-2ms, so ~46 genuine presents per
+// second landed inside the 2ms window and reached the swapchain completely
+// unpaced (~130 fps against a 90 fps cap, alternating short/long frame times).
+//
+// kFinalOutputBoundary is a site that observes EVERY final presented output,
+// generated frames included (native-Vulkan vkQueuePresentKHR /
+// vkAcquireNextImageKHR). Only those sites may own multiplier-sized output-
+// group admission.
+enum class PresentSite : uint8_t {
+    kDuplicateProne = 0,
+    kUniqueApplicationPresent = 1,
+    kFinalOutputBoundary = 2,
+};
+
+// Whether every Apply() entry from this site must take a cadence-grid slot
+// instead of the legacy duplicate-present time window.
+//
+// A kUniqueApplicationPresent site only owns the application's own present
+// stream. While a frame-generation runtime is producing, that same DXGI stream
+// also carries runtime-owned generated presents (FFX presents an interpolated
+// frame from its own proxy swapchain), and the site cannot tell them apart
+// from the application's frames. CE's cadence paces base frames there, so
+// gating every entry would both spend a base-rate grid slot on a generated
+// present - halving the output - and block the runtime's own presenter thread
+// inside CE's cadence lock, which is the FFX freeze class CE must never enter.
+// Until those sites can classify a generated present structurally the way a
+// final-output boundary does, frame generation keeps the established
+// behaviour. This is NOT the rejected `strictGrid = boundary && !FGActive`
+// escape from Portal RTX: a real final-output boundary stays strict and is
+// owned by OutputGroupAdmission below.
+inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenerationActive) {
+    switch (site) {
+        case PresentSite::kFinalOutputBoundary:
+            return true;
+        case PresentSite::kUniqueApplicationPresent:
+            return !frameGenerationActive;
+        case PresentSite::kDuplicateProne:
+            break;
+    }
+    return false;
+}
+
 // Deterministic multiplier-sized output-group admission for real final
 // presentation boundaries (native-Vulkan vkQueuePresentKHR /
 // vkAcquireNextImageKHR). Exactly one callback per group of `multiplier`

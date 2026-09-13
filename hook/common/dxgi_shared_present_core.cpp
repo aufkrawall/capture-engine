@@ -342,9 +342,16 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
     // cadence is finished after Present returns so the wait happens before the
     // game starts building the next frame.
+    //
+    // This is a unique application-present boundary: IsRecursivePresent() and
+    // the IsInWrapperPresent() early return above already rejected every
+    // nested, cross-thread and wrapper-owned re-entry, so a second Apply() for
+    // one presented frame cannot reach here and the limiter must gate the
+    // cadence grid on every entry instead of on a duplicate-present time
+    // window.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 

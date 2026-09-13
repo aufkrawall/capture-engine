@@ -673,10 +673,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
     // cadence is finished after Present returns so the wait happens before the
-    // game starts building the next frame.
+    // game starts building the next frame. Unique application-present boundary
+    // for the same reason as DetourPresent - see ExecutePresentCore.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 

@@ -179,7 +179,7 @@ TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActi
 // Strange Brigade Vulkan presents several real swapchain images per frame
 // period (concurrent present streams). The legacy 2ms dedup treated the second
 // present as a duplicate and let it through unpaced, so the displayed rate was
-// 2x the target with alternating short/long frame times. gateEveryPresent must
+// 2x the target with alternating short/long frame times. A final-output site must
 // pace the immediate second Apply too: it waits for the next grid slot instead
 // of returning fast.
 TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
@@ -189,14 +189,14 @@ TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
     mockShm->fpsLimiter.SetGeneralFps(60);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
 
     bool sawFastDedup = false;
     bool sawPacedSecondApply = false;
     for (int attempt = 0; attempt < 3 && !sawPacedSecondApply; ++attempt) {
         LARGE_INTEGER start, end;
         QueryPerformanceCounter(&start);
-        limiter.Apply(false, true);
+        limiter.Apply(false, kFinalOutputSite);
         QueryPerformanceCounter(&end);
 
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
@@ -211,7 +211,7 @@ TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
     EXPECT_TRUE(sawPacedSecondApply);
 }
 
-// gateEveryPresent must never stall when the limiter is not configured: it
+// A final-output site must never stall when the limiter is not configured: it
 // only changes lock/dedup semantics, not the inactive fast path.
 TEST_F(FpsLimiterTest, GateEveryPresentStaysNonBlockingWhenInactive) {
     mockShm->runtimeState.isRecording = false;
@@ -220,7 +220,7 @@ TEST_F(FpsLimiterTest, GateEveryPresentStaysNonBlockingWhenInactive) {
 
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
-    limiter.Apply(false, true);
+    limiter.Apply(false, kFinalOutputSite);
     QueryPerformanceCounter(&end);
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract

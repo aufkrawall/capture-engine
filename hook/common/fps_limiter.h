@@ -183,24 +183,32 @@ public:
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
     //
-    // gateEveryPresent marks real final presentation/acquire boundaries
-    // (native-Vulkan vkQueuePresentKHR / vkAcquireNextImageKHR). Those call
-    // sites use deterministic multiplier-sized output-group admission while
-    // frame generation is active: exactly one callback per group owns a
-    // cadence slot and waits on the exact rational group grid (interval =
-    // QPC_frequency * multiplier / configured output target), while the
-    // remaining multiplier-1 callbacks are the generated outputs of that
-    // already admitted group and pass through a lock-free fast path. The
+    // `site` is the call site's structural contract about its own entries; see
+    // ce::fps_limiter_policy::PresentSite. It decides two things:
+    //
+    // kFinalOutputBoundary (native-Vulkan vkQueuePresentKHR /
+    // vkAcquireNextImageKHR) uses deterministic multiplier-sized output-group
+    // admission while frame generation is active: exactly one callback per
+    // group owns a cadence slot and waits on the exact rational group grid
+    // (interval = QPC_frequency * multiplier / configured output target),
+    // while the remaining multiplier-1 callbacks are the generated outputs of
+    // that already admitted group and pass through a lock-free fast path. The
     // classification is an ordinal, never a time window, so bursts of rapid
     // callbacks cannot be confused with generated spillover the way the legacy
     // 2ms dedup allowed (that escape let Portal RTX run ~146 fps against a 130
-    // cap). With FG off every callback is its own group owner and blocking
-    // cadence-lock serialization preserves the Strange Brigade multi-present
-    // grid: exactly one present per target interval, evenly spaced.
-    // Non-boundary call sites (DXVK Present+PresentEx and the D3D/OpenGL
-    // wrappers) keep the legacy dedup fast paths because their second call is
-    // genuinely the same logical frame.
-    void Apply(bool allowPostPresentReflexCadence = false, bool gateEveryPresent = false);
+    // cap).
+    //
+    // Every site that cannot deliver a second entry for one logical frame
+    // (kFinalOutputBoundary, and kUniqueApplicationPresent with FG off) is
+    // gated on the grid: the duplicate-present window is skipped entirely and
+    // blocking cadence-lock serialization preserves the Strange Brigade
+    // multi-present grid: exactly one present per target interval, evenly
+    // spaced. Only kDuplicateProne sites (DXVK Present+PresentEx and the
+    // D3D/OpenGL wrappers) keep the dedup fast paths, because their second
+    // call is genuinely the same logical frame.
+    void Apply(bool allowPostPresentReflexCadence = false,
+               ce::fps_limiter_policy::PresentSite site =
+                   ce::fps_limiter_policy::PresentSite::kDuplicateProne);
 
     void Shutdown();
 

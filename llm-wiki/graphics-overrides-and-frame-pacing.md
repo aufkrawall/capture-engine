@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-09-10 (cost-ranked RR preset ladder with a new `high` level, `StochasticInterpolation=1`, shared-memory preset-byte renumbering)
+Last cross-checked: 2026-09-13 (`ce::fps_limiter_policy::PresentSite` call-site contract; DXGI top-level presents gated on the cadence grid)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -17,6 +17,7 @@ Primary sources:
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
+- `tests/{test_fps_limiter_present_site,test_present_pacing_policy}.cpp`
 
 ## Configuration contract
 
@@ -333,16 +334,36 @@ Primary sources:
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
   general limiting retains now-relative recovery. The fine margin is `clamp(p99 timer wake overshoot + 25us, 50us,
   250us)`; only the final 50us is a tight spin.
-- Native Vulkan presents are paced through the grid with `Apply(gateEveryPresent=true)` on EVERY present (both
-  `vkQueuePresentKHR` and the async `vkAcquireNextImageKHR` path), not only the first present entering the hook.
+- **The Apply() call-site contract is `ce::fps_limiter_policy::PresentSite`, not a clock.** `kDuplicateProne` is the
+  legacy default (DXVK Present+PresentEx, the D3D9/D3D8/DDraw/OpenGL wrappers): a second call there really is the same
+  logical frame, so the 0.5-2 ms duplicate-present window still classifies it. `kUniqueApplicationPresent` is a site
+  that structurally cannot deliver a second entry for one application present - the DXGI `Present`/`Present1` detours
+  and `CWrapDXGISwapChain` are mutually exclusive (`IsInWrapperPresent()`) and guarded by `IsRecursivePresent()`, so
+  nested/cross-thread re-entries return before `Apply()`. `kFinalOutputBoundary` is a site that observes every final
+  presented output including generated frames (native-Vulkan present/acquire) and is the only contract allowed to own
+  output-group admission. `ShouldGateEveryApplyOnCadenceGrid()` maps the contract onto the strict grid.
+- **DXGI top-level presents are gated on the grid, FG off.** Strange Brigade DX12 (session `20260913_122208`, cap 90,
+  `general_limiter_mode=basic`) presented ~130 fps with alternating short/long frame times while the limiter's own
+  stats read a perfect `waited=120 late=0 avgFps=90.0`: the game renders a frame in 1-2 ms, so ~46 genuine presents
+  per second landed inside the 2 ms `activeDedup` window, were classified as duplicate presents and reached the
+  swapchain completely unpaced (`activeDedup` grew ~58 per 120 paced frames; 90 paced + 44 escaped = the observed
+  129/s). The duplicate window can only misfire on a recursion-guarded boundary, so those four sites now pass
+  `kUniqueApplicationPresent`. While frame generation is producing, the same DXGI stream also carries runtime-owned
+  generated presents (FFX presents an interpolated frame from its own proxy swapchain) that CE cannot yet classify
+  structurally there, so FG keeps the established window - gating every entry would both spend a base-rate grid slot
+  on a generated present and block the runtime's presenter thread inside CE's cadence lock (the FFX freeze class).
+  That qualification is NOT the rejected `strictGrid = boundary && !FGActive` escape: a real final-output boundary
+  stays unconditionally strict and is owned by `OutputGroupAdmission`.
+- Native Vulkan presents are paced through the grid with `Apply(PresentSite::kFinalOutputBoundary)` on EVERY present
+  (both `vkQueuePresentKHR` and the async `vkAcquireNextImageKHR` path), not only the first present entering the hook.
   Strange Brigade Vulkan presents several real swapchain images per frame period from concurrent present streams;
   the old first-present-only gating plus the 2ms dedup fast path let those extra images reach the driver unpaced, so
   a 60fps target displayed ~120fps (vsync-capped in intros) with alternating short/long frame times and bad 1% lows.
-  Gate-every-present takes the cadence lock blocking (concurrent streams serialize onto the grid: exactly one present
+  The strict grid takes the cadence lock blocking (concurrent streams serialize onto the grid: exactly one present
   per target interval, evenly spaced) and bypasses both dedup fast paths. DXVK keeps the legacy first-present gating +
   dedup because its CS thread presents once per frame while the DX9/DXGI hooks already pace the game thread. FG-scaled
-  LEGACY (non-boundary) call sites keep the dedup so generated frames are not pushed onto the base-frame grid; the
-  FG-active real-boundary path instead uses the grouped admission below. The strict path
+  LEGACY (`kDuplicateProne`) call sites keep the dedup so generated frames are not pushed onto the base-frame grid;
+  the FG-active real-boundary path instead uses the grouped admission below. The strict path
   works identically with FIFO vsync enabled or off: the wait happens before the driver call and the game's present
   mode is left untouched.
 - **FG-active real boundaries use deterministic multiplier-sized output-group admission, not a time window.**
