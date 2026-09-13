@@ -16,11 +16,11 @@ inline constexpr uint32_t kDxgiPresentAllowTearing = 0x200u;
 // Forcing SyncInterval=1 below NVIDIA's WSI replaced VRR with a fixed grid.
 // With 4x MFG, a variable-duration generated group was then consumed in exactly
 // four refreshes, producing the measured fast-then-freeze judder and apparent
-// overlay flicker. The layer now uses VK_EXT_present_timing relative scheduling:
-// the presentation engine retains the generated group's native spacing while
-// its reported minimum refresh duration supplies the maximum-rate ceiling.
-// Keeping this hook path disarmed is essential; it must not restate that native
-// schedule as a uniform DXGI interval one layer below Vulkan.
+// overlay flicker. The VK_EXT_present_timing scheduling that briefly replaced it
+// is retired too, for the same reason one layer up (Portal RTX session
+// 20260913_184745; see vulkan_present_metering_policy.h). The presentation
+// engine owns the placement of a generated group, and this hook path must stay
+// disarmed rather than restate that schedule as a uniform DXGI interval.
 inline bool ShouldArmFinalDxgiPresent(bool vulkanLayerModuleLoaded, std::string_view vsyncMode) {
     (void)vulkanLayerModuleLoaded;
     (void)vsyncMode;

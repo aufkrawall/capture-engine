@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <string>
 
 #include "../hook/vulkan_layer/vulkan_present_metering_policy.h"
+#include "source_fragment_reader.h"
 
 // Regression coverage for `vsync_mode=fifo` behaving like mailbox in Portal RTX
 // (RTX Remix), session installed/captureengine/logs/20260829_022419.
@@ -169,6 +172,57 @@ TEST(VulkanPresentMeteringPolicyChainScan, ASelfReferentialChainTerminates) {
     EXPECT_TRUE(scan.truncated);
     EXPECT_EQ(scan.nodeCount, kMaxScannedChainNodes);
     EXPECT_FALSE(scan.found);
+}
+
+// Portal RTX session 20260913_184745 crossed a live `vsync_mode` change inside
+// one running game: with `default` the metered 3x batch reached the screen at a
+// 0.43 ms frame-time stddev and a ~110 fps 1% low, and with `fifo` - the only
+// difference being CE's present-mode override plus its VK_EXT_present_timing
+// request - the identical presents landed bunched, 6.91 ms stddev and a ~14 fps
+// 1% low. `20260913_190555` reproduces it. CE must therefore never ask for a
+// present schedule of its own again: not the swapchain flag, not a target time,
+// and not the device/instance capabilities that only existed to reach them.
+TEST(VulkanPresentTimingRetirement, TheLayerRequestsNoPresentScheduleOfItsOwn) {
+    namespace fs = std::filesystem;
+    const fs::path layer = fs::current_path() / "hook" / "vulkan_layer";
+    for (const char* unit : {"vulkan_layer_present.cpp", "vulkan_layer_swapchain.cpp", "vulkan_layer_hooks.cpp",
+                             "vulkan_layer_capabilities.cpp"}) {
+        const std::string source = ce::test_source::ReadLogicalSource(layer / unit);
+        ASSERT_FALSE(source.empty()) << unit;
+        for (const char* forbidden : {"VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT",
+                                      "VkPresentTimingsInfoEXT",
+                                      "VkPresentTimingInfoEXT",
+                                      "VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT",
+                                      "VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT",
+                                      "vkGetSwapchainTimingPropertiesEXT",
+                                      "VK_EXT_PRESENT_TIMING_EXTENSION_NAME"}) {
+            EXPECT_EQ(source.find(forbidden), std::string::npos) << unit << " must not use " << forbidden;
+        }
+    }
+    EXPECT_FALSE(fs::exists(layer / "vulkan_present_timing.cpp"));
+    EXPECT_FALSE(fs::exists(layer / "vulkan_present_timing_policy.h"));
+}
+
+// The other half of the same rule, and the older half: the generated-frame
+// spacing signal is the runtime's, so CE observes it and changes nothing.
+TEST(VulkanPresentTimingRetirement, GeneratedFrameSpacingStaysWithTheRuntime) {
+    namespace fs = std::filesystem;
+    const std::string present =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
+    const std::string capabilities = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_capabilities.cpp");
+    const std::string remix =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "remix_hook.cpp");
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(capabilities.empty());
+    ASSERT_FALSE(remix.empty());
+
+    EXPECT_NE(present.find("preserved for generated-frame spacing"), std::string::npos);
+    EXPECT_EQ(present.find("suppressPresentMetering"), std::string::npos);
+    EXPECT_EQ(capabilities.find("CopyWithoutPresentMetering"), std::string::npos)
+        << "device extension enumeration must preserve NVIDIA's metering capability";
+    EXPECT_EQ(remix.find("enablePresentMetering"), std::string::npos)
+        << "CE must not force Remix away from hardware generated-frame spacing";
 }
 
 }  // namespace

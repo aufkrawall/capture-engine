@@ -220,6 +220,13 @@ private:
     // suppressed transition that left no trace made a flapping source look like
     // a single late one, which is the shape a reader most needs to tell apart.
     uint32_t suppressedFrameTimeSourceChanges = 0;
+    // Periodic cadence of whichever series the overlay is reporting from. The
+    // per-frame CSV already carries these columns, but a pacing regression that
+    // only moves the *shape* of the screen series - Portal RTX 20260913_184745,
+    // where forced FIFO took a metered generated batch from 0.43 ms to 6.91 ms
+    // of frame-time stddev while every present stayed identical - was invisible
+    // in the log until someone re-derived it from the CSV.
+    DWORD lastPacingHealthLogTime = 0;
     DWORD lastSystemLatencySourceLogTime = 0;
     DWORD lastNativeLatencyQueryTime = 0;
     bool hasObservedSystemLatencySource = false;

@@ -49,13 +49,11 @@ struct InstanceDispatch {
     PFN_vkDestroySurfaceKHR fp_vkDestroySurfaceKHR = nullptr;
     PFN_vkGetPhysicalDeviceSurfaceSupportKHR fp_vkGetPhysicalDeviceSurfaceSupportKHR = nullptr;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR = nullptr;
-    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR fp_vkGetPhysicalDeviceSurfaceCapabilities2KHR = nullptr;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR fp_vkGetPhysicalDeviceSurfaceFormatsKHR = nullptr;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR fp_vkGetPhysicalDeviceSurfacePresentModesKHR = nullptr;
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     PFN_vkCreateWin32SurfaceKHR fp_vkCreateWin32SurfaceKHR = nullptr;
 #endif
-    bool presentTimingSurfaceQueriesEnabled = false;
 };
 
 // Dispatch table for device-level functions
@@ -72,12 +70,11 @@ struct DeviceDispatch {
     bool formatFeatureFlags2Available = false;
     bool storageImageReadWithoutFormatAvailable = false;
     bool storageImageWriteWithoutFormatAvailable = false;
-    bool relativePresentTimingEnabled = false;
     // The application enabled VK_NV_present_metering on this device, so a frame
-    // generator running on it can stop the driver honouring the swapchain's
-    // vertical-blank wait. This is the only case in which CE's native relative
-    // present timing is worth the native present path it costs; see
-    // ce::vulkan_present_timing_policy::ShouldEnableSwapchain.
+    // generator running on it places its generated images itself. Diagnostic
+    // only: CE never schedules presents on such a device - see
+    // vulkan_present_metering_policy.h for the measurement that retired the
+    // VK_EXT_present_timing attempt.
     bool applicationEnabledPresentMetering = false;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
@@ -152,8 +149,6 @@ struct DeviceDispatch {
     PFN_vkAcquireNextImageKHR fp_vkAcquireNextImageKHR = nullptr;
     PFN_vkAcquireNextImage2KHR fp_vkAcquireNextImage2KHR = nullptr;
     PFN_vkQueuePresentKHR fp_vkQueuePresentKHR = nullptr;
-    PFN_vkGetSwapchainTimingPropertiesEXT fp_vkGetSwapchainTimingPropertiesEXT = nullptr;
-    PFN_vkGetSwapchainTimeDomainPropertiesEXT fp_vkGetSwapchainTimeDomainPropertiesEXT = nullptr;
     PFN_vkSetLatencySleepModeNV fp_vkSetLatencySleepModeNV = nullptr;
     PFN_vkLatencySleepNV fp_vkLatencySleepNV = nullptr;
     PFN_vkCreateDescriptorSetLayout fp_vkCreateDescriptorSetLayout = nullptr;
@@ -228,20 +223,6 @@ struct SwapchainData {
     // VkPresentInfoKHR. A present-mode selection CE cannot see at creation time
     // would arrive here.
     std::atomic<uint32_t> presentChainLogState{0};
-    // VK_EXT_present_timing is the native display scheduler behind forced FIFO:
-    // relative target times preserve VRR and generated-frame spacing while the
-    // display's minimum refresh duration imposes the maximum-rate ceiling.
-    bool relativePresentTimingEnabled = false;
-    VkTimeDomainKHR presentTimingTimeDomain = VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT;
-    uint64_t presentTimingTimeDomainId = 0;
-    std::atomic<bool> presentTimingTimeDomainValid{false};
-    std::atomic<uint64_t> presentTimingRefreshDurationNs{0};
-    std::atomic<uint64_t> presentTimingPropertiesCounter{0};
-    std::atomic<uint64_t> presentTimingTimeDomainsCounter{0};
-    std::atomic<uint32_t> presentTimingOccurrence{0};
-    std::atomic<uint32_t> presentTimingQueryFailureCount{0};
-    std::atomic<uint32_t> presentTimingDomainQueryFailureCount{0};
-    std::atomic<bool> presentTimingActiveLogged{false};
     // VkSetPresentConfigNV applies to a whole run of subsequent Presents even
     // though only the first call carries the pNext node. Retain that run and
     // multiplier independently of shared Streamline-state publication.

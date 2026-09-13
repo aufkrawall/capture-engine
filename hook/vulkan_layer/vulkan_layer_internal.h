@@ -12,8 +12,6 @@ struct FrameLimitState;
 
 #include "vulkan_present_chain_policy.h"
 
-#include "vulkan_present_timing.h"
-
 #include "vulkan_swapchain_image_policy.h"
 
 #include <algorithm>

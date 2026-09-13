@@ -1,7 +1,8 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-09-13 (the present-timing swapchain flag is now gated on `VK_NV_present_metering`, because
-asking for it costs the game NVIDIA's native present path; earlier 2026-08-30 state otherwise unchanged)
+Last cross-checked: 2026-09-13 (VK_EXT_present_timing scheduling is removed outright - it bunched the metered
+generated batch it was meant to bound, measured across a live `vsync_mode` change in one Portal RTX session;
+earlier 2026-08-30 state otherwise unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -13,6 +14,7 @@ Primary sources:
 - `hook/vulkan_layer/{vulkan_layer_swapchain,vulkan_layer_present,vulkan_layer_capabilities}.cpp`
 - `hook/vulkan_layer/{layer_overlay,layer_overlay_render,layer_overlay_compute}.cpp`
 - `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
+- `hook/common/overlay_adapter_render_frame.cpp` (the `[Overlay] Pacing health:` line, 10 s cadence)
 - `hook/common/{vulkan_dxgi_fifo_policy.h,vulkan_dxgi_fifo_registry.h,vulkan_wsi_surface_table.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
 - `hook/wrappers/vulkan_dxgi_fifo_present.cpp`, `hook/wrappers/wrapper_hooks.{h,cpp}`
 - `hook/apis/{streamline_hook_api,remix_hook}.cpp`
@@ -147,27 +149,53 @@ screen.
   nothing when the runtime does not use the extension - but it is no longer offered as the explanation for anything.
   See "the DXGI override was the bug" below for where the evidence now points.
 
-### The present-timing flag costs the native present path, so it is spent only where it buys something
+### VK_EXT_present_timing is retired: it bunched the metered batch it was meant to bound
 
-- **`VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT` moves the whole swapchain onto NVIDIA's layered-on-DXGI
-  presenter.** Measured with `build/vk-wsi-probe` on 2026-09-13: enabling `VK_EXT_present_timing` +
-  `VK_KHR_present_id2` + `VK_KHR_calibrated_timestamps` on the device, feature node included, changes nothing - the
-  ICD still builds its native presenter (`wgl*` + `nvppex.dll` + `dispbroker.dll`, no D3D at all). Adding only the
-  swapchain flag makes the same run resolve `CreateDXGIFactory2`, `D3D12CreateDevice`,
-  `DwmGetCompositionTimingInfo` and `DCompositionCreateDevice3` and map `nvwgf2umx.dll`/`nvldumdx.dll`/`dcomp.dll`.
-  NVIDIA's native presenter cannot serve a present-timing swapchain.
-- That is a real cost to the game: the layered path is what puts the window back under DWM composition, which is
-  directly visible as the Windows volume OSD drawing over a fullscreen title.
-- **A plain FIFO swapchain gains nothing from the flag** - it already presents one image per vertical blank. The
-  only swapchain that can outrun its own display is one on a device that enabled `VK_NV_present_metering`, where a
-  metered frame generator makes the driver stop applying that wait. `ShouldEnableSwapchain` therefore requires
-  `meteredPresentationPossible`, recorded at `vkCreateDevice` from the application's own extension list
-  (`DeviceDispatch::applicationEnabledPresentMetering`). Forced FIFO in an ordinary title now keeps the native
-  presenter and still gets its vertical-blank wait from FIFO itself.
-- The layer says which branch it took, once per swapchain: `native relative present timing not requested for FIFO
-  swapchain ... this device never enabled VK_NV_present_metering`, against the existing `enabling native relative
-  present timing for FIFO swapchain` line. `vkCreateSwapchainKHR driver returned: ... nativeTiming=` carries the
-  same answer.
+- **The ceiling attempt.** From 2026-08-30 the layer created a forced-FIFO swapchain on a metering-capable device
+  with `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT` and chained a `VkPresentTimingsInfoEXT` onto every present,
+  carrying `VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT` with `targetTime` set to the swapchain's
+  reported `refreshDuration`. The intent was a display ceiling that left the generator's own spacing alone.
+- **The A/B that killed it.** Portal RTX session `20260913_184745` crossed a live `vsync_mode` change inside one
+  running game, so nothing else moved:
+
+  | window | `vsync_mode` | CE present timing | screen-time stddev | 1% low |
+  | --- | --- | --- | --- | --- |
+  | `perf_metrics_11520.csv` (18:47-18:48) | `default` | not armed | **0.43 ms** | ~110 fps |
+  | `perf_metrics_14696.csv` (18:49) | `fifo` | armed | **6.91 ms** | ~14 fps |
+
+  `20260913_190555`'s `perf_metrics_1508.csv` reproduces the broken half (stddev 6.90 ms, 1% low 57 fps).
+  `vkQueuePresentKHR` is byte-identical in both: three calls ~0.3 ms apart every 21.1 ms, the normal shape of a
+  metered 3x batch, and the *rendered* period is a metronome either way (21.128 ms, stddev 0.317 ms, 47.3 fps
+  base). Only what reaches the screen changes. Solving mean 7.03 ms with stddev 6.90 ms for a three-interval group
+  gives ~2.2/2.2/16.8 ms - the batch lands bunched and the screen then holds, which is the reported stutter.
+  Every non-batched Vulkan session on 2026-09-13 sits at 0.13-0.91 ms stddev whether `fifo` was forced or not, so
+  forced FIFO on its own is not the trigger; the metered batch is.
+- **A second, independent defect in the same code.** `RefreshTimingProperties` re-read
+  `VkSwapchainTimingPropertiesEXT::refreshDuration` every 256 presents and fed the live value straight in as the
+  per-image floor. On a variable-refresh swapchain (`refreshInterval == UINT64_MAX`) that field reports the cycle
+  the panel is running *now*, not its shortest: `20260913_190555` logged 6944400 ns, then **10140800**, then
+  **10359900**, then 6944400 again, so CE asked the driver to hold generated frames to 98.6 and 96.5 fps on a
+  144 Hz panel for 3.6 s of a 12 s window. A ceiling must come from the display's *minimum* refresh duration.
+- **Fix (2026-09-13): the whole mechanism is removed** - `vulkan_present_timing.{h,cpp}`,
+  `vulkan_present_timing_policy.h`, the device/instance extension additions, the swapchain flag and the per-present
+  chain node. `vsync_mode=fifo` keeps its present-mode override; CE requests no present schedule of its own.
+  `tests/test_vulkan_present_metering_policy.cpp` guards the retirement by reading the layer sources.
+- **What the flag cost while it was armed** (`build/vk-wsi-probe`, 2026-09-13, still true and worth keeping):
+  enabling `VK_EXT_present_timing` + `VK_KHR_present_id2` + `VK_KHR_calibrated_timestamps` on the device, feature
+  node included, changes nothing - the ICD still builds its native presenter (`wgl*` + `nvppex.dll` +
+  `dispbroker.dll`, no D3D at all). Adding **only** the swapchain flag makes the same run resolve
+  `CreateDXGIFactory2`, `D3D12CreateDevice`, `DwmGetCompositionTimingInfo` and `DCompositionCreateDevice3` and map
+  `nvwgf2umx.dll`/`nvldumdx.dll`/`dcomp.dll`. NVIDIA's native presenter cannot serve a present-timing swapchain,
+  and the layered path is what puts the window back under DWM composition - directly visible as the Windows volume
+  OSD drawing over a fullscreen title. Removing the request restores the native path for every title.
+- **Open: nothing bounds a metered generator that outruns its display.** That is the gap the mechanism existed to
+  fill (session `20260829_022419`, 172 presents/s on a 143 Hz panel under 4x MFG). Two CE actions arrive together
+  on such a swapchain - the Immediate->FIFO override and the timing request - and only the timing request has been
+  withdrawn so far, so the next Portal RTX run with `vsync_mode=fifo` and MFG decides whether the override is
+  implicated too. Read `[Overlay] Pacing health:` in `vulkan_layer.log`: `stddev` back under ~1 ms with a 1% low
+  near the mean means the batch is spread again. If it is still ~7 ms, the present-mode override is the remaining
+  cause and the ceiling has to move to the *rendered* rate - the unit metering spreads - rather than to the
+  placement of images the generator already scheduled.
 
 ## The effective present mode is the created one; the DXGI override was the bug
 

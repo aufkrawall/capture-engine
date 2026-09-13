@@ -1,6 +1,5 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_boundary.h"
-#include "vulkan_present_timing_policy.h"
 #include "vulkan_reflex_limiter.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
@@ -255,19 +254,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                         presentMeteringScan.framesPerBatch, static_cast<int>(sd->presentMode), sd->imageCount,
                         presentMeteringScan.nodeCount, presentMeteringScan.isChainHead ? 1 : 0,
                         decision.preserveMetering
-                            ? "preserved for generated-frame spacing; native relative timing owns the display ceiling"
+                            ? "preserved for generated-frame spacing; CE schedules none of these presents"
                             : "left in place unchanged");
                 }
             }
         }
     }
 
-    // CE never rewrites the application's metering request. Present-mode
-    // selection and native timing compose by adding CE-owned head nodes.
+    // CE never rewrites the application's metering request, and never schedules
+    // a present of its own: the only CE-owned head node here restores the
+    // swapchain's created present mode against a per-present selection.
     const void* effectivePresentChain = pPresentInfo ? pPresentInfo->pNext : nullptr;
     const void* finalPresentChain = effectivePresentChain;
-    bool fifoPresentModeActive =
-        sd && ce::vulkan_present_timing_policy::IsFifoPresentMode(sd->presentMode);
     ce::vulkan_present_chain::SwapchainPresentModeInfo forcedPresentModeNode = {};
     VkPresentModeKHR forcedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     if (pPresentInfo && effectivePresentChain) {
@@ -298,15 +296,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             forcedPresentModeNode.pPresentModes = &forcedPresentMode;
             finalPresentChain = &forcedPresentModeNode;
             modified = true;
-        } else if (chain.hasPresentModeSelection) {
-            // If CE could not replace a conflicting application-owned node,
-            // schedule only when its actual per-present selection is still a
-            // FIFO mode. Injecting a non-zero timing target for any other mode
-            // violates VK_EXT_present_timing's valid-usage contract.
-            fifoPresentModeActive =
-                pPresentInfo->swapchainCount == 1 &&
-                chain.presentModeSelectionSwapchainCount == 1 &&
-                ce::vulkan_present_timing_policy::IsFifoPresentMode(chain.selectedPresentMode);
         }
         if (selectionDecision.forceCreatedMode || selectionDecision.blockedByChainPosition) {
             static std::atomic<int> s_selectionLogCount{0};
@@ -491,22 +480,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
-    VkPresentTimingInfoEXT relativeTimingInfo = {};
-    VkPresentTimingsInfoEXT relativeTimingsInfo = {};
-    if (pPresentInfo && sd && BuildRelativePresentTiming(disp, sd, *pPresentInfo, fifoPresentModeActive,
-                                                         finalPresentChain,
-                                                         relativeTimingInfo, relativeTimingsInfo)) {
-        finalPresentChain = &relativeTimingsInfo;
-        modified = true;
-    }
-
     // Create modified PresentInfo with chained semaphore
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
         presentInfoCopy = *pPresentInfo;
         // Every CE-owned head node was assembled above without writing the
-        // application's const chain: the preserved application nodes, optional
-        // forced created mode, then native relative present timing.
+        // application's const chain: the preserved application nodes, then the
+        // optional forced created mode.
         presentInfoCopy.pNext = finalPresentChain;
         if (currentWaitSemaphores && currentWaitSemaphoreCount > 0) {
             presentInfoCopy.waitSemaphoreCount = currentWaitSemaphoreCount;

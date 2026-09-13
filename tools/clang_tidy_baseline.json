@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 742,
+    "entries": 740,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -413,7 +413,6 @@
       "hook/vulkan_layer/vulkan_layer_present.cpp",
       "hook/vulkan_layer/vulkan_layer_state.cpp",
       "hook/vulkan_layer/vulkan_layer_swapchain.cpp",
-      "hook/vulkan_layer/vulkan_present_timing.cpp",
       "hook/vulkan_layer/vulkan_reflex_limiter.cpp",
       "hook/wrappers/custom_hook.cpp",
       "hook/wrappers/d3d10_device_wrap.cpp",
@@ -763,7 +762,6 @@
       "tests/test_vulkan_loader_data.cpp",
       "tests/test_vulkan_present_chain_policy.cpp",
       "tests/test_vulkan_present_metering_policy.cpp",
-      "tests/test_vulkan_present_timing_policy.cpp",
       "tests/test_vulkan_renderer_policy.cpp",
       "tests/test_vulkan_sampler_policy_source.cpp",
       "tests/test_vulkan_swapchain_image_policy.cpp"

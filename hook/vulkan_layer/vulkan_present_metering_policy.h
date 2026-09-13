@@ -12,9 +12,7 @@
 // generated batch across its rendered-frame interval. That content-spacing
 // signal is essential under variable base frame times; removing it makes the
 // generated images arrive as a tight burst followed by a long gap. It does not,
-// by itself, impose the display's maximum presentation rate. CE now supplies
-// that independent constraint with VK_EXT_present_timing: each image has a
-// native relative target no shorter than the display's minimum refresh cycle.
+// by itself, impose the display's maximum presentation rate.
 //
 // Portal RTX (RTX Remix) session `20260829_022419` is that conflict end to end.
 // CE overrode Remix's `VK_PRESENT_MODE_IMMEDIATE_KHR` to FIFO and the driver
@@ -41,7 +39,35 @@
 // rendered that burst/gap shape directly, producing the reported judder and
 // overlay flicker. Driver-forced VSync remained smooth because it left the
 // metering signal intact. CE therefore observes this node for diagnostics but
-// never removes it; native relative timing owns only the display ceiling.
+// never removes it.
+//
+// **CE schedules none of these presents either (2026-09-13).** The ceiling used
+// to be supplied with `VK_EXT_present_timing`: a per-present relative target of
+// the swapchain's reported refresh duration, on a swapchain created with
+// `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT`. Portal RTX session
+// `20260913_184745` is the A/B that retired it, because the same running game
+// crossed a live `vsync_mode` change with everything else held fixed:
+//
+//   | window                     | vsync_mode | screen-time stddev | 1% low   |
+//   | -------------------------- | ---------- | ------------------ | -------- |
+//   | `perf_metrics_11520.csv`   | `default`  | 0.43 ms            | ~110 fps |
+//   | `perf_metrics_14696.csv`   | `fifo`     | 6.91 ms            | ~14 fps  |
+//
+// `vkQueuePresentKHR` is identical in both - three calls ~0.3 ms apart every
+// 21.1 ms, the normal shape of a metered 3x batch - and the rendered period is a
+// metronome either way (21.128 ms, stddev 0.317 ms). Only what reaches the
+// screen changes: the batch lands bunched (~2.2/2.2/16.8 ms) instead of spread
+// (~7.0 ms). `20260913_190555` reproduces it (stddev 6.90 ms, 1% low 57 fps),
+// and every non-batched Vulkan session that day sits at 0.13-0.91 ms whether
+// `fifo` was forced or not. Two CE actions arrive together on such a swapchain -
+// the Immediate->FIFO override and the timing request - so the timing request is
+// withdrawn first; it is the one that also costs the game NVIDIA's native
+// present path (see llm-wiki/vulkan-forced-fifo.md).
+//
+// The unowned consequence is stated rather than papered over: nothing now bounds
+// a metered generator that outruns its display. That ceiling belongs on the
+// *rendered* rate, which is the unit the metering spreads - not on the placement
+// of images the generator has already scheduled.
 
 namespace ce::vulkan_present_metering_policy {
 
@@ -51,9 +77,9 @@ namespace ce::vulkan_present_metering_policy {
 // ones define it.
 inline constexpr VkStructureType kStructureTypeSetPresentConfigNV = static_cast<VkStructureType>(1000613000);
 
-// Spelled out for the same reason. A device that enabled this is the only kind
-// that can outrun its own FIFO swapchain, which is what CE's native relative
-// present timing exists to bound.
+// Spelled out for the same reason. A device that enabled this is the one kind
+// that can outrun its own FIFO swapchain, and the one kind whose present
+// placement CE must leave entirely alone.
 inline constexpr const char* kExtensionName = "VK_NV_present_metering";
 
 struct SetPresentConfigNV {
@@ -143,7 +169,7 @@ struct Input {
 
 struct Decision {
     // Keep the driver's generated-frame spacing signal in the present chain.
-    // VK_EXT_present_timing supplies the separate minimum display interval.
+    // CE adds no schedule of its own beside it.
     bool preserveMetering = false;
 };
 

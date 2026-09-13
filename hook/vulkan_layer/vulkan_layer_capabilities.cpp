@@ -4,9 +4,11 @@
  * A configured graphics override sometimes has to be applied to what the
  * application is *allowed to ask for*, not to the calls it makes afterwards.
  * Hardware present metering used to be withheld here. Session 20260830_234347
- * proved that doing so destroys generated-frame spacing; the policy now keeps
- * the capability and VK_EXT_present_timing supplies the independent display
- * ceiling. The wrappers remain passthrough-compatible for older deployments.
+ * proved that doing so destroys generated-frame spacing, so the policy keeps the
+ * capability. Nothing of CE's replaced it: the VK_EXT_present_timing ceiling that
+ * briefly did was retired by session 20260913_184745 (see
+ * vulkan_present_metering_policy.h). The wrappers remain passthrough-compatible
+ * for older deployments.
  */
 
 #include "vulkan_layer_internal.h"

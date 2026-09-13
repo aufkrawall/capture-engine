@@ -67,6 +67,31 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 ++suppressedFrameTimeSourceChanges;
             }
         }
+
+        // The cadence of the series the overlay is reporting from, on a bounded
+        // period. A pacing regression can leave every present interval intact
+        // and move only what reaches the screen: Portal RTX 20260913_184745
+        // crossed a live vsync_mode change inside one running game and the
+        // metered 3x batch went from 0.43 ms to 6.91 ms of frame-time stddev
+        // (1% low 110 -> 14 fps) with byte-identical vkQueuePresentKHR calls.
+        // Without this line that shape is only recoverable by re-deriving it
+        // from the per-frame CSV.
+        constexpr DWORD kPacingHealthLogIntervalMs = 10000;
+        const DWORD pacingNow = GetTickCount();
+        if (pacingNow - lastPacingHealthLogTime >= kPacingHealthLogIntervalMs) {
+            lastPacingHealthLogTime = pacingNow;
+            HookLogImportant(
+                "[Overlay] Pacing health: source=%s fps=%.1f 1%%low=%.1f 0.1%%low=%.1f stddev=%.0fus "
+                "displayJagUs=%.0f presentJagUs=%.0f screenTimeShare=%upermille fg=%d multiplier=%d "
+                "baseFps=%.1f outputFps=%.1f",
+                metrics->GetEffectiveFrameTimeSource() == FrameTimeSource::DisplayChange ? "display-change"
+                                                                                         : "presentation",
+                metrics->GetCurrentFPS(), metrics->Get1PercentLowFPS(), metrics->Get01PercentLowFPS(),
+                metrics->GetWindowStdDev(), metrics->GetDisplayJaggednessUs(),
+                metrics->GetPresentationJaggednessUs(), metrics->GetDisplayScreenTimePermille(),
+                metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
+                metrics->GetFGOutputFPS());
+        }
     }
 
     const float presFrameTimeMs = metrics ? metrics->GetLastPresentationFrameTimeMs() : 0.0f;

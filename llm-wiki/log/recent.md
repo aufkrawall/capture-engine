@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-09-13 - Forced FIFO bunched the DLSS-MFG batch on screen: VK_EXT_present_timing scheduling removed
+
+**Report**: Portal RTX (RTX Remix, DLSS multi-frame generation) stutters with `[Graphics] vsync_mode=fifo`;
+driver-forced V-Sync in the same game is smooth. Session `20260913_190555`.
+
+**What the presents say**: nothing. `perf_metrics_1508.csv` is three `vkQueuePresentKHR` calls ~0.3 ms apart every
+21.128 ms (stddev 0.317 ms, 47.3 fps base x 3 = 142 presents/s on a 144 Hz VRR panel). That burst shape *is* the
+normal metered batch, and the rendered period is a metronome. CE's own cost is negligible (overlay 105 us/present,
+`fence_wait_us` p50 2 us, `fps_limit_wait_us` ~0).
+
+**What the screen says**: the same CSV's `source_*` columns come from the display-change series
+(`screenTime=1 screenTimeShare=1000permille`), and they carry a frame-time stddev of **6.90 ms** with a **57 fps
+1% low** at a 142 fps mean. Solving mean 7.03 / stddev 6.90 for a three-interval group gives ~2.2/2.2/16.8 ms: the
+batch lands bunched and the screen then holds. That is the stutter.
+
+**The A/B**: session `20260913_184745` crossed a live `vsync_mode` change inside one running game, so nothing else
+moved. `perf_metrics_11520.csv` (18:47-18:48, `default`, present timing never armed): stddev **0.43 ms**, 1% low
+~110 fps. `perf_metrics_14696.csv` (18:49, `fifo`, armed): stddev **6.91 ms**, 1% low ~14 fps. Identical present
+structure (`burstShare` 0.67 in both). Every non-batched Vulkan session that day sits at 0.13-0.91 ms stddev with
+or without forced FIFO, so forced FIFO alone is not the trigger - the metered batch is.
+
+**Second defect, same code**: `RefreshTimingProperties` re-read `VkSwapchainTimingPropertiesEXT::refreshDuration`
+every 256 presents and used the live value as the per-image floor. On a VRR swapchain that field is the cycle the
+panel is running *now*: `20260913_190555` logged 6944400 -> **10140800** -> **10359900** -> 6944400 ns, so CE asked
+the driver to hold generated frames to 98.6 and 96.5 fps on a 144 Hz panel for 3.6 s of a 12 s window.
+
+**Change**: the whole `VK_EXT_present_timing` mechanism is deleted - `vulkan_present_timing.{h,cpp}`,
+`vulkan_present_timing_policy.h`, the device/instance capability additions, `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT`
+and the per-present `VkPresentTimingsInfoEXT`. `vsync_mode=fifo` keeps its present-mode override; CE now requests no
+present schedule of its own anywhere. Removing the swapchain flag also gives every title NVIDIA's native present path
+back (see [[ce-took-nvidia-native-vulkan-present]] and the probe in `vulkan-forced-fifo.md`).
+
+**New diagnostic**: `[Overlay] Pacing health:` every 10 s in the layer/hook log - active series, fps, 1%/0.1% low,
+stddev, display and presentation jaggedness, screen-time share, FG multiplier. This whole regression moved only the
+*shape* of the screen series and was invisible in the log until it was re-derived from the CSV by hand.
+
+**Open**: two CE actions arrive together on a metered swapchain, the Immediate->FIFO override and the timing request,
+and only the timing request is withdrawn. The next Portal RTX `fifo` + MFG run decides: `Pacing health` stddev back
+under ~1 ms means the batch is spread again; still ~7 ms means the present-mode override is the remaining cause.
+Also still open and now unowned: nothing bounds a metered generator that outruns its display (session
+`20260829_022419`, 172 presents/s on 143 Hz under 4x MFG). That ceiling belongs on the *rendered* rate.
+
 ### 2026-09-13 - CE was taking NVIDIA's native Vulkan present path away from the game (two causes)
 
 **Report**: with the inject active, DOOM Eternal always presented through DXGI even with the driver's
