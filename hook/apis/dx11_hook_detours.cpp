@@ -480,7 +480,7 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
         // Wrap the swapchain returned by D3D11CreateDeviceAndSwapChain so our
         // wrapper captures Present
         if (ppSwapChain && *ppSwapChain) {
-            IUnknown* pDev = (ppDevice && *ppDevice) ? *ppDevice : nullptr;
+            IUnknown* pDev = *ppDevice;
             IDXGISwapChain* pReal = *ppSwapChain;
             *ppSwapChain = (IDXGISwapChain*)new CWrapDXGISwapChain(pReal, pDev);
             pReal->Release();
@@ -501,19 +501,17 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
             ctx->Release();
 
         // Explicitly set VRAM Total to prevent background thread crash
-        if (ppDevice && *ppDevice) {
-            IDXGIDevice* dxgiDevice = nullptr;
-            if (SUCCEEDED((*ppDevice)->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
-                IDXGIAdapter* adapter = nullptr;
-                if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
-                    DXGI_ADAPTER_DESC desc;
-                    if (SUCCEEDED(adapter->GetDesc(&desc))) {
-                        SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
-                    }
-                    adapter->Release();
+        IDXGIDevice* dxgiDevice = nullptr;
+        if (SUCCEEDED((*ppDevice)->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
+            IDXGIAdapter* adapter = nullptr;
+            if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+                DXGI_ADAPTER_DESC desc;
+                if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                    SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
                 }
-                dxgiDevice->Release();
+                adapter->Release();
             }
+            dxgiDevice->Release();
         }
     }
 
@@ -600,8 +598,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory,  IUnknow
         }
         // Check for D3D12 Device (non-standard but possible, or checking on
         // swapchain itself)
-        else if (ppSwapChain && *ppSwapChain &&
-                 SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
+        else if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
             HookLog("DX11: CreateSwapChain - Detected DX12 Device from SwapChain.");
             DX12_SignalFSR4SwapchainRecreated();
             HookLog(
@@ -725,8 +722,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, 
         }
         // Check for D3D12 Device (non-standard but possible, or checking on
         // swapchain itself)
-        else if (ppSwapChain && *ppSwapChain &&
-                 SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
+        else if (SUCCEEDED((*ppSwapChain)->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12Device))) {
             HookLog(
                 "DX11: CreateSwapChainForHwnd - Detected DX12 Device from "
                 "SwapChain.");
