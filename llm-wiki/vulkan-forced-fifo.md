@@ -1,8 +1,9 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-09-13 (both of CE's forced-FIFO mechanisms are retired for a metered frame generator:
-VK_EXT_present_timing scheduling, and then the present-mode override itself - NVIDIA's announced flip lead
-collapses from 6842 us to 141 us when FIFO is forced; earlier 2026-08-30 state otherwise unchanged)
+Last cross-checked: 2026-09-13 (for a metered frame generator CE now changes nothing above the WSI - both the
+VK_EXT_present_timing scheduling and the present-mode override are retired, because NVIDIA's announced flip lead
+collapses from 6842 us to 141 us when FIFO is forced - and states the vertical blank on the WSI's own final DXGI
+flip instead; earlier 2026-08-30 state otherwise unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -216,14 +217,32 @@ screen.
   `vsync_mode=fifo` now does nothing at all - including while frame generation is switched off, because the
   extension is enabled for the life of the device. Making that distinction would mean deciding a present mode
   from a state that changes after creation, which is a race, not a fix.
-- **Open: nothing bounds a metered generator that outruns its display.** That is the gap both retired mechanisms
-  existed to fill (session `20260829_022419`, 172 presents/s on a 143 Hz panel under 4x MFG). Neither the Vulkan
-  present mode nor a per-present schedule can supply it without destroying the generator's placement, so the
-  ceiling has to move to the *rendered* rate - the unit metering spreads. The only mechanism CE has for that
-  which is not a CE-side timer is the driver's own frame-generation-aware low-latency interval
-  (`minimumIntervalUs` via `NvAPI_Vulkan_SetSleepMode`/`vkSetLatencySleepModeNV`, which under DLSS-G limits
-  *displayed* frames), and this page's own rule currently says no refresh-derived cap is a VSync fallback. That
-  rule is the open decision, not a settled one.
+- **The ceiling is the final DXGI present, re-armed (0.1.6547).** With the override stood down, session
+  `20260913_194420` measured the placement fixed (announced flip lead 6066 us, frame-time stddev **154 us**
+  against 6900 us, `displayJagUs=135`) and the output settling at **152.1 fps on a 144 Hz panel** - above the
+  refresh rate, with tearing. `SyncInterval=1` with `DXGI_PRESENT_ALLOW_TEARING` cleared on the WSI's own flip is
+  the vertical blank that supplies the missing half, and it is a vertical blank rather than a clock: no timer, no
+  rate, no driver-profile write, no swapchain parameter changed. On a G-SYNC panel it is the DXGI spelling of
+  "G-SYNC + V-Sync On" - the panel still varies its refresh below its maximum and the flip waits only at the
+  ceiling.
+- **Why the earlier retirement of that path does not apply any more.** It was retired because forcing the interval
+  was measured turning a generated group into fast-then-freeze judder (`20260830_175147`, `20260830_182939`).
+  Both of those sessions *also* forced the Vulkan present mode to FIFO, and that is what unpaced the group - the
+  announced flip lead collapses from 6842 us to 141 us on a metered swapchain forced to FIFO. The earlier
+  conclusion was measured on an already-unpaced burst. CE no longer touches the present mode there, so the group
+  now arrives at DXGI correctly spread, and quantizing a correctly-spread group onto vertical blanks is
+  synchronization rather than judder.
+- **Scope**: `ShouldArmFinalDxgiPresent` arms on the resident layer plus a `fifo`/`adaptive` profile as before, but
+  `ShouldRewriteFinalPresent` now additionally requires `VK_NV_present_metering` on the device - read through the
+  same layer export the upstream Streamline gate uses. An ordinary Vulkan title still gets its vertical blank from
+  the FIFO present mode CE did force, and its final presents stay byte-identical, so the WSI keeps the per-present
+  choice it makes for variable refresh.
+- **Rejected on the way (2026-09-13): a refresh-derived rate cap.** The driver's frame-generation-aware
+  low-latency interval (`minimumIntervalUs`, which under DLSS-G bounds displayed frames) would hold the output
+  under the refresh rate without a CE timer, and was built and discarded. It is a clock, not a vertical blank: it
+  caps a rate and never phase-locks a frame to a blank. Proper vsync has no synthetic timer in it, so this page's
+  existing rule - no driver profile write, timer, Reflex cap or refresh-derived cap is a VSync fallback - stands
+  unchanged.
 
 ## The effective present mode is the created one; the DXGI override was the bug
 

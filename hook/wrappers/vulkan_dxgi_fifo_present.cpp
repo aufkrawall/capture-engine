@@ -10,6 +10,7 @@
 #include "../common/hook_common.h"
 #include "../common/overlay_compat.h"
 #include "../common/vulkan_dxgi_fifo_policy.h"
+#include "../common/vulkan_layer_metering_bridge.h"
 #include "../common/vulkan_dxgi_fifo_registry.h"
 #include "iat_hook.h"
 #include "inline_hook.h"
@@ -422,7 +423,8 @@ void ApplyFinalPresentPolicy(IDXGISwapChain* swapchain, UINT& syncInterval, UINT
     const size_t slot = forceFifo && swapchain ? g_observedSwapchains.Find(swapchain)
                                                : ce::vulkan_dxgi_fifo_registry::kInvalidSlot;
     const bool registered = slot != ce::vulkan_dxgi_fifo_registry::kInvalidSlot;
-    if (!ce::vulkan_dxgi_fifo_policy::ShouldRewriteFinalPresent(forceFifo, registered)) {
+    if (!ce::vulkan_dxgi_fifo_policy::ShouldRewriteFinalPresent(
+            forceFifo, registered, ce::vulkan_layer_bridge::DeviceEnabledPresentMetering())) {
         if (forceFifo)
             LogForeignPresentPassThrough(label, swapchain);
         return;

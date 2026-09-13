@@ -35,12 +35,14 @@ const auto hwnd = [](uintptr_t value) { return reinterpret_cast<HWND>(value); };
 
 } // namespace
 
-// The final-DXGI SyncInterval=1 backstop is intentionally retired. It replaced
-// VRR with a fixed refresh grid below Vulkan and caused 4x generated groups to
-// run fast and then freeze. Native VK_EXT_present_timing now owns the ceiling.
-TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentNeverArms) {
-    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "fifo"));
-    EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "adaptive"));
+// The final-DXGI SyncInterval=1 contract is the only vertical blank CE can
+// still state for a metered frame generator, and the only mechanism left that
+// is a vertical blank rather than a clock. It arms on the resident layer plus a
+// vertical-blank-paced profile; `off`, `mailbox` and `default` never do, and
+// the match is exact and case-sensitive.
+TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentArmsOnlyForAVblankPacedVulkanProfile) {
+    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "fifo"));
+    EXPECT_TRUE(ShouldArmFinalDxgiPresent(true, "adaptive"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "fifo"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(false, "adaptive"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "mailbox"));
@@ -48,6 +50,19 @@ TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentNeverArms) {
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "default"));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, ""));
     EXPECT_FALSE(ShouldArmFinalDxgiPresent(true, "FIFO"));
+}
+
+// Arming installs the observation route; rewriting is narrower. Only a device
+// that enabled VK_NV_present_metering has an unpaced final present, because
+// only there did CE's creation-time present-mode override stand down. An
+// ordinary Vulkan title already got its vertical blank from forced FIFO, and
+// restating it below the WSI would take away the per-present choice the WSI
+// makes for variable refresh.
+TEST(VulkanDxgiFifoScopingTest, FinalDxgiRewriteIsScopedToTheMeteredDevice) {
+    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, true));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(true, true, false));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(true, false, true));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(false, true, true));
 }
 
 TEST(VulkanDxgiFifoScopingTest, FinalDxgiFifoRequiresLiveOwnershipAndLifecycle) {
@@ -110,10 +125,12 @@ TEST(VulkanDxgiFifoScopingTest, FinalDxgiFifoUsesVblankAndForbidsTearing) {
 // The rewrite only ever fires on a swapchain the creation detours observed:
 // no force, or a foreign instance, must pass through.
 TEST(VulkanDxgiFifoScopingTest, FinalPresentRewriteRequiresArmedForceAndRegisteredInstance) {
-    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/true));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/false));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(false, false));
-    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/true,
+                                           /*deviceEnabledPresentMetering=*/true));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/false,
+                                           /*deviceEnabledPresentMetering=*/true));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(false, false, true));
+    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, true));
 }
 
 TEST(VulkanDxgiFifoScopingTest, ObservedSwapchainRegistryScopesMembershipToRegisteredInstances) {

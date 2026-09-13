@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-09-13 - The vertical blank moved to the WSI's own DXGI flip
+
+Third round, continuing the two entries below. Session `20260913_194420` on 0.1.6545 shows the present-mode
+stand-down worked: `nvFlipSchedule avgDelayUs=6066` (the generator holds its frames again), `Pacing health
+stddev=154us displayJagUs=135` against 6900 us / 12248 us before. It also shows what was left: `fps=152.1` on a
+144 Hz panel, `publishedInterval p50=6600us`, and the user reports tearing. The vertical-blank request has two
+promises and only one of them was being kept.
+
+**Rejected first, and worth recording.** The driver's frame-generation-aware low-latency interval
+(`minimumIntervalUs` via `NvAPI_Vulkan_SetSleepMode`/`vkSetLatencySleepModeNV`, which under DLSS-G bounds
+*displayed* frames) holds the output under the refresh rate without any CE-side wait, and was implemented, tested
+and then discarded. It is the driver's clock rather than CE's, but it is still a clock: it caps a rate and never
+phase-locks a frame to a blank. Proper vsync has no synthetic timer in it.
+
+**Change (0.1.6547)**: re-arm the final-DXGI vertical-blank contract in `hook/wrappers/vulkan_dxgi_fifo_present.cpp`
+- `SyncInterval=1` with `DXGI_PRESENT_ALLOW_TEARING` cleared on the flip NVIDIA's WSI issues. That is a vertical
+blank, not a rate, and on a G-SYNC panel it is the DXGI spelling of "G-SYNC + V-Sync On". The machinery was intact;
+only `ShouldArmFinalDxgiPresent` had been made to return false.
+
+**Why its earlier retirement no longer applies**: it was retired on `20260830_175147`/`20260830_182939`, where
+forcing the interval turned a generated group into fast-then-freeze judder. Both sessions *also* forced the Vulkan
+present mode to FIFO, which is what unpaced the group in the first place (6842 us -> 141 us of announced flip
+lead). The earlier conclusion was measured on an already-unpaced burst. CE no longer touches the present mode for
+a metered device, so the group reaches DXGI correctly spread and the blanks align it instead of bunching it.
+
+**Scope**: arming is unchanged (resident layer + `fifo`/`adaptive`), but `ShouldRewriteFinalPresent` now also
+requires `VK_NV_present_metering` on the device, read through the layer export added for the Streamline gate. An
+ordinary Vulkan title keeps its vertical blank from the forced FIFO present mode and its final presents stay
+byte-identical, so the WSI keeps the per-present choice it makes for variable refresh.
+
+**Verdict to look for on hardware**: `Pacing health` stddev staying near 150 us with `fps` at or just under the
+panel's refresh, and no tearing. If the stddev climbs back toward 7 ms, the flip quantization is fighting the
+generator's schedule after all and the ceiling has nowhere left to live above the driver.
+
 ### 2026-09-13 - The driver named it: forced FIFO removes a metered generator's flip scheduling
 
 Follow-up to the entry below, on the 0.1.6542 build that removed CE's own present schedule. Session
