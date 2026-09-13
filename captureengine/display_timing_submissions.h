@@ -32,25 +32,38 @@ public:
     // The submitting thread belongs to the presenting process even when it is
     // not the thread that called Present, so the process is the key and the
     // thread only refines the choice within it.
-    bool Associate(uint32_t processId, uint32_t threadId, uint32_t submitSequence, int64_t timestamp) {
+    // When no user-mode runtime present exists (e.g. Vulkan / non-DXGI swapchains),
+    // associate the kernel submission directly using the queue packet timestamp.
+    bool Associate(uint32_t processId, uint32_t threadId, uint32_t submitSequence, int64_t timestamp,
+                   bool* outIsFallback = nullptr) {
+        if (outIsFallback)
+            *outIsFallback = false;
         const auto process = pendingPresents_.find(processId);
-        if (process == pendingPresents_.end() || process->second.empty())
-            return false;
-        auto& pending = process->second;
-        std::array<uint32_t, kMaxPendingPresentsPerProcess> pendingThreadIds = {};
-        const std::size_t pendingCount = std::min(pending.size(), pendingThreadIds.size());
-        for (std::size_t i = 0; i < pendingCount; ++i)
-            pendingThreadIds[i] = pending[i].threadId;
-        const std::size_t selected =
-            SelectDisplaySubmissionPresent(pendingThreadIds.data(), pendingCount, threadId);
-        if (selected == kNoPendingDisplayPresent)
-            return false;
+        if (process != pendingPresents_.end() && !process->second.empty()) {
+            auto& pending = process->second;
+            std::array<uint32_t, kMaxPendingPresentsPerProcess> pendingThreadIds = {};
+            const std::size_t pendingCount = std::min(pending.size(), pendingThreadIds.size());
+            for (std::size_t i = 0; i < pendingCount; ++i)
+                pendingThreadIds[i] = pending[i].threadId;
+            const std::size_t selected =
+                SelectDisplaySubmissionPresent(pendingThreadIds.data(), pendingCount, threadId);
+            if (selected != kNoPendingDisplayPresent) {
+                associations_[submitSequence].push_back(
+                    {processId, timestamp, nextAssociationId_++, pending[selected].timestamp});
+                pending.erase(pending.begin() +
+                              static_cast<std::deque<PendingRuntimePresent>::difference_type>(selected));
+                if (pending.empty())
+                    pendingPresents_.erase(process);
+                ++observedAssociations_;
+                return true;
+            }
+        }
         associations_[submitSequence].push_back(
-            {processId, timestamp, nextAssociationId_++, pending[selected].timestamp});
-        pending.erase(pending.begin() + static_cast<std::deque<PendingRuntimePresent>::difference_type>(selected));
-        if (pending.empty())
-            pendingPresents_.erase(process);
+            {processId, timestamp, nextAssociationId_++, timestamp});
+        if (outIsFallback)
+            *outIsFallback = true;
         ++observedAssociations_;
+        ++observedFallbackAssociations_;
         return true;
     }
 
@@ -92,6 +105,7 @@ public:
 
     uint64_t observedPresents() const noexcept { return observedPresents_; }
     uint64_t observedAssociations() const noexcept { return observedAssociations_; }
+    uint64_t observedFallbackAssociations() const noexcept { return observedFallbackAssociations_; }
 
 private:
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingPresents_;
@@ -99,4 +113,5 @@ private:
     uint64_t nextAssociationId_ = 1;
     uint64_t observedPresents_ = 0;
     uint64_t observedAssociations_ = 0;
+    uint64_t observedFallbackAssociations_ = 0;
 };

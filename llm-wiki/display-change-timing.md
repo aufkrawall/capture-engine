@@ -22,6 +22,13 @@ stream is unavailable, denied, failed, or two seconds stale.
   marker matcher uses it as a causal upper bound, preventing a newer application marker from being paired with an older
   generated frame that reaches the screen later through DLSS-G's asynchronous pacer. A missing association intentionally
   preserves the older timestamp-only behavior.
+- **Vulkan and non-DXGI swapchains emit no `Microsoft-Windows-DXGI` runtime present events.** When a tracked process
+  submits a present queue packet (`kQueuePacketStart`, `bPresent = 1`) without prior runtime present entries,
+  `DisplaySubmissionTracker::Associate` associates the submission directly using the queue packet timestamp as
+  `presentStartTimestamp`. This enables `DisplayTimingService` to correlate subsequent flip completions (MPO / sync /
+  immediate) and publish displayed frames into shared memory, so the overlay's latency estimator receives display timing
+  and reports estimated latency (`Latency est. XX.X ms`) for Vulkan titles without Reflex/PCL markers. Untracked
+  processes are filtered out in `HandleQueuePacket` before association.
 - **NVIDIA frame generation does not use the `Intel-PresentMon` `FlipFrameType` provider.** That provider's frame-type
   enumeration only names `Intel_XEFG` (50) and `AMD_AFMF` (100); a 2026-08-30 Talos run with DLSS 4 MFG at
   `published_multiplier=4` logged `frameType(received=0 ...)` for the whole session. An earlier revision of this page

@@ -266,8 +266,20 @@ private:
             !ReadProperty(event, L"bPresent", isPresent) || isPresent == 0) {
             return;
         }
-        submissions_.Associate(event->EventHeader.ProcessId, event->EventHeader.ThreadId, submitSequence,
-                               event->EventHeader.TimeStamp.QuadPart);
+        if (!IsTrackedProcess(event->EventHeader.ProcessId))
+            return;
+        bool isFallback = false;
+        if (submissions_.Associate(event->EventHeader.ProcessId, event->EventHeader.ThreadId, submitSequence,
+                                   event->EventHeader.TimeStamp.QuadPart, &isFallback)) {
+            if (isFallback) {
+                if (runtimeIntervalPid_ != event->EventHeader.ProcessId) {
+                    runtimeIntervalPid_ = event->EventHeader.ProcessId;
+                    runtimeIntervals_.StartWindow();
+                }
+                runtimeIntervals_.Observe(
+                    DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
+            }
+        }
     }
 
     // Every vertical blank is observed, whether or not it carries a flip of a

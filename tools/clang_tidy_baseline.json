@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 739,
+    "entries": 740,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -601,6 +601,7 @@
       "tests/test_display_timing_intervals.cpp",
       "tests/test_display_timing_nvidia.cpp",
       "tests/test_display_timing_session_reclaim.cpp",
+      "tests/test_display_timing_submissions.cpp",
       "tests/test_display_timing_vblank.cpp",
       "tests/test_dlss_indicator_spoof.cpp",
       "tests/test_dx12_ecl_queue_registration_policy.cpp",
