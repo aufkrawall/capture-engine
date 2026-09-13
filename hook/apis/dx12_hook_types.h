@@ -106,6 +106,8 @@ bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData);
 
 void Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices, const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH);
 
+void SetNextUploadSlot(int allocatorSlot) override;
+
 void Shutdown();
 
 private:
@@ -124,7 +126,7 @@ bool WaitForSlotGpuComplete(int slot);
     // in well under this, so the wait returns as soon as the slot is free.
     static constexpr DWORD kSlotWaitTimeoutMs = 1000;
 
-    static constexpr int kPoolSize = 4;
+    static constexpr int kPoolSize = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount;
     static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
     static constexpr size_t kInitIBBytes = 8192 * 2;   // 8192 indices * 2 bytes
 
@@ -152,6 +154,7 @@ bool WaitForSlotGpuComplete(int slot);
     size_t ibSize_[kPoolSize] = {};
     ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding_;
     UINT64 slotFenceValue_[kPoolSize] = {};
+    std::atomic<int> nextUploadSlot_{-1};
     int frameIdx_ = 0;
 };
 
@@ -159,7 +162,7 @@ struct DX12OverlayState {
     // Large pool size ensures we never need to wait for GPU.
     // Even at 60fps with 100ms GPU latency, only 6 allocators are in flight.
     // 16 provides 2.5x headroom - allocator is always ready, zero waiting.
-    static const int ALLOC_POOL_SIZE = 16;
+    static const int ALLOC_POOL_SIZE = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount;
     std::vector<ID3D12CommandAllocator*> allocators;
     ID3D12GraphicsCommandList* cmdList = nullptr;
     int allocIndex = 0;

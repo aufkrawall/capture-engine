@@ -413,7 +413,10 @@ if (rendered) {
 }
 bool slFGSubmit = cachedSLFGActive;
 if (dx12_hook_g_State.fence) {
-    UINT64 next = dx12_hook_g_State.currentFenceValue + 1;
+    // A real overlay draw publishes this value to its allocator-coupled upload
+    // slot before recording. Probe-only submissions have no upload ownership
+    // and use the ordinary next value.
+    UINT64 next = uploadGuardValue != 0 ? uploadGuardValue : dx12_hook_g_State.currentFenceValue + 1;
     ID3D12CommandQueue* submitQueue = submittedQueue ? submittedQueue : queue;
     HRESULT sigHr = submitQueue->Signal(dx12_hook_g_State.fence, next);
     if (SUCCEEDED(sigHr)) {

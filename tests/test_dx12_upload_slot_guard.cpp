@@ -4,6 +4,7 @@
 #include <d3d12.h>
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -196,6 +197,67 @@ TEST(DX12UploadSlotGuardTest, TexturedBackendClearsGuardsOnFenceRebind) {
     const size_t clear = source.find("slotFenceValue[i] = 0;", rebind);
     ASSERT_NE(clear, std::string::npos);
     EXPECT_LT(rebind, clear);
+}
+
+TEST(DX12UploadSlotGuardTest, AllocatorCoupledSlotsCannotWrapInsideTheInFlightAllocatorPool) {
+    namespace policy = ce::dx12_overlay_policy;
+    constexpr int kOldIndependentUploadSlotCount = 4;
+
+    ASSERT_EQ(policy::kAllocatorCoupledUploadSlotCount, 16);
+    // The old upload ring aliased allocator 0 while allocator 4 could legally
+    // be selected and allocator 0's GPU work was still in flight.
+    EXPECT_EQ(0 % kOldIndependentUploadSlotCount, 4 % kOldIndependentUploadSlotCount);
+    EXPECT_NE(policy::ResolveAllocatorCoupledUploadSlot(0), policy::ResolveAllocatorCoupledUploadSlot(4));
+
+    std::array<int, policy::kAllocatorCoupledUploadSlotCount> owners;
+    owners.fill(-1);
+    for (int allocatorSlot = 0; allocatorSlot < policy::kAllocatorCoupledUploadSlotCount; ++allocatorSlot) {
+        const int uploadSlot = policy::ResolveAllocatorCoupledUploadSlot(allocatorSlot);
+        ASSERT_GE(uploadSlot, 0);
+        ASSERT_LT(uploadSlot, static_cast<int>(owners.size()));
+        EXPECT_EQ(owners[uploadSlot], -1);
+        owners[uploadSlot] = allocatorSlot;
+    }
+    EXPECT_EQ(policy::ResolveAllocatorCoupledUploadSlot(-1), -1);
+    EXPECT_EQ(policy::ResolveAllocatorCoupledUploadSlot(policy::kAllocatorCoupledUploadSlotCount), -1);
+
+    EXPECT_TRUE(policy::CanUseFenceGuardedUploadSlotFallback(true, 1));
+    EXPECT_FALSE(policy::CanUseFenceGuardedUploadSlotFallback(true, 0));
+    EXPECT_FALSE(policy::CanUseFenceGuardedUploadSlotFallback(false, 1));
+}
+
+TEST(DX12UploadSlotGuardTest, PostSLBindsUploadStorageToAllocatorAndItsExactSignal) {
+    const std::string types = ReadSource("hook/apis/dx12_hook_types.h");
+    const std::string backend = ReadSource("hook/apis/dx12_hook_types_impl.cpp");
+    const std::string adapter = ReadSource("hook/common/overlay_adapter.cpp");
+    const std::string route = ReadSource("hook/apis/dx12_hook_postsl_render_route.cpp");
+    const std::string submit = ReadSource("hook/apis/dx12_hook_postsl_render_submit.cpp");
+    const std::string normalRoute = ReadSource("hook/apis/dx12_hook_process_session_draw_submit.cpp");
+    ASSERT_FALSE(types.empty());
+    ASSERT_FALSE(backend.empty());
+    ASSERT_FALSE(adapter.empty());
+    ASSERT_FALSE(route.empty());
+    ASSERT_FALSE(submit.empty());
+    ASSERT_FALSE(normalRoute.empty());
+
+    EXPECT_NE(types.find("kPoolSize = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount"),
+              std::string::npos);
+    EXPECT_NE(types.find("ALLOC_POOL_SIZE = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount"),
+              std::string::npos);
+    EXPECT_NE(backend.find("nextUploadSlot_.exchange(-1"), std::string::npos);
+    EXPECT_NE(backend.find("CanUseFenceGuardedUploadSlotFallback"), std::string::npos);
+    EXPECT_NE(backend.find("draw refused"), std::string::npos);
+    EXPECT_NE(adapter.find("backend->SetNextUploadSlot(slot)"), std::string::npos);
+
+    EXPECT_NE(route.find("uploadGuardValue = dx12_hook_g_State.fence ?"), std::string::npos);
+    EXPECT_NE(route.find("dx12_hook_s_descFreeSlotGuardValue = uploadGuardValue"), std::string::npos);
+    EXPECT_NE(route.find("dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx)"), std::string::npos);
+    EXPECT_EQ(route.find("dx12_hook_s_descFreeSlotGuardValue = 0"), std::string::npos);
+    EXPECT_NE(submit.find("uploadGuardValue != 0 ? uploadGuardValue"), std::string::npos);
+
+    const size_t firstNormalCoupling = normalRoute.find("SetDX12NextUploadSlot(idx)");
+    ASSERT_NE(firstNormalCoupling, std::string::npos);
+    EXPECT_NE(normalRoute.find("SetDX12NextUploadSlot(idx)", firstNormalCoupling + 1), std::string::npos);
 }
 
 }  // namespace

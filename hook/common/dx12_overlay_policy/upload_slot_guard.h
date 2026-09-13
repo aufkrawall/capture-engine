@@ -3,6 +3,8 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include <cstdint>
+
 // Pinning the fence whose lifetime the per-slot upload-ring guards are keyed
 // to.
 //
@@ -28,6 +30,21 @@
 // provably belongs to a new fence lifetime. The caller clears its per-slot
 // guard values whenever RebindIfNeeded() reports a change.
 namespace ce::dx12_overlay_policy {
+
+// The overlay command allocator and persistently mapped VB/IB pools share one
+// lifetime domain. Keeping the count in one place lets a renderer bind upload
+// slot N to allocator N, whose fence completion was already proved before the
+// allocator was reset. An independent, smaller upload ring can wrap while all
+// allocator slots are still legitimately in flight and overwrite GPU reads.
+inline constexpr int kAllocatorCoupledUploadSlotCount = 16;
+
+inline constexpr int ResolveAllocatorCoupledUploadSlot(int allocatorSlot) {
+    return allocatorSlot >= 0 && allocatorSlot < kAllocatorCoupledUploadSlotCount ? allocatorSlot : -1;
+}
+
+inline constexpr bool CanUseFenceGuardedUploadSlotFallback(bool hasFence, uint64_t publishedGuardValue) {
+    return hasFence && publishedGuardValue != 0;
+}
 
 class UploadSlotGuardFenceBinding {
 public:

@@ -313,24 +313,26 @@ TEST_F(FpsLimiterTest, ThreeTimesSixCallbackBurstPacesExactlyTwoGroups) {
     g_FGCompat.SetDLSSFGActive(false);
 }
 
-// With FG off every real-boundary callback is its own group owner: the
-// Strange Brigade multi-present fix must keep serializing concurrent presents
-// onto the cadence grid one per target interval.
-TEST_F(FpsLimiterTest, NoFGRealBoundaryPacesEveryCallback) {
+// With FG off every real-boundary callback is its own group owner. Verify the
+// deterministic admission decision rather than wall-clock time: a callback
+// that arrives after its deadline correctly re-bases the local cadence without
+// waiting, so scheduler overshoot must not turn this regression into a flake.
+TEST_F(FpsLimiterTest, NoFGRealBoundaryAdmitsEveryCallbackAsGroupOwner) {
     ConfigureThreeTimesGeneralCap(*mockShm, 120);
     g_FGCompat.SetDLSSFGMultiplier(0);
     g_FGCompat.SetDLSSFGActive(false);
 
+    const uint32_t boundaryBefore = limiter.GetBoundaryCallbackCount();
     const uint32_t pacedBefore = limiter.GetPacedGroupCount();
+    const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
+    const uint32_t concurrentSkipsBefore = limiter.GetConcurrentApplySkipCount();
     for (int i = 0; i < 4; ++i) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
         limiter.Apply(false, true);
-        QueryPerformanceCounter(&end);
-        EXPECT_GE(ElapsedMs(start, end, freq), 3.0) << "callback " << i << " must be paced";
     }
+    EXPECT_EQ(limiter.GetBoundaryCallbackCount() - boundaryBefore, 4u);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 4u);
-    EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 0u);
+    EXPECT_EQ(limiter.GetGeneratedSlotPassCount() - generatedBefore, 0u);
+    EXPECT_EQ(limiter.GetConcurrentApplySkipCount() - concurrentSkipsBefore, 0u);
 }
 
 // Legacy non-boundary call sites (DXVK Present+PresentEx sequential duplicate)

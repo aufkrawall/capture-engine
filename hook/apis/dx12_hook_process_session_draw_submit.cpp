@@ -447,6 +447,7 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
                                                                     dx12_hook_g_State.fence != nullptr,
                                                                     dx12_hook_g_State.currentFenceValue);
                                                         }
+                                                        dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
 
                                                         dx12_hook_g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                         const auto metricsBinding =
@@ -559,6 +560,7 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
                                                             slFGActive || g_FGCompat.IsFGActive(),
                                                             dx12_hook_g_State.fence != nullptr, dx12_hook_g_State.currentFenceValue);
                                                 }
+                                                dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
 
                                                 dx12_hook_g_D3D11On12Adapter.SetIPCClient(g_IPC);
                                                 const auto metricsBinding =

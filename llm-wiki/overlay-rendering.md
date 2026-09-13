@@ -1,6 +1,6 @@
 # Inject Overlay Rendering
 
-Last cross-checked: 2026-09-07 (callback registry caching and hidden-callback GPU transparency; FSR-tagged pacing windows and PresentStart-to-screen attribution; application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
+Last cross-checked: 2026-09-13 (DX12 allocator-coupled glyph upload ownership; callback registry caching and hidden-callback GPU transparency; FSR-tagged pacing windows and PresentStart-to-screen attribution; application-source Present classification for proxy-swapchain frame generation; Streamline PCL marker capture, Vulkan layer-created queue loader data, optional LibreHardwareMonitor telemetry, marker-enhanced/fallback PC latency, actual display-change frame timing, split-renderer direct-child GPU telemetry provenance, DXGI/Vulkan presentation-color
 contracts, HDR10 gamut/transfer correctness, per-monitor Windows SDR-white calibration, effective-monitor
 inject-overlay DPI scaling, dynamic frame-time graph ceiling scaling, and runtime-owned FG UI transitions)
 
@@ -23,8 +23,14 @@ Primary sources:
 - `common/shared_defs.h`
 - `common/recording_indicator_policy.h`
 - `hook/common/custom_overlay.{h,cpp}`
+- `hook/common/custom_overlay_dx12.{h,cpp}`
+- `hook/common/custom_overlay_dx12_render.cpp`
+- `hook/common/dx12_overlay_policy/upload_slot_guard.h`
 - `hook/common/custom_font.cpp`
 - `hook/common/overlay_adapter.{h,cpp}`
+- `hook/apis/dx12_hook_types.h`
+- `hook/apis/dx12_hook_types_impl.cpp`
+- `hook/apis/dx12_hook_postsl_render_{route,submit}.cpp`
 - `hook/common/performance_metrics.{h,cpp}`
 - `hook/common/system_latency_metrics.h`
 - `hook/common/system_latency_types.h`
@@ -54,6 +60,7 @@ Primary sources:
 - `tests/test_system_latency_metrics.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_vulkan_loader_data.cpp`
+- `tests/test_dx12_upload_slot_guard.cpp`
 
 ## Summary
 
@@ -81,6 +88,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Pending/live recording-state transitions invalidate the frame cache. Layout measurement reserves the widest ordinary and pending recording labels, plus all known FG labels, 4x, four-digit Base/Display and FPS values, percentages, memory values/capacities, recording warnings, and notifications. Encoder warnings remain suppressed until established recording. Changing digit counts must not resize or clip an already-present row.
 - The frame-time graph retains all 180 raw samples. Its vertical ceiling is dynamic: at least 50% headroom above the recent average, at least 2x the minimum, a 33 ms floor so the 30 FPS threshold stays visible, and about 15% padding below the lowest sample; the ceiling label refreshes at most every two seconds. X positions use exact endpoint interpolation instead of a rounded step plus edge clamping. The line uses bounded miter joins with a bevel fallback and a one-physical-pixel transparent AA fringe in the existing solid draw command.
 - Glyph cells use measured GDI ink extents, two transparent texels around each cell, clipped rasterization, and `GdiFlush` before atlas reads. Text and shadow derive from one snapped physical-pixel origin. Font, colors, metrics, linear sampling, and the x86 DX12 solid-glyph-span path are unchanged.
+- A DX12 overlay command allocator and the persistently mapped VB/IB storage recorded through it have one GPU lifetime. Normal and PostSL draws therefore force upload slot `N` to the already-proven-complete allocator slot `N`; both pools derive their ordinary 16-slot count from `kAllocatorCoupledUploadSlotCount`. PostSL additionally guards that slot with the exact `g_State.fence` value signaled after its ECL. Never rotate the descriptor-free uploads through a smaller independent ring or publish guard zero merely because DLSS-G is active: four uploads can wrap while any of the other allocator slots remain in flight, letting the CPU mix old and new glyph vertices. The `33 ms` scale-label capture from 2026-09-13 showed the first `3` as a box while the adjacent identical `3` remained correct, which rules out the source string and atlas entry and is the characteristic per-instance geometry tear.
 - Inject-overlay scale is resolved once when its font atlas/backend is initialized from the nearest display's
   effective DPI (`GetDpiForMonitor(MDT_EFFECTIVE_DPI)`), with the shared legacy-DPI fallback. The target game
   window's awareness-dependent virtualized DPI must never be used: a DPI-unaware game can report 96 on a 150%
@@ -520,7 +528,7 @@ the random downstream state.
   Portal RTX still needs a fresh runtime startup after installing the fixed build; the supplied failure session itself
   can establish the pre-fix call chain and object state, not post-fix hardware behavior.
 - Portal RTX session `20260826_020732` runtime-validated the generic split-renderer overlay/crash fix but exposed the telemetry provenance gap: `hl2.exe` remained the correct profile/source PID while `NvRemixBridge.exe` owned Vulkan on RTX 5070 LUID `0xC88E`. The bridge published that exact LUID, but the sensor accepted only same-PID publishers and found no `hl2.exe` GPU-engine instances, leaving validity `0x0`. Direct-child publisher eligibility now follows the same process-lineage boundary as the Vulkan layer without changing config/source ownership. Fresh runtime validation of the numeric GPU/VRAM rows remains required.
-- Focused deterministic coverage pins draw-data notifications versus cache hits, failed-upload dirtiness, DX8/DX9 state-block reuse structure, DX10 constant invalidation, OpenGL array/fallback selection and state sentinels, glyph gutters, graph geometry, text-origin snapping, dynamic row sequences, and memory-value policy.
+- Focused deterministic coverage pins draw-data notifications versus cache hits, failed-upload dirtiness, DX8/DX9 state-block reuse structure, DX10 constant invalidation, OpenGL array/fallback selection and state sentinels, glyph gutters, graph geometry, text-origin snapping, dynamic row sequences, memory-value policy, and the one-to-one DX12 allocator/upload-slot mapping plus exact PostSL signal guard.
 - Live 4K validation covered native DX9 plus DirectDraw7 x64/x86 and showed valid RAM consumption rather than the unavailable marker, with the full overlay and graph rendered. Required build `0.1.4989` completed x64/x86 hooks and test apps, Vulkan layers, packaging/import closure, PE hardening, and PDB checks. All 14 focused host-telemetry tests pass. The no-build gate passed the remaining 1,644 native tests; the sole excluded cursor-bitmap test depends on the shared `IDC_ARROW`, which was temporarily transparent while the ChatGPT Windows-control session was active, consistent with cursor substitution and unrelated to overlay telemetry.
 - True hardware/runtime validation of the DX6/DX7/DX8 native paths remains unavailable on the current driver because the test apps fall back before reaching those devices. A genuine OpenGL 2.1 implementation is also still needed to runtime-exercise the legacy array path; unit/source invariants currently cover it.
 - The native bridge was smoke-tested on the current Ryzen/NVIDIA machine (2026-09-03, non-elevated): `CE_LHM_READY 0.9.6.0`, real GPU temperature/power/fan/core clock/memory clock/voltage, `gpu_fan` pinned to `/gpu-nvidia/0/fan/1`, all CPU rails correctly unavailable, and exit code 0 through the shutdown event. Overlay-side rendering of the native bridge's values has not been re-checked on hardware.

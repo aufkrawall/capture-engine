@@ -423,8 +423,7 @@ void OverlayAdapter::SetDX12NextUploadSlot(int slot) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
     if (backendType == OverlayBackendType::DX12 && backend) {
-        auto* dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
-        dx12Backend->SetNextUploadSlot(slot);
+        backend->SetNextUploadSlot(slot);
     }
 #endif
 }

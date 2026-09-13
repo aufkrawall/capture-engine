@@ -41,6 +41,7 @@ private:
     int idx;
     ID3D12GraphicsCommandList* list;
     ID3D12CommandAllocator* alloc;
+    UINT64 uploadGuardValue = 0;
     bool rendered;
     bool selectedQueueIsSwapchainQueue;
     bool fastPostFSRDLSSProbe;

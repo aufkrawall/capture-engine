@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-09-13 - DX12 dynamic glyph boxes were an upload/allocator ownership race
+
+A supplied DLSS-G 4x screenshot showed the first `3` of the graph's dynamic `33 ms` ceiling label as a box while
+the adjacent identical `3` rendered correctly. The shared ASCII atlas and CPU text construction therefore could not
+explain the per-instance failure. Static lifetime reconstruction found that the x64 descriptor-free backend reused
+four persistently mapped VB/IB slots independently of PostSL's fence-selected pool of up to 16 command allocators,
+while PostSL disabled the upload guard. At generated-output cadence the CPU could wrap the smaller ring and rewrite
+vertices still being read by the GPU; digit-count and string changes made those mixed bytes visible.
+
+The descriptor-free, textured, normal, and PostSL paths now share a 16-slot allocator/upload lifetime domain and
+force each draw's upload slot to its proven-complete allocator index. PostSL publishes the precise next overlay-fence
+value before recording and signals that same value after submitting the list. Missing descriptor-free coupling uses
+the guarded ring only with a live/nonzero completion guard; otherwise the draw is refused and rate-limit logged.
+Focused `DX12UploadSlotGuardTest` coverage passes. The first complete verification run exposed a known
+scheduler-sensitive FPS-limiter test: it required every admitted callback to spend at least 3 ms asleep even though
+a callback arriving after its cadence deadline correctly returns immediately and re-bases. The no-FG integration
+test now checks deterministic boundary, group-owner, generated-slot, and concurrency-skip counters instead of elapsed
+wall time. The final `--verify --skip-updates --concise` gate passed on build `0.1.6527`, including both hook
+architectures, the full native and Python suites, clang-tidy/file-size ratchets, and ASan/UBSan. Proprietary-driver
+and game confirmation remain pending at this entry.
+
 ### 2026-09-12 - DLSS-suspended PostSL capture and screenshot ordering
 
 Static reconstruction found one shared transition seam behind ignored inject screenshots and overlay pixels in

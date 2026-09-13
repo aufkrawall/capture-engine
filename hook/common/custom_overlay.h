@@ -191,6 +191,10 @@ public:
         return false;
     }
 
+    // Explicit APIs can couple persistently mapped upload storage to the
+    // command allocator whose completion was proved by the caller.
+    virtual void SetNextUploadSlot(int) {}
+
 protected:
     int hdrMode = 0;
     float paperWhiteNits = 200.0f;

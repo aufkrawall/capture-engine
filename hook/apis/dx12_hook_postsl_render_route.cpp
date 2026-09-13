@@ -467,6 +467,24 @@ if (willRender) {
         dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api);
     }
 
+    // The allocator selected above is already fence-complete. Couple its
+    // persistently mapped VB/IB slot to that same lifetime and record the
+    // exact fence value the submission below will signal. The former
+    // independent four-slot upload ring could wrap while other allocator
+    // slots were still in flight, which exposed mixed glyph geometry when a
+    // changing string altered the uploaded bytes.
+    uploadGuardValue = dx12_hook_g_State.fence ? dx12_hook_g_State.currentFenceValue + 1 : 0;
+    const bool usingDescFreeBackend =
+        dx12_hook_g_DescFreeBackend &&
+        dx12_hook_g_D3D11On12Adapter.GetBackend() == dx12_hook_g_DescFreeBackend;
+    if (usingDescFreeBackend) {
+        dx12_hook_s_descFreeSlotFence = dx12_hook_g_State.fence;
+        dx12_hook_s_descFreeSlotGuardValue = uploadGuardValue;
+    } else {
+        dx12_hook_g_D3D11On12Adapter.SetDX12UploadSlotFence(dx12_hook_g_State.fence, uploadGuardValue);
+    }
+    dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
+
     if (usePostSLOffscreenComposite &&
         EnsureOffscreenRT(dev, dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight, dx12_hook_g_State.format)) {
         // Avoid binding the post-FSR DLSS backbuffer as an RTV on the first real
@@ -509,11 +527,6 @@ if (willRender) {
 
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = dx12_hook_g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
-        // PostSL/FG overlay: synchronized by the FG completion fence each
-        // frame, so disable the DescFree per-slot guard (g_State.fence does
-        // not track this value here — a non-zero guard would stall reuse).
-        dx12_hook_s_descFreeSlotFence = dx12_hook_g_State.fence;
-        dx12_hook_s_descFreeSlotGuardValue = 0;
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
         dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
         dx12_hook_s_descFreeCmdList = nullptr;
@@ -564,9 +577,6 @@ if (willRender) {
 
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = rtvHandle;
-        // PostSL/FG overlay: synchronized by the FG completion fence (see above).
-        dx12_hook_s_descFreeSlotFence = dx12_hook_g_State.fence;
-        dx12_hook_s_descFreeSlotGuardValue = 0;
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
         dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
         dx12_hook_s_descFreeCmdList = nullptr;
@@ -644,4 +654,3 @@ if (ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(entryLi
 crossQueueSynced = didXQSync;  // SL→origGame sync from above
     return PostSLFlow::kContinue;
 }
-

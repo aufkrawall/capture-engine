@@ -89,6 +89,11 @@ bool DX12DescFreeBackend::Initialize(int fontWidth, int fontHeight, const uint8_
     return true;
 }
 
+void DX12DescFreeBackend::SetNextUploadSlot(int allocatorSlot) {
+    nextUploadSlot_.store(ce::dx12_overlay_policy::ResolveAllocatorCoupledUploadSlot(allocatorSlot),
+                          std::memory_order_release);
+}
+
 void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices,
             const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH)  {
     auto* cmdList = dx12_hook_s_descFreeCmdList;
@@ -109,9 +114,28 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
             slotFenceValue_[i] = 0;
     }
 
-    // Upload vertex data
-    int slot = frameIdx_ % kPoolSize;
-    frameIdx_++;
+    // Bind VB/IB lifetime to the exact allocator whose fence completion was
+    // proved before Reset. The old independent four-slot ring could wrap while
+    // the 16 allocator slots were still in flight, so changing text geometry
+    // exposed mixed old/new glyph vertices even though allocator reuse was safe.
+    const int coupledSlot = nextUploadSlot_.exchange(-1, std::memory_order_acq_rel);
+    if (coupledSlot < 0) {
+        static std::atomic<uint32_t> uncoupledSlotLogs{0};
+        const uint32_t count = uncoupledSlotLogs.fetch_add(1, std::memory_order_relaxed);
+        if (!ce::dx12_overlay_policy::CanUseFenceGuardedUploadSlotFallback(
+                slotGuardBinding_.GetFence() != nullptr, dx12_hook_s_descFreeSlotGuardValue)) {
+            if (count < 3 || (count % 600) == 0) {
+                HookLogImportant("DescFree: allocator-coupled upload slot missing without a completion guard; "
+                                 "draw refused (count=%u)", count + 1);
+            }
+            return;
+        }
+        if (count < 3 || (count % 600) == 0) {
+            HookLogImportant("DescFree: allocator-coupled upload slot missing; using fence-guarded fallback "
+                             "(count=%u)", count + 1);
+        }
+    }
+    const int slot = coupledSlot >= 0 ? coupledSlot : frameIdx_++ % kPoolSize;
 
     // If a caller published a slot guard, block until the GPU has finished
     // the previous frame that used this ring slot before overwriting it.
@@ -285,6 +309,7 @@ void DX12DescFreeBackend::Shutdown()  {
     slotGuardBinding_.Reset();
     for (int i = 0; i < kPoolSize; ++i)
         slotFenceValue_[i] = 0;
+    nextUploadSlot_.store(-1, std::memory_order_release);
 }
 
 bool DX12DescFreeBackend::CreateRootSignature() {

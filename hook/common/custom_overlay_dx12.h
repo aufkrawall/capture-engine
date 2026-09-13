@@ -52,7 +52,7 @@ public:
     void SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue);
     // Force the next Render call to use the upload slot associated with an externally owned backbuffer index.
     // Used by FFX proxy rendering so AMD's buffer-reuse fence and CE's VB/IB slot have identical lifetimes.
-    void SetNextUploadSlot(int slot);
+    void SetNextUploadSlot(int slot) override;
     bool PrimeResources(ID3D12GraphicsCommandList* cmdList);
     bool HasPendingResources() const {
         return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
@@ -89,7 +89,7 @@ private:
     // Per-frame buffer pool — prevents CPU/GPU data race on upload-heap buffers.
     // Pool size matches the command allocator pool in dx12_hook.cpp so fence
     // guarantees that slot N is GPU-idle before the CPU reuses it.
-    static constexpr int kFramePoolSize = 16;
+    static constexpr int kFramePoolSize = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount;
     // The ordinary fence/allocator ring stays at 16. Callback uploads may
     // grow without waiting when those slots are still in flight.
     static constexpr int kMaxUploadSlots = 128;

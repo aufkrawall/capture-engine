@@ -34,7 +34,8 @@ void DX12Backend::SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue) {
 }
 
 void DX12Backend::SetNextUploadSlot(int slot) {
-    nextForcedUploadSlot.store(slot >= 0 && slot < kFramePoolSize ? slot : -1, std::memory_order_release);
+    nextForcedUploadSlot.store(ce::dx12_overlay_policy::ResolveAllocatorCoupledUploadSlot(slot),
+                               std::memory_order_release);
 }
 
 bool DX12Backend::PrimeResources(ID3D12GraphicsCommandList* cmdList) {
