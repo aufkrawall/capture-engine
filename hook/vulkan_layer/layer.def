@@ -4,3 +4,4 @@ EXPORTS
     vkGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr
     vkNegotiateLoaderLayerInterfaceVersion = CELayer_vkNegotiateLoaderLayerInterfaceVersion
     CEVulkanLayerIsLiveVulkanSurfaceHwnd
+    CEVulkanLayerDeviceEnabledPresentMetering

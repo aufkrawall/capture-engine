@@ -40,7 +40,25 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
             else if (strcmp(vsyncMode, "adaptive") == 0)
                 desiredMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 
-            if (desiredMode != pCreateInfo->presentMode) {
+            ce::vulkan_present_metering_policy::PresentModeOverrideInput overrideInput = {};
+            overrideInput.vblankPacedPresentationRequested =
+                ce::vulkan_present_metering_policy::RequestsVblankPacedPresentation(vsyncMode);
+            overrideInput.deviceEnabledPresentMetering = disp->applicationEnabledPresentMetering;
+            const bool standDown =
+                ce::vulkan_present_metering_policy::ShouldSkipPresentModeOverride(overrideInput);
+            if (standDown && desiredMode != pCreateInfo->presentMode) {
+                static std::atomic<bool> s_standDownLogged{false};
+                if (!s_standDownLogged.exchange(true, std::memory_order_relaxed)) {
+                    LayerLog(
+                        "Vulkan Layer: NOT overriding present mode %d -> %d (%s) - this device enabled %s, and "
+                        "forcing a vertical-blank-paced mode onto a metered frame generator removes its flip "
+                        "scheduling instead of adding a wait (the driver's announced flip lead collapses from "
+                        "~6.8 ms to ~0.14 ms; Portal RTX 20260913_184745). The application's own present mode "
+                        "stands",
+                        pCreateInfo->presentMode, desiredMode, vsyncMode,
+                        ce::vulkan_present_metering_policy::kExtensionName);
+                }
+            } else if (desiredMode != pCreateInfo->presentMode) {
                 // Validate that the desired present mode is supported
                 bool modeSupported = false;
                 VkPhysicalDevice physDev = disp->physicalDevice;

@@ -1,5 +1,7 @@
 #include "streamline_hook_internal.h"
 
+#include "../common/vulkan_layer_metering_bridge.h"
+
 #include "../common/streamline_api_generation.h"
 #include "streamline_bridge.h"
 #include "streamline_bridge_policy.h"
@@ -40,6 +42,13 @@ VkResult VKAPI_CALL Hooked_Streamline_vkCreateSwapchainKHR(VkDevice device,
     const auto decision = ce::streamline_runtime_policy::ResolveVulkanFifoPresentModeOverride(
         graphicsConfig.vsyncMode.c_str(), static_cast<int32_t>(createInfo->presentMode));
     if (!decision.overrideApplied) {
+        return original(device, createInfo, allocator, swapchain);
+    }
+    // Same boundary the layer applies one level down: forcing a vertical-blank-
+    // paced present mode onto a swapchain a metered frame generator drives
+    // removes that generator's flip scheduling instead of adding a wait.
+    if (ce::vulkan_layer_bridge::MeteredGeneratorOwnsPresentPlacement(
+            static_cast<int>(createInfo->presentMode), decision.presentMode)) {
         return original(device, createInfo, allocator, swapchain);
     }
 

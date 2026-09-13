@@ -1,8 +1,8 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-09-13 (VK_EXT_present_timing scheduling is removed outright - it bunched the metered
-generated batch it was meant to bound, measured across a live `vsync_mode` change in one Portal RTX session;
-earlier 2026-08-30 state otherwise unchanged)
+Last cross-checked: 2026-09-13 (both of CE's forced-FIFO mechanisms are retired for a metered frame generator:
+VK_EXT_present_timing scheduling, and then the present-mode override itself - NVIDIA's announced flip lead
+collapses from 6842 us to 141 us when FIFO is forced; earlier 2026-08-30 state otherwise unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -188,14 +188,42 @@ screen.
   `nvwgf2umx.dll`/`nvldumdx.dll`/`dcomp.dll`. NVIDIA's native presenter cannot serve a present-timing swapchain,
   and the layered path is what puts the window back under DWM composition - directly visible as the Windows volume
   OSD drawing over a fullscreen title. Removing the request restores the native path for every title.
-- **Open: nothing bounds a metered generator that outruns its display.** That is the gap the mechanism existed to
-  fill (session `20260829_022419`, 172 presents/s on a 143 Hz panel under 4x MFG). Two CE actions arrive together
-  on such a swapchain - the Immediate->FIFO override and the timing request - and only the timing request has been
-  withdrawn so far, so the next Portal RTX run with `vsync_mode=fifo` and MFG decides whether the override is
-  implicated too. Read `[Overlay] Pacing health:` in `vulkan_layer.log`: `stddev` back under ~1 ms with a 1% low
-  near the mean means the batch is spread again. If it is still ~7 ms, the present-mode override is the remaining
-  cause and the ceiling has to move to the *rendered* rate - the unit metering spreads - rather than to the
-  placement of images the generator already scheduled.
+- **Follow-up (same day): removing CE's schedule was not enough, and the driver named the remaining cause.**
+  Session `20260913_193655` on 0.1.6542 shows the swapchain created clean (`flags=0x0`, `CE schedules none of
+  these presents`) and the steady-state frame-time stddev unchanged at 6.88-6.92 ms. `sensors.log`'s
+  `[DisplayTiming]` line carries the measurement that settles it - `nvFlipSchedule(... applied=N avgDelayUs=M ...)`,
+  where M is the lead with which NVIDIA announces the screen time it scheduled an image for:
+
+  | 20260913_184745 window | vsync_mode | applied | avgDelayUs | published screen intervals |
+  | --- | --- | --- | --- | --- |
+  | 18:48:12 | `default` | 124 | **6842** | p50 7400 us |
+  | 18:49:25 | `fifo` | 1296 | **141** | p1 1900, p50 **2100**, p99 18500 us |
+
+  6.8 ms of announced lead is a generated frame being *held* for its slot in the rendered interval. 141 us is no
+  hold at all, and the published intervals show the result: the batch flips back to back and the screen then
+  waits. **Forcing a vertical-blank-paced present mode onto a metered swapchain does not add a vertical-blank
+  wait - it takes the generator's flip scheduling away.** RTX Remix says the same in its own UI ("When Frame
+  Generation is active, V-Sync is automatically disabled") and NVIDIA excludes Vulkan from DLSS-G V-Sync support.
+- **Fix (0.1.6545): the present-mode override stands down on a metering-capable device.**
+  `ShouldSkipPresentModeOverride` in `vulkan_present_metering_policy.h` is consulted at both override sites - the
+  layer's own `vkCreateSwapchainKHR` and the upstream `sl.interposer` hook, which reaches the same answer through
+  a new layer export (`CEVulkanLayerDeviceEnabledPresentMetering`, resolved via
+  `hook/common/vulkan_layer_metering_bridge.h`). The gate is the application's own `VkDeviceCreateInfo` extension
+  list rather than an observed metered present, because the generator creates its swapchain and presents through
+  it immediately - there is no present to observe first, and a present mode can only be chosen at creation.
+  `off` and `mailbox` are untouched: they are not a vertical-blank contract and carry none of this measurement.
+- **The cost, stated rather than hidden.** In a title whose device enables `VK_NV_present_metering`,
+  `vsync_mode=fifo` now does nothing at all - including while frame generation is switched off, because the
+  extension is enabled for the life of the device. Making that distinction would mean deciding a present mode
+  from a state that changes after creation, which is a race, not a fix.
+- **Open: nothing bounds a metered generator that outruns its display.** That is the gap both retired mechanisms
+  existed to fill (session `20260829_022419`, 172 presents/s on a 143 Hz panel under 4x MFG). Neither the Vulkan
+  present mode nor a per-present schedule can supply it without destroying the generator's placement, so the
+  ceiling has to move to the *rendered* rate - the unit metering spreads. The only mechanism CE has for that
+  which is not a CE-side timer is the driver's own frame-generation-aware low-latency interval
+  (`minimumIntervalUs` via `NvAPI_Vulkan_SetSleepMode`/`vkSetLatencySleepModeNV`, which under DLSS-G limits
+  *displayed* frames), and this page's own rule currently says no refresh-derived cap is a VSync fallback. That
+  rule is the open decision, not a settled one.
 
 ## The effective present mode is the created one; the DXGI override was the bug
 

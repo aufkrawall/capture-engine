@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "layer_wsi_surface_bridge.h"
 #include "nv_lod_spread_override.h"
 #include "vulkan_reflex_limiter.h"
 
@@ -714,6 +715,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             strcmp(pCreateInfo->ppEnabledExtensionNames[i],
                    ce::vulkan_present_metering_policy::kExtensionName) == 0) {
             dispatch->applicationEnabledPresentMetering = true;
+            ce::vulkan_wsi::PublishDevicePresentMetering();
             LayerLog("Vulkan Layer: application enabled %s - a metered frame generator owns the display "
                      "placement of its generated images on this device, so CE schedules none of its presents",
                      ce::vulkan_present_metering_policy::kExtensionName);

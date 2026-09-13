@@ -29,7 +29,9 @@ using ce::vulkan_present_metering_policy::IsVblankPacedPresentMode;
 using ce::vulkan_present_metering_policy::kMaxScannedChainNodes;
 using ce::vulkan_present_metering_policy::kStructureTypeSetPresentConfigNV;
 using ce::vulkan_present_metering_policy::RequestsVblankPacedPresentation;
+using ce::vulkan_present_metering_policy::PresentModeOverrideInput;
 using ce::vulkan_present_metering_policy::ScanPresentChain;
+using ce::vulkan_present_metering_policy::ShouldSkipPresentModeOverride;
 using ce::vulkan_present_metering_policy::SetPresentConfigNV;
 
 Input MakeInput(VkPresentModeKHR presentMode, uint32_t framesPerBatch) {
@@ -223,6 +225,63 @@ TEST(VulkanPresentTimingRetirement, GeneratedFrameSpacingStaysWithTheRuntime) {
         << "device extension enumeration must preserve NVIDIA's metering capability";
     EXPECT_EQ(remix.find("enablePresentMetering"), std::string::npos)
         << "CE must not force Remix away from hardware generated-frame spacing";
+}
+
+// The 2026-09-13 follow-up: removing CE's own present schedule was not enough,
+// because the present-mode override alone still collapses the batch. The
+// driver states it itself in sensors.log's [DisplayTiming] line - the announced
+// flip lead is 6842 us with vsync_mode=default and 141 us with fifo forced, and
+// the published screen intervals go from ~7 ms to p50 2100 us / p99 18500 us.
+TEST(VulkanPresentModeOverride, StandsDownForAMeteredFrameGenerator) {
+    PresentModeOverrideInput input = {};
+    input.vblankPacedPresentationRequested = true;
+    input.deviceEnabledPresentMetering = true;
+    EXPECT_TRUE(ShouldSkipPresentModeOverride(input));
+}
+
+TEST(VulkanPresentModeOverride, AnOrdinaryDeviceStillGetsForcedFifo) {
+    PresentModeOverrideInput input = {};
+    input.vblankPacedPresentationRequested = true;
+    input.deviceEnabledPresentMetering = false;
+    EXPECT_FALSE(ShouldSkipPresentModeOverride(input));
+}
+
+// `off` and `mailbox` are not a vertical-blank contract, carry none of the
+// measurement above, and must keep working on a metering-capable device.
+TEST(VulkanPresentModeOverride, OnlyVblankPacedRequestsStandDown) {
+    PresentModeOverrideInput input = {};
+    input.vblankPacedPresentationRequested = false;
+    input.deviceEnabledPresentMetering = true;
+    EXPECT_FALSE(ShouldSkipPresentModeOverride(input));
+}
+
+// Both override sites must consult it: the layer's own swapchain creation and
+// the upstream sl.interposer hook that runs above the layer, which reaches the
+// same answer through the resident layer's export.
+TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
+    namespace fs = std::filesystem;
+    const std::string swapchain = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_swapchain.cpp");
+    const std::string streamline = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp");
+    const std::string bridge = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.cpp");
+    const std::string layerDef =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer.def");
+    ASSERT_FALSE(swapchain.empty());
+    ASSERT_FALSE(streamline.empty());
+    ASSERT_FALSE(bridge.empty());
+    ASSERT_FALSE(layerDef.empty());
+
+    EXPECT_NE(swapchain.find("ShouldSkipPresentModeOverride"), std::string::npos);
+    const std::string meteringBridge = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "common" / "vulkan_layer_metering_bridge.h");
+    ASSERT_FALSE(meteringBridge.empty());
+    EXPECT_NE(streamline.find("MeteredGeneratorOwnsPresentPlacement"), std::string::npos);
+    EXPECT_NE(meteringBridge.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos);
+    EXPECT_NE(bridge.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos);
+    EXPECT_NE(layerDef.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos)
+        << "the hook DLL resolves this export by name; it must stay in the layer's export list";
 }
 
 }  // namespace

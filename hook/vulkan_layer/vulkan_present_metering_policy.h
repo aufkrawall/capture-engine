@@ -151,6 +151,50 @@ inline bool IsVblankPacedPresentMode(VkPresentModeKHR presentMode) {
     return presentMode == VK_PRESENT_MODE_FIFO_KHR || presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
 }
 
+// Whether CE's creation-time present-mode override must stand down.
+//
+// **The driver states the reason itself.** `[DisplayTiming]` in `sensors.log`
+// reports `nvFlipSchedule(... applied=N avgDelayUs=M ...)`, where M is how far
+// ahead of the flip NVIDIA announced the screen time it scheduled that image
+// for. Portal RTX on 2026-09-13, same game, same 3x multi-frame generation,
+// minutes apart:
+//
+//   18:48:12  vsync_mode=default (Immediate swapchain)  applied=124   avgDelayUs=6842
+//   18:49:25  vsync_mode=fifo    (CE forced FIFO)       applied=1296  avgDelayUs=141
+//
+// 6.8 ms of announced lead is a generated frame being *held* for its slot in the
+// rendered interval. 141 us is no hold at all, and the published screen-interval
+// distribution says what that looks like: `p1Us=1900 p50Us=2100 p99Us=18500`
+// against the ~7.0 ms the batch is supposed to occupy. The whole batch flips
+// back to back and the screen then waits - the reported stutter, and the 6.9 ms
+// frame-time stddev in `perf_metrics_14696.csv`/`perf_metrics_17184.csv` against
+// 0.43 ms with the override off.
+//
+// So forcing a vertical-blank-paced present mode onto a swapchain a metered
+// generator drives does not add a vertical-blank wait; it takes away the
+// generator's flip scheduling. RTX Remix says the same thing in its own UI
+// ("When Frame Generation is active, V-Sync is automatically disabled") and
+// NVIDIA excludes Vulkan from DLSS-G V-Sync support. CE stands down instead.
+//
+// The gate is the device's own extension list rather than an observed metered
+// present: the frame generator creates its swapchain and presents through it
+// immediately, so there is no present to observe first, and a present mode can
+// only be chosen at creation. A device that enabled the extension is the
+// application saying a metered generator may run on it.
+struct PresentModeOverrideInput {
+    // The resolved profile asked for `fifo` or `adaptive`
+    // (see RequestsVblankPacedPresentation). `off` and `mailbox` are not a
+    // vertical-blank contract and are not covered by the measurement above.
+    bool vblankPacedPresentationRequested = false;
+    // VK_NV_present_metering appeared in VkDeviceCreateInfo's own extension list
+    // (DeviceDispatch::applicationEnabledPresentMetering).
+    bool deviceEnabledPresentMetering = false;
+};
+
+inline bool ShouldSkipPresentModeOverride(const PresentModeOverrideInput& input) {
+    return input.vblankPacedPresentationRequested && input.deviceEnabledPresentMetering;
+}
+
 struct Input {
     // True when the resolved profile asked CE for vertical-blank-paced
     // presentation (see RequestsVblankPacedPresentation).

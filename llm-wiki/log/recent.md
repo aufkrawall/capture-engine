@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-09-13 - The driver named it: forced FIFO removes a metered generator's flip scheduling
+
+Follow-up to the entry below, on the 0.1.6542 build that removed CE's own present schedule. Session
+`20260913_193655` shows the swapchain created clean (`flags=0x0`, `CE schedules none of these presents`) and the
+steady-state frame-time stddev **unchanged at 6.88-6.92 ms**. So the VK_EXT_present_timing injection was not the
+cause - the remaining CE action on that swapchain was the Immediate->FIFO present-mode override.
+
+**The measurement that settles it is in `sensors.log`, not the layer log.** `[DisplayTiming]` reports
+`nvFlipSchedule(... applied=N avgDelayUs=M ...)`, where M is the lead with which NVIDIA announces the screen time
+it scheduled an image for. Session `20260913_184745`, same game, same 3x MFG, one minute apart:
+
+| window | vsync_mode | applied | avgDelayUs | published screen intervals |
+| --- | --- | --- | --- | --- |
+| 18:48:12 | `default` | 124 | **6842** | p50 7400 us |
+| 18:49:25 | `fifo` | 1296 | **141** | p1 1900, p50 **2100**, p99 18500 us |
+
+6.8 ms of announced lead is a generated frame being held for its slot in the rendered interval. 141 us is no hold,
+and the published intervals show the consequence directly: the batch flips back to back and the screen then waits.
+**Forcing a vertical-blank-paced present mode onto a metered swapchain does not add a vertical-blank wait; it
+takes the generator's flip scheduling away.** Remix's own UI says "When Frame Generation is active, V-Sync is
+automatically disabled", and NVIDIA excludes Vulkan from DLSS-G V-Sync support.
+
+**Change (0.1.6545)**: `ShouldSkipPresentModeOverride` gates both override sites - the layer's
+`vkCreateSwapchainKHR` and the upstream `sl.interposer` hook, which reads the same fact through a new layer export
+`CEVulkanLayerDeviceEnabledPresentMetering` (`hook/common/vulkan_layer_metering_bridge.h`). The gate is the
+application's own `VkDeviceCreateInfo` extension list, not an observed metered present: the generator creates its
+swapchain and presents through it immediately, so there is nothing to observe first and a present mode can only be
+chosen at creation. `off` and `mailbox` are untouched.
+
+**Cost, stated**: in a title whose device enables `VK_NV_present_metering`, `vsync_mode=fifo` now does nothing at
+all, including while FG is switched off - the extension is device-lifetime. Distinguishing the two would mean
+choosing a present mode from state that changes after creation, which is a race.
+
+**Open**: nothing bounds a metered generator that outruns its display. Neither the Vulkan present mode nor a
+per-present schedule can supply that without destroying the generator's placement, so the ceiling belongs on the
+*rendered* rate. The only non-CE-timer mechanism left is the driver's FG-aware low-latency interval
+(`minimumIntervalUs`, which under DLSS-G limits displayed frames) - and `vulkan-forced-fifo.md`'s own rule
+currently forbids calling a refresh-derived cap a VSync fallback. That rule is now the open decision.
+
 ### 2026-09-13 - Forced FIFO bunched the DLSS-MFG batch on screen: VK_EXT_present_timing scheduling removed
 
 **Report**: Portal RTX (RTX Remix, DLSS multi-frame generation) stutters with `[Graphics] vsync_mode=fifo`;
