@@ -1,8 +1,7 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last cross-checked: 2026-08-30 (session 20260830_224007 root causes fixed: the live-HWND query was missing from the
-layer's PE export table, and the first WSI factory preceded the IAT-triggered factory hooks; the overlay ring and
-the compute-composite barrier fixes unchanged)
+Last cross-checked: 2026-09-13 (the present-timing swapchain flag is now gated on `VK_NV_present_metering`, because
+asking for it costs the game NVIDIA's native present path; earlier 2026-08-30 state otherwise unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -147,6 +146,28 @@ screen.
 - The withholding is kept because two pacing authorities on one set of presents is still wrong, and because it costs
   nothing when the runtime does not use the extension - but it is no longer offered as the explanation for anything.
   See "the DXGI override was the bug" below for where the evidence now points.
+
+### The present-timing flag costs the native present path, so it is spent only where it buys something
+
+- **`VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT` moves the whole swapchain onto NVIDIA's layered-on-DXGI
+  presenter.** Measured with `build/vk-wsi-probe` on 2026-09-13: enabling `VK_EXT_present_timing` +
+  `VK_KHR_present_id2` + `VK_KHR_calibrated_timestamps` on the device, feature node included, changes nothing - the
+  ICD still builds its native presenter (`wgl*` + `nvppex.dll` + `dispbroker.dll`, no D3D at all). Adding only the
+  swapchain flag makes the same run resolve `CreateDXGIFactory2`, `D3D12CreateDevice`,
+  `DwmGetCompositionTimingInfo` and `DCompositionCreateDevice3` and map `nvwgf2umx.dll`/`nvldumdx.dll`/`dcomp.dll`.
+  NVIDIA's native presenter cannot serve a present-timing swapchain.
+- That is a real cost to the game: the layered path is what puts the window back under DWM composition, which is
+  directly visible as the Windows volume OSD drawing over a fullscreen title.
+- **A plain FIFO swapchain gains nothing from the flag** - it already presents one image per vertical blank. The
+  only swapchain that can outrun its own display is one on a device that enabled `VK_NV_present_metering`, where a
+  metered frame generator makes the driver stop applying that wait. `ShouldEnableSwapchain` therefore requires
+  `meteredPresentationPossible`, recorded at `vkCreateDevice` from the application's own extension list
+  (`DeviceDispatch::applicationEnabledPresentMetering`). Forced FIFO in an ordinary title now keeps the native
+  presenter and still gets its vertical-blank wait from FIFO itself.
+- The layer says which branch it took, once per swapchain: `native relative present timing not requested for FIFO
+  swapchain ... this device never enabled VK_NV_present_metering`, against the existing `enabling native relative
+  present timing for FIFO swapchain` line. `vkCreateSwapchainKHR driver returned: ... nativeTiming=` carries the
+  same answer.
 
 ## The effective present mode is the created one; the DXGI override was the bug
 

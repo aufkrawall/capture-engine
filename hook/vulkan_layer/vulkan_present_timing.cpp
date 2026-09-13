@@ -382,17 +382,18 @@ PresentTimingSwapchainEnablement PreparePresentTimingSwapchain(
     ce::vulkan_present_timing_policy::SwapchainInput input = {};
     input.vblankPacingRequested = VulkanLayerState::Get().WantsVblankPacedPresentation();
     input.deviceEnabled = deviceDispatch && deviceDispatch->relativePresentTimingEnabled;
+    input.meteredPresentationPossible = deviceDispatch && deviceDispatch->applicationEnabledPresentMetering;
     input.presentMode = modifiedCreateInfo.presentMode;
 
     VkPresentTimingSurfaceCapabilitiesEXT timingCapabilities = {};
     timingCapabilities.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT;
     VkInstance instance = VK_NULL_HANDLE;
     InstanceDispatch* instanceDispatch = nullptr;
-    if (input.deviceEnabled) {
+    if (input.deviceEnabled && input.meteredPresentationPossible) {
         instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(deviceDispatch->physicalDevice);
         instanceDispatch = VulkanLayerState::Get().GetInstanceDispatch(instance);
     }
-    input.surfaceQueryAvailable = input.deviceEnabled &&
+    input.surfaceQueryAvailable = input.deviceEnabled && input.meteredPresentationPossible &&
                                   deviceDispatch->fp_vkGetSwapchainTimingPropertiesEXT &&
                                   deviceDispatch->fp_vkGetSwapchainTimeDomainPropertiesEXT && instanceDispatch &&
                                   instanceDispatch->fp_vkGetPhysicalDeviceSurfaceCapabilities2KHR;
@@ -421,7 +422,18 @@ PresentTimingSwapchainEnablement PreparePresentTimingSwapchain(
 
     enablement.enabled = ce::vulkan_present_timing_policy::ShouldEnableSwapchain(input);
     if (!enablement.enabled) {
-        if (input.deviceEnabled && ce::vulkan_present_timing_policy::IsFifoPresentMode(input.presentMode)) {
+        if (input.deviceEnabled && !input.meteredPresentationPossible &&
+            ce::vulkan_present_timing_policy::IsFifoPresentMode(input.presentMode)) {
+            static std::atomic<bool> loggedOnce{false};
+            if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {
+                LayerLog("Vulkan Layer: native relative present timing not requested for FIFO swapchain on "
+                         "surface %p - this device never enabled %s, so its FIFO swapchain already waits for "
+                         "the vertical blank. Requesting the present-timing flag would only move the swapchain "
+                         "off NVIDIA's native present path onto a layered DXGI one",
+                         (void*)applicationCreateInfo.surface,
+                         ce::vulkan_present_metering_policy::kExtensionName);
+            }
+        } else if (input.deviceEnabled && ce::vulkan_present_timing_policy::IsFifoPresentMode(input.presentMode)) {
             LayerLog("Vulkan Layer: native relative present timing unavailable for surface %p "
                      "(query=%d success=%d presentTiming=%d relative=%d)",
                      (void*)applicationCreateInfo.surface, input.surfaceQueryAvailable ? 1 : 0,

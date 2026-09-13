@@ -61,12 +61,30 @@ struct SwapchainInput {
     bool surfaceQuerySucceeded = false;
     bool presentTimingSupportedForSurface = false;
     bool relativeTimeSupportedForSurface = false;
+    // The device enabled VK_NV_present_metering, so a frame generator on it can
+    // ask the driver to spread generated images across a rendered frame interval
+    // and stop honouring the swapchain's vertical-blank wait.
+    bool meteredPresentationPossible = false;
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 };
 
+// Whether the swapchain is created with VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT.
+//
+// The bit is not free: NVIDIA's Windows WSI cannot serve a present-timing
+// swapchain from its native present path, so asking for it moves the whole
+// swapchain onto the layered-on-DXGI presenter - measured with
+// build/vk-wsi-probe on 2026-09-13, where the device-level extensions and the
+// feature node are inert and only this swapchain flag flips the path.
+//
+// A plain FIFO swapchain already presents one image per vertical blank, so the
+// relative-time floor buys nothing there. The one case that needs it is a
+// device with VK_NV_present_metering enabled, where a metered frame generator
+// makes the driver stop applying that wait (see vulkan_present_metering_policy.h).
+// CE therefore pays the native-presenter price only for a swapchain that can
+// actually outrun its own display.
 inline bool ShouldEnableSwapchain(const SwapchainInput& input) noexcept {
-    return input.vblankPacingRequested && input.deviceEnabled && input.surfaceQueryAvailable &&
-           input.surfaceQuerySucceeded &&
+    return input.vblankPacingRequested && input.deviceEnabled && input.meteredPresentationPossible &&
+           input.surfaceQueryAvailable && input.surfaceQuerySucceeded &&
            input.presentTimingSupportedForSurface && input.relativeTimeSupportedForSurface &&
            IsFifoPresentMode(input.presentMode);
 }

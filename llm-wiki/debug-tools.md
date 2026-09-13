@@ -114,3 +114,28 @@ Built-in, ALWAYS-ON (no env/flag/install), written via `HookLogImportant` to `ho
 - For cases DRED can only report as a "pure hang" (`pageFaultVA=0`, e.g. the x86 DX12 Alt+Tab overlay-draw hang), CE can enable the D3D12 debug layer to surface the exact resource-state/hazard at the API call. Requires the Graphics Tools optional feature (`C:\Windows\System32\d3d12SDKLayers.dll` — present on this machine). Armed in `DX12Hook::Init()` before device creation (`ce::dx12_dred::ArmDebugLayerBeforeDeviceCreation`).
 - Levels: `CE_DX12_DEBUG_LAYER=1` enables the debug layer (lighter); `=2` also enables GPU-based validation (heavier, serializes — can mask timing hangs but catches GPU-side hazards). Unset/`0` = off (default; the debug layer changes timing so it is diagnosis-only).
 - The device's `ID3D12InfoQueue` is drained to the hook log every `ProcessFrame` and on device-removal, tagged `DX12 DBGLAYER [<context>] sev=.. cat=.. id=..: <description>`. Run the repro with the env set, then read `hook_debug.log` for those lines around the freeze.
+
+## NVIDIA Vulkan WSI present-path probe (`build/vk-wsi-probe`, untracked)
+
+- Standalone ~15 s reproducer that answers "did NVIDIA's Windows WSI present this swapchain natively, or through a
+  layered DXGI swapchain?" from inside the process. Single translation unit; build with the MSYS2 clang:
+  `build/msys64/clang64/bin/clang++.exe -O1 -std=c++17 -static -static-libgcc -o vk_wsi_probe.exe vk_wsi_probe.cpp
+  -luser32 -lgdi32 -lpsapi -ld3d12 -ldxgi -luuid -lole32`.
+- It creates a window plus an ordinary Vulkan 1.1 FIFO swapchain, presents a few frames, and reports the modules
+  that appeared at each stage. `--icd-bypass-gpa` additionally patches `nvoglv64.dll`'s `GetProcAddress` import to
+  trace (and answer with the module's genuine export) every entry point the ICD resolves; `--trace-gdi` traces the
+  GDI pixel-format and `D3DKMTEnumAdapters2` calls the native presenter makes.
+- **Reading the answer**: native resolves `wgl*` on `opengl32.dll` and loads `nvppex.dll` + `dispbroker.dll` with
+  no D3D at all; layered resolves `CreateDXGIFactory2`, `D3D12CreateDevice`, `DwmGetCompositionTimingInfo`,
+  `DCompositionCreateDevice3` and maps `nvwgf2umx.dll`/`nvldumdx.dll`/`d3d12core.dll`/`dcomp.dll`. Do **not** read
+  `dxgi.dll` presence as layered: OBS's `graphics-hook64.dll` and RTSS's `rtssvklayer64.dll` map it into every
+  Vulkan process here.
+- Flags reproduce CE behaviours one at a time without CE: `--preload-sl` / `--preload-sl-core` /
+  `--preload-sl-interposer` / `--preload-ngx` (the runtime preload set), `--present-timing` / `--pt-noflag` /
+  `--pt-idonly` (the forced-FIFO present-timing pieces), `--ce` (CE's added device/instance extensions plus the
+  reserved queue), `--d3d12-first`, `--hook-wgl`, `--fse`, `--doom-usage`, `--delay-ms=N` (wait for CE to inject).
+- Inside an injected process CE's own `hook_debug.log` answers the same question authoritatively: the line
+  `Vulkan layer owns presentation - exact DXGI swapchain-create pass-through` appears exactly when NVIDIA's WSI
+  creates its layered DXGI swapchain. Known limitation: the probe's ICD tracing is not compatible with RTSS's
+  Vulkan layer plus CE's loader hooks in one process (RTSSVkLayer64 null-derefs at `vkCreateInstance`), so use CE's
+  own log line for in-CE runs.

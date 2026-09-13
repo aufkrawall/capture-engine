@@ -733,6 +733,20 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->storageImageReadWithoutFormatAvailable = storageImageReadWithoutFormatAvailable;
     dispatch->storageImageWriteWithoutFormatAvailable = storageImageWriteWithoutFormatAvailable;
     dispatch->relativePresentTimingEnabled = presentTimingEnablement.enabled;
+    // Read from the application's own list, not CE's modified copy: CE never
+    // adds this extension, so the two agree, and the application's list is the
+    // authoritative statement that a metered frame generator may run here.
+    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i) {
+        if (pCreateInfo->ppEnabledExtensionNames[i] &&
+            strcmp(pCreateInfo->ppEnabledExtensionNames[i],
+                   ce::vulkan_present_metering_policy::kExtensionName) == 0) {
+            dispatch->applicationEnabledPresentMetering = true;
+            LayerLog("Vulkan Layer: application enabled %s - a metered frame generator can outrun a FIFO "
+                     "swapchain here, so native relative present timing stays eligible",
+                     ce::vulkan_present_metering_policy::kExtensionName);
+            break;
+        }
+    }
     dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);

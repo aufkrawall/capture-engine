@@ -369,8 +369,17 @@ bool NeedsLowLevelModuleLoadObservationHook();
 // to the override copies instead of the game's older ones. Loads through the
 // original loader entry and notifies CE's module hooks immediately. No-op when
 // no override paths are configured.
+//
+// The sl.* half is held back until this process shows Streamline use: mapping
+// sl.interposer.dll makes NVIDIA's Vulkan WSI abandon its native present path
+// for a layered DXGI swapchain, which is not CE's to spend on a game that never
+// asked for Streamline.
 void PreloadConfiguredGraphicsRuntimeDlls();
 void PreloadConfiguredStreamlineBridgeNgxDlls();
+
+// Places the deferred sl.* half once Streamline use has been observed. Cheap and
+// idempotent; called from the hook thread's monitor loop.
+void PlaceConfiguredStreamlinePluginSetIfObserved();
 
 // Loads the user-configured third-party tool DLLs (ThirdParty.reshade_dll_path,
 // ThirdParty.optiscaler_dll_path, ThirdParty.specialk_dll_path) into the

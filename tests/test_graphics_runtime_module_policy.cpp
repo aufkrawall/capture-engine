@@ -16,6 +16,7 @@ using ce::graphics_runtime::ModelSegmentToDllName;
 using ce::graphics_runtime::NgxModelSegment;
 using ce::graphics_runtime::ResolveStreamlineProvidedDllName;
 using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
+using ce::graphics_runtime::ShouldPlaceStreamlinePluginSet;
 using ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule;
 using ce::graphics_runtime::WouldRedirectDuplicateLoadedModule;
 
@@ -234,6 +235,35 @@ TEST(GraphicsRuntimeModulePolicy, StreamlineOverrideIsAllOrNothingAnchoredOnTheC
     EXPECT_FALSE(ShouldApplyStreamlineOverrideRedirect(false, true));
 }
 
+// Regression: a profile that only configures the override PATHS used to make CE
+// map sl.interposer.dll into every injected process. NVIDIA's Windows Vulkan ICD
+// answers a mapped Streamline interposer by abandoning its native present path
+// for a layered DXGI presenter, so DOOM Eternal - which never loads Streamline -
+// lost native WSI present purely because streamline_dll_path was set
+// (2026-09-13, reproduced with build/vk-wsi-probe down to sl.interposer.dll
+// alone). The copies may only be placed once the process shows Streamline use.
+TEST(GraphicsRuntimeModulePolicy, StreamlinePluginSetIsPlacedOnlyForAProcessThatUsesStreamline) {
+    ce::graphics_runtime::StreamlineUseEvidence none = {};
+    EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(true, false, none));
+
+    ce::graphics_runtime::StreamlineUseEvidence mapped = {};
+    mapped.coreAlreadyMapped = true;
+    EXPECT_TRUE(ShouldPlaceStreamlinePluginSet(true, false, mapped));
+
+    ce::graphics_runtime::StreamlineUseEvidence shipped = {};
+    shipped.coreShippedWithApplication = true;
+    EXPECT_TRUE(ShouldPlaceStreamlinePluginSet(true, false, shipped));
+
+    ce::graphics_runtime::StreamlineUseEvidence observed = {};
+    observed.loadObserved = true;
+    EXPECT_TRUE(ShouldPlaceStreamlinePluginSet(true, false, observed));
+
+    // The existing gates still win: no configured override, and a foreign core
+    // that would turn the placement into a version-mixed stack.
+    EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(false, false, observed));
+    EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(true, true, observed));
+}
+
 // Both redirect decisions in GetRedirectedPath must consult the duplicate check: the NGX
 // model-repository branch returns early with its own path, so guarding only the generic branch
 // would leave the driver-managed plugin loads (which is how sl.common/sl.reflex arrive) unguarded.
@@ -295,22 +325,31 @@ TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheC
     EXPECT_NE(redirect.rfind("StreamlineOverrideRedirectAllowed(filename.c_str())", genericReturn),
               std::string::npos);
 
-    // The preload answers the question for modules that predate CE, then gates the sl.* set.
+    // The sl.* placement is gated twice, in this order: on owning the core, and
+    // on the process actually using Streamline. Both gates precede the first
+    // PreloadOverrideDll of an sl.* name.
+    const size_t placement = redirect.find("bool PlaceStreamlinePluginSet()");
+    ASSERT_NE(placement, std::string::npos);
+    const size_t coreGate = redirect.find("StreamlineOverrideRedirectAllowed(\"sl.* plugin set\")", placement);
+    ASSERT_NE(coreGate, std::string::npos);
+    const size_t useGate = redirect.find("ShouldPlaceStreamlinePluginSet(", coreGate);
+    ASSERT_NE(useGate, std::string::npos);
+    const size_t interposerPreload =
+        redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")", useGate);
+    ASSERT_NE(interposerPreload, std::string::npos);
+
+    // The preload answers "did CE lose the core" for modules that predate CE
+    // before it places anything.
     const size_t preload = redirect.find("void PreloadConfiguredGraphicsRuntimeDlls()");
     ASSERT_NE(preload, std::string::npos);
     const size_t scan = redirect.find("ScanLoadedModulesForForeignStreamlineCore();", preload);
     ASSERT_NE(scan, std::string::npos);
-    const size_t gate = redirect.find("StreamlineOverrideRedirectAllowed(\"sl.* plugin set\")", preload);
-    ASSERT_NE(gate, std::string::npos);
-    EXPECT_LT(scan, gate);
-    const size_t interposerPreload = redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")",
-                                                   preload);
-    ASSERT_NE(interposerPreload, std::string::npos);
-    EXPECT_LT(gate, interposerPreload);
-    // The independent NGX snippet overrides must stay outside the gate.
+    const size_t placementCall = redirect.find("PlaceStreamlinePluginSet()", scan);
+    ASSERT_NE(placementCall, std::string::npos);
+    // The independent NGX snippet overrides must stay outside both gates.
     const size_t snippetPreload = redirect.find("PreloadOverrideDll(gfx.dlssSrDllPath, \"nvngx_dlss.dll\")", preload);
     ASSERT_NE(snippetPreload, std::string::npos);
-    EXPECT_LT(interposerPreload, snippetPreload);
+    EXPECT_LT(placementCall, snippetPreload);
 }
 
 }  // namespace

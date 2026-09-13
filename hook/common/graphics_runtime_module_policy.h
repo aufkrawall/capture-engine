@@ -342,6 +342,42 @@ inline bool ShouldApplyStreamlineOverrideRedirect(bool overrideConfigured, bool 
     return overrideConfigured && !foreignCoreObserved;
 }
 
+// Evidence that this process uses Streamline at all. Separate from the redirect
+// gate above, which only decides WHICH distribution wins once Streamline is in
+// play.
+struct StreamlineUseEvidence {
+    // sl.interposer/sl.common is already mapped (static import, or a load that
+    // predates CE).
+    bool coreAlreadyMapped = false;
+    // sl.interposer.dll ships next to the process image, so the application is
+    // built against Streamline and will load it by name.
+    bool coreShippedWithApplication = false;
+    // A sl.* load or load request has been observed at runtime.
+    bool loadObserved = false;
+};
+
+// Whether CE may MAP its configured sl.* override copies into this process.
+//
+// Placing them is not free. NVIDIA's Windows Vulkan ICD abandons its native
+// present path and builds a layered-on-DXGI presenter (d3d12 + nvwgf2umx +
+// dcomp) as soon as sl.interposer.dll is mapped, because that is how Vulkan
+// DLSS Frame Generation has to present. Mapping the Streamline core into a
+// process that never asked for it therefore takes the game's native presenter
+// away - measured with build/vk-wsi-probe on 2026-09-13, where mapping
+// sl.interposer.dll alone is sufficient and the nvngx_* snippets are inert.
+//
+// The override paths mean "when this process loads Streamline, use my copy",
+// not "load Streamline". So the plugin set is placed only once the process has
+// shown that it uses Streamline; until then the loader redirect alone covers
+// the first real request, and this placement follows it.
+inline bool ShouldPlaceStreamlinePluginSet(bool overrideConfigured, bool foreignCoreObserved,
+                                           const StreamlineUseEvidence& evidence) {
+    if (!ShouldApplyStreamlineOverrideRedirect(overrideConfigured, foreignCoreObserved)) {
+        return false;
+    }
+    return evidence.coreAlreadyMapped || evidence.coreShippedWithApplication || evidence.loadObserved;
+}
+
 inline bool IsRuntimeModuleBaseName(const char* baseName) {
     if (!baseName || !baseName[0]) {
         return false;

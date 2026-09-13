@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-09-13 (`PresentSite` call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an overrun-learned reservation)
+Last cross-checked: 2026-09-13 (the sl.* runtime preload is demand-driven now - mapping sl.interposer.dll costs a Vulkan game NVIDIA's native present path; plus the `PresentSite` call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an overrun-learned reservation)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -419,6 +419,20 @@ Reflex handoff rules.
   every module that loads after the snapshot (when overrides are configured), so Streamline-internal loads reach the
   redirect even without the preload. Only loader imports are touched - no graphics API wrapper is installed into
   runtime modules.
+- **The sl.* half of that preload is demand-driven (2026-09-13).** Mapping `sl.interposer.dll` makes NVIDIA's
+  Windows Vulkan ICD abandon its native present path and build a layered-on-DXGI presenter, because that is how
+  Vulkan DLSS Frame Generation has to present - `build/vk-wsi-probe` reduces it to that one module, and the
+  `nvngx_*.dll` snippets are inert. Configuring an override path used to map the whole Streamline stack into every
+  injected process, so DOOM Eternal - which never loads Streamline - lost native WSI present purely because
+  `streamline_dll_path` was set (session `20260913_180809`, where the driver called `CreateSwapChainForHwnd`
+  *inside* `vkCreateSwapchainKHR`). The override paths mean "when this process loads Streamline, use my copy", not
+  "load Streamline", so `ce::graphics_runtime::ShouldPlaceStreamlinePluginSet` now requires evidence of actual
+  Streamline use: the core already mapped, `sl.interposer.dll` shipping beside the process image, or an observed
+  `sl.*` load/request (`NoteStreamlineUseObserved`, latched from `GetRedirectedPath` and
+  `NoteRuntimeModuleLoadedForOverridePolicy`). The deferred placement runs from the hook thread's monitor loop
+  (`PlaceConfiguredStreamlinePluginSetIfObserved`), never under the loader lock. The loader redirect is unchanged
+  and still serves the first real request, so a Streamline title gets the same copies it always did; the held-back
+  case logs `Runtime preload: sl.* plugin set held back ...` with the three evidence bits.
 - **Ownership: the preload and the redirect belong to exactly one process per game.** Both sit behind
   `CurrentProcessOwnsProcessLocalRuntimeOverrides()`, which stands down when the Vulkan layer has published an
   inherited-renderer claim naming a direct child renderer of *this* client - the split-renderer titles, e.g.

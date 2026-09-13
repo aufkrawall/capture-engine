@@ -1,5 +1,69 @@
 # llm-wiki Log
 
+### 2026-09-13 - CE was taking NVIDIA's native Vulkan present path away from the game (two causes)
+
+**Report**: with the inject active, DOOM Eternal always presented through DXGI even with the driver's
+Vulkan/OpenGL present method set to prefer native - visible as the Windows volume OSD compositing over the game.
+Without CE it stayed native. Session `20260913_180809` confirms it from CE's own side: the driver called
+`CreateSwapChainForHwnd` *inside* `vkCreateSwapchainKHR` (18:08:25.359, between the layer's entry at .097 and the
+driver's return at .374), which CE logged three times as `Vulkan layer owns presentation - exact DXGI
+swapchain-create pass-through`. That line is the authoritative "NVIDIA's WSI went layered" signal.
+
+**Reproducer**: `build/vk-wsi-probe` (standalone, ~15 s, not part of any gate). It creates an ordinary Vulkan
+FIFO swapchain and traces the ICD's own imports (`nvoglv64.dll` IAT: `GetProcAddress`, `LoadLibrary*`,
+`GetModuleHandle*`, plus the GDI pixel-format and `D3DKMTEnumAdapters2` entries). The two paths are trivially
+separable from inside the process:
+- **native**: the ICD resolves `wglDescribePixelFormat`/`wglCreateLayerContext`/`wglShareLists`/`wglDeleteContext`/
+  `wglMakeCurrent`/`wglSwapLayerBuffers`/`wglGetCurrentContext`, then loads `nvppex.dll` (`ppeGetVersion`,
+  `ppeGetExportTable`) and `dispbroker.dll`/`winsta.dll`. It never touches D3D.
+- **layered**: the same run additionally resolves `dxgi!CreateDXGIFactory2`, `d3d12!D3D12CreateDevice`,
+  `dwmapi!DwmGetCompositionTimingInfo` and `dcomp!DCompositionCreateDevice3`, and maps `nvwgf2umx.dll`,
+  `nvldumdx.dll`, `d3d12core.dll`, `dcomp.dll`.
+Module-presence alone is not a detector: OBS's `graphics-hook64.dll` and RTSS's `rtssvklayer64.dll` map `dxgi.dll`
+into every Vulkan process here regardless.
+
+**Cause 1 - the Streamline preload (`streamline_dll_path`)**. `PreloadConfiguredGraphicsRuntimeDlls` mapped
+`sl.interposer.dll`, `sl.common.dll`, `sl.dlss*.dll` into *every* injected process whose profile configured any
+DLSS/Streamline override path, as a name-registration trick so later name-based loads resolve to CE's copies.
+DOOM Eternal never loads Streamline. The probe reduces it to a single fact: **mapping `sl.interposer.dll` alone is
+enough** for the ICD to build the layered presenter - it is how Vulkan DLSS-G has to present. The `nvngx_*.dll`
+snippets are inert (probe `--preload-ngx`: native). Bisected away from every other suspect first: CE's added
+device/instance extensions (`VK_KHR_external_memory_win32`, `external_semaphore_win32`, `timeline_semaphore`,
+`get_physical_device_properties2`), the reserved overlay queue, DOOM's `imageUsage=0x1f`,
+`VK_EXT_full_screen_exclusive`, a real D3D12 device plus DXGI flip swapchain in the process, CE's `opengl32`/
+`gdi32` swap-entry inline hooks, and CE's `GetProcAddress` router (traced: it never intercepts the ICD's own
+lookups) - all stayed native.
+- **Fix**: `ce::graphics_runtime::ShouldPlaceStreamlinePluginSet` + `PlaceStreamlinePluginSet` in
+  `hook/main_redirect.cpp`. The sl.* set is placed only once the process shows Streamline use - the core is
+  already mapped, `sl.interposer.dll` ships beside the process image, or a sl.* load/request has been observed
+  (`NoteStreamlineUseObserved`, latched from `GetRedirectedPath` and `NoteRuntimeModuleLoadedForOverridePolicy`).
+  The deferred half runs from the hook thread's 100 ms monitor loop (`PlaceConfiguredStreamlinePluginSetIfObserved`),
+  off the loader-lock path. The NGX snippets keep their eager placement. The loader redirect is unchanged and still
+  serves the first real request, so a Streamline game gets the same copies as before.
+
+**Cause 2 - `vsync_mode=fifo|adaptive`**. The layer asked for `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT` on every
+forced-FIFO swapchain (`abcafbeb`). The probe separates the pieces: the device extensions (`VK_EXT_present_timing`,
+`VK_KHR_present_id2`, `VK_KHR_calibrated_timestamps`) and the feature node are **inert**; the swapchain flag alone
+flips the path, because NVIDIA's native presenter cannot serve a present-timing swapchain.
+- **Fix**: `ShouldEnableSwapchain` now also requires `meteredPresentationPossible` - the application enabled
+  `VK_NV_present_metering` on this device (recorded at `vkCreateDevice`). That is the only case where a FIFO
+  swapchain can outrun its display; a plain FIFO swapchain already waits for the vertical blank, so the flag bought
+  nothing and cost the native presenter.
+
+**Validated**: `installed/testapp/vulkan_test.exe` with a DOOM-shaped profile (`vsync_mode=fifo`,
+`streamline_dll_path`, `dlss_sr_dll_path`) - `nativeTiming=0`, `flags=0x0`, zero DXGI swapchain-create
+pass-throughs. The hold-back path is proven separately with the probe process (no Streamline beside it):
+`Runtime preload: sl.* plugin set held back ... (mapped=0 shippedWithApplication=0 loadObserved=0)` and no sl.*
+module in the process. The test app ships the whole sl.* set next to its exe, so it takes the
+`coreShippedWithApplication` branch and still gets the full placement - the intended positive. **DOOM Eternal
+itself is still unrun.**
+
+**Open**: `hook/wrappers/d3dkmt_hook.cpp` types `D3DKMT_HANDLE` as `UINT64` (it is `UINT32`), so every
+`D3DKMT_QUERYADAPTERINFO` / `D3DKMT_QUERYVIDEOMEMORYINFO` field it reads is at the wrong offset - the garbage
+`Type=3086977864, Size=52413` lines in the DOOM log are a pointer's low dword and the adapter LUID. Harmless while
+the VRAM override is off (every hook passes the application's struct through untouched), but the override path
+writes at those offsets. Not this bug; not fixed here.
+
 ### 2026-09-13 - DOOM Eternal black window: overlay views outlived their swapchain
 
 Session `20260913_174040`: the first launch stayed black, the second worked. The layer log shows the startup

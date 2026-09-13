@@ -51,6 +51,11 @@ namespace ce::vulkan_present_metering_policy {
 // ones define it.
 inline constexpr VkStructureType kStructureTypeSetPresentConfigNV = static_cast<VkStructureType>(1000613000);
 
+// Spelled out for the same reason. A device that enabled this is the only kind
+// that can outrun its own FIFO swapchain, which is what CE's native relative
+// present timing exists to bound.
+inline constexpr const char* kExtensionName = "VK_NV_present_metering";
+
 struct SetPresentConfigNV {
     VkStructureType sType;
     const void* pNext;

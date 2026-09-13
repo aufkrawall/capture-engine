@@ -59,6 +59,19 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
 // ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect.
 std::atomic<bool> g_ForeignStreamlineCoreObserved{false};
 
+// Latched the moment this process asks for, or maps, any sl.* module. Placing
+// CE's own sl.* copies before that costs a Vulkan game its native present path;
+// see ce::graphics_runtime::ShouldPlaceStreamlinePluginSet.
+std::atomic<bool> g_StreamlineUseObserved{false};
+
+void NoteStreamlineUseObserved(const char *evidence) {
+  if (g_StreamlineUseObserved.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  HookLogImportant("Streamline use observed (%s): the configured sl.* override copies may now be placed",
+                   evidence ? evidence : "unspecified");
+}
+
 // Builds the override path for `filename` from an override setting that may name
 // either a directory or a specific file. Shared by the redirect decision and by
 // the "is this resolved path our override copy" test so the two can never drift.
@@ -213,12 +226,22 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
     return;
   }
   const std::string &overridePath = g_pLocalConfig->graphics.streamlineDllPath;
-  if (overridePath.empty() || g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire)) {
+  if (overridePath.empty()) {
     return;
   }
   char providedName[MAX_PATH] = {};
-  if (!ce::graphics_runtime::ResolveStreamlineProvidedDllName(resolvedPath, providedName, sizeof(providedName)) ||
-      !ce::graphics_runtime::IsStreamlineCoreProvidedDllName(providedName)) {
+  const bool resolvedStreamlineName =
+      ce::graphics_runtime::ResolveStreamlineProvidedDllName(resolvedPath, providedName, sizeof(providedName));
+  // Any sl.* image mapping - the game's own or CE's redirected copy - proves
+  // this process runs Streamline, which is what releases the plugin placement.
+  if (resolvedStreamlineName &&
+      ce::graphics_runtime::HasPrefixIgnoreCase(ce::graphics_runtime::ModuleFileName(providedName), "sl.")) {
+    NoteStreamlineUseObserved(providedName);
+  }
+  if (g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!resolvedStreamlineName || !ce::graphics_runtime::IsStreamlineCoreProvidedDllName(providedName)) {
     return;
   }
   std::string expected = BuildOverridePath(overridePath, providedName);
@@ -339,6 +362,11 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
                filenameLower == "nvlowlatencyvk.dll") {
         overridePath = g_pLocalConfig->graphics.streamlineDllPath;
         isStreamlineMatch = true;
+        // The request itself is the earliest proof that this process runs
+        // Streamline, and it arrives before the module maps.
+        if (filenameLower.find("sl.") == 0 && !overridePath.empty()) {
+          NoteStreamlineUseObserved(filename.c_str());
+        }
       }
     }
 
@@ -442,6 +470,84 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
                    reinterpret_cast<void*>(hMod));
 }
 
+// True when sl.interposer.dll ships next to the process image, i.e. the
+// application is built against Streamline and will load it by name. Resolved
+// once: the executable's own folder cannot change while the process runs.
+bool StreamlineShipsWithApplication() {
+  static const bool shipped = [] {
+    char modulePath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+      return false;
+    }
+    char *lastSlash = nullptr;
+    for (char *cursor = modulePath; *cursor; ++cursor) {
+      if (*cursor == '\\' || *cursor == '/') {
+        lastSlash = cursor;
+      }
+    }
+    if (!lastSlash) {
+      return false;
+    }
+    *lastSlash = '\0';
+    const std::string candidate = std::string(modulePath) + "\\sl.interposer.dll";
+    return GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES;
+  }();
+  return shipped;
+}
+
+ce::graphics_runtime::StreamlineUseEvidence CollectStreamlineUseEvidence() {
+  ce::graphics_runtime::StreamlineUseEvidence evidence = {};
+  evidence.coreAlreadyMapped =
+      GetModuleHandleA("sl.interposer.dll") != nullptr || GetModuleHandleA("sl.common.dll") != nullptr;
+  evidence.coreShippedWithApplication = StreamlineShipsWithApplication();
+  evidence.loadObserved = g_StreamlineUseObserved.load(std::memory_order_acquire);
+  return evidence;
+}
+
+// The sl.* half of the runtime preload. Split from the NGX half because the two
+// have different costs: the NGX snippets are inert to the Vulkan present path,
+// while mapping the Streamline core takes the native presenter away from a game
+// that never asked for Streamline. Returns true once the set is placed (or is
+// permanently refused), so the caller can stop re-evaluating.
+bool PlaceStreamlinePluginSet() {
+  const auto& gfx = g_pLocalConfig->graphics;
+  if (gfx.streamlineDllPath.empty()) {
+    return true;
+  }
+  if (!StreamlineOverrideRedirectAllowed("sl.* plugin set")) {
+    return true;  // Foreign core / active bridge: already logged, and final.
+  }
+
+  const ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
+  if (!ce::graphics_runtime::ShouldPlaceStreamlinePluginSet(true, false, evidence)) {
+    static std::atomic<bool> loggedOnce{false};
+    if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {
+      HookLogImportant(
+          "Runtime preload: sl.* plugin set held back - this process shows no Streamline use yet (mapped=%d "
+          "shippedWithApplication=%d loadObserved=%d). Mapping sl.interposer.dll makes NVIDIA's Vulkan WSI "
+          "abandon its native present path for a layered DXGI swapchain, so the copies are placed only once the "
+          "process actually asks for Streamline; the loader redirect covers that first request either way",
+          evidence.coreAlreadyMapped ? 1 : 0, evidence.coreShippedWithApplication ? 1 : 0,
+          evidence.loadObserved ? 1 : 0);
+    }
+    return false;
+  }
+
+  // Streamline stack first: sl.interposer pulls sl.common as a dependent from
+  // the same directory; then the feature plugins. Once a name is registered,
+  // every later name-based load (including Streamline's own internal loads)
+  // resolves to these override copies.
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.interposer.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.common.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_g.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_d.dll");
+  return true;
+}
+
+std::atomic<bool> g_StreamlinePluginSetPlaced{false};
+
 }  // namespace
 
 void PreloadConfiguredGraphicsRuntimeDlls() {
@@ -474,24 +580,40 @@ void PreloadConfiguredGraphicsRuntimeDlls() {
   // seen a load that predates CE.
   ScanLoadedModulesForForeignStreamlineCore();
 
-  // Streamline stack first: sl.interposer pulls sl.common as a dependent from
-  // the same directory; then the feature plugins and the NGX snippets. Once a
-  // name is registered, every later name-based load (including Streamline's
-  // own internal loads) resolves to these override copies.
-  //
-  // Skipped entirely once the core is foreign: those copies could then only ever
-  // become the minority half of a version-mixed stack (or an unused third
-  // instance), which is the Cyberpunk 20260816_153027 crash.
-  if (StreamlineOverrideRedirectAllowed("sl.* plugin set")) {
-    PreloadOverrideDll(gfx.streamlineDllPath, "sl.interposer.dll");
-    PreloadOverrideDll(gfx.streamlineDllPath, "sl.common.dll");
-    PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss.dll");
-    PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_g.dll");
-    PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_d.dll");
+  // The sl.* set is placed only once this process shows Streamline use; see
+  // PlaceStreamlinePluginSet. Skipped entirely once the core is foreign: those
+  // copies could then only ever become the minority half of a version-mixed
+  // stack (or an unused third instance), which is the Cyberpunk 20260816_153027
+  // crash.
+  if (PlaceStreamlinePluginSet()) {
+    g_StreamlinePluginSetPlaced.store(true, std::memory_order_release);
   }
+
+  // The NGX snippets carry no such cost - they are ordinary feature DLLs that
+  // NGX loads by name, and a probe run proved they leave NVIDIA's Vulkan
+  // present path alone - so they keep the eager placement that makes a later
+  // name-based load resolve to the configured copy.
   PreloadOverrideDll(gfx.dlssSrDllPath, "nvngx_dlss.dll");
   PreloadOverrideDll(gfx.dlssFgDllPath, "nvngx_dlssg.dll");
   PreloadOverrideDll(gfx.dlssRrDllPath, "nvngx_dlssd.dll");
+}
+
+// Second chance for the deferred sl.* half, driven from the hook thread's
+// monitor loop. The first real Streamline request is served by the loader
+// redirect; this places the rest of the configured set right behind it.
+void PlaceConfiguredStreamlinePluginSetIfObserved() {
+  if (!g_pLocalConfig || g_StreamlinePluginSetPlaced.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    return;
+  }
+  if (!g_StreamlineUseObserved.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (PlaceStreamlinePluginSet()) {
+    g_StreamlinePluginSetPlaced.store(true, std::memory_order_release);
+  }
 }
 
 void PreloadConfiguredStreamlineBridgeNgxDlls() {

@@ -345,6 +345,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   // own (often older) runtime. The LoadLibrary redirect alone cannot cover
   // Streamline-internal loads, which run through the IAT of modules that load
   // after this snapshot pass.
+  //
+  // The sl.* half is the exception: it waits for evidence that this process
+  // uses Streamline, because mapping sl.interposer.dll costs a Vulkan game its
+  // native WSI present path. The monitor loop below places it when that
+  // evidence arrives.
   PreloadConfiguredGraphicsRuntimeDlls();
 
   // Install the low-level loader observer before optional diagnostic hooks.
@@ -429,6 +434,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     DWORD now = GetTickCount();
     ce::pacing_trace::Service();
     ce::overlay_gpu_timing::Service();
+    // The sl.* override copies are placed off the loader-lock path, right
+    // behind the first Streamline request the redirect served.
+    PlaceConfiguredStreamlinePluginSetIfObserved();
 
     // Attribute the service pass by stage. Total-only measurements hid whether
     // a collision came from the periodic module scan, UE5 reads, retirement, or

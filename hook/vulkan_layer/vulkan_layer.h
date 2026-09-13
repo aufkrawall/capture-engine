@@ -73,6 +73,12 @@ struct DeviceDispatch {
     bool storageImageReadWithoutFormatAvailable = false;
     bool storageImageWriteWithoutFormatAvailable = false;
     bool relativePresentTimingEnabled = false;
+    // The application enabled VK_NV_present_metering on this device, so a frame
+    // generator running on it can stop the driver honouring the swapchain's
+    // vertical-blank wait. This is the only case in which CE's native relative
+    // present timing is worth the native present path it costs; see
+    // ce::vulkan_present_timing_policy::ShouldEnableSwapchain.
+    bool applicationEnabledPresentMetering = false;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;

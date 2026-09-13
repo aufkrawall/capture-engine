@@ -78,6 +78,7 @@ TEST(VulkanPresentTimingPolicy, SurfaceMustSupportRelativeTimingOnAFifoMode) {
     SwapchainInput input = {};
     input.vblankPacingRequested = true;
     input.deviceEnabled = true;
+    input.meteredPresentationPossible = true;
     input.surfaceQueryAvailable = true;
     input.surfaceQuerySucceeded = true;
     input.presentTimingSupportedForSurface = true;
@@ -99,6 +100,31 @@ TEST(VulkanPresentTimingPolicy, SurfaceMustSupportRelativeTimingOnAFifoMode) {
     input.presentTimingSupportedForSurface = true;
     input.vblankPacingRequested = false;
     EXPECT_FALSE(ShouldEnableSwapchain(input));
+}
+
+// Regression: a forced-FIFO swapchain on a device without VK_NV_present_metering
+// already waits for the vertical blank, so CE asked for
+// VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT for nothing - and NVIDIA's Windows
+// WSI answers that flag by abandoning its native present path for a layered
+// DXGI swapchain. DOOM Eternal with vsync_mode=fifo lost native present this
+// way (2026-09-13).
+TEST(VulkanPresentTimingPolicy, PlainFifoSwapchainKeepsTheNativePresentPath) {
+    SwapchainInput input = {};
+    input.vblankPacingRequested = true;
+    input.deviceEnabled = true;
+    input.surfaceQueryAvailable = true;
+    input.surfaceQuerySucceeded = true;
+    input.presentTimingSupportedForSurface = true;
+    input.relativeTimeSupportedForSurface = true;
+    input.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+    input.meteredPresentationPossible = false;
+    EXPECT_FALSE(ShouldEnableSwapchain(input));
+
+    // Only a device that can meter its presents can outrun its own FIFO
+    // swapchain, and only there is the native present path worth spending.
+    input.meteredPresentationPossible = true;
+    EXPECT_TRUE(ShouldEnableSwapchain(input));
 }
 
 TEST(VulkanPresentTimingPolicy, RelativeTimingIsOnlyInjectedForOneUnclaimedSwapchain) {
