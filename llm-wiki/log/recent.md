@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-09-13 - The Vulkan layer never exported the query its DXGI backstop is authorized by
+
+Session `20260913_200614` on 0.1.6547: fps still above the refresh rate, still tearing. The path armed correctly -
+`Vulkan DXGI FIFO: armed system method-body interception`, all four system creation body hooks active - and then:
+
+    Vulkan DXGI FIFO: swapchain ... from CreateSwapChainForHwnd targets window 0000000000460984
+    which is not a live Vulkan surface (occurrence #1); not registered, presents stay untouched
+
+0x460984 is the window the layer itself resolved from the surface and is drawing the overlay on
+(`InitializeOverlay ENTRY(... window=0000000000460984 ...)`), so `RegisterSurface` and therefore
+`PublishLiveSurfaceHwnd` had both run.
+
+**Cause**: `CEVulkanLayerIsLiveVulkanSurfaceHwnd` was listed in `hook/vulkan_layer/layer.def`, and **no link
+command has ever read that file**. `tools/build/build_vulkan_layer.py` passes no `.def`; the layer exports through
+`__declspec(dllexport)` on the declaration alone, which `layer_main.cpp`'s Vulkan entry points have and the bridge
+queries did not. `llvm-readobj --coff-exports` on the shipped DLL listed exactly three names. The hook DLL's
+`GetProcAddress` returned null and the call site fails closed on purpose, so the authorization always said "no"
+and the registry stayed empty. The final-present rewrite has never run in this configuration.
+
+**Why nothing caught it**: two source-policy tests asserted the name was present *in `layer.def`*, and passed
+throughout. A source list is not an export table.
+
+**Fix (0.1.6548)**: `__declspec(dllexport)` on both bridge queries; `layer.def` deleted rather than left looking
+authoritative; the two tests re-pointed at the attribute on the declaration; and
+`tools/verify_vulkan_layer_exports.py` added to the build after PE verification, reading the export table of the
+DLL that actually ships (`Verified Vulkan layer exports consumed by the hook DLL`). It reproduces the bug against
+the pre-fix artifact, and `tools/tests/test_vulkan_layer_exports.py` covers its parsing, including the x86
+`--kill-at` decoration.
+
+**Note for the other direction**: `CEVulkanLayerDeviceEnabledPresentMetering`, added earlier the same day for the
+present-mode stand-down gate, was equally unexported. Its consumer - the upstream Streamline present-mode override
+- also fails *open*, so that gate would silently have kept forcing FIFO in a Streamline DLSS-G Vulkan title. The
+layer-side gate reads `DeviceDispatch` directly and was unaffected, which is why Portal RTX still behaved.
+
 ### 2026-09-13 - The vertical blank moved to the WSI's own DXGI flip
 
 Third round, continuing the two entries below. Session `20260913_194420` on 0.1.6545 shows the present-mode

@@ -38,6 +38,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
         ("build_testapp_tasks", unittest_command("test_build_testapp_tasks")),
         ("pe_hardening_policy", unittest_command("test_pe_hardening")),
+        ("vulkan_layer_exports", unittest_command("test_vulkan_layer_exports")),
         ("clang_tidy_baseline_scope", unittest_command("test_clang_tidy_baseline")),
         ("clang_tidy_cache", unittest_command("test_clang_tidy_cache")),
         ("verification_parallelism", unittest_command("test_verification_parallelism")),

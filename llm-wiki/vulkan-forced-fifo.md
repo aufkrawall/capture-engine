@@ -237,6 +237,19 @@ screen.
   same layer export the upstream Streamline gate uses. An ordinary Vulkan title still gets its vertical blank from
   the FIFO present mode CE did force, and its final presents stay byte-identical, so the WSI keeps the per-present
   choice it makes for variable refresh.
+- **It could not have worked yet: the layer never exported the query it is authorized by (0.1.6548).** Session
+  `20260913_200614` armed the path, installed all four system creation body hooks, and then reported
+  `swapchain ... from CreateSwapChainForHwnd targets window 0x460984 which is not a live Vulkan surface;
+  not registered, presents stay untouched` - for the very window the layer had registered and was drawing its
+  overlay on. `CEVulkanLayerIsLiveVulkanSurfaceHwnd` was listed in `hook/vulkan_layer/layer.def`, but **no link
+  command has ever read that file**: the layer exports through `__declspec(dllexport)` alone, and the shipped DLL
+  exported exactly three names. Every `GetProcAddress` for the query returned null and the call site failed closed
+  in silence, so the registry stayed empty and no present was ever rewritten.
+- Two source-policy tests asserted the name was in `layer.def` and passed throughout. They now assert the
+  `__declspec(dllexport)` attribute on the declaration, and `tools/verify_vulkan_layer_exports.py` checks the
+  export table of the DLL that actually ships as part of the build (`Verified Vulkan layer exports consumed by the
+  hook DLL`), with `tools/tests/test_vulkan_layer_exports.py` covering its parsing. `layer.def` is deleted rather
+  than left as a file that looks authoritative and is not.
 - **Rejected on the way (2026-09-13): a refresh-derived rate cap.** The driver's frame-generation-aware
   low-latency interval (`minimumIntervalUs`, which under DLSS-G bounds displayed frames) would hold the output
   under the refresh rate without a CE timer, and was built and discarded. It is a clock, not a vertical blank: it

@@ -61,10 +61,10 @@ bool AnyDeviceEnabledPresentMetering() {
 
 }  // namespace ce::vulkan_wsi
 
-extern "C" BOOL CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND window) {
+extern "C" __declspec(dllexport) BOOL CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND window) {
     return g_liveSurfaceHwnds.IsLive(window) ? TRUE : FALSE;
 }
 
-extern "C" BOOL CEVulkanLayerDeviceEnabledPresentMetering(void) {
+extern "C" __declspec(dllexport) BOOL CEVulkanLayerDeviceEnabledPresentMetering(void) {
     return g_deviceEnabledPresentMetering.load(std::memory_order_acquire) ? TRUE : FALSE;
 }

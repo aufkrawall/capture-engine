@@ -150,6 +150,25 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
             )
     log("Verified PE mitigations, architecture, section permissions, effective CFG, imports, and PDBs")
 
+    # The resident layer exports through __declspec(dllexport) only, and the
+    # hook DLL reaches it by GetProcAddress on names that fail closed in
+    # silence when absent. Check the artifact that ships, not a source list.
+    run_command(
+        [
+            sys.executable,
+            os.path.join(PROJECT_ROOT, "tools", "verify_vulkan_layer_exports.py"),
+            "--llvm-readobj",
+            llvm_readobj,
+            "--root",
+            BIN_DIR,
+            "--require",
+            "VK_LAYER_CE_overlay.dll",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    log("Verified Vulkan layer exports consumed by the hook DLL")
+
     if IS_WINDOWS and env.get("CE_SANITIZE") != "1" and not ISOLATED_BUILD_ROOT:
         scrub_and_verify_privacy_paths()
 

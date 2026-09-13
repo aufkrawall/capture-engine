@@ -1,7 +1,0 @@
-LIBRARY VK_LAYER_CE_overlay
-EXPORTS
-    vkGetInstanceProcAddr = CELayer_vkGetInstanceProcAddr
-    vkGetDeviceProcAddr = CELayer_vkGetDeviceProcAddr
-    vkNegotiateLoaderLayerInterfaceVersion = CELayer_vkNegotiateLoaderLayerInterfaceVersion
-    CEVulkanLayerIsLiveVulkanSurfaceHwnd
-    CEVulkanLayerDeviceEnabledPresentMetering

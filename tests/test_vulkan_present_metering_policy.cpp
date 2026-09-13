@@ -266,12 +266,12 @@ TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
         fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp");
     const std::string bridge = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.cpp");
-    const std::string layerDef =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer.def");
+    const std::string bridgeHeader = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.h");
     ASSERT_FALSE(swapchain.empty());
     ASSERT_FALSE(streamline.empty());
     ASSERT_FALSE(bridge.empty());
-    ASSERT_FALSE(layerDef.empty());
+    ASSERT_FALSE(bridgeHeader.empty());
 
     EXPECT_NE(swapchain.find("ShouldSkipPresentModeOverride"), std::string::npos);
     const std::string meteringBridge = ce::test_source::ReadFile(
@@ -280,8 +280,14 @@ TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
     EXPECT_NE(streamline.find("MeteredGeneratorOwnsPresentPlacement"), std::string::npos);
     EXPECT_NE(meteringBridge.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos);
     EXPECT_NE(bridge.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos);
-    EXPECT_NE(layerDef.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos)
-        << "the hook DLL resolves this export by name; it must stay in the layer's export list";
+    // The layer has no .def file in any link command: __declspec(dllexport) is
+    // the whole export mechanism, and a name without it resolves to null in the
+    // hook DLL and fails closed in silence. tools/verify_vulkan_layer_exports.py
+    // checks the shipped DLL; this only keeps the attribute on the declaration.
+    EXPECT_NE(bridgeHeader.find("extern \"C\" __declspec(dllexport) BOOL "
+                                "CEVulkanLayerDeviceEnabledPresentMetering(void);"),
+              std::string::npos)
+        << "the hook DLL resolves this export by name; it must stay dllexport";
 }
 
 }  // namespace

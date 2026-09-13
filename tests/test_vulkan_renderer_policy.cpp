@@ -263,7 +263,8 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
     const std::string layerMain =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_main.cpp");
-    const std::string layerDef = ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer.def");
+    const std::string layerBridgeHeader =
+        ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.h");
     const std::string layerBridge =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.cpp");
     const std::string tableHeader =
@@ -272,7 +273,7 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
     ASSERT_FALSE(layerState.empty());
     ASSERT_FALSE(layerPresent.empty());
     ASSERT_FALSE(layerMain.empty());
-    ASSERT_FALSE(layerDef.empty());
+    ASSERT_FALSE(layerBridgeHeader.empty());
     ASSERT_FALSE(layerBridge.empty());
     ASSERT_FALSE(tableHeader.empty());
 
@@ -292,8 +293,16 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
     // The authorization source is the resident layer's exported query, not a
     // heuristic: no module names, no IPC, no file mapping on the query path.
     EXPECT_NE(finalPresent.find("CEVulkanLayerIsLiveVulkanSurfaceHwnd"), std::string::npos);
-    EXPECT_NE(layerDef.find("CEVulkanLayerIsLiveVulkanSurfaceHwnd"), std::string::npos);
     EXPECT_NE(layerBridge.find("CEVulkanLayerIsLiveVulkanSurfaceHwnd"), std::string::npos);
+    // The layer is linked with no .def file at all - __declspec(dllexport) is
+    // the whole export mechanism. This assertion used to read layer.def, which
+    // no link command has ever consumed, so it passed for months while the
+    // export was absent and every authorization query failed closed in silence
+    // (Portal RTX session 20260913_200614). The shipped DLL's export table is
+    // checked by tools/verify_vulkan_layer_exports.py in the build itself.
+    EXPECT_NE(layerBridgeHeader.find("extern \"C\" __declspec(dllexport) BOOL "
+                                     "CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND window);"),
+              std::string::npos);
     EXPECT_NE(layerBridge.find("LiveSurfaceHwndTable"), std::string::npos);
 
     // The hook caches the exported query in a function pointer, so the layer

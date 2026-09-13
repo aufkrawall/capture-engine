@@ -42,11 +42,20 @@ bool AnyDeviceEnabledPresentMetering();
 
 // Exported query consumed by the capture hook DLL via GetProcAddress. Returns
 // TRUE only while `window` backs at least one live Vulkan Win32 surface.
-extern "C" BOOL CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND window);
+//
+// `__declspec(dllexport)` is the layer's only export mechanism - the same one
+// its Vulkan entry points use. `hook/vulkan_layer/layer.def` is not part of any
+// link command, so listing a name there exports nothing; a name missing this
+// attribute resolves to null in the hook DLL and every query fails closed in
+// silence. That is exactly what happened to this query (Portal RTX session
+// 20260913_200614: `targets window ... which is not a live Vulkan surface`
+// for a window the layer had registered), so the authorized swapchain registry
+// stayed empty and the final-present rewrite never ran.
+extern "C" __declspec(dllexport) BOOL CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND window);
 
 // Exported query consumed by the capture hook DLL via GetProcAddress. Returns
 // TRUE once any Vulkan device in this process was created with
 // VK_NV_present_metering in the application's own extension list. Latching is
 // deliberate: the capability is a device-lifetime property, and a present mode
 // can only be chosen while a swapchain is being created.
-extern "C" BOOL CEVulkanLayerDeviceEnabledPresentMetering(void);
+extern "C" __declspec(dllexport) BOOL CEVulkanLayerDeviceEnabledPresentMetering(void);
