@@ -106,6 +106,9 @@ TEST_F(FpsLimiterTest, UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        // A present that is scanned out promptly: the frame's GPU work finished
+        // before its deadline, so the release may move in.
+        limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
     }
@@ -158,6 +161,7 @@ TEST_F(FpsLimiterTest, DuplicateProneSiteNeverArmsAFrontLoadedRelease) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kDuplicateProneSite);
         limiter.ApplyPostPresent();
     }
@@ -179,6 +183,7 @@ TEST_F(FpsLimiterTest, FrameGenerationKeepsTheBackEdgePlacement) {
     ConfirmDLSSFGPacing();
 
     for (int i = 0; i < 48; ++i) {
+        limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
     }
@@ -201,9 +206,132 @@ TEST_F(FpsLimiterTest, CaptureSyncKeepsTheBackEdgePlacement) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
     }
 
     EXPECT_EQ(limiter.GetFrontLoadedPacingState().releases, 0u);
+}
+
+TEST(FpsLimiterPolicyTest, GpuExcessIsMeasuredAgainstTheIrreducibleFlipLatency) {
+    using ce::fps_limiter_policy::ResolveFrontLoadGpuExcessUs;
+
+    // A present scanned out at the floor: the grid, not the GPU, still decides
+    // the screen time.
+    EXPECT_EQ(ResolveFrontLoadGpuExcessUs(400, 400, 250), 0);
+    // Within the timer margin is still the floor.
+    EXPECT_EQ(ResolveFrontLoadGpuExcessUs(600, 400, 250), 0);
+    // The Strange Brigade shape: 6.8 ms against a 0.4 ms floor is 6.4 ms of GPU
+    // work that ran past the deadline.
+    EXPECT_EQ(ResolveFrontLoadGpuExcessUs(6800, 400, 250), 6400);
+    // Missing or nonsensical inputs must never move the reservation.
+    EXPECT_EQ(ResolveFrontLoadGpuExcessUs(0, 400, 250), 0);
+    EXPECT_EQ(ResolveFrontLoadGpuExcessUs(6800, -1, 250), 0);
+}
+
+TEST(FpsLimiterPolicyTest, GpuHeadroomWalksBackInByABoundedProbe) {
+    using ce::fps_limiter_policy::DecayFrontLoadGpuHeadroomUs;
+
+    EXPECT_EQ(DecayFrontLoadGpuHeadroomUs(0, 250), 0);
+    // One timer margin per clean window, so discovering that a lighter scene no
+    // longer needs the reservation costs at most that much straddle.
+    EXPECT_EQ(DecayFrontLoadGpuHeadroomUs(6400, 250), 6150);
+    // It reaches zero rather than asymptoting, and never goes negative.
+    EXPECT_EQ(DecayFrontLoadGpuHeadroomUs(100, 250), 0);
+    EXPECT_EQ(DecayFrontLoadGpuHeadroomUs(250, 250), 0);
+}
+
+TEST(FpsLimiterPolicyTest, FrontLoadingNeedsDisplayedTransitionEvidence) {
+    using ce::fps_limiter_policy::HasUsableGpuCompletionEvidence;
+
+    EXPECT_TRUE(HasUsableGpuCompletionEvidence(/*presentToDisplaySamples=*/16, /*minimumSamples=*/16, /*floorSeeded=*/true));
+    EXPECT_FALSE(HasUsableGpuCompletionEvidence(15, 16, true));
+    // A floor that was never seeded at the back edge is not a floor: it would
+    // measure a frame CE released too late, not the irreducible flip latency.
+    EXPECT_FALSE(HasUsableGpuCompletionEvidence(64, 16, false));
+}
+
+// Without displayed-transition evidence there is no way to tell whether
+// releasing the game later pushes its GPU work past the deadline, and a budget
+// below the frame's whole CPU+GPU time buys no latency at all - so the back
+// edge stays the default rather than a guess.
+TEST_F(FpsLimiterTest, NoDisplayedTransitionEvidenceKeepsTheBackEdgePlacement) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    for (int i = 0; i < 48; ++i) {
+        limiter.Apply(true, kUniquePresentSite);
+        limiter.ApplyPostPresent();
+    }
+
+    EXPECT_EQ(limiter.GetFrontLoadedPacingState().releases, 0u);
+}
+
+// Strange Brigade DX12 is GPU-bound: a 1.8 ms CPU frame in front of ~8.5 ms of
+// GPU work. A CPU-sized budget released the game far too late, the GPU ran past
+// the deadline, and present-to-display rose 0.4 -> 6.8 ms - which put the game's
+// own variance on the screen timeline the overlay measures its percentiles
+// from. The reservation must grow until the frame is finished by its deadline.
+TEST_F(FpsLimiterTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
+    mockShm->runtimeState.isRecording = false;
+    mockShm->runtimeState.captureRequested = false;
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(240);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    // Seed the floor and engage the placement while the frame is finishing
+    // early enough that the grid still decides the screen time.
+    for (int i = 0; i < 96; ++i) {
+        limiter.ObservePresentToDisplay(400);
+        limiter.Apply(true, kUniquePresentSite);
+        limiter.ApplyPostPresent();
+    }
+    const auto engaged = limiter.GetFrontLoadedPacingState();
+    ASSERT_GT(engaged.releases, 0u);
+    EXPECT_EQ(engaged.gpuHeadroomUs, 0);
+
+    // Now the presents start waiting on GPU work that no longer fits.
+    for (int i = 0; i < 192; ++i) {
+        limiter.ObservePresentToDisplay(2400);
+        limiter.Apply(true, kUniquePresentSite);
+        limiter.ApplyPostPresent();
+    }
+    const auto grown = limiter.GetFrontLoadedPacingState();
+
+    EXPECT_GT(grown.gpuHeadroomUs, 0) << "the reservation must cover the GPU half too";
+    EXPECT_GT(grown.budgetUs, engaged.budgetUs);
+    EXPECT_LE(grown.budgetUs, grown.intervalUs) << "it may saturate to the back edge, never past it";
+}
+
+// A wait shorter than the scheduler tick cannot be resolved by the kernel
+// timer - it sleeps to the next tick, past the deadline. Front-loaded pacing
+// made the pre-present wait hundreds of microseconds, where the measured
+// overshoot went from a 37 us median on ~9 ms coarse waits to an 88 us median
+// (561 us worst) on ~500 us ones. SmartWait must land those by yielding.
+TEST_F(FpsLimiterTest, SubTickWaitsLandWithoutTheKernelTimer) {
+    std::vector<double> overshootUs;
+    overshootUs.reserve(15);
+    for (int i = 0; i < 15; ++i) {
+        LARGE_INTEGER start;
+        QueryPerformanceCounter(&start);
+        const int64_t targetUs = 400;
+        const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
+
+        ASSERT_TRUE(limiter.SmartWait(targetTicks));
+
+        LARGE_INTEGER end;
+        QueryPerformanceCounter(&end);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        overshootUs.push_back((double)(end.QuadPart - targetTicks) * 1000000.0 / freq.QuadPart);
+    }
+
+    std::sort(overshootUs.begin(), overshootUs.end());
+    // Never early: the deadline is the contract.
+    EXPECT_GE(overshootUs.front(), 0.0);
+    // The median must stay far below the tick the kernel timer would have cost.
+    EXPECT_LT(overshootUs[overshootUs.size() / 2], 250.0);
 }

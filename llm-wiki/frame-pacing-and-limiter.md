@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-09-13 (split out of `graphics-overrides-and-frame-pacing.md`; `PresentSite` call-site
+Last cross-checked: 2026-09-13 (GPU-completion-aware front-load reservation; split out of `graphics-overrides-and-frame-pacing.md`; `PresentSite` call-site
 contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an overrun-learned
 reservation)
 
@@ -12,6 +12,7 @@ Primary sources:
 - `hook/common/{fps_limiter,fps_limiter_policy}.h`
 - `hook/common/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
 - `hook/common/reflex_limiter.h`
+- `hook/common/performance_metrics.cpp` (`ConsumeDisplayTiming` publishes present-to-display to the limiter)
 - `hook/common/{dxgi_shared_present_core,dxgi_shared_present1,dxgi_shared_present_routing}.cpp`
 - `hook/wrappers/dxgi_swapchain_wrap_present.cpp`
 - `hook/vulkan_layer/{vulkan_layer_present,vulkan_layer_swapchain,vulkan_reflex_limiter}.*`
@@ -84,7 +85,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   generation (the present stream is not CE's to re-phase, and blocking after a runtime-owned present is the FFX
   freeze class), **no capture sync** (see below), and no explicit Reflex/native post-present cadence already owning
   the slot. Diagnostics ride the 120-frame stats line as
-  `frontLoad=/budgetUs=/workCeilingUs=/headroomUs=/overruns=/releaseWaitUs=/releases=`.
+  `frontLoad=/budgetUs=/workCeilingUs=/headroomUs=/gpuHeadroomUs=/p2dUs=/p2dFloorUs=/overruns=/releaseWaitUs=/releases=`.
 - **The reservation above the work ceiling is learned from real overruns, not padded for everyone.** A ceiling over a
   sliding window of N samples is by construction exceeded by roughly one in N+1 later frames: at 90 fps with the
   64-sample ring that is over one missed deadline per second, which is exactly where a 1% low is measured. Session
@@ -100,6 +101,37 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   slots through `AdvanceCaptureSyncDeadlineAfterLateFrame()`, which is a repeated frame in the recording. While a
   recording is the product the capture grid outranks input latency, so `usingCaptureSync` disqualifies the
   placement outright rather than relying on the overrun controller to stabilise it.
+- **The budget must cover the frame's GPU half, not just its CPU half - and below that threshold the placement buys
+  nothing.** Writing L for input-to-photon, B for the budget, W for the frame's whole CPU+GPU work and F for the
+  irreducible flip latency: `B >= W` gives `L = B + F` with every screen time pinned to the grid, and `B < W` gives
+  `L = W + F` with screen times following GPU completion. Shrinking B below W therefore buys **zero** latency and
+  pays for it in jitter; the optimum is exactly `B = W`. Strange Brigade DX12 is GPU-bound (a 1.8 ms CPU frame in
+  front of ~8.5 ms of GPU work), so the CPU-sized budget landed well under W: session `20260913_132320` measured
+  present-to-display at 6.8 ms against a 0.4 ms floor, and because the screen time was then set by GPU completion
+  the game's own variance reached the display timeline. `ResolveFrontLoadGpuExcessUs()` reads that excess and
+  `UpdateFrontLoadGpuHeadroom()` integrates it into the reservation; `DecayFrontLoadGpuHeadroomUs()` walks it back
+  in by one timer margin per clean 64-frame window, a bounded probe rather than a proportional decay that would
+  periodically put the GPU a large step past the deadline just to discover it no longer needs to be there.
+- **No displayed-transition evidence means no front-loading.** `HasUsableGpuCompletionEvidence()` requires a seeded
+  present-to-display floor plus a full sample window. The floor may only be seeded while the placement is still at
+  the back edge, because that is the only state in which the GPU is known to have finished before the present - a
+  floor taken while front-loaded would measure a frame CE released too late. Without that evidence there is no way
+  to tell whether releasing the game later pushes its GPU work past the deadline, and the relation above says a
+  budget below W buys no latency at all, so the back edge stays the proven default and the withholding is logged.
+- **Which timeline a pacing claim is about matters.** The overlay publishes its FPS percentiles and frame-time
+  stddev from the display series (`PerformanceMetrics::ActiveSeries()` selects `m_display` when the effective source
+  is `DisplayChange`), i.e. from screen times, which is the right thing to measure and must stay that way. The perf
+  CSV's `qpc_delta_us` is the present-hook entry timeline. The two can move in opposite directions: on
+  `20260913_132320` front-loading improved the PRESENT timeline (stddev 194 -> 169 us, |frame-to-frame delta|
+  189 -> 126 us) while the DISPLAY timeline regressed (published 1% low 86.9 -> 85.0 fps, stddev 148 -> 202 us).
+  Compare the overlay's own `source_1pct_low_x100` / `source_frametime_stddev_us` columns over a whole run; a
+  hand-picked CSV window will happily show the opposite conclusion.
+- **`SmartWait()` must not arm the kernel timer for less than a scheduler tick.** `EnsureTimerResolution()` puts the
+  scheduler on a 1 ms tick and a wait armed for less cannot land inside it - it sleeps to the next tick, past the
+  deadline. Invisible while the limiter's waits were whole milliseconds; front-loading made the pre-present wait
+  hundreds of microseconds and the measured overshoot went from a 37 us median (212 us worst) on ~9 ms coarse waits
+  to an 88 us median (561 us worst) on ~500 us ones. The coarse timer is now only armed when the coarse portion
+  exceeds a tick; below that the existing yield/spin loop owns the whole wait.
 - **Front-loading does not recover the whole hold, because the presentation queue takes what the limiter gives up.**
   On `20260913_130052` `anchorToPresent` fell 20.5 -> 11.8 ms exactly as designed, but `presentToDisplay` rose
   0.4 -> 6.8 ms, so the published estimate went 26.4 -> 24.2 ms - a real 2.2 ms, not 9. Presenting earlier moves the

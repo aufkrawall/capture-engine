@@ -31,8 +31,8 @@ inline void FpsLimiter::RecordFrameWork(int64_t workUs, int64_t intervalUs) {
     // The reservation above the ceiling is the timer margin plus whatever the
     // overrun controller has learned this game needs.
     frameWorkBudgetUs_ = ce::fps_limiter_policy::ResolveFrameWorkBudgetUs(
-        ceilingUs, adaptiveFineMarginUs_ + frontLoadHeadroomUs_, intervalUs, frameWorkSampleCount_,
-        kFrameWorkMinimumSamples);
+        ceilingUs, adaptiveFineMarginUs_ + frontLoadHeadroomUs_ + frontLoadGpuHeadroomUs_, intervalUs,
+        frameWorkSampleCount_, kFrameWorkMinimumSamples);
 }
 
 inline int64_t FpsLimiter::CadenceIntervalTicks(int targetFps, int cadenceScale) const {
@@ -97,11 +97,77 @@ inline void FpsLimiter::NoteFrontLoadedLateness(int64_t lateUs) {
     }
 }
 
-inline void FpsLimiter::ArmFrontLoadedRelease(bool eligible, int effectiveTargetFps) {
-    if (!eligible || localTargetTime_ == 0 || qpcFrequency <= 0 || frameWorkBudgetUs_ <= 0 ||
-        frameWorkBudgetUs_ >= cadenceIntervalUs_) {
+inline FpsLimiter::PresentToDisplaySnapshot FpsLimiter::SnapshotPresentToDisplay() const {
+    PresentToDisplaySnapshot snapshot;
+    std::array<int64_t, 64> samples{};
+    size_t count = 0;
+    {
+        std::lock_guard<std::mutex> lock(presentToDisplayMutex_);
+        count = presentToDisplaySampleCount_;
+        samples = presentToDisplayUs_;
+        snapshot.floorUs = presentToDisplayFloorUs_;
+        snapshot.floorSeeded = presentToDisplayFloorSeeded_;
+    }
+    snapshot.samples = count;
+    if (count == 0) {
+        return snapshot;
+    }
+    // Median, so one vertical-blank hiccup cannot move the reservation.
+    std::sort(samples.begin(), samples.begin() + count);
+    snapshot.recentUs = samples[count / 2];
+    return snapshot;
+}
+
+// Walk the reservation to the point where the frame's GPU work finishes by the
+// deadline. Growth is immediate and by the whole measured excess, because every
+// microsecond the GPU runs past the deadline is a microsecond of the game's own
+// variance landing on the screen timeline; the walk back in is a bounded probe.
+inline void FpsLimiter::UpdateFrontLoadGpuHeadroom() {
+    if (++frontLoadWindowFrames_ < kFrontLoadGpuWindowFrames) {
         return;
     }
+    frontLoadWindowFrames_ = 0;
+
+    const PresentToDisplaySnapshot p2d = SnapshotPresentToDisplay();
+    if (!p2d.floorSeeded || p2d.samples == 0) {
+        return;
+    }
+    const int64_t excessUs =
+        ce::fps_limiter_policy::ResolveFrontLoadGpuExcessUs(p2d.recentUs, p2d.floorUs, adaptiveFineMarginUs_);
+    if (excessUs > 0) {
+        const int64_t grown = frontLoadGpuHeadroomUs_ + excessUs;
+        frontLoadGpuHeadroomUs_ = cadenceIntervalUs_ > 0 && grown > cadenceIntervalUs_ ? cadenceIntervalUs_ : grown;
+        TraceLog(
+            "Apply: LOCAL front-load gpu reservation grew excessUs=%lld p2dUs=%lld floorUs=%lld gpuHeadroomUs=%lld",
+            excessUs, p2d.recentUs, p2d.floorUs, frontLoadGpuHeadroomUs_);
+        return;
+    }
+    frontLoadGpuHeadroomUs_ =
+        ce::fps_limiter_policy::DecayFrontLoadGpuHeadroomUs(frontLoadGpuHeadroomUs_, adaptiveFineMarginUs_);
+}
+
+inline void FpsLimiter::ArmFrontLoadedRelease(bool eligible, int effectiveTargetFps) {
+    // Without displayed-transition evidence there is no way to tell whether
+    // releasing the game later pushes its GPU work past the deadline, and a
+    // budget below the frame's whole CPU+GPU time buys no latency at all - so
+    // the back edge stays the default rather than a guess.
+    const PresentToDisplaySnapshot p2d = SnapshotPresentToDisplay();
+    const bool gpuEvidenceUsable = ce::fps_limiter_policy::HasUsableGpuCompletionEvidence(
+        p2d.samples, kPresentToDisplayMinimumSamples, p2d.floorSeeded);
+    if (!eligible || !gpuEvidenceUsable || localTargetTime_ == 0 || qpcFrequency <= 0 ||
+        frameWorkBudgetUs_ <= 0 || frameWorkBudgetUs_ >= cadenceIntervalUs_) {
+        if (!gpuEvidenceUsable && eligible && !frontLoadedPacingLogged_ && !loggedMissingGpuEvidence_) {
+            HookLog(
+                "FPS Limiter: holding the back-edge cadence placement - no displayed-transition evidence yet "
+                "(present-to-display samples=%zu, floor=%s). Front-loading needs it to know the frame's GPU work "
+                "still finishes by the deadline.",
+                p2d.samples, p2d.floorSeeded ? "seeded" : "unseeded");
+            loggedMissingGpuEvidence_ = true;
+        }
+        frontLoadedPlacementActive_.store(false, std::memory_order_release);
+        return;
+    }
+    frontLoadedPlacementActive_.store(true, std::memory_order_release);
     timerPostPresentPending_ = true;
     timerPostPresentTargetTime_ = localTargetTime_ - ((frameWorkBudgetUs_ * qpcFrequency) / 1000000);
     frontLoadedReleaseRan_ = false;
@@ -163,7 +229,18 @@ inline void FpsLimiter::ResetFrontLoadedPacingState() {
     cadenceIntervalUs_ = 0;
     lastFrontLoadedReleaseWaitUs_ = 0;
     frontLoadHeadroomUs_ = 0;
+    frontLoadGpuHeadroomUs_ = 0;
+    frontLoadWindowFrames_ = 0;
     frontLoadCleanFrames_ = 0;
     frontLoadedReleaseRan_ = false;
     frontLoadedPacingLogged_ = false;
+    loggedMissingGpuEvidence_ = false;
+    frontLoadedPlacementActive_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(presentToDisplayMutex_);
+        presentToDisplayCursor_ = 0;
+        presentToDisplaySampleCount_ = 0;
+        presentToDisplayFloorUs_ = -1;
+        presentToDisplayFloorSeeded_ = false;
+    }
 }

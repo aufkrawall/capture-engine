@@ -750,6 +750,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // A missed deadline on a frame the release owned is the only evidence the
     // budget was too small; feed it back before sizing the next one.
     NoteFrontLoadedLateness(cadence.lateUs);
+    // And the screen times say whether the frame's GPU half is still finishing
+    // after the deadline, which is the other half of the same question.
+    UpdateFrontLoadGpuHeadroom();
 
     // Front-loaded placement: the deadline and the pre-present wait above are
     // unchanged, so the cap and the grid phase never depend on the release

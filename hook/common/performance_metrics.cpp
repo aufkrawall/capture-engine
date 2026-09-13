@@ -1,5 +1,6 @@
 #include "performance_metrics.h"
 
+#include "fps_limiter.h"
 #include "hook_common.h"
 #include "pacing_health_telemetry.h"
 #include "pacing_trace.h"
@@ -312,6 +313,10 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs) {
             ce::pacing_health::Observe(ce::pacing_health::Channel::kPresentToDisplay,
                                        screenTimeUs - presentStartTimeUs, screenTimeUs, fsrTag);
+            // The limiter sizes its front-loaded release from this: a present
+            // that waits longer than the irreducible flip latency is one whose
+            // GPU work was still finishing after the deadline.
+            g_SharedFpsLimiter.ObservePresentToDisplay(screenTimeUs - presentStartTimeUs);
             // Present time does not decide screen time under free-running VRR;
             // completion does. Measuring the same transition from the callback
             // that produced it separates the runtime's own hold from the wait

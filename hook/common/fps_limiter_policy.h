@@ -409,6 +409,66 @@ inline int64_t DecayFrontLoadHeadroomUs(int64_t headroomUs) {
     return headroomUs - (step > 0 ? step : 1);
 }
 
+// Whether the frame's own GPU work still has to finish after the deadline, and
+// by how much.
+//
+// Front-loading budgets the CPU half of a frame, but the flip cannot happen
+// until the GPU half finishes too. Strange Brigade DX12 is GPU-bound - a
+// 1.8ms CPU frame in front of roughly 8.5ms of GPU work - so a CPU-sized
+// budget released the game far too late and the GPU ran past the deadline.
+// Session `20260913_132320` measured the consequence exactly: present-to-
+// display rose 0.4 -> 6.8ms, and because the screen time was then set by GPU
+// completion instead of by CE's grid, the game's own frame-to-frame variance
+// reached the display timeline. The overlay publishes its percentiles from
+// screen times, which is why its 1% low fell 86.9 -> 85.0 fps and its
+// frame-time stddev rose 148 -> 202us while the PRESENT timeline actually
+// improved (stddev 194 -> 169us).
+//
+// The placement is worth nothing below that threshold. Writing L for
+// input-to-photon, B for the budget, W for the frame's whole CPU+GPU work and
+// F for the irreducible flip latency:
+//
+//   B >= W  ->  L = B + F        and every screen time is pinned to the grid
+//   B <  W  ->  L = W + F        and screen times follow GPU completion
+//
+// so shrinking the budget below W buys exactly zero latency and pays for it in
+// jitter. The optimum is B = W: the lowest latency the frame can have, with the
+// grid still deciding when it is shown. That is what this looks for, and the
+// excess of present-to-display over its own floor is how far away it is.
+inline int64_t ResolveFrontLoadGpuExcessUs(int64_t recentPresentToDisplayUs, int64_t floorPresentToDisplayUs,
+                                           int64_t marginUs) {
+    if (recentPresentToDisplayUs <= 0 || floorPresentToDisplayUs < 0) {
+        return 0;
+    }
+    const int64_t excess = recentPresentToDisplayUs - floorPresentToDisplayUs;
+    // Below the timer margin the frame is finishing early enough that the grid,
+    // not the GPU, is still deciding the screen time.
+    return excess > marginUs ? excess : 0;
+}
+
+// The reservation walks back in by one timer margin per clean window rather
+// than by a fraction of itself. A proportional decay would periodically put the
+// GPU a large step past the deadline just to discover it no longer fits there;
+// a bounded probe costs at most one margin of straddle for one window, and
+// still finds a lighter scene's lower optimum over time.
+inline int64_t DecayFrontLoadGpuHeadroomUs(int64_t headroomUs, int64_t marginUs) {
+    if (headroomUs <= 0) {
+        return 0;
+    }
+    const int64_t step = marginUs > 0 ? marginUs : 1;
+    return headroomUs > step ? headroomUs - step : 0;
+}
+
+// Front-loading is only allowed where the GPU half can be observed. Without
+// present-to-display evidence there is no way to tell whether releasing the
+// game later pushes its GPU work past the deadline, and the relation above
+// says a budget that lands below W buys no latency at all - so guessing can
+// only lose. The back edge stays the proven default.
+inline bool HasUsableGpuCompletionEvidence(size_t presentToDisplaySamples, size_t minimumSamples,
+                                           bool floorSeeded) {
+    return floorSeeded && presentToDisplaySamples >= minimumSamples;
+}
+
 // Deterministic multiplier-sized output-group admission for real final
 // presentation boundaries (native-Vulkan vkQueuePresentKHR /
 // vkAcquireNextImageKHR). Exactly one callback per group of `multiplier`

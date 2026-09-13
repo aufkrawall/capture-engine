@@ -11,17 +11,21 @@ inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence,
         return;
     }
 
+    const PresentToDisplaySnapshot p2dDiagnostics = SnapshotPresentToDisplay();
+
     TraceLog(
         "Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
         "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
         "resets=%u phaseSkipped=%u dedup=%u activeDedup=%u frontLoad=%d budgetUs=%lld "
-        "workCeilingUs=%lld headroomUs=%lld overruns=%u releaseWaitUs=%lld releases=%u",
+        "workCeilingUs=%lld headroomUs=%lld gpuHeadroomUs=%lld p2dUs=%lld p2dFloorUs=%lld overruns=%u "
+        "releaseWaitUs=%lld releases=%u",
         cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps,
         cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames,
         cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames,
         cadence.statsSkippedGridSlots, applyDedupCount_, applyActiveDedupCount_,
         timerPostPresentPending_ ? 1 : 0, frameWorkBudgetUs_, observedFrameWorkCeilingUs_,
-        frontLoadHeadroomUs_, frontLoadOverrunCount_, lastFrontLoadedReleaseWaitUs_, frontLoadedReleaseCount_);
+        frontLoadHeadroomUs_, frontLoadGpuHeadroomUs_, p2dDiagnostics.recentUs, p2dDiagnostics.floorUs,
+        frontLoadOverrunCount_, lastFrontLoadedReleaseWaitUs_, frontLoadedReleaseCount_);
     HookLog(
         "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
         "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",

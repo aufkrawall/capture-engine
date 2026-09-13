@@ -1,5 +1,57 @@
 # llm-wiki Log
 
+### 2026-09-13 - Front-loading has to budget the GPU half too, or it buys nothing
+
+Run `20260913_132320` showed the overrun controller doing its job - `overruns=3` total, `headroomUs` decaying
+23 -> 2 us, late-frame rate back to 0.30% from 0.63% - and the 1%/0.1% low only recovering 84.9 -> 85.0 and
+83.2 -> 84.0. So missed deadlines were not the main jitter source.
+
+The two timelines disagreed, which is the clue. On the PRESENT timeline front-loading was already BETTER than the
+back edge (stddev 194 -> 169 us, |frame-to-frame delta| 189 -> 126 us, p99.9 11911 -> 11740 us). On the DISPLAY
+timeline it was worse (published 1% low 86.9 -> 85.0, stddev 148 -> 202 us). The overlay publishes percentiles from
+`m_display` (screen times) when the effective source is `DisplayChange`, and screen time is the right thing to
+measure - so the regression was real and the CSV comparison was the misleading one.
+
+Root cause: the budget covers the CPU half of a frame, but the flip cannot happen until the GPU half finishes.
+Strange Brigade DX12 is GPU-bound - ~1.8 ms CPU in front of ~8.5 ms GPU - so a CPU-sized budget released the game
+far too late and the GPU ran past the deadline. `presentToDisplay` rose 0.4 -> 6.8 ms, and with the screen time then
+set by GPU completion instead of by CE's grid, the game's own frame-to-frame variance landed directly on the display
+timeline.
+
+The algebra says the placement is worthless below that threshold. With L = input-to-photon, B = budget, W = whole
+CPU+GPU work, F = irreducible flip latency: `B >= W` gives `L = B + F` and grid-pinned screen times; `B < W` gives
+`L = W + F` and GPU-driven screen times. Shrinking B below W buys **zero** latency and pays for it in jitter. The
+optimum is exactly `B = W`. Numbers for this session: W ~= 8.8 ms (independently consistent with the p2d excess and
+with the measured latency delta), so the optimum budget ~= 9.1 ms costs ~0.3 ms against the current 2.1 ms budget
+and buys back the whole percentile regression, while still sitting ~2 ms below the back edge.
+
+Also note the published latency estimate over-reports the front-load gain: `anchorToPresent` is
+`modelled base interval + measured hold`, so CE's own hold is counted twice. The true back-edge-to-front-load gain
+is ~0.8 ms, not the 2.2 ms the overlay showed. The estimator limitation is documented in
+`system_latency_frame_begin.h`; it was deliberately NOT touched here, because changing the measurement in the same
+change as the behaviour would make the next A/B unreadable.
+
+Fixes:
+- `ResolveFrontLoadGpuExcessUs()` / `UpdateFrontLoadGpuHeadroom()`: grow the reservation by the measured excess of
+  present-to-display over its own floor, fed from `PerformanceMetrics::ConsumeDisplayTiming` (one call; the overlay's
+  own metrics are untouched). `DecayFrontLoadGpuHeadroomUs()` walks it back in by one timer margin per clean
+  64-frame window - a bounded probe, not a proportional decay that would periodically put the GPU a large step past
+  the deadline just to discover it no longer needs to be there.
+- `HasUsableGpuCompletionEvidence()`: no seeded present-to-display floor, no front-loading. The floor may only be
+  seeded while the placement is at the back edge, the only state in which the GPU is known to have finished before
+  the present. Without the evidence the back edge stays the default and the withholding is logged.
+- `SmartWait()` no longer arms the kernel timer for less than a scheduler tick. `EnsureTimerResolution()` puts the
+  scheduler on a 1 ms tick and a shorter arm cannot land inside it. Invisible while the limiter's waits were whole
+  milliseconds; front-loading made the pre-present wait hundreds of microseconds and the measured overshoot went
+  from a 37 us median (212 us worst) on ~9 ms coarse waits to an 88 us median (561 us worst) on ~500 us ones.
+
+Tests: GPU excess/decay/evidence tables, an integration case proving the reservation grows when presents start
+waiting on GPU work, one proving no displayed-transition evidence keeps the back edge, and a sub-tick SmartWait
+accuracy case. Hardware run pending: expect `gpuHeadroomUs` to climb for a few seconds then settle, `p2dUs` to fall
+back towards `p2dFloorUs`, the published 1%/0.1% low back near the back-edge figures, and the latency estimate to
+settle between the two previous runs.
+
+
 ### 2026-09-13 - Front-loading's cost was a sliding-window ceiling; capture sync opts out
 
 Hardware run `20260913_130052` confirmed the placement change: `frontLoad=1`, `releases` climbing,

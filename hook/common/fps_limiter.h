@@ -179,6 +179,31 @@ public:
     // presented outputs (including generated frames) rather than only base
     // application frames. This is process-local state, so it does not extend
     // the shared-memory ABI and cannot be delayed by media startup handshakes.
+    // Displayed-transition feedback: how long a present waited before it was
+    // scanned out. Published by whichever thread consumes display timing, so it
+    // must never touch the cadence state. While the placement is at the back
+    // edge the frame's GPU work is known to have finished before the present,
+    // which is the only state in which this measures the irreducible flip
+    // latency rather than a frame CE released too late.
+    void ObservePresentToDisplay(int64_t presentToDisplayUs) {
+        if (presentToDisplayUs < 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(presentToDisplayMutex_);
+        presentToDisplayUs_[presentToDisplayCursor_] = presentToDisplayUs;
+        presentToDisplayCursor_ = (presentToDisplayCursor_ + 1) % presentToDisplayUs_.size();
+        if (presentToDisplaySampleCount_ < presentToDisplayUs_.size()) {
+            ++presentToDisplaySampleCount_;
+        }
+        if (frontLoadedPlacementActive_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (!presentToDisplayFloorSeeded_ || presentToDisplayUs < presentToDisplayFloorUs_) {
+            presentToDisplayFloorUs_ = presentToDisplayUs;
+            presentToDisplayFloorSeeded_ = true;
+        }
+    }
+
     void SetInjectFinalOutputCaptureAvailable(bool available) {
         injectFinalOutputCaptureAvailable_.store(available, std::memory_order_release);
     }
@@ -225,6 +250,9 @@ public:
         int64_t intervalUs = 0;
         int64_t lastReleaseWaitUs = 0;
         int64_t headroomUs = 0;
+        int64_t gpuHeadroomUs = 0;
+        int64_t presentToDisplayUs = 0;
+        int64_t presentToDisplayFloorUs = -1;
         uint32_t releases = 0;
         uint32_t overruns = 0;
         size_t workSamples = 0;
@@ -239,6 +267,7 @@ public:
         state.intervalUs = cadenceIntervalUs_;
         state.lastReleaseWaitUs = lastFrontLoadedReleaseWaitUs_;
         state.headroomUs = frontLoadHeadroomUs_;
+        state.gpuHeadroomUs = frontLoadGpuHeadroomUs_;
         state.releases = frontLoadedReleaseCount_;
         state.overruns = frontLoadOverrunCount_;
         state.workSamples = frameWorkSampleCount_;
@@ -263,6 +292,18 @@ private:
     // Learns the extra reservation from presents that actually missed their
     // deadline while the placement was front-loaded.
     void NoteFrontLoadedLateness(int64_t lateUs);
+    // Walks the reservation to the point where the frame's GPU work finishes by
+    // the deadline; see fps_limiter_detail/front_load.h.
+    void UpdateFrontLoadGpuHeadroom();
+    // Snapshot of the present-to-display ring, taken without holding its lock
+    // across anything.
+    struct PresentToDisplaySnapshot {
+        int64_t recentUs = 0;
+        int64_t floorUs = -1;
+        size_t samples = 0;
+        bool floorSeeded = false;
+    };
+    PresentToDisplaySnapshot SnapshotPresentToDisplay() const;
     bool RunFrontLoadedRelease();
     void ResetFrontLoadedPacingState();
 
@@ -389,6 +430,20 @@ private:
     int64_t frameWorkBudgetUs_ = 0;
     int64_t cadenceIntervalUs_ = 0;
     int64_t frontLoadHeadroomUs_ = 0;
+    int64_t frontLoadGpuHeadroomUs_ = 0;
+    uint32_t frontLoadWindowFrames_ = 0;
+    static constexpr size_t kPresentToDisplayMinimumSamples = 16;
+    static constexpr uint32_t kFrontLoadGpuWindowFrames = 64;
+    // Written by whichever thread consumes display timing, read once per window
+    // by the present thread. The lock is only ever held for O(1) ring work and
+    // never across a wait.
+    mutable std::mutex presentToDisplayMutex_;
+    std::array<int64_t, 64> presentToDisplayUs_{};
+    size_t presentToDisplayCursor_ = 0;
+    size_t presentToDisplaySampleCount_ = 0;
+    int64_t presentToDisplayFloorUs_ = -1;
+    bool presentToDisplayFloorSeeded_ = false;
+    std::atomic<bool> frontLoadedPlacementActive_{false};
     uint32_t frontLoadCleanFrames_ = 0;
     uint32_t frontLoadOverrunCount_ = 0;
     bool frontLoadedReleaseRan_ = false;
@@ -397,6 +452,7 @@ private:
     int64_t lastFrontLoadedReleaseWaitUs_ = 0;
     uint32_t frontLoadedReleaseCount_ = 0;
     bool frontLoadedPacingLogged_ = false;
+    bool loggedMissingGpuEvidence_ = false;
     std::atomic<uint32_t> concurrentApplySkips_{0};
     static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };

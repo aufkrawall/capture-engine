@@ -179,7 +179,18 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     // Arm the kernel timer before the deadline, then trim only the measured
     // scheduler tail. Arming at the deadline itself turns wake-up latency
     // directly into frame-time variance.
-    if (diffUs > fineMarginUs + 100 && !highResTimerFailed) {
+    //
+    // The coarse portion also has to be long enough for the timer to resolve.
+    // EnsureTimerResolution() puts the scheduler on a 1ms tick, and a wait
+    // armed for less than that cannot land inside it - it sleeps to the next
+    // tick, past the deadline. That never showed while the limiter's waits
+    // were whole milliseconds; front-loaded pacing made them hundreds of
+    // microseconds and it showed immediately, with the measured overshoot
+    // going from a 37us median (212us worst) on ~9ms coarse waits to an 88us
+    // median (561us worst) on ~500us ones. Below one tick, yielding and
+    // spinning is both cheaper and exact.
+    constexpr int64_t kSchedulerTickUs = 1000;
+    if (diffUs > fineMarginUs + kSchedulerTickUs && !highResTimerFailed) {
         std::lock_guard<std::mutex> lock(timerStateMutex_);
         if (!highResTimer) {
             // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
