@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-09-13 - Validated: forced vsync under DLSS MFG, on the vertical blank
+
+Session `20260913_201259` (0.1.6548) closes the four-round Portal RTX investigation below. `registered live-WSI
+swapchain #1`, then `final Present1 #1 ... force=1 SyncInterval=0->1 Flags=0x200->0x0`. Steady state: **144.0
+presents/s on a 144 Hz panel** (`publishedInterval meanUs=6946`), `Pacing health stddev=320-365us
+displayJagUs=297-360`, 1% low 99-123 fps, `nvFlipSchedule avgDelayUs=6007` (the generator still holds its frames).
+
+| state | presents/s | screen-time stddev | 1% low | tearing |
+| --- | --- | --- | --- | --- |
+| forced FIFO + VK_EXT_present_timing | 141 | 6900 us | 57 fps | no |
+| present mode left alone, no ceiling | 152 | 154 us | - | yes |
+| + vertical blank on the WSI's DXGI flip | **144.0** | **~360 us** | **~110 fps** | **no** |
+
+The stddev above the uncapped 154 us is the vertical blank itself: intervals are now one refresh, occasionally two
+(`p99 8300 us`). What CE does for a metered frame generator is now exactly one thing - `SyncInterval=1` with
+`ALLOW_TEARING` cleared on the flip NVIDIA's WSI issues. It changes nothing above the WSI, adds no timer, writes
+no driver profile.
+
 ### 2026-09-13 - The Vulkan layer never exported the query its DXGI backstop is authorized by
 
 Session `20260913_200614` on 0.1.6547: fps still above the refresh rate, still tearing. The path armed correctly -

@@ -1,5 +1,8 @@
 # Forced FIFO Presentation Under Vulkan
 
+Last verified on hardware: 2026-09-13, session `20260913_201259` (144.0 presents/s on a 144 Hz panel, screen-time
+stddev ~360 us, no tearing, generator scheduling intact).
+
 Last cross-checked: 2026-09-13 (for a metered frame generator CE now changes nothing above the WSI - both the
 VK_EXT_present_timing scheduling and the present-mode override are retired, because NVIDIA's announced flip lead
 collapses from 6842 us to 141 us when FIFO is forced - and states the vertical blank on the WSI's own final DXGI
@@ -250,6 +253,22 @@ screen.
   export table of the DLL that actually ships as part of the build (`Verified Vulkan layer exports consumed by the
   hook DLL`), with `tools/tests/test_vulkan_layer_exports.py` covering its parsing. `layer.def` is deleted rather
   than left as a file that looks authoritative and is not.
+- **Validated on hardware, session `20260913_201259` (0.1.6548).** `registered live-WSI swapchain #1 ... from
+  CreateSwapChainForHwnd`, then `final Present1 #1 ... force=1 SyncInterval=0->1 Flags=0x200->0x0` on the DLFG
+  swapchain - the tearing flag cleared at its source. Steady state: **144.0 presents/s on a 144 Hz panel**
+  (`publishedInterval meanUs=6946`, exactly the refresh period), `Pacing health stddev=320-365us
+  displayJagUs=297-360`, 1% low 99-123 fps, and `nvFlipSchedule avgDelayUs=6007` - the generator is still
+  holding its frames, so the metering survived the vertical blank. The three-stage history in one table:
+
+  | state | presents/s | screen-time stddev | 1% low | tearing |
+  | --- | --- | --- | --- | --- |
+  | forced FIFO + present timing | 141 | 6900 us | 57 fps | no |
+  | present mode left alone, no ceiling | 152 | 154 us | - | yes |
+  | + vertical blank on the WSI's DXGI flip | **144.0** | **~360 us** | **~110 fps** | **no** |
+
+  The stddev is slightly above the uncapped 154 us by construction: flips are now quantized to vertical blanks,
+  so an interval is one refresh or occasionally two (`p99 8300 us`). That is what a vertical blank looks like,
+  not judder.
 - **Rejected on the way (2026-09-13): a refresh-derived rate cap.** The driver's frame-generation-aware
   low-latency interval (`minimumIntervalUs`, which under DLSS-G bounds displayed frames) would hold the output
   under the refresh rate without a CE timer, and was built and discarded. It is a clock, not a vertical blank: it
