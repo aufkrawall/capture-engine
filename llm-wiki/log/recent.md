@@ -58,11 +58,35 @@ module in the process. The test app ships the whole sl.* set next to its exe, so
 `coreShippedWithApplication` branch and still gets the full placement - the intended positive. **DOOM Eternal
 itself is still unrun.**
 
-**Open**: `hook/wrappers/d3dkmt_hook.cpp` types `D3DKMT_HANDLE` as `UINT64` (it is `UINT32`), so every
-`D3DKMT_QUERYADAPTERINFO` / `D3DKMT_QUERYVIDEOMEMORYINFO` field it reads is at the wrong offset - the garbage
-`Type=3086977864, Size=52413` lines in the DOOM log are a pointer's low dword and the adapter LUID. Harmless while
-the VRAM override is off (every hook passes the application's struct through untouched), but the override path
-writes at those offsets. Not this bug; not fixed here.
+**Found alongside, fixed separately** (see the D3DKMT entry below): `hook/wrappers/d3dkmt_hook.cpp` typed
+`D3DKMT_HANDLE` as `UINT64`, so every field it read was at the wrong offset.
+
+### 2026-09-13 - D3DKMT hook: the mirrored structures were off by eight bytes
+
+`hook/wrappers/d3dkmt_hook.cpp` declared `D3DKMT_HANDLE` as `UINT64`; `d3dukmdt.h` defines it as `UINT32`. Every
+member after the first handle was therefore shifted:
+- `D3DKMT_QUERYADAPTERINFO::Type` read the low dword of `pPrivateDriverData` and `PrivateDriverDataSize` read past
+  the structure. DOOM Eternal session `20260913_180809` shows it directly: `QueryAdapterInfo - Type=3086977864,
+  Size=52413`, where 52413 is 0xccbd - the low half of the adapter LUID the Vulkan layer logged for the same GPU in
+  the same session.
+- `D3DKMT_QUERYVIDEOMEMORYINFO` was off by eight from `MemorySegmentGroup` onwards. `hProcess` is a `HANDLE`
+  (8 bytes) and `hAdapter` a `UINT32`, not two 64-bit handles. The read-only path only mislogged, but the VRAM
+  override branch writes `Budget`/`CurrentUsage`/`CurrentReservation`/`AvailableForReservation` back into the
+  caller's structure and would have written the budget over `CurrentUsage` while reading `Budget`'s low dword as
+  the segment group. Only `InitializeConfig` leaving the override off by default kept that latent.
+- `D3DKMT_ADAPTERINFO` named its last two fields `VidPnSourceId`/`NodeCount`; the real ones are
+  `NumOfSources`/`bPrecisePresentRegionsPreferred`, and `AdapterLuid` is a `LUID` (4-byte aligned, so it packs at
+  offset 4 behind the handle), not a 64-bit handle.
+
+**Fix**: the layouts moved to `hook/wrappers/d3dkmt_abi.h` with every offset and size pinned by `static_assert`,
+documented as a mirror of `d3dkmthk.h`/`d3dukmdt.h` (those headers are not in the MSYS2 toolchain, so mirroring is
+required - same arrangement as `vulkan_present_metering_policy.h` for `VK_NV_present_metering`). The hook now logs
+real values (`hProcess` resolved to a PID, the adapter LUID, `NumOfSources`, `PhysicalAdapterIndex`), the dead
+no-op switch in `Hook_D3DKMTQueryAdapterInfo` is gone, and `Hook_D3DKMTEnumAdapters` clamps its loop to
+`MAX_ENUM_ADAPTERS` instead of trusting the reported count. `tests/test_d3dkmt_abi.cpp` asserts the offsets and
+checks that a write to `Type` is what a 32-bit read at offset 4 returns.
+
+
 
 ### 2026-09-13 - DOOM Eternal black window: overlay views outlived their swapchain
 

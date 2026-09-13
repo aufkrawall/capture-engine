@@ -1,6 +1,6 @@
 # Code Style
 
-Last cross-checked: 2026-07-28
+Last cross-checked: 2026-09-13 (added the offset-pinning rule for mirrored external ABI structures; the rest verified 2026-07-28)
 
 Primary sources:
 - `AGENTS.md`
@@ -66,6 +66,12 @@ This page records the style rules that are either tool-backed or strongly reflec
 - Fixed-width integers are common in shared-memory, hook, and ABI-sensitive code.
 - `enum class` is common when introducing new enums.
 - Match the touched file's local naming and member-style convention instead of renaming neighbors.
+- **A structure mirrored from an external ABI is pinned by `static_assert` on every offset and its size, in its own
+  header.** Several vendor headers this tree hooks against are not in the MSYS2 toolchain (`d3dkmthk.h`,
+  `VK_NV_present_metering` on the Linux headers), so mirroring is unavoidable - but a mirror that drifts is a silent
+  wrong-offset read, and a write through it corrupts the caller's structure. `hook/wrappers/d3dkmt_abi.h` and
+  `hook/vulkan_layer/vulkan_present_metering_policy.h` are the two worked examples; `D3DKMT_HANDLE` typed as
+  `UINT64` instead of `UINT32` is the regression they exist to prevent.
 
 ## Existing Helper Patterns
 - Common RAII helpers already live in `common/raii_helpers.h`: `HandleGuard`, `MappingGuard`, `VirtualAllocGuard`, `ComGuard`, and `ScopeGuard`.

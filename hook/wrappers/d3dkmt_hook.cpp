@@ -9,6 +9,7 @@
 #include <algorithm>
 #include "../common/hook_common.h"
 #include "../common/logging.h"
+#include "d3dkmt_abi.h"
 #include "iat_hook.h"
 
 // NTSTATUS definitions
@@ -20,95 +21,12 @@
 #define STATUS_PROCEDURE_NOT_FOUND ((NTSTATUS)0xC000007A)
 #endif
 
-// D3DKMT structures and constants (normally from d3dkmthk.h)
-// These are kernel-mode driver interfaces for GPU queries
-
-typedef UINT64 D3DKMT_HANDLE;
-
-typedef enum _KMT_MEMORY_SEGMENT_GROUP {
-    KMT_MEMORY_SEGMENT_GROUP_LOCAL = 0,
-    KMT_MEMORY_SEGMENT_GROUP_NON_LOCAL = 1
-} KMT_MEMORY_SEGMENT_GROUP;
-
-typedef struct _D3DKMT_QUERYVIDEOMEMORYINFO {
-    D3DKMT_HANDLE hProcess;
-    D3DKMT_HANDLE hAdapter;
-    KMT_MEMORY_SEGMENT_GROUP MemorySegmentGroup;
-    UINT64 Budget;
-    UINT64 CurrentUsage;
-    UINT64 CurrentReservation;
-    UINT64 AvailableForReservation;
-    UINT64 PhysicalUsage;
-} D3DKMT_QUERYVIDEOMEMORYINFO;
-
-typedef enum _KMTQUERYADAPTERINFOTYPE {
-    KMTQAITYPE_UMDRIVERPRIVATE = 0,
-    KMTQAITYPE_UMDRIVERNAME = 1,
-    KMTQAITYPE_UMOPENGLINFO = 2,
-    KMTQAITYPE_GETSEGMENTSIZE = 3,
-    KMTQAITYPE_ADAPTERGUID = 4,
-    KMTQAITYPE_FLIPQUEUEINFO = 5,
-    KMTQAITYPE_ADAPTERADDRESS = 6,
-    KMTQAITYPE_SETWORKINGSETINFO = 7,
-    KMTQAITYPE_ADAPTERREGISTRYINFO = 8,
-    KMTQAITYPE_CURRENTDISPLAYMODE = 9,
-    KMTQAITYPE_MODELIST = 10,
-    KMTQAITYPE_CHECKDRIVERUPDATESTATUS = 11,
-    KMTQAITYPE_VIRTUALADDRESSINFO = 12,
-    KMTQAITYPE_DRIVERVERSION = 13,
-    KMTQAITYPE_ADAPTERTYPE = 15,
-    KMTQAITYPE_OUTPUTDUPLCONTEXTSCOUNT = 16,
-    KMTQAITYPE_WDDM_1_2_CAPS = 17,
-    KMTQAITYPE_UMD_DRIVER_VERSION = 18,
-    KMTQAITYPE_DIRECTFLIP_SUPPORT = 19,
-    KMTQAITYPE_MULTIPLANOVERLAY_SUPPORT = 20,
-    KMTQAITYPE_DLIST_DRIVER_NAME = 21,
-    KMTQAITYPE_WDDM_1_3_CAPS = 22,
-    KMTQAITYPE_MULTIPLANOVERLAY_HUD_SUPPORT = 23,
-    KMTQAITYPE_WDDM_2_0_CAPS = 24,
-    KMTQAITYPE_NODEMETADATA = 25,
-    KMTQAITYPE_CPDRIVERNAME = 26,
-    KMTQAITYPE_XBOX = 27,
-    KMTQAITYPE_INDEPENDENTFLIP_SUPPORT = 28,
-    KMTQAITYPE_MIRACASTCOMPANIONDRIVERNAME = 29,
-    KMTQAITYPE_PHYSICALADAPTERCOUNT = 30,
-    KMTQAITYPE_PHYSICALADAPTERDEVICEIDS = 31,
-    KMTQAITYPE_DRIVERCAPS_EXT = 32,
-    KMTQAITYPE_QUERY_MIRACAST_DRIVER_TYPE = 33,
-    KMTQAITYPE_QUERY_GPUMMU_CAPS = 34,
-    KMTQAITYPE_QUERY_MULTIPLANOVERLAY_DECODE_SUPPORT = 35,
-    KMTQAITYPE_QUERY_HW_PROTECTION_TEARDOWN_COUNT = 36,
-    KMTQAITYPE_QUERY_ISBADDRIVER = 37,
-    KMTQAITYPE_QUERY_MULTIPLANOVERLAY_SECONDARY_SUPPORT = 38,
-    KMTQAITYPE_QUERY_DISPLAY_ADAPTER_INFO = 39,
-    KMTQAITYPE_PHYSICALADAPTERCOUNT_FROM_ID = 40,
-    KMTQAITYPE_GET_DEVICE_STATE = 41,
-    KMTQAITYPE_QUERY_DMA_REMAPPING_SUPPORT = 42,
-} KMTQUERYADAPTERINFOTYPE;
-
-typedef struct _D3DKMT_QUERYADAPTERINFO {
-    D3DKMT_HANDLE hAdapter;
-    KMTQUERYADAPTERINFOTYPE Type;
-    VOID* pPrivateDriverData;
-    UINT PrivateDriverDataSize;
-} D3DKMT_QUERYADAPTERINFO;
-
-typedef struct _D3DKMT_ADAPTERINFO {
-    D3DKMT_HANDLE hAdapter;
-    D3DKMT_HANDLE AdapterLuid;
-    ULONG VidPnSourceId;
-    ULONG NodeCount;
-} D3DKMT_ADAPTERINFO;
-
-typedef struct _D3DKMT_ENUMADAPTERS {
-    ULONG NumAdapters;
-    D3DKMT_ADAPTERINFO Adapters[16];
-} D3DKMT_ENUMADAPTERS;
-
-typedef struct _D3DKMT_ENUMADAPTERS2 {
-    ULONG NumAdapters;
-    D3DKMT_ADAPTERINFO* pAdapters;
-} D3DKMT_ENUMADAPTERS2;
+// The D3DKMT structures these hooks read and write are mirrored, with their
+// offsets pinned, in d3dkmt_abi.h. Do not re-declare them here.
+using D3DKMT_QUERYVIDEOMEMORYINFO = ce::d3dkmt::QueryVideoMemoryInfo;
+using D3DKMT_QUERYADAPTERINFO = ce::d3dkmt::QueryAdapterInfo;
+using D3DKMT_ENUMADAPTERS = ce::d3dkmt::EnumAdapters;
+using D3DKMT_ENUMADAPTERS2 = ce::d3dkmt::EnumAdapters2;
 
 // Function prototypes
 typedef NTSTATUS(WINAPI* PFN_D3DKMTQueryVideoMemoryInfo)(const D3DKMT_QUERYVIDEOMEMORYINFO*);
@@ -165,15 +83,18 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryVideoMemoryInfo(const D3DKMT_QUERYVIDEOME
         return status;
     }
 
-    // Log the query for debugging
-    HookLog("D3DKMT: QueryVideoMemoryInfo - Process=%u, Segment=%s",
-            pInfo->hProcess ? (ULONG)(pInfo->hProcess) : GetCurrentProcessId(),
-            pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL ? "LOCAL" : "NON_LOCAL");
+    // Log the query for debugging. hProcess is a process HANDLE, not a PID, and
+    // a null handle means "this process" - resolve it to a PID either way so the
+    // line names one identity.
+    HookLog("D3DKMT: QueryVideoMemoryInfo - Process=%lu, Segment=%s, PhysicalAdapterIndex=%u",
+            static_cast<unsigned long>(pInfo->hProcess ? GetProcessId(pInfo->hProcess) : GetCurrentProcessId()),
+            pInfo->MemorySegmentGroup == ce::d3dkmt::kSegmentGroupLocal ? "LOCAL" : "NON_LOCAL",
+            pInfo->PhysicalAdapterIndex);
 
     // Cast away const to modify the output struct (if needed)
     D3DKMT_QUERYVIDEOMEMORYINFO* pMutableInfo = const_cast<D3DKMT_QUERYVIDEOMEMORYINFO*>(pInfo);
 
-    if (pInfo->MemorySegmentGroup == KMT_MEMORY_SEGMENT_GROUP_LOCAL) {
+    if (pInfo->MemorySegmentGroup == ce::d3dkmt::kSegmentGroupLocal) {
         // Local/Dedicated VRAM
         if (g_VramConfig.enabled) {
             UINT64 originalBudget = pInfo->Budget;
@@ -233,20 +154,10 @@ static NTSTATUS WINAPI Hook_D3DKMTQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO
         return status;
     }
 
-    // Log adapter queries for debugging
-    HookLog("D3DKMT: QueryAdapterInfo - Type=%u, Size=%u", pInfo->Type, pInfo->PrivateDriverDataSize);
-
-    // Handle specific query types that report VRAM
-    switch (pInfo->Type) {
-        // NOLINTNEXTLINE(bugprone-branch-clone) - empty/identical switch branches are intentionally shared no-op cases
-        case KMTQAITYPE_ADAPTERREGISTRYINFO:
-        case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS:
-        case KMTQAITYPE_UMDRIVERNAME:
-            // Adapter registry/device-ID/UMD queries are logged above; no override is applied.
-            break;
-        default:
-            break;
-    }
+    // Log adapter queries for debugging. This hook applies no override of its
+    // own - every query is answered by the driver and passed straight back.
+    HookLog("D3DKMT: QueryAdapterInfo - Type=%u, Size=%u", static_cast<unsigned>(pInfo->Type),
+            static_cast<unsigned>(pInfo->PrivateDriverDataSize));
 
     return status;
 }
@@ -260,11 +171,19 @@ static NTSTATUS WINAPI Hook_D3DKMTEnumAdapters(const D3DKMT_ENUMADAPTERS* pEnumA
     NTSTATUS status = o_D3DKMTEnumAdapters(pEnumAdapters);
 
     if (NT_SUCCESS(status) && pEnumAdapters) {
-        HookLog("D3DKMT: EnumAdapters - Count=%u", pEnumAdapters->NumAdapters);
+        HookLog("D3DKMT: EnumAdapters - Count=%lu", static_cast<unsigned long>(pEnumAdapters->NumAdapters));
 
-        for (UINT i = 0; i < pEnumAdapters->NumAdapters; i++) {
-            HookLog("D3DKMT:   Adapter[%u] - VidPnSourceId=%u, NodeCount=%u", i,
-                    pEnumAdapters->Adapters[i].VidPnSourceId, pEnumAdapters->Adapters[i].NodeCount);
+        // The array is MAX_ENUM_ADAPTERS entries; never read past it on a count
+        // the driver reported, however it got there.
+        const ULONG logged =
+            std::min<ULONG>(pEnumAdapters->NumAdapters, static_cast<ULONG>(ce::d3dkmt::kMaxEnumAdapters));
+        for (ULONG i = 0; i < logged; i++) {
+            HookLog("D3DKMT:   Adapter[%lu] - Luid=%08lx:%08lx, NumOfSources=%lu, PrecisePresentRegions=%d",
+                    static_cast<unsigned long>(i),
+                    static_cast<unsigned long>(pEnumAdapters->Adapters[i].AdapterLuid.HighPart),
+                    static_cast<unsigned long>(pEnumAdapters->Adapters[i].AdapterLuid.LowPart),
+                    static_cast<unsigned long>(pEnumAdapters->Adapters[i].NumOfSources),
+                    pEnumAdapters->Adapters[i].bPrecisePresentRegionsPreferred ? 1 : 0);
         }
     }
 
@@ -280,7 +199,7 @@ static NTSTATUS WINAPI Hook_D3DKMTEnumAdapters2(const D3DKMT_ENUMADAPTERS2* pEnu
     NTSTATUS status = o_D3DKMTEnumAdapters2(pEnumAdapters);
 
     if (NT_SUCCESS(status) && pEnumAdapters) {
-        HookLog("D3DKMT: EnumAdapters2 - Count=%u", pEnumAdapters->NumAdapters);
+        HookLog("D3DKMT: EnumAdapters2 - Count=%lu", static_cast<unsigned long>(pEnumAdapters->NumAdapters));
     }
 
     return status;
