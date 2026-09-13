@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 740,
+    "entries": 741,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -693,6 +693,7 @@
       "tests/test_overlay_composite_route_growth.cpp",
       "tests/test_overlay_fg_status_publication.cpp",
       "tests/test_overlay_submit_queue_policy.cpp",
+      "tests/test_overlay_swapchain_lifetime_policy.cpp",
       "tests/test_overlay_system.cpp",
       "tests/test_pacing_health.cpp",
       "tests/test_pacing_present_boundaries.cpp",

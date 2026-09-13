@@ -239,6 +239,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                          const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    // Presentable images die with their swapchain, so every CE object built over
+    // them has to be gone before the driver gets the destroy. Releasing at the
+    // next create instead leaves CE holding views over freed images and then
+    // hands those stale views back to the driver, which is a use-after-free the
+    // NVIDIA kernel driver answers with a GPU error and a lost device.
+    ReleaseOverlayForSwapchain(device, swapchain);
     RetireCaptureSwapchain(device, swapchain);
     if (disp && disp->fp_vkDestroySwapchainKHR)
         disp->fp_vkDestroySwapchainKHR(device, swapchain, pAllocator);

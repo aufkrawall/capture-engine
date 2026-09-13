@@ -294,6 +294,37 @@ Primary sources:
   on the stack. With it **on** the game requests 2, the override was a no-op and the session ran fine, which is why
   the crash presented as an async-present problem rather than an image-count one.
 
+## Vulkan swapchain lifetime (overlay objects built over presentable images)
+
+- **Presentable images are destroyed with their swapchain, so every CE object derived from them must be gone
+  before `vkDestroySwapchainKHR` reaches the driver.** The overlay holds one `VkImageView` per presentable image,
+  a `VkFramebuffer` over each of those views, and - on the compute-composite route - descriptor sets written with
+  those views plus command buffers recorded against those images. All of it refers to memory the swapchain owns.
+- `Capture_vkDestroySwapchainKHR` (`hook/vulkan_layer/vulkan_layer_swapchain.cpp`) therefore calls
+  `ReleaseOverlayForSwapchain` first, before `RetireCaptureSwapchain` and before the driver's destroy.
+  `ce::overlay_swapchain_lifetime::Decide` (`hook/vulkan_layer/overlay_swapchain_lifetime_policy.h`) owns the
+  decision: release only the state whose recorded `OverlayState::swapchain` is the one being destroyed, and skip
+  the device-idle wait when a device loss is already latched (a lost device answers no wait). A device carrying
+  several swapchains keeps its overlay running when an unrelated one is destroyed.
+- The capture side needs no equivalent: `RetireCaptureSwapchain` only moves the state to the retired list, and
+  every resource in it is CE-owned rather than swapchain-derived.
+- An application that retires through `VkSwapchainCreateInfoKHR::oldSwapchain` is correct under the same rule
+  without extra work, because `InitializeOverlay`'s create-time release runs while the old swapchain is only
+  retired and its images are still alive.
+- **DOOM Eternal (session `20260913_174040`, fixed in 0.1.6537)** proved it. CE used to release at the *next*
+  `vkCreateSwapchainKHR` ("InitializeOverlay - Existing state found, cleaning it before re-init"), one swapchain
+  generation too late. The game destroyed its startup swapchain at 17:41:45.923 and created the replacement at
+  .927; CE tore its state down at .942-.951, handing the driver image views over already-freed images, and
+  `nvlddmkm` logged event 153 ("Error occurred on GPUID") at .9535. The first present on the new swapchain
+  returned `VK_ERROR_DEVICE_LOST` from the prerender fence wait (`Vulkan Prerender: wait failed result=-4`,
+  then `device loss latched from submission-slot fence probe`), and the game window stayed black for the rest of
+  the process lifetime. The next launch of the same build ran the identical sequence without faulting, which is
+  what a use-after-free looks like - whether the freed allocation has been recycled decides the outcome.
+- Diagnostics: the release logs `Releasing overlay state built over swapchain %p before the driver destroys it`
+  with the idle-wait decision. A session that still shows `InitializeOverlay - Existing state found` on a plain
+  destroy-then-create sequence has lost the ordering. A Windows System-log `nvlddmkm` 153 whose timestamp lands
+  inside a CE teardown window is the signature to look for, not a driver fault to write off.
+
 ## Queue-depth and frame pacing
 
 Moved to `frame-pacing-and-limiter.md`: producer-queue CPU/present depth enforcement, the rational FPS-limiting

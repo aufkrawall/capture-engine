@@ -10,6 +10,7 @@
 
 #include "../common/dxgi_shared.h"
 #include "../common/system_metrics.h"
+#include "overlay_swapchain_lifetime_policy.h"
 #include "vulkan_presentation_color.h"
 
 // Detect if a DLL is loaded from outside System32 (i.e. a DXVK replacement).
@@ -242,6 +243,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     LayerLog("Vulkan Layer: InitializeOverlay - Creating OverlayState...");
     OverlayState state = {};
     state.device = device;
+    state.swapchain = swapchain;
     state.physicalDevice = disp->physicalDevice;
     state.instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice);
     state.format = format;
@@ -558,6 +560,43 @@ PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device) {
         return it->second.metrics;
     }
     return nullptr;
+}
+
+// A non-dispatchable handle is a pointer in the 64-bit layer and a uint64_t in
+// the 32-bit one, which is exactly what VK_USE_64_BIT_PTR_DEFINES reports, so
+// neither cast on its own compiles for both.
+static uint64_t SwapchainIdentity(VkSwapchainKHR swapchain) {
+#if (VK_USE_64_BIT_PTR_DEFINES == 1)
+    return reinterpret_cast<uint64_t>(swapchain);
+#else
+    return static_cast<uint64_t>(swapchain);
+#endif
+}
+
+void ReleaseOverlayForSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
+    std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    auto it = g_OverlayStates.find(device);
+    ce::overlay_swapchain_lifetime::Input input = {};
+    input.overlayStateExists = it != g_OverlayStates.end();
+    if (input.overlayStateExists) {
+        input.overlayStateSwapchain = SwapchainIdentity(it->second.swapchain);
+        input.deviceLost = it->second.deviceLost;
+    }
+    input.destroyedSwapchain = SwapchainIdentity(swapchain);
+    const auto decision = ce::overlay_swapchain_lifetime::Decide(input);
+    if (!decision.release)
+        return;
+
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    LayerLog(
+        "Vulkan Layer: Releasing overlay state built over swapchain %p before the driver destroys it "
+        "(deviceIdleWait=%d)",
+        swapchain, decision.waitForIdle ? 1 : 0);
+    // CleanupOverlayState skips the idle wait on a latched device loss, which is
+    // the same condition the policy reports, so the two cannot disagree.
+    CleanupOverlayState(it->second, device, disp);
+    g_OverlayStates.erase(it);
+    SyncOverlayActiveFlagLocked();
 }
 
 void CleanupOverlay(VkDevice device) {

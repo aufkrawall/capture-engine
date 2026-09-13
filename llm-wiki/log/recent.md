@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-09-13 - DOOM Eternal black window: overlay views outlived their swapchain
+
+Session `20260913_174040`: the first launch stayed black, the second worked. The layer log shows the startup
+swapchain destroyed at 17:41:45.923 and the replacement created at .927, CE tearing its overlay state down at
+.942-.951 inside the next `InitializeOverlay`, and the first present on the new swapchain failing with
+`Vulkan Prerender: wait failed result=-4` plus `device loss latched from submission-slot fence probe` at 46.134.
+The Windows System log pins the cause between the two: `nvlddmkm` event 153 ("Error occurred on GPUID: 700") at
+45.9535, i.e. inside CE's own teardown. Capture was not involved - `RetireCaptureSwapchain` only moves state to a
+retired list and owns no swapchain-derived objects.
+
+Root cause: the overlay builds a `VkImageView` per presentable image, a `VkFramebuffer` over each, and compute-route
+descriptor sets and command buffers bound to them, and CE released all of it at the *next* `vkCreateSwapchainKHR`.
+Presentable images die with their swapchain, so between the game's destroy and its next create CE held views over
+freed images and then handed those stale views back to the driver. That is a use-after-free, which is exactly why
+the second launch of the same build survived the identical sequence.
+
+Fix (0.1.6537): `Capture_vkDestroySwapchainKHR` now calls `ReleaseOverlayForSwapchain` before the driver destroy,
+gated by `ce::overlay_swapchain_lifetime::Decide` - release only the state whose recorded `OverlayState::swapchain`
+is the one being destroyed, and skip the device-idle wait on a latched device loss. `OverlayState` gained the
+`swapchain` field that makes that identification possible. Seven regression tests cover the policy plus the source
+ordering (release before `fp_vkDestroySwapchainKHR`, and `InitializeOverlay` recording the owning swapchain).
+`--verify` passed. Hardware re-check pending: a cold DOOM Eternal start has to survive the startup swapchain
+recreate several times over, and the log should show `Releasing overlay state built over swapchain ...` instead of
+`InitializeOverlay - Existing state found`.
+
 ### 2026-09-13 - DOOM Vulkan compute-present capture and authoritative freeze evidence
 
 DOOM Eternal recording `20260913_163446` is a healthy 3840x2160/120 inject capture from a source capped near

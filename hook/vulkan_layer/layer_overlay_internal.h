@@ -38,6 +38,11 @@ struct OverlayState {
     bool initialized = false;
     bool deviceLost = false;
     VkDevice device = VK_NULL_HANDLE;
+    // The swapchain whose presentable images `imageViews`, `framebuffers` and
+    // the compute route's descriptor sets were built over. Those objects have
+    // to be destroyed before that swapchain is, so the destroy hook needs to
+    // know which swapchain owns the live state.
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkRenderPass renderPass = VK_NULL_HANDLE;

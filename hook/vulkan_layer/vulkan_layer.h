@@ -520,6 +520,11 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySurfaceKHR(VkInstance instance, VkSu
 void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent, VkImageUsageFlags imageUsage,
                        uint32_t imageCount, VkImage* images, HWND window);
+// Destroys every overlay object derived from `swapchain`'s presentable images
+// (image views, framebuffers, and the compute route that binds them). The
+// destroy hook calls this before the driver frees those images; see
+// overlay_swapchain_lifetime_policy.h.
+void ReleaseOverlayForSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
