@@ -117,6 +117,10 @@ def compile_project(
         log("Tests-only mode: stopping after unit test build/run")
         return
 
+    # Ensure FG SDK headers (Streamline, FidelityFX) and native runtime DLLs are
+    # prepared before compiling hook DLL and test apps.
+    setup_fg_sdk_for_host(skip_updates=skip_updates)
+
     # --- Architecture Loop ---
     arch_targets = ["x64"]
     if env.get("CE_SANITIZE") == "1":

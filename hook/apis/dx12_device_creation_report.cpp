@@ -30,6 +30,10 @@ namespace policy = ce::d3d12_device_creation;
 using PFN_D3D12CreateDeviceLocal = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 using PFN_CreateDXGIFactory1Local = HRESULT(WINAPI*)(REFIID, void**);
 
+#ifndef D3D_FEATURE_LEVEL_12_2
+#define D3D_FEATURE_LEVEL_12_2 static_cast<D3D_FEATURE_LEVEL>(0xc200)
+#endif
+
 constexpr D3D_FEATURE_LEVEL kProbedLevels[policy::kProbedFeatureLevelCount] = {
     D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2};
 constexpr const char* kProbedLevelNames[policy::kProbedFeatureLevelCount] = {"11_0", "12_0", "12_1", "12_2"};

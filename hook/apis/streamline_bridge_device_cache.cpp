@@ -14,6 +14,10 @@
 namespace ce::streamline_bridge {
 namespace {
 
+#ifndef D3D_FEATURE_LEVEL_1_0_CORE
+#define D3D_FEATURE_LEVEL_1_0_CORE static_cast<D3D_FEATURE_LEVEL>(0x1000)
+#endif
+
 struct RememberedDevice {
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_1_0_CORE;
     Microsoft::WRL::ComPtr<ID3D12Device> device;
