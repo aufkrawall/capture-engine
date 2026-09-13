@@ -287,6 +287,50 @@ void VulkanLayerState::ArmPresentTopologyLearning() {
     m_LearnPrerenderBoundaries.store(true, std::memory_order_relaxed);
 }
 
+void VulkanLayerState::ObservePrerenderPresentQueue(SwapchainData* swapchainData, VkQueue presentQueue) {
+    if (!swapchainData || presentQueue == VK_NULL_HANDLE)
+        return;
+    if (swapchainData->prerenderPresentQueue.load(std::memory_order_acquire) == presentQueue)
+        return;
+
+    uint32_t learnedFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t currentFamily = VK_QUEUE_FAMILY_IGNORED;
+    {
+        // A stable queue pays only the atomic check above. Keep the state lock
+        // across a queue change and any route reset so another present cannot
+        // observe the new queue before old producer evidence is retired.
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        if (swapchainData->prerenderPresentQueue.load(std::memory_order_relaxed) == presentQueue)
+            return;
+        const auto familyIt = m_QueueFamilies.find(presentQueue);
+        currentFamily = familyIt != m_QueueFamilies.end() ? familyIt->second : VK_QUEUE_FAMILY_IGNORED;
+        if (currentFamily == VK_QUEUE_FAMILY_IGNORED)
+            return;
+
+        learnedFamily = swapchainData->prerenderPresentQueueFamily.load(std::memory_order_acquire);
+        if (learnedFamily == VK_QUEUE_FAMILY_IGNORED) {
+            swapchainData->prerenderPresentQueueFamily.store(currentFamily, std::memory_order_release);
+            swapchainData->prerenderPresentQueue.store(presentQueue, std::memory_order_release);
+            return;
+        }
+        if (!ce::vulkan_prerender_policy::ShouldRelearnPresentTopology(learnedFamily, currentFamily)) {
+            swapchainData->prerenderPresentQueue.store(presentQueue, std::memory_order_release);
+            return;
+        }
+
+        swapchainData->prerenderProducerQueue.store(VK_NULL_HANDLE, std::memory_order_release);
+        swapchainData->prerenderOnProducerSubmit.store(false, std::memory_order_release);
+        swapchainData->prerenderTopologySamples.store(0, std::memory_order_release);
+        ArmPresentTopologyLearning();
+        swapchainData->prerenderPresentQueueFamily.store(currentFamily, std::memory_order_release);
+        swapchainData->prerenderPresentQueue.store(presentQueue, std::memory_order_release);
+    }
+
+    LayerLog("Vulkan Layer: Present queue family changed %u -> %u without swapchain recreation; re-learning "
+             "producer topology",
+             learnedFamily, currentFamily);
+}
+
 void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores,
                                                  uint32_t waitCount, const VkSemaphore* signalSemaphores,
                                                  uint32_t signalCount) {

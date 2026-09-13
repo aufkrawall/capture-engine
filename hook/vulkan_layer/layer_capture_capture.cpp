@@ -351,23 +351,34 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     }
 
     // Wait Semaphores
-    std::vector<uint64_t> waitValues;
-    std::vector<VkPipelineStageFlags> waitStages;
+    std::array<uint64_t, 1> inlineWaitValues = {0};
+    std::array<VkPipelineStageFlags, 1> inlineWaitStages = {VK_PIPELINE_STAGE_TRANSFER_BIT};
+    std::vector<uint64_t> fallbackWaitValues;
+    std::vector<VkPipelineStageFlags> fallbackWaitStages;
+    const uint64_t* waitValues = nullptr;
     uint32_t waitCount = 0;
 
     if (waitSemaphores && waitSemaphoreCount > 0) {
-        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkPipelineStageFlags* waitStages = nullptr;
+        if (waitSemaphoreCount == 1) {
+            waitValues = inlineWaitValues.data();
+            waitStages = inlineWaitStages.data();
+        } else {
+            fallbackWaitValues.assign(waitSemaphoreCount, 0);
+            fallbackWaitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            waitValues = fallbackWaitValues.data();
+            waitStages = fallbackWaitStages.data();
+        }
         submit.waitSemaphoreCount = waitSemaphoreCount;
         submit.pWaitSemaphores = waitSemaphores;
-        submit.pWaitDstStageMask = waitStages.data();
-        waitValues.assign(waitSemaphoreCount, 0);
+        submit.pWaitDstStageMask = waitStages;
         waitCount = waitSemaphoreCount;
     }
 
     // Prepare Timeline Info
     VkTimelineSemaphoreSubmitInfo timelineSubmit = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
     timelineSubmit.waitSemaphoreValueCount = waitCount;
-    timelineSubmit.pWaitSemaphoreValues = waitCount > 0 ? waitValues.data() : nullptr;
+    timelineSubmit.pWaitSemaphoreValues = waitValues;
     timelineSubmit.signalSemaphoreValueCount = signalCount;
     timelineSubmit.pSignalSemaphoreValues = signalValues;
 

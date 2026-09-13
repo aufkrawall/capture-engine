@@ -460,12 +460,17 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    std::vector<VkPipelineStageFlags> waitStages;
+    VkPipelineStageFlags inlineWaitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    std::vector<VkPipelineStageFlags> fallbackWaitStages;
     if (waitSemaphores && waitSemaphoreCount > 0) {
-        waitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        const VkPipelineStageFlags* waitStages = &inlineWaitStage;
+        if (waitSemaphoreCount > 1) {
+            fallbackWaitStages.assign(waitSemaphoreCount, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            waitStages = fallbackWaitStages.data();
+        }
         submitInfo.waitSemaphoreCount = waitSemaphoreCount;
         submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages.data();
+        submitInfo.pWaitDstStageMask = waitStages;
     }
 
     if (signalSemaphore != VK_NULL_HANDLE) {

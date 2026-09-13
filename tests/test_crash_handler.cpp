@@ -438,18 +438,26 @@ TEST(FreezeWatchdogPolicyTest, CrossApiPresentLivenessSuppressesOnlyWhileFresh) 
     EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 99999, kMaxAgeMs));
 }
 
-// The Vulkan layer is a separate DLL: when it detaches or drops its IPC
-// connection it just stops publishing presents, which looks exactly like a
-// frozen Vulkan render loop. Its evidence therefore has to expire with it,
-// otherwise a dormant layer recreates the very false positive this gate exists
-// to prevent. A D3D present path proved itself from inside this module and
-// cannot vanish that way.
-TEST(FreezeWatchdogPolicyTest, VulkanLayerEvidenceExpiresWithTheLayer) {
+// DOOM Eternal may rotate Vulkan presents across an idTech worker pool while
+// its WSI transport also traverses CE-observed D3D12/DXGI helper paths. Once a
+// Vulkan call returns, neither the last worker nor historical helper activity
+// proves a freeze. A call that remains published is exact evidence and target.
+TEST(FreezeWatchdogPolicyTest, VulkanLayerEvidenceRequiresAPresentStillInFlight) {
     EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, true, true));
     EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, true, false));
-    EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(true, true, false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(true, true, false));
     EXPECT_TRUE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(true, false, false));
     EXPECT_FALSE(ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(false, false, true));
+}
+
+TEST(FreezeWatchdogPolicyTest, VulkanWorkerPoolThreadSwitchLoggingIsRateLimited) {
+    for (uint64_t count = 1; count <= 8; ++count) {
+        EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(count));
+    }
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(9));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(16));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(17));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(1024));
 }
 
 // A freeze dump that names no thread is a freeze dump that hides its own cause.

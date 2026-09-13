@@ -505,16 +505,26 @@ TEST(OverlaySubmitQueuePolicySourceTest, TheRenderPassOwnsBothLayoutTransitions)
 
 // Which queue signals what a present waits on decides whether CE's overlay - a
 // render pass, so always on a graphics queue - inserts a cross-engine round trip
-// the game never had. It is not recoverable from a frame-time graph, so the
-// layer states it once per swapchain generation.
-TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapchainGeneration) {
+// the game never had. A swapchain generation normally owns one route, but DOOM
+// can move a live generation from graphics to compute after startup.
+TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyRelearnsAfterALiveQueueFamilyMove) {
     const std::string swapchain = ReadProjectSource("hook/vulkan_layer/vulkan_layer_swapchain.cpp");
     const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
+    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
     ASSERT_FALSE(swapchain.empty());
     ASSERT_FALSE(topology.empty());
+    ASSERT_FALSE(present.empty());
     EXPECT_NE(topology.find("Present topology - present queue family"), std::string::npos);
     EXPECT_NE(swapchain.find("ArmPresentTopologyLearning()"), std::string::npos)
-        << "a swapchain recreate is exactly when a game's present topology can change";
+        << "a swapchain recreation must start a fresh bounded learning window";
+    EXPECT_NE(present.find("ObservePrerenderPresentQueue(sd, queue)"), std::string::npos);
+    EXPECT_NE(topology.find("prerenderPresentQueue.load(std::memory_order_acquire) == presentQueue"),
+              std::string::npos)
+        << "a stable present route must remain an atomic-only observation";
+    EXPECT_NE(topology.find("Present queue family changed"), std::string::npos);
+    EXPECT_NE(topology.find("prerenderProducerQueue.store(VK_NULL_HANDLE"), std::string::npos);
+    EXPECT_NE(topology.find("prerenderOnProducerSubmit.store(false"), std::string::npos);
+    EXPECT_NE(topology.find("prerenderTopologySamples.store(0"), std::string::npos);
     EXPECT_NE(topology.find("FinishPresentTopologyLearning()"), std::string::npos)
         << "learning must stop once the answer is known, so the steady state pays only an atomic load";
 
@@ -527,6 +537,15 @@ TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyIsIdentifiedOncePerSwapc
     }
     // Two definitions plus both paths of each of the three submit wrappers.
     EXPECT_EQ(noteCount, 8u);
+}
+
+TEST(OverlaySubmitQueuePolicySourceTest, DirectOverlayCommonWaitChainDoesNotAllocatePerFrame) {
+    const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
+    ASSERT_FALSE(render.empty());
+
+    EXPECT_NE(render.find("VkPipelineStageFlags inlineWaitStage"), std::string::npos);
+    EXPECT_NE(render.find("if (waitSemaphoreCount > 1)"), std::string::npos);
+    EXPECT_EQ(render.find("std::vector<VkPipelineStageFlags> waitStages;"), std::string::npos);
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitUsesSemaphoreDerivedGraphicsProducer) {
@@ -565,6 +584,16 @@ TEST(VulkanPrerenderPolicyTest, MovesCrossThreadQueuePacingToTheProducerSubmit) 
     EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 8184));
     EXPECT_FALSE(ShouldPaceOnProducerSubmit(0, 8184));
     EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 0));
+}
+
+TEST(VulkanPrerenderPolicyTest, RelearnsOnlyForAKnownLiveQueueFamilyMove) {
+    using ce::vulkan_prerender_policy::ShouldRelearnPresentTopology;
+    constexpr uint32_t kUnknownQueueFamily = std::numeric_limits<uint32_t>::max();
+
+    EXPECT_FALSE(ShouldRelearnPresentTopology(kUnknownQueueFamily, 0));
+    EXPECT_FALSE(ShouldRelearnPresentTopology(0, kUnknownQueueFamily));
+    EXPECT_FALSE(ShouldRelearnPresentTopology(0, 0));
+    EXPECT_TRUE(ShouldRelearnPresentTopology(0, 2));
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, ForcedAnisotropyPublishesBoundedApplicationProof) {

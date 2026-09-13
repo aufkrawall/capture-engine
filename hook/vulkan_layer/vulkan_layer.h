@@ -201,11 +201,13 @@ struct SwapchainData {
     std::atomic<uint64_t> lastAcquireTick{0};
     std::atomic<bool> asyncPresentDetected{false};
     // Graphics queue that produced the image consumed by a non-graphics
-    // present queue. Learned from the first present wait semaphore and reused
-    // for queue-depth control without introducing a cross-engine marker.
+    // present queue. Learned from a bounded present-wait sample and relearned
+    // if a live swapchain moves to another present queue family.
     std::atomic<VkQueue> prerenderProducerQueue{VK_NULL_HANDLE};
     std::atomic<bool> prerenderOnProducerSubmit{false};
     std::atomic<uint32_t> prerenderTopologySamples{0};
+    std::atomic<VkQueue> prerenderPresentQueue{VK_NULL_HANDLE};
+    std::atomic<uint32_t> prerenderPresentQueueFamily{VK_QUEUE_FAMILY_IGNORED};
     // Last logged frame-generation present-metering state for this swapchain,
     // so activation and multiplier changes are visible without logging a line
     // per present. 0 means nothing has been logged yet.
@@ -306,6 +308,7 @@ public:
         return IsLearningPresentTopology() || m_LearnPrerenderBoundaries.load(std::memory_order_relaxed);
     }
     void ArmPresentTopologyLearning();
+    void ObservePrerenderPresentQueue(SwapchainData* swapchainData, VkQueue presentQueue);
     void NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores, uint32_t waitCount,
                                    const VkSemaphore* signalSemaphores, uint32_t signalCount);
     void NoteSemaphoreDependencies2(VkQueue queue, const VkSemaphoreSubmitInfo* waitSemaphores, uint32_t waitCount,

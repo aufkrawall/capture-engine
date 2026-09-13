@@ -226,9 +226,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         }
 
         VulkanLayerState::Get().RegisterSwapchain(*pSwapchain, sd);
-        // A new swapchain generation is exactly when a game's present topology
-        // can change - DOOM Eternal's "present from compute" toggle recreates
-        // the swapchain - so re-arm the one-shot identification for it.
+        // A new swapchain generation is one present-topology boundary. The
+        // present hook also catches a live queue-family move on the same
+        // generation before re-arming this bounded identification window.
         VulkanLayerState::Get().ArmPresentTopologyLearning();
         LayerLog("Vulkan Layer: Swapchain registration complete");
     }

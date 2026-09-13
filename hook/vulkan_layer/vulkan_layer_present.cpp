@@ -46,7 +46,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 
     // A compute-only present queue may be fed by a graphics queue owned by a
     // different application thread. Learn that exact semaphore route before
-    // applying the configured queue-depth marker.
+    // applying the configured queue-depth marker. Some engines move the same
+    // swapchain onto another queue family after startup, so that route change
+    // re-arms the bounded dependency window too.
+    VulkanLayerState::Get().ObservePrerenderPresentQueue(sd, queue);
     LearnPrerenderProducerTopology(sd, queue, pPresentInfo);
 
     const bool runtimeEligible = sd && sd->extent.width >= 320 && sd->extent.height >= 180;
@@ -180,7 +183,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     const VkSemaphore* currentWaitSemaphores =
         (pPresentInfo && pPresentInfo->waitSemaphoreCount > 0) ? pPresentInfo->pWaitSemaphores : nullptr;
     uint32_t currentWaitSemaphoreCount = pPresentInfo ? pPresentInfo->waitSemaphoreCount : 0;
-    std::vector<VkSemaphore> chainedWaitSemaphores;
+    VkSemaphore chainedWaitSemaphore = VK_NULL_HANDLE;
     bool modified = false;
 
     const bool injectCaptureRequested =
@@ -364,8 +367,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     perfMetrics.overlayUs -= fenceWaitUs;
                 }
                 if (overlayRendered) {
-                    chainedWaitSemaphores.assign(1, overlayDone);
-                    currentWaitSemaphores = chainedWaitSemaphores.data();
+                    chainedWaitSemaphore = overlayDone;
+                    currentWaitSemaphores = &chainedWaitSemaphore;
                     currentWaitSemaphoreCount = 1;
                     modified = true;
                 }
@@ -423,8 +426,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 // example while its non-blocking fence is busy). Preserve the
                 // original Present wait chain unless captureDone was really signaled.
                 if (captureSubmitted && captureDone != VK_NULL_HANDLE) {
-                    chainedWaitSemaphores.assign(1, captureDone);
-                    currentWaitSemaphores = chainedWaitSemaphores.data();
+                    chainedWaitSemaphore = captureDone;
+                    currentWaitSemaphores = &chainedWaitSemaphore;
                     currentWaitSemaphoreCount = 1;
                     modified = true;
                 }

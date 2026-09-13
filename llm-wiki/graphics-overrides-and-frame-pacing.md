@@ -212,8 +212,16 @@ Primary sources:
   graphics-record, graphics-submit, compute-submit, and compute-record-miss averages. Steady phases are timed only
   every 128th frame, while rare command-record misses are timed when they occur, keeping the diagnostic itself off
   the performance result in all other frames.
-- Once per swapchain generation the layer logs `Present topology - present queue family=... wait semaphore
-  signalled by queue ...`. Graphics-signalled means CE only appends to the game's timeline;
+- DOOM Eternal session `20260913_163446` disproved the earlier assumption that presentation topology changes only
+  with swapchain recreation: one live swapchain first presented on graphics family 0, then moved to non-graphics
+  compute family 2 about 1.7 seconds later without a new create. That could leave `cpu_prerender_limit` attached to
+  the startup route after its bounded dependency learner stopped. Each swapchain now retains the observed present
+  queue/family. A stable queue costs one atomic comparison; a live family move atomically retires the cached producer
+  queue/on-submit decision, clears its sample count, and re-arms bounded semaphore-dependency learning under the
+  state lock before publishing the new route. Same-family queue changes do not discard a valid topology.
+- Each learned route logs `Present topology - present queue family=... wait semaphore signalled by queue ...`, and
+  a live transition first logs `Present queue family changed ... re-learning producer topology`.
+  Graphics-signalled means CE only appends to the game's timeline;
   compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
   permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay
   unavailable` names the missing capability before retaining the direct fallback.

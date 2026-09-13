@@ -25,21 +25,16 @@ inline bool ShouldSuppressFreezeCheckForBackgroundProcess(bool processForeground
     return !processForeground && !forceMonitor && !presentInFlight && !runtimePresentationMonitor;
 }
 
-// "Render thread frozen" is only a defensible claim once CE has actually seen
-// the render loop it monitors. The watchdog is armed from a hook-install worker
-// thread, and its heartbeat is fed exclusively from CE's D3D/DXGI present
-// paths, so a game that renders through an API CE does not present for (Vulkan
-// via the CE layer, OpenGL, a foreign present chain that owns the entry) never
-// beats it - the elapsed time then measures "CE never saw a present", not a
-// hang. Strange Brigade Vulkan `20260818_190149` is that false positive: the
-// game ran at 144 FPS (perf CSV frame 3232 at t=153871 ms) while the watchdog
-// dumped at t=153875 ms, and the in-process dump is what actually froze it.
-// Presenting evidence that does not need a heartbeat still counts: a Present
-// stuck inside CE's own hook, a removed device, or an FG runtime that owns
-// presentation each prove a D3D render loop exists.
-inline bool ShouldAssertRenderThreadFreeze(bool renderLoopHeartbeatObserved, bool presentInFlight, bool forceMonitor,
+// "Render thread frozen" is only a defensible claim with authoritative live
+// render-loop evidence. The watchdog is armed from a hook-install worker, so an
+// elapsed timer by itself can mean only "CE did not see a present". D3D history
+// remains authoritative while D3D owns presentation; the Vulkan-layer policy
+// below instead requires a currently published call. Presenting evidence that
+// does not need a normal heartbeat still counts: a Present stuck inside CE's
+// own D3D hook, a removed device, or an FG runtime that owns presentation.
+inline bool ShouldAssertRenderThreadFreeze(bool liveRenderLoopEvidence, bool presentInFlight, bool forceMonitor,
                                            bool runtimePresentationMonitor) {
-    return renderLoopHeartbeatObserved || presentInFlight || forceMonitor || runtimePresentationMonitor;
+    return liveRenderLoopEvidence || presentInFlight || forceMonitor || runtimePresentationMonitor;
 }
 
 // Which thread a freeze dump must capture when nothing has claimed the
@@ -65,15 +60,19 @@ inline bool IsObservedPresentRecent(uint64_t lastPresentTickMs, uint64_t nowTick
 }
 
 // Which observed render loop still counts as evidence right now. A D3D present
-// path proved itself from inside this module and that proof cannot expire. The
-// Vulkan layer's proof can: it is another DLL, and when it detaches or drops
-// its IPC connection it simply stops publishing, which is indistinguishable
-// from a frozen Vulkan render loop. Withdrawing that evidence with the layer is
-// what keeps a dormant layer from turning a healthy game into a freeze claim -
-// the exact shape of the bug this gate exists to prevent.
-inline bool HasLiveRenderLoopEvidence(bool d3dPresentObserved, bool vulkanLayerPresentObserved,
-                                      bool vulkanLayerStillActive) {
-    return d3dPresentObserved || (vulkanLayerPresentObserved && vulkanLayerStillActive);
+// path proved itself from inside this module, but it is not authoritative while
+// the Vulkan layer owns final presentation: Vulkan WSI can traverse CE-observed
+// DXGI and D3D12 helper paths too. Vulkan games may rotate vkQueuePresentKHR
+// across a worker pool, so the last worker is evidence only while that exact
+// call remains published. A normally returned call clears the publication and
+// must not turn a cleanly idle foreground game into a freeze claim.
+inline bool HasLiveRenderLoopEvidence(bool d3dPresentObserved, bool vulkanLayerStillActive,
+                                      bool vulkanPresentInFlight) {
+    return vulkanLayerStillActive ? vulkanPresentInFlight : d3dPresentObserved;
+}
+
+inline bool ShouldLogVulkanPresentThreadSwitch(uint64_t switchCount) {
+    return switchCount <= 8 || (switchCount != 0 && (switchCount & (switchCount - 1)) == 0);
 }
 
 }  // namespace ce::freeze_watchdog_policy
@@ -166,7 +165,9 @@ public:
 
 private:
     enum class RenderLoopSource { D3DPresent, VulkanLayerPresent };
+    enum class VulkanPresentState { Inactive, Idle, InFlight };
     void NoteRenderLoopObserved(RenderLoopSource source);
+    VulkanPresentState GetVulkanPresentState() const;
     bool HasLiveRenderLoopEvidence() const;
     void PollCrossApiPresentLiveness();
     void WatchdogThread();
@@ -184,6 +185,7 @@ private:
     std::atomic<bool> d3dRenderLoopObserved_{false};
     std::atomic<bool> vulkanLayerRenderLoopObserved_{false};
     std::atomic<bool> monitoredThreadFromVulkanLayer_{false};
+    std::atomic<uint64_t> vulkanPresentThreadSwitchCount_{0};
     // IsFrozen() is const and rate-limits its own diagnostic.
     mutable std::atomic<bool> loggedMissingRenderLoop_{false};
     std::atomic<uint64_t> lastHeartbeat_{0};

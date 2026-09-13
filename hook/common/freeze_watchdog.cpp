@@ -186,6 +186,7 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     lastDumpRequestMicros_.store(0, std::memory_order_release);
     dumpCapturedForCurrentRun_.store(false, std::memory_order_release);
     loggedMissingRenderLoop_.store(false, std::memory_order_release);
+    vulkanPresentThreadSwitchCount_.store(0, std::memory_order_release);
 
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n", finalTimeout,
@@ -261,16 +262,22 @@ void FreezeWatchdog::NoteRenderLoopObserved(RenderLoopSource source) {
 }
 
 bool FreezeWatchdog::HasLiveRenderLoopEvidence() const {
-    bool vulkanLayerStillActive = false;
-    if (vulkanLayerRenderLoopObserved_.load(std::memory_order_acquire)) {
-        const SharedMemoryLayout* sharedMemory = GetHookSharedMemory();
-        vulkanLayerStillActive =
-            sharedMemory &&
-            sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId());
-    }
+    const VulkanPresentState vulkanPresentState = GetVulkanPresentState();
     return ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(
         d3dRenderLoopObserved_.load(std::memory_order_acquire),
-        vulkanLayerRenderLoopObserved_.load(std::memory_order_acquire), vulkanLayerStillActive);
+        vulkanPresentState != VulkanPresentState::Inactive,
+        vulkanPresentState == VulkanPresentState::InFlight);
+}
+
+FreezeWatchdog::VulkanPresentState FreezeWatchdog::GetVulkanPresentState() const {
+    const SharedMemoryLayout* sharedMemory = GetHookSharedMemory();
+    const uint32_t currentPid = GetCurrentProcessId();
+    if (!sharedMemory || !sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(currentPid)) {
+        return VulkanPresentState::Inactive;
+    }
+    return sharedMemory->runtimeState.GetVulkanPresentThreadForProcess(currentPid) != 0
+               ? VulkanPresentState::InFlight
+               : VulkanPresentState::Idle;
 }
 
 // The CE Vulkan layer presents from a separate DLL and cannot call Heartbeat(),
@@ -293,16 +300,6 @@ void FreezeWatchdog::PollCrossApiPresentLiveness() {
         return;
     }
 
-    // Same 2 s recency window the hook-install Vulkan-ownership check uses, and
-    // four watchdog polls wide, so the heartbeat tracks the layer's real present
-    // rate instead of the poll rate. A stale tick deliberately produces no
-    // heartbeat: that is a Vulkan render loop that stopped, which is the one
-    // case where this watchdog should still be allowed to fire.
-    if (!sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
-            currentPid, GetTickCount64(), static_cast<uint32_t>(kCrossApiPresentMaxAgeMs))) {
-        return;
-    }
-
     // Claim the dump's target thread only while no D3D present path owns it.
     // DXVK titles present through both the layer and CE's DXGI wrapper, and the
     // two run on different threads; whichever proves itself first keeps the
@@ -315,9 +312,25 @@ void FreezeWatchdog::PollCrossApiPresentLiveness() {
         (monitoredTid == 0 || monitoredThreadFromVulkanLayer_.load(std::memory_order_acquire))) {
         monitoredThreadId_.store(presentThreadId, std::memory_order_release);
         monitoredThreadFromVulkanLayer_.store(true, std::memory_order_release);
-        HookLogImportant("FreezeWatchdog: Monitoring the Vulkan layer's present thread tid=%lu (was %lu)",
-                         presentThreadId, monitoredTid);
+        const uint64_t switchCount = vulkanPresentThreadSwitchCount_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (ce::freeze_watchdog_policy::ShouldLogVulkanPresentThreadSwitch(switchCount)) {
+            HookLogImportant(
+                "FreezeWatchdog: Monitoring the Vulkan layer's present thread tid=%lu (was %lu switches=%llu)",
+                presentThreadId, monitoredTid, static_cast<unsigned long long>(switchCount));
+        }
     }
+
+    // Same 2 s recency window the hook-install Vulkan-ownership check uses, and
+    // four watchdog polls wide, so the heartbeat tracks the layer's real present
+    // rate instead of the poll rate. Read/claim the current publication first:
+    // a call already stuck beyond this window is still exact target evidence.
+    // A stale tick produces no heartbeat, and only a publication that remains
+    // in flight can keep the Vulkan render loop authoritative after that.
+    if (!sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
+            currentPid, GetTickCount64(), static_cast<uint32_t>(kCrossApiPresentMaxAgeMs))) {
+        return;
+    }
+
     NoteRenderLoopObserved(RenderLoopSource::VulkanLayerPresent);
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
 }
@@ -356,11 +369,15 @@ bool FreezeWatchdog::IsFrozen() const {
     if (!ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(HasLiveRenderLoopEvidence(), inPresentCall,
                                                                     forceMonitor, runtimePresentationMonitor)) {
         if (elapsed > timeoutSeconds_.load() && !loggedMissingRenderLoop_.exchange(true, std::memory_order_acq_rel)) {
+            const VulkanPresentState vulkanPresentState = GetVulkanPresentState();
             HookLogImportant(
-                "FreezeWatchdog: Not asserting a freeze after %.1fs — CE has never observed a present on this "
-                "process's render loop (monitoredTid=%lu). The game most likely renders through an API CE does not "
-                "present for; a hang here would be indistinguishable from a healthy frame.",
-                elapsed, monitoredThreadId_.load(std::memory_order_acquire));
+                "FreezeWatchdog: Not asserting a freeze after %.1fs — no authoritative present is in flight "
+                "(monitoredTid=%lu d3dObserved=%d vulkanLayerActive=%d vulkanPresentInFlight=%d). A returned "
+                "Vulkan present does not leave its last worker as a valid freeze target.",
+                elapsed, monitoredThreadId_.load(std::memory_order_acquire),
+                d3dRenderLoopObserved_.load(std::memory_order_acquire) ? 1 : 0,
+                vulkanPresentState != VulkanPresentState::Inactive ? 1 : 0,
+                vulkanPresentState == VulkanPresentState::InFlight ? 1 : 0);
         }
         return false;
     }
@@ -575,20 +592,35 @@ void FreezeWatchdog::WatchdogThread() {
 
         if (now - lastLogTime > 10'000'000) {
             lastLogTime = now;
-            char logMsg[256];
+            char logMsg[416];
             const int renderLoopObserved = renderLoopObserved_.load(std::memory_order_acquire) ? 1 : 0;
+            const VulkanPresentState vulkanPresentState = GetVulkanPresentState();
+            const int vulkanLayerActive = vulkanPresentState != VulkanPresentState::Inactive ? 1 : 0;
+            const int vulkanPresentInFlight = vulkanPresentState == VulkanPresentState::InFlight ? 1 : 0;
+            const int liveRenderLoopEvidence = ce::freeze_watchdog_policy::HasLiveRenderLoopEvidence(
+                d3dRenderLoopObserved_.load(std::memory_order_acquire), vulkanLayerActive != 0,
+                vulkanPresentInFlight != 0)
+                                                   ? 1
+                                                   : 0;
             snprintf(logMsg, sizeof(logMsg),
-                     "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu, "
-                     "runtimePresentation=%d, renderLoopObserved=%d\n",
-                     elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
-                     dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
-                     renderLoopObserved);
+                      "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu, "
+                      "runtimePresentation=%d, renderLoopObserved=%d, liveEvidence=%d, vulkanLayerActive=%d, "
+                      "vulkanPresentInFlight=%d, vulkanTidSwitches=%llu\n",
+                      elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
+                      dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
+                      renderLoopObserved, liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
+                      static_cast<unsigned long long>(
+                          vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)));
             OutputDebugStringA(logMsg);
             HookLog(
                 "FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
-                "runtimePresentation=%d renderLoopObserved=%d",
+                "runtimePresentation=%d renderLoopObserved=%d liveEvidence=%d vulkanLayerActive=%d "
+                "vulkanPresentInFlight=%d vulkanTidSwitches=%llu",
                 elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId,
-                runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0, renderLoopObserved);
+                runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0, renderLoopObserved,
+                liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
+                static_cast<unsigned long long>(
+                    vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)));
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {

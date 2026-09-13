@@ -1,5 +1,34 @@
 # llm-wiki Log
 
+### 2026-09-13 - DOOM Vulkan compute-present capture and authoritative freeze evidence
+
+DOOM Eternal recording `20260913_163446` is a healthy 3840x2160/120 inject capture from a source capped near
+140 FPS. The compute-present compositor stayed active after the live swapchain moved from graphics family 0 to
+compute family 2. Present cadence averaged 7.148 ms with a 9.442 ms maximum gap; capture CPU averaged 40.8 us
+(p95 50 us). The 62.875 s output has exactly 7,545 video packets, no encoder skip/duplicate/backpressure, and two
+48 kHz audio tracks of exactly 3,018,000 samples each. Strict analysis found no media/audio/visual fault; only the
+bounded startup-publication backlog and external-overlay contexts.
+
+The configured 140 FPS general cap plus disabled capture sync intentionally produces timestamp-nearest 140-to-120
+decimation: 1,258 candidates were superseded, with zero missing CFR slots/duplicates and a 3.726 ms maximum residual.
+For absolute motion uniformity, capture sync multiplier 1 is preferable because it makes source and output cadence
+120-to-120; retaining 140 is a valid gameplay-latency/source-choice tradeoff.
+
+The trace exposed two generic hot-path issues. The common one-semaphore Vulkan overlay/capture/present chain allocated
+three temporary vectors per captured frame; it now uses inline storage and retains allocation only for uncommon
+multi-wait submissions. The swapchain also changed present family without recreation after bounded prerender topology
+learning had ended, which could leave `cpu_prerender_limit=1` attached to the startup route. A stable queue now costs
+one atomic comparison, while a live family move retires the cached producer decision and safely re-arms bounded
+dependency learning. Focused capture/overlay/prerender tests pass.
+
+Freeze session `20260913_154630` confirms a separate false-positive family. Vulkan presents stopped normally at
+15:57:01 and resumed on the same game instance at 15:59:33, but a historical D3D12 ECL helper heartbeat kept the old
+watchdog armed and it dumped at 15:57:33. The named last-present worker (tid 20308) was merely waiting on an idTech
+event; its stack contained no CE, Vulkan, or driver stall. While the Vulkan layer owns final presentation, only a
+currently published `vkQueuePresentKHR` is now authoritative: a truly stuck call remains published and targetable,
+whereas a returned worker cannot trigger a timeout dump. Worker-pool target-switch logs are rate-limited and status
+reports historical versus current evidence explicitly. Focused watchdog policy tests pass.
+
 ### 2026-09-13 - Front-loading has to budget the GPU half too, or it buys nothing
 
 Run `20260913_132320` showed the overrun controller doing its job - `overruns=3` total, `headroomUs` decaying
@@ -200,37 +229,3 @@ test now checks deterministic boundary, group-owner, generated-slot, and concurr
 wall time. The final `--verify --skip-updates --concise` gate passed on build `0.1.6527`, including both hook
 architectures, the full native and Python suites, clang-tidy/file-size ratchets, and ASan/UBSan. Proprietary-driver
 and game confirmation remain pending at this entry.
-
-### 2026-09-12 - DLSS-suspended PostSL capture and screenshot ordering
-
-Static reconstruction found one shared transition seam behind ignored inject screenshots and overlay pixels in
-`capture_include_overlay=false` recordings. A real PostSL callback can remain the exact output/overlay owner after a
-game suspends DLSS-G for a cutscene, but final-output capture previously required the active FG signal. The callback
-could therefore draw first while capture either disappeared or later used the nominally overlay-free ProcessFrame
-location. Screenshot routing had the complementary error: global PostSL active/confirmed latches made ProcessFrame
-yield even when the current callback returned on scene cooldown or render-lock contention, leaving the request
-Pending with no producer.
-
-Real presented-output callbacks now choose a final-generated or suspended-base capture domain from the live DLSS-G
-signal. Both domains retain same-queue before/after-overlay ordering; the suspended domain publishes ordinary base
-metadata and shares the base cadence gate. A Present-scoped capture claim prevents duplicate ProcessFrame capture,
-and base gating occurs only after Phase1 route selection. Screenshot ownership during suspension requires the actual
-callback or a successful PostSL draw in this Present, while the post-ProcessFrame include path rechecks request state.
-The D3D12 screenshot producer also derives its device from the exact backbuffer, retains and validates the submission
-queue's COM device identity, passes a live swapchain rather than a released `IDXGISwapChain3`, completes post-claim
-readback setup failures explicitly, and emits rate-limited stage diagnostics. Focused DXGI, final-output, and
-screenshot policy/regression suites pass; proprietary-driver/game validation remains pending.
-
-### 2026-09-12 - Screen grab privacy: Virtual desktop switching and Task View privacy blackout improvements
-
-Investigated delayed/unreliable video blackening under `black_when_no_fullscreen_focus=true` with `dxgi_dup` monitor capture when switching Windows virtual desktops (`Win+Tab` hotkey or desktop navigation). Root causes identified:
-1. When switching virtual desktops, Windows cloaks windows on inactive desktops using DWM cloaking (`DWM_CLOAKED_SHELL` 0x02 via `DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ...)`), but `IsWindowVisible()` remains `TRUE` and `IsIconic()` remains `FALSE`. Because Windows focus handover to the new desktop lags by 100-500 ms, `TryClassifyWindowFullscreenLike()` previously continued treating the invisible/cloaked game window on Desktop 1 as an active fullscreen foreground window while `dxgi_dup` was already duplicating the physical display showing Desktop 2.
-2. `Win+Tab` opens Task View (`XamlExplorerHostIslandWindow` / `Windows.UI.Core.CoreWindow`, owned by `explorer.exe` or `xamlexplorerhost.exe`), which spans the entire monitor and was previously classified as `fullscreenLike = true`.
-3. Inactive desktop backgrounds (`WorkerW` / `Progman`) and taskbars could be classified as fullscreen-like if focused on Virtual Desktop 2.
-4. In monitor-scope capture (`dxgi_dup`), once a game establishes verified fullscreen focus on the captured monitor, switching to another virtual desktop that contains another fullscreen window (e.g., browser or document viewer) previously had no process continuity check while the target game remained alive.
-
-Fixes implemented:
-- Added `IsWindowCloaked()`, `IsWindowOnCurrentVirtualDesktop()`, and `IsIgnoredShellWindow()` to `common/screen_grab_privacy.*`. `TryClassifyWindowFullscreenLike()` now immediately rejects cloaked windows, windows not on the current virtual desktop, and shell/system UI classes/processes (`explorer.exe`, `xamlexplorerhost.exe`, `shellexperiencehost.exe`, `startmenuexperiencehost.exe`, `searchhost.exe`, `textinputhost.exe`, `WorkerW`, `Progman`, etc.).
-- Added target continuity tracking (`capturedMonitorWindow_`, `capturedMonitorPid_`) to `ScreenGrabPrivacyRuntime`. In monitor-scope capture, once verified fullscreen focus is established, only windows from that same application/process can satisfy fullscreen focus while that target window remains alive. If the target closes, the lock releases cleanly.
-- Added regression tests in `tests/test_screen_grab_privacy.cpp` for cloaked, virtual desktop, and shell class rejection.
-- Validation: Complete `--verify --skip-updates --concise` gate passed with zero regressions (content-validated build, all unit tests, Python self-tests, clang-tidy ratchet clean, ASan/UBSan clean).

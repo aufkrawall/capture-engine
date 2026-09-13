@@ -38,6 +38,21 @@ TEST(InjectCaptureSourceTest, VulkanPresentWaitIsRewiredOnlyAfterCaptureSubmissi
         << "image reuse bookkeeping belongs inside the single try-locked capture transaction";
 }
 
+TEST(InjectCaptureSourceTest, VulkanPresentWaitChainingDoesNotAllocatePerFrame) {
+    const std::string source = ReadSource("hook/vulkan_layer/vulkan_layer.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t begin = source.rfind("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(");
+    const size_t end = source.find("VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = source.substr(begin, end - begin);
+    ASSERT_FALSE(body.empty());
+
+    EXPECT_NE(body.find("VkSemaphore chainedWaitSemaphore = VK_NULL_HANDLE"), std::string::npos);
+    EXPECT_NE(body.find("currentWaitSemaphores = &chainedWaitSemaphore"), std::string::npos);
+    EXPECT_EQ(body.find("std::vector<VkSemaphore> chainedWaitSemaphores"), std::string::npos);
+}
+
 TEST(InjectCaptureSourceTest, VulkanCaptureFailureCannotPoisonFenceOrPublishUnsubmittedFrame) {
     const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
     ASSERT_FALSE(source.empty());
@@ -63,6 +78,18 @@ TEST(InjectCaptureSourceTest, VulkanCaptureFailureCannotPoisonFenceOrPublishUnsu
     EXPECT_NE(body.find("Capture queue submit failed"), std::string::npos);
     EXPECT_NE(body.find("recoveryFence"), std::string::npos);
     EXPECT_NE(body.find("IsCaptureTextureSlotOutstanding"), std::string::npos);
+}
+
+TEST(InjectCaptureSourceTest, VulkanCaptureCommonWaitChainDoesNotAllocatePerFrame) {
+    const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
+    ASSERT_FALSE(source.empty());
+    const std::string body = FunctionBody(source, "bool CaptureFrame(", "// ---- Vulkan Screenshot ----");
+    ASSERT_FALSE(body.empty());
+
+    EXPECT_NE(body.find("std::array<uint64_t, 1> inlineWaitValues"), std::string::npos);
+    EXPECT_NE(body.find("if (waitSemaphoreCount == 1)"), std::string::npos);
+    EXPECT_EQ(body.find("std::vector<uint64_t> waitValues;"), std::string::npos);
+    EXPECT_EQ(body.find("std::vector<VkPipelineStageFlags> waitStages;"), std::string::npos);
 }
 
 TEST(InjectCaptureSourceTest, VulkanQueueFamilyChangesDoNotWaitForTheWholeDevice) {
