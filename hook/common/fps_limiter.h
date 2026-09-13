@@ -224,7 +224,9 @@ public:
         int64_t workCeilingUs = 0;
         int64_t intervalUs = 0;
         int64_t lastReleaseWaitUs = 0;
+        int64_t headroomUs = 0;
         uint32_t releases = 0;
+        uint32_t overruns = 0;
         size_t workSamples = 0;
     };
 
@@ -236,7 +238,9 @@ public:
         state.workCeilingUs = observedFrameWorkCeilingUs_;
         state.intervalUs = cadenceIntervalUs_;
         state.lastReleaseWaitUs = lastFrontLoadedReleaseWaitUs_;
+        state.headroomUs = frontLoadHeadroomUs_;
         state.releases = frontLoadedReleaseCount_;
+        state.overruns = frontLoadOverrunCount_;
         state.workSamples = frameWorkSampleCount_;
         return state;
     }
@@ -256,6 +260,9 @@ private:
     void NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, int targetFps, int cadenceScale,
                                             bool cadenceFirstFrame);
     void ArmFrontLoadedRelease(bool eligible, int effectiveTargetFps);
+    // Learns the extra reservation from presents that actually missed their
+    // deadline while the placement was front-loaded.
+    void NoteFrontLoadedLateness(int64_t lateUs);
     bool RunFrontLoadedRelease();
     void ResetFrontLoadedPacingState();
 
@@ -381,6 +388,10 @@ private:
     int64_t observedFrameWorkCeilingUs_ = 0;
     int64_t frameWorkBudgetUs_ = 0;
     int64_t cadenceIntervalUs_ = 0;
+    int64_t frontLoadHeadroomUs_ = 0;
+    uint32_t frontLoadCleanFrames_ = 0;
+    uint32_t frontLoadOverrunCount_ = 0;
+    bool frontLoadedReleaseRan_ = false;
     bool timerPostPresentPending_ = false;
     int64_t timerPostPresentTargetTime_ = 0;
     int64_t lastFrontLoadedReleaseWaitUs_ = 0;

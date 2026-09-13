@@ -359,10 +359,54 @@ inline int64_t ResolveFrameWorkBudgetUs(int64_t observedWorkCeilingUs, int64_t f
 //   CE's to re-phase, and blocking after a runtime-owned present is the FFX
 //   freeze class.
 // - An explicit Reflex/native post-present cadence already owns the slot.
+// - Capture sync is excluded. Removing the game's slack before the deadline
+//   raises the rate of presents that miss it (Strange Brigade DX12 went from
+//   0.24% to 0.63% late frames), and under capture sync a missed deadline
+//   skips whole CFR grid slots rather than costing a fraction of a millisecond
+//   of frame time. While a recording is the product, the capture grid outranks
+//   input latency.
 inline bool ShouldFrontLoadCadenceWait(bool gatedOnCadenceGrid, bool callSiteRunsPostPresentCadence,
-                                       bool frameGenerationActive, bool explicitPostPresentCadencePending) {
+                                       bool frameGenerationActive, bool explicitPostPresentCadencePending,
+                                       bool usingCaptureSync) {
     return gatedOnCadenceGrid && callSiteRunsPostPresentCadence && !frameGenerationActive &&
-           !explicitPostPresentCadencePending;
+           !explicitPostPresentCadencePending && !usingCaptureSync;
+}
+
+// Extra reservation above the observed work ceiling, learned from the presents
+// that actually missed their deadline.
+//
+// A ceiling taken over a sliding window of N samples is, by construction,
+// exceeded by roughly one in N+1 later frames: at 90 fps with a 64-sample ring
+// that is over one missed deadline per second, which is exactly where a 1% low
+// is measured. Strange Brigade DX12 showed it - front-loading moved the
+// published 1% low from 86.9 to 84.9 fps, the 0.1% low from 86.5 to 83.2, and
+// the overlay's frame-time stddev from 148us to 225us, with the limiter
+// reporting late frames of 24-455us where the back edge reported none.
+//
+// Widening the reservation for everyone would pay latency the game never
+// needed. Growing it by what a real overrun actually cost, and decaying it
+// while none occur, pays only what this game demonstrates it needs - and while
+// the presentation queue still holds the frame (6.8ms on that session) those
+// microseconds do not reach the screen at all.
+inline int64_t GrowFrontLoadHeadroomUs(int64_t headroomUs, int64_t lateUs, int64_t intervalUs) {
+    // Lateness of a whole interval or more is a hitch, not a budget overrun:
+    // the frame could not have been started early enough to make that deadline
+    // and reserving for it would park the placement at the back edge forever.
+    if (lateUs <= 0 || intervalUs <= 0 || lateUs >= intervalUs) {
+        return headroomUs;
+    }
+    return lateUs > headroomUs ? lateUs : headroomUs;
+}
+
+// Decay applied once per clean observation window so a one-off overrun cannot
+// hold the reservation for the rest of the session. Integer division reaches
+// zero on its own, so the placement fully recovers rather than asymptoting.
+inline int64_t DecayFrontLoadHeadroomUs(int64_t headroomUs) {
+    if (headroomUs <= 0) {
+        return 0;
+    }
+    const int64_t step = headroomUs / 8;
+    return headroomUs - (step > 0 ? step : 1);
 }
 
 // Deterministic multiplier-sized output-group admission for real final

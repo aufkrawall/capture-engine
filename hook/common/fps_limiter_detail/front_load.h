@@ -28,8 +28,11 @@ inline void FpsLimiter::RecordFrameWork(int64_t workUs, int64_t intervalUs) {
         }
     }
     observedFrameWorkCeilingUs_ = ceilingUs;
+    // The reservation above the ceiling is the timer margin plus whatever the
+    // overrun controller has learned this game needs.
     frameWorkBudgetUs_ = ce::fps_limiter_policy::ResolveFrameWorkBudgetUs(
-        ceilingUs, adaptiveFineMarginUs_, intervalUs, frameWorkSampleCount_, kFrameWorkMinimumSamples);
+        ceilingUs, adaptiveFineMarginUs_ + frontLoadHeadroomUs_, intervalUs, frameWorkSampleCount_,
+        kFrameWorkMinimumSamples);
 }
 
 inline int64_t FpsLimiter::CadenceIntervalTicks(int targetFps, int cadenceScale) const {
@@ -65,6 +68,35 @@ inline void FpsLimiter::NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, 
 // Hand the next deadline to ApplyPostPresent so the game is released just in
 // time to build the frame that deadline presents, instead of finishing it
 // immediately and ageing in the present hook.
+// A present that missed its deadline while the previous frame was released on
+// a budget is the only evidence that the budget was too small. Anything else -
+// a hitch, a back-edge frame, a frame the release never ran for - says nothing
+// about it and must not move the reservation.
+inline void FpsLimiter::NoteFrontLoadedLateness(int64_t lateUs) {
+    if (!frontLoadedReleaseRan_) {
+        return;
+    }
+    frontLoadedReleaseRan_ = false;
+    const int64_t grown =
+        ce::fps_limiter_policy::GrowFrontLoadHeadroomUs(frontLoadHeadroomUs_, lateUs, cadenceIntervalUs_);
+    if (grown != frontLoadHeadroomUs_) {
+        frontLoadHeadroomUs_ = grown;
+        frontLoadCleanFrames_ = 0;
+        ++frontLoadOverrunCount_;
+        TraceLog("Apply: LOCAL front-load overrun lateUs=%lld headroomUs=%lld ceilingUs=%lld overruns=%u", lateUs,
+                 frontLoadHeadroomUs_, observedFrameWorkCeilingUs_, frontLoadOverrunCount_);
+        return;
+    }
+    if (lateUs > 0) {
+        // A hitch: neither evidence for nor against the reservation.
+        return;
+    }
+    if (++frontLoadCleanFrames_ >= frameWorkUs_.size()) {
+        frontLoadCleanFrames_ = 0;
+        frontLoadHeadroomUs_ = ce::fps_limiter_policy::DecayFrontLoadHeadroomUs(frontLoadHeadroomUs_);
+    }
+}
+
 inline void FpsLimiter::ArmFrontLoadedRelease(bool eligible, int effectiveTargetFps) {
     if (!eligible || localTargetTime_ == 0 || qpcFrequency <= 0 || frameWorkBudgetUs_ <= 0 ||
         frameWorkBudgetUs_ >= cadenceIntervalUs_) {
@@ -72,6 +104,7 @@ inline void FpsLimiter::ArmFrontLoadedRelease(bool eligible, int effectiveTarget
     }
     timerPostPresentPending_ = true;
     timerPostPresentTargetTime_ = localTargetTime_ - ((frameWorkBudgetUs_ * qpcFrequency) / 1000000);
+    frontLoadedReleaseRan_ = false;
     if (frontLoadedPacingLogged_) {
         return;
     }
@@ -109,6 +142,8 @@ inline bool FpsLimiter::RunFrontLoadedRelease() {
         qpcFrequency > 0 ? ((releaseEnd.QuadPart - releaseStart.QuadPart) * 1000000) / qpcFrequency : 0;
     lastFrontLoadedReleaseWaitUs_ = releaseWaitUs;
     ++frontLoadedReleaseCount_;
+    // The next Apply()'s lateness, if any, is attributable to this budget.
+    frontLoadedReleaseRan_ = true;
     // The perf CSV's limiter column is the total time the limiter blocked this
     // frame's thread, which is now spent on both sides of Present.
     lastActualWaitUs_ += releaseWaitUs;
@@ -127,5 +162,8 @@ inline void FpsLimiter::ResetFrontLoadedPacingState() {
     frameWorkBudgetUs_ = 0;
     cadenceIntervalUs_ = 0;
     lastFrontLoadedReleaseWaitUs_ = 0;
+    frontLoadHeadroomUs_ = 0;
+    frontLoadCleanFrames_ = 0;
+    frontLoadedReleaseRan_ = false;
     frontLoadedPacingLogged_ = false;
 }

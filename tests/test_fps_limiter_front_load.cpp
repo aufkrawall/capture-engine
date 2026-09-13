@@ -45,18 +45,57 @@ TEST(FpsLimiterPolicyTest, FrontLoadingRequiresAPeriodTheLimiterFullyOwns) {
 
     EXPECT_TRUE(ShouldFrontLoadCadenceWait(/*gatedOnCadenceGrid=*/true, /*callSiteRunsPostPresentCadence=*/true,
                                            /*frameGenerationActive=*/false,
-                                           /*explicitPostPresentCadencePending=*/false));
+                                           /*explicitPostPresentCadencePending=*/false,
+                                           /*usingCaptureSync=*/false));
     // A duplicate-prone site can deliver more than one entry per frame, so a
     // release cannot be attributed to one present.
-    EXPECT_FALSE(ShouldFrontLoadCadenceWait(false, true, false, false));
+    EXPECT_FALSE(ShouldFrontLoadCadenceWait(false, true, false, false, false));
     // A site that never runs the post-present half would arm a release nothing
     // consumes.
-    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, false, false, false));
+    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, false, false, false, false));
     // Under frame generation the present stream is not CE's to re-phase, and
     // blocking after a runtime-owned present is the FFX freeze class.
-    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, true, true, false));
+    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, true, true, false, false));
     // An explicit Reflex/native post-present cadence already owns the slot.
-    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, true, false, true));
+    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, true, false, true, false));
+    // Capture sync: a missed deadline skips whole CFR grid slots, so the
+    // capture grid outranks input latency while a recording is the product.
+    EXPECT_FALSE(ShouldFrontLoadCadenceWait(true, true, false, false, true));
+}
+
+TEST(FpsLimiterPolicyTest, FrontLoadHeadroomGrowsOnlyOnRealOverruns) {
+    using ce::fps_limiter_policy::GrowFrontLoadHeadroomUs;
+
+    constexpr int64_t kIntervalUs = 11111;
+    // A present that missed its deadline by less than an interval is a budget
+    // overrun: reserve exactly what it cost.
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(0, 455, kIntervalUs), 455);
+    // The reservation only ever grows towards the worst overrun seen.
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(455, 24, kIntervalUs), 455);
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(455, 900, kIntervalUs), 900);
+    // On-time frames leave it alone.
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(455, 0, kIntervalUs), 455);
+    // A whole interval or more is a hitch the frame could never have been
+    // started early enough for; reserving for it would park the placement at
+    // the back edge forever.
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(455, kIntervalUs, kIntervalUs), 455);
+    EXPECT_EQ(GrowFrontLoadHeadroomUs(455, 717844, kIntervalUs), 455);
+}
+
+TEST(FpsLimiterPolicyTest, FrontLoadHeadroomDecaysBackToZero) {
+    using ce::fps_limiter_policy::DecayFrontLoadHeadroomUs;
+
+    EXPECT_EQ(DecayFrontLoadHeadroomUs(0), 0);
+    EXPECT_EQ(DecayFrontLoadHeadroomUs(800), 700);
+    // Integer division must still reach zero rather than asymptote, so a
+    // one-off overrun cannot hold the reservation for the rest of the session.
+    int64_t headroom = 455;
+    for (int i = 0; i < 200 && headroom > 0; ++i) {
+        const int64_t next = DecayFrontLoadHeadroomUs(headroom);
+        ASSERT_LT(next, headroom);
+        headroom = next;
+    }
+    EXPECT_EQ(headroom, 0);
 }
 
 TEST_F(FpsLimiterTest, UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents) {
@@ -148,4 +187,23 @@ TEST_F(FpsLimiterTest, FrameGenerationKeepsTheBackEdgePlacement) {
     g_FGCompat.SetDLSSFGActive(false);
 
     EXPECT_EQ(state.releases, 0u);
+}
+
+// Capture sync owns a CFR grid, not merely a frequency. Removing the game's
+// slack before the deadline raises the rate of presents that miss it, and a
+// missed deadline there skips whole grid slots.
+TEST_F(FpsLimiterTest, CaptureSyncKeepsTheBackEdgePlacement) {
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->runtimeState.isRecording = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(120);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    for (int i = 0; i < 48; ++i) {
+        limiter.Apply(true, kUniquePresentSite);
+        limiter.ApplyPostPresent();
+    }
+
+    EXPECT_EQ(limiter.GetFrontLoadedPacingState().releases, 0u);
 }

@@ -747,13 +747,17 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // timeout per frame before local fallback ran.
     const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
 
+    // A missed deadline on a frame the release owned is the only evidence the
+    // budget was too small; feed it back before sizing the next one.
+    NoteFrontLoadedLateness(cadence.lateUs);
+
     // Front-loaded placement: the deadline and the pre-present wait above are
     // unchanged, so the cap and the grid phase never depend on the release
     // running at all - it only decides how late the game starts the frame it
     // presents. See fps_limiter_detail/front_load.h.
     ArmFrontLoadedRelease(ce::fps_limiter_policy::ShouldFrontLoadCadenceWait(
                               strictGrid, allowPostPresentReflexCadence, fgActive,
-                              reflexPostPresentCadencePending_),
+                              reflexPostPresentCadencePending_, usingCaptureSync),
                           effectiveTargetFps);
     if (localCadenceFirstFrame) {
         TraceLog(
