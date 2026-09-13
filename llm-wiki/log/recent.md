@@ -1,5 +1,46 @@
 # llm-wiki Log
 
+### 2026-09-13 - The limiter was holding finished frames: front-loaded cadence release
+
+Follow-up run `20260913_124032` confirmed the dedup fix (`activeDedup=0`, `site=1 strictGrid=1`, `waited=120 late=0
+avgFps=90.0`, `resets=0`, steady-state frame-time stddev 194-202 us against 648 us for a third-party front-edge
+limiter in the same scene). It also exposed the next problem: the overlay reported ~26.4 ms PC latency against
+~24.2 ms for that limiter.
+
+The PC-latency chain decomposed it exactly. `latency = anchorToPresent + presentToDisplay + inputWait`, and the
+inputWait term was identical (5.55 ms) in both. CE: `anchorToPresent=20.5ms presentToDisplay=0.4ms appQueue=6`.
+Third-party: `anchorToPresent=11.2ms presentToDisplay=7.5ms`. With FG off the estimator records the same present
+into both rings, so the 9.3 ms difference in `anchorToPresent` is `runtimePresent (ETW PresentStart) - CE hook
+entry` - CE's own pre-present wait, measured. The perf CSV agrees: median frame delta 11.09 ms, median
+`fps_limit_wait_us` 9.21-9.34 ms, CE in-hook total 0.10 ms, so the game built each frame in a median 1.78-1.94 ms
+(stddev 135-169 us, max 3.1 ms) and then aged in CE's hook for the remaining 9.3 ms.
+
+Root cause: the limiter's deadline decides when a frame is PRESENTED, and CE was also letting it decide when the
+frame was BUILT - by placing the entire wait after the game had already finished rendering. The frame was therefore
+9.3 ms old by the time it reached the runtime, and 0.4 ms later it was on screen.
+
+Fix: `ApplyPostPresent()` now releases the game `ResolveFrameWorkBudgetUs()` before the next deadline, so the frame
+is built last and presented immediately. The budget is the measured high-water of recent frame work plus the
+adaptive timer margin (a ceiling, not a percentile: overrunning it makes the present late, and a late present
+re-phases the general cadence). Crucially `localTargetTime_` and the pre-present wait are untouched, so this is a
+latency control only - a skipped release, an unmeasurable work time, or a budget of a whole interval all degrade to
+the original back-edge placement with the cap and the grid phase intact. Gated by `ShouldFrontLoadCadenceWait()` on
+a grid-gated site that runs the post-present half, no active FG, and no explicit Reflex cadence owning the slot.
+
+Expected effect on the measured chain: `anchorToPresent` falls to ~11.2 ms (the modelled interval plus a ~0.1 ms
+hook gap) and the published estimate to ~17 ms. Note the estimator's own modelling limit either way - it models
+input-to-present as one base interval when no marker exists, which over-states a front-edge loop whose real work is
+1.8 ms. That limitation is documented in `system_latency_frame_begin.h` and is unchanged here; it affects the
+absolute number, not the A/B.
+
+New units `hook/common/fps_limiter_detail/{front_load,cadence_diagnostics}.h` keep `apply.h` under the size ceiling.
+Tests: `tests/test_fps_limiter_front_load.cpp` (budget table incl. the not-measurable and does-not-fit cases, the
+eligibility truth table, the placement moving under a unique-present site, the cap surviving a skipped release, and
+duplicate-prone/FG sites keeping the back edge). Hardware run pending: a good run shows `frontLoad=1` with
+`budgetUs` a few hundred us above `workCeilingUs`, `releases` climbing, `resets=0` still, and the PC latency sample
+dropping by roughly the old `scheduledWaitUs`.
+
+
 ### 2026-09-13 - SB DX12 fps limiter: the 2 ms duplicate-present window ate 46 genuine frames/s
 
 Session `20260913_122208` (Strange Brigade DX12, `FpsLimiter.general_fps=90`, `general_limiter_mode=basic`, inject

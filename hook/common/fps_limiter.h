@@ -164,6 +164,10 @@ public:
         std::lock_guard<std::mutex> lock(cadenceMutex_);
         reflexPostPresentCadencePending_ = false;
         externalNativePostPresentPending_ = false;
+        // A present that never completed releases nothing: the next frame's
+        // pre-present wait still owns the deadline, so dropping the armed
+        // release only costs this frame its front-loaded placement.
+        timerPostPresentPending_ = false;
     }
 
     void SetNativePacingBackend(const NativeFpsPacingBackend& backend) {
@@ -212,8 +216,51 @@ public:
 
     void Shutdown();
 
+    // Front-loaded cadence placement state, for diagnostics and regression
+    // coverage. See fps_limiter_detail/front_load.h.
+    struct FrontLoadedPacingState {
+        bool armed = false;
+        int64_t budgetUs = 0;
+        int64_t workCeilingUs = 0;
+        int64_t intervalUs = 0;
+        int64_t lastReleaseWaitUs = 0;
+        uint32_t releases = 0;
+        size_t workSamples = 0;
+    };
+
+    FrontLoadedPacingState GetFrontLoadedPacingState() const {
+        std::lock_guard<std::mutex> lock(cadenceMutex_);
+        FrontLoadedPacingState state;
+        state.armed = timerPostPresentPending_;
+        state.budgetUs = frameWorkBudgetUs_;
+        state.workCeilingUs = observedFrameWorkCeilingUs_;
+        state.intervalUs = cadenceIntervalUs_;
+        state.lastReleaseWaitUs = lastFrontLoadedReleaseWaitUs_;
+        state.releases = frontLoadedReleaseCount_;
+        state.workSamples = frameWorkSampleCount_;
+        return state;
+    }
+
 private:
     void RecordTimerOvershoot(int64_t overshootUs);
+
+    // Time the game needed to build and submit a frame after the limiter last
+    // released it, used to size the front-loaded release. Samples outside the
+    // cadence interval are a hitch or a placement change, not frame work.
+    void RecordFrameWork(int64_t workUs, int64_t intervalUs);
+
+    // Rational cadence interval of the currently configured grid, in QPC ticks.
+    int64_t CadenceIntervalTicks(int targetFps, int cadenceScale) const;
+
+    // Front-loaded cadence placement; see fps_limiter_detail/front_load.h.
+    void NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, int targetFps, int cadenceScale,
+                                            bool cadenceFirstFrame);
+    void ArmFrontLoadedRelease(bool eligible, int effectiveTargetFps);
+    bool RunFrontLoadedRelease();
+    void ResetFrontLoadedPacingState();
+
+    // 120-frame cadence report; see fps_limiter_detail/cadence_diagnostics.h.
+    void EmitLocalCadenceStats(const LocalCadenceResult& cadence, int effectiveTargetFps);
 
     void ResetReflexNativePacingState();
 
@@ -324,6 +371,21 @@ private:
     size_t timerOvershootCursor_ = 0;
     size_t timerOvershootSampleCount_ = 0;
     int64_t adaptiveFineMarginUs_ = 100;
+    // Front-loaded cadence placement. The grid deadline and the pre-present
+    // wait are untouched by all of this: the release only decides how late in
+    // the period the game starts building the frame that deadline presents.
+    static constexpr size_t kFrameWorkMinimumSamples = 16;
+    std::array<int64_t, 64> frameWorkUs_{};
+    size_t frameWorkCursor_ = 0;
+    size_t frameWorkSampleCount_ = 0;
+    int64_t observedFrameWorkCeilingUs_ = 0;
+    int64_t frameWorkBudgetUs_ = 0;
+    int64_t cadenceIntervalUs_ = 0;
+    bool timerPostPresentPending_ = false;
+    int64_t timerPostPresentTargetTime_ = 0;
+    int64_t lastFrontLoadedReleaseWaitUs_ = 0;
+    uint32_t frontLoadedReleaseCount_ = 0;
+    bool frontLoadedPacingLogged_ = false;
     std::atomic<uint32_t> concurrentApplySkips_{0};
     static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };
@@ -331,6 +393,8 @@ private:
 // Member definitions live out of line to keep this header near the AGENTS.md
 // size ceiling. They stay inline, so the per-frame path is unchanged. These
 // must come after the class body above.
+#include "fps_limiter_detail/cadence_diagnostics.h"
+#include "fps_limiter_detail/front_load.h"
 #include "fps_limiter_detail/frame_pacing.h"
 #include "fps_limiter_detail/apply.h"
 #include "fps_limiter_detail/lifecycle.h"

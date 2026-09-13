@@ -303,6 +303,68 @@ inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenera
     return false;
 }
 
+// Where a fully-owned cadence period spends its idle time.
+//
+// The deadline decides when a frame is PRESENTED. It does not have to decide
+// when the game is allowed to BUILD that frame, and spending the whole wait
+// after the game already finished rendering is what ages the frame: Strange
+// Brigade DX12 under a 90 fps cap rendered a frame in a median 1.8ms (stddev
+// 0.15ms) and then sat in CE's present hook for a median 9.3ms of every 11.1ms
+// period. The overlay's PC-latency chain measured exactly that shape -
+// anchorToPresent 20.5ms against a 0.4ms present-to-display, where a
+// front-edge limiter in the same scene read 11.2ms/7.5ms.
+//
+// Releasing the game `budget` before the deadline moves that idle to the FRONT
+// of the period: the frame is built last and presented immediately. The
+// present still lands on the same absolute grid slot, because whatever the
+// budget over-reserved is simply waited out before Present as before. The
+// budget is therefore a latency control only, never a rate or correctness one:
+// a budget of a whole interval, a skipped post-present release, or an
+// unmeasurable work time all degrade to the original back-edge behaviour with
+// the cap and the grid phase intact.
+//
+// The ceiling is the observed high-water of recent frames rather than a
+// percentile: overrunning the budget makes the present late, and a late
+// present re-phases the general cadence. One hitch saturates the ceiling and
+// parks the placement back at the back edge until it ages out, which is the
+// safe direction.
+inline int64_t ResolveFrameWorkBudgetUs(int64_t observedWorkCeilingUs, int64_t fineMarginUs, int64_t intervalUs,
+                                        size_t sampleCount, size_t minimumSamples) {
+    if (intervalUs <= 0) {
+        return 0;
+    }
+    if (sampleCount < minimumSamples || observedWorkCeilingUs < 0) {
+        // Not measurable yet: reserve the whole period, which is the original
+        // back-edge placement expressed as a budget. Sample count is the only
+        // measurability signal - a ceiling that rounds to zero is a real
+        // measurement of a frame that costs less than the timer margin, and the
+        // margin alone is the right reservation for it.
+        return intervalUs;
+    }
+    const int64_t margin = fineMarginUs > 0 ? fineMarginUs : 0;
+    if (observedWorkCeilingUs > intervalUs - margin) {
+        return intervalUs;
+    }
+    return observedWorkCeilingUs + margin;
+}
+
+// A cadence wait may only be front-loaded where CE owns the whole period.
+//
+// - The call site must gate every entry on the grid (PresentSite contract), so
+//   exactly one release belongs to one present.
+// - The call site must run the post-present half; the flag that promises an
+//   explicit post-present cadence is that same promise.
+// - Frame generation disqualifies it for the same reason it disqualifies the
+//   strict grid on a kUniqueApplicationPresent site: the present stream is not
+//   CE's to re-phase, and blocking after a runtime-owned present is the FFX
+//   freeze class.
+// - An explicit Reflex/native post-present cadence already owns the slot.
+inline bool ShouldFrontLoadCadenceWait(bool gatedOnCadenceGrid, bool callSiteRunsPostPresentCadence,
+                                       bool frameGenerationActive, bool explicitPostPresentCadencePending) {
+    return gatedOnCadenceGrid && callSiteRunsPostPresentCadence && !frameGenerationActive &&
+           !explicitPostPresentCadencePending;
+}
+
 // Deterministic multiplier-sized output-group admission for real final
 // presentation boundaries (native-Vulkan vkQueuePresentKHR /
 // vkAcquireNextImageKHR). Exactly one callback per group of `multiplier`

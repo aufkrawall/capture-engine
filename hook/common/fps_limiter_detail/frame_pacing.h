@@ -284,6 +284,13 @@ inline void FpsLimiter::ApplyPostPresent() {
         lastApplyReturnQpc = retQpc.QuadPart;
         return;
     }
+    // Front-loaded release: the frame just presented is already on its way to
+    // the screen; this holds the game until it is time to build the NEXT one so
+    // that frame is presented fresh at its deadline instead of finished early
+    // and aged in the present hook. See fps_limiter_detail/front_load.h.
+    if (RunFrontLoadedRelease()) {
+        return;
+    }
     if (!reflexPostPresentCadencePending_) {
         return;
     }

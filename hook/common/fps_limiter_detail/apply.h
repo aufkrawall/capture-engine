@@ -114,6 +114,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         g_ReflexLimiter.SetManualLimiterConfiguredOrActive(false);
         lastActualWaitUs_ = 0;
         loggedNativeFallback_ = false;
+        ResetFrontLoadedPacingState();
         ResetReflexNativePacingState();
         // Release timer resolution if we had it set
         {
@@ -738,11 +739,22 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         }
     }
 
+    NoteFrameWorkForFrontLoadedRelease(nowQpc.QuadPart, cadenceTargetFps, cadenceScale, localCadenceFirstFrame);
+
     // Timer fallback/basic/FG fallback pacing is hook-local.  Waiting for
     // the helper process here is fragile because per-game config can enable
     // the limiter after startup; an unanswered event used to cost one full
     // timeout per frame before local fallback ran.
     const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
+
+    // Front-loaded placement: the deadline and the pre-present wait above are
+    // unchanged, so the cap and the grid phase never depend on the release
+    // running at all - it only decides how late the game starts the frame it
+    // presents. See fps_limiter_detail/front_load.h.
+    ArmFrontLoadedRelease(ce::fps_limiter_policy::ShouldFrontLoadCadenceWait(
+                              strictGrid, allowPostPresentReflexCadence, fgActive,
+                              reflexPostPresentCadencePending_),
+                          effectiveTargetFps);
     if (localCadenceFirstFrame) {
         TraceLog(
             "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "
@@ -756,35 +768,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps,
             static_cast<unsigned>(site), strictGrid ? 1 : 0);
     }
-    if (cadence.emitStats) {
-        TraceLog(
-            "Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
-            "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
-            "resets=%u phaseSkipped=%u dedup=%u activeDedup=%u",
-            cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps,
-            cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames,
-            cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames,
-            cadence.statsSkippedGridSlots, applyDedupCount_, applyActiveDedupCount_);
-        HookLog(
-            "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
-            "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",
-            cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
-            effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
-            cadence.statsSkippedGridSlots, applyActiveDedupCount_);
-        if (cadence.statsBoundaryCallbacks > 0 || cadence.statsGeneratedPasses > 0 ||
-            cadence.statsConcurrentSkips > 0 || cadence.statsGroupResets > 0) {
-            // Rate-limited by the 120-frame stats window. A nonzero concurrent
-            // skip while a real-boundary limiter is active is an invariant
-            // violation: boundary owners block on the cadence lock and
-            // generated slots never touch it, so this must not increase.
-            HookLog(
-                "FPS Limiter: boundary admission stats: boundaryCallbacks=%u pacedGroups=%u generatedPasses=%u "
-                "groupResets=%u concurrentSkips=%u%s",
-                cadence.statsBoundaryCallbacks, cadence.statsPacedGroups, cadence.statsGeneratedPasses,
-                cadence.statsGroupResets, cadence.statsConcurrentSkips,
-                cadence.statsConcurrentSkips > 0 ? " [INVARIANT VIOLATION: unpaced lock-contention escape]" : "");
-        }
-    }
+    EmitLocalCadenceStats(cadence, effectiveTargetFps);
 
     // Record time Apply() returned so sequential duplicate presents
     // (e.g. DXVK Present+PresentEx) are deduped on the next call.

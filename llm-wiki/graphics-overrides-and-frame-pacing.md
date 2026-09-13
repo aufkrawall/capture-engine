@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-09-13 (`ce::fps_limiter_policy::PresentSite` call-site contract; DXGI top-level presents gated on the cadence grid)
+Last cross-checked: 2026-09-13 (`PresentSite` call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -8,6 +8,7 @@ Primary sources:
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
+- `hook/common/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
 - `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,remix_frame_generation_policy.h,reflex_limiter.h,ue5_rr_override_policy.h,ue5_cvar_override_policy.h}`
 - `captureengine/{display_timing_service.cpp,display_timing_policy.h,display_timing_correlation.h}`
 - `hook/main_ue5*.cpp`
@@ -17,7 +18,7 @@ Primary sources:
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
-- `tests/{test_fps_limiter_present_site,test_present_pacing_policy}.cpp`
+- `tests/{test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 
 ## Configuration contract
 
@@ -329,6 +330,24 @@ Primary sources:
   below anything a player would call a freeze. A wait that misses the ceiling latches pacing off process-wide rather
   than paying the ceiling on every later present. Both halves matter: commit ccbdeac5 fixed the freeze with a 16 ms
   ceiling that broke the pacing, and dd30a5b6 restored the pacing by restoring the freeze.
+- **The cadence wait is front-loaded: the deadline decides when a frame is PRESENTED, not when the game may BUILD it.**
+  Spending the whole wait after the game already finished rendering ages the finished frame by the wait. Strange
+  Brigade DX12 (session `20260913_124032`, 90 fps cap) built a frame in a median 1.8 ms (stddev 0.15 ms) and then sat
+  in CE's present hook for a median 9.3 ms of every 11.1 ms period; the overlay's PC-latency chain measured exactly
+  that - `anchorToPresent=20.5ms presentToDisplay=0.4ms`, against `11.2ms/7.5ms` and 24.2 ms published for a
+  front-edge third-party limiter in the same scene. `ApplyPostPresent()` now releases the game
+  `ResolveFrameWorkBudgetUs()` before the next deadline instead, so the frame is built last and presented
+  immediately. The budget is the measured high-water of recent frame work (release -> next `Apply()` entry, 64-sample
+  ring) plus the adaptive timer margin - a ceiling rather than a percentile, because overrunning it makes the present
+  late and a late present re-phases the general cadence; one hitch saturates the ceiling and parks the placement back
+  at the back edge until it ages out. **The budget is a latency control only, never a rate or correctness one:**
+  `localTargetTime_` and the pre-present wait are untouched, so a skipped release (`CancelPostPresentPacing()`, a
+  failed Present, a call site that never runs the post-present half), an unmeasurable work time, or a budget of a
+  whole interval all degrade to the original back-edge placement with the cap and the grid phase intact.
+  `ShouldFrontLoadCadenceWait()` requires a grid-gated site that runs the post-present half, no active frame
+  generation (the present stream is not CE's to re-phase, and blocking after a runtime-owned present is the FFX
+  freeze class), and no explicit Reflex/native post-present cadence already owning the slot. Diagnostics ride the
+  120-frame stats line as `frontLoad=/budgetUs=/workCeilingUs=/releaseWaitUs=/releases=`.
 - The timer limiter uses a rational QPC/Bresenham grid, never emits a short catch-up interval after a missed deadline,
   and arms a high-resolution timer before the deadline. Capture-sync late recovery advances by whole rational-grid slots
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
