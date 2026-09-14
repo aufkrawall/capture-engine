@@ -29,13 +29,14 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
     if (status != ERROR_SUCCESS)
         return status;
 
-    using namespace display_timing_etw;
-    status = EnableFilteredProvider(*session, kRuntimeProvider, kRuntimeKeyword,
-                                    {kRuntimePresentStart, kRuntimeMpoPresentStart});
+    namespace dte = display_timing_etw;
+    status = dte::EnableFilteredProvider(*session, dte::kRuntimeProvider, dte::kRuntimeKeyword,
+                                         {dte::kRuntimePresentStart, dte::kRuntimeMpoPresentStart});
     if (status == ERROR_SUCCESS) {
-        status = EnableFilteredProvider(
-            *session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
-            {kQueuePacketStart, kMmioFlip, kMmioMpoFlip, kVsync, kVsyncMpo, kHsyncMpo, kMpoPresentIds});
+        status = dte::EnableFilteredProvider(
+            *session, dte::kGraphicsKernelProvider, dte::kGraphicsKernelKeyword,
+            {dte::kQueuePacketStart, dte::kMmioFlip, dte::kMmioMpoFlip, dte::kVsync,
+             dte::kVsyncMpo, dte::kHsyncMpo, dte::kMpoPresentIds});
     }
     if (status != ERROR_SUCCESS) {
         StopSession(*session, sessionName);
@@ -44,14 +45,16 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
     }
 
     const ULONG frameTypeStatus =
-        EnableFilteredProvider(*session, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
+        dte::EnableFilteredProvider(*session, dte::kFrameTypeProvider, dte::kFrameTypeKeyword,
+                                    {dte::kGeneratedFlip});
     if (frameTypeStatus != ERROR_SUCCESS)
         LogWarn("[DisplayTiming] Generated-frame timestamp events are unavailable: %lu", frameTypeStatus);
 
     // Optional like the frame-type provider: absent on non-NVIDIA adapters,
     // where flip event timestamps already are the screen times.
     const ULONG nvidiaStatus =
-        EnableFilteredProvider(*session, kNvidiaDisplayProvider, kNvidiaDisplayKeyword, {kNvidiaFlipRequest});
+        dte::EnableFilteredProvider(*session, dte::kNvidiaDisplayProvider, dte::kNvidiaDisplayKeyword,
+                                    {dte::kNvidiaFlipRequest});
     if (nvidiaStatus != ERROR_SUCCESS)
         LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", nvidiaStatus);
     return ERROR_SUCCESS;
