@@ -101,6 +101,10 @@ std::unordered_set<IDXGISwapChain*> s_startupBlockingOverlayTaggedSwapchains;
 }
 
 namespace DXGIShared {
+std::unordered_set<IDXGISwapChain*> s_presentInterposerPrivateSwapchains;
+}
+
+namespace DXGIShared {
 // Post-SL FG overlay callback (set by dx12_hook.cpp when SL FG is active).
 std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback{nullptr};
 }
@@ -173,6 +177,39 @@ bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain) {
 
     std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
     return s_thirdPartyOverlaySwapchains.find(pSwapChain) != s_thirdPartyOverlaySwapchains.end();
+}
+}
+
+namespace DXGIShared {
+void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    s_presentInterposerPrivateSwapchains.insert(pSwapChain);
+}
+}
+
+namespace DXGIShared {
+void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    s_presentInterposerPrivateSwapchains.erase(pSwapChain);
+}
+}
+
+namespace DXGIShared {
+bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
+    return s_presentInterposerPrivateSwapchains.find(pSwapChain) != s_presentInterposerPrivateSwapchains.end();
 }
 }
 
@@ -398,6 +435,31 @@ bool IsPresentInterceptedBelowForeignChain() {
 
 bool ArePresentMethodsInterceptedBelowForeignChain() {
     return dxgi_shared_oPresentDeepBody != nullptr && dxgi_shared_oPresent1DeepBody != nullptr;
+}
+
+bool IsSwapchainPresentCoveredByDeepBodyHook(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain || !IsPresentInterceptedBelowForeignChain()) {
+        return false;
+    }
+    // dxgi_shared_oPresent holds the real dxgi!Present entry in the left-to-foreign-chain mode,
+    // which is the only mode that installs a deep body hook. The body CE patched belongs to that
+    // module, so "same module as the entry" is exactly the coverage question.
+    void* deepHookedEntry = (void*)dxgi_shared_oPresent;
+    if (!deepHookedEntry) {
+        return false;
+    }
+    void** vtable = *reinterpret_cast<void***>(pSwapChain);
+    if (!vtable || !vtable[8]) {
+        return false;
+    }
+
+    HMODULE entryModule = nullptr;
+    HMODULE presentModule = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(deepHookedEntry), &entryModule);
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(vtable[8]), &presentModule);
+    return entryModule != nullptr && entryModule == presentModule;
 }
 }
 

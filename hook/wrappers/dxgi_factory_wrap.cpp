@@ -109,6 +109,12 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
         return;
     }
 
+    // The object the application receives is by definition not a private interposer chain. A
+    // present interposer that merely forwards the app's create unchanged would otherwise have its
+    // own create classified as private and cost CE the overlay, so let the app-facing identity
+    // settle it here rather than guess at create time.
+    DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(static_cast<IDXGISwapChain*>(pReal));
+
     const size_t loadedOverlayCount = ce::overlay_compat::CountLoadedTrackedOverlayModules(
         ce::overlay_compat::TrackedOverlaySubset::kOverlay);
     const bool outputWindowVisible = !outputWindow || IsWindowVisible(outputWindow) != FALSE;
@@ -121,15 +127,26 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
         *ppSwapChain = pReal;
         return;
     }
+    const bool interceptedBelowForeignChain = DXGIShared::ArePresentMethodsInterceptedBelowForeignChain();
+    const bool appFacingPresentCoveredByDeepBodyHook =
+        DXGIShared::IsSwapchainPresentCoveredByDeepBodyHook(static_cast<IDXGISwapChain*>(pReal));
     if (ce::overlay_compat::ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
-            d3d12CommandQueueSwapchain, DXGIShared::ArePresentMethodsInterceptedBelowForeignChain(),
-            loadedOverlayCount)) {
+            d3d12CommandQueueSwapchain, interceptedBelowForeignChain, loadedOverlayCount,
+            appFacingPresentCoveredByDeepBodyHook)) {
         WrapperLog(
             "%s: Preserving real DX12 swapchain identity below the foreign Present chain "
             "(sc=%p overlays=%zu)",
             callName ? callName : "CreateSwapChain", pReal, loadedOverlayCount);
         *ppSwapChain = pReal;
         return;
+    }
+    if (d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayCount >= 1 &&
+        !appFacingPresentCoveredByDeepBodyHook) {
+        WrapperLog(
+            "%s: A present interposer implements Present for the app-facing swapchain (sc=%p overlays=%zu) — the "
+            "deep dxgi body hook only sees the interposer's private output chain, so CE takes its own view "
+            "through the swapchain wrapper",
+            callName ? callName : "CreateSwapChain", pReal, loadedOverlayCount);
     }
 
     if (g_DisableSwapchainWrapper ||

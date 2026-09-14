@@ -363,6 +363,7 @@ if (!pSwapChain) {
 }
 
 DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(pSwapChain);
+DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(pSwapChain);
 
 std::lock_guard<std::mutex> hwndLock(dx12_hook_s_hwndSwapchainMutex);
 for (auto it = dx12_hook_s_hwndSwapchainMap.begin(); it != dx12_hook_s_hwndSwapchainMap.end();) {

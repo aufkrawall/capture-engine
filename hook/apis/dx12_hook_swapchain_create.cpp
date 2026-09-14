@@ -343,6 +343,9 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
 }
 
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
+    if (NotePresentInterposerPrivateSwapchainCreate("CreateSwapChainForHwnd INLINE", callerAddress, *ppSC)) {
+        return hr;
+    }
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
         HookLogImportant(
@@ -478,6 +481,9 @@ if (FAILED(hr)) {
 }
 
 if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainGlobal", callerAddress, *ppSwapChain)) {
+        return hr;
+    }
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSwapChain, callerModulePath);
         HookLogImportant(
@@ -545,7 +551,7 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         return hr;
     }
 
-    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
+    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice, *ppSwapChain)) {
         HookLogImportant(
             "DetourCreateSwapChainGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p) — deep Present interception already covers CE",
@@ -677,6 +683,9 @@ if (ce::dx12_overlay_policy::ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAf
 }
 
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
+    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainForHwndGlobal", callerAddress, *ppSC)) {
+        return hr;
+    }
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
         HookLogImportant(
@@ -746,7 +755,7 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
         return hr;
     }
 
-    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)) {
+    if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice, *ppSC)) {
         HookLogImportant(
             "DetourCreateSwapChainForHwndGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",

@@ -32,6 +32,22 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
+        // A present interposer's private output chain is never the application's swapchain: its
+        // back buffers belong to the interposer's own command queue, and NOTHING CE submits on
+        // the game's queue may touch them. Identity is the only evidence that holds below the
+        // foreign chain, and unlike an overlay create an interposer create is always in addition
+        // to the application's, so it can never be reclassified later.
+        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+            static std::atomic<int> s_interposerPresentBypassLogCount{0};
+            const int logCount = s_interposerPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 2048) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Passing through a present interposer's private output swapchain %p untouched "
+                    "(#%d) — CE composites on the application-facing chain only",
+                    pSwapChain, logCount + 1);
+            }
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(

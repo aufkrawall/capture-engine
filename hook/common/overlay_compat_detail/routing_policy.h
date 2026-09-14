@@ -233,10 +233,28 @@ inline bool ShouldLeavePresentEntryToForeignOverlayChain(size_t loadedOverlayMod
 // reason already requires the same below-chain view, and Steam alone can retain the proxy's old
 // real object long enough to reject a same-HWND FSR replacement. Non-DX12 swapchains and the
 // wrapper-only fallback remain unchanged.
-inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(bool d3d12CommandQueueSwapchain,
-                                                                        bool interceptedBelowForeignChain,
-                                                                        size_t loadedOverlayModuleCount) {
-    return d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 1;
+//
+// The deep body view is only a view of the chain whose Present IS that body. A present interposer
+// (NVIDIA Smooth Motion) implements the application-facing Present in its own module and keeps a
+// private real DXGI chain for its output, so the body hook covers the interposer's chain and never
+// the application's. Preserving identity there leaves CE with no view of the game's swapchain at
+// all, and the only Presents it does see carry buffers owned by the interposer's queue. CE must
+// take its own view of the app-facing object instead (session 20260914_102700).
+inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
+    bool d3d12CommandQueueSwapchain, bool interceptedBelowForeignChain, size_t loadedOverlayModuleCount,
+    bool appFacingPresentCoveredByDeepBodyHook) {
+    return d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 1 &&
+           appFacingPresentCoveredByDeepBodyHook;
+}
+
+// A swapchain created BY a present interposer is that interposer's private output chain: it is
+// never the application's swapchain, whatever else the create looks like. Unlike an overlay — which
+// can legitimately wrap the game's own authoritative create and make the real game swapchain look
+// foreign — an interposer's create is always in addition to the app's, so identity alone is
+// decisive here and no later "the game presents on it after all" evidence can overturn it.
+inline bool ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(bool callerFromPresentInterposerModule,
+                                                                       bool presentInterposerInStack) {
+    return callerFromPresentInterposerModule || presentInterposerInStack;
 }
 
 // A hidden-window DX12 create deliberately skips Present-hook refresh and all authoritative

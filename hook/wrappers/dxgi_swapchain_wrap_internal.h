@@ -208,12 +208,20 @@ inline const char* GetDX12PresentDelegationOverlayModuleName() {
 // (sl.dlss_g -> entry hook -> DetourPresent) instead of double-processing each
 // runtime present through both the wrapper and the detour.
 inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut = nullptr,
-                                                  bool streamlineRuntimeNonRetainingWrapper = false) {
+                                                  bool streamlineRuntimeNonRetainingWrapper = false,
+                                                  bool presentInvisibleToDetourHook = false) {
     const char* overlayModule = GetDX12PresentDelegationOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
     if (!DXGIShared::HasPresentDetourHooks()) {
+        return false;
+    }
+    if (presentInvisibleToDetourHook) {
+        // A present interposer owns this object's Present, so the detour is a view of the
+        // interposer's private output chain and never of this swapchain. Delegating would hand
+        // the frame to a hook that will deliberately pass it through, and the overlay would
+        // never be composited at all (Strange Brigade DX12 + NVIDIA Smooth Motion).
         return false;
     }
     if (streamlineRuntimeNonRetainingWrapper) {

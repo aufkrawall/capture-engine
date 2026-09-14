@@ -21,6 +21,18 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice,
       m_Promoted(false),
       m_DestructionCookie(0) {
     WrapperLog("SwapChain: CWrapDXGISwapChain CONSTRUCTOR called (real=%p, device=%p)", pReal, pDevice);
+    // A present interposer (NVIDIA Smooth Motion) implements the application-facing Present in
+    // its own module and presents its private chain to dxgi. CE's deep body hook then only ever
+    // sees that private chain, so this wrapper is CE's ONLY view of the game's presents and must
+    // never delegate them to the detour.
+    m_PresentInvisibleToDetourHook = pReal != nullptr && DXGIShared::IsPresentInterceptedBelowForeignChain() &&
+                                     !DXGIShared::IsSwapchainPresentCoveredByDeepBodyHook(pReal);
+    if (m_PresentInvisibleToDetourHook) {
+        WrapperLog(
+            "SwapChain: Present for real=%p is implemented above dxgi (present interposer) — this wrapper is CE's "
+            "only Present view and composites the overlay itself",
+            pReal);
+    }
     if (pReal) {
         if (!m_StreamlineRuntimeNonRetaining) {
             // Retaining mode owns a real-swapchain reference for the wrapper lifetime.
@@ -324,7 +336,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     const char* delegationOverlayModule = nullptr;
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining)) {
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining,
+                                                          m_PresentInvisibleToDetourHook)) {
         static std::atomic<int> s_inlineRouteLogCount{0};
         if (s_inlineRouteLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
             WrapperLog("Present: Delegating DX12 Present to detour hook for external overlay %s%s",
@@ -602,7 +615,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
 
     const char* delegationOverlayModule = nullptr;
-    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining)) {
+    if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining,
+                                                          m_PresentInvisibleToDetourHook)) {
         static std::atomic<int> s_inlineRouteLogCount1{0};
         if (s_inlineRouteLogCount1.fetch_add(1, std::memory_order_relaxed) < 20) {
             WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s%s",

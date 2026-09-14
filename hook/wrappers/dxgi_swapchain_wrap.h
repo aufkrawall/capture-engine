@@ -56,6 +56,11 @@ public:
     bool IsStreamlineRuntimeNonRetaining() const {
         return m_StreamlineRuntimeNonRetaining;
     }
+    // True when the deep dxgi!Present body hook cannot see this object's presents because a
+    // present interposer implements them (NVIDIA Smooth Motion).
+    bool IsPresentInvisibleToDetourHook() const {
+        return m_PresentInvisibleToDetourHook;
+    }
     // Check if the wrapper is in a zombie state (destroying or shutdown).
     // Called by forwarding methods to safely reject calls during destruction.
     bool IsWrapperZombie() const;
@@ -160,6 +165,13 @@ private:
 
     // Streamline-runtime non-retaining mode (see constructor overloads).
     bool m_StreamlineRuntimeNonRetaining = false;
+
+    // True when CE's Present view is the deep dxgi!Present body hook below a foreign overlay
+    // chain AND this object's Present is implemented somewhere else — a present interposer's
+    // proxy (NVIDIA Smooth Motion). The detour then never sees this swapchain's presents, so
+    // delegating to it would leave the frame uncomposited. Fixed at construction: an object's
+    // vtable does not change.
+    bool m_PresentInvisibleToDetourHook = false;
 
     // Window handle
     HWND m_hWnd;

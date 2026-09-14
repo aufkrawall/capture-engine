@@ -575,6 +575,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             ProcessPresentVSyncOverride(SyncInterval, Flags);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
+        // Same rule as DetourPresent: the interposer's private output chain is passed through
+        // untouched, because its buffers belong to the interposer's queue and not to the game's.
+        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+            static std::atomic<int> s_interposerPresent1BypassLogCount{0};
+            const int logCount = s_interposerPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 2048) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Passing through a present interposer's private output swapchain %p untouched "
+                    "(#%d) — CE composites on the application-facing chain only",
+                    pSwapChain, logCount + 1);
+            }
+            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        }
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(

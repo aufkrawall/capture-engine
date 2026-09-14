@@ -342,4 +342,17 @@ void DX12_UnregisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
 bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
 bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain);
 
+// A present interposer (NVIDIA Smooth Motion's NvPresent64) hands the application a proxy
+// IDXGISwapChain and keeps this private real DXGI chain, on its own command queue, for the
+// interpolated output. CE's overlay must never composite into it: the buffers belong to the
+// interposer's queue, and submitting into them from the application's queue removes the device.
+void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
+void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
+bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
+
+// True when `pSwapChain`'s Present really is the dxgi body CE deep-hooked below the foreign
+// overlay chain. False for a proxy whose Present lives in another module — there the deep body
+// view is a view of that proxy's private chain, not of this object.
+bool IsSwapchainPresentCoveredByDeepBodyHook(IDXGISwapChain* pSwapChain);
+
 }  // namespace DXGIShared

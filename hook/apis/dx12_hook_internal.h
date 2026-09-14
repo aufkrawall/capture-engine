@@ -648,7 +648,11 @@ void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd);
 bool IsStreamlineLoaded();
 bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice);
 bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView();
-bool ShouldPreserveDX12SwapchainIdentityForForeignChain(IUnknown* pDevice);
+bool ShouldPreserveDX12SwapchainIdentityForForeignChain(IUnknown* pDevice, IDXGISwapChain* pSwapChain);
+// Registers a present interposer's private output swapchain (NVIDIA Smooth Motion) and returns
+// true so the caller skips every CE swapchain side effect for it.
+bool NotePresentInterposerPrivateSwapchainCreate(const char* context, const void* callerAddress,
+                                                 IDXGISwapChain* pSwapChain);
 HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 bool IsStreamlineLoaded();

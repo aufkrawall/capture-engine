@@ -263,13 +263,41 @@ TEST(OverlayPresentEntryChainPolicyTest, EntryOwnershipDoesNotDependOnAVisiblePa
 }
 
 TEST(OverlayPresentEntryChainPolicyTest, DeepForeignOverlayViewPreservesDX12SwapchainIdentity) {
-    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1));
-    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 2));
-    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3));
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1, true));
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 2, true));
+    EXPECT_TRUE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3, true));
 
-    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(false, true, 2));
-    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, false, 2));
-    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 0));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(false, true, 2, true));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, false, 2, true));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 0, true));
+}
+
+// Strange Brigade DX12 + NVIDIA Smooth Motion, session 20260914_102700: the deep dxgi!Present body
+// hook is not a view of a chain whose Present lives in NvPresent64. Preserving identity there left
+// CE with the interposer's private output swapchain as its only Present, and the first overlay
+// ExecuteCommandLists on the GAME's queue removed the device (DXGI_ERROR_ACCESS_DENIED).
+TEST(OverlayPresentEntryChainPolicyTest, PresentInterposerDeniesTheDeepBodyIdentityPreservation) {
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 1, false));
+    EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3, false));
+}
+
+TEST(OverlayPresentEntryChainPolicyTest, PresentInterposerCreatesAreItsOwnPrivateChain) {
+    EXPECT_TRUE(ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(true, false));
+    EXPECT_TRUE(ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(false, true));
+    EXPECT_FALSE(ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(false, false));
+}
+
+TEST(OverlayPresentEntryChainPolicyTest, PresentInterposerModulePathsAreRecognized) {
+    EXPECT_TRUE(IsPresentInterposerModulePath("C:/WINDOWS/SYSTEM32/NvPresent64.dll"));
+    EXPECT_TRUE(IsPresentInterposerModulePath("nvpresent32.dll"));
+    EXPECT_TRUE(IsPresentInterposerModulePath(L"C:/WINDOWS/SYSTEM32/NvPresent64.dll"));
+
+    // An overlay or an in-process FG runtime is not a present interposer: those keep the
+    // application's own swapchain, so CE's below-the-chain view still covers it.
+    EXPECT_FALSE(IsPresentInterposerModulePath("C:/WINDOWS/SYSTEM32/dxgi.dll"));
+    EXPECT_FALSE(IsPresentInterposerModulePath("gameoverlayrenderer64.dll"));
+    EXPECT_FALSE(IsPresentInterposerModulePath("sl.interposer.dll"));
+    EXPECT_FALSE(IsPresentInterposerModulePath("nvapi64.dll"));
 }
 
 TEST(OverlayPresentEntryChainPolicyTest, InvisibleDX12CreateWithForeignOverlayPreservesIdentity) {

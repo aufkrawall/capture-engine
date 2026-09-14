@@ -613,8 +613,11 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     const std::string present = ce::test_source::ReadFile(wrapPresent);
     ASSERT_FALSE(present.empty());
     EXPECT_NE(present.find("ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, "
-                           "m_StreamlineRuntimeNonRetaining)"),
+                           "m_StreamlineRuntimeNonRetaining,"),
               std::string::npos);
+    // ...and the delegation is also refused when a present interposer owns this object's Present,
+    // because the detour is then a view of the interposer's private chain, not of this swapchain.
+    EXPECT_NE(present.find("m_PresentInvisibleToDetourHook"), std::string::npos);
     EXPECT_NE(present.find("MaybeInvokePostSLOverlayRenderFromWrappedRuntimePresent"), std::string::npos);
     // The wrapper feeds the Streamline present-stall detector in leave-entry mode (DetourPresent
     // never runs there), otherwise slDLSSGSetOptions falsely dumps "Present STALLED".
@@ -646,7 +649,7 @@ TEST(DXGISharedSourceTest, DeepForeignPresentViewPreservesRealDX12SwapchainIdent
     const std::string create = ce::test_source::ReadFile(
         fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(create.empty());
-    const size_t policyCall = create.find("ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice)");
+    const size_t policyCall = create.find("ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice,");
     ASSERT_NE(policyCall, std::string::npos);
     EXPECT_NE(create.find("Preserving real DX12 swapchain identity", policyCall), std::string::npos);
     const size_t legacyCreate = create.find("DetourCreateSwapChainGlobal(");
@@ -676,6 +679,75 @@ TEST(DXGISharedSourceTest, DeepForeignPresentViewPreservesRealDX12SwapchainIdent
         << "an invisible DX12 chain with a foreign overlay must never gain a retaining proxy";
     EXPECT_LT(preserve, retainingWrap)
         << "the factory wrapper must return the real object before any retaining wrapper is constructed";
+}
+
+// Strange Brigade DX12 + NVIDIA Smooth Motion (session 20260914_102700). NvPresent64 hands the
+// application a proxy swapchain and keeps a private real DXGI chain on its own command queue. CE's
+// deep dxgi!Present body hook therefore only ever saw that private chain, adopted it as the game's
+// swapchain, and submitted the overlay on the GAME's queue: the first ExecuteCommandLists removed
+// the device (GetDeviceRemovedReason == DXGI_ERROR_ACCESS_DENIED, 0x887A002B), Present returned
+// DXGI_ERROR_DEVICE_REMOVED and the game crashed on a null dereference a second later.
+TEST(DXGISharedSourceTest, PresentInterposerPrivateChainIsNeverCompositedInto) {
+    namespace fs = std::filesystem;
+    const std::string create = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+    ASSERT_FALSE(create.empty());
+    // Every create site must classify the interposer's private chain before any CE side effect,
+    // including the third-party-overlay branch that would otherwise capture its queue.
+    for (const char* context : {"CreateSwapChainForHwnd INLINE", "DetourCreateSwapChainGlobal",
+                                "DetourCreateSwapChainForHwndGlobal"}) {
+        const std::string note =
+            std::string("NotePresentInterposerPrivateSwapchainCreate(\"") + context + "\"";
+        const size_t noteAt = create.find(note);
+        ASSERT_NE(noteAt, std::string::npos) << context;
+        const size_t markAt = create.find("MarkThirdPartyOverlaySwapchain(", noteAt);
+        ASSERT_NE(markAt, std::string::npos) << context;
+        EXPECT_LT(noteAt, markAt) << context;
+    }
+
+    const std::string wrapPolicy = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_wrap_policy.cpp");
+    ASSERT_FALSE(wrapPolicy.empty());
+    EXPECT_NE(wrapPolicy.find("DX12_RegisterPresentInterposerPrivateSwapchain("), std::string::npos);
+    EXPECT_NE(wrapPolicy.find("ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain("), std::string::npos);
+
+    // Both present entries must pass the private chain through before any ProcessFrame decision.
+    const std::string presentCore = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp");
+    ASSERT_FALSE(presentCore.empty());
+    const size_t coreGuard = presentCore.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
+    const size_t coreOverlayGuard =
+        presentCore.find("DX12_IsThirdPartyOverlaySwapchain(pSwapChain)");
+    ASSERT_NE(coreGuard, std::string::npos);
+    ASSERT_NE(coreOverlayGuard, std::string::npos);
+    EXPECT_LT(coreGuard, coreOverlayGuard);
+
+    const std::string present1 = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp");
+    ASSERT_FALSE(present1.empty());
+    const size_t present1Guard = present1.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
+    const size_t present1OverlayGuard = present1.find("DX12_IsThirdPartyOverlaySwapchain(pSwapChain)");
+    ASSERT_NE(present1Guard, std::string::npos);
+    ASSERT_NE(present1OverlayGuard, std::string::npos);
+    EXPECT_LT(present1Guard, present1OverlayGuard);
+
+    // The object handed to the application is never a private chain, whatever the create looked
+    // like — an interposer that merely forwards the app's create must not cost CE its overlay.
+    const std::string factory = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    ASSERT_FALSE(factory.empty());
+    const size_t assign = factory.find("void AssignCreatedSwapchain(");
+    ASSERT_NE(assign, std::string::npos);
+    const size_t unregister =
+        factory.find("DX12_UnregisterPresentInterposerPrivateSwapchain(", assign);
+    const size_t preserve =
+        factory.find("ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(", assign);
+    ASSERT_NE(unregister, std::string::npos);
+    ASSERT_NE(preserve, std::string::npos);
+    EXPECT_LT(unregister, preserve);
+    // ...and the identity preservation must be conditioned on the deep body hook actually covering
+    // that object's Present.
+    EXPECT_NE(factory.find("IsSwapchainPresentCoveredByDeepBodyHook(", assign), std::string::npos);
 }
 
 TEST(DXGISharedSourceTest, InternalD3D11ProbeCannotEnterDX12SwapchainWrapping) {

@@ -369,6 +369,42 @@ inline bool IsFFXFrameGenerationModulePath(const wchar_t* path) {
     return false;
 }
 
+// A present interposer is not an overlay and not an in-process FG runtime: it replaces DXGI for
+// the application. NVIDIA Smooth Motion's NvPresent64 hands the app a proxy IDXGISwapChain of its
+// own and keeps a PRIVATE real DXGI swapchain, created on its own command queue, for the
+// interpolated output. Both consequences matter to CE: a hook in the dxgi!Present body sees only
+// that private chain and never the application's, and compositing into the private chain from the
+// application's queue is an unsynchronized write to buffers another queue owns — Strange Brigade
+// DX12 + Smooth Motion, session 20260914_102700, removed the device with DXGI_ERROR_ACCESS_DENIED
+// on CE's very first overlay ExecuteCommandLists.
+inline bool IsPresentInterposerModulePath(const char* path) {
+    static constexpr const char* kPresentInterposerTokens[] = {
+        "nvpresent64",
+        "nvpresent32",
+    };
+
+    for (const char* token : kPresentInterposerTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool IsPresentInterposerModulePath(const wchar_t* path) {
+    static constexpr const wchar_t* kPresentInterposerTokens[] = {
+        L"nvpresent64",
+        L"nvpresent32",
+    };
+
+    for (const wchar_t* token : kPresentInterposerTokens) {
+        if (detail::ContainsInsensitive(path, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 inline bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount,
                                             HMODULE* moduleOut = nullptr) {
     if (moduleOut) {
@@ -475,6 +511,58 @@ inline bool HasStreamlineFrameGenerationModuleInStack(char* modulePathOut = null
     for (USHORT i = 0; i < frameCount; ++i) {
         char candidatePath[MAX_PATH] = {};
         if (IsCodeAddressFromStreamlineFrameGenerationModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
+            if (modulePathOut && modulePathOutCount > 0) {
+                strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+inline bool IsPresentInterposerModuleHandle(HMODULE moduleHandle, char* modulePathOut = nullptr,
+                                            size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    if (!moduleHandle) {
+        return false;
+    }
+
+    char modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(moduleHandle, modulePath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, modulePath, _TRUNCATE);
+    }
+    return IsPresentInterposerModulePath(modulePath);
+}
+
+inline bool IsCodeAddressFromPresentInterposerModule(const void* codeAddress, char* modulePathOut = nullptr,
+                                                     size_t modulePathOutCount = 0) {
+    HMODULE callerModule = nullptr;
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
+        !callerModule) {
+        return false;
+    }
+
+    return IsPresentInterposerModuleHandle(callerModule, modulePathOut, modulePathOutCount);
+}
+
+inline bool HasPresentInterposerModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+
+    constexpr USHORT kMaxFrames = 16;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        char candidatePath[MAX_PATH] = {};
+        if (IsCodeAddressFromPresentInterposerModule(stackFrames[i], candidatePath, sizeof(candidatePath))) {
             if (modulePathOut && modulePathOutCount > 0) {
                 strncpy_s(modulePathOut, modulePathOutCount, candidatePath, _TRUNCATE);
             }

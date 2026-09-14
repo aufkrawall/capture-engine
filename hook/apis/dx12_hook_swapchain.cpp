@@ -120,6 +120,7 @@ void RemoveGlobalVTableHooks() {
         for (const auto& entry : dx12_hook_s_hwndSwapchainMap) {
             for (IDXGISwapChain* swapchain : entry.second) {
                 DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(swapchain);
+                DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(swapchain);
             }
         }
         dx12_hook_s_hwndSwapchainMap.clear();
