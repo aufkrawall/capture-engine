@@ -178,3 +178,56 @@ TEST(DDrawPresentPolicyTest, RegionSizeIsAFractionOfTheFrameItReplaces) {
     const long long framePixels = 3840LL * 2160LL;
     EXPECT_LT(regionPixels * 20, framePixels);
 }
+
+// ============================================================================
+// Overlay route - which renderer may draw a given presentation, and the rule
+// that nothing renders while the loaded backend cannot serve the route.
+// ============================================================================
+
+TEST(DDrawPresentPolicyTest, OnlyAFlipTheDeviceRenderedCanUseTheNativeRoute) {
+    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::FlipChain, true), policy::OverlayRoute::NativeDevice);
+    // The device is rendering somewhere else, so drawing with it would put the
+    // overlay where nobody looks.
+    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::FlipChain, false),
+              policy::OverlayRoute::HelperComposite);
+}
+
+TEST(DDrawPresentPolicyTest, BlitAndDirectScanoutPresentationsAlwaysComposite) {
+    // A blit publishes an offscreen image and a direct scanout write is not a
+    // device operation at all, so the application's 3D device cannot draw them
+    // even when it is otherwise live.
+    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::BlitPresent, true),
+              policy::OverlayRoute::HelperComposite);
+    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::DirectScanout, true),
+              policy::OverlayRoute::HelperComposite);
+    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::None, true), policy::OverlayRoute::HelperComposite);
+}
+
+TEST(DDrawPresentPolicyTest, TheCompositeRouteRefusesToRenderThroughTheNativeBackend) {
+    // The Gothic II crash, encoded: the composite ran while the backend was
+    // still bound to the application's own Direct3D 7 device, so every frame
+    // issued device work the application never asked for and then read back a
+    // helper backbuffer the overlay had never been drawn into.
+    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite,
+                                               /*nativeBackendBoundToThisDevice=*/true,
+                                               /*compositeBackendReady=*/false));
+    EXPECT_TRUE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite, false, true));
+}
+
+TEST(DDrawPresentPolicyTest, TheNativeRouteRefusesToRenderThroughTheCompositeBackend) {
+    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice,
+                                               /*nativeBackendBoundToThisDevice=*/false,
+                                               /*compositeBackendReady=*/true));
+    EXPECT_TRUE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, true, false));
+}
+
+TEST(DDrawPresentPolicyTest, ANativeBackendBoundToAnotherDeviceCannotRender) {
+    // A device the application recreated leaves the backend bound to one that
+    // renders nothing; the caller reports that as "not bound to this device".
+    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, false, false));
+}
+
+TEST(DDrawPresentPolicyTest, NoBackendLoadedRendersNothingOnEitherRoute) {
+    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, false, false));
+    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite, false, false));
+}

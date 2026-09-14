@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-09-14 - Gothic II start crash: the composite ran with the native backend still loaded
+
+Session `20260914_182411` (0.1.6584) died five seconds in: `0xC0000005` reading address 0, in
+`gameoverlayrenderer.dll+0xB8EA0` - Steam's inlined SSE `memcpy`, `movdqa xmm0,[esi]` with ESI null, copying about
+1700 bytes from nothing - on the game's own DirectDraw render thread. The external helper captured the dump after
+the fact, so it carries no exception context and no usable stack; the attribution below comes from the log, which
+is unambiguous about what CE was doing for the half second before it.
+
+`[Overlay] Initializing D3D7 backend` appears exactly once in the whole session. `Initializing DX9 backend` never
+appears. Every `RenderOverlay#N` line reports the same `renderer=0c032610`. And from 18:24:21.781 the route was
+compositing: `DX9: Registered internal helper device`, `Overlay composite region resized`, `Overlay composited
+into the presented surface` counts 1-4.
+
+So the native backend drew three flips, the application stopped rendering into the surface being presented, and
+`TryDrawNativeLegacyD3DOverlay` correctly declined - but the composite path that took over called
+`OverlayAdapter::InitDX9`, **which returns true without doing anything when an adapter is already initialized**.
+The backend stayed bound to the application's Direct3D 7 device. Every composite frame after that issued
+`BeginScene`, sampler and render-state changes, a draw and `EndScene` on the game's own device, at a point the
+game never asked for, *between* CE's own Lock and Unlock of the presented surface, and outside
+`LegacyD3DInternalScope` - so `ce::legacy_d3d_sampler_state` recorded CE's sampler states as the application's and
+`ReconcileAfterExternalStateChange` re-applied forced filtering after every one of CE's own state restores. Then
+it read back a helper backbuffer the overlay had never been drawn into and wrote that over the frame.
+
+The fix is a rule, not a patch: **the backend the adapter holds must match the route actually executing, and
+nothing renders while they disagree.** `ddraw_hook_overlay_route.cpp` derives the required route from the
+presentation (`ce::ddraw_present_policy::SelectOverlayRoute`: only a flip the device actually rendered can use the
+native route - a blit publishes an offscreen image and a direct scanout write is not a device operation at all),
+switches the adapter to it before anything renders, and **confirms the backend that is actually loaded afterwards**
+rather than trusting the Init return. `BackendCanRenderRoute` is the invariant in one expression and is unit
+tested in both directions. Route switches are counted and bounded at eight, after which the route latches on the
+composite, which works for every presentation shape; the periodic `DDraw: Presentation mix` line now carries
+`route=`, `routeSwitches=` and `routeLatched=`.
+
+Two pieces of hardening on the native backend itself. It no longer draws when `BeginScene` fails - a device
+already inside a scene is mid-way through the application's own geometry, and at a flip that never happens, so a
+failure means something unusual and the frame is skipped. And a failed `ApplyStateBlock` now disables the backend
+outright: the application's device is carrying the overlay's blend and stage setup at that point and there is no
+way to put it back, so the only correct action is to stop drawing.
+
+Built and verified at 0.1.6586. **Hardware run pending.** The next run should show `DDraw: Overlay route -> ...`
+on every transition and `route=` in the mix line; a session that ends up on `route=d3d9ex-composite` with
+`routeSwitches=1` is the expected shape if Gothic stops rendering into its flip target early.
+
 ### 2026-09-14 - Gothic II loading screens, and the DX7 overlay that costs the GPU nothing
 
 Session `20260914_180020` (0.1.6578) proved the flip-path fix: `kind=1`, the composite target is the attached back

@@ -480,99 +480,7 @@ IDirect3DDevice7* AcquireLegacyD3D7Device() {
 
 }
 
-bool TryDrawNativeLegacyD3DOverlay(IDirectDrawSurface7* compositeTarget,  int viewportWidth,  int viewportHeight) {
-
-
-    if (!compositeTarget || viewportWidth <= 0 || viewportHeight <= 0)
-        return false;
-
-    IDirect3DDevice7* device = AcquireLegacyD3D7Device();
-    if (!device)
-        return false;
-
-    // The device has to be rendering into the exact surface this presentation
-    // publishes. A DX7 title that renders elsewhere - an offscreen pass, a
-    // second device - keeps the D3D9Ex composite, which works on any surface.
-    using GetRenderTarget7_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice7*, IDirectDrawSurface7**);
-    void** deviceVTable = *(void***)device;
-    auto getRenderTarget = reinterpret_cast<GetRenderTarget7_t>(deviceVTable[D3D7_VTABLE_GETRENDERTARGET]);
-    IDirectDrawSurface7* renderTarget = nullptr;
-    bool targetsThisSurface = false;
-    if (getRenderTarget && SUCCEEDED(getRenderTarget(device, &renderTarget)) && renderTarget != nullptr) {
-        // DirectDraw hands out one IDirectDrawSurface7 per surface, so the
-        // pointers match outright in every normal case; the COM identity
-        // comparison is only the fallback for an aggregated or wrapped object.
-        targetsThisSurface = renderTarget == compositeTarget ||
-                             DirectDrawObjectIdentity(renderTarget) == DirectDrawObjectIdentity(compositeTarget);
-    }
-    if (renderTarget)
-        renderTarget->Release();
-    if (!targetsThisSurface) {
-        device->Release();
-        return false;
-    }
-
-    // A device the application recreated (a resolution change destroys and
-    // rebuilds it) leaves the backend bound to a device that no longer renders
-    // anything, so the backend is rebuilt on the new one.
-    bool backendMatchesDevice = false;
-    if (g_OverlayAdapter.GetBackendType() == OverlayBackendType::D3D7) {
-        auto* nativeBackend = static_cast<CustomOverlay::D3D7Backend*>(g_OverlayAdapter.GetBackend());
-        backendMatchesDevice = nativeBackend && nativeBackend->GetDevice() == static_cast<void*>(device);
-        if (!backendMatchesDevice) {
-            HookLogImportant("DDraw: Rebinding the native overlay to a recreated Direct3D 7 device (%p)",
-                             static_cast<void*>(device));
-            LegacyD3DInternalScope internalScope;
-            g_OverlayAdapter.Shutdown();
-        }
-    }
-
-    if (!backendMatchesDevice) {
-        if (g_OverlayAdapter.IsInitialized()) {
-            // The route reached a presentation before the application created
-            // its device, so the overlay came up on the D3D9Ex helper. Retire
-            // it once: the native path costs the game nothing per present.
-            if (ddraw_hook_g_NativeLegacyD3DUpgradeAttempted) {
-                device->Release();
-                return false;
-            }
-            ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = true;
-            HookLogImportant("DDraw: Upgrading the overlay from the D3D9Ex composite to the application's Direct3D 7 device");
-            LegacyD3DInternalScope internalScope;
-            g_OverlayAdapter.Shutdown();
-            ddraw_hook_g_DDrawCapture.ReleaseCompositeRegionResources();
-        }
-        LegacyD3DInternalScope internalScope;
-        if (!g_OverlayAdapter.InitD3D7(device)) {
-            ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = true;
-            HookLogImportant("DDraw: Direct3D 7 overlay backend unavailable; keeping the D3D9Ex composite");
-            device->Release();
-            return false;
-        }
-        if (ddraw_hook_g_CachedHwnd) {
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-        }
-    }
-
-    {
-        // Every state and sampler call below is CE's, not the application's.
-        LegacyD3DInternalScope internalScope;
-        g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
-    }
-
-    static uint32_t nativeDrawCount = 0;
-    nativeDrawCount++;
-    if (nativeDrawCount <= 4 || (nativeDrawCount % 600 == 0)) {
-        HookLogImportant("DDraw: Overlay drawn natively by the application's Direct3D 7 device (surface=%p %dx%d count=%u)",
-                         compositeTarget, viewportWidth, viewportHeight, nativeDrawCount);
-    }
-
-    device->Release();
-    return true;
-
-}
-
-void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget) {
+void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_policy::PresentKind kind) {
 
 
     auto& capture = ddraw_hook_g_DDrawCapture;
@@ -602,29 +510,43 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget) {
     const int viewportHeight = static_cast<int>(capture.height);
 
     // A Direct3D 7 title can draw the overlay with its own device, straight
-    // into the surface it is about to present. That costs no readback, no
-    // second device and no CPU/GPU synchronization on the present path.
-    if (TryDrawNativeLegacyD3DOverlay(compositeTarget, viewportWidth, viewportHeight)) {
+    // into the surface it is about to present: no readback, no second device
+    // and no CPU/GPU synchronization on the present path. That only holds for
+    // a flip, where the device is rendering into the flip target; a blit or a
+    // direct write to the scanout surface publishes something the device is
+    // not rendering to, and the composite handles those.
+    IDirect3DDevice7* nativeDevice = kind == ce::ddraw_present_policy::PresentKind::FlipChain
+                                         ? AcquireNativeLegacyD3DDeviceForSurface(compositeTarget)
+                                         : nullptr;
+    const DDrawOverlayRoute requiredRoute =
+        nativeDevice ? DDrawOverlayRoute::NativeLegacyD3D : DDrawOverlayRoute::HelperComposite;
+
+    // Nothing is rendered while the adapter's backend and the running route
+    // disagree: a backend bound to the application's device cannot draw into
+    // the helper's backbuffer, and driving it from here issues device work the
+    // application never asked for.
+    const bool backendReady = EnsureOverlayRouteBackend(requiredRoute, nativeDevice);
+    if (nativeDevice) {
+        nativeDevice->Release();
+    }
+    if (!backendReady) {
         return;
     }
 
-    if (!capture.EnsureOverlayCompositeDevice()) {
-        return;
-    }
-
-    if (!g_OverlayAdapter.IsInitialized()) {
-        if (ddraw_hook_g_CachedHwnd) {
-            InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
+    if (requiredRoute == DDrawOverlayRoute::NativeLegacyD3D) {
+        {
+            // Every state and sampler call the backend makes is CE's, not the
+            // application's, and must not reach the forced-filtering layer.
+            LegacyD3DInternalScope internalScope;
+            g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
         }
-        if (g_OverlayAdapter.InitDX9(capture.d3d9DeviceEx)) {
-            if (ddraw_hook_g_CachedHwnd) {
-                g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-            }
-            HookLog("DDraw: OverlayAdapter initialized");
+        static uint32_t nativeDrawCount = 0;
+        nativeDrawCount++;
+        if (nativeDrawCount <= 4 || (nativeDrawCount % 600 == 0)) {
+            HookLogImportant(
+                "DDraw: Overlay drawn natively by the application's Direct3D 7 device (surface=%p %dx%d count=%u)",
+                compositeTarget, viewportWidth, viewportHeight, nativeDrawCount);
         }
-    }
-    if (!g_OverlayAdapter.IsInitialized()) {
         return;
     }
 

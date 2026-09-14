@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 751,
+    "entries": 752,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -154,6 +154,7 @@
       "hook/apis/ddraw_hook_helpers.cpp",
       "hook/apis/ddraw_hook_install.cpp",
       "hook/apis/ddraw_hook_overlay_composite.cpp",
+      "hook/apis/ddraw_hook_overlay_route.cpp",
       "hook/apis/dx11_hook.cpp",
       "hook/apis/dx11_hook_capture_frame.cpp",
       "hook/apis/dx11_hook_capture_init.cpp",

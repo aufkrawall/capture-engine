@@ -310,10 +310,18 @@ inline std::atomic<IDirect3DDevice7*> ddraw_hook_g_D3D7Device{nullptr};
 // the per-thread activation memo cannot answer from a stale association.
 inline std::atomic<uint32_t> ddraw_hook_g_SurfaceAssociationGeneration{0};
 
-// One-shot: the overlay is retired from the D3D9Ex composite onto the
-// application's own device at most once, so a device that cannot host it
-// does not cause a per-present init/teardown cycle.
-inline bool ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = false;
+// Which renderer the DirectDraw overlay route is using. The backend the adapter
+// holds must always match the route actually executing: a backend bound to the
+// application's Direct3D 7 device cannot draw into the D3D9Ex helper's
+// backbuffer, and running it from the composite path issues device work at a
+// point the application never asked for. See ddraw_hook_overlay_route.cpp.
+enum class DDrawOverlayRoute { Undecided, NativeLegacyD3D, HelperComposite };
+
+inline DDrawOverlayRoute ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::Undecided;
+
+inline uint32_t ddraw_hook_g_OverlayRouteSwitches = 0;
+
+inline bool ddraw_hook_g_OverlayRouteLatchedToComposite = false;
 
 void TrackLegacyD3D7Device(IDirect3DDevice7* device);
 
@@ -343,10 +351,14 @@ public:
     LegacyD3DInternalScope& operator=(const LegacyD3DInternalScope&) = delete;
 };
 
-// Draws the overlay with the application's own Direct3D 7 device, into the
-// surface it is about to present. Returns false when that device is not the
-// one rendering this presentation, leaving the D3D9Ex composite to handle it.
-bool TryDrawNativeLegacyD3DOverlay(IDirectDrawSurface7* compositeTarget, int viewportWidth, int viewportHeight);
+// The application's Direct3D 7 device when it is rendering into exactly the
+// surface this presentation publishes, with a reference the caller releases.
+// Null means the native route cannot draw this presentation.
+IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* presentedSurface);
+
+// Brings the overlay adapter's backend in line with the route about to run.
+// False means nothing may be rendered this presentation.
+bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7* nativeDevice);
 
 // Presentation mix for the DirectDraw route. DirectDraw has no single present
 // entry point, so a route that composites nothing is otherwise
@@ -589,8 +601,9 @@ void CaptureFrameViaGDI(IDirectDrawSurface7* surface);
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 inline DDrawCapture ddraw_hook_g_DDrawCapture;
 
-// Composite the overlay into one DirectDraw surface through the D3D9Ex helper.
-void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget);
+// Put the overlay into one DirectDraw surface, by whichever route can render
+// into it: the application's own Direct3D 7 device, or the D3D9Ex composite.
+void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget, ce::ddraw_present_policy::PresentKind kind);
 
 // Geometry and capability of one surface, read in a single GetSurfaceDesc.
 bool ResolveSurfaceGeometry(IDirectDrawSurface7* surface, ce::ddraw_present_policy::Extent& extent,

@@ -291,8 +291,21 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
+    // A device that is already inside a scene is mid-way through the
+    // application's own geometry. Injecting the overlay there would put it
+    // inside a draw sequence the application is still building, so the frame is
+    // skipped instead: at a flip the application has always ended its scene.
+    if (FAILED(dev->BeginScene())) {
+        static int busySceneLogCount = 0;
+        if (busySceneLogCount < 4) {
+            HookLogImportant("[Overlay] D3D7::Render: device already in a scene; skipping this frame");
+            busySceneLogCount++;
+        }
+        dev->ApplyStateBlock(stateBlock);
+        return;
+    }
+
     lastUseTexture = !commands.front().useTexture;
-    const bool weStartedScene = SUCCEEDED(dev->BeginScene());
 
     static int drawLogCount = 0;
     for (const auto& command : commands) {
@@ -317,12 +330,21 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         }
     }
 
-    if (weStartedScene) {
-        dev->EndScene();
-    }
-
+    dev->EndScene();
     dev->SetTexture(0, nullptr);
-    dev->ApplyStateBlock(stateBlock);
+
+    // A failed restore leaves the application's device carrying the overlay's
+    // blend and stage setup. There is no way to put that back, so the backend
+    // stops drawing rather than corrupting every later frame.
+    const HRESULT applyHr = dev->ApplyStateBlock(stateBlock);
+    if (FAILED(applyHr)) {
+        HookLogImportant("[Overlay] D3D7::Render: state restore FAILED (hr=0x%08X); disabling the native overlay to "
+                         "leave the application's device alone",
+                         static_cast<unsigned>(applyHr));
+        dev->DeleteStateBlock(stateBlock);
+        stateBlock = 0;
+        stateBlockUsable = false;
+    }
 }
 
 }  // namespace CustomOverlay

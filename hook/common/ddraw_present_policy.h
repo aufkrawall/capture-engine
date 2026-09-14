@@ -181,4 +181,35 @@ inline bool AlignCompositeRegion(const Rect& bounds, uint32_t surfaceWidth, uint
     return true;
 }
 
+// Which renderer can draw a given presentation.
+enum class OverlayRoute {
+    // The application's own 3D device, straight into the surface it is about to
+    // present: no readback, no second device, nothing leaving the GPU.
+    NativeDevice,
+    // A private helper device plus a CPU round trip. Works for any surface.
+    HelperComposite,
+};
+
+// The native route only exists where the application's device is rendering into
+// the very surface being published. A flip publishes what the device rendered;
+// a blit publishes an offscreen image the device is not rendering to, and a
+// direct scanout write is not a device operation at all.
+inline OverlayRoute SelectOverlayRoute(PresentKind kind, bool deviceRendersThePresentedSurface) {
+    if (kind == PresentKind::FlipChain && deviceRendersThePresentedSurface)
+        return OverlayRoute::NativeDevice;
+    return OverlayRoute::HelperComposite;
+}
+
+// Nothing may be rendered while the loaded backend cannot draw for the running
+// route. Gothic II session `20260914_182411` is the reason this is a rule and
+// not an assumption: the composite route ran with the native backend still
+// loaded, so every frame issued `BeginScene`, state changes, a draw and
+// `EndScene` on the application's own Direct3D 7 device from the composite
+// path - device work at a point the application never asked for - and then read
+// back a helper backbuffer the overlay had never been drawn into.
+inline bool BackendCanRenderRoute(OverlayRoute route, bool nativeBackendBoundToThisDevice,
+                                  bool compositeBackendReady) {
+    return route == OverlayRoute::NativeDevice ? nativeBackendBoundToThisDevice : compositeBackendReady;
+}
+
 }  // namespace ce::ddraw_present_policy

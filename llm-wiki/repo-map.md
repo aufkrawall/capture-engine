@@ -138,7 +138,8 @@ anchors that predate the split are approximate.
       policy entry points), `ddraw_hook_overlay_composite.cpp` (region-scoped D3D9Ex composite
       fallback; the preferred route is `hook/common/custom_overlay_d3d7.{h,cpp}`, which draws with
       the application's own Direct3D 7 device),
-      `ddraw_hook_detours.cpp` (surface detours + blit classification),
+      `ddraw_hook_overlay_route.cpp` (which renderer draws which presentation, and the
+      backend/route match rule), `ddraw_hook_detours.cpp` (surface detours + blit classification),
       `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception), `ddraw_hook_install.cpp`,
       `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; the policy itself is
       `hook/common/ddraw_present_policy.h`.
