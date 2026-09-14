@@ -81,14 +81,6 @@ bool DDrawCapture::EnsureCompositeRegionResources(const Rect& region) {
         return false;
     }
 
-    hr = d3d9DeviceEx->CreateOffscreenPlainSurface(neededWidth, neededHeight, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
-                                                   &d3d9RegionBackdrop, nullptr);
-    if (FAILED(hr) || !d3d9RegionBackdrop) {
-        HookLog("DDraw: Failed to create %ux%u overlay backdrop surface (hr=0x%08x)", neededWidth, neededHeight, hr);
-        ReleaseCompositeRegionResources();
-        return false;
-    }
-
     // Optional: a default-pool staging surface uploads through StretchRect,
     // which avoids the system-memory copy UpdateSurface performs. Its absence
     // only costs speed, so a failure here is not fatal.
@@ -107,16 +99,17 @@ bool DDrawCapture::EnsureCompositeRegionResources(const Rect& region) {
 
 void DDrawCapture::InvalidateCompositeBackdrop() {
     backdropValid = false;
-    backdropSurface = nullptr;
-    backdropRegion = {};
+    lastCompositeValid = false;
+    compositeStateSurface = nullptr;
+    compositeStateRegion = {};
 }
 
 void DDrawCapture::ReleaseCompositeRegionResources() {
     InvalidateCompositeBackdrop();
-    if (d3d9RegionBackdrop) {
-        d3d9RegionBackdrop->Release();
-        d3d9RegionBackdrop = nullptr;
-    }
+    backdropPixels.clear();
+    backdropPixels.shrink_to_fit();
+    lastCompositePixels.clear();
+    lastCompositePixels.shrink_to_fit();
     if (d3d9RegionUpload) {
         d3d9RegionUpload->Release();
         d3d9RegionUpload = nullptr;
@@ -142,38 +135,9 @@ bool DDrawCapture::CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* sur
 
     IDirect3DSurface9* staging = d3d9RegionUpload ? d3d9RegionUpload : d3d9RegionSysMem;
 
-    // A repeat composite into a surface nothing has republished must not read
-    // the region back: it still holds the previous composite, and blending the
-    // overlay over itself darkens a translucent overlay a little more each
-    // time. The application's own pixels were saved the first time.
-    const bool sameRegion = backdropRegion.left == region.left && backdropRegion.top == region.top &&
-                            backdropRegion.right == region.right && backdropRegion.bottom == region.bottom;
-    const bool reuseBackdrop = ce::ddraw_present_policy::CompositeBackdropIsReusable(
-        backdropValid && d3d9RegionBackdrop != nullptr, backdropSurface == surface, sameRegion,
-        ddraw_hook_g_CompositePresentKind);
-
     D3DLOCKED_RECT stagingLock = {};
     if (FAILED(staging->LockRect(&stagingLock, nullptr, 0)) || !stagingLock.pBits) {
         return false;
-    }
-
-    if (reuseBackdrop) {
-        D3DLOCKED_RECT backdropLock = {};
-        if (SUCCEEDED(d3d9RegionBackdrop->LockRect(&backdropLock, nullptr, D3DLOCK_READONLY)) && backdropLock.pBits) {
-            const uint8_t* src = static_cast<const uint8_t*>(backdropLock.pBits);
-            uint8_t* dst = static_cast<uint8_t*>(stagingLock.pBits);
-            const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-            for (uint32_t y = 0; y < regionH; ++y) {
-                memcpy(dst, src, rowBytes);
-                src += backdropLock.Pitch;
-                dst += stagingLock.Pitch;
-            }
-            d3d9RegionBackdrop->UnlockRect();
-            staging->UnlockRect();
-            ddraw_hook_g_PresentationDiagnostics.backdropReuses.fetch_add(1, std::memory_order_relaxed);
-            return UploadStagedRegionToOverlayBackbuffer(staging, region);
-        }
-        d3d9RegionBackdrop->UnlockRect();
     }
 
     RECT sourceRect = {region.left, region.top, region.right, region.bottom};
@@ -241,47 +205,95 @@ bool DDrawCapture::CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* sur
         }
     }
 
-    // These are the application's own pixels for this region. Saving them is
-    // what lets a repeat composite into the same place blend over the frame
-    // instead of over the previous composite.
-    SaveCompositeBackdrop(staging, surface, region);
+    // Decide whether what was just read is the application's frame or CE's own
+    // previous output, and leave the staging surface holding the former.
+    ResolveCompositeBackdrop(staging, surface, region);
 
     return UploadStagedRegionToOverlayBackbuffer(staging, region);
 }
 
-void DDrawCapture::SaveCompositeBackdrop(IDirect3DSurface9* staging, IDirectDrawSurface7* surface,
-                                         const Rect& region) {
-    backdropValid = false;
-    if (!staging || !d3d9RegionBackdrop || staging == d3d9RegionBackdrop)
+void DDrawCapture::ResolveCompositeBackdrop(IDirect3DSurface9* staging, IDirectDrawSurface7* surface,
+                                            const Rect& region) {
+    if (!staging)
         return;
 
     const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
     const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
-
-    D3DLOCKED_RECT sourceLock = {};
-    if (FAILED(staging->LockRect(&sourceLock, nullptr, D3DLOCK_READONLY)) || !sourceLock.pBits)
-        return;
-    D3DLOCKED_RECT backdropLock = {};
-    if (FAILED(d3d9RegionBackdrop->LockRect(&backdropLock, nullptr, 0)) || !backdropLock.pBits) {
-        staging->UnlockRect();
-        return;
-    }
-
-    const uint8_t* src = static_cast<const uint8_t*>(sourceLock.pBits);
-    uint8_t* dst = static_cast<uint8_t*>(backdropLock.pBits);
     const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-    for (uint32_t y = 0; y < regionH; ++y) {
-        memcpy(dst, src, rowBytes);
-        src += sourceLock.Pitch;
-        dst += backdropLock.Pitch;
+    const size_t regionBytes = rowBytes * regionH;
+
+    const bool sameSurface = compositeStateSurface == surface;
+    const bool sameRegion = compositeStateRegion.left == region.left && compositeStateRegion.top == region.top &&
+                            compositeStateRegion.right == region.right &&
+                            compositeStateRegion.bottom == region.bottom;
+
+    D3DLOCKED_RECT stagingLock = {};
+    if (FAILED(staging->LockRect(&stagingLock, nullptr, 0)) || !stagingLock.pBits)
+        return;
+
+    // Is the region still byte-for-byte what CE wrote there last time? If so the
+    // application has not drawn into it since, and the pixels now in the staging
+    // surface are CE's own composite rather than a frame.
+    bool matchesLastComposite = false;
+    if (lastCompositeValid && sameSurface && sameRegion && lastCompositePixels.size() == regionBytes) {
+        matchesLastComposite = true;
+        const uint8_t* src = static_cast<const uint8_t*>(stagingLock.pBits);
+        const uint8_t* saved = lastCompositePixels.data();
+        for (uint32_t y = 0; y < regionH && matchesLastComposite; ++y) {
+            matchesLastComposite = memcmp(src, saved, rowBytes) == 0;
+            src += stagingLock.Pitch;
+            saved += rowBytes;
+        }
     }
 
-    d3d9RegionBackdrop->UnlockRect();
-    staging->UnlockRect();
+    const bool reuseBackdrop = ce::ddraw_present_policy::CompositeBackdropIsReusable(
+        backdropValid && backdropPixels.size() == regionBytes, sameSurface, sameRegion,
+        ddraw_hook_g_CompositePresentKind, matchesLastComposite);
 
-    backdropSurface = surface;
-    backdropRegion = region;
-    backdropValid = true;
+    if (reuseBackdrop) {
+        uint8_t* dst = static_cast<uint8_t*>(stagingLock.pBits);
+        const uint8_t* saved = backdropPixels.data();
+        for (uint32_t y = 0; y < regionH; ++y) {
+            memcpy(dst, saved, rowBytes);
+            dst += stagingLock.Pitch;
+            saved += rowBytes;
+        }
+        ddraw_hook_g_PresentationDiagnostics.backdropReuses.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        backdropPixels.resize(regionBytes);
+        const uint8_t* src = static_cast<const uint8_t*>(stagingLock.pBits);
+        uint8_t* saved = backdropPixels.data();
+        for (uint32_t y = 0; y < regionH; ++y) {
+            memcpy(saved, src, rowBytes);
+            src += stagingLock.Pitch;
+            saved += rowBytes;
+        }
+        backdropValid = true;
+        compositeStateSurface = surface;
+        compositeStateRegion = region;
+        lastCompositeValid = false;
+    }
+
+    staging->UnlockRect();
+}
+
+void DDrawCapture::RememberCompositeResult(const uint8_t* pixels, int pitch, const Rect& region) {
+    if (!pixels || pitch <= 0) {
+        lastCompositeValid = false;
+        return;
+    }
+    const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
+    const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
+    const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
+    lastCompositePixels.resize(rowBytes * regionH);
+    uint8_t* dst = lastCompositePixels.data();
+    for (uint32_t y = 0; y < regionH; ++y) {
+        memcpy(dst, pixels, rowBytes);
+        pixels += pitch;
+        dst += rowBytes;
+    }
+    lastCompositeValid = true;
+    compositeStateRegion = region;
 }
 
 bool DDrawCapture::UploadStagedRegionToOverlayBackbuffer(IDirect3DSurface9* staging, const Rect& region) {
@@ -374,6 +386,10 @@ bool DDrawCapture::CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* sur
                 src += readbackLock.Pitch;
                 dst += desc.lPitch;
             }
+            // Exactly what now sits in the surface. The next composite compares
+            // its fresh read against this to tell CE's own output from a frame
+            // the application drew in the meantime.
+            RememberCompositeResult(static_cast<const uint8_t*>(readbackLock.pBits), readbackLock.Pitch, region);
             written = true;
         } else if (bits == 16) {
             const bool is565 = Is565(desc.ddpfPixelFormat);
@@ -386,6 +402,10 @@ bool DDrawCapture::CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* sur
                 src += readbackLock.Pitch;
                 dst += desc.lPitch;
             }
+            // A packed 16-bit surface cannot be compared against the 32-bit
+            // readback, so the next composite always treats its read as a
+            // frame the application drew.
+            lastCompositeValid = false;
             written = true;
         }
         surface->Unlock(&destRect);
@@ -406,6 +426,7 @@ bool DDrawCapture::CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* sur
                                    static_cast<int>(regionH), readbackDC, 0, 0, SRCCOPY);
         surface->ReleaseDC(targetDC);
         d3d9RegionSysMem->ReleaseDC(readbackDC);
+        lastCompositeValid = false;
         if (!blitOk) {
             static int writebackFailLogCount = 0;
             if (writebackFailLogCount < 4) {

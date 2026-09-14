@@ -555,15 +555,29 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_p
     // previous frame's rectangle is the starting estimate; the frame that grows
     // past it is corrected below rather than clipped.
     ce::ddraw_present_policy::Rect staged = {};
-    bool staging = ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, staged) &&
-                   capture.EnsureCompositeRegionResources(staged) &&
+    bool haveRegion = ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, staged);
+    if (haveRegion) {
+        // Whatever CE wrote into this surface last time has to be written again,
+        // or a shrinking overlay leaves the strip it vacated holding the
+        // previous composite with nothing left to repaint it.
+        staged = ce::ddraw_present_policy::ExpandToPreviousComposite(
+            staged, capture.lastCompositeValid && capture.compositeStateSurface == compositeTarget,
+            capture.compositeStateRegion);
+    }
+    bool staging = haveRegion && capture.EnsureCompositeRegionResources(staged) &&
                    capture.CopySurfaceRegionToOverlayBackbuffer(compositeTarget, staged);
+    if (!haveRegion) {
+        ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
+    } else if (!staging) {
+        ddraw_hook_g_PresentationDiagnostics.compositeStageFailed.fetch_add(1, std::memory_order_relaxed);
+    }
 
     g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
 
     ce::ddraw_present_policy::Rect rendered = {};
     if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
         // Nothing was drawn this frame, so nothing has to reach the surface.
+        ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -575,8 +589,10 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_p
     }
 
     if (staging && capture.CopyOverlayBackbufferRegionToSurface(compositeTarget, staged)) {
+        ddraw_hook_g_PresentationDiagnostics.compositeSucceeded.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    ddraw_hook_g_PresentationDiagnostics.compositeWriteFailed.fetch_add(1, std::memory_order_relaxed);
 
     // The overlay could not be placed inside the image the application is about
     // to publish. The helper's own swapchain is the only remaining route; it is

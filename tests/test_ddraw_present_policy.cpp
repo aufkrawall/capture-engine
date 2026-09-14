@@ -233,43 +233,70 @@ TEST(DDrawPresentPolicyTest, NoBackendLoadedRendersNothingOnEitherRoute) {
 }
 
 // ============================================================================
-// Composite backdrop - the overlay must never be blended over itself.
+// Composite backdrop - the overlay must never be blended over itself, and must
+// never freeze the application's pixels underneath it either.
 // ============================================================================
 
 TEST(DDrawPresentPolicyTest, AFreshBackdropIsReadFromTheSurface) {
     // Nothing saved yet: the composite has to read the application's pixels.
     EXPECT_FALSE(policy::CompositeBackdropIsReusable(/*haveBackdrop=*/false, /*sameSurface=*/true,
-                                                     /*sameRegion=*/true, policy::PresentKind::DirectScanout));
+                                                     /*sameRegion=*/true, policy::PresentKind::DirectScanout,
+                                                     /*regionMatchesLastComposite=*/true));
 }
 
-TEST(DDrawPresentPolicyTest, ARepeatWriteIntoTheSameSurfaceReusesTheSavedBackdrop) {
-    // This is the strobe: the composite is a read-modify-write, so a second
-    // composite into a surface nothing republished would read back its own
-    // previous output and blend the translucent overlay over itself. Gothic II
-    // writes its front buffer about ten times per flip during the intro logos.
-    EXPECT_TRUE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout));
+TEST(DDrawPresentPolicyTest, AnUntouchedRegionStillHoldsCesOwnOutput) {
+    // The region read back is byte-identical to what CE wrote there, so the
+    // application has not drawn into it since. Blending over it again would
+    // darken a translucent overlay a little more.
+    EXPECT_TRUE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout, true));
 }
 
-TEST(DDrawPresentPolicyTest, ABlitPresentAlsoBringsCleanPixels) {
-    // The blit overwrites its destination from a source the application just
-    // produced, so a backdrop saved earlier does not describe it.
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::BlitPresent));
+TEST(DDrawPresentPolicyTest, AChangedRegionIsTheApplicationsFrameAndBecomesTheBackdrop) {
+    // This is what made a loading screen freeze under the overlay: reusing a
+    // saved backdrop while the application was animating replaced its pixels
+    // with stale ones, every frame, for as long as the reuse lasted.
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout,
+                                                     /*regionMatchesLastComposite=*/false));
 }
 
 TEST(DDrawPresentPolicyTest, AFlipAlwaysReadsTheFreshlyRenderedImage) {
-    // A flip publishes what the application just rendered, so anything saved
-    // for that surface is stale by construction.
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::FlipChain));
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::FlipChain, true));
 }
 
-TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherSurfaceIsNotReused) {
+TEST(DDrawPresentPolicyTest, ABlitPresentAlsoBringsCleanPixels) {
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::BlitPresent, true));
+}
+
+TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherSurfaceOrRectangleIsNotReused) {
     EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, /*sameSurface=*/false, true,
-                                                     policy::PresentKind::DirectScanout));
+                                                     policy::PresentKind::DirectScanout, true));
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, /*sameRegion=*/false,
+                                                     policy::PresentKind::DirectScanout, true));
 }
 
-TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherRectangleIsNotReused) {
-    // The overlay grew or shrank, so the saved pixels do not cover what the
-    // composite is about to blend over.
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, /*sameRegion=*/false,
-                                                     policy::PresentKind::DirectScanout));
+TEST(DDrawPresentPolicyTest, TheWrittenRectangleCoversWhatCeWroteLastTime) {
+    // A shrinking overlay would otherwise leave the strip it vacated holding
+    // the previous composite, with nothing left to repaint it.
+    const policy::Rect now{0, 0, 448, 320};
+    const policy::Rect previous{0, 0, 512, 384};
+    const policy::Rect merged = policy::ExpandToPreviousComposite(now, true, previous);
+    EXPECT_EQ(merged.right, 512);
+    EXPECT_EQ(merged.bottom, 384);
+}
+
+TEST(DDrawPresentPolicyTest, AGrowingOverlayKeepsItsOwnRectangle) {
+    const policy::Rect now{0, 0, 512, 384};
+    const policy::Rect previous{0, 0, 448, 320};
+    const policy::Rect merged = policy::ExpandToPreviousComposite(now, true, previous);
+    EXPECT_EQ(merged.right, 512);
+    EXPECT_EQ(merged.bottom, 384);
+}
+
+TEST(DDrawPresentPolicyTest, NoPreviousCompositeLeavesTheRectangleAlone) {
+    const policy::Rect now{64, 64, 512, 384};
+    const policy::Rect merged = policy::ExpandToPreviousComposite(now, false, policy::Rect{});
+    EXPECT_EQ(merged.left, 64);
+    EXPECT_EQ(merged.top, 64);
+    EXPECT_EQ(merged.right, 512);
+    EXPECT_EQ(merged.bottom, 384);
 }

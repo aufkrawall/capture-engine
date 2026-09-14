@@ -67,6 +67,29 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             FormatCpuClocksValue(cachedCpuClocksText, sizeof(cachedCpuClocksText),
                                  cachedSystemMetrics.cpuCoreClockValid, cachedSystemMetrics.cpuCoreClockMhz);
         }
+
+        // What the rows actually say, and the validity behind it, whenever any
+        // of it changes. A row that alternates between a reading and "--" is
+        // indistinguishable in the log from one that never moves, and the
+        // overlay is the only place it was visible.
+        char rowDigest[320];
+        std::snprintf(rowDigest, sizeof(rowDigest), "cpu='%s' gpu='%s' gpuClk='%s' cpuClk='%s' valid=%c%c%c%c%c%c%c%c%c",
+                      cachedCpuMetricsText, cachedGpuMetricsText, cachedGpuClocksText, cachedCpuClocksText,
+                      cachedSystemMetrics.gpuUsageValid ? 'G' : '-', cachedSystemMetrics.vramUsageValid ? 'V' : '-',
+                      cachedSystemMetrics.cpuTemperatureValid ? 'c' : '-',
+                      cachedSystemMetrics.gpuTemperatureValid ? 'g' : '-',
+                      cachedSystemMetrics.cpuPackagePowerValid ? 'p' : '-',
+                      cachedSystemMetrics.gpuPackagePowerValid ? 'P' : '-',
+                      cachedSystemMetrics.gpuFanValid ? 'f' : '-',
+                      cachedSystemMetrics.gpuCoreClockValid ? 'k' : '-',
+                      cachedSystemMetrics.cpuCoreClockValid ? 'K' : '-');
+        if (std::strcmp(rowDigest, lastLoggedRowDigest) != 0) {
+            std::snprintf(lastLoggedRowDigest, sizeof(lastLoggedRowDigest), "%s", rowDigest);
+            ++rowDigestChanges;
+            if (rowDigestChanges <= 60 || (rowDigestChanges % 50) == 0) {
+                HookLogImportant("[Overlay] Rows changed #%u: %s", rowDigestChanges, rowDigest);
+            }
+        }
     }
 
     // Adaptive overlay width: measure visible labels/values and size to content.

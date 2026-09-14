@@ -85,11 +85,17 @@ void LogDirectDrawPresentationMix(const char* reason) {
                                                                                                : "undecided";
     HookLogImportant(
         "DDraw: Presentation mix (%s) flips=%u blitPresents=%u directScanoutBlits=%u ignoredBlits=%u "
-        "scanoutUnlocks=%u composites=%u skippedNoPublishedImage=%u skippedOutsideOverlay=%u "
-        "backdropReuses=%u route=%s routeSwitches=%u routeLatched=%d",
+        "scanoutUnlocks=%u composites=%u ok=%u noGeometry=%u stageFailed=%u writeFailed=%u reentrant=%u "
+        "skippedNoPublishedImage=%u skippedOutsideOverlay=%u backdropReuses=%u route=%s routeSwitches=%u "
+        "routeLatched=%d",
         reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
         diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
         diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.composites.load(std::memory_order_relaxed),
+        diag.compositeSucceeded.load(std::memory_order_relaxed),
+        diag.compositeNoGeometry.load(std::memory_order_relaxed),
+        diag.compositeStageFailed.load(std::memory_order_relaxed),
+        diag.compositeWriteFailed.load(std::memory_order_relaxed),
+        diag.reentrantPresentations.load(std::memory_order_relaxed),
         diag.skippedNoPublishedImage.load(std::memory_order_relaxed),
         diag.skippedOutsideOverlay.load(std::memory_order_relaxed),
         diag.backdropReuses.load(std::memory_order_relaxed), routeLabel,
@@ -139,6 +145,10 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     // whole presentation, not just the capture inside it.
     ddraw_hook_g_CaptureRecurse++;
     if (ddraw_hook_g_CaptureRecurse > 1) {
+        // CE's own composite locks and unlocks DirectDraw surfaces through the
+        // same hooks, so it generates presentations of its own. They were
+        // silently dropped and made the mix counters impossible to reconcile.
+        diag.reentrantPresentations.fetch_add(1, std::memory_order_relaxed);
         ddraw_hook_g_CaptureRecurse--;
         return;
     }

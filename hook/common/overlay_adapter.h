@@ -201,6 +201,11 @@ private:
     size_t cachedCpuSensorOffset = 0;
     size_t cachedGpuSensorOffset = 0;
 
+    // Last logged digest of the metric rows plus their validity flags, so a row
+    // that alternates between a reading and "--" is visible in the log.
+    char lastLoggedRowDigest[320] = "";
+    uint32_t rowDigestChanges = 0;
+
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;
     uint32_t lastRecordingWarningKind = 0;

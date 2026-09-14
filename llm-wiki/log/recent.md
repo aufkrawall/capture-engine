@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-09-14 - A frozen backdrop, a vacated strip, and the diagnostics that were missing
+
+Session `20260914_192142` (0.1.6594) reported both symptoms unchanged, which retired the previous round's two
+hypotheses. `backdropReuses=179` of `composites=223` proves the backdrop mechanism was live, so the double-blend
+it removes was not what was being seen; and the sensor service published cleanly throughout (one adapter
+resolution, no rejected publications), so the value strobing is not the publisher flapping.
+
+**The backdrop reuse was itself wrong, and worse than what it replaced.** Reusing a saved backdrop for every
+repeat composite into the same surface freezes the application's pixels under the overlay for as long as the
+reuse lasts. On a loading screen - where the application animates and rarely flips - that meant CE wrote stale
+content into the overlay's rectangle every frame. The rule now requires proof that the region is untouched: CE
+keeps the exact pixels it last wrote there, reads the region, and compares. Byte-identical means the application
+has not drawn into it since and the region is still carrying CE's own output, so the saved backdrop is used.
+Anything else - a different surface or rectangle, a flip or blit-present republishing the image, or content that
+simply differs - means what was just read *is* the application's frame and becomes the new backdrop. 16-bit and
+GDI writebacks leave nothing comparable, so they always take the fresh read.
+
+**A shrinking overlay left a stale strip.** `EnsureCompositeRegionResources` follows the overlay's own bounds, and
+the log shows them oscillating across a 64-pixel alignment step (512x320 -> 448x320 -> 512x320 -> 512x384) as
+value widths change. When the rectangle shrank, the strip it vacated kept the previous composite and nothing ever
+repainted it. `ExpandToPreviousComposite` now unions the new rectangle with whatever CE wrote into that surface
+last time.
+
+**The diagnostics could not answer either question, which is why three rounds of hypotheses were wrong.**
+`composites` counted attempts, not outcomes, and 188 of 411 presentations in that session vanished into the
+recursion guard uncounted. The mix line now carries `ok=`, `noGeometry=`, `stageFailed=`, `writeFailed=` and
+`reentrant=`, so a composite that runs but never reaches the surface is distinguishable from one that is never
+attempted. And the overlay now logs its own rows: `[Overlay] Rows changed #N: cpu='...' gpu='...' gpuClk='...'
+cpuClk='...' valid=GVcgpPfkK` whenever any of that changes, which is the only place a row alternating between a
+reading and `--` was ever visible.
+
+Built and verified at 0.1.6598. **Both symptoms are still open**; this round makes the next session decisive
+rather than claiming a fix.
+
 ### 2026-09-14 - The overlay was being blended over itself, and an idle process is not an unreadable one
 
 Session `20260914_190240` (0.1.6590) had two symptoms with two separate causes.

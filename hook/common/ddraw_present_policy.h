@@ -151,15 +151,39 @@ inline CompositeTarget SelectCompositeTarget(PresentKind kind, bool havePresentS
 // So the clean pixels are kept: read once for a given surface and rectangle,
 // reused for every repeat composite into the same place, and thrown away as
 // soon as a flip publishes a new image.
-inline bool CompositeBackdropIsReusable(bool haveBackdrop, bool sameSurface, bool sameRegion,
-                                        PresentKind kind) {
-    if (!haveBackdrop || !sameSurface || !sameRegion)
+// `regionMatchesLastComposite` is the decisive one: the region was read back
+// and is byte-identical to what CE last wrote there, so the application has not
+// drawn into it since and the pixels under the overlay are still the ones saved.
+// Anything else - a different surface, a different rectangle, a flip or
+// blit-present republishing the image, or content that simply differs - means
+// what was just read IS the application's frame and becomes the new backdrop.
+//
+// Reusing a backdrop without that check freezes the game's pixels under the
+// overlay for as long as the reuse lasts, which on a loading screen is the
+// whole screen.
+inline bool CompositeBackdropIsReusable(bool haveBackdrop, bool sameSurface, bool sameRegion, PresentKind kind,
+                                        bool regionMatchesLastComposite) {
+    if (!haveBackdrop || !sameSurface || !sameRegion || !regionMatchesLastComposite)
         return false;
-    // Only a direct write into a surface that keeps the rest of its contents
-    // can still be carrying a previous composite. A flip publishes what the
-    // application just rendered and a blit-present overwrites its destination
-    // from a source, so both bring pixels that are clean by construction.
+    // A flip publishes what the application just rendered and a blit-present
+    // overwrites its destination from a source, so both bring pixels that are
+    // clean by construction and must be read.
     return kind == PresentKind::DirectScanout;
+}
+
+// The rectangle CE has to write this time: at least the overlay's own, and at
+// least everything CE wrote into this surface last time. Without the second
+// part a shrinking overlay leaves the strip it vacated holding the previous
+// composite, with nothing left to ever repaint it.
+inline Rect ExpandToPreviousComposite(const Rect& region, bool havePrevious, const Rect& previous) {
+    if (!havePrevious || previous.IsEmpty())
+        return region;
+    Rect merged;
+    merged.left = region.left < previous.left ? region.left : previous.left;
+    merged.top = region.top < previous.top ? region.top : previous.top;
+    merged.right = region.right > previous.right ? region.right : previous.right;
+    merged.bottom = region.bottom > previous.bottom ? region.bottom : previous.bottom;
+    return merged;
 }
 
 // A direct-scanout update only needs the overlay restored when it actually
