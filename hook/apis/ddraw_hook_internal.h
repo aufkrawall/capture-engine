@@ -75,6 +75,8 @@ typedef float D3DVALUE;
 
 #include "../common/input_manager.h"
 
+#include "../common/custom_overlay_d3d7.h"
+
 #include "../common/overlay_adapter.h"
 
 #include "../../common/secure_dll_loading.h"
@@ -128,6 +130,12 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_ho
 #define DDSURFACE7_VTABLE_GETDC 17
 
 #define DDSURFACE7_VTABLE_RELEASEDC 26
+
+// The legacy Direct3D headers cannot be included here (they collide with
+// d3d9.h), so the few methods CE calls on the application's device are
+// reached by vtable index. `LegacyD3D7VTableAbiTest` pins every index used
+// here against the real interface declaration.
+#define D3D7_VTABLE_GETRENDERTARGET 9
 
 #define D3D7_VTABLE_SETRENDERSTATE 20
 
@@ -292,7 +300,74 @@ inline std::vector<void**> ddraw_hook_g_HookedSurfaceVTables;
 
 inline uint32_t ddraw_hook_g_PrerenderIdx = 0;
 
-inline IDirect3DDevice7* ddraw_hook_g_D3D7Device = nullptr;
+// The game's own Direct3D 7 device, kept referenced so the overlay can draw
+// with it. Updated only when the device actually changes; the previous one is
+// released at that point. The pointer is atomic because the unchanged case has
+// to stay lock-free: a DX7 title calls SetTextureStageState per material.
+inline std::atomic<IDirect3DDevice7*> ddraw_hook_g_D3D7Device{nullptr};
+
+// Bumped whenever a surface's recorded DirectDraw/Direct3D version changes, so
+// the per-thread activation memo cannot answer from a stale association.
+inline std::atomic<uint32_t> ddraw_hook_g_SurfaceAssociationGeneration{0};
+
+// One-shot: the overlay is retired from the D3D9Ex composite onto the
+// application's own device at most once, so a device that cannot host it
+// does not cause a per-present init/teardown cycle.
+inline bool ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = false;
+
+void TrackLegacyD3D7Device(IDirect3DDevice7* device);
+
+// Returns the tracked device with a reference the caller must release.
+IDirect3DDevice7* AcquireLegacyD3D7Device();
+
+// CE's own calls into the legacy Direct3D device must not travel through the
+// forced-filtering interception: that layer caches what it believes the
+// application asked for, and the overlay's sampler and render states are not
+// the application's.
+inline thread_local int ddraw_hook_g_LegacyD3DInternalDepth = 0;
+
+inline bool LegacyD3DInternalCallActive() {
+    return ddraw_hook_g_LegacyD3DInternalDepth != 0;
+}
+
+class LegacyD3DInternalScope {
+public:
+    LegacyD3DInternalScope() {
+        ++ddraw_hook_g_LegacyD3DInternalDepth;
+    }
+    ~LegacyD3DInternalScope() {
+        --ddraw_hook_g_LegacyD3DInternalDepth;
+    }
+
+    LegacyD3DInternalScope(const LegacyD3DInternalScope&) = delete;
+    LegacyD3DInternalScope& operator=(const LegacyD3DInternalScope&) = delete;
+};
+
+// Draws the overlay with the application's own Direct3D 7 device, into the
+// surface it is about to present. Returns false when that device is not the
+// one rendering this presentation, leaving the D3D9Ex composite to handle it.
+bool TryDrawNativeLegacyD3DOverlay(IDirectDrawSurface7* compositeTarget, int viewportWidth, int viewportHeight);
+
+// Presentation mix for the DirectDraw route. DirectDraw has no single present
+// entry point, so a route that composites nothing is otherwise
+// indistinguishable from one that is simply never called - which is exactly
+// what a loading screen that blits instead of flipping looks like.
+struct DDrawPresentationDiagnostics {
+    std::atomic<uint32_t> flips{0};
+    std::atomic<uint32_t> blitPresents{0};
+    std::atomic<uint32_t> directScanoutBlits{0};
+    std::atomic<uint32_t> ignoredBlits{0};
+    std::atomic<uint32_t> scanoutUnlocks{0};
+    std::atomic<uint32_t> composites{0};
+    std::atomic<uint32_t> skippedNoPublishedImage{0};
+    std::atomic<uint32_t> skippedOutsideOverlay{0};
+    std::atomic<uint32_t> lastLogTick{0};
+};
+
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - atomic members are constant-initialized
+inline DDrawPresentationDiagnostics ddraw_hook_g_PresentationDiagnostics;
+
+void LogDirectDrawPresentationMix(const char* reason);
 
 inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
 
@@ -505,7 +580,7 @@ public:
 
     // Surface info
     IDirectDrawSurface7* ddrawSurface = nullptr;
-    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureCompositeRegionResources(const ce::ddraw_present_policy::Rect& region);void ReleaseCompositeRegionResources();bool CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
+    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureCompositeRegionResources(const ce::ddraw_present_policy::Rect& region);void ReleaseCompositeRegionResources();bool CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureOverlayCompositeDevice();void PublishOverlayAdapterLuidOnce();bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
 
     // Capture via GetDC for surfaces that don't support Lock
 void CaptureFrameViaGDI(IDirectDrawSurface7* surface);

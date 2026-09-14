@@ -36,7 +36,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d,  REFCLSID devi
         InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api::D3D7, *ddraw_hook_device,
                                     ddraw_hook_g_DDrawBootstrapDepth == 0, "IDirect3D7::CreateDevice");
         if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
-            ddraw_hook_g_D3D7Device = *ddraw_hook_device;
+            TrackLegacyD3D7Device(*ddraw_hook_device);
             AssociateLegacyD3DSurface(target, 7);
             ReportLegacyD3DUse(7, "IDirect3D7::CreateDevice");
         }
@@ -73,7 +73,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d,  REFCLSID device
 HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device,  DWORD Type,  DWORD ddraw_hook_Value) {
 
 
-    if (HookIsShuttingDown())
+    if (HookIsShuttingDown() || LegacyD3DInternalCallActive())
         return ddraw_hook_oSetRenderState7(ddraw_hook_device, Type, ddraw_hook_Value);
     ReportLegacyD3DUse(7, "IDirect3DDevice7::SetRenderState");
     if (g_IPC) {
@@ -103,10 +103,10 @@ HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_ho
         setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState7);
     if (!getState)
         getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState7);
-    if (HookIsShuttingDown())
+    if (HookIsShuttingDown() || LegacyD3DInternalCallActive())
         return setState ? setState(ddraw_hook_device, Stage, Type, ddraw_hook_Value) : DDERR_GENERIC;
     ReportLegacyD3DUse(7, "IDirect3DDevice7::SetTextureStageState");
-    ddraw_hook_g_D3D7Device = ddraw_hook_device;  // Capture device for proactive use
+    TrackLegacyD3D7Device(ddraw_hook_device);
     return ce::legacy_d3d_sampler_state::SetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, Stage, Type, ddraw_hook_Value, setState, getState, QueryD3D7MaxAnisotropy);
 
@@ -124,7 +124,7 @@ HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* ddraw_ho
         setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState7);
     if (!getState)
         getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState7);
-    if (HookIsShuttingDown())
+    if (HookIsShuttingDown() || LegacyD3DInternalCallActive())
         return getState ? getState(ddraw_hook_device, Stage, Type, ddraw_hook_pValue) : DDERR_GENERIC;
     ReportLegacyD3DUse(7, "IDirect3DDevice7::GetTextureStageState");
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
@@ -179,7 +179,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device) {
     auto endScene = record ? record->endScene.load(std::memory_order_acquire) : nullptr;
     if (!endScene)
         return DDERR_GENERIC;
-    if (HookIsShuttingDown())
+    if (HookIsShuttingDown() || LegacyD3DInternalCallActive())
         return endScene(ddraw_hook_device);
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
@@ -196,7 +196,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device,  DW
     if (!applyStateBlock)
         return DDERR_GENERIC;
     const HRESULT hr = applyStateBlock(ddraw_hook_device, ddraw_hook_blockHandle);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr)) {
+    if (!HookIsShuttingDown() && !LegacyD3DInternalCallActive() && SUCCEEDED(hr)) {
         ce::legacy_d3d_sampler_state::ReconcileAfterExternalStateChange(
             ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
             record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);

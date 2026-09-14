@@ -246,6 +246,26 @@ bool OverlayAdapter::InitDX9(void* device) {
     return true;
 }
 
+bool OverlayAdapter::InitD3D7(void* device) {
+#ifndef VK_LAYER_CE_OVERLAY
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    if (!device) {
+        HookLogImportant("[Overlay] InitD3D7 failed: null device pointer");
+        return false;
+    }
+
+    HookLogImportant("[Overlay] Initializing D3D7 backend (device=%p)", device);
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::D3D7Backend(device), OverlayBackendType::D3D7, "D3D7",
+                                   dpiScale);
+#else
+    (void)device;
+    return true;
+#endif
+}
+
 bool OverlayAdapter::InitDX8(void* device) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
@@ -462,20 +482,12 @@ bool OverlayAdapter::GetLastRenderedBounds(int viewportWidth, int viewportHeight
 
     // The cached-frame path re-renders the same vertex buffer, so the geometry
     // the backend last drew is always the one described here.
-    const auto& vertices = renderer->GetVertices();
-    if (vertices.empty() || renderer->GetCommands().empty())
+    float minX = 0.0f;
+    float minY = 0.0f;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+    if (!renderer->GetDrawBounds(minX, minY, maxX, maxY))
         return false;
-
-    float minX = vertices[0].x;
-    float minY = vertices[0].y;
-    float maxX = vertices[0].x;
-    float maxY = vertices[0].y;
-    for (const auto& vertex : vertices) {
-        minX = std::min(minX, vertex.x);
-        minY = std::min(minY, vertex.y);
-        maxX = std::max(maxX, vertex.x);
-        maxY = std::max(maxY, vertex.y);
-    }
 
     // One pixel of slack on each edge covers the anti-aliased fringe the graph
     // polyline writes just outside its own vertex positions.

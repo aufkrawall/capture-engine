@@ -9,7 +9,8 @@ namespace {
 policy::BlitGeometry FullScreenPresentBlit() {
     policy::BlitGeometry geometry;
     geometry.destIsScanout = true;
-    geometry.destIsFlipChain = false;
+    geometry.destIsBackBuffer = false;
+    geometry.destOwnsFlipChain = false;
     geometry.haveSource = true;
     geometry.dest = {1920, 1080};
     geometry.source = {1920, 1080};
@@ -60,12 +61,36 @@ TEST(DDrawPresentPolicyTest, ExplicitFullRectanglesStillCountAsAPresent) {
     EXPECT_EQ(policy::ClassifyBlit(geometry), policy::PresentKind::BlitPresent);
 }
 
-TEST(DDrawPresentPolicyTest, BlitsOntoAFlipChainAreNotPresentations) {
-    // Flip publishes a flip chain's images. Treating a draw into one as a
-    // present composited the overlay into a buffer nothing was about to show.
+TEST(DDrawPresentPolicyTest, BlitsOntoABackBufferAreNotPresentations) {
+    // Flip publishes a back buffer. Treating a draw into one as a present
+    // composited the overlay into a buffer nothing was about to show.
     policy::BlitGeometry geometry = FullScreenPresentBlit();
-    geometry.destIsFlipChain = true;
+    geometry.destIsScanout = false;
+    geometry.destIsBackBuffer = true;
+    geometry.destOwnsFlipChain = true;
     EXPECT_EQ(policy::ClassifyBlit(geometry), policy::PresentKind::None);
+}
+
+TEST(DDrawPresentPolicyTest, BlitsOntoAFlipChainsFrontBufferStillReachTheScreen) {
+    // Gothic II draws its loading screens by blitting onto the primary while
+    // the 3D scene is not running. Suppressing those because the primary heads
+    // a flip chain left the overlay off the screen for the whole load: only a
+    // back buffer is published later, the front buffer is the screen.
+    policy::BlitGeometry geometry = FullScreenPresentBlit();
+    geometry.destOwnsFlipChain = true;
+    EXPECT_EQ(policy::ClassifyBlit(geometry), policy::PresentKind::DirectScanout);
+    EXPECT_EQ(policy::SelectCompositeTarget(policy::ClassifyBlit(geometry), true),
+              policy::CompositeTarget::VisibleSurface);
+}
+
+TEST(DDrawPresentPolicyTest, AFlipChainsBlitSourceIsNeverStamped) {
+    // The source of such a blit can be a static image the application blits
+    // again unchanged, so the overlay goes into the visible surface afterwards
+    // instead of into the source.
+    policy::BlitGeometry geometry = FullScreenPresentBlit();
+    geometry.destOwnsFlipChain = true;
+    EXPECT_NE(policy::SelectCompositeTarget(policy::ClassifyBlit(geometry), true),
+              policy::CompositeTarget::PresentSource);
 }
 
 TEST(DDrawPresentPolicyTest, PartialBlitsAreScanoutUpdatesNotPresentations) {

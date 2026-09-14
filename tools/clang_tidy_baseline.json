@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 748,
+    "entries": 751,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -307,6 +307,7 @@
       "hook/common/cached_overlay_renderer.cpp",
       "hook/common/custom_font.cpp",
       "hook/common/custom_overlay.cpp",
+      "hook/common/custom_overlay_d3d7.cpp",
       "hook/common/custom_overlay_dx10.cpp",
       "hook/common/custom_overlay_dx11.cpp",
       "hook/common/custom_overlay_dx12.cpp",
@@ -683,6 +684,7 @@
       "tests/test_injection_path_policy.cpp",
       "tests/test_inline_hook_pristine_image.cpp",
       "tests/test_ipc_message_validation.cpp",
+      "tests/test_legacy_d3d7_vtable_abi.cpp",
       "tests/test_live_stream_config.cpp",
       "tests/test_log_meter.cpp",
       "tests/test_log_privacy.cpp",
@@ -698,6 +700,7 @@
       "tests/test_nv_lod_spread_override.cpp",
       "tests/test_overlay_compat.cpp",
       "tests/test_overlay_composite_route_growth.cpp",
+      "tests/test_overlay_draw_bounds.cpp",
       "tests/test_overlay_fg_status_publication.cpp",
       "tests/test_overlay_submit_queue_policy.cpp",
       "tests/test_overlay_swapchain_lifetime_policy.cpp",

@@ -1,5 +1,58 @@
 # llm-wiki Log
 
+### 2026-09-14 - Gothic II loading screens, and the DX7 overlay that costs the GPU nothing
+
+Session `20260914_180020` (0.1.6578) proved the flip-path fix: `kind=1`, the composite target is the attached back
+buffer, a 512x320 region instead of the 3840x2160 frame, no `PresentEx` fallback, and 600 composites in 5.38 s -
+112 per second where the full-surface round trip had managed about 17. The overlay still disappeared on loading
+screens, and that was a second bug in the same policy.
+
+**A flip chain's front buffer is still the screen.** `ClassifyBlit` suppressed every blit whose destination
+belonged to a flip chain, on the reasoning that Flip publishes those images. That is true of a *back* buffer and
+false of the primary: a blit onto the surface being scanned out is visible the moment it completes. Gothic II
+draws its loading screens exactly that way - the 3D scene is not running, so nothing flips and the progress
+display is blitted straight onto the primary - and CE composited nothing for the whole load. The predicate is now
+`destIsBackBuffer` (DDSCAPS_BACKBUFFER without DDSCAPS_PRIMARYSURFACE) for "published later", with
+`destOwnsFlipChain` kept only to decide *where*: such a blit's source can be a static image the application blits
+again unchanged, so the overlay goes into the visible surface after the blit rather than being stamped into that
+source.
+
+A presentation-mix counter set now logs every ten seconds (`DDraw: Presentation mix ... flips= blitPresents=
+directScanoutBlits= ignoredBlits= scanoutUnlocks= composites= skippedNoPublishedImage= skippedOutsideOverlay=`).
+DirectDraw has no single present entry point, so a route that composites nothing is otherwise indistinguishable
+from one that is never called - which is precisely what this looked like in the log.
+
+**The overlay now draws with the game's own Direct3D 7 device.** The D3D9Ex composite, even region-scoped, ends in
+`GetRenderTargetData`, which blocks the render thread until the GPU has caught up - a hard CPU/GPU serialization
+point on the game's own present path, once per present, plus two video-memory locks. A DX6/DX7 title already owns
+a device that draws transformed, alpha-blended, textured triangles, which is exactly what the overlay's draw list
+is. `CustomOverlay::D3D7Backend` converts the shared vertices to `D3DTLVERTEX`, uploads the font atlas once as a
+managed ARGB8888 texture surface, and issues the same handful of `DrawIndexedPrimitive` calls the DX9 backend
+issues - no readback, no second device, no staging surfaces, nothing leaving the GPU. `TryDrawNativeLegacyD3DOverlay`
+takes it only when the device's current render target *is* the surface this presentation publishes; anything else
+keeps the D3D9Ex composite, which works on any surface. State is saved and restored with a `D3DSBT_ALL` state
+block, and the overlay suppresses itself rather than running without one.
+
+Three things had to come with it. The legacy `d3d.h`/`d3dtypes.h` headers redefine enumerators `d3d9.h` also
+defines, so they exist in exactly one translation unit and the backend's interface is `void*`; the few device
+methods the hook itself calls go by vtable index, pinned by `LegacyD3D7VTableAbiTest` in the only test that sees
+the real declaration. CE's own state calls bypass the forced-filtering interception through
+`LegacyD3DInternalScope` - that layer caches what it believes the *application* asked for, and the overlay's
+sampler states are not the application's. And the D3D9Ex helper device is now created only when the composite
+route actually needs it, with the adapter LUID the host's telemetry wants published from a device-less
+`Direct3DCreate9Ex` instead.
+
+Hot-path work that came out of the same pass: `TrackLegacyD3D7Device` runs from `SetTextureStageState` - once per
+material - and took a mutex on every call, so the unchanged case is now a relaxed atomic compare;
+`ActivateDirectDrawSurface` runs from every hooked Flip, Blt, BltFast and Unlock and cost a `QueryInterface`, a
+lock and two hash lookups each time, now memoized per thread against an association generation; and the native
+path's render-target identity check compares pointers before falling back to COM identity.
+
+Measured, for the record: `cpu_prerender_limit` defaults to -1 and neither branch of `ApplyPrerenderLimitDDraw`
+runs at that value, so CE adds no flip-status spin of its own. Built and verified at 0.1.6580. **Hardware run
+pending** - no Gothic II session has exercised the native D3D7 backend yet, and the loading screens need a
+re-check with the presentation-mix counters in the log.
+
 ### 2026-09-14 - DirectDraw overlay flicker: the composite was on the wrong side of the present
 
 Gothic II with the SystemPack (DirectDraw7 + Direct3D7, 4K, session `20260914_173658`) drew the overlay and then

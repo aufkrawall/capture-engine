@@ -240,17 +240,78 @@ bool DDrawCapture::EnsureOverlayDevice(HWND hwnd,  uint32_t w,  uint32_t ddraw_h
         height = ddraw_hook_h;
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
+        // The helper device is created only if the composite route actually
+        // needs it. A DX7 title draws the overlay with its own device, and
+        // standing up a second D3D9Ex device for that costs VRAM and a driver
+        // context for nothing.
+        PublishOverlayAdapterLuidOnce();
+        return true;
+
+}
+bool DDrawCapture::EnsureOverlayCompositeDevice() {
+
+
         if (d3d9DeviceEx) {
             return true;
         }
-
-        if (!CreateD3D9ExWrapper(hwnd)) {
-            HookLog("DDraw: Overlay disabled (D3D9Ex wrapper failed)");
+        if (!targetHwnd || width == 0 || height == 0) {
             return false;
         }
 
-        HookLog("DDraw: Overlay helper ready (hwnd=%p, size=%ux%u)", hwnd, width, height);
+        if (!CreateD3D9ExWrapper(targetHwnd)) {
+            HookLog("DDraw: Overlay composite disabled (D3D9Ex wrapper failed)");
+            return false;
+        }
+
+        HookLog("DDraw: Overlay helper ready (hwnd=%p, size=%ux%u)", targetHwnd, width, height);
         return true;
+
+}
+void DDrawCapture::PublishOverlayAdapterLuidOnce() {
+
+
+        // The host's GPU/VRAM telemetry needs an adapter identity even in
+        // overlay-only runs, where no capture device is ever created. The
+        // default adapter's LUID is available from the D3D9Ex factory alone,
+        // so it no longer depends on the helper device existing.
+        if (luidLow != 0 || luidHigh != 0) {
+            return;
+        }
+
+        static bool attempted = false;
+        if (attempted) {
+            return;
+        }
+        attempted = true;
+
+        HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
+        if (!d3d9)
+            d3d9 = ce::security::LoadSystemLibrary(L"d3d9.dll");
+        if (!d3d9)
+            return;
+
+        typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex**);
+        auto createD3D9Ex = reinterpret_cast<PFN_Direct3DCreate9Ex>(GetProcAddress(d3d9, "Direct3DCreate9Ex"));
+        if (!createD3D9Ex)
+            return;
+
+        IDirect3D9Ex* factory = nullptr;
+        if (FAILED(createD3D9Ex(D3D_SDK_VERSION, &factory)) || !factory)
+            return;
+
+        LUID adapterLuid = {};
+        const HRESULT luidHr = factory->GetAdapterLUID(D3DADAPTER_DEFAULT, &adapterLuid);
+        factory->Release();
+        if (FAILED(luidHr) || (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0)) {
+            HookLog("DDraw: Overlay adapter LUID unavailable (hr=0x%08x)", luidHr);
+            return;
+        }
+
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        luidLow = adapterLuid.LowPart;
+        luidHigh = adapterLuid.HighPart;
+        ReportLUID(luidLow, luidHigh);
+        HookLog("DDraw: Published overlay adapter LUID %08x:%08x", luidHigh, luidLow);
 
 }
 bool DDrawCapture::EnsureCaptureResources(IDirectDrawSurface7* surface,  HWND hwnd,  uint32_t w,  uint32_t ddraw_hook_h) {

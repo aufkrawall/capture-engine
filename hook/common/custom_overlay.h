@@ -116,6 +116,12 @@ public:
         return fontAtlas.GetLineHeight();
     }
 
+    // Bounding box of the geometry the last built frame emitted, in viewport
+    // pixels. Legacy compatibility routes composite through a CPU round trip
+    // and must move only the pixels the overlay can actually touch. False when
+    // nothing was drawn.
+    bool GetDrawBounds(float& minX, float& minY, float& maxX, float& maxY) const;
+
     // Get draw data for backend to render
     const std::vector<DrawVertex>& GetVertices() const {
         return vertices;

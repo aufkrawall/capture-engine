@@ -57,12 +57,17 @@ enum class CompositeTarget {
 };
 
 struct BlitGeometry {
-    // The blit's destination is the surface the display scans out (the primary
-    // surface, or a back buffer of the chain that owns it).
+    // The destination is the surface the display is scanning out: writing it is
+    // immediately visible, whether or not it heads a flip chain.
     bool destIsScanout = false;
-    // That destination belongs to a flip chain, so Flip - not this blit -
-    // decides what reaches the screen.
-    bool destIsFlipChain = false;
+    // The destination is a back buffer. Flip - not this blit - decides when its
+    // contents reach the screen, so a write into it is ordinary drawing.
+    bool destIsBackBuffer = false;
+    // The scanout surface heads a flip chain. Its blit sources are not
+    // necessarily frame buffers (a loading screen blits a static image), so the
+    // overlay must not be stamped into them; the visible surface is composited
+    // after the blit instead.
+    bool destOwnsFlipChain = false;
     bool haveSource = false;
     Extent dest;
     Extent source;
@@ -82,13 +87,20 @@ inline bool RectsIntersect(const Rect& a, const Rect& b) {
 // frame; treating each one as a present re-composites the overlay that many
 // times and still misses the frame that follows.
 inline PresentKind ClassifyBlit(const BlitGeometry& geometry) {
-    if (!geometry.destIsScanout)
+    // A back buffer is published by Flip, so drawing into one is not a present.
+    if (geometry.destIsBackBuffer)
         return PresentKind::None;
-    if (geometry.destIsFlipChain)
+    if (!geometry.destIsScanout)
         return PresentKind::None;
     if (geometry.dest.width == 0 || geometry.dest.height == 0)
         return PresentKind::None;
     if (!geometry.haveSource)
+        return PresentKind::DirectScanout;
+    // On a flip chain the blit still reaches the screen - Gothic II draws its
+    // loading screens this way while the 3D scene is not running - but the
+    // overlay goes into the visible surface afterwards rather than into a
+    // source the application may blit again unchanged.
+    if (geometry.destOwnsFlipChain)
         return PresentKind::DirectScanout;
 
     const bool coversDest = !geometry.haveDestRect ||

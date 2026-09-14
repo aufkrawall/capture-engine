@@ -56,10 +56,15 @@ BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT
     if (!ReadSurfaceGeometry(dest, geometry.dest, destCaps))
         return result;
 
-    geometry.destIsScanout = (destCaps & (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) != 0;
-    geometry.destIsFlipChain = (destCaps & (DDSCAPS_FLIP | DDSCAPS_BACKBUFFER)) != 0;
-    if (!geometry.destIsScanout || geometry.destIsFlipChain) {
-        // Flip owns a flip chain's images and an offscreen destination is not a
+    // Only the primary surface is being scanned out. A back buffer carries
+    // DDSCAPS_BACKBUFFER without DDSCAPS_PRIMARYSURFACE and is published later
+    // by Flip; writing the primary is visible the moment the blit completes,
+    // flip chain or not.
+    geometry.destIsScanout = (destCaps & DDSCAPS_PRIMARYSURFACE) != 0;
+    geometry.destIsBackBuffer = !geometry.destIsScanout && (destCaps & DDSCAPS_BACKBUFFER) != 0;
+    geometry.destOwnsFlipChain = (destCaps & DDSCAPS_FLIP) != 0;
+    if (geometry.destIsBackBuffer || !geometry.destIsScanout) {
+        // Flip owns a back buffer and an offscreen destination is not a
         // presentation at all, so the source never has to be described.
         return result;
     }
@@ -479,6 +484,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
                           (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
     const BlitPresentation presentation =
         eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+    if (eligible && presentation.kind == policy::PresentKind::None) {
+        ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // A full-surface blit onto a single-buffered scanout surface is this
     // application's present, so the overlay goes into its source first.
@@ -517,6 +525,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
                           (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
     const BlitPresentation presentation =
         eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+    if (eligible && presentation.kind == policy::PresentKind::None) {
+        ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (presentation.kind == policy::PresentKind::BlitPresent) {
         ComposePresentation(surface, srcSurface, presentation.kind, false, policy::Rect{});

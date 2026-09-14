@@ -21,8 +21,11 @@ void AssociateDirectDrawSurface(IUnknown* surface,  ce::graphics_api_identity::D
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
     if (!identity)
         return;
-    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-    ddraw_hook_g_SurfaceDirectDrawVersions[identity] = version;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        ddraw_hook_g_SurfaceDirectDrawVersions[identity] = version;
+    }
+    ddraw_hook_g_SurfaceAssociationGeneration.fetch_add(1, std::memory_order_release);
 
 }
 
@@ -32,13 +35,39 @@ void AssociateLegacyD3DSurface(IUnknown* surface,  unsigned d3dVersion) {
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
     if (!identity)
         return;
-    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-    ddraw_hook_g_SurfaceLegacyD3DVersions[identity] = d3dVersion;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        ddraw_hook_g_SurfaceLegacyD3DVersions[identity] = d3dVersion;
+    }
+    ddraw_hook_g_SurfaceAssociationGeneration.fetch_add(1, std::memory_order_release);
 
 }
 
 void ActivateDirectDrawSurface(IUnknown* surface,  ce::graphics_api_identity::DirectDrawVersion fallbackVersion) {
 
+
+    // Every hooked Flip, Blt, BltFast and Unlock lands here, so the repeat case
+    // - the same surface, frame after frame - must not cost a QueryInterface, a
+    // lock and two hash lookups. The memo is per thread and is invalidated by
+    // any new association, so it can never answer for a reused address.
+    struct ActivationMemo {
+        IUnknown* surface = nullptr;
+        uint32_t generation = 0;
+        int version = 0;
+        unsigned d3dVersion = 0;
+        bool valid = false;
+    };
+    thread_local ActivationMemo memo;
+
+    const uint32_t generation = ddraw_hook_g_SurfaceAssociationGeneration.load(std::memory_order_acquire);
+    if (memo.valid && memo.surface == surface && memo.generation == generation) {
+        ddraw_hook_g_ActiveDirectDrawVersion.store(memo.version, std::memory_order_release);
+        unsigned activeD3DVersion = memo.d3dVersion;
+        if (activeD3DVersion == 0)
+            activeD3DVersion = ddraw_hook_g_LegacyD3DCallbackVersion.load(std::memory_order_acquire);
+        ddraw_hook_g_ActiveLegacyD3DVersion.store(activeD3DVersion, std::memory_order_release);
+        return;
+    }
 
     auto version = fallbackVersion;
     unsigned d3dVersion = 0;
@@ -52,6 +81,12 @@ void ActivateDirectDrawSurface(IUnknown* surface,  ce::graphics_api_identity::Di
         if (d3dIt != ddraw_hook_g_SurfaceLegacyD3DVersions.end())
             d3dVersion = d3dIt->second;
     }
+    memo.surface = surface;
+    memo.generation = generation;
+    memo.version = static_cast<int>(version);
+    memo.d3dVersion = d3dVersion;
+    memo.valid = true;
+
     ddraw_hook_g_ActiveDirectDrawVersion.store(static_cast<int>(version), std::memory_order_release);
     if (d3dVersion == 0)
         d3dVersion = ddraw_hook_g_LegacyD3DCallbackVersion.load(std::memory_order_acquire);
@@ -412,34 +447,144 @@ bool ResolveOverlayCompositeRegion(int viewportWidth,  int viewportHeight,  ce::
 
 }  // namespace
 
+void TrackLegacyD3D7Device(IDirect3DDevice7* device) {
+
+
+    // The unchanged case is the whole hot path: this runs from
+    // SetTextureStageState, which a DX7 title calls for every material it
+    // binds. Only an actual device change pays for the lock.
+    if (!device || ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed) == device)
+        return;
+
+    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+    IDirect3DDevice7* previous = ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed);
+    if (previous == device)
+        return;
+    device->AddRef();
+    ddraw_hook_g_D3D7Device.store(device, std::memory_order_release);
+    // Released only under the lock, and every reader takes its reference under
+    // the same lock, so a concurrent reader can never hold a dead pointer.
+    if (previous)
+        previous->Release();
+
+}
+
+IDirect3DDevice7* AcquireLegacyD3D7Device() {
+
+
+    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+    IDirect3DDevice7* device = ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed);
+    if (device)
+        device->AddRef();
+    return device;
+
+}
+
+bool TryDrawNativeLegacyD3DOverlay(IDirectDrawSurface7* compositeTarget,  int viewportWidth,  int viewportHeight) {
+
+
+    if (!compositeTarget || viewportWidth <= 0 || viewportHeight <= 0)
+        return false;
+
+    IDirect3DDevice7* device = AcquireLegacyD3D7Device();
+    if (!device)
+        return false;
+
+    // The device has to be rendering into the exact surface this presentation
+    // publishes. A DX7 title that renders elsewhere - an offscreen pass, a
+    // second device - keeps the D3D9Ex composite, which works on any surface.
+    using GetRenderTarget7_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice7*, IDirectDrawSurface7**);
+    void** deviceVTable = *(void***)device;
+    auto getRenderTarget = reinterpret_cast<GetRenderTarget7_t>(deviceVTable[D3D7_VTABLE_GETRENDERTARGET]);
+    IDirectDrawSurface7* renderTarget = nullptr;
+    bool targetsThisSurface = false;
+    if (getRenderTarget && SUCCEEDED(getRenderTarget(device, &renderTarget)) && renderTarget != nullptr) {
+        // DirectDraw hands out one IDirectDrawSurface7 per surface, so the
+        // pointers match outright in every normal case; the COM identity
+        // comparison is only the fallback for an aggregated or wrapped object.
+        targetsThisSurface = renderTarget == compositeTarget ||
+                             DirectDrawObjectIdentity(renderTarget) == DirectDrawObjectIdentity(compositeTarget);
+    }
+    if (renderTarget)
+        renderTarget->Release();
+    if (!targetsThisSurface) {
+        device->Release();
+        return false;
+    }
+
+    // A device the application recreated (a resolution change destroys and
+    // rebuilds it) leaves the backend bound to a device that no longer renders
+    // anything, so the backend is rebuilt on the new one.
+    bool backendMatchesDevice = false;
+    if (g_OverlayAdapter.GetBackendType() == OverlayBackendType::D3D7) {
+        auto* nativeBackend = static_cast<CustomOverlay::D3D7Backend*>(g_OverlayAdapter.GetBackend());
+        backendMatchesDevice = nativeBackend && nativeBackend->GetDevice() == static_cast<void*>(device);
+        if (!backendMatchesDevice) {
+            HookLogImportant("DDraw: Rebinding the native overlay to a recreated Direct3D 7 device (%p)",
+                             static_cast<void*>(device));
+            LegacyD3DInternalScope internalScope;
+            g_OverlayAdapter.Shutdown();
+        }
+    }
+
+    if (!backendMatchesDevice) {
+        if (g_OverlayAdapter.IsInitialized()) {
+            // The route reached a presentation before the application created
+            // its device, so the overlay came up on the D3D9Ex helper. Retire
+            // it once: the native path costs the game nothing per present.
+            if (ddraw_hook_g_NativeLegacyD3DUpgradeAttempted) {
+                device->Release();
+                return false;
+            }
+            ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = true;
+            HookLogImportant("DDraw: Upgrading the overlay from the D3D9Ex composite to the application's Direct3D 7 device");
+            LegacyD3DInternalScope internalScope;
+            g_OverlayAdapter.Shutdown();
+            ddraw_hook_g_DDrawCapture.ReleaseCompositeRegionResources();
+        }
+        LegacyD3DInternalScope internalScope;
+        if (!g_OverlayAdapter.InitD3D7(device)) {
+            ddraw_hook_g_NativeLegacyD3DUpgradeAttempted = true;
+            HookLogImportant("DDraw: Direct3D 7 overlay backend unavailable; keeping the D3D9Ex composite");
+            device->Release();
+            return false;
+        }
+        if (ddraw_hook_g_CachedHwnd) {
+            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
+        }
+    }
+
+    {
+        // Every state and sampler call below is CE's, not the application's.
+        LegacyD3DInternalScope internalScope;
+        g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
+    }
+
+    static uint32_t nativeDrawCount = 0;
+    nativeDrawCount++;
+    if (nativeDrawCount <= 4 || (nativeDrawCount % 600 == 0)) {
+        HookLogImportant("DDraw: Overlay drawn natively by the application's Direct3D 7 device (surface=%p %dx%d count=%u)",
+                         compositeTarget, viewportWidth, viewportHeight, nativeDrawCount);
+    }
+
+    device->Release();
+    return true;
+
+}
+
 void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget) {
 
 
     auto& capture = ddraw_hook_g_DDrawCapture;
-    if (!capture.d3d9DeviceEx || !compositeTarget)
+    if (!compositeTarget || capture.width == 0 || capture.height == 0)
         return;
 
     if (capture.targetHwnd && capture.targetHwnd != ddraw_hook_g_CachedHwnd) {
         ddraw_hook_g_CachedHwnd = capture.targetHwnd;
         InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
     }
-
     if (ddraw_hook_g_CachedHwnd) {
         g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-    }
-
-    if (!g_OverlayAdapter.IsInitialized()) {
-        ddraw_hook_g_CachedHwnd = capture.targetHwnd;
-        if (ddraw_hook_g_CachedHwnd) {
-            InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-        }
-        if (g_OverlayAdapter.InitDX9(capture.d3d9DeviceEx)) {
-            if (ddraw_hook_g_CachedHwnd) {
-                g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-            }
-            HookLog("DDraw: OverlayAdapter initialized");
-        }
     }
 
     g_OverlayAdapter.SetMetrics(&ddraw_hook_g_PerfMetrics);
@@ -451,13 +596,37 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget) {
     g_OverlayAdapter.SetGraphicsAPI(ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion),
                                     "active DirectDraw presentation surface");
 
-    if (!g_OverlayAdapter.IsInitialized() || capture.width == 0 || capture.height == 0)
-        return;
-
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int viewportWidth = static_cast<int>(capture.width);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int viewportHeight = static_cast<int>(capture.height);
+
+    // A Direct3D 7 title can draw the overlay with its own device, straight
+    // into the surface it is about to present. That costs no readback, no
+    // second device and no CPU/GPU synchronization on the present path.
+    if (TryDrawNativeLegacyD3DOverlay(compositeTarget, viewportWidth, viewportHeight)) {
+        return;
+    }
+
+    if (!capture.EnsureOverlayCompositeDevice()) {
+        return;
+    }
+
+    if (!g_OverlayAdapter.IsInitialized()) {
+        if (ddraw_hook_g_CachedHwnd) {
+            InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
+            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
+        }
+        if (g_OverlayAdapter.InitDX9(capture.d3d9DeviceEx)) {
+            if (ddraw_hook_g_CachedHwnd) {
+                g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
+            }
+            HookLog("DDraw: OverlayAdapter initialized");
+        }
+    }
+    if (!g_OverlayAdapter.IsInitialized()) {
+        return;
+    }
 
     // The game's pixels have to be under the overlay before it is blended, and
     // the region to stage is only known from geometry that already exists. The

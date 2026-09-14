@@ -78,15 +78,45 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
     return false;
 }
 
+void LogDirectDrawPresentationMix(const char* reason) {
+    auto& diag = ddraw_hook_g_PresentationDiagnostics;
+    HookLogImportant(
+        "DDraw: Presentation mix (%s) flips=%u blitPresents=%u directScanoutBlits=%u ignoredBlits=%u "
+        "scanoutUnlocks=%u composites=%u skippedNoPublishedImage=%u skippedOutsideOverlay=%u",
+        reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
+        diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
+        diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.composites.load(std::memory_order_relaxed),
+        diag.skippedNoPublishedImage.load(std::memory_order_relaxed),
+        diag.skippedOutsideOverlay.load(std::memory_order_relaxed));
+}
+
 void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,
                          ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
                          const ce::ddraw_present_policy::Rect& changedRect) {
     if (HookIsShuttingDown())
         return;
 
+    auto& diag = ddraw_hook_g_PresentationDiagnostics;
+    switch (kind) {
+        case ce::ddraw_present_policy::PresentKind::FlipChain:
+            diag.flips.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case ce::ddraw_present_policy::PresentKind::BlitPresent:
+            diag.blitPresents.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case ce::ddraw_present_policy::PresentKind::DirectScanout:
+            (haveChangedRect ? diag.directScanoutBlits : diag.scanoutUnlocks).fetch_add(1, std::memory_order_relaxed);
+            break;
+        case ce::ddraw_present_policy::PresentKind::None:
+            break;
+    }
+
     const auto target = ce::ddraw_present_policy::SelectCompositeTarget(kind, presentSource != nullptr);
-    if (target == ce::ddraw_present_policy::CompositeTarget::None)
+    if (target == ce::ddraw_present_policy::CompositeTarget::None) {
+        if (kind != ce::ddraw_present_policy::PresentKind::None)
+            diag.skippedNoPublishedImage.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
 
     IDirectDrawSurface7* compositeTarget =
         target == ce::ddraw_present_policy::CompositeTarget::PresentSource ? presentSource : visibleSurface;
@@ -138,6 +168,7 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
                 static_cast<int>(overlayBounds.left), static_cast<int>(overlayBounds.top),
                 static_cast<int>(overlayBounds.right), static_cast<int>(overlayBounds.bottom)};
             if (!ce::ddraw_present_policy::DirectScanoutNeedsComposite(bounds, true, changedRect)) {
+                diag.skippedOutsideOverlay.fetch_add(1, std::memory_order_relaxed);
                 ddraw_hook_g_CaptureRecurse--;
                 return;
             }
@@ -146,6 +177,7 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
 
     auto doOverlay = [&]() {
         if (shouldDrawOverlay) {
+            diag.composites.fetch_add(1, std::memory_order_relaxed);
             DrawDDrawOverlay(compositeTarget);
         }
     };
@@ -207,6 +239,18 @@ void NotePresentationComplete() {
 
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
     g_SharedFpsLimiter.Apply();
+
+    // A presentation mix that changes shape - flips stopping while blits carry
+    // the screen, or nothing being composited at all - is the signature of the
+    // loading-screen and menu paths, and is not recoverable from the overlay.
+    constexpr uint32_t kPresentationMixLogIntervalMs = 10000;
+    const uint32_t nowTick = static_cast<uint32_t>(GetTickCount());
+    auto& diag = ddraw_hook_g_PresentationDiagnostics;
+    const uint32_t lastTick = diag.lastLogTick.load(std::memory_order_relaxed);
+    if (lastTick == 0 || nowTick - lastTick >= kPresentationMixLogIntervalMs) {
+        diag.lastLogTick.store(nowTick, std::memory_order_relaxed);
+        LogDirectDrawPresentationMix("periodic");
+    }
 }
 
 void HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDrawSurface4* presentSource,

@@ -30,6 +30,7 @@
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 // Full backends for hook DLL
+#include "custom_overlay_d3d7.h"
 #include "custom_overlay_dx10.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"

@@ -115,6 +115,27 @@ void Renderer::EndFrame() {
     frameStarted = false;
 }
 
+bool Renderer::GetDrawBounds(float& minX, float& minY, float& maxX, float& maxY) const {
+    if (vertices.empty() || commands.empty())
+        return false;
+
+    minX = vertices[0].x;
+    minY = vertices[0].y;
+    maxX = vertices[0].x;
+    maxY = vertices[0].y;
+    for (const DrawVertex& vertex : vertices) {
+        if (vertex.x < minX)
+            minX = vertex.x;
+        if (vertex.y < minY)
+            minY = vertex.y;
+        if (vertex.x > maxX)
+            maxX = vertex.x;
+        if (vertex.y > maxY)
+            maxY = vertex.y;
+    }
+    return maxX > minX && maxY > minY;
+}
+
 bool Renderer::RenderCachedFrame(int width, int height) {
     if (!initialized || !backend || commands.empty())
         return false;
