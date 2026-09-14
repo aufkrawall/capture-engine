@@ -12,7 +12,10 @@ into a new archive once it grows past that, and the lint stage enforces the ceil
 
 | File | Lines | Covers |
 |---|---:|---|
-| `recent.md` | 231 | current (2026-09-13) |
+| `recent.md` | 245 | current (2026-09-14) |
+| `archive-2026-W38c.md` | 213 | 2026-09-14 - 2026-09-13 |
+| `archive-2026-W38b.md` | 194 | 2026-09-13 |
+| `archive-2026-W38a.md` | 150 | 2026-09-13 |
 | `archive-2026-W37d.md` | 35 | 2026-09-12 |
 | `archive-2026-W37c.md` | 134 | 2026-09-10 - 2026-09-09 |
 | `archive-2026-W37b.md` | 202 | 2026-09-09 - 2026-09-07 |

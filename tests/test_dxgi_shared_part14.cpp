@@ -502,8 +502,17 @@ TEST(DXGISharedSourceTest, GuardedTempSwapchainRouteRunsWithoutADXGIProxy) {
     const std::string deep =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "inline_hook_deep.cpp");
     ASSERT_FALSE(deep.empty());
+    // Gothic II/SystemPack exposed the x86 failure mode: dxgi.dll loaded at
+    // 0x64210000, but the disk prolog's absolute operand still named its
+    // preferred-base address 0x100D86C0. The pristine reader must relocate the
+    // bytes before resume verification or trampoline construction.
+    const size_t relocatedRead = deep.find("inline_hook_pristine_image::ReadRelocatedImageBytes(");
+    ASSERT_NE(relocatedRead, std::string::npos);
     const size_t bypassFn = deep.find("void* CreateBypassTrampoline(void* target) {");
     ASSERT_NE(bypassFn, std::string::npos);
+    EXPECT_LT(relocatedRead, bypassFn);
+    EXPECT_NE(deep.find("ReadOrigBytesFromDisk(target, origDiskBytes, 64, &relocationsApplied)", bypassFn),
+              std::string::npos);
     const size_t cacheLookup = deep.find("s_bypassTrampolines.find(target)", bypassFn);
     ASSERT_NE(cacheLookup, std::string::npos);
     const size_t slotAllocation = deep.find("GetTrampolineSlot(target)", bypassFn);

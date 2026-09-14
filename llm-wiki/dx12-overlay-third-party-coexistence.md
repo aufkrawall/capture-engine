@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-08-14 (Present-entry rule generalized to draw order in 0.1.5960: CE stays out of *any* `dxgi!Present` entry a foreign overlay owns — not only one two or more share — and intercepts below it with a deep hook in the `dxgi!Present` body, so its overlay composites after Steam's and RTSS's instead of underneath them; the FG-interposer exception is gone because the body view supersedes it, the prepend survives only as the refusal fallback against a single overlay, Streamline present routing is refused below the chain, and the foreign-jump classification now resolves the Present-owning module from the address instead of by name. Generic hook-chain ownership, thread-quiesced patching, proxy-module exclusions, and resident pass-through lifecycle remain as audited on 2026-08-11; the prior DX12/FG provenance rules remain in force. Open: layering against object-wrapping proxies such as ReShade — see Known limitations. The native-FSR-FG below-the-chain and marker-only topmost handoffs are covered in their own resolved sections below.)
+Last cross-checked: 2026-09-14 (Gothic II x86 exposed the pristine-code base-relocation invariant in the guarded system-DXGI bypass. Present-entry/draw-order rules remain as audited on 2026-08-14; object-wrapping proxy layering remains open.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -12,6 +12,8 @@ Primary sources:
 - `hook/main_host_lifecycle.cpp`
 - `hook/main_overlay_detect.cpp`
 - `hook/wrappers/inline_hook.cpp`
+- `hook/wrappers/inline_hook_deep.cpp`
+- `hook/wrappers/inline_hook_pristine_image.h`
 - `hook/wrappers/hook_patch_transaction.cpp`
 - `hook/wrappers/iat_hook.cpp`
 - `hook/wrappers/vtable_hook.cpp`
@@ -27,15 +29,6 @@ Primary sources:
 - `tests/test_dxgi_shared_part10.cpp`
 - `tests/test_dxgi_shared_part11.cpp`
 - `tests/test_fps_limiter.cpp`
-- `installed/captureengine/logs/20260602_215620`
-- `installed/captureengine/logs/20260602_215334`
-- `installed/captureengine/logs/20260602_213952`
-- `installed/captureengine/logs/20260602_161416`
-- `installed/captureengine/logs/20260602_030350`
-- `installed/captureengine/logs/20260601_212556`
-- `installed/captureengine/logs/20260531_232108/hook_debug.log`
-- `installed/captureengine/logs/20260531_230835_talosfsrfg/hook_debug.log`
-- `installed/captureengine/logs/20260809_015416`
 
 ## Scope
 This page records the current repo knowledge for making our overlay and capture hooks coexist with external injects and overlays. The detailed historical cases are DX12-heavy, while the generic ownership and lifecycle invariants also cover DXGI, D3D8/9/11/12, DDraw, OpenGL, and Vulkan.
@@ -201,6 +194,7 @@ Note this also explains the removed proactive slot patch: it *was* masking these
 - **A swapchain-wrapping proxy decides where CE's Present hook lands — resolve the SYSTEM dxgi factory (0.1.5962).** Going below the *entry chain* only fixes layering against byte-patching overlays (Steam, RTSS, Detours-style tools), because they all forward the same `this` into the same function body. A proxy that ships as `dxgi.dll` in the game directory and wraps the swapchain *object* (ReShade; SpecialK and OptiScaler have the same shape) is different: `GetPresentAddress` reads slot 8 of the *wrapper's* vtable, so CE's prepend and CE's deep body patch both land in the proxy's own `Present` **prolog** — above its effect pass and above every overlay that patched the real `dxgi!Present` the proxy forwards to. `installed/captureengine/logs/20260812_195840` is the proof: CE logged `[OVERLAY LAYER] CE composites BELOW the foreign Present chain` and Steam still drew on top, with `presentAddr=00007FF95309C140 is in module: …\Talos1\Binaries\Win64\dxgi.dll` and `no visible jump at 00007FF95309C140` (Steam's patch was on the system function further down, not on the proxy's method). Fix: `HookSwapchainVTableViaTempSwapchain` creates its temp swapchain from the **system** DXGI factory (`GetSystemDXGIModuleHandle`, resolved by full path under `GetSystemDirectory` because the proxy shares the base name) via that factory's own `CreateSwapChainForHwnd` slot, and accepts the result only when slot 8 lands inside the system image (`IsAddressInsideSystemDXGI`) — a proxy that also hooks real factory vtables falls back to the historical view unchanged. Log markers: `Created temp swapchain via the SYSTEM dxgi factory (Present=…) — Present hooks target the terminal dxgi!CDXGISwapChain::Present, below the swapchain-wrapping proxy <path>` vs `System-DXGI temp swapchain still resolves Present to … outside the system image`.
   - **VALIDATED** (`installed/captureengine/logs/fixed`, 0.1.5963, user-confirmed): terminal Present resolved into `C:\WINDOWS\system32\dxgi.dll`, `E9 at 00007FFA04FC9960 -> 00007FF9C4FC0000  foreignJumpVisibleNow=1` (Steam/RTSS do patch the system function), deep body hook below it, `[OVERLAY LAYER] … BELOW …`, CE's overlay on top.
   - **The temp swapchain must enter NO foreign handler** (0.1.5964, after two crashes on the first launch of 0.1.5963 in `20260812_201336`): calling the system factory's `CreateSwapChainForHwnd` slot as found entered RTSS and then Steam — `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64 -> gameoverlayrenderer64!OverlayHookD3D3 -> 0x0` (DEP execute at null), and in the other launch an `OverlayHookD3D3+0x14bc4` self-recursion until the stack was gone. Steam's overlay dispatches through callback slots that stay NULL until it has rendered on a real game swapchain. The helper now requires the resolved slot to lie inside the system image (otherwise it refuses and the caller falls back) and bypasses a foreign entry patch with `InlineHook::CreateBypassTrampoline` rather than executing it.
+  - **A disk-origin bypass must use bytes relocated for the loaded module base** (`20260914_154220`, Gothic II x86). The raw system `dxgi!CreateDXGIFactory1` prolog named preferred-base address `0x100D86C0`, while the live image at `0x64210000` named `0x642E86C0`; copying the raw `A1` operand into CE's trampoline crashed at EIP `0x0BA00008`. `ReadRelocatedImageBytes` applies bounded `HIGHLOW`/`DIR64` records before resume verification or execution, and refuses a moved image whose relevant relocations cannot be proved. This is generic PE correctness, not a Gothic/SystemPack exception.
   - Consequence to keep in mind: below an object wrapper CE receives the proxy's `_orig` swapchain pointer rather than the wrapper pointer. That is one consistent pointer for every present in the mode (the proxy always forwards the same object), so pointer-keyed state stays coherent, but resize/identity bookkeeping that was populated above the wrapper will not match it.
   - **Still open:** the DX11 install path (`DX11Hook` temp `D3D11CreateDeviceAndSwapChain` -> `DXGIShared::InstallHooks`) has no equivalent terminal resolution. It has not been observed to matter (D3D11's internal factory is not the proxy's), but a `d3d11.dll`-shaped proxy would put CE above it the same way.
 

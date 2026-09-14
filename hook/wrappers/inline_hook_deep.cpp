@@ -14,6 +14,7 @@
 #include "inline_hook_internal.h"
 #include "inline_hook_lde.h"
 #include "inline_hook_policy.h"
+#include "inline_hook_pristine_image.h"
 #include "hook_patch_transaction.h"
 
 #include <windows.h>
@@ -43,8 +44,11 @@ namespace InlineHook {
 // trampoline is built containing the complete original prolog, allowing the
 // wrapper to call through to the real function and capture the return value.
 
-// Read original (unpatched) function bytes from the DLL file on disk.
-static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count) {
+// Read original (unpatched) function bytes from the DLL file and apply the
+// module's image-base relocations so absolute operands match the loaded image.
+static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied) {
+    if (relocationsApplied)
+        *relocationsApplied = 0;
     HMODULE hMod = nullptr;
     if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             (LPCSTR)funcAddr, &hMod) ||
@@ -56,63 +60,45 @@ static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count) {
     if (!GetModuleFileNameA(hMod, modPath, MAX_PATH))
         return false;
 
-    uintptr_t rva = (uintptr_t)funcAddr - (uintptr_t)hMod;
+    const uintptr_t rva = (uintptr_t)funcAddr - (uintptr_t)hMod;
+    if (rva > MAXDWORD || count <= 0)
+        return false;
 
     HANDLE hFile =
         CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (hFile == INVALID_HANDLE_VALUE)
         return false;
 
-    bool success = false;
-    DWORD br;
-
-    IMAGE_DOS_HEADER dosH;
-    if (!ReadFile(hFile, &dosH, sizeof(dosH), &br, nullptr) || dosH.e_magic != IMAGE_DOS_SIGNATURE) {
+    LARGE_INTEGER fileSize = {};
+    constexpr LONGLONG kMaxPristineImageBytes = 512LL * 1024LL * 1024LL;
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0 || fileSize.QuadPart > kMaxPristineImageBytes) {
         CloseHandle(hFile);
         return false;
     }
-
-    if (SetFilePointer(hFile, dosH.e_lfanew, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
-        CloseHandle(hFile);
-        return false;
-    }
-
-    DWORD sig;
-    if (!ReadFile(hFile, &sig, 4, &br, nullptr) || sig != IMAGE_NT_SIGNATURE) {
-        CloseHandle(hFile);
-        return false;
-    }
-
-    IMAGE_FILE_HEADER fh;
-    if (!ReadFile(hFile, &fh, sizeof(fh), &br, nullptr)) {
-        CloseHandle(hFile);
-        return false;
-    }
-
-    // Skip optional header to reach section headers
-    if (SetFilePointer(hFile, fh.SizeOfOptionalHeader, nullptr, FILE_CURRENT) == INVALID_SET_FILE_POINTER) {
-        CloseHandle(hFile);
-        return false;
-    }
-
-    for (WORD i = 0; i < fh.NumberOfSections; i++) {
-        IMAGE_SECTION_HEADER sh;
-        if (!ReadFile(hFile, &sh, sizeof(sh), &br, nullptr))
-            break;
-
-        if (rva >= sh.VirtualAddress && rva < sh.VirtualAddress + sh.Misc.VirtualSize) {
-            DWORD fileOff = sh.PointerToRawData + (DWORD)(rva - sh.VirtualAddress);
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            if (SetFilePointer(hFile, fileOff, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER) {
-                if (ReadFile(hFile, outBuf, (DWORD)count, &br, nullptr) && (int)br == count)
-                    success = true;
-            }
-            break;
+    std::vector<uint8_t> fileBytes(static_cast<size_t>(fileSize.QuadPart));
+    size_t totalRead = 0;
+    while (totalRead < fileBytes.size()) {
+        DWORD bytesRead = 0;
+        const DWORD request = static_cast<DWORD>(fileBytes.size() - totalRead);
+        if (!ReadFile(hFile, fileBytes.data() + totalRead, request, &bytesRead, nullptr) || bytesRead == 0) {
+            CloseHandle(hFile);
+            return false;
         }
+        totalRead += bytesRead;
     }
-
     CloseHandle(hFile);
-    return success;
+
+    const auto result = ce::inline_hook_pristine_image::ReadRelocatedImageBytes(
+        fileBytes.data(), fileBytes.size(), reinterpret_cast<uintptr_t>(hMod), static_cast<DWORD>(rva), outBuf,
+        static_cast<size_t>(count));
+    if (!result.Succeeded()) {
+        HookLogImportant("PristineImage: Refusing original bytes for %p (%s)", funcAddr,
+                         ce::inline_hook_pristine_image::ImageBytesIssueName(result.issue));
+        return false;
+    }
+    if (relocationsApplied)
+        *relocationsApplied = result.relocationsApplied;
+    return true;
 }
 
 struct VerifiedResumeOffset {
@@ -246,9 +232,14 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 
     // Step 2: Read original (unpatched) bytes from DLL on disk
     uint8_t origDiskBytes[64];
-    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64)) {
+    size_t relocationsApplied = 0;
+    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64, &relocationsApplied)) {
         HookLog("DeepHook: Failed to read original bytes from disk for %p", target);
         return nullptr;
+    }
+    if (relocationsApplied != 0) {
+        HookLog("DeepHook: Applied %llu image-base relocation(s) to pristine bytes for %p",
+                static_cast<unsigned long long>(relocationsApplied), target);
     }
 
     // Log original bytes from disk
@@ -606,9 +597,14 @@ void* CreateBypassTrampoline(void* target) {
 
     // Step 2: Read original (unpatched) bytes from DLL on disk
     uint8_t origDiskBytes[64];
-    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64)) {
+    size_t relocationsApplied = 0;
+    if (!ReadOrigBytesFromDisk(target, origDiskBytes, 64, &relocationsApplied)) {
         HookLog("BypassTrampoline: Failed to read original bytes from disk for %p", target);
         return nullptr;
+    }
+    if (relocationsApplied != 0) {
+        HookLog("BypassTrampoline: Applied %llu image-base relocation(s) to pristine bytes for %p",
+                static_cast<unsigned long long>(relocationsApplied), target);
     }
 
     HookLog("BypassTrampoline: Original disk bytes at %p:", target);

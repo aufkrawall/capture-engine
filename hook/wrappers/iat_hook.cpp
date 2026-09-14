@@ -22,6 +22,7 @@
 #include "../common/overlay_compat.h"
 #include "../common/sampler_override_utils.h"
 #include "hook_common.h"
+#include "iat_import_table.h"
 #include "wrapper_hooks.h"
 #include "iat_hook_internal.h"
 
@@ -76,7 +77,7 @@ static bool IsModuleValid(HMODULE hModule) {
 }
 
 // Check if memory is readable using VirtualQuery
-static bool IsMemoryReadable(void* ptr, size_t size) {
+static bool IsMemoryReadable(const void* ptr, size_t size) {
     if (!ptr)
         return false;
 
@@ -91,18 +92,20 @@ static bool IsMemoryReadable(void* ptr, size_t size) {
     }
 
     // Check protection flags - allow read, read-write, execute-read, etc.
-    DWORD protect = mbi.Protect;
-    if (protect == PAGE_NOACCESS || protect == PAGE_EXECUTE) {
+    const DWORD protect = mbi.Protect;
+    const DWORD access = protect & 0xFF;
+    if ((protect & PAGE_GUARD) || access == PAGE_NOACCESS || access == PAGE_EXECUTE) {
         return false;
     }
 
     // Check if the entire range is within this region
-    SIZE_T regionSize = (char*)ptr + size - (char*)mbi.BaseAddress;
-    if (regionSize > mbi.RegionSize) {
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    if (address < regionBase) {
         return false;
     }
-
-    return true;
+    const SIZE_T offset = address - regionBase;
+    return offset <= mbi.RegionSize && size <= mbi.RegionSize - offset;
 }
 
 // A caller-owned IAT replacement cannot be chained correctly from a process-
@@ -129,28 +132,54 @@ static bool IsForeignIATOwner(void* currentFunction, const char* sourceModule, c
 // PE Parsing Helpers
 // ============================================================================
 
-static IMAGE_IMPORT_DESCRIPTOR* GetImportDescriptor(HMODULE module) {
+struct ModuleImportView {
+    BYTE* imageBase = nullptr;
+    size_t imageSize = 0;
+    DWORD directoryRva = 0;
+    DWORD directorySize = 0;
+};
+
+static bool GetModuleImportView(HMODULE module, ModuleImportView* view) {
+    if (!view)
+        return false;
+
     // Validate module is still loaded before accessing memory
     if (!IsModuleValid(module))
-        return nullptr;
+        return false;
+
+    MODULEINFO moduleInfo = {};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &moduleInfo, sizeof(moduleInfo)) ||
+        moduleInfo.lpBaseOfDll != module || moduleInfo.SizeOfImage == 0)
+        return false;
+
+    auto* imageBase = reinterpret_cast<BYTE*>(module);
+    const size_t imageSize = moduleInfo.SizeOfImage;
 
     // Check if DOS header memory is readable
-    if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER)))
-        return nullptr;
+    if (!detail::ImageRangeContains(imageSize, 0, sizeof(IMAGE_DOS_HEADER)) ||
+        !IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER)))
+        return false;
 
     auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
-    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-        return nullptr;
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE || dosHeader->e_lfanew < 0 ||
+        !detail::ImageRangeContains(imageSize, static_cast<uintptr_t>(dosHeader->e_lfanew),
+                                    sizeof(IMAGE_NT_HEADERS)))
+        return false;
 
-    auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<BYTE*>(module) + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
-        return nullptr;
+    auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(imageBase + dosHeader->e_lfanew);
+    if (!IsMemoryReadable(ntHeaders, sizeof(*ntHeaders)) || ntHeaders->Signature != IMAGE_NT_SIGNATURE ||
+        ntHeaders->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER) ||
+        ntHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC ||
+        ntHeaders->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_IMPORT)
+        return false;
 
     auto importDir = &ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (importDir->VirtualAddress == 0)
-        return nullptr;
+    if (importDir->VirtualAddress == 0 || importDir->Size < sizeof(IMAGE_IMPORT_DESCRIPTOR) ||
+        !detail::ImageRangeContains(imageSize, importDir->VirtualAddress, importDir->Size))
+        return false;
 
-    return reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(reinterpret_cast<BYTE*>(module) + importDir->VirtualAddress);
+    *view = {imageBase, imageSize, importDir->VirtualAddress, importDir->Size};
+    return true;
 }
 
 static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportSize = nullptr) {
@@ -184,6 +213,20 @@ static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportS
 // Core IAT Patching
 // ============================================================================
 
+struct TrackedImportContext {
+    HMODULE targetModule = nullptr;
+    const char* sourceModule = nullptr;
+    const char* functionName = nullptr;
+    void* hookFunction = nullptr;
+};
+
+static bool LookupTrackedImport(void* opaqueContext, void** iatEntry, void** originalFunction) {
+    const auto* context = static_cast<const TrackedImportContext*>(opaqueContext);
+    return context && TryGetTrackedOriginalForPatchedEntry(context->targetModule, context->sourceModule,
+                                                            context->functionName, context->hookFunction, iatEntry,
+                                                            originalFunction);
+}
+
 bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* hookFunction,
               void** outOriginal) {
     if (!targetModule)
@@ -191,146 +234,116 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
     if (!sourceModule || !functionName || !hookFunction)
         return false;
 
-    auto importDesc = GetImportDescriptor(targetModule);
-    if (!importDesc)
+    ModuleImportView importView;
+    if (!GetModuleImportView(targetModule, &importView))
         return false;
 
-    // Find the import descriptor for the source module
-    bool moduleFound = false;
-    while (importDesc->Name != 0) {
-        auto moduleName = reinterpret_cast<const char*>(reinterpret_cast<BYTE*>(targetModule) + importDesc->Name);
-
-        // Logs every module we encounter during search for target
-        // WrapperLog("IAT Debug: Module found in IAT: %s", moduleName);
-
-        if (_stricmp(moduleName, sourceModule) == 0) {
-            moduleFound = true;
-            // Found the module - now find the function
-            auto thunkData = reinterpret_cast<IMAGE_THUNK_DATA*>(reinterpret_cast<BYTE*>(targetModule) +
-                                                                 importDesc->OriginalFirstThunk);
-            auto iatEntry =
-                reinterpret_cast<IMAGE_THUNK_DATA*>(reinterpret_cast<BYTE*>(targetModule) + importDesc->FirstThunk);
-
-            // Check for OriginalFirstThunk == 0 case (Borland/Old Linkers)
-            if (importDesc->OriginalFirstThunk == 0) {
-                thunkData = iatEntry;
-            }
-
-            if (!thunkData) {
-                WrapperLog("IAT: INT is null for %s in %p", sourceModule, targetModule);
-                break;
-            }
-
-            while (thunkData->u1.AddressOfData != 0) {
-                if (!(thunkData->u1.Ordinal & IMAGE_ORDINAL_FLAG)) {
-                    auto importByName = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(reinterpret_cast<BYTE*>(targetModule) +
-                                                                                thunkData->u1.AddressOfData);
-
-                    if (strcmp(importByName->Name, functionName) == 0) {
-                        // Found the function - patch the IAT entry
-                        const auto currentFunction = reinterpret_cast<void*>(iatEntry->u1.Function);
-                        if (currentFunction == hookFunction) {
-                            void* originalFunction = nullptr;
-                            if (TryGetTrackedOriginalForPatchedEntry(
-                                    targetModule, sourceModule, functionName, hookFunction,
-                                    reinterpret_cast<void**>(&iatEntry->u1.Function), &originalFunction)) {
-                                if (outOriginal && originalFunction) {
-                                    *outOriginal = originalFunction;
-                                }
-                                static std::atomic<uint32_t> alreadyPatchedLogs{0};
-                                const uint32_t logIndex =
-                                    alreadyPatchedLogs.fetch_add(1, std::memory_order_relaxed);
-                                if (logIndex < 16 || (logIndex % 1000) == 0) {
-                                    WrapperLog("IAT: %s!%s in module %p already patched", sourceModule,
-                                               functionName, targetModule);
-                                }
-                                return true;
-                            }
-                            WrapperLog("IAT: %s!%s in module %p already points at hook but original is not tracked",
-                                       sourceModule, functionName, targetModule);
-                            return false;
-                        }
-                        if (IsForeignIATOwner(currentFunction, sourceModule, functionName)) {
-                            static std::atomic<uint32_t> preservedOwnerLogs{0};
-                            const uint32_t logIndex = preservedOwnerLogs.fetch_add(1, std::memory_order_relaxed);
-                            if (logIndex < 64 || (logIndex % 512) == 0) {
-                                WrapperLog(
-                                    "IAT: Preserving foreign owner %p for %s!%s in module %p; CE will attach "
-                                    "through export/vtable routes",
-                                    currentFunction, sourceModule, functionName, targetModule);
-                            }
-                            return false;
-                        }
-
-                        PatchedEntry trackingEntry{targetModule, {}, {}, hookFunction, currentFunction,
-                                                   reinterpret_cast<void**>(&iatEntry->u1.Function)};
-                        try {
-                            trackingEntry.sourceModule = sourceModule;
-                            trackingEntry.functionName = functionName;
-                        } catch (...) {
-                            WrapperLog("IAT: Could not allocate ownership record for %s!%s in module %p",
-                                       sourceModule, functionName, targetModule);
-                            return false;
-                        }
-
-                        DWORD oldProtect;
-                        if (VirtualProtect(&iatEntry->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-                            // Save original
-                            void* previousOutOriginal = outOriginal ? *outOriginal : nullptr;
-                            if (outOriginal) {
-                                *outOriginal = currentFunction;
-                            }
-                            MemoryBarrier();
-
-                            std::unique_lock<std::mutex> trackingLock(g_PatchLock);
-                            try {
-                                g_PatchedEntries.push_back(std::move(trackingEntry));
-                            } catch (...) {
-                                VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
-                                if (outOriginal)
-                                    *outOriginal = previousOutOriginal;
-                                WrapperLog("IAT: Could not publish ownership record for %s!%s in module %p",
-                                           sourceModule, functionName, targetModule);
-                                return false;
-                            }
-
-                            // Claim the slot only if no foreign injector changed
-                            // it after our initial read.
-                            void* replaced = InterlockedCompareExchangePointer(
-                                reinterpret_cast<PVOID volatile*>(&iatEntry->u1.Function), hookFunction,
-                                currentFunction);
-
-                            VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
-
-                            if (replaced != currentFunction) {
-                                g_PatchedEntries.pop_back();
-                                WrapperLog("IAT: Preserving concurrent replacement %p for %s!%s in module %p",
-                                           replaced, sourceModule, functionName, targetModule);
-                                if (outOriginal)
-                                    *outOriginal = previousOutOriginal;
-                                return false;
-                            }
-
-                            WrapperLog("IAT: Successfully patched %s!%s in module %p", sourceModule, functionName,
-                                       targetModule);
-
-                            WrapperLog("IAT: Patched %s!%s in module %p", sourceModule, functionName, targetModule);
-                            return true;
-                        }
-                    }
-                }
-                ++thunkData;
-                ++iatEntry;
-            }
+    HMODULE source = GetModuleHandleA(sourceModule);
+    void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
+    TrackedImportContext trackingContext{targetModule, sourceModule, functionName, hookFunction};
+    const detail::ImportEntryLookup lookup = detail::FindImportTableEntry(
+        importView.imageBase, importView.imageSize, importView.directoryRva, importView.directorySize, sourceModule,
+        functionName, expectedFunction, hookFunction, &IsMemoryReadable, &LookupTrackedImport, &trackingContext);
+    if (lookup.issue != detail::ImportTableIssue::None) {
+        static std::atomic<uint32_t> malformedImportLogs{0};
+        const uint32_t logIndex = malformedImportLogs.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 16 || (logIndex % 512) == 0) {
+            WrapperLog("IAT: Skipping malformed import table in module %p while finding %s!%s (reason=%s)",
+                       targetModule, sourceModule, functionName, detail::ImportTableIssueName(lookup.issue));
         }
-        ++importDesc;
+        return false;
+    }
+    if (!lookup.iatEntry)
+        return false;
+
+    auto* iatEntry = lookup.iatEntry;
+    const auto currentFunction = reinterpret_cast<void*>(static_cast<uintptr_t>(iatEntry->u1.Function));
+    if (currentFunction == hookFunction) {
+        void* originalFunction = lookup.trackedOriginal;
+        if (originalFunction ||
+            TryGetTrackedOriginalForPatchedEntry(targetModule, sourceModule, functionName, hookFunction,
+                                                 reinterpret_cast<void**>(&iatEntry->u1.Function),
+                                                 &originalFunction)) {
+            if (outOriginal && originalFunction)
+                *outOriginal = originalFunction;
+            static std::atomic<uint32_t> alreadyPatchedLogs{0};
+            const uint32_t logIndex = alreadyPatchedLogs.fetch_add(1, std::memory_order_relaxed);
+            if (logIndex < 16 || (logIndex % 1000) == 0) {
+                WrapperLog("IAT: %s!%s in module %p already patched", sourceModule, functionName, targetModule);
+            }
+            return true;
+        }
+        WrapperLog("IAT: %s!%s in module %p already points at hook but original is not tracked", sourceModule,
+                   functionName, targetModule);
+        return false;
+    }
+    if (IsForeignIATOwner(currentFunction, sourceModule, functionName)) {
+        static std::atomic<uint32_t> preservedOwnerLogs{0};
+        const uint32_t logIndex = preservedOwnerLogs.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 64 || (logIndex % 512) == 0) {
+            WrapperLog(
+                "IAT: Preserving foreign owner %p for %s!%s in module %p; CE will attach "
+                "through export/vtable routes",
+                currentFunction, sourceModule, functionName, targetModule);
+        }
+        return false;
     }
 
-    if (!moduleFound && targetModule == GetModuleHandle(nullptr)) {
-        // WrapperLog("IAT Debug: Module %s not imported by EXE", sourceModule);
+    PatchedEntry trackingEntry{targetModule, {}, {}, hookFunction, currentFunction,
+                               reinterpret_cast<void**>(&iatEntry->u1.Function)};
+    try {
+        trackingEntry.sourceModule = sourceModule;
+        trackingEntry.functionName = functionName;
+    } catch (...) {
+        WrapperLog("IAT: Could not allocate ownership record for %s!%s in module %p", sourceModule, functionName,
+                   targetModule);
+        return false;
     }
 
-    return false;
+    DWORD oldProtect;
+    if (!VirtualProtect(&iatEntry->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect))
+        return false;
+
+    void* previousOutOriginal = outOriginal ? *outOriginal : nullptr;
+    if (outOriginal)
+        *outOriginal = currentFunction;
+    MemoryBarrier();
+
+    std::unique_lock<std::mutex> trackingLock(g_PatchLock);
+    try {
+        g_PatchedEntries.push_back(std::move(trackingEntry));
+    } catch (...) {
+        VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+        if (outOriginal)
+            *outOriginal = previousOutOriginal;
+        WrapperLog("IAT: Could not publish ownership record for %s!%s in module %p", sourceModule, functionName,
+                   targetModule);
+        return false;
+    }
+
+    // Claim the slot only if no foreign injector changed it after our initial
+    // read.
+    void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&iatEntry->u1.Function),
+                                                       hookFunction, currentFunction);
+    VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+
+    if (replaced != currentFunction) {
+        g_PatchedEntries.pop_back();
+        WrapperLog("IAT: Preserving concurrent replacement %p for %s!%s in module %p", replaced, sourceModule,
+                   functionName, targetModule);
+        if (outOriginal)
+            *outOriginal = previousOutOriginal;
+        return false;
+    }
+
+    if (lookup.usedResolvedAddress) {
+        WrapperLog("IAT: Successfully patched name-less %s!%s in module %p by resolved address", sourceModule,
+                   functionName, targetModule);
+    } else {
+        WrapperLog("IAT: Successfully patched %s!%s in module %p", sourceModule, functionName, targetModule);
+    }
+    WrapperLog("IAT: Patched %s!%s in module %p", sourceModule, functionName, targetModule);
+    return true;
 }
 
 bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionName, void* hookFunction,

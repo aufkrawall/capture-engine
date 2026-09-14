@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 742,
+    "entries": 743,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -676,6 +676,7 @@
       "tests/test_inject_source_lifecycle.cpp",
       "tests/test_injection_lifetime_source.cpp",
       "tests/test_injection_path_policy.cpp",
+      "tests/test_inline_hook_pristine_image.cpp",
       "tests/test_ipc_message_validation.cpp",
       "tests/test_live_stream_config.cpp",
       "tests/test_log_meter.cpp",
