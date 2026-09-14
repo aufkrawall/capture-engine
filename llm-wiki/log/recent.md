@@ -1,5 +1,52 @@
 # llm-wiki Log
 
+### 2026-09-14 - DirectDraw overlay flicker: the composite was on the wrong side of the present
+
+Gothic II with the SystemPack (DirectDraw7 + Direct3D7, 4K, session `20260914_173658`) drew the overlay and then
+lost it again, frame after frame. The log shows what the route actually did: `DDraw: Overlay writeback to primary
+surface completed` on every present, and `DDraw: Overlay helper PresentEx hr=0x08760878` - `S_PRESENT_OCCLUDED` -
+on every one of them too.
+
+Both lines are the bug. `HandleCapture` ran **after** the original `Flip`/`Blt` returned and composited into the
+surface that was already on screen: read the primary, draw the overlay over it, write the whole thing back. On a
+flip chain that write lands in a buffer the display is already scanning out, and the next flip replaces that
+buffer with one the overlay never touched. The overlay was therefore present for part of a frame, missing for the
+rest, and completely absent whenever the write finished after the following flip - flicker at the frame rate, by
+construction. The helper `PresentEx` was a second, redundant presentation route that is occluded for as long as
+the application holds the display, so it never contributed anything either.
+
+The cost made it worse. Every composite moved the whole 3840x2160 surface up and back down across the CPU, about
+66 MB per present; the session's composite counter advanced 112 times in 6.4 s, roughly 17 presents per second,
+and the window in which the frame was on screen without the overlay was about 10-25 ms wide.
+
+`hook/common/ddraw_present_policy.h` now names what each hooked call publishes. `Flip` publishes the flip chain's
+back buffer (or the caller's explicit target), a full-surface blit onto a **single-buffered** scanout surface
+publishes its source, and an `Unlock` of the primary is already visible. The overlay goes into the image the
+present is about to publish, before the call reaches the runtime; when that image cannot be resolved CE composites
+nothing rather than falling back to the visible surface, because that fallback *is* the race. Blits onto a flip
+chain are no longer presentations at all - `Flip` owns those images - and partial blits are 2D updates that only
+restore the overlay when they intersect it, instead of re-compositing the whole overlay dozens of times a frame
+and feeding each one to the recorder.
+
+The transfer is now the overlay's own bounding rectangle, aligned to a 64-pixel grid: `OverlayAdapter::
+GetLastRenderedBounds` derives it from the geometry the renderer last built, and the staging surfaces are sized to
+it instead of to the frame (over 20x less traffic at 4K). The rectangle is known only from geometry that already
+exists, so the previous frame's rectangle stages the pixels and the frame that grows past it re-stages the union
+and re-submits the same geometry through `OverlayAdapter::ResubmitLastFrame` - without that the overlay would be
+clipped for exactly one frame every time it grows. The helper `PresentEx` survives only as the fallback for when
+the in-frame composite fails outright.
+
+Two smaller things fell out. The 100 ms "last presented source surface" tick heuristic is gone - `Flip` hands us
+its target and `Blt` hands us its source, so there was nothing left to guess. And `NotePresentationComplete`
+refuses to count a frame while a composite is in flight: the composite locks and unlocks DirectDraw surfaces
+through CE's own hooks, so a nested `Unlock` of the scanout surface reaches the frame accounting and would both
+corrupt the frame-time series and let the FPS limiter sleep inside the composite.
+
+`DDrawPresentPolicyTest` covers the classification and the region arithmetic, including the two cases that were
+previously wrong by construction: a flip composites into the flip target and never into the visible surface, and a
+partial blit is not a present. Built and verified at 0.1.6577. **Hardware run pending** - no Gothic II session has
+exercised this yet.
+
 ### 2026-09-14 - Gothic II/SystemPack startup: old-linker IATs and unrelocated pristine code
 
 All three Gothic2.exe failures in sessions `20260914_151113` and `20260914_151846` were deterministic

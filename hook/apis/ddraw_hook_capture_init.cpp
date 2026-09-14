@@ -204,19 +204,8 @@ bool DDrawCapture::CreateD3D9ExWrapper(HWND hwnd) {
 
         d3d9DeviceEx->SetMaximumFrameLatency(1);
 
-        hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
-                                                       &d3d9FastUploadSurface, nullptr);
-        if (FAILED(hr)) {
-            HookLog("DDraw: Failed to create fast D3D9Ex upload surface (hr=0x%08x)", hr);
-        }
-
-        hr = d3d9DeviceEx->CreateOffscreenPlainSurface(width, height, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
-                                                       &d3d9UploadSurface, nullptr);
-        if (FAILED(hr)) {
-            HookLog("DDraw: Failed to create D3D9Ex upload surface (hr=0x%08x)", hr);
-            return false;
-        }
-
+        // The composite staging surfaces are sized to the overlay's own
+        // bounding rectangle, not to the frame, and are created on first use.
         HookLog("DDraw: D3D9Ex wrapper created for overlay");
         return true;
 

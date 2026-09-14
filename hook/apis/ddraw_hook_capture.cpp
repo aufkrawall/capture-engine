@@ -78,127 +78,173 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
     return false;
 }
 
-void HandleCapture(IDirectDrawSurface7* primarySurface, IDirectDrawSurface7* explicitSourceSurface) {
+void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,
+                         ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                         const ce::ddraw_present_policy::Rect& changedRect) {
     if (HookIsShuttingDown())
         return;
+
+    const auto target = ce::ddraw_present_policy::SelectCompositeTarget(kind, presentSource != nullptr);
+    if (target == ce::ddraw_present_policy::CompositeTarget::None)
+        return;
+
+    IDirectDrawSurface7* compositeTarget =
+        target == ce::ddraw_present_policy::CompositeTarget::PresentSource ? presentSource : visibleSurface;
+    if (!compositeTarget)
+        return;
+
+    // Compositing re-enters DirectDraw through the same hooked surface methods
+    // (Lock/Unlock, GetDC/ReleaseDC), so the recursion guard has to cover the
+    // whole presentation, not just the capture inside it.
     ddraw_hook_g_CaptureRecurse++;
     if (ddraw_hook_g_CaptureRecurse > 1) {
         ddraw_hook_g_CaptureRecurse--;
         return;
     }
 
-    g_RenderWatchdog.Heartbeat();
-
-    // Update performance metrics
-    static int64_t qpcFreq = 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
-    ddraw_hook_g_PerfMetrics.Update(us);
-
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
-    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
-    bool isRecording = g_IPC && g_IPC->IsRecording();
+    const bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    const bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+    const bool isRecording = g_IPC && g_IPC->IsRecording();
     HWND targetHwnd = ResolveDirectDrawTargetWindow();
+
     uint32_t surfaceWidth = 0;
     uint32_t surfaceHeight = 0;
     const bool haveSurfaceSize =
-        GetSurfaceSize(primarySurface, surfaceWidth, surfaceHeight) && surfaceWidth > 0 && surfaceHeight > 0;
-    IDirectDrawSurface7* presentationSurface =
-        ResolvePreferredPresentationSurface(primarySurface, explicitSourceSurface);
+        GetSurfaceSize(compositeTarget, surfaceWidth, surfaceHeight) && surfaceWidth > 0 && surfaceHeight > 0;
 
-    static bool loggedFirstHandleCapture = false;
-    if (!loggedFirstHandleCapture) {
+    static bool loggedFirstPresentation = false;
+    if (!loggedFirstPresentation) {
         HookLogImportant(
-            "DDraw: First HandleCapture surface=%p hwnd=%p recording=%d showOverlay=%d captureIncludeOverlay=%d "
-            "size=%ux%u presentation=%p",
-            primarySurface, targetHwnd, isRecording ? 1 : 0, shouldDrawOverlay ? 1 : 0, captureIncludeOverlay ? 1 : 0,
-            surfaceWidth, surfaceHeight, presentationSurface);
-        loggedFirstHandleCapture = true;
+            "DDraw: First presentation kind=%d visible=%p presentSource=%p composite=%p hwnd=%p recording=%d "
+            "showOverlay=%d captureIncludeOverlay=%d size=%ux%u",
+            static_cast<int>(kind), visibleSurface, presentSource, compositeTarget, targetHwnd, isRecording ? 1 : 0,
+            shouldDrawOverlay ? 1 : 0, captureIncludeOverlay ? 1 : 0, surfaceWidth, surfaceHeight);
+        loggedFirstPresentation = true;
     }
 
     if (shouldDrawOverlay && haveSurfaceSize) {
         ddraw_hook_g_DDrawCapture.EnsureOverlayDevice(targetHwnd, surfaceWidth, surfaceHeight);
     }
 
-    // Lambda for overlay drawing: overlay MUST ALWAYS be drawn onto the primary surface (front display buffer)
-    auto doOverlay = [&]() {
-        if (shouldDrawOverlay) {
-            DrawDDrawOverlay(primarySurface);
-        }
-    };
-
-    // Lambda for capture operation
-    auto doCapture = [&]() {
-        if (isRecording) {
-            if (!ddraw_hook_g_DDrawCapture.initialized && haveSurfaceSize) {
-                ddraw_hook_g_DDrawCapture.EnsureCaptureResources(primarySurface, targetHwnd, surfaceWidth, surfaceHeight);
-            }
-
-            if (ddraw_hook_g_DDrawCapture.initialized) {
-                // If recording includes overlay, capture the primary surface which now contains the composited overlay.
-                // Otherwise capture from the clean presentation surface (or primary surface if none).
-                IDirectDrawSurface7* captureTarget =
-                    captureIncludeOverlay ? primarySurface : (presentationSurface ? presentationSurface : primarySurface);
-                ddraw_hook_g_DDrawCapture.CaptureFrameFromSurface(captureTarget);
+    // A direct-scanout change is already on screen; only the part of it that
+    // overwrote the overlay's own pixels needs the overlay put back.
+    if (shouldDrawOverlay && kind == ce::ddraw_present_policy::PresentKind::DirectScanout && haveChangedRect) {
+        RECT overlayBounds = {};
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        if (g_OverlayAdapter.GetLastRenderedBounds(static_cast<int>(surfaceWidth), static_cast<int>(surfaceHeight),
+                                                   overlayBounds)) {
+            const ce::ddraw_present_policy::Rect bounds{
+                static_cast<int>(overlayBounds.left), static_cast<int>(overlayBounds.top),
+                static_cast<int>(overlayBounds.right), static_cast<int>(overlayBounds.bottom)};
+            if (!ce::ddraw_present_policy::DirectScanoutNeedsComposite(bounds, true, changedRect)) {
+                ddraw_hook_g_CaptureRecurse--;
+                return;
             }
         }
-    };
-
-    // Order capture/overlay based on config
-    if (captureIncludeOverlay) {
-        doOverlay();  // Draw overlay first onto primary surface
-        doCapture();  // Then capture primary surface (includes overlay)
-    } else {
-        doCapture();  // Capture first (clean frame)
-        doOverlay();  // Then draw overlay onto primary surface (visible on screen but not in recording)
     }
 
-    // Apply FPS limiter
-    g_SharedFpsLimiter.SetIPCClient(g_IPC);
-    g_SharedFpsLimiter.Apply();
+    auto doOverlay = [&]() {
+        if (shouldDrawOverlay) {
+            DrawDDrawOverlay(compositeTarget);
+        }
+    };
+
+    // A partial scanout update restores the overlay but is not a frame: feeding
+    // every HUD or cursor blit to the recorder would publish the same frame
+    // many times over.
+    const bool changeCoversSurface =
+        !haveChangedRect || (changedRect.left <= 0 && changedRect.top <= 0 &&
+                             changedRect.right >= static_cast<int>(surfaceWidth) &&
+                             changedRect.bottom >= static_cast<int>(surfaceHeight));
+
+    auto doCapture = [&]() {
+        if (!isRecording || !changeCoversSurface)
+            return;
+        if (!ddraw_hook_g_DDrawCapture.initialized && haveSurfaceSize) {
+            ddraw_hook_g_DDrawCapture.EnsureCaptureResources(compositeTarget, targetHwnd, surfaceWidth, surfaceHeight);
+        }
+        if (ddraw_hook_g_DDrawCapture.initialized) {
+            ddraw_hook_g_DDrawCapture.CaptureFrameFromSurface(compositeTarget);
+        }
+    };
+
+    // Both the recording and the screen now read the same image, so the only
+    // question left is whether the recording sees the overlay in it.
+    if (captureIncludeOverlay) {
+        doOverlay();
+        doCapture();
+    } else {
+        doCapture();
+        doOverlay();
+    }
 
     ddraw_hook_g_CaptureRecurse--;
 }
 
-void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface, IDirectDrawSurface4* explicitSourceSurface) {
-    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
-    if (!primarySurface7) {
+void NotePresentationComplete() {
+    if (HookIsShuttingDown())
+        return;
+    // The composite locks and unlocks DirectDraw surfaces through the same
+    // hooked methods, so a nested Unlock of the scanout surface reaches here
+    // while a presentation is still being composited. Counting that as a frame
+    // would corrupt the frame-time series and let the limiter sleep inside the
+    // composite.
+    if (ddraw_hook_g_CaptureRecurse != 0)
+        return;
+
+    g_RenderWatchdog.Heartbeat();
+
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER frequency;
+        QueryPerformanceFrequency(&frequency);
+        qpcFreq = frequency.QuadPart;
+    }
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    ddraw_hook_g_PerfMetrics.Update(DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq));
+
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
+}
+
+void HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDrawSurface4* presentSource,
+                                ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                                const ce::ddraw_present_policy::Rect& changedRect) {
+    IDirectDrawSurface7* visibleSurface7 = QuerySurface7(visibleSurface);
+    if (!visibleSurface7) {
         static int primaryUpgradeFailLogCount = 0;
         if (primaryUpgradeFailLogCount < 4) {
-            HookLog("DDraw: Failed to upgrade DirectDraw4 primary surface to DirectDraw7 for capture/overlay");
+            HookLog("DDraw: Failed to upgrade DirectDraw4 surface to DirectDraw7 for capture/overlay");
             primaryUpgradeFailLogCount++;
         }
         return;
     }
 
-    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
-    HandleCapture(primarySurface7, explicitSourceSurface7);
+    IDirectDrawSurface7* presentSource7 = QuerySurface7(presentSource);
+    ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
 
-    if (explicitSourceSurface7) {
-        explicitSourceSurface7->Release();
+    if (presentSource7) {
+        presentSource7->Release();
     }
-    primarySurface7->Release();
+    visibleSurface7->Release();
 }
 
-void HandleCaptureLegacySurface(IDirectDrawSurface* primarySurface, IDirectDrawSurface* explicitSourceSurface) {
-    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
-    if (!primarySurface7) {
+void HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirectDrawSurface* presentSource,
+                                     ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                                     const ce::ddraw_present_policy::Rect& changedRect) {
+    IDirectDrawSurface7* visibleSurface7 = QuerySurface7(visibleSurface);
+    if (!visibleSurface7) {
         static std::atomic<int> s_upgradeFailureLogCount{0};
         if (s_upgradeFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
-            HookLogImportant("DDraw: Failed to upgrade legacy primary surface to Surface7 for capture/overlay");
+            HookLogImportant("DDraw: Failed to upgrade legacy surface to Surface7 for capture/overlay");
         }
         return;
     }
-    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
-    HandleCapture(primarySurface7, explicitSourceSurface7);
-    if (explicitSourceSurface7)
-        explicitSourceSurface7->Release();
-    primarySurface7->Release();
+    IDirectDrawSurface7* presentSource7 = QuerySurface7(presentSource);
+    ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
+    if (presentSource7)
+        presentSource7->Release();
+    visibleSurface7->Release();
 }

@@ -63,6 +63,8 @@ typedef float D3DVALUE;
 
 #include "../common/capture_base.h"
 
+#include "../common/ddraw_present_policy.h"
+
 #include "../common/fps_limiter.h"
 
 #include "../common/frame_timing.h"
@@ -292,10 +294,6 @@ inline uint32_t ddraw_hook_g_PrerenderIdx = 0;
 
 inline IDirect3DDevice7* ddraw_hook_g_D3D7Device = nullptr;
 
-inline IDirectDrawSurface7* ddraw_hook_g_LastPresentedSourceSurface = nullptr;
-
-inline DWORD ddraw_hook_g_LastPresentedSourceTick = 0;
-
 inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
 
 inline bool ddraw_hook_g_DirectDrawCreateInlineInstalled = false;
@@ -361,8 +359,7 @@ public:
     }~DirectDrawBootstrapScope();
 };uintptr_t DirectDrawObjectIdentity(IUnknown* object);void AssociateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion version);void AssociateLegacyD3DSurface(IUnknown* surface, unsigned d3dVersion);void ActivateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion fallbackVersion);UINT QueryD3D7MaxAnisotropy(void* opaqueDevice);UINT QueryD3D6MaxAnisotropy(void* opaqueDevice);bool ShouldSuppressDirectDrawHooking();
 
-bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable);bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc);bool IsPrimarySurfaceDesc(const DDSURFACEDESC* surfaceDesc);bool SurfaceHasCaps(IDirectDrawSurface* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface4* surface, DWORD capsMask);IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike);void RememberPresentedSourceSurface(IDirectDrawSurface7* surface);IDirectDrawSurface7* ResolvePreferredPresentationSurface(IDirectDrawSurface7* primarySurface,
-                                                                IDirectDrawSurface7* explicitSourceSurface);
+bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable);bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc);bool IsPrimarySurfaceDesc(const DDSURFACEDESC* surfaceDesc);bool SurfaceHasCaps(IDirectDrawSurface* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface4* surface, DWORD capsMask);IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike);
 
 HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* ddraw_hook_pUnkOuter);
@@ -483,9 +480,16 @@ public:
     // D3D9Ex wrapper for GPU sharing
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
-    IDirect3DSurface9* d3d9FastUploadSurface = nullptr;
-    IDirect3DSurface9* d3d9UploadSurface = nullptr;
     bool d3d9UsesFlipEx = false;
+
+    // Staging for the overlay composite. Only the overlay's own bounding
+    // rectangle crosses the CPU, so these are sized to that region rather than
+    // to the frame: a 4K full-surface round trip costs about 66 MB per present.
+    IDirect3DSurface9* d3d9RegionUpload = nullptr;  // D3DPOOL_DEFAULT, lockable game-pixel staging
+    IDirect3DSurface9* d3d9RegionSysMem = nullptr;  // D3DPOOL_SYSTEMMEM, upload fallback and readback
+    IDirect3DSurface9* d3d9RegionTarget = nullptr;  // D3DPOOL_DEFAULT render target for the readback
+    uint32_t regionWidth = 0;
+    uint32_t regionHeight = 0;
 
     // D3D11 for shared texture
     ID3D11Device* d3d11Device = nullptr;
@@ -501,7 +505,7 @@ public:
 
     // Surface info
     IDirectDrawSurface7* ddrawSurface = nullptr;
-    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool UploadOverlaySurfaceToBackbuffer();bool StretchOverlaySurfaceToBackbuffer(IDirect3DSurface9* surface);bool CopyLockedSurfaceToUploadSurface(const DDSURFACEDESC2& desc);bool CopySurfaceToOverlayBackbufferViaLock(IDirectDrawSurface7* surface);bool CopyPrimarySurfaceToOverlayBackbuffer(IDirectDrawSurface7* surface);bool CopyOverlayBackbufferToPrimarySurface(IDirectDrawSurface7* surface);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
+    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureCompositeRegionResources(const ce::ddraw_present_policy::Rect& region);void ReleaseCompositeRegionResources();bool CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
 
     // Capture via GetDC for surfaces that don't support Lock
 void CaptureFrameViaGDI(IDirectDrawSurface7* surface);
@@ -510,18 +514,40 @@ void CaptureFrameViaGDI(IDirectDrawSurface7* surface);
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 inline DDrawCapture ddraw_hook_g_DDrawCapture;
 
-// Draw overlay using D3D9Ex
-void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface);void InstallAttachedBackBufferHooks(IDirectDrawSurface7* primarySurface, const char* ddraw_hook_reason);
+// Composite the overlay into one DirectDraw surface through the D3D9Ex helper.
+void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget);
+
+// Geometry and capability of one surface, read in a single GetSurfaceDesc.
+bool ResolveSurfaceGeometry(IDirectDrawSurface7* surface, ce::ddraw_present_policy::Extent& extent,
+                            DWORD& caps);
+
+// The image a Flip is about to publish: the caller's explicit target, else the
+// attached back buffer. Returns an AddRef'd surface the caller must release.
+IDirectDrawSurface7* AcquireFlipPresentSource(IDirectDrawSurface7* primarySurface,
+                                             IDirectDrawSurface7* destOverride);
+
+// Overlay composite plus recording capture for one presentation, performed on
+// the image that presentation publishes and before it reaches the runtime.
+void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,
+                         ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                         const ce::ddraw_present_policy::Rect& changedRect);
+
+// Frame accounting for a completed presentation: watchdog, metrics, FPS limiter.
+void NotePresentationComplete();void InstallAttachedBackBufferHooks(IDirectDrawSurface7* primarySurface, const char* ddraw_hook_reason);
 
 // Get surface dimensions from DDSURFACEDESC2
 bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* ddraw_hook_reason);void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
                                                     ce::graphics_api_identity::DirectDrawVersion version,
                                                     const char* ddraw_hook_reason);void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* ddraw_hook_reason);void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* ddraw_hook_reason);void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
 
-// Common capture logic called after Flip/Blt
-void HandleCapture(IDirectDrawSurface7* primarySurface, IDirectDrawSurface7* explicitSourceSurface = nullptr);void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface,
-                                  IDirectDrawSurface4* explicitSourceSurface = nullptr);void HandleCaptureLegacySurface(IDirectDrawSurface* primarySurface,
-                                       IDirectDrawSurface* explicitSourceSurface = nullptr);HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
+// Presentation entry points for the DirectDraw4 and legacy surface interfaces,
+// which reach the same policy after upgrading their surfaces to Surface7.
+void HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDrawSurface4* presentSource,
+                               ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                               const ce::ddraw_present_policy::Rect& changedRect);
+void HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirectDrawSurface* presentSource,
+                                    ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
+                                    const ce::ddraw_present_policy::Rect& changedRect);HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
                                                                      IDirectDrawSurface** ppSurface,
                                                                      IUnknown* ddraw_hook_pUnkOuter);LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* surface);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
                                                            IDirectDrawSurface* destOverride, DWORD ddraw_hook_flags);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,

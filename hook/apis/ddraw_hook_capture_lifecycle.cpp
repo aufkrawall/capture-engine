@@ -10,14 +10,7 @@ DirectDrawBootstrapScope::~DirectDrawBootstrapScope() {
 void DDrawCapture::ReleaseOverlayResources() {
 
 
-        if (d3d9FastUploadSurface) {
-            d3d9FastUploadSurface->Release();
-            d3d9FastUploadSurface = nullptr;
-        }
-        if (d3d9UploadSurface) {
-            d3d9UploadSurface->Release();
-            d3d9UploadSurface = nullptr;
-        }
+        ReleaseCompositeRegionResources();
         if (d3d9DeviceEx) {
             DX9_UnregisterInternalHelperDevice(d3d9DeviceEx);
             d3d9DeviceEx->Release();

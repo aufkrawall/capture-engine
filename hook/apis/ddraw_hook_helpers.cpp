@@ -182,47 +182,47 @@ IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike) {
 
 }
 
-void RememberPresentedSourceSurface(IDirectDrawSurface7* surface) {
+bool ResolveSurfaceGeometry(IDirectDrawSurface7* surface,  ce::ddraw_present_policy::Extent& extent,
+                            DWORD& caps) {
 
 
+    extent = {};
+    caps = 0;
     if (!surface)
-        return;
+        return false;
 
-    ddraw_hook_g_LastPresentedSourceSurface = surface;
-    ddraw_hook_g_LastPresentedSourceTick = GetTickCount();
+    DDSURFACEDESC2 desc = {};
+    desc.dwSize = sizeof(desc);
+    if (FAILED(surface->GetSurfaceDesc(&desc)))
+        return false;
+
+    extent.width = desc.dwWidth;
+    extent.height = desc.dwHeight;
+    caps = desc.ddsCaps.dwCaps;
+    return extent.width > 0 && extent.height > 0;
 
 }
 
-IDirectDrawSurface7* ResolvePreferredPresentationSurface(IDirectDrawSurface7* primarySurface, 
-                                                                IDirectDrawSurface7* explicitSourceSurface) {
+IDirectDrawSurface7* AcquireFlipPresentSource(IDirectDrawSurface7* primarySurface,
+                                              IDirectDrawSurface7* destOverride) {
 
 
-    uint32_t primaryWidth = 0;
-    uint32_t primaryHeight = 0;
-    const bool havePrimarySize = GetSurfaceSize(primarySurface, primaryWidth, primaryHeight);
-
-    auto surfaceMatchesPrimary = [&](IDirectDrawSurface7* surface) {
-        if (!surface)
-            return false;
-        if (!havePrimarySize)
-            return true;
-        uint32_t surfaceWidth = 0;
-        uint32_t surfaceHeight = 0;
-        return GetSurfaceSize(surface, surfaceWidth, surfaceHeight) && surfaceWidth == primaryWidth &&
-               surfaceHeight == primaryHeight;
-    };
-
-    if (explicitSourceSurface && surfaceMatchesPrimary(explicitSourceSurface)) {
-        return explicitSourceSurface;
+    // An explicit flip target is authoritative: the application named the
+    // surface it wants on screen.
+    if (destOverride) {
+        destOverride->AddRef();
+        return destOverride;
     }
+    if (!primarySurface)
+        return nullptr;
 
-    const DWORD now = GetTickCount();
-    if (ddraw_hook_g_LastPresentedSourceSurface && (now - ddraw_hook_g_LastPresentedSourceTick) <= 100 &&
-        surfaceMatchesPrimary(ddraw_hook_g_LastPresentedSourceSurface)) {
-        return ddraw_hook_g_LastPresentedSourceSurface;
+    DDSCAPS2 backBufferCaps = {};
+    backBufferCaps.dwCaps = DDSCAPS_BACKBUFFER;
+    IDirectDrawSurface7* backBuffer = nullptr;
+    if (SUCCEEDED(primarySurface->GetAttachedSurface(&backBufferCaps, &backBuffer)) && backBuffer) {
+        return backBuffer;
     }
-
-    return primarySurface;
+    return nullptr;
 
 }
 
@@ -370,14 +370,57 @@ void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface,  float limit) {
 
 }
 
-void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
+namespace {
+
+// Growing the staged rectangle to a grid keeps a value row that widens by a few
+// pixels from recreating the staging surfaces every time it changes.
+constexpr int kCompositeRegionAlignment = 64;
+
+ce::ddraw_present_policy::Rect ToPolicyRect(const RECT& rect) {
+    return ce::ddraw_present_policy::Rect{static_cast<int>(rect.left), static_cast<int>(rect.top),
+                                          static_cast<int>(rect.right), static_cast<int>(rect.bottom)};
+}
+
+bool RegionContains(const ce::ddraw_present_policy::Rect& outer, const ce::ddraw_present_policy::Rect& inner) {
+    return outer.left <= inner.left && outer.top <= inner.top && outer.right >= inner.right &&
+           outer.bottom >= inner.bottom;
+}
+
+ce::ddraw_present_policy::Rect RegionUnion(const ce::ddraw_present_policy::Rect& a,
+                                           const ce::ddraw_present_policy::Rect& b) {
+    ce::ddraw_present_policy::Rect merged;
+    merged.left = std::min(a.left, b.left);
+    merged.top = std::min(a.top, b.top);
+    merged.right = std::max(a.right, b.right);
+    merged.bottom = std::max(a.bottom, b.bottom);
+    return merged;
+}
+
+// The rectangle the overlay's geometry occupies, grown to the staging grid and
+// clamped to the frame. False means the overlay drew nothing.
+bool ResolveOverlayCompositeRegion(int viewportWidth,  int viewportHeight,  ce::ddraw_present_policy::Rect& region) {
 
 
-    if (!ddraw_hook_g_DDrawCapture.d3d9DeviceEx)
+    RECT bounds = {};
+    if (!g_OverlayAdapter.GetLastRenderedBounds(viewportWidth, viewportHeight, bounds))
+        return false;
+    return ce::ddraw_present_policy::AlignCompositeRegion(ToPolicyRect(bounds), static_cast<uint32_t>(viewportWidth),
+                                                          static_cast<uint32_t>(viewportHeight),
+                                                          kCompositeRegionAlignment, region);
+
+}
+
+}  // namespace
+
+void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget) {
+
+
+    auto& capture = ddraw_hook_g_DDrawCapture;
+    if (!capture.d3d9DeviceEx || !compositeTarget)
         return;
 
-    if (ddraw_hook_g_DDrawCapture.targetHwnd && ddraw_hook_g_DDrawCapture.targetHwnd != ddraw_hook_g_CachedHwnd) {
-        ddraw_hook_g_CachedHwnd = ddraw_hook_g_DDrawCapture.targetHwnd;
+    if (capture.targetHwnd && capture.targetHwnd != ddraw_hook_g_CachedHwnd) {
+        ddraw_hook_g_CachedHwnd = capture.targetHwnd;
         InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
     }
 
@@ -386,12 +429,12 @@ void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
     }
 
     if (!g_OverlayAdapter.IsInitialized()) {
-        ddraw_hook_g_CachedHwnd = ddraw_hook_g_DDrawCapture.targetHwnd;
+        ddraw_hook_g_CachedHwnd = capture.targetHwnd;
         if (ddraw_hook_g_CachedHwnd) {
             InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
             g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
         }
-        if (g_OverlayAdapter.InitDX9(ddraw_hook_g_DDrawCapture.d3d9DeviceEx)) {
+        if (g_OverlayAdapter.InitDX9(capture.d3d9DeviceEx)) {
             if (ddraw_hook_g_CachedHwnd) {
                 g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
             }
@@ -401,29 +444,60 @@ void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
 
     g_OverlayAdapter.SetMetrics(&ddraw_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
-    g_OverlayAdapter.SetDroppedFrames(ddraw_hook_g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
+    g_OverlayAdapter.SetDroppedFrames(capture.droppedFrames.load(std::memory_order_relaxed));
     const auto directDrawVersion = static_cast<ce::graphics_api_identity::DirectDrawVersion>(
         ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
     g_OverlayAdapter.SetGraphicsAPI(ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion),
                                     "active DirectDraw presentation surface");
 
-    if (g_OverlayAdapter.IsInitialized() && ddraw_hook_g_DDrawCapture.width > 0 && ddraw_hook_g_DDrawCapture.height > 0) {
-        ddraw_hook_g_DDrawCapture.CopyPrimarySurfaceToOverlayBackbuffer(overlaySourceSurface);
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        g_OverlayAdapter.RenderOverlay(ddraw_hook_g_DDrawCapture.width, ddraw_hook_g_DDrawCapture.height);
-        static uint32_t overlayRenderSubmitCount = 0;
-        overlayRenderSubmitCount++;
-        if (overlayRenderSubmitCount <= 8 || (overlayRenderSubmitCount % 120 == 0)) {
-            HookLogImportant("DDraw: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)",
-                             ddraw_hook_g_DDrawCapture.targetHwnd, ddraw_hook_g_DDrawCapture.width, ddraw_hook_g_DDrawCapture.height,
-                             overlayRenderSubmitCount);
-        }
-        if (overlaySourceSurface) {
-            ddraw_hook_g_DDrawCapture.CopyOverlayBackbufferToPrimarySurface(overlaySourceSurface);
-        }
-        ddraw_hook_g_DDrawCapture.PresentOverlay();
+    if (!g_OverlayAdapter.IsInitialized() || capture.width == 0 || capture.height == 0)
+        return;
+
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+    const int viewportWidth = static_cast<int>(capture.width);
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+    const int viewportHeight = static_cast<int>(capture.height);
+
+    // The game's pixels have to be under the overlay before it is blended, and
+    // the region to stage is only known from geometry that already exists. The
+    // previous frame's rectangle is the starting estimate; the frame that grows
+    // past it is corrected below rather than clipped.
+    ce::ddraw_present_policy::Rect staged = {};
+    bool staging = ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, staged) &&
+                   capture.EnsureCompositeRegionResources(staged) &&
+                   capture.CopySurfaceRegionToOverlayBackbuffer(compositeTarget, staged);
+
+    g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
+
+    ce::ddraw_present_policy::Rect rendered = {};
+    if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
+        // Nothing was drawn this frame, so nothing has to reach the surface.
+        return;
     }
+
+    if (!staging || !RegionContains(staged, rendered)) {
+        staged = staging ? RegionUnion(staged, rendered) : rendered;
+        staging = capture.EnsureCompositeRegionResources(staged) &&
+                  capture.CopySurfaceRegionToOverlayBackbuffer(compositeTarget, staged) &&
+                  g_OverlayAdapter.ResubmitLastFrame(viewportWidth, viewportHeight);
+    }
+
+    if (staging && capture.CopyOverlayBackbufferRegionToSurface(compositeTarget, staged)) {
+        return;
+    }
+
+    // The overlay could not be placed inside the image the application is about
+    // to publish. The helper's own swapchain is the only remaining route; it is
+    // occluded for as long as the application holds the display, which is why
+    // it is never the normal path.
+    static std::atomic<int> s_compositeFallbackLogCount{0};
+    if (s_compositeFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
+        HookLogImportant("DDraw: In-frame overlay composite unavailable (target=%p %dx%d); falling back to the "
+                         "helper swapchain present",
+                         compositeTarget, viewportWidth, viewportHeight);
+    }
+    capture.PresentOverlay();
 
 }
 

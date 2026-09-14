@@ -53,6 +53,9 @@ Primary sources:
 - `hook/common/custom_overlay_dx{8,9,10}.{h,cpp}`
 - `hook/common/custom_overlay_gl.{h,cpp}`
 - `hook/apis/{ddraw,dx8,dx9,opengl}_hook.cpp`
+- `hook/common/ddraw_present_policy.h`
+- `hook/apis/ddraw_hook_overlay_composite.cpp`
+- `tests/test_ddraw_present_policy.cpp`
 - `tests/test_overlay_system.cpp`
 - `tests/test_host_metrics_policy.cpp`
 - `tests/test_hardware_sensor_plugin.cpp`
@@ -293,7 +296,7 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - DX8 and DX9 lazily retain one full state-block object for the backend lifetime while still capturing and applying it around every overlay draw. Capture/apply failure discards the object for safe recreation; reset/shutdown releases it. Existing half-pixel placement, render-target safeguards, fixed-function state, and BeginScene/EndScene handling remain intact.
 - DX10 remaps its constant buffer only when viewport size, HDR mode, or paper-white changes. Its complete pipeline save/restore remains intact.
 - A valid OpenGL 2.1 fixed-function matrix path prefers client-side vertex/color/UV arrays and one `glDrawElements` per shared command. VBO/EBO, VAO, active/client texture unit, client-array enables, matrix mode, viewport, texture, blend, depth, and cull state are restored. Capability decisions are per backend/context; a one-time error probe retains immediate mode for incompatible injected contexts. Per-Present error draining and success heartbeat logs were removed.
-- DirectDraw/DX6/DX7 keep their compatibility architecture: lock/copy the full source surface, render through the D3D9Ex helper, and present the helper surface. They inherit the optimized DX9 backend, but the full-surface transfer is inherently much more expensive than a native in-device overlay and was not replaced in this targeted patch.
+- DirectDraw/DX6/DX7 still render through the D3D9Ex helper and still pay a CPU round trip, but **only for the overlay's own bounding rectangle, and always into the image the present is about to publish**. `ce::ddraw_present_policy` (`hook/common/ddraw_present_policy.h`) decides both: `Flip` composites into the flip target, a full-surface blit onto a single-buffered scanout surface composites into its source, and an `Unlock` of the primary composites into the primary. Compositing after the call - into the surface already on screen - is the flicker this replaced: that write races scanout and the next flip discards it (Gothic II/SystemPack, session `20260914_173658`). When the published image cannot be resolved CE composites nothing rather than falling back to the visible surface, because that fallback is the race. The rectangle comes from `OverlayAdapter::GetLastRenderedBounds` aligned to 64 pixels, so a 4K composite moves roughly 1 MB each way instead of the 33 MB a full-surface transfer moved; a frame whose overlay grows past the staged rectangle re-stages the union and re-submits the same geometry via `OverlayAdapter::ResubmitLastFrame` rather than being clipped. The helper swapchain `PresentEx` is a fallback only - it returns `S_PRESENT_OCCLUDED` for as long as the application holds the display. A native in-device D3D7 overlay would still avoid the round trip entirely and remains unimplemented.
 
 ## Vulkan compute-composite route (compute-only present queues)
 

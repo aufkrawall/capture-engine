@@ -45,14 +45,14 @@ TEST(DirectDrawVTableAbiTest, LegacySurfaceVTableIndicesMatchAbi) {
 }
 
 TEST(DirectDrawVTableAbiTest, PixelFormatPackFormulasMatchHardwareScanout) {
-    // Test RGB565 packing formula used in CopyOverlayBackbufferToPrimarySurface
+    // Test RGB565 packing formula used in CopyOverlayBackbufferRegionToSurface
     auto pack565 = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
         return static_cast<uint16_t>(((static_cast<uint16_t>(r) >> 3) << 11) |
                                      ((static_cast<uint16_t>(g) >> 2) << 5) |
                                      (static_cast<uint16_t>(b) >> 3));
     };
 
-    // Test RGB555 packing formula used in CopyOverlayBackbufferToPrimarySurface
+    // Test RGB555 packing formula used in CopyOverlayBackbufferRegionToSurface
     auto pack555 = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
         return static_cast<uint16_t>(((static_cast<uint16_t>(r) >> 3) << 10) |
                                      ((static_cast<uint16_t>(g) >> 3) << 5) |
@@ -80,34 +80,26 @@ TEST(DirectDrawVTableAbiTest, PixelFormatPackFormulasMatchHardwareScanout) {
     EXPECT_EQ(pack555(0, 0, 0), 0x0000);
 }
 
-TEST(DirectDrawVTableAbiTest, OverlayRoutingDirectsToPrimaryScanoutSurface) {
-    // Verify the invariant: overlay presentation must ALWAYS target the primary scanout surface,
-    // not the temporary backbuffer / offscreen source blitted into it.
+TEST(DirectDrawVTableAbiTest, FlipTargetIsTheAttachedBackBufferUnlessOverridden) {
+    // Flip publishes the flip chain's back buffer, or the surface the caller
+    // named. That surface - never the one already on screen - is where the
+    // overlay has to be before the flip reaches the runtime; see
+    // ce::ddraw_present_policy and DDrawPresentPolicyTest for the policy itself.
     struct MockSurface {
         int id;
-        bool isPrimary;
+        bool isScanout;
     };
 
-    MockSurface primarySurface{1, true};
-    MockSurface backBufferSurface{2, false};
+    MockSurface visibleSurface{1, true};
+    MockSurface attachedBackBuffer{2, false};
+    MockSurface explicitTarget{3, false};
 
-    MockSurface* explicitSource = &backBufferSurface;
-    MockSurface* presentationSurface = explicitSource ? explicitSource : &primarySurface;
+    MockSurface* destOverride = nullptr;
+    MockSurface* flipTarget = destOverride ? destOverride : &attachedBackBuffer;
+    EXPECT_EQ(flipTarget->id, 2);
+    EXPECT_NE(flipTarget, &visibleSurface);
 
-    // doOverlay routing policy verification:
-    // When drawing overlay, we must target primarySurface, NOT presentationSurface
-    MockSurface* overlayTarget = &primarySurface;
-    EXPECT_EQ(overlayTarget->id, 1);
-    EXPECT_TRUE(overlayTarget->isPrimary);
-    EXPECT_NE(overlayTarget, presentationSurface);
-
-    // Clean capture (captureIncludeOverlay = false) takes from presentationSurface
-    MockSurface* cleanCaptureTarget = presentationSurface ? presentationSurface : &primarySurface;
-    EXPECT_EQ(cleanCaptureTarget->id, 2);
-    EXPECT_FALSE(cleanCaptureTarget->isPrimary);
-
-    // Overlay-included capture (captureIncludeOverlay = true) takes from primarySurface
-    MockSurface* overlayIncludedCaptureTarget = &primarySurface;
-    EXPECT_EQ(overlayIncludedCaptureTarget->id, 1);
-    EXPECT_TRUE(overlayIncludedCaptureTarget->isPrimary);
+    destOverride = &explicitTarget;
+    flipTarget = destOverride ? destOverride : &attachedBackBuffer;
+    EXPECT_EQ(flipTarget->id, 3);
 }

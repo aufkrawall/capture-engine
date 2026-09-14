@@ -1,5 +1,145 @@
 #include "ddraw_hook_internal.h"
 
+namespace {
+
+namespace policy = ce::ddraw_present_policy;
+
+// One presentation classification for a blit-shaped call.
+struct BlitPresentation {
+    policy::PresentKind kind = policy::PresentKind::None;
+    policy::Rect changedRect;
+    bool haveChangedRect = false;
+};
+
+policy::Rect ToPolicyRect(const RECT& rect) {
+    return policy::Rect{static_cast<int>(rect.left), static_cast<int>(rect.top), static_cast<int>(rect.right),
+                        static_cast<int>(rect.bottom)};
+}
+
+bool ReadSurfaceGeometry(IDirectDrawSurface7* surface, policy::Extent& extent, DWORD& caps) {
+    return ResolveSurfaceGeometry(surface, extent, caps);
+}
+
+bool ReadSurfaceGeometry(IDirectDrawSurface4* surface, policy::Extent& extent, DWORD& caps) {
+    extent = {};
+    caps = 0;
+    DDSURFACEDESC2 desc = {};
+    desc.dwSize = sizeof(desc);
+    if (!surface || FAILED(surface->GetSurfaceDesc(&desc)))
+        return false;
+    extent.width = desc.dwWidth;
+    extent.height = desc.dwHeight;
+    caps = desc.ddsCaps.dwCaps;
+    return extent.width > 0 && extent.height > 0;
+}
+
+bool ReadSurfaceGeometry(IDirectDrawSurface* surface, policy::Extent& extent, DWORD& caps) {
+    extent = {};
+    caps = 0;
+    DDSURFACEDESC desc = {};
+    desc.dwSize = sizeof(desc);
+    if (!surface || FAILED(surface->GetSurfaceDesc(&desc)))
+        return false;
+    extent.width = desc.dwWidth;
+    extent.height = desc.dwHeight;
+    caps = desc.ddsCaps.dwCaps;
+    return extent.width > 0 && extent.height > 0;
+}
+
+// A blit onto a flip chain's images is ordinary drawing - Flip publishes them -
+// so only a single-buffered scanout surface can be presented to this way.
+template <typename SurfaceT>
+BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT* source, const RECT* sourceRect) {
+    BlitPresentation result;
+    policy::BlitGeometry geometry;
+    DWORD destCaps = 0;
+    if (!ReadSurfaceGeometry(dest, geometry.dest, destCaps))
+        return result;
+
+    geometry.destIsScanout = (destCaps & (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) != 0;
+    geometry.destIsFlipChain = (destCaps & (DDSCAPS_FLIP | DDSCAPS_BACKBUFFER)) != 0;
+    if (!geometry.destIsScanout || geometry.destIsFlipChain) {
+        // Flip owns a flip chain's images and an offscreen destination is not a
+        // presentation at all, so the source never has to be described.
+        return result;
+    }
+    if (destRect) {
+        geometry.haveDestRect = true;
+        geometry.destRect = ToPolicyRect(*destRect);
+    }
+
+    DWORD sourceCaps = 0;
+    if (source && ReadSurfaceGeometry(source, geometry.source, sourceCaps)) {
+        geometry.haveSource = true;
+        if (sourceRect) {
+            geometry.haveSourceRect = true;
+            geometry.sourceRect = ToPolicyRect(*sourceRect);
+        }
+    }
+
+    result.kind = policy::ClassifyBlit(geometry);
+    result.haveChangedRect = geometry.haveDestRect;
+    result.changedRect = geometry.haveDestRect
+                             ? geometry.destRect
+                             : policy::Rect{0, 0, static_cast<int>(geometry.dest.width),
+                                            static_cast<int>(geometry.dest.height)};
+    return result;
+}
+
+// BltFast has no destination rectangle: the destination is the source's extent
+// placed at the given corner.
+template <typename SurfaceT>
+BlitPresentation ClassifyBltFastCall(SurfaceT* dest, DWORD destX, DWORD destY, SurfaceT* source,
+                                     const RECT* sourceRect) {
+    policy::Extent sourceExtent;
+    DWORD sourceCaps = 0;
+    const bool haveSource = source && ReadSurfaceGeometry(source, sourceExtent, sourceCaps);
+    int copyWidth = haveSource ? static_cast<int>(sourceExtent.width) : 0;
+    int copyHeight = haveSource ? static_cast<int>(sourceExtent.height) : 0;
+    if (sourceRect) {
+        copyWidth = static_cast<int>(sourceRect->right - sourceRect->left);
+        copyHeight = static_cast<int>(sourceRect->bottom - sourceRect->top);
+    }
+    RECT destRect = {static_cast<LONG>(destX), static_cast<LONG>(destY),
+                     static_cast<LONG>(destX) + copyWidth, static_cast<LONG>(destY) + copyHeight};
+    return ClassifyBlitCall(dest, &destRect, source, sourceRect);
+}
+
+IDirectDrawSurface4* AcquireFlipPresentSource4(IDirectDrawSurface4* primarySurface,
+                                               IDirectDrawSurface4* destOverride) {
+    if (destOverride) {
+        destOverride->AddRef();
+        return destOverride;
+    }
+    if (!primarySurface)
+        return nullptr;
+    DDSCAPS2 backBufferCaps = {};
+    backBufferCaps.dwCaps = DDSCAPS_BACKBUFFER;
+    IDirectDrawSurface4* backBuffer = nullptr;
+    if (SUCCEEDED(primarySurface->GetAttachedSurface(&backBufferCaps, &backBuffer)) && backBuffer)
+        return backBuffer;
+    return nullptr;
+}
+
+IDirectDrawSurface* AcquireFlipPresentSourceLegacy(IDirectDrawSurface* primarySurface,
+                                                   IDirectDrawSurface* destOverride) {
+    if (destOverride) {
+        destOverride->AddRef();
+        return destOverride;
+    }
+    if (!primarySurface)
+        return nullptr;
+    DDSCAPS backBufferCaps = {};
+    backBufferCaps.dwCaps = DDSCAPS_BACKBUFFER;
+    IDirectDrawSurface* backBuffer = nullptr;
+    if (SUCCEEDED(primarySurface->GetAttachedSurface(&backBufferCaps, &backBuffer)) && backBuffer)
+        return backBuffer;
+    return nullptr;
+}
+
+}  // namespace
+
+
 
 HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis,  DDSURFACEDESC* pDesc, 
                                                                      IDirectDrawSurface** ppSurface, 
@@ -56,10 +196,16 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.flip)
         return DDERR_GENERIC;
+    if (!HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        IDirectDrawSurface* presentSource = AcquireFlipPresentSourceLegacy(surface, destOverride);
+        HandlePresentationLegacySurface(surface, presentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
+        if (presentSource)
+            presentSource->Release();
+    }
     const HRESULT hr = record.flip(surface, destOverride, ddraw_hook_flags);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0) {
-        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        HandleCaptureLegacySurface(surface);
+        NotePresentationComplete();
     }
     return hr;
 
@@ -74,11 +220,21 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.blt)
         return DDERR_GENERIC;
-    const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
-        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+    const bool live = !HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0;
+    const BlitPresentation presentation =
+        live ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+    if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        HandleCaptureLegacySurface(surface, srcSurface);
+    }
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        HandlePresentationLegacySurface(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+    const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                        presentation.changedRect);
     }
     return hr;
 
@@ -91,11 +247,21 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.bltFast)
         return DDERR_GENERIC;
-    const HRESULT hr = record.bltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
-        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+    const bool live = !HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0;
+    const BlitPresentation presentation =
+        live ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+    if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        HandleCaptureLegacySurface(surface, srcSurface);
+    }
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        HandlePresentationLegacySurface(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+    const HRESULT hr = record.bltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                        presentation.changedRect);
     }
     return hr;
 
@@ -121,8 +287,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surfac
     const HRESULT hr = record.unlock(surface, ddraw_hook_surfaceData);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
         SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
+        // The application drew straight into the scanout surface, so the frame
+        // is already visible and the overlay goes back on top of it.
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        HandleCaptureLegacySurface(surface);
+        HandlePresentationLegacySurface(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
+        NotePresentationComplete();
     }
     return hr;
 
@@ -227,6 +396,14 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
     MaybeTrackPrimarySurface(surface, "Flip");
 
+    // The overlay has to be inside the image this flip publishes. Compositing
+    // into the surface that is already on screen races scanout, and the flip
+    // then replaces that surface with one the overlay never touched.
+    IDirectDrawSurface7* flipPresentSource = AcquireFlipPresentSource(surface, destOverride);
+    ComposePresentation(surface, flipPresentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
+    if (flipPresentSource)
+        flipPresentSource->Release();
+
     if (g_IPC) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {
@@ -254,8 +431,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
         ApplyPrerenderLimitDDraw(surface, 0.0f);
     }
 
-    // Capture after flip (primary surface now has the rendered frame)
-    HandleCapture(surface);
+    NotePresentationComplete();
 
     return hr;
 
@@ -273,8 +449,13 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  ID
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
     MaybeTrackPrimarySurface4(surface, "Flip4");
 
+    IDirectDrawSurface4* flipPresentSource = AcquireFlipPresentSource4(surface, destOverride);
+    HandlePresentationSurface4(surface, flipPresentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
+    if (flipPresentSource)
+        flipPresentSource->Release();
+
     HRESULT hr = ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags);
-    HandleCaptureSurface4(surface);
+    NotePresentationComplete();
     return hr;
 
 }
@@ -285,22 +466,32 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
                                                      void* ddraw_hook_bltFx) {
 
 
-    HRESULT hr = ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
-    if (HookIsShuttingDown())
-        return hr;
-    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
-
-    if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
-        RememberPresentedSourceSurface(srcSurface);
+    if (HookIsShuttingDown()) {
+        return ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     }
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
 
     if (surface != ddraw_hook_g_HookSurfacePrototype && !ddraw_hook_g_PrimarySurface) {
         MaybeTrackPrimarySurface(surface, "Blt");
     }
 
-    // Only capture if this is a blit to the tracked primary surface
-    if (surface && surface != ddraw_hook_g_HookSurfacePrototype && (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface)) {
-        HandleCapture(surface, srcSurface);
+    const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype &&
+                          (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
+    const BlitPresentation presentation =
+        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+
+    // A full-surface blit onto a single-buffered scanout surface is this
+    // application's present, so the overlay goes into its source first.
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        ComposePresentation(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+
+    HRESULT hr = ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                            presentation.changedRect);
     }
 
     return hr;
@@ -311,23 +502,32 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
 HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
                                                  IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans) {
 
-    HRESULT hr = ddraw_hook_oDDSurface7BltFast ? ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans)
-                                               : DDERR_GENERIC;
-    if (HookIsShuttingDown())
-        return hr;
-    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
-
-    if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
-        RememberPresentedSourceSurface(srcSurface);
+    if (!ddraw_hook_oDDSurface7BltFast)
+        return DDERR_GENERIC;
+    if (HookIsShuttingDown()) {
+        return ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
     }
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
 
     if (surface != ddraw_hook_g_HookSurfacePrototype && !ddraw_hook_g_PrimarySurface) {
         MaybeTrackPrimarySurface(surface, "BltFast");
     }
 
-    if (surface && surface != ddraw_hook_g_HookSurfacePrototype &&
-        (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface)) {
-        HandleCapture(surface, srcSurface);
+    const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype &&
+                          (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
+    const BlitPresentation presentation =
+        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        ComposePresentation(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+
+    HRESULT hr = ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                            presentation.changedRect);
     }
 
     return hr;
@@ -340,18 +540,30 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
                                                      void* ddraw_hook_bltFx) {
 
 
-    HRESULT hr = ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
-    if (HookIsShuttingDown())
-        return hr;
+    if (HookIsShuttingDown()) {
+        return ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    }
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
 
     if (surface != ddraw_hook_g_HookSurfacePrototype4 && !ddraw_hook_g_PrimarySurface4) {
         MaybeTrackPrimarySurface4(surface, "Blt4");
     }
 
-    if (SUCCEEDED(hr) && surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
-        (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4)) {
-        HandleCaptureSurface4(surface, srcSurface);
+    const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
+                          (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4);
+    const BlitPresentation presentation =
+        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+
+    HRESULT hr = ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                   presentation.changedRect);
     }
 
     return hr;
@@ -362,19 +574,32 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
 HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
                                                  IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans) {
 
-    HRESULT hr = ddraw_hook_oDDSurface4BltFast ? ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans)
-                                               : DDERR_GENERIC;
-    if (HookIsShuttingDown())
-        return hr;
+    if (!ddraw_hook_oDDSurface4BltFast)
+        return DDERR_GENERIC;
+    if (HookIsShuttingDown()) {
+        return ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    }
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
 
     if (surface != ddraw_hook_g_HookSurfacePrototype4 && !ddraw_hook_g_PrimarySurface4) {
         MaybeTrackPrimarySurface4(surface, "BltFast4");
     }
 
-    if (SUCCEEDED(hr) && surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
-        (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4)) {
-        HandleCaptureSurface4(surface, srcSurface);
+    const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
+                          (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4);
+    const BlitPresentation presentation =
+        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+
+    if (presentation.kind == policy::PresentKind::BlitPresent) {
+        HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});
+    }
+
+    HRESULT hr = ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        NotePresentationComplete();
+    } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
+        HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                   presentation.changedRect);
     }
 
     return hr;
@@ -412,8 +637,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface,  
 
     HRESULT hr = ddraw_hook_oDDSurface7Unlock(surface, ddraw_hook_rect);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface) {
+        // Software rendering straight into the scanout surface: the frame is
+        // already visible, so the overlay is restored on top of it.
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
-        HandleCapture(surface);
+        ComposePresentation(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
+        NotePresentationComplete();
     }
     return hr;
 
@@ -425,248 +653,8 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface,  
     HRESULT hr = ddraw_hook_oDDSurface4Unlock(surface, ddraw_hook_rect);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface4) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
-        HandleCaptureSurface4(surface);
-    }
-    return hr;
-
-}
-
-void ReportLegacyD3DUse(unsigned version,  const char* evidence) {
-
-
-    if (HookIsShuttingDown() || ddraw_hook_g_DDrawBootstrapDepth != 0)
-        return;
-    const unsigned previous = ddraw_hook_g_LegacyD3DCallbackVersion.exchange(version, std::memory_order_acq_rel);
-    ddraw_hook_g_ActiveLegacyD3DVersion.store(version, std::memory_order_release);
-    if (previous != version) {
-        HookLogImportant("[GraphicsAPI] legacy Direct3D use accepted api=DX%u evidence=%s", version,
-                         evidence ? evidence : "unknown");
-    }
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d,  REFCLSID deviceClass, 
-                                                        IDirectDrawSurface7* target,  IDirect3DDevice7** ddraw_hook_device) {
-
-
-    D3D7CreateDevice_t original = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-        const auto it = ddraw_hook_g_D3D7CreateDeviceOriginals.find(d3d ? *(void***)d3d : nullptr);
-        if (it != ddraw_hook_g_D3D7CreateDeviceOriginals.end())
-            original = it->second;
-    }
-
-    const HRESULT hr = original ? original(d3d, deviceClass, target, ddraw_hook_device) : DDERR_GENERIC;
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_device && *ddraw_hook_device) {
-        InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api::D3D7, *ddraw_hook_device,
-                                    ddraw_hook_g_DDrawBootstrapDepth == 0, "IDirect3D7::CreateDevice");
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
-            ddraw_hook_g_D3D7Device = *ddraw_hook_device;
-            AssociateLegacyD3DSurface(target, 7);
-            ReportLegacyD3DUse(7, "IDirect3D7::CreateDevice");
-        }
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d,  REFCLSID deviceClass, 
-                                                        IDirectDrawSurface4* target,  IUnknown** ddraw_hook_device, 
-                                                        IUnknown* ddraw_hook_outer) {
-
-
-    D3D3CreateDevice_t original = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-        const auto it = ddraw_hook_g_D3D3CreateDeviceOriginals.find(d3d ? *(void***)d3d : nullptr);
-        if (it != ddraw_hook_g_D3D3CreateDeviceOriginals.end())
-            original = it->second;
-    }
-    const HRESULT hr = original ? original(d3d, deviceClass, target, ddraw_hook_device, ddraw_hook_outer) : DDERR_GENERIC;
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_device && *ddraw_hook_device) {
-        InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api::D3D6, *ddraw_hook_device,
-                                    ddraw_hook_g_DDrawBootstrapDepth == 0, "IDirect3D3::CreateDevice");
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
-            AssociateLegacyD3DSurface(target, 6);
-            ReportLegacyD3DUse(6, "IDirect3D3::CreateDevice");
-        }
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device,  DWORD Type,  DWORD ddraw_hook_Value) {
-
-
-    if (HookIsShuttingDown())
-        return ddraw_hook_oSetRenderState7(ddraw_hook_device, Type, ddraw_hook_Value);
-    ReportLegacyD3DUse(7, "IDirect3DDevice7::SetRenderState");
-    if (g_IPC) {
-        const char* msaa = g_IPC->GetSharedMem()->graphicsConfig.msaaSamples;
-        if (msaa[0] != 'd') {
-            if (Type == 2 /* D3DRENDERSTATE_ANTIALIAS */) {
-                if (strcmp(msaa, "off") == 0)
-                    ddraw_hook_Value = 0;  // D3DANTIALIAS_NONE
-                else
-                    ddraw_hook_Value = 2;  // D3DANTIALIAS_SORTINDEPENDENT
-            }
-        }
-    }
-    return ddraw_hook_oSetRenderState7(ddraw_hook_device, Type, ddraw_hook_Value);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_hook_device,  DWORD Stage,  DWORD Type, 
-                                                             DWORD ddraw_hook_Value) {
-
-
-    LegacyD3DSamplerVTableRecord* record =
-        ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device);
-    auto setState = record ? record->setState.load(std::memory_order_acquire) : nullptr;
-    auto getState = record ? record->getState.load(std::memory_order_acquire) : nullptr;
-    if (!setState)
-        setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState7);
-    if (!getState)
-        getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState7);
-    if (HookIsShuttingDown())
-        return setState ? setState(ddraw_hook_device, Stage, Type, ddraw_hook_Value) : DDERR_GENERIC;
-    ReportLegacyD3DUse(7, "IDirect3DDevice7::SetTextureStageState");
-    ddraw_hook_g_D3D7Device = ddraw_hook_device;  // Capture device for proactive use
-    return ce::legacy_d3d_sampler_state::SetTextureStageState(
-        ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, Stage, Type, ddraw_hook_Value, setState, getState, QueryD3D7MaxAnisotropy);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* ddraw_hook_device,  DWORD Stage,  DWORD Type, 
-                                                             DWORD* ddraw_hook_pValue) {
-
-
-    LegacyD3DSamplerVTableRecord* record =
-        ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device);
-    auto setState = record ? record->setState.load(std::memory_order_acquire) : nullptr;
-    auto getState = record ? record->getState.load(std::memory_order_acquire) : nullptr;
-    if (!setState)
-        setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState7);
-    if (!getState)
-        getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState7);
-    if (HookIsShuttingDown())
-        return getState ? getState(ddraw_hook_device, Stage, Type, ddraw_hook_pValue) : DDERR_GENERIC;
-    ReportLegacyD3DUse(7, "IDirect3DDevice7::GetTextureStageState");
-    return ce::legacy_d3d_sampler_state::GetTextureStageState(
-        ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, Stage, Type, ddraw_hook_pValue, getState, setState,
-        QueryD3D7MaxAnisotropy);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* ddraw_hook_device,  DWORD Stage,  DWORD Type,  DWORD ddraw_hook_Value) {
-
-
-    LegacyD3DSamplerVTableRecord* record =
-        ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device);
-    auto setState = record ? record->setState.load(std::memory_order_acquire) : nullptr;
-    auto getState = record ? record->getState.load(std::memory_order_acquire) : nullptr;
-    if (!setState)
-        setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState6);
-    if (!getState)
-        getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState6);
-    if (HookIsShuttingDown())
-        return setState ? setState(ddraw_hook_device, Stage, Type, ddraw_hook_Value) : DDERR_GENERIC;
-    ReportLegacyD3DUse(6, "IDirect3DDevice3::SetTextureStageState");
-    return ce::legacy_d3d_sampler_state::SetTextureStageState(
-        ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device, Stage, Type, ddraw_hook_Value, setState, getState, QueryD3D6MaxAnisotropy);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* ddraw_hook_device,  DWORD Stage,  DWORD Type,  DWORD* ddraw_hook_pValue) {
-
-
-    LegacyD3DSamplerVTableRecord* record =
-        ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device);
-    auto setState = record ? record->setState.load(std::memory_order_acquire) : nullptr;
-    auto getState = record ? record->getState.load(std::memory_order_acquire) : nullptr;
-    if (!setState)
-        setState = reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(ddraw_hook_oSetTextureStageState6);
-    if (!getState)
-        getState = reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(ddraw_hook_oGetTextureStageState6);
-    if (HookIsShuttingDown())
-        return getState ? getState(ddraw_hook_device, Stage, Type, ddraw_hook_pValue) : DDERR_GENERIC;
-    ReportLegacyD3DUse(6, "IDirect3DDevice3::GetTextureStageState");
-    return ce::legacy_d3d_sampler_state::GetTextureStageState(
-        ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device, Stage, Type, ddraw_hook_pValue, getState, setState,
-        QueryD3D6MaxAnisotropy);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device) {
-
-
-    auto* record = ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device);
-    auto endScene = record ? record->endScene.load(std::memory_order_acquire) : nullptr;
-    if (!endScene)
-        return DDERR_GENERIC;
-    if (HookIsShuttingDown())
-        return endScene(ddraw_hook_device);
-    ce::legacy_d3d_sampler_state::RefreshConfiguration(
-        ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
-        record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);
-    return endScene(ddraw_hook_device);
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device,  DWORD ddraw_hook_blockHandle) {
-
-
-    auto* record = ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device);
-    auto applyStateBlock = record ? record->applyStateBlock.load(std::memory_order_acquire) : nullptr;
-    if (!applyStateBlock)
-        return DDERR_GENERIC;
-    const HRESULT hr = applyStateBlock(ddraw_hook_device, ddraw_hook_blockHandle);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr)) {
-        ce::legacy_d3d_sampler_state::ReconcileAfterExternalStateChange(
-            ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
-            record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device) {
-
-
-    auto* record = ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device);
-    auto endScene = record ? record->endScene.load(std::memory_order_acquire) : nullptr;
-    if (!endScene)
-        return DDERR_GENERIC;
-    if (HookIsShuttingDown())
-        return endScene(ddraw_hook_device);
-    ce::legacy_d3d_sampler_state::RefreshConfiguration(
-        ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
-        record->getState.load(std::memory_order_acquire), QueryD3D6MaxAnisotropy);
-    return endScene(ddraw_hook_device);
-
-}
-
-HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid,  IDirectDraw** lplpDD,  IUnknown* ddraw_hook_pUnkOuter) {
-
-
-    const HRESULT hr = ddraw_hook_oDirectDrawCreate ? ddraw_hook_oDirectDrawCreate(lpGuid, lplpDD, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && lplpDD && *lplpDD)
-        HookDirectDrawObject(*lplpDD, IID_IDirectDraw);
-    return hr;
-
-}
-
-HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid,  LPVOID* lplpDD,  REFIID iid,  IUnknown* ddraw_hook_pUnkOuter) {
-
-
-    HookLog("DDraw: DetourDirectDrawCreateEx called (iidIsDDraw7=%d, iidIsDDraw4=%d, out=%p)",
-            IsEqualIID(iid, IID_IDirectDraw7) ? 1 : 0, IsEqualIID(iid, IID_IDirectDraw4) ? 1 : 0, lplpDD);
-    HRESULT hr = ddraw_hook_oDirectDrawCreateEx ? ddraw_hook_oDirectDrawCreateEx(lpGuid, lplpDD, iid, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
-    HookLog("DDraw: DetourDirectDrawCreateEx returned hr=0x%08x, object=%p", hr,
-            (lplpDD && SUCCEEDED(hr)) ? *lplpDD : nullptr);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && lplpDD && *lplpDD) {
-        HookDirectDrawObject(*lplpDD, iid);
+        HandlePresentationSurface4(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
+        NotePresentationComplete();
     }
     return hr;
 

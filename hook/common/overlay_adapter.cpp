@@ -451,6 +451,60 @@ bool OverlayAdapter::HasPendingDX12Resources() const {
     return false;
 }
 
+bool OverlayAdapter::GetLastRenderedBounds(int viewportWidth, int viewportHeight, RECT& outBounds) const {
+    outBounds = RECT{};
+    if (viewportWidth <= 0 || viewportHeight <= 0)
+        return false;
+
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!renderer)
+        return false;
+
+    // The cached-frame path re-renders the same vertex buffer, so the geometry
+    // the backend last drew is always the one described here.
+    const auto& vertices = renderer->GetVertices();
+    if (vertices.empty() || renderer->GetCommands().empty())
+        return false;
+
+    float minX = vertices[0].x;
+    float minY = vertices[0].y;
+    float maxX = vertices[0].x;
+    float maxY = vertices[0].y;
+    for (const auto& vertex : vertices) {
+        minX = std::min(minX, vertex.x);
+        minY = std::min(minY, vertex.y);
+        maxX = std::max(maxX, vertex.x);
+        maxY = std::max(maxY, vertex.y);
+    }
+
+    // One pixel of slack on each edge covers the anti-aliased fringe the graph
+    // polyline writes just outside its own vertex positions.
+    RECT bounds{};
+    bounds.left = static_cast<LONG>(std::floor(minX)) - 1;
+    bounds.top = static_cast<LONG>(std::floor(minY)) - 1;
+    bounds.right = static_cast<LONG>(std::ceil(maxX)) + 1;
+    bounds.bottom = static_cast<LONG>(std::ceil(maxY)) + 1;
+
+    bounds.left = std::max<LONG>(bounds.left, 0);
+    bounds.top = std::max<LONG>(bounds.top, 0);
+    bounds.right = std::min<LONG>(bounds.right, viewportWidth);
+    bounds.bottom = std::min<LONG>(bounds.bottom, viewportHeight);
+    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+        return false;
+
+    outBounds = bounds;
+    return true;
+}
+
+bool OverlayAdapter::ResubmitLastFrame(int viewportWidth, int viewportHeight) {
+    if (viewportWidth <= 0 || viewportHeight <= 0)
+        return false;
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!initialized.load(std::memory_order_acquire) || !renderer)
+        return false;
+    return renderer->RenderCachedFrame(viewportWidth, viewportHeight);
+}
+
 uint32_t OverlayAdapter::GetLoadColor(float load) {
     using namespace CustomOverlay::Colors;
     if (load < 50.0f)

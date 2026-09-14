@@ -134,8 +134,12 @@ anchors that predate the split are approximate.
       `dx9_hook_overlay.cpp`, `dx9_hook_helpers.cpp`, `dx9_hook_sampler_state.cpp`.
     - DX8: `dx8_hook_capture_{lifecycle,init,frame,copy}.cpp`, `dx8_hook_detours.cpp`,
       `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
-    - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_detours.cpp`,
-      `ddraw_hook_install.cpp`, `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`.
+    - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_capture.cpp` (presentation
+      policy entry points), `ddraw_hook_overlay_composite.cpp` (region-scoped D3D9Ex composite),
+      `ddraw_hook_detours.cpp` (surface detours + blit classification),
+      `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception), `ddraw_hook_install.cpp`,
+      `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; the policy itself is
+      `hook/common/ddraw_present_policy.h`.
     - OpenGL: `opengl_hook_capture.cpp` (detours, swap begin/end, overlay draw),
       `opengl_hook_install.cpp` (inline + IAT hook installation, `OpenGLHook::Init/Shutdown`),
       `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.

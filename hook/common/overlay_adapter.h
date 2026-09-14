@@ -110,6 +110,18 @@ public:
     // Render the overlay (called after BeginFrame in hook's render path)
     void RenderOverlay(int viewportWidth, int viewportHeight);
 
+    // Bounding box, in viewport pixels, of the geometry the last rendered frame
+    // emitted. The legacy DirectDraw/DX6/DX7 route composites through a CPU
+    // round trip and must move only the pixels the overlay can actually touch;
+    // a full 4K surface costs about 66 MB per present either way.
+    bool GetLastRenderedBounds(int viewportWidth, int viewportHeight, RECT& outBounds) const;
+
+    // Re-submit the geometry the last RenderOverlay built, without rebuilding it
+    // and without advancing any per-frame state. The DirectDraw composite needs
+    // this on the frames where the overlay grew past the region it had already
+    // staged the game's pixels into.
+    bool ResubmitLastFrame(int viewportWidth, int viewportHeight);
+
 private:
     struct FrameLayoutSnapshot {
         uint32_t rowMask = 0;

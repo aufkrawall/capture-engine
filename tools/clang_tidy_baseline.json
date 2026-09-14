@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 744,
+    "entries": 748,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -150,8 +150,10 @@
       "hook/apis/ddraw_hook_capture_init.cpp",
       "hook/apis/ddraw_hook_capture_lifecycle.cpp",
       "hook/apis/ddraw_hook_detours.cpp",
+      "hook/apis/ddraw_hook_detours_legacy_d3d.cpp",
       "hook/apis/ddraw_hook_helpers.cpp",
       "hook/apis/ddraw_hook_install.cpp",
+      "hook/apis/ddraw_hook_overlay_composite.cpp",
       "hook/apis/dx11_hook.cpp",
       "hook/apis/dx11_hook_capture_frame.cpp",
       "hook/apis/dx11_hook_capture_init.cpp",
@@ -598,6 +600,8 @@
       "tests/test_d3d9_capture_policy.cpp",
       "tests/test_d3d9_vtable_abi.cpp",
       "tests/test_d3dkmt_abi.cpp",
+      "tests/test_ddraw_present_policy.cpp",
+      "tests/test_directdraw_vtable_abi.cpp",
       "tests/test_display_pacing_integrity.cpp",
       "tests/test_display_timing_correlation.cpp",
       "tests/test_display_timing_intervals.cpp",
