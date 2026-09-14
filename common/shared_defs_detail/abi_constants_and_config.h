@@ -495,6 +495,7 @@ struct SharedGraphicsConfig {
     // before prerenderLimit, so neither addition changes the shared layout or ABI.
     bool nvLodSpreadFix;                 // Force NVIDIA's process-local LOD-spread branch ON
     bool forceRayReconstruction;         // Persistently select UE NVIDIA DLSS Ray Reconstruction
+    bool legacyD3DNativeOverlay;         // Draw the DX6/DX7 overlay with the application's own device
     float prerenderLimit;                // integer semantics: -1=default, 0=serial, 1-6 buffered
     int32_t backbufferCount;             // -1=app controlled, 2-6 actual count
     int32_t frameLatency;                // 0=default, 1-6 (SetMaximumFrameLatency)
@@ -636,9 +637,12 @@ static_assert(offsetof(SharedGraphicsConfig, nvLodSpreadFix) ==
 static_assert(offsetof(SharedGraphicsConfig, forceRayReconstruction) ==
                   offsetof(SharedGraphicsConfig, nvLodSpreadFix) + 1,
               "forceRayReconstruction must remain in the existing SharedGraphicsConfig padding");
+static_assert(offsetof(SharedGraphicsConfig, legacyD3DNativeOverlay) ==
+                  offsetof(SharedGraphicsConfig, forceRayReconstruction) + 1,
+              "legacyD3DNativeOverlay must consume the last byte of the existing padding");
 static_assert(offsetof(SharedGraphicsConfig, prerenderLimit) ==
-                  offsetof(SharedGraphicsConfig, forceRayReconstruction) + 2,
-              "RR policy flags must not move later SharedGraphicsConfig fields");
+                  offsetof(SharedGraphicsConfig, legacyD3DNativeOverlay) + 1,
+              "policy flags must not move later SharedGraphicsConfig fields");
 static_assert(offsetof(SharedGraphicsConfig, rayReconstructionOptimalSettings) ==
                   offsetof(SharedGraphicsConfig, dlssDebugOverlay) + 16,
               "UE5 policy fields must remain appended to SharedGraphicsConfig");

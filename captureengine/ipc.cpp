@@ -182,6 +182,7 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         strncpy(dst.msaaSamples, src.msaaSamples.c_str(), sizeof(dst.msaaSamples) - 1);
         dst.msaaSamples[sizeof(dst.msaaSamples) - 1] = '\0';
         dst.nvLodSpreadFix = src.nvLodSpreadFix;
+        dst.legacyD3DNativeOverlay = src.legacyD3DNativeOverlay;
         dst.forceRayReconstruction = src.forceRayReconstruction;
         dst.rayReconstructionOptimalSettings = src.rayReconstructionOptimalSettings;
         dst.disablePostProcessingEffects = src.disablePostProcessingEffects;

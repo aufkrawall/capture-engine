@@ -493,6 +493,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
         mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
+        mergedConfig.legacyD3DNativeOverlay = shmGfx.legacyD3DNativeOverlay;
         mergedConfig.rayReconstructionOptimalSettings = shmGfx.rayReconstructionOptimalSettings;
         mergedConfig.disablePostProcessingEffects = shmGfx.disablePostProcessingEffects;
         mergedConfig.tonemapperSharpen = shmGfx.tonemapperSharpen;

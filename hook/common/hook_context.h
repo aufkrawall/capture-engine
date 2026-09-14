@@ -435,6 +435,7 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.forceMipBiasClamp = sharedMem->graphicsConfig.forceMipBiasClamp;
         result.msaaSamples = sharedMem->graphicsConfig.msaaSamples;
         result.nvLodSpreadFix = sharedMem->graphicsConfig.nvLodSpreadFix;
+        result.legacyD3DNativeOverlay = sharedMem->graphicsConfig.legacyD3DNativeOverlay;
         result.forceRayReconstruction = sharedMem->graphicsConfig.forceRayReconstruction;
         result.rayReconstructionOptimalSettings = sharedMem->graphicsConfig.rayReconstructionOptimalSettings;
         result.disablePostProcessingEffects = sharedMem->graphicsConfig.disablePostProcessingEffects;

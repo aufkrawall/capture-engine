@@ -231,3 +231,45 @@ TEST(DDrawPresentPolicyTest, NoBackendLoadedRendersNothingOnEitherRoute) {
     EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, false, false));
     EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite, false, false));
 }
+
+// ============================================================================
+// Scanout writes on a flip chain - drawing the next flip replaces, or the
+// presentation itself once the chain has stopped flipping.
+// ============================================================================
+
+TEST(DDrawPresentPolicyTest, ASingleBufferedScanoutWriteIsAlwaysThePresentation) {
+    // Nothing else publishes that surface, so every write to it is the frame.
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/false, 1));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(false, 0));
+}
+
+TEST(DDrawPresentPolicyTest, TheFirstFrontBufferWriteAfterAFlipIsDrawing) {
+    // Gothic II writes its front buffer about eleven times a second while
+    // flipping eighty-six times a second. Compositing on those writes puts the
+    // overlay into the surface the display is scanning out, for a frame the
+    // next flip immediately replaces - which is what was left flickering.
+    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/true, 1));
+}
+
+TEST(DDrawPresentPolicyTest, WritesThatPileUpWithoutAFlipAreThePresentation) {
+    // A loading screen: the 3D scene is not running, nothing flips, and the
+    // writes are what the screen shows.
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, policy::kScanoutWritesWithoutFlipThreshold));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, policy::kScanoutWritesWithoutFlipThreshold + 40));
+}
+
+TEST(DDrawPresentPolicyTest, AFlipResettingTheRunReturnsWritesToDrawing) {
+    // Modelled the way the hook maintains it: a flip resets the run to zero and
+    // the next write starts a new one.
+    uint32_t writesSinceFlip = 12;
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, writesSinceFlip));
+    writesSinceFlip = 0;  // a flip happened
+    ++writesSinceFlip;
+    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(true, writesSinceFlip));
+}
+
+TEST(DDrawPresentPolicyTest, TheThresholdIsReachedOnTheSecondUnansweredWrite) {
+    EXPECT_EQ(policy::kScanoutWritesWithoutFlipThreshold, 2u);
+    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(true, 1));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, 2));
+}

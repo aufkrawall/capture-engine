@@ -318,6 +318,27 @@ HWND ResolveDirectDrawTargetWindow() {
 
 }
 
+bool ScanoutSurfaceOwnsFlipChain(IDirectDrawSurface7* surface) {
+
+
+    if (!surface)
+        return false;
+    if (ddraw_hook_g_PrimaryFlipChainState >= 0)
+        return ddraw_hook_g_PrimaryFlipChainState != 0;
+
+    ce::ddraw_present_policy::Extent extent = {};
+    DWORD caps = 0;
+    if (!ResolveSurfaceGeometry(surface, extent, caps))
+        return false;
+
+    ddraw_hook_g_PrimaryFlipChainState = (caps & DDSCAPS_FLIP) != 0 ? 1 : 0;
+    HookLogImportant("DDraw: Scanout surface %p %s a flip chain (caps=0x%08x)", surface,
+                     ddraw_hook_g_PrimaryFlipChainState != 0 ? "heads" : "does not head",
+                     static_cast<unsigned>(caps));
+    return ddraw_hook_g_PrimaryFlipChainState != 0;
+
+}
+
 void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface,  const char* ddraw_hook_reason) {
 
 
@@ -325,6 +346,7 @@ void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface,  const char* ddraw_h
         return;
 
     ddraw_hook_g_PrimarySurface = surface;
+    ddraw_hook_g_PrimaryFlipChainState = -1;
     HookLog("DDraw: Tracking runtime primary surface from %s (%p)", ddraw_hook_reason, surface);
 
 }

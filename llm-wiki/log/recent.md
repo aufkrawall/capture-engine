@@ -1,5 +1,42 @@
 # llm-wiki Log
 
+### 2026-09-14 - The native D3D7 overlay is opt-in, and a front-buffer write is not a present
+
+Two more Gothic II runs settled two open questions.
+
+**The native Direct3D 7 overlay is what crashes this title.** Session `20260914_183948` (0.1.6587, with the
+backend/route match rule in place) crashed again, byte-identical to `20260914_182411`: `movdqa xmm0,[esi]` at
+`gameoverlayrenderer.dll+0xB8EA0`, ESI null, `EDX=0x0D ECX=0x24` - Steam's inlined SSE `memcpy` copying 1700 bytes
+from nothing. So the previous attribution was wrong: the wrong-backend behaviour was a real bug and worth fixing,
+but it was not this crash. What both crashing sessions share, and what the clean `20260914_180020` session did
+not have, is the native backend running at all. `legacy_d3d_native_overlay` in `[Graphics]` now gates it and
+defaults to **off**. The composite draws the same overlay on every title; the native path is an optimization that
+has taken a co-resident Steam overlay down twice and cannot be attributed further from the dumps available.
+
+**CE's crash dumps carry no 32-bit stack.** Both dumps are written by the x64 external helper against a WoW64
+target with `kRichCrashDumpType`, which captures the *native* thread stacks - `wow64cpu!CpupSyscallStub` and
+nothing below it. `dds` over the recorded 32-bit ESP returns `????????` in both. That is why neither crash could
+be attributed past the faulting instruction, and it will be true of every future WoW64 crash until the helper
+either dumps full memory for such targets or adds a memory callback carrying each thread's 32-bit stack range.
+**Open, not fixed.**
+
+That session also showed the route switching five times in eight seconds, rebuilding the backend's Direct3D 7
+objects inside the Flip detour each time, because the application's render target legitimately alternates. A route
+change now has to hold for 45 consecutive presentations before it is acted on.
+
+**A write into a flip chain's front buffer is not a presentation while the chain is being flipped.** Session
+`20260914_184850` (0.1.6588, composite route, no crash) still flickered, and the presentation mix says why:
+`flips=932 ... scanoutUnlocks=327`, about eighty-six flips and eleven front-buffer writes a second. Each of those
+writes composited the overlay into the surface the display was scanning out, for a frame the next flip
+immediately replaced - the same race the flip fix removed, re-entered through the loading-screen rule. The
+front-buffer rule is right for a loading screen, where nothing flips; it is wrong while flips are arriving.
+`ScanoutWriteIsPresentation` now judges that by structure rather than by a clock: a flip resets the run of
+scanout writes, a write extends it, and only a run that reaches two without a flip answering it is the
+presentation. Gameplay never reaches two; a loading screen reaches it on the second write. The mix line reports
+`scanoutWritesLeftToTheFlip=`.
+
+Built and verified at 0.1.6590. **Hardware run pending.**
+
 ### 2026-09-14 - Gothic II start crash: the composite ran with the native backend still loaded
 
 Session `20260914_182411` (0.1.6584) died five seconds in: `0xC0000005` reading address 0, in

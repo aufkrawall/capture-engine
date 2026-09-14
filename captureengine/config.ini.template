@@ -563,6 +563,15 @@ force_mip_bias_clamp=false
 ; processes - is the kind of thing some anti-cheat systems object to, so leave this
 ; off for competitive online games.
 nv_lod_spread_fix=off
+; DirectDraw/DX6/DX7 only. Draws the overlay with the application's own Direct3D
+; device, straight into the surface it is about to present, instead of
+; compositing through a private D3D9Ex helper. That removes the helper's
+; readback, which is a CPU/GPU synchronization point on the game's present path.
+; Off by default: it has twice taken down a co-resident Steam overlay in
+; Gothic II (identical fault both times, inside gameoverlayrenderer.dll), and
+; the crash dumps carry no usable 32-bit stack to attribute it further. The
+; composite route draws the same overlay correctly on every title.
+legacy_d3d_native_overlay=off
 ; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.

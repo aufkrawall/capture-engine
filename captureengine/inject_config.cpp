@@ -59,6 +59,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
     strncpy(graphics.msaaSamples, config.graphics.msaaSamples.c_str(), 31);
     graphics.nvLodSpreadFix = config.graphics.nvLodSpreadFix;
+    graphics.legacyD3DNativeOverlay = config.graphics.legacyD3DNativeOverlay;
     graphics.forceRayReconstruction = config.graphics.forceRayReconstruction;
     graphics.rayReconstructionOptimalSettings = config.graphics.rayReconstructionOptimalSettings;
     graphics.disablePostProcessingEffects = config.graphics.disablePostProcessingEffects;

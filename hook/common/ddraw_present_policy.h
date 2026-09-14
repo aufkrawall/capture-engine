@@ -134,6 +134,28 @@ inline CompositeTarget SelectCompositeTarget(PresentKind kind, bool havePresentS
     return CompositeTarget::None;
 }
 
+// How many writes into a flip chain's front buffer have to pile up with no Flip
+// in between before those writes are what the screen is showing. Two: the first
+// one after a flip is drawing the next flip will replace, the second says the
+// chain has stopped flipping.
+inline constexpr uint32_t kScanoutWritesWithoutFlipThreshold = 2;
+
+// A write into the *front* buffer of a flip chain is not a presentation while
+// the chain is still being flipped. The next Flip replaces it, so compositing
+// there achieves nothing except writing the surface the display is scanning out
+// - which tears the overlay in and back out again. Gothic II does about eleven
+// such writes a second during gameplay while flipping eighty-six times a
+// second, and that is what was left flickering after the flip path was correct.
+//
+// It becomes the presentation exactly when the chain stops flipping, which is
+// what a loading screen is: writes accumulate and nothing resets them.
+inline bool ScanoutWriteIsPresentation(bool destOwnsFlipChain, uint32_t scanoutWritesSinceFlip,
+                                       uint32_t threshold = kScanoutWritesWithoutFlipThreshold) {
+    if (!destOwnsFlipChain)
+        return true;
+    return scanoutWritesSinceFlip >= threshold;
+}
+
 // A direct-scanout update only needs the overlay restored when it actually
 // overwrote the overlay's own pixels.
 inline bool DirectScanoutNeedsComposite(const Rect& overlayBounds, bool haveChangedRect, const Rect& changedRect) {

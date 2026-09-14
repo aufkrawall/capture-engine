@@ -323,6 +323,22 @@ inline uint32_t ddraw_hook_g_OverlayRouteSwitches = 0;
 
 inline bool ddraw_hook_g_OverlayRouteLatchedToComposite = false;
 
+// A route change is only acted on once it has held for a run of
+// presentations; the application's render target legitimately alternates.
+inline DDrawOverlayRoute ddraw_hook_g_OverlayRoutePending = DDrawOverlayRoute::Undecided;
+
+inline uint32_t ddraw_hook_g_OverlayRoutePendingPresentations = 0;
+
+// Writes into the scanout surface since the last flip, and whether the tracked
+// primary heads a flip chain at all. Together they say whether such a write is
+// what the screen is showing or drawing the next flip is about to replace.
+inline uint32_t ddraw_hook_g_ScanoutWritesSinceFlip = 0;
+
+// -1 unknown, 0 single-buffered, 1 flip chain. Resolved once per primary.
+inline int ddraw_hook_g_PrimaryFlipChainState = -1;
+
+bool ScanoutSurfaceOwnsFlipChain(IDirectDrawSurface7* surface);
+
 void TrackLegacyD3D7Device(IDirect3DDevice7* device);
 
 // Returns the tracked device with a reference the caller must release.
@@ -373,6 +389,7 @@ struct DDrawPresentationDiagnostics {
     std::atomic<uint32_t> composites{0};
     std::atomic<uint32_t> skippedNoPublishedImage{0};
     std::atomic<uint32_t> skippedOutsideOverlay{0};
+    std::atomic<uint32_t> scanoutWritesLeftToTheFlip{0};
     std::atomic<uint32_t> lastLogTick{0};
 };
 

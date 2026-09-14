@@ -36,6 +36,26 @@ void RetireOverlayBackendForRouteChange() {
     g_OverlayAdapter.Shutdown();
 }
 
+// A route change only takes effect once this many presentations in a row have
+// asked for it. The application's render target legitimately alternates - a
+// Gothic II session moved between its flip target and something else five
+// times in eight seconds - and acting on every single presentation rebuilt the
+// backend's GPU objects, inside the Flip detour, each time.
+constexpr uint32_t kOverlayRouteStabilityPresentations = 45;
+
+bool RouteChangeIsStable(DDrawOverlayRoute requestedRoute) {
+    if (ddraw_hook_g_OverlayRoutePending != requestedRoute) {
+        ddraw_hook_g_OverlayRoutePending = requestedRoute;
+        ddraw_hook_g_OverlayRoutePendingPresentations = 1;
+        return false;
+    }
+    if (ddraw_hook_g_OverlayRoutePendingPresentations < kOverlayRouteStabilityPresentations) {
+        ++ddraw_hook_g_OverlayRoutePendingPresentations;
+        return false;
+    }
+    return true;
+}
+
 bool AllowOverlayRouteSwitch() {
     if (ddraw_hook_g_OverlayRouteLatchedToComposite)
         return false;
@@ -54,6 +74,15 @@ bool AllowOverlayRouteSwitch() {
 
 IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* presentedSurface) {
     if (!presentedSurface || ddraw_hook_g_OverlayRouteLatchedToComposite)
+        return nullptr;
+
+    // Opt-in. Drawing the overlay with the application's own Direct3D 7 device
+    // removes the composite's readback, but it has twice taken down a
+    // co-resident Steam overlay in Gothic II with an identical fault inside
+    // gameoverlayrenderer.dll, and the crash dumps carry no 32-bit stack to
+    // attribute it further. The composite draws the same overlay on every
+    // title, so it is what runs unless this is turned on deliberately.
+    if (!GetActiveGraphicsConfig().legacyD3DNativeOverlay)
         return nullptr;
 
     IDirect3DDevice7* device = AcquireLegacyD3D7Device();
@@ -97,10 +126,12 @@ bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7
         if (ce::ddraw_present_policy::BackendCanRenderRoute(ce::ddraw_present_policy::OverlayRoute::NativeDevice,
                                                             boundToThisDevice, false)) {
             ddraw_hook_g_OverlayRoute = requiredRoute;
+            ddraw_hook_g_OverlayRoutePending = requiredRoute;
+            ddraw_hook_g_OverlayRoutePendingPresentations = 0;
             return true;
         }
 
-        if (!AllowOverlayRouteSwitch())
+        if (!RouteChangeIsStable(requiredRoute) || !AllowOverlayRouteSwitch())
             return false;
 
         RetireOverlayBackendForRouteChange();
@@ -145,16 +176,21 @@ bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7
             ce::ddraw_present_policy::OverlayRoute::HelperComposite, false,
             currentBackend == OverlayBackendType::DX9 && ddraw_hook_g_DDrawCapture.d3d9DeviceEx != nullptr)) {
         ddraw_hook_g_OverlayRoute = requiredRoute;
+        ddraw_hook_g_OverlayRoutePending = requiredRoute;
+        ddraw_hook_g_OverlayRoutePendingPresentations = 0;
         return true;
     }
 
-    if (currentBackend == OverlayBackendType::D3D7 && !AllowOverlayRouteSwitch()) {
-        // Latched, but still holding the native backend: it has to go anyway,
-        // because the composite cannot render through it.
+    if (currentBackend == OverlayBackendType::D3D7) {
+        // The native backend is loaded and this presentation cannot use it.
+        // Nothing renders until the change has proved stable, because tearing
+        // the backend down and rebuilding it on every alternating presentation
+        // churns Direct3D 7 objects inside the application's Flip.
+        if (!RouteChangeIsStable(requiredRoute))
+            return false;
         RetireOverlayBackendForRouteChange();
-    } else if (currentBackend == OverlayBackendType::D3D7) {
-        RetireOverlayBackendForRouteChange();
-        ++ddraw_hook_g_OverlayRouteSwitches;
+        if (AllowOverlayRouteSwitch())
+            ++ddraw_hook_g_OverlayRouteSwitches;
     }
 
     if (!ddraw_hook_g_DDrawCapture.EnsureOverlayCompositeDevice())
