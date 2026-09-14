@@ -170,18 +170,23 @@ bool DDrawCapture::CreateD3D9ExWrapper(HWND hwnd) {
                                           &d3d9DeviceEx);
         };
 
-        hr = tryCreateDevice(D3DSWAPEFFECT_FLIPEX, 2);
-        if (SUCCEEDED(hr)) {
-            d3d9UsesFlipEx = true;
-        } else {
+        {
+            DX9InternalBypassScope dx9Bypass;
             hr = tryCreateDevice(D3DSWAPEFFECT_DISCARD, 1);
-            d3d9UsesFlipEx = false;
+            if (SUCCEEDED(hr)) {
+                d3d9UsesFlipEx = false;
+            } else {
+                hr = tryCreateDevice(D3DSWAPEFFECT_FLIPEX, 2);
+                d3d9UsesFlipEx = SUCCEEDED(hr);
+            }
         }
 
         if (FAILED(hr)) {
             HookLog("DDraw: Failed to create D3D9Ex device (hr=0x%08x)", hr);
             return false;
         }
+
+        DX9_RegisterInternalHelperDevice(d3d9DeviceEx);
 
         LUID helperLuid = {};
         const HRESULT luidHr = d3d9Ex->GetAdapterLUID(D3DADAPTER_DEFAULT, &helperLuid);

@@ -15,6 +15,7 @@ class DirectDrawBootstrapScope;
 struct DDrawCapture;
 
 #include "ddraw_hook.h"
+#include "dx9_hook.h"
 
 #include <algorithm>
 
@@ -116,6 +117,8 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_ho
 
 #define DDSURFACE7_VTABLE_BLT 5
 
+#define DDSURFACE7_VTABLE_BLTFAST 7
+
 #define DDSURFACE7_VTABLE_UNLOCK 32
 
 #define DDSURFACE7_VTABLE_LOCK 25
@@ -155,6 +158,12 @@ typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Blt_t)(IDirectDrawSurface4* surface
                                                     IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                     void* ddraw_hook_bltFx);
 
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface7BltFast_t)(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
+                                                        IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans);
+
+typedef HRESULT(STDMETHODCALLTYPE* DDSurface4BltFast_t)(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
+                                                        IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans);
+
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface7Unlock_t)(IDirectDrawSurface7* surface, LPRECT ddraw_hook_rect);
 
 typedef HRESULT(STDMETHODCALLTYPE* DDSurface4Unlock_t)(IDirectDrawSurface4* surface, LPRECT ddraw_hook_rect);
@@ -184,6 +193,9 @@ typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyFlip_t)(IDirectDrawSurface* su
 typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyBlt_t)(IDirectDrawSurface* surface, LPRECT destRect,
                                                          IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                          DDBLTFX* ddraw_hook_bltFx);
+
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyBltFast_t)(IDirectDrawSurface* surface, DWORD dwX, DWORD dwY,
+                                                             IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD dwTrans);
 
 typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyLock_t)(IDirectDrawSurface* surface, LPRECT destRect,
                                                           DDSURFACEDESC* surfaceDesc, DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
@@ -225,6 +237,10 @@ inline DDSurface4Flip_t ddraw_hook_oDDSurface4Flip = nullptr;
 inline DDSurface7Blt_t ddraw_hook_oDDSurface7Blt = nullptr;
 
 inline DDSurface4Blt_t ddraw_hook_oDDSurface4Blt = nullptr;
+
+inline DDSurface7BltFast_t ddraw_hook_oDDSurface7BltFast = nullptr;
+
+inline DDSurface4BltFast_t ddraw_hook_oDDSurface4BltFast = nullptr;
 
 inline DDSurface7Lock_t ddraw_hook_oDDSurface7Lock = nullptr;
 
@@ -302,6 +318,7 @@ struct LegacyDDrawVTableRecord {
 struct LegacySurfaceVTableRecord {
     DDSurfaceLegacyFlip_t flip = nullptr;
     DDSurfaceLegacyBlt_t blt = nullptr;
+    DDSurfaceLegacyBltFast_t bltFast = nullptr;
     DDSurfaceLegacyLock_t lock = nullptr;
     DDSurfaceLegacyUnlock_t unlock = nullptr;
 };
@@ -364,6 +381,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                           DDBLTFX* ddraw_hook_bltFx);
 
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surface, DWORD dwX, DWORD dwY,
+                                                              IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD dwTrans);
+
 HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
                                                            DDSURFACEDESC* surfaceDesc, DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
 
@@ -382,6 +402,12 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRE
 HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface, LPRECT destRect,
                                                      IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                      void* ddraw_hook_bltFx);
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
+                                                         IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans);
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
+                                                         IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans);
 
 HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
                                                       DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
@@ -475,7 +501,7 @@ public:
 
     // Surface info
     IDirectDrawSurface7* ddrawSurface = nullptr;
-    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool UploadOverlaySurfaceToBackbuffer();bool StretchOverlaySurfaceToBackbuffer(IDirect3DSurface9* surface);bool CopyLockedSurfaceToUploadSurface(const DDSURFACEDESC2& desc);bool CopySurfaceToOverlayBackbufferViaLock(IDirectDrawSurface7* surface);bool CopyPrimarySurfaceToOverlayBackbuffer(IDirectDrawSurface7* surface);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
+    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool UploadOverlaySurfaceToBackbuffer();bool StretchOverlaySurfaceToBackbuffer(IDirect3DSurface9* surface);bool CopyLockedSurfaceToUploadSurface(const DDSURFACEDESC2& desc);bool CopySurfaceToOverlayBackbufferViaLock(IDirectDrawSurface7* surface);bool CopyPrimarySurfaceToOverlayBackbuffer(IDirectDrawSurface7* surface);bool CopyOverlayBackbufferToPrimarySurface(IDirectDrawSurface7* surface);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
 
     // Capture via GetDC for surfaces that don't support Lock
 void CaptureFrameViaGDI(IDirectDrawSurface7* surface);

@@ -193,6 +193,154 @@ bool DDrawCapture::CopyPrimarySurfaceToOverlayBackbuffer(IDirectDrawSurface7* su
 }
 
 
+bool DDrawCapture::CopyOverlayBackbufferToPrimarySurface(IDirectDrawSurface7* surface) {
+
+
+        if (!surface || !d3d9DeviceEx || !d3d9UploadSurface || width == 0 || height == 0) {
+            return false;
+        }
+
+        IDirect3DSurface9* backBuffer = nullptr;
+        HRESULT hr = d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+        if (FAILED(hr) || !backBuffer) {
+            static int backBufferFailLogCount = 0;
+            if (backBufferFailLogCount < 4) {
+                HookLog("DDraw: Failed to get helper backbuffer for overlay readback (hr=0x%08x)", hr);
+                backBufferFailLogCount++;
+            }
+            return false;
+        }
+
+        hr = d3d9DeviceEx->GetRenderTargetData(backBuffer, d3d9UploadSurface);
+        backBuffer->Release();
+        if (FAILED(hr)) {
+            static int renderTargetDataFailLogCount = 0;
+            if (renderTargetDataFailLogCount < 4) {
+                HookLog("DDraw: GetRenderTargetData failed for overlay readback (hr=0x%08x)", hr);
+                renderTargetDataFailLogCount++;
+            }
+            return false;
+        }
+
+        bool directCopySuccess = false;
+        DDSURFACEDESC2 desc = {};
+        desc.dwSize = sizeof(desc);
+        HRESULT surfaceHr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
+        if (SUCCEEDED(surfaceHr) && desc.lpSurface) {
+            D3DLOCKED_RECT uploadLock = {};
+            HRESULT uploadHr = d3d9UploadSurface->LockRect(&uploadLock, nullptr, D3DLOCK_READONLY);
+            if (SUCCEEDED(uploadHr)) {
+                const uint8_t* src = static_cast<const uint8_t*>(uploadLock.pBits);
+                uint8_t* dst = static_cast<uint8_t*>(desc.lpSurface);
+
+                if (desc.ddpfPixelFormat.dwRGBBitCount == 32 && desc.dwWidth == width && desc.dwHeight == height) {
+                    const size_t rowBytes = static_cast<size_t>(width) * 4u;
+                    for (uint32_t y = 0; y < height; ++y) {
+                        memcpy(dst, src, rowBytes);
+                        src += uploadLock.Pitch;
+                        dst += desc.lPitch;
+                    }
+                    directCopySuccess = true;
+                } else if (desc.ddpfPixelFormat.dwRGBBitCount == 16 && desc.dwWidth == width && desc.dwHeight == height) {
+                    const bool is565 = (desc.ddpfPixelFormat.dwGBitMask == 0x07E0);
+                    for (uint32_t y = 0; y < height; ++y) {
+                        const uint32_t* src32 = reinterpret_cast<const uint32_t*>(src);
+                        uint16_t* dst16 = reinterpret_cast<uint16_t*>(dst);
+                        if (is565) {
+                            for (uint32_t x = 0; x < width; ++x) {
+                                uint32_t c = src32[x];
+                                dst16[x] = static_cast<uint16_t>(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F));
+                            }
+                        } else {
+                            for (uint32_t x = 0; x < width; ++x) {
+                                uint32_t c = src32[x];
+                                dst16[x] = static_cast<uint16_t>(((c >> 9) & 0x7C00) | ((c >> 6) & 0x03E0) | ((c >> 3) & 0x001F));
+                            }
+                        }
+                        src += uploadLock.Pitch;
+                        dst += desc.lPitch;
+                    }
+                    directCopySuccess = true;
+                }
+                d3d9UploadSurface->UnlockRect();
+            }
+            surface->Unlock(nullptr);
+            if (!directCopySuccess) {
+                static int mismatchLogCount = 0;
+                if (mismatchLogCount < 4) {
+                    HookLog("DDraw: Overlay writeback format/size mismatch (surf=%ux%u %ubpp, target=%ux%u)",
+                            desc.dwWidth, desc.dwHeight, desc.ddpfPixelFormat.dwRGBBitCount, width, height);
+                    mismatchLogCount++;
+                }
+            }
+        } else if (FAILED(surfaceHr)) {
+            static int lockFailLogCount = 0;
+            if (lockFailLogCount < 4) {
+                HookLog("DDraw: Failed to lock surface for overlay writeback (hr=0x%08x)", surfaceHr);
+                lockFailLogCount++;
+            }
+        }
+
+        if (directCopySuccess) {
+            static uint32_t overlayWritebackCount = 0;
+            overlayWritebackCount++;
+            if (overlayWritebackCount <= 8 || (overlayWritebackCount % 120 == 0)) {
+                HookLogImportant("DDraw: Overlay writeback to primary surface completed (hwnd=%p size=%ux%u count=%u)",
+                                 targetHwnd, width, height, overlayWritebackCount);
+            }
+            return true;
+        }
+
+        // Fallback: GDI BitBlt
+        HDC uploadDC = nullptr;
+        hr = d3d9UploadSurface->GetDC(&uploadDC);
+        if (FAILED(hr) || !uploadDC) {
+            static int uploadDcFailLogCount = 0;
+            if (uploadDcFailLogCount < 4) {
+                HookLog("DDraw: Failed to get D3D9 upload DC for overlay readback (hr=0x%08x)", hr);
+                uploadDcFailLogCount++;
+            }
+            return false;
+        }
+
+        HDC targetDC = nullptr;
+        hr = surface->GetDC(&targetDC);
+        if (FAILED(hr) || !targetDC) {
+            d3d9UploadSurface->ReleaseDC(uploadDC);
+            static int targetDcFailLogCount = 0;
+            if (targetDcFailLogCount < 4) {
+                HookLog("DDraw: Failed to get target surface DC for overlay readback (hr=0x%08x)", hr);
+                targetDcFailLogCount++;
+            }
+            return false;
+        }
+
+        BOOL bitBltOk =
+            BitBlt(targetDC, 0, 0, static_cast<int>(width), static_cast<int>(height), uploadDC, 0, 0, SRCCOPY);
+
+        surface->ReleaseDC(targetDC);
+        d3d9UploadSurface->ReleaseDC(uploadDC);
+
+        if (!bitBltOk) {
+            static int bitBltFailLogCount = 0;
+            if (bitBltFailLogCount < 4) {
+                HookLog("DDraw: BitBlt into primary surface failed (err=%lu)", GetLastError());
+                bitBltFailLogCount++;
+            }
+            return false;
+        }
+
+        static uint32_t gdiWritebackCount = 0;
+        gdiWritebackCount++;
+        if (gdiWritebackCount <= 8 || (gdiWritebackCount % 120 == 0)) {
+            HookLogImportant("DDraw: Overlay GDI writeback to primary surface completed (hwnd=%p size=%ux%u count=%u)",
+                             targetHwnd, width, height, gdiWritebackCount);
+        }
+        return true;
+
+}
+
+
 bool DDrawCapture::PresentOverlay() {
 
 
@@ -201,10 +349,14 @@ bool DDrawCapture::PresentOverlay() {
         }
 
         HWND presentWindowOverride = d3d9UsesFlipEx ? nullptr : targetHwnd;
-        HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, presentWindowOverride, nullptr, 0);
+        HRESULT hr = S_OK;
+        {
+            DX9InternalBypassScope dx9Bypass;
+            hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, presentWindowOverride, nullptr, 0);
+        }
         static uint32_t overlayPresentCount = 0;
         overlayPresentCount++;
-        if (overlayPresentCount <= 8) {
+        if (overlayPresentCount <= 8 || (overlayPresentCount % 120 == 0)) {
             HookLogImportant("DDraw: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
                              targetHwnd, width, height, overlayPresentCount);
         }

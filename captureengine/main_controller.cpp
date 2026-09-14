@@ -117,7 +117,9 @@ void LaunchGameSuspended(const std::string& path) {
                 "injection...",
                 pi.dwProcessId);
 
-            auto injector = std::make_shared<InjectionManager>(main_g_Config);
+            static std::shared_ptr<InjectionManager> s_launcherInjector;
+            s_launcherInjector = std::make_shared<InjectionManager>(main_g_Config);
+            auto& injector = s_launcherInjector;
 
             // Determine DLL path based on target architecture
             BOOL isWow64 = FALSE;

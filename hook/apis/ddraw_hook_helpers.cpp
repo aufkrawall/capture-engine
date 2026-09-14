@@ -414,10 +414,13 @@ void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
         g_OverlayAdapter.RenderOverlay(ddraw_hook_g_DDrawCapture.width, ddraw_hook_g_DDrawCapture.height);
         static uint32_t overlayRenderSubmitCount = 0;
         overlayRenderSubmitCount++;
-        if (overlayRenderSubmitCount <= 8) {
+        if (overlayRenderSubmitCount <= 8 || (overlayRenderSubmitCount % 120 == 0)) {
             HookLogImportant("DDraw: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)",
                              ddraw_hook_g_DDrawCapture.targetHwnd, ddraw_hook_g_DDrawCapture.width, ddraw_hook_g_DDrawCapture.height,
                              overlayRenderSubmitCount);
+        }
+        if (overlaySourceSurface) {
+            ddraw_hook_g_DDrawCapture.CopyOverlayBackbufferToPrimarySurface(overlaySourceSurface);
         }
         ddraw_hook_g_DDrawCapture.PresentOverlay();
     }

@@ -150,7 +150,7 @@ static bool GetD3D9PresentAddresses(void** ppPresent, void** ppPresentEx, void**
             uintptr_t* vtable = *(uintptr_t**)deviceEx;
 
             *ppPresent = (void*)vtable[17];
-            *ppPresentEx = (void*)vtable[132];
+            *ppPresentEx = (void*)vtable[121];
 
             if (SUCCEEDED(deviceEx->GetSwapChain(0, &swapChain))) {
                 uintptr_t* scVtable = *(uintptr_t**)swapChain;

@@ -85,6 +85,23 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
 }
 
 
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surface, DWORD dwX, DWORD dwY,
+                                                      IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD dwTrans) {
+
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.bltFast)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.bltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
+        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface, srcSurface);
+    }
+    return hr;
+
+}
+
+
 HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface,  LPRECT destRect, 
                                                            DDSURFACEDESC* surfaceDesc,  DWORD ddraw_hook_flags,  HANDLE ddraw_hook_event) {
 
@@ -291,7 +308,31 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
 }
 
 
-#include "ddraw_hook_internal.h"
+HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
+                                                 IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans) {
+
+    HRESULT hr = ddraw_hook_oDDSurface7BltFast ? ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans)
+                                               : DDERR_GENERIC;
+    if (HookIsShuttingDown())
+        return hr;
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
+
+    if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        RememberPresentedSourceSurface(srcSurface);
+    }
+
+    if (surface != ddraw_hook_g_HookSurfacePrototype && !ddraw_hook_g_PrimarySurface) {
+        MaybeTrackPrimarySurface(surface, "BltFast");
+    }
+
+    if (surface && surface != ddraw_hook_g_HookSurfacePrototype &&
+        (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface)) {
+        HandleCapture(surface, srcSurface);
+    }
+
+    return hr;
+
+}
 
 
 HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPRECT destRect, 
@@ -306,6 +347,29 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
 
     if (surface != ddraw_hook_g_HookSurfacePrototype4 && !ddraw_hook_g_PrimarySurface4) {
         MaybeTrackPrimarySurface4(surface, "Blt4");
+    }
+
+    if (SUCCEEDED(hr) && surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
+        (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4)) {
+        HandleCaptureSurface4(surface, srcSurface);
+    }
+
+    return hr;
+
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
+                                                 IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans) {
+
+    HRESULT hr = ddraw_hook_oDDSurface4BltFast ? ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans)
+                                               : DDERR_GENERIC;
+    if (HookIsShuttingDown())
+        return hr;
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
+
+    if (surface != ddraw_hook_g_HookSurfacePrototype4 && !ddraw_hook_g_PrimarySurface4) {
+        MaybeTrackPrimarySurface4(surface, "BltFast4");
     }
 
     if (SUCCEEDED(hr) && surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&

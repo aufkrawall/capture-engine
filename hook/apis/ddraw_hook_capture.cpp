@@ -77,3 +77,128 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
 
     return false;
 }
+
+void HandleCapture(IDirectDrawSurface7* primarySurface, IDirectDrawSurface7* explicitSourceSurface) {
+    if (HookIsShuttingDown())
+        return;
+    ddraw_hook_g_CaptureRecurse++;
+    if (ddraw_hook_g_CaptureRecurse > 1) {
+        ddraw_hook_g_CaptureRecurse--;
+        return;
+    }
+
+    g_RenderWatchdog.Heartbeat();
+
+    // Update performance metrics
+    static int64_t qpcFreq = 0;
+    if (qpcFreq == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qpcFreq = f.QuadPart;
+    }
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
+    ddraw_hook_g_PerfMetrics.Update(us);
+
+    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
+    bool isRecording = g_IPC && g_IPC->IsRecording();
+    HWND targetHwnd = ResolveDirectDrawTargetWindow();
+    uint32_t surfaceWidth = 0;
+    uint32_t surfaceHeight = 0;
+    const bool haveSurfaceSize =
+        GetSurfaceSize(primarySurface, surfaceWidth, surfaceHeight) && surfaceWidth > 0 && surfaceHeight > 0;
+    IDirectDrawSurface7* presentationSurface =
+        ResolvePreferredPresentationSurface(primarySurface, explicitSourceSurface);
+
+    static bool loggedFirstHandleCapture = false;
+    if (!loggedFirstHandleCapture) {
+        HookLogImportant(
+            "DDraw: First HandleCapture surface=%p hwnd=%p recording=%d showOverlay=%d captureIncludeOverlay=%d "
+            "size=%ux%u presentation=%p",
+            primarySurface, targetHwnd, isRecording ? 1 : 0, shouldDrawOverlay ? 1 : 0, captureIncludeOverlay ? 1 : 0,
+            surfaceWidth, surfaceHeight, presentationSurface);
+        loggedFirstHandleCapture = true;
+    }
+
+    if (shouldDrawOverlay && haveSurfaceSize) {
+        ddraw_hook_g_DDrawCapture.EnsureOverlayDevice(targetHwnd, surfaceWidth, surfaceHeight);
+    }
+
+    // Lambda for overlay drawing: overlay MUST ALWAYS be drawn onto the primary surface (front display buffer)
+    auto doOverlay = [&]() {
+        if (shouldDrawOverlay) {
+            DrawDDrawOverlay(primarySurface);
+        }
+    };
+
+    // Lambda for capture operation
+    auto doCapture = [&]() {
+        if (isRecording) {
+            if (!ddraw_hook_g_DDrawCapture.initialized && haveSurfaceSize) {
+                ddraw_hook_g_DDrawCapture.EnsureCaptureResources(primarySurface, targetHwnd, surfaceWidth, surfaceHeight);
+            }
+
+            if (ddraw_hook_g_DDrawCapture.initialized) {
+                // If recording includes overlay, capture the primary surface which now contains the composited overlay.
+                // Otherwise capture from the clean presentation surface (or primary surface if none).
+                IDirectDrawSurface7* captureTarget =
+                    captureIncludeOverlay ? primarySurface : (presentationSurface ? presentationSurface : primarySurface);
+                ddraw_hook_g_DDrawCapture.CaptureFrameFromSurface(captureTarget);
+            }
+        }
+    };
+
+    // Order capture/overlay based on config
+    if (captureIncludeOverlay) {
+        doOverlay();  // Draw overlay first onto primary surface
+        doCapture();  // Then capture primary surface (includes overlay)
+    } else {
+        doCapture();  // Capture first (clean frame)
+        doOverlay();  // Then draw overlay onto primary surface (visible on screen but not in recording)
+    }
+
+    // Apply FPS limiter
+    g_SharedFpsLimiter.SetIPCClient(g_IPC);
+    g_SharedFpsLimiter.Apply();
+
+    ddraw_hook_g_CaptureRecurse--;
+}
+
+void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface, IDirectDrawSurface4* explicitSourceSurface) {
+    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
+    if (!primarySurface7) {
+        static int primaryUpgradeFailLogCount = 0;
+        if (primaryUpgradeFailLogCount < 4) {
+            HookLog("DDraw: Failed to upgrade DirectDraw4 primary surface to DirectDraw7 for capture/overlay");
+            primaryUpgradeFailLogCount++;
+        }
+        return;
+    }
+
+    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
+    HandleCapture(primarySurface7, explicitSourceSurface7);
+
+    if (explicitSourceSurface7) {
+        explicitSourceSurface7->Release();
+    }
+    primarySurface7->Release();
+}
+
+void HandleCaptureLegacySurface(IDirectDrawSurface* primarySurface, IDirectDrawSurface* explicitSourceSurface) {
+    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
+    if (!primarySurface7) {
+        static std::atomic<int> s_upgradeFailureLogCount{0};
+        if (s_upgradeFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+            HookLogImportant("DDraw: Failed to upgrade legacy primary surface to Surface7 for capture/overlay");
+        }
+        return;
+    }
+    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
+    HandleCapture(primarySurface7, explicitSourceSurface7);
+    if (explicitSourceSurface7)
+        explicitSourceSurface7->Release();
+    primarySurface7->Release();
+}

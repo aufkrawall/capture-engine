@@ -307,18 +307,22 @@ void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface,  const cha
         VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_FLIP]), (LPVOID)&DetourDDSurfaceLegacyFlip, (LPVOID*)&record.flip);
     const VTableHook::Status bltStatus =
         VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_BLT]), (LPVOID)&DetourDDSurfaceLegacyBlt, (LPVOID*)&record.blt);
+    const VTableHook::Status bltFastStatus =
+        VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_BLTFAST]), (LPVOID)&DetourDDSurfaceLegacyBltFast, (LPVOID*)&record.bltFast);
     const VTableHook::Status lockStatus =
         VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_LOCK]), (LPVOID)&DetourDDSurfaceLegacyLock, (LPVOID*)&record.lock);
     const VTableHook::Status unlockStatus = VTableHook::Create(
         reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_UNLOCK]), (LPVOID)&DetourDDSurfaceLegacyUnlock, (LPVOID*)&record.unlock);
     ddraw_hook_g_LegacySurfaceVTables.emplace(vtable, record);
-    if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success && lockStatus == VTableHook::Success &&
-        unlockStatus == VTableHook::Success && record.flip && record.blt && record.lock && record.unlock) {
+    if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success && bltFastStatus == VTableHook::Success &&
+        lockStatus == VTableHook::Success && unlockStatus == VTableHook::Success && record.flip && record.blt &&
+        record.bltFast && record.lock && record.unlock) {
         HookLog("DDraw: Legacy surface hooks installed via %s (surface=%p, vtable=%p)", ddraw_hook_reason, surface, vtable);
     } else {
-        HookLogImportant("DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s lock=%s unlock=%s)",
+        HookLogImportant("DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s bltFast=%s lock=%s unlock=%s)",
                          ddraw_hook_reason, VTableHook::StatusToString(flipStatus), VTableHook::StatusToString(bltStatus),
-                         VTableHook::StatusToString(lockStatus), VTableHook::StatusToString(unlockStatus));
+                         VTableHook::StatusToString(bltFastStatus), VTableHook::StatusToString(lockStatus),
+                         VTableHook::StatusToString(unlockStatus));
     }
 
 }
@@ -398,6 +402,15 @@ void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface,  const char* d
         HookLog("DDraw: Blt4 hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(bltStatus));
     }
 
+    VTableHook::Status bltFastStatus =
+        VTableHook::Create(reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_BLTFAST]), (LPVOID)&DetourDDSurface4BltFast,
+                           ddraw_hook_oDDSurface4BltFast ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface4BltFast);
+    if (bltFastStatus == VTableHook::Success) {
+        HookLog("DDraw: BltFast4 hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: BltFast4 hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(bltFastStatus));
+    }
+
     VTableHook::Status lockStatus =
         VTableHook::Create(reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_LOCK]), (LPVOID)&DetourDDSurface4Lock,
                            ddraw_hook_oDDSurface4Lock ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface4Lock);
@@ -460,6 +473,15 @@ void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface,  const char* dd
         HookLog("DDraw: Blt hook installed via %s", ddraw_hook_reason);
     } else {
         HookLog("DDraw: Blt hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(bltStatus));
+    }
+
+    VTableHook::Status bltFastStatus =
+        VTableHook::Create(reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_BLTFAST]), (LPVOID)&DetourDDSurface7BltFast,
+                           ddraw_hook_oDDSurface7BltFast ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface7BltFast);
+    if (bltFastStatus == VTableHook::Success) {
+        HookLog("DDraw: BltFast hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: BltFast hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(bltFastStatus));
     }
 
     VTableHook::Status lockStatus =
@@ -656,140 +678,4 @@ void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7,  const char* ddraw_
         HookLog("DDraw: CreateSurface hook install via %s returned %s", ddraw_hook_reason,
                 VTableHook::StatusToString(createSurfaceStatus));
     }
-
-}
-
-
-void HandleCapture(IDirectDrawSurface7* primarySurface,  IDirectDrawSurface7* explicitSourceSurface) {
-
-
-    if (HookIsShuttingDown())
-        return;
-    ddraw_hook_g_CaptureRecurse++;
-    if (ddraw_hook_g_CaptureRecurse > 1) {
-        ddraw_hook_g_CaptureRecurse--;
-        return;
-    }
-
-    g_RenderWatchdog.Heartbeat();
-
-    // Update performance metrics
-    static int64_t qpcFreq = 0;
-    if (qpcFreq == 0) {
-        LARGE_INTEGER f;
-        QueryPerformanceFrequency(&f);
-        qpcFreq = f.QuadPart;
-    }
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-    int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
-    ddraw_hook_g_PerfMetrics.Update(us);
-
-    SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
-    bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
-    bool isRecording = g_IPC && g_IPC->IsRecording();
-    HWND targetHwnd = ResolveDirectDrawTargetWindow();
-    uint32_t surfaceWidth = 0;
-    uint32_t surfaceHeight = 0;
-    const bool haveSurfaceSize =
-        GetSurfaceSize(primarySurface, surfaceWidth, surfaceHeight) && surfaceWidth > 0 && surfaceHeight > 0;
-    IDirectDrawSurface7* presentationSurface =
-        ResolvePreferredPresentationSurface(primarySurface, explicitSourceSurface);
-
-    static bool loggedFirstHandleCapture = false;
-    if (!loggedFirstHandleCapture) {
-        HookLogImportant(
-            "DDraw: First HandleCapture surface=%p hwnd=%p recording=%d showOverlay=%d captureIncludeOverlay=%d "
-            "size=%ux%u",
-            primarySurface, targetHwnd, isRecording ? 1 : 0, shouldDrawOverlay ? 1 : 0, captureIncludeOverlay ? 1 : 0,
-            surfaceWidth, surfaceHeight);
-        loggedFirstHandleCapture = true;
-    }
-
-    if (shouldDrawOverlay && haveSurfaceSize) {
-        ddraw_hook_g_DDrawCapture.EnsureOverlayDevice(targetHwnd, surfaceWidth, surfaceHeight);
-    }
-
-    // Lambda for capture operation
-    auto doCapture = [&]() {
-        if (isRecording) {
-            if (!ddraw_hook_g_DDrawCapture.initialized && haveSurfaceSize) {
-                ddraw_hook_g_DDrawCapture.EnsureCaptureResources(primarySurface, targetHwnd, surfaceWidth, surfaceHeight);
-            }
-
-            if (ddraw_hook_g_DDrawCapture.initialized) {
-                ddraw_hook_g_DDrawCapture.CaptureFrameFromSurface(presentationSurface ? presentationSurface : primarySurface);
-            }
-        }
-    };
-
-    // Lambda for overlay drawing
-    auto doOverlay = [&]() {
-        if (shouldDrawOverlay) {
-            DrawDDrawOverlay(presentationSurface ? presentationSurface : primarySurface);
-        }
-    };
-
-    // Order capture/overlay based on config
-    if (captureIncludeOverlay) {
-        doOverlay();  // Draw overlay first
-        doCapture();  // Then capture (includes overlay)
-    } else {
-        doCapture();  // Capture first (clean frame)
-        doOverlay();  // Then draw overlay (visible but not recorded)
-    }
-
-    // Apply FPS limiter
-    g_SharedFpsLimiter.SetIPCClient(g_IPC);
-    g_SharedFpsLimiter.Apply();
-
-    ddraw_hook_g_CaptureRecurse--;
-
-}
-
-
-void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface, 
-                                  IDirectDrawSurface4* explicitSourceSurface) {
-
-
-    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
-    if (!primarySurface7) {
-        static int primaryUpgradeFailLogCount = 0;
-        if (primaryUpgradeFailLogCount < 4) {
-            HookLog("DDraw: Failed to upgrade DirectDraw4 primary surface to DirectDraw7 for capture/overlay");
-            primaryUpgradeFailLogCount++;
-        }
-        return;
-    }
-
-    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
-    HandleCapture(primarySurface7, explicitSourceSurface7);
-
-    if (explicitSourceSurface7) {
-        explicitSourceSurface7->Release();
-    }
-    primarySurface7->Release();
-
-}
-
-
-void HandleCaptureLegacySurface(IDirectDrawSurface* primarySurface, 
-                                       IDirectDrawSurface* explicitSourceSurface) {
-
-
-    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
-    if (!primarySurface7) {
-        static std::atomic<int> s_upgradeFailureLogCount{0};
-        if (s_upgradeFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
-            HookLogImportant("DDraw: Failed to upgrade legacy primary surface to Surface7 for capture/overlay");
-        }
-        return;
-    }
-    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
-    HandleCapture(primarySurface7, explicitSourceSurface7);
-    if (explicitSourceSurface7)
-        explicitSourceSurface7->Release();
-    primarySurface7->Release();
-
 }

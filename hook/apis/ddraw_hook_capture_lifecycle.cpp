@@ -19,6 +19,7 @@ void DDrawCapture::ReleaseOverlayResources() {
             d3d9UploadSurface = nullptr;
         }
         if (d3d9DeviceEx) {
+            DX9_UnregisterInternalHelperDevice(d3d9DeviceEx);
             d3d9DeviceEx->Release();
             d3d9DeviceEx = nullptr;
         }

@@ -76,19 +76,6 @@ static bool IsDirectDrawBusy(HRESULT hr) {
     return hr == DDERR_WASSTILLDRAWING || hr == DDERR_SURFACEBUSY;
 }
 
-static void PumpStartupMessagesForMs(DWORD durationMs) {
-    const uint64_t deadline = GetTickCount64() + durationMs;
-    MSG msg = {};
-    while (g_Running && GetTickCount64() < deadline) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-            if (!g_Running)
-                return;
-        }
-        Sleep(10);
-    }
-}
 
 static void QueueDirectDrawReset(const char* reason) {
     if (!g_ResetPending) {
@@ -140,7 +127,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
     if (msg == WM_KILLFOCUS) {
-        UpdateWindowActiveState(false, "kill focus");
         return 0;
     }
     if (msg == WM_SETFOCUS) {
@@ -441,9 +427,7 @@ static bool InitDirectDraw(HWND hwnd) {
                 return false;
         } else {
             DWORD coopFlags = DDSCL_FULLSCREEN | DDSCL_EXCLUSIVE | DDSCL_ALLOWREBOOT;
-            if (FAILED(g_DirectDraw->SetCooperativeLevel(hwnd, coopFlags)))
-                return false;
-            if (!InitFullscreenPrimary()) {
+            if (FAILED(g_DirectDraw->SetCooperativeLevel(hwnd, coopFlags)) || !InitFullscreenPrimary()) {
                 printf("DirectDraw7: Exclusive %dx%d mode unavailable, using desktop blit fallback for render %dx%d\n",
                        g_WindowWidth, g_WindowHeight, g_WindowWidth, g_WindowHeight);
                 if (!InitDesktopFullscreenPrimary(hwnd))
@@ -548,9 +532,16 @@ static void PresentFrame(HWND hwnd) {
 
     // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
+    printf("DEBUG: main entry argc=%d\n", argc);
+    fflush(stdout);
     LoadConfig();
+
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
+
+    if (testapp::LaunchX86SiblingProcess(argc, argv)) {
+        return 0;
+    }
 
     if (argc >= 3) {
         g_WindowWidth = testapp::ParseIntOrZero(argv[1]);
@@ -596,12 +587,7 @@ int main(int argc, char* argv[]) {
     if (!hwnd)
         return 1;
 
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
-
-    printf("DirectDraw7: startup warmup before DirectDraw init (750 ms)\n");
-    PumpStartupMessagesForMs(750);
-    if (!g_Running) {
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_PresentWidth, g_PresentHeight)) {
         DestroyWindow(hwnd);
         return 0;
     }
@@ -610,6 +596,12 @@ int main(int argc, char* argv[]) {
         CleanupDirectDraw(hwnd);
         DestroyWindow(hwnd);
         return 1;
+    }
+
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_PresentWidth, g_PresentHeight)) {
+        CleanupDirectDraw(hwnd);
+        DestroyWindow(hwnd);
+        return 0;
     }
     g_WindowActive = true;
     g_ResetPending = false;

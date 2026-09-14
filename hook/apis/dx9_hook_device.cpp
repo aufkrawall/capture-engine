@@ -232,16 +232,16 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
         EarlyLog("DX9: Device supports D3D9Ex interfaces");
         uintptr_t* vtableEx = *(uintptr_t**)deviceEx;
 
-        // Hook ResetEx (129)
+        // Hook ResetEx (132)
         if (!dx9_hook_oResetEx) {
-            if (VTableHook::Create(&vtableEx[129], (void*)&DetourResetEx, (void**)&dx9_hook_oResetEx) == VTableHook::Success) {
+            if (VTableHook::Create(&vtableEx[132], (void*)&DetourResetEx, (void**)&dx9_hook_oResetEx) == VTableHook::Success) {
                 EarlyLog("DX9: ResetEx hook installed");
             }
         }
 
-        // Hook PresentEx (132) - always install VTable hook for reliable coverage
+        // Hook PresentEx (121) - always install VTable hook for reliable coverage
         if (!dx9_hook_oPresentEx) {
-            if (VTableHook::Create(&vtableEx[132], (void*)&DetourPresentEx, (void**)&dx9_hook_oPresentEx) ==
+            if (VTableHook::Create(&vtableEx[121], (void*)&DetourPresentEx, (void**)&dx9_hook_oPresentEx) ==
                 VTableHook::Success) {
                 EarlyLog("DX9: PresentEx hook installed (VTable)");
             }
