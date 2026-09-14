@@ -1,5 +1,42 @@
 # llm-wiki Log
 
+### 2026-09-14 - The overlay was being blended over itself, and an idle process is not an unreadable one
+
+Session `20260914_190240` (0.1.6590) had two symptoms with two separate causes.
+
+**The composite blended the overlay over its own previous output.** The DirectDraw composite is a
+read-modify-write: it reads the target region, blends the overlay over those pixels and writes the result back.
+That is only correct while the pixels it reads are the application's. A flip publishes a freshly rendered image,
+so the region read after one is always clean - but consecutive writes into the *same* scanout surface with no
+flip between them are not, because the application may have changed only part of the surface and left the
+overlay's own pixels in place. A translucent overlay then darkens a little more with every repetition, and the
+next flip restores a clean one. Gothic II does both shapes: 86 flips and 11 front-buffer writes a second during
+gameplay, and about ten writes per flip through the intro logos, which is the ratio that made it look like the
+values themselves were flashing.
+
+The previous attempt - `ScanoutWriteIsPresentation`, suppressing front-buffer writes while the chain was still
+flipping - treated the symptom and created a worse one: a loading screen that flips occasionally between its
+writes left every write as "the first after a flip", so the overlay was never restored for the whole load. That
+rule is gone. The composite now keeps the application's own pixels for the region it is compositing
+(`CompositeBackdropIsReusable`): read once for a given surface and rectangle, reused for every repeat composite
+into the same place, discarded as soon as a flip or a blit-present brings a newly produced image. Repeat
+composites become idempotent, so a front-buffer write no longer has to be suppressed to avoid strobing, and a
+loading screen composites on every write again. The mix line reports `backdropReuses=`.
+
+**A process with no GPU-engine counter instance is idle, not unreadable.** Windows publishes a
+`\GPU Engine(...)` instance for a process only while that process has work on that engine, so the instances come
+and go. `host_metrics.cpp` set `gpuUsageValid` only when at least one instance matched, so a poll that found none
+published the GPU row as unavailable and the overlay drew `--`. Through the intro logos, where the game barely
+touches the GPU, that flapped at the poll rate. A resolved adapter plus a counter query that succeeded is a
+readable sample; no matching instance means the process did no GPU work in that interval, which is 0%
+(`metrics_policy::GpuLoadIsReadable`). Unreadable is now reserved for an unresolved adapter or a failed query.
+
+VRAM usage has the same instance behaviour but no truthful zero - a process with a resolved adapter is using
+some - so `VramUsageIsReadable` holds the previous reading across a bounded run of missing samples
+(`kVramUsageMissingSampleTolerance`, five polls) and only then gives up.
+
+Built and verified at 0.1.6594. **Hardware run pending.**
+
 ### 2026-09-14 - The native D3D7 overlay is opt-in, and a front-buffer write is not a present
 
 Two more Gothic II runs settled two open questions.

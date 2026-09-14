@@ -353,7 +353,10 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
     }
 
     double totalGpuLoad = 0.0;
-    bool gpuUsageValid = false;
+    // A resolved adapter plus a counter query that succeeded is a readable
+    // sample even when no engine instance matched this process: that is 0%
+    // load, not an unknown. See GpuLoadIsReadable.
+    bool gpuUsageValid = metrics_policy::GpuLoadIsReadable(adapter.adapterLuid != 0, gpuCounterRead);
     if (gpuCounterRead && adapter.adapterLuid != 0) {
         // Per engine, not per instance: the 3D, Compute and Copy engines run at
         // the same time, so their utilizations are not addends of one elapsed
@@ -366,7 +369,6 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
         for (const GpuEngineValue& value : gpuValues) {
             if (value.adapterLuid != adapter.adapterLuid || !value.valueValid)
                 continue;
-            gpuUsageValid = true;
             if (!value.videoEngine)
                 engineLoads.push_back({value.engineKey, value.utilization});
         }
@@ -421,11 +423,31 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
 
     uint64_t vramUsed = 0;
     const bool vramCounterRead = ReadVramUsage(g_HostMetrics, adapter.adapterLuid, vramUsed);
+    // The instance backing this counter disappears for a poll or two whenever a
+    // process goes briefly idle. VRAM in use does not drop to nothing with it,
+    // so the last reading is held across a bounded run of absences instead of
+    // blanking the row at the poll rate.
+    if (vramCounterRead) {
+        g_HostMetrics.vramUsageMissingSamples = 0;
+        g_HostMetrics.lastVramUsedBytes = vramUsed;
+        g_HostMetrics.haveVramUsedBytes = true;
+    } else {
+        if (g_HostMetrics.vramUsageMissingSamples < UINT32_MAX)
+            ++g_HostMetrics.vramUsageMissingSamples;
+        vramUsed = g_HostMetrics.lastVramUsedBytes;
+    }
+    const bool vramUsageReadable = metrics_policy::VramUsageIsReadable(
+        adapter.adapterLuid != 0, vramCounterRead, g_HostMetrics.haveVramUsedBytes,
+        g_HostMetrics.vramUsageMissingSamples);
+    if (!vramUsageReadable) {
+        vramUsed = 0;
+        g_HostMetrics.haveVramUsedBytes = false;
+    }
 
     uint32_t validity = 0;
     if (gpuUsageValid)
         validity |= SYSTEM_METRIC_GPU_USAGE_VALID;
-    if (vramCounterRead && adapter.adapterLuid != 0)
+    if (vramUsageReadable)
         validity |= SYSTEM_METRIC_VRAM_USAGE_VALID;
     if (vramTotal > 0)
         validity |= SYSTEM_METRIC_VRAM_TOTAL_VALID;

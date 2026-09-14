@@ -86,13 +86,13 @@ void LogDirectDrawPresentationMix(const char* reason) {
     HookLogImportant(
         "DDraw: Presentation mix (%s) flips=%u blitPresents=%u directScanoutBlits=%u ignoredBlits=%u "
         "scanoutUnlocks=%u composites=%u skippedNoPublishedImage=%u skippedOutsideOverlay=%u "
-        "scanoutWritesLeftToTheFlip=%u route=%s routeSwitches=%u routeLatched=%d",
+        "backdropReuses=%u route=%s routeSwitches=%u routeLatched=%d",
         reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
         diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
         diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.composites.load(std::memory_order_relaxed),
         diag.skippedNoPublishedImage.load(std::memory_order_relaxed),
         diag.skippedOutsideOverlay.load(std::memory_order_relaxed),
-        diag.scanoutWritesLeftToTheFlip.load(std::memory_order_relaxed), routeLabel,
+        diag.backdropReuses.load(std::memory_order_relaxed), routeLabel,
         ddraw_hook_g_OverlayRouteSwitches, ddraw_hook_g_OverlayRouteLatchedToComposite ? 1 : 0);
 }
 
@@ -117,22 +117,10 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
             break;
     }
 
-    // A flip resets the run of scanout writes; a write extends it. The rule
-    // below reads that run, so it has to be maintained for every presentation,
-    // including the ones that go on to composite nothing.
-    if (kind == ce::ddraw_present_policy::PresentKind::FlipChain) {
-        ddraw_hook_g_ScanoutWritesSinceFlip = 0;
-    } else if (kind == ce::ddraw_present_policy::PresentKind::DirectScanout) {
-        ++ddraw_hook_g_ScanoutWritesSinceFlip;
-        if (!ce::ddraw_present_policy::ScanoutWriteIsPresentation(ScanoutSurfaceOwnsFlipChain(visibleSurface),
-                                                                 ddraw_hook_g_ScanoutWritesSinceFlip)) {
-            // The next flip publishes something else, so this write is drawing,
-            // not presenting. Compositing here would write the surface the
-            // display is scanning out for a frame nobody will see.
-            diag.scanoutWritesLeftToTheFlip.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-    }
+    // The composite needs to know what published this image: a flip always
+    // brings freshly rendered pixels, a repeat write into the scanout surface
+    // may still be carrying the previous composite.
+    ddraw_hook_g_CompositePresentKind = kind;
 
     const auto target = ce::ddraw_present_policy::SelectCompositeTarget(kind, presentSource != nullptr);
     if (target == ce::ddraw_present_policy::CompositeTarget::None) {

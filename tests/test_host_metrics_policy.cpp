@@ -316,3 +316,48 @@ TEST(HostMetricsSourceInvariantTest, DirectDrawOverlayHelperPublishesAdapterWith
     // the two live in separate semantic units now, so only presence is asserted
     // for the capture entry point.
 }
+
+// ============================================================================
+// Counter readability - a process's GPU-engine and VRAM counter instances come
+// and go, and an absent instance is not the same thing as an unreadable value.
+// ============================================================================
+
+TEST(HostMetricsPolicyTest, AResolvedAdapterWithASuccessfulQueryIsReadableEvenWithNoEngineInstance) {
+    // Windows publishes a GPU Engine instance only while the process has work
+    // on that engine. A poll that finds none means the process did no GPU work
+    // in that interval - 0%, a real reading. Publishing that as unreadable made
+    // the overlay's GPU row strobe between a value and "--" through Gothic II's
+    // intro logos, where the game barely touches the GPU (20260914_190240).
+    EXPECT_TRUE(scan_host::metrics_policy::GpuLoadIsReadable(/*adapterResolved=*/true, /*counterQuerySucceeded=*/true));
+}
+
+TEST(HostMetricsPolicyTest, GpuLoadIsUnreadableOnlyWhenItIsGenuinelyUnknown) {
+    EXPECT_FALSE(scan_host::metrics_policy::GpuLoadIsReadable(false, true));
+    EXPECT_FALSE(scan_host::metrics_policy::GpuLoadIsReadable(true, false));
+    EXPECT_FALSE(scan_host::metrics_policy::GpuLoadIsReadable(false, false));
+}
+
+TEST(HostMetricsPolicyTest, VramUsageHoldsItsReadingAcrossAShortRunOfMissingSamples) {
+    // VRAM in use has no truthful zero: a process with a resolved adapter is
+    // using some. A missing instance holds the previous figure instead of
+    // blanking the row at the poll rate.
+    EXPECT_TRUE(scan_host::metrics_policy::VramUsageIsReadable(/*adapterResolved=*/true, /*counterReadThisPoll=*/false,
+                                                    /*havePreviousReading=*/true,
+                                                    /*consecutiveMissingSamples=*/1));
+    EXPECT_TRUE(scan_host::metrics_policy::VramUsageIsReadable(true, false, true,
+                                                    scan_host::metrics_policy::kVramUsageMissingSampleTolerance));
+}
+
+TEST(HostMetricsPolicyTest, VramUsageGivesUpOnceTheSamplesStopAltogether) {
+    EXPECT_FALSE(scan_host::metrics_policy::VramUsageIsReadable(true, false, true,
+                                                     scan_host::metrics_policy::kVramUsageMissingSampleTolerance + 1));
+    // Nothing to hold.
+    EXPECT_FALSE(scan_host::metrics_policy::VramUsageIsReadable(true, false, /*havePreviousReading=*/false, 1));
+    // No adapter is genuinely unknown whatever the counter did.
+    EXPECT_FALSE(scan_host::metrics_policy::VramUsageIsReadable(/*adapterResolved=*/false, true, true, 0));
+}
+
+TEST(HostMetricsPolicyTest, AFreshVramReadingIsAlwaysReadable) {
+    EXPECT_TRUE(scan_host::metrics_policy::VramUsageIsReadable(true, /*counterReadThisPoll=*/true,
+                                                    /*havePreviousReading=*/false, 99));
+}

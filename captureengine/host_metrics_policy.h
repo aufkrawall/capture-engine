@@ -209,6 +209,36 @@ inline double ResolveAdapterGpuLoadPercent(std::vector<GpuEngineLoadSample> samp
     return (std::min)(100.0, busiestEngine);
 }
 
+// Windows publishes a `\GPU Engine(...)` instance for a process only while
+// that process has work on that engine, so the instances come and go. A poll
+// that finds none therefore means the process did no GPU work in that interval
+// - a real 0% - not that the counter is unreadable.
+//
+// Publishing "no instance" as unreadable is what made the overlay's GPU row
+// strobe between a value and "--" whenever a title went briefly idle: Gothic
+// II's intro logos barely touch the GPU, and the row flapped at the poll rate
+// (session 20260914_190240). Unreadable is reserved for what is genuinely
+// unknown: no resolved adapter, or a counter query that failed outright.
+inline bool GpuLoadIsReadable(bool adapterResolved, bool counterQuerySucceeded) {
+    return adapterResolved && counterQuerySucceeded;
+}
+
+// VRAM usage has no truthful zero: a process with a resolved adapter is using
+// some. A poll whose counter instance is momentarily absent therefore holds the
+// previous reading rather than blanking the row, and only a run of absences
+// long enough to mean the process has stopped producing samples gives up.
+inline constexpr uint32_t kVramUsageMissingSampleTolerance = 5;
+
+inline bool VramUsageIsReadable(bool adapterResolved, bool counterReadThisPoll, bool havePreviousReading,
+                                uint32_t consecutiveMissingSamples,
+                                uint32_t tolerance = kVramUsageMissingSampleTolerance) {
+    if (!adapterResolved)
+        return false;
+    if (counterReadThisPoll)
+        return true;
+    return havePreviousReading && consecutiveMissingSamples <= tolerance;
+}
+
 inline bool ParseGpuEngineSample(std::string_view instanceName, double utilization, GpuEngineSample& sample) {
     const std::string_view pidMarker = "pid_";
     const size_t pidPos = FindAsciiInsensitive(instanceName, pidMarker);

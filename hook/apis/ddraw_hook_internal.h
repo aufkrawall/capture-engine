@@ -329,15 +329,12 @@ inline DDrawOverlayRoute ddraw_hook_g_OverlayRoutePending = DDrawOverlayRoute::U
 
 inline uint32_t ddraw_hook_g_OverlayRoutePendingPresentations = 0;
 
-// Writes into the scanout surface since the last flip, and whether the tracked
-// primary heads a flip chain at all. Together they say whether such a write is
-// what the screen is showing or drawing the next flip is about to replace.
-inline uint32_t ddraw_hook_g_ScanoutWritesSinceFlip = 0;
+// The presentation shape the running composite belongs to, so the composite can
+// tell a freshly published image from a repeat write into one it already
+// composited into.
+inline ce::ddraw_present_policy::PresentKind ddraw_hook_g_CompositePresentKind =
+    ce::ddraw_present_policy::PresentKind::None;
 
-// -1 unknown, 0 single-buffered, 1 flip chain. Resolved once per primary.
-inline int ddraw_hook_g_PrimaryFlipChainState = -1;
-
-bool ScanoutSurfaceOwnsFlipChain(IDirectDrawSurface7* surface);
 
 void TrackLegacyD3D7Device(IDirect3DDevice7* device);
 
@@ -389,7 +386,7 @@ struct DDrawPresentationDiagnostics {
     std::atomic<uint32_t> composites{0};
     std::atomic<uint32_t> skippedNoPublishedImage{0};
     std::atomic<uint32_t> skippedOutsideOverlay{0};
-    std::atomic<uint32_t> scanoutWritesLeftToTheFlip{0};
+    std::atomic<uint32_t> backdropReuses{0};
     std::atomic<uint32_t> lastLogTick{0};
 };
 
@@ -595,6 +592,14 @@ public:
     uint32_t regionWidth = 0;
     uint32_t regionHeight = 0;
 
+    // The application's own pixels for the region currently being composited,
+    // kept so a repeat composite into the same place never blends the overlay
+    // over a previous composite. See CompositeBackdropIsReusable.
+    IDirect3DSurface9* d3d9RegionBackdrop = nullptr;  // D3DPOOL_SYSTEMMEM
+    IDirectDrawSurface7* backdropSurface = nullptr;
+    ce::ddraw_present_policy::Rect backdropRegion = {};
+    bool backdropValid = false;
+
     // D3D11 for shared texture
     ID3D11Device* d3d11Device = nullptr;
     ID3D11DeviceContext* d3d11Context = nullptr;
@@ -609,7 +614,7 @@ public:
 
     // Surface info
     IDirectDrawSurface7* ddrawSurface = nullptr;
-    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureCompositeRegionResources(const ce::ddraw_present_policy::Rect& region);void ReleaseCompositeRegionResources();bool CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureOverlayCompositeDevice();void PublishOverlayAdapterLuidOnce();bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
+    HWND targetHwnd = NULL;void ReleaseOverlayResources();void Cleanup() override;bool CleanupDDraw(bool force = false);void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;bool CreateD3D11Device();bool CreateStagingTexture();bool CreateSharedTextures();bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureCompositeRegionResources(const ce::ddraw_present_policy::Rect& region);void InvalidateCompositeBackdrop();void SaveCompositeBackdrop(IDirect3DSurface9* staging, IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool UploadStagedRegionToOverlayBackbuffer(IDirect3DSurface9* staging, const ce::ddraw_present_policy::Rect& region);void ReleaseCompositeRegionResources();bool CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const ce::ddraw_present_policy::Rect& region);bool EnsureOverlayDevice(HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool EnsureOverlayCompositeDevice();void PublishOverlayAdapterLuidOnce();bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);bool PresentOverlay();bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);void CaptureFrame(void* bits, int pitch);
 
     // Capture via GetDC for surfaces that don't support Lock
 void CaptureFrameViaGDI(IDirectDrawSurface7* surface);

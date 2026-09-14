@@ -233,43 +233,43 @@ TEST(DDrawPresentPolicyTest, NoBackendLoadedRendersNothingOnEitherRoute) {
 }
 
 // ============================================================================
-// Scanout writes on a flip chain - drawing the next flip replaces, or the
-// presentation itself once the chain has stopped flipping.
+// Composite backdrop - the overlay must never be blended over itself.
 // ============================================================================
 
-TEST(DDrawPresentPolicyTest, ASingleBufferedScanoutWriteIsAlwaysThePresentation) {
-    // Nothing else publishes that surface, so every write to it is the frame.
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/false, 1));
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(false, 0));
+TEST(DDrawPresentPolicyTest, AFreshBackdropIsReadFromTheSurface) {
+    // Nothing saved yet: the composite has to read the application's pixels.
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(/*haveBackdrop=*/false, /*sameSurface=*/true,
+                                                     /*sameRegion=*/true, policy::PresentKind::DirectScanout));
 }
 
-TEST(DDrawPresentPolicyTest, TheFirstFrontBufferWriteAfterAFlipIsDrawing) {
-    // Gothic II writes its front buffer about eleven times a second while
-    // flipping eighty-six times a second. Compositing on those writes puts the
-    // overlay into the surface the display is scanning out, for a frame the
-    // next flip immediately replaces - which is what was left flickering.
-    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/true, 1));
+TEST(DDrawPresentPolicyTest, ARepeatWriteIntoTheSameSurfaceReusesTheSavedBackdrop) {
+    // This is the strobe: the composite is a read-modify-write, so a second
+    // composite into a surface nothing republished would read back its own
+    // previous output and blend the translucent overlay over itself. Gothic II
+    // writes its front buffer about ten times per flip during the intro logos.
+    EXPECT_TRUE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout));
 }
 
-TEST(DDrawPresentPolicyTest, WritesThatPileUpWithoutAFlipAreThePresentation) {
-    // A loading screen: the 3D scene is not running, nothing flips, and the
-    // writes are what the screen shows.
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, policy::kScanoutWritesWithoutFlipThreshold));
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, policy::kScanoutWritesWithoutFlipThreshold + 40));
+TEST(DDrawPresentPolicyTest, ABlitPresentAlsoBringsCleanPixels) {
+    // The blit overwrites its destination from a source the application just
+    // produced, so a backdrop saved earlier does not describe it.
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::BlitPresent));
 }
 
-TEST(DDrawPresentPolicyTest, AFlipResettingTheRunReturnsWritesToDrawing) {
-    // Modelled the way the hook maintains it: a flip resets the run to zero and
-    // the next write starts a new one.
-    uint32_t writesSinceFlip = 12;
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, writesSinceFlip));
-    writesSinceFlip = 0;  // a flip happened
-    ++writesSinceFlip;
-    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(true, writesSinceFlip));
+TEST(DDrawPresentPolicyTest, AFlipAlwaysReadsTheFreshlyRenderedImage) {
+    // A flip publishes what the application just rendered, so anything saved
+    // for that surface is stale by construction.
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::FlipChain));
 }
 
-TEST(DDrawPresentPolicyTest, TheThresholdIsReachedOnTheSecondUnansweredWrite) {
-    EXPECT_EQ(policy::kScanoutWritesWithoutFlipThreshold, 2u);
-    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(true, 1));
-    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, 2));
+TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherSurfaceIsNotReused) {
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, /*sameSurface=*/false, true,
+                                                     policy::PresentKind::DirectScanout));
+}
+
+TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherRectangleIsNotReused) {
+    // The overlay grew or shrank, so the saved pixels do not cover what the
+    // composite is about to blend over.
+    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, /*sameRegion=*/false,
+                                                     policy::PresentKind::DirectScanout));
 }

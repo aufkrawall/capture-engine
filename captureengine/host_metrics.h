@@ -34,6 +34,12 @@ struct HostMetricsState {
 
     // VRAM PDH (Usage only - Total counter doesn't exist on all systems)
     bool vramPdhInitialized = false;
+    // The per-process VRAM counter instance vanishes for a poll or two when a
+    // process goes briefly idle; the last reading is held across a bounded run
+    // of absences so the overlay row does not flap at the poll rate.
+    uint64_t lastVramUsedBytes = 0;
+    uint32_t vramUsageMissingSamples = 0;
+    bool haveVramUsedBytes = false;
     PDH_HQUERY vramQuery = nullptr;
     PDH_HCOUNTER vramCounter = nullptr;  // Dedicated Usage
 

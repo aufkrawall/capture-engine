@@ -134,26 +134,32 @@ inline CompositeTarget SelectCompositeTarget(PresentKind kind, bool havePresentS
     return CompositeTarget::None;
 }
 
-// How many writes into a flip chain's front buffer have to pile up with no Flip
-// in between before those writes are what the screen is showing. Two: the first
-// one after a flip is drawing the next flip will replace, the second says the
-// chain has stopped flipping.
-inline constexpr uint32_t kScanoutWritesWithoutFlipThreshold = 2;
-
-// A write into the *front* buffer of a flip chain is not a presentation while
-// the chain is still being flipped. The next Flip replaces it, so compositing
-// there achieves nothing except writing the surface the display is scanning out
-// - which tears the overlay in and back out again. Gothic II does about eleven
-// such writes a second during gameplay while flipping eighty-six times a
-// second, and that is what was left flickering after the flip path was correct.
+// The composite is a read-modify-write: it reads the target's pixels, blends
+// the overlay over them and writes the result back. That is only correct while
+// the pixels it reads are the application's - if the region still holds a
+// previous composite, the overlay is blended over itself, and a translucent
+// overlay darkens a little more with every repetition.
 //
-// It becomes the presentation exactly when the chain stops flipping, which is
-// what a loading screen is: writes accumulate and nothing resets them.
-inline bool ScanoutWriteIsPresentation(bool destOwnsFlipChain, uint32_t scanoutWritesSinceFlip,
-                                       uint32_t threshold = kScanoutWritesWithoutFlipThreshold) {
-    if (!destOwnsFlipChain)
-        return true;
-    return scanoutWritesSinceFlip >= threshold;
+// A flip publishes a freshly rendered image, so the region read after one is
+// always clean. Consecutive writes into the same scanout surface with no flip
+// between them are not: the application may have changed only part of the
+// surface and left the overlay's own pixels in place. Gothic II does both - it
+// flips 86 times a second and writes its front buffer 11 times a second during
+// gameplay, and during the intro logos the ratio inverts to about ten writes
+// per flip - which is what was left strobing.
+//
+// So the clean pixels are kept: read once for a given surface and rectangle,
+// reused for every repeat composite into the same place, and thrown away as
+// soon as a flip publishes a new image.
+inline bool CompositeBackdropIsReusable(bool haveBackdrop, bool sameSurface, bool sameRegion,
+                                        PresentKind kind) {
+    if (!haveBackdrop || !sameSurface || !sameRegion)
+        return false;
+    // Only a direct write into a surface that keeps the rest of its contents
+    // can still be carrying a previous composite. A flip publishes what the
+    // application just rendered and a blit-present overwrites its destination
+    // from a source, so both bring pixels that are clean by construction.
+    return kind == PresentKind::DirectScanout;
 }
 
 // A direct-scanout update only needs the overlay restored when it actually
