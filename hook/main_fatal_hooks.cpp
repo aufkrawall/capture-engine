@@ -208,9 +208,11 @@ int __cdecl HookedPurecall() {
 
 void TryInstallFatalTerminationDumpHooks() {
   std::call_once(g_FatalTerminationDumpHookOnce, []() {
-    // Resolve the executable's bounds here, not on the termination path, where
-    // the loader lock may already be held by the teardown in progress.
-    CachePrimaryModuleBoundsForTerminationOrigin();
+    // Resolve the bounds of the executable, of CE's own image and of the modules
+    // a termination request is forwarded through here, not on the termination
+    // path, where the loader lock may already be held by the teardown in
+    // progress.
+    CacheTerminationOriginModuleBounds();
     bool patchedAny = false;
     auto patchRaise = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;

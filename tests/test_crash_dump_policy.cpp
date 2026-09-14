@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 
 #include "../common/crash_dump_policy.h"
 #include "../common/cpp_exception_message.h"
@@ -190,6 +191,94 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpSkipsAnApplicationTerminatingItself)
     EXPECT_TRUE(
         policy::ShouldCapturePreTerminationDump(true, 1, false, true, policy::TerminationOrigin::kLoadedModule));
     EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true, policy::TerminationOrigin::kUnknown));
+}
+
+// Portal RTX session 20260914_130052: the same quit produced both decisions.
+// NvRemixBridge.exe called TerminateProcess(1) from its own image, CE's
+// TerminateProcess hook resolved kPrimaryModule and correctly suppressed the
+// dump - and then KERNELBASE's own implementation called NtTerminateProcess,
+// where CE's second hook saw KERNELBASE as the caller, called the request a
+// loaded-module one, and wrote the 183 MB dump the first hook had just refused.
+// A request is attributed to the frame that made it, never to the layer
+// carrying it down.
+TEST(CrashDumpPolicyTest, LayeredTerminationRequestIsAttributedToItsRequester) {
+    using Kind = policy::TerminationFrameKind;
+    const Kind portalRtxNtTerminateProcess[] = {
+        Kind::kCaptureEngine,        // HookedNtTerminateProcess
+        Kind::kCaptureEngine,        // CapturePreTerminationDumpIfNeeded
+        Kind::kTerminationPlumbing,  // KERNELBASE!TerminateProcess
+        Kind::kPrimaryModule,        // NvRemixBridge.exe - the requester
+        Kind::kTerminationPlumbing,  // ntdll thread start
+    };
+    size_t requesterFrame = 0;
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(portalRtxNtTerminateProcess,
+                                                         std::size(portalRtxNtTerminateProcess), &requesterFrame),
+              policy::TerminationOrigin::kPrimaryModule);
+    EXPECT_EQ(requesterFrame, 3u);
+
+    // The outermost hook of that same request sees the requester directly, and
+    // both layers must therefore agree.
+    const Kind portalRtxTerminateProcess[] = {Kind::kCaptureEngine, Kind::kPrimaryModule};
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(portalRtxTerminateProcess,
+                                                         std::size(portalRtxTerminateProcess)),
+              policy::TerminationOrigin::kPrimaryModule);
+}
+
+// Everything the FG fallback exists for still reaches the dump: a runtime that
+// ends the process while tearing down is found behind the same plumbing.
+TEST(CrashDumpPolicyTest, LayeredTerminationRequestFromALoadedModuleStillDumps) {
+    using Kind = policy::TerminationFrameKind;
+    const Kind frames[] = {Kind::kCaptureEngine, Kind::kTerminationPlumbing, Kind::kOtherModule,
+                           Kind::kPrimaryModule};
+    size_t requesterFrame = 0;
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(frames, std::size(frames), &requesterFrame),
+              policy::TerminationOrigin::kLoadedModule);
+    EXPECT_EQ(requesterFrame, 2u);
+}
+
+// The classifier fails open in every direction it cannot prove: an
+// unattributable frame stops the walk rather than letting the search run past
+// it to a module that did not make the request, a stack of nothing but carrying
+// layers attributes nothing, and neither can suppress a dump.
+TEST(CrashDumpPolicyTest, UnattributableTerminationRequestResolvesToUnknown) {
+    using Kind = policy::TerminationFrameKind;
+    const Kind opaqueFrame[] = {Kind::kCaptureEngine, Kind::kTerminationPlumbing, Kind::kUnresolved,
+                                Kind::kPrimaryModule};
+    size_t requesterFrame = 0;
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(opaqueFrame, std::size(opaqueFrame), &requesterFrame),
+              policy::TerminationOrigin::kUnknown);
+    EXPECT_EQ(requesterFrame, std::size(opaqueFrame));
+
+    const Kind plumbingOnly[] = {Kind::kCaptureEngine, Kind::kTerminationPlumbing, Kind::kTerminationPlumbing};
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(plumbingOnly, std::size(plumbingOnly)),
+              policy::TerminationOrigin::kUnknown);
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(plumbingOnly, 0), policy::TerminationOrigin::kUnknown);
+    EXPECT_EQ(policy::ResolveTerminationOriginFromFrames(nullptr, 4), policy::TerminationOrigin::kUnknown);
+
+    // kUnknown is the answer that still dumps, so an unattributable request is
+    // never quietly dropped.
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true, policy::TerminationOrigin::kUnknown));
+}
+
+// Only the modules that forward a termination request into one another count as
+// plumbing. The list must stay narrow: NVIDIA's FG runtimes are loaded from the
+// DriverStore under the Windows directory, and an FG runtime killing the
+// process during teardown is exactly what the fallback exists to capture.
+TEST(CrashDumpPolicyTest, OnlyTerminationForwardersCountAsPlumbing) {
+    EXPECT_TRUE(policy::IsTerminationPlumbingModuleName("ntdll.dll"));
+    EXPECT_TRUE(policy::IsTerminationPlumbingModuleName("KERNELBASE.dll"));
+    EXPECT_TRUE(policy::IsTerminationPlumbingModuleName("KERNEL32.DLL"));
+    EXPECT_TRUE(policy::IsTerminationPlumbingModuleName("ucrtbase.dll"));
+    EXPECT_TRUE(policy::IsTerminationPlumbingModuleName("msvcrt.dll"));
+
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("nvngx_dlssg.dll"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("sl.interposer.dll"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("amd_fidelityfx_dx12.dll"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("NvRemixBridge.exe"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("ntdll.dll.bak"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName("ntdll"));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName(""));
+    EXPECT_FALSE(policy::IsTerminationPlumbingModuleName(nullptr));
 }
 
 // The origin only ever gates the frame-generation fallback. A crash-like exit

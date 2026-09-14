@@ -316,8 +316,11 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
 // The frame-generation fallback may only be suppressed on evidence the policy
 // can trust, and that evidence has to be gathered without touching the loader
 // on the termination path: whatever is tearing the process down may already
-// hold the loader lock. The executable's bounds are therefore cached while the
-// hooks are installed, and the decision is a plain range check.
+// hold the loader lock, and NtTerminateProcess is reached from
+// RtlExitUserProcess with that lock held by the terminating thread itself. The
+// bounds of every module the path has to tell apart - the executable, CE's own
+// image, and the layers a request is forwarded through - are therefore cached
+// while the hooks are installed, and every decision is a plain range check.
 TEST(CrashHandlerSourceTest, TerminationOriginIsCachedAtInstallAndResolvedWithoutTheLoader) {
     const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
@@ -325,20 +328,67 @@ TEST(CrashHandlerSourceTest, TerminationOriginIsCachedAtInstallAndResolvedWithou
 
     const size_t bootstrap = contents.find("void TryInstallFatalTerminationDumpHooks()");
     ASSERT_NE(bootstrap, std::string::npos);
-    const size_t cacheCall = contents.find("CachePrimaryModuleBoundsForTerminationOrigin();", bootstrap);
+    const size_t cacheCall = contents.find("CacheTerminationOriginModuleBounds();", bootstrap);
     ASSERT_NE(cacheCall, std::string::npos);
 
-    const size_t resolver = contents.find(
-        "ce::crash_dump_policy::TerminationOrigin ResolveTerminationOrigin(const void* callerAddress) {");
+    const size_t classifier =
+        contents.find("ce::crash_dump_policy::TerminationFrameKind ClassifyTerminationFrame(const void* address) {");
+    ASSERT_NE(classifier, std::string::npos);
+    const size_t classifierEnd = contents.find("\n}\n", classifier);
+    ASSERT_NE(classifierEnd, std::string::npos);
+    const std::string classifierBody = contents.substr(classifier, classifierEnd - classifier);
+    EXPECT_NE(classifierBody.find("g_PrimaryModuleBase"), std::string::npos);
+    EXPECT_NE(classifierBody.find("g_PrimaryModuleSize"), std::string::npos);
+    EXPECT_NE(classifierBody.find("g_CaptureEngineModuleRange"), std::string::npos);
+    EXPECT_NE(classifierBody.find("g_TerminationPlumbingRanges"), std::string::npos);
+
+    // Anchor on the definition, not on the declaration that precedes it in the
+    // logical unit's internal header.
+    const size_t resolver = contents.find("const void** requesterAddress) {");
     ASSERT_NE(resolver, std::string::npos);
     const size_t resolverEnd = contents.find("\n}\n", resolver);
     ASSERT_NE(resolverEnd, std::string::npos);
     const std::string resolverBody = contents.substr(resolver, resolverEnd - resolver);
     EXPECT_NE(resolverBody.find("g_PrimaryModuleBase.load"), std::string::npos);
     EXPECT_NE(resolverBody.find("g_PrimaryModuleSize.load"), std::string::npos);
-    EXPECT_EQ(resolverBody.find("GetModuleHandle"), std::string::npos);
-    EXPECT_EQ(resolverBody.find("LoadLibrary"), std::string::npos);
-    EXPECT_EQ(resolverBody.find("EnumProcessModules"), std::string::npos);
+
+    for (const std::string& body : {classifierBody, resolverBody}) {
+        EXPECT_EQ(body.find("GetModuleHandle"), std::string::npos);
+        EXPECT_EQ(body.find("LoadLibrary"), std::string::npos);
+        EXPECT_EQ(body.find("EnumProcessModules"), std::string::npos);
+    }
+}
+
+// A termination request passes through several hooked layers on one thread, and
+// only the outermost is called by the module that made it. Portal RTX session
+// 20260914_130052: the TerminateProcess hook suppressed the dump for
+// NvRemixBridge.exe terminating itself, then the NtTerminateProcess hook - whose
+// caller is KERNELBASE - captured the 183 MB dump the first hook had refused. So
+// when the immediate caller only carries the request, the resolver walks the
+// stack for the frame that actually made it.
+TEST(CrashHandlerSourceTest, LayeredTerminationRequestIsAttributedByWalkingTheStack) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::string contents = ReadSourceFile(source);
+    ASSERT_FALSE(contents.empty());
+
+    // Anchor on the definition, not on the declaration that precedes it in the
+    // logical unit's internal header.
+    const size_t resolver = contents.find("const void** requesterAddress) {");
+    ASSERT_NE(resolver, std::string::npos);
+    const size_t resolverEnd = contents.find("\n}\n", resolver);
+    ASSERT_NE(resolverEnd, std::string::npos);
+    const std::string resolverBody = contents.substr(resolver, resolverEnd - resolver);
+
+    // The plumbing layers are the only ones that trigger the walk; a caller the
+    // classifier can attribute directly is answered without one.
+    EXPECT_NE(resolverBody.find("kTerminationPlumbing"), std::string::npos);
+    EXPECT_NE(resolverBody.find("RtlCaptureStackBackTrace"), std::string::npos);
+    EXPECT_NE(resolverBody.find("ce::crash_dump_policy::ResolveTerminationOriginFromFrames"), std::string::npos);
+
+    const size_t directAnswer = resolverBody.find("case Kind::kPrimaryModule:");
+    const size_t walk = resolverBody.find("RtlCaptureStackBackTrace");
+    ASSERT_NE(directAnswer, std::string::npos);
+    EXPECT_LT(directAnswer, walk);
 }
 
 // An unresolved origin must never suppress a dump, and a suppressed one must
@@ -351,10 +401,11 @@ TEST(CrashHandlerSourceTest, PreTerminationDumpResolvesOriginBeforeDecidingAndLo
 
     const size_t entry = contents.find("bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode,");
     ASSERT_NE(entry, std::string::npos);
-    const size_t originResolved = contents.find("ResolveTerminationOrigin(callerAddress)", entry);
+    const size_t originResolved =
+        contents.find("ResolveTerminationOrigin(callerAddress, &terminationRequester)", entry);
     const size_t policyCall = contents.find("ce::crash_dump_policy::ShouldCapturePreTerminationDump(", entry);
-    const size_t suppressionLog = contents.find("LogSuppressedPreTerminationDump(source, exitCode, callerAddress)",
-                                                entry);
+    const size_t suppressionLog = contents.find(
+        "LogSuppressedPreTerminationDump(source, exitCode, callerAddress, terminationRequester)", entry);
     ASSERT_NE(originResolved, std::string::npos);
     ASSERT_NE(policyCall, std::string::npos);
     ASSERT_NE(suppressionLog, std::string::npos);

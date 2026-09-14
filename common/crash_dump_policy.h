@@ -76,6 +76,19 @@ inline bool EndsWithAsciiInsensitive(const char* value, const char* suffix) {
     return true;
 }
 
+inline bool EqualsAsciiInsensitive(const char* value, const char* other) {
+    if (!value || !other) {
+        return false;
+    }
+    size_t i = 0;
+    for (; value[i] != '\0' && other[i] != '\0'; ++i) {
+        if (ToLowerAscii(value[i]) != ToLowerAscii(other[i])) {
+            return false;
+        }
+    }
+    return value[i] == '\0' && other[i] == '\0';
+}
+
 inline bool ContainsAsciiInsensitive(const char* value, const char* needle) {
     if (!value || !needle) {
         return false;
@@ -329,6 +342,77 @@ enum class TerminationOrigin : uint8_t {
     kPrimaryModule,
     kLoadedModule,
 };
+
+// Windows reaches a single termination request through several layers that
+// forward into one another, and CE hooks each of them separately: the
+// application calls TerminateProcess and KERNELBASE calls NtTerminateProcess;
+// exit() calls ExitProcess, which calls RtlExitUserProcess, which calls
+// NtTerminateProcess. Only the outermost layer still sees the requester as its
+// immediate caller - every layer below it is called by a Windows module, so
+// classifying by that caller alone reports the plumbing instead of the
+// requester. These are the modules that merely carry a request. The list stays
+// deliberately narrow rather than covering the Windows directory wholesale,
+// because plenty of modules that live there - the DriverStore copies of the
+// NVIDIA FG runtimes among them - can legitimately be what ends the process.
+inline constexpr const char* kTerminationPlumbingModuleNames[] = {
+    "ntdll.dll",     "kernel32.dll", "kernelbase.dll",   "ucrtbase.dll",
+    "ucrtbased.dll", "msvcrt.dll",   "vcruntime140.dll", "vcruntime140d.dll",
+};
+
+inline constexpr size_t kTerminationPlumbingModuleCount =
+    sizeof(kTerminationPlumbingModuleNames) / sizeof(kTerminationPlumbingModuleNames[0]);
+
+inline bool IsTerminationPlumbingModuleName(const char* moduleBaseName) {
+    if (!moduleBaseName || moduleBaseName[0] == '\0') {
+        return false;
+    }
+    for (size_t i = 0; i < kTerminationPlumbingModuleCount; ++i) {
+        if (EqualsAsciiInsensitive(moduleBaseName, kTerminationPlumbingModuleNames[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// What a single stack frame on a termination path is, for attributing the
+// request to the module that actually made it.
+enum class TerminationFrameKind : uint8_t {
+    kUnresolved = 0,       // no known module covers the frame
+    kCaptureEngine,        // CE's own hook wrapper
+    kTerminationPlumbing,  // a Windows layer carrying the request
+    kPrimaryModule,        // the process's own executable
+    kOtherModule,          // any other loaded module
+};
+
+// Frames are innermost-first, the order RtlCaptureStackBackTrace returns them
+// in. The first frame that is neither CE's own hook nor a carrying layer is the
+// module that asked for the termination. An unresolvable frame stops the walk:
+// the request cannot be attributed past it, and kUnknown never suppresses.
+inline TerminationOrigin ResolveTerminationOriginFromFrames(const TerminationFrameKind* frames, size_t frameCount,
+                                                            size_t* requesterFrameIndex = nullptr) {
+    if (requesterFrameIndex) {
+        *requesterFrameIndex = frameCount;
+    }
+    if (!frames) {
+        return TerminationOrigin::kUnknown;
+    }
+
+    for (size_t i = 0; i < frameCount; ++i) {
+        if (frames[i] == TerminationFrameKind::kCaptureEngine ||
+            frames[i] == TerminationFrameKind::kTerminationPlumbing) {
+            continue;
+        }
+        if (frames[i] == TerminationFrameKind::kUnresolved) {
+            return TerminationOrigin::kUnknown;
+        }
+        if (requesterFrameIndex) {
+            *requesterFrameIndex = i;
+        }
+        return frames[i] == TerminationFrameKind::kPrimaryModule ? TerminationOrigin::kPrimaryModule
+                                                                 : TerminationOrigin::kLoadedModule;
+    }
+    return TerminationOrigin::kUnknown;
+}
 
 inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
                                             bool frameGenerationRuntimeActiveOrRecent = false,

@@ -1,5 +1,53 @@
 # llm-wiki Log
 
+### 2026-09-14 - The 183 MB Portal RTX exit dump: one termination, two verdicts
+
+Session `20260914_130052`, `crash_external_fatal_exit_NtTerminateProcess_00000001_4bae8a0c.dmp`, 183 MB, for a
+clean quit. `hook_debug.log` holds both decisions one millisecond apart:
+
+```
+13:02:26.900 FatalExitDump: Skipping pre-termination dump - ... (source=TerminateProcess code=0x00000001
+             caller=00007FF7A88B0D6B module=...\NvRemixBridge.exe+0x10D6B fgRuntimeActiveOrRecent=1)
+13:02:26.900 FatalExitDump: Capturing pre-termination dump ... (source=NtTerminateProcess code=0x00000001
+             exceptionAddr=00007FF9C0830159 crashLike=0 fgRuntimeActiveOrRecent=1 origin=loaded-module)
+```
+
+The logged stack of the second decision names the requester outright: `stack[2]=KERNELBASE.dll+0x100159`,
+`stack[3]=NvRemixBridge.exe+0x10D6B`. The 2026-09-02 primary-module rule worked exactly as designed at the
+`TerminateProcess` layer and then lost, at the `NtTerminateProcess` layer, the one fact it depends on. A single
+termination request is observed by every hook it passes through on one thread, and below the outermost layer the
+immediate caller is always a Windows module — so `ResolveTerminationOrigin(callerAddress)` reported the plumbing,
+not the requester, and the suppression path (which deliberately does not set `g_PreTerminationDumpAttempted`, so it
+cannot burn the one-dump budget) gave the inner layer a second, worse-informed chance.
+
+Fix (0.1.6565): frames, not the immediate caller. `ce::crash_dump_policy::ResolveTerminationOriginFromFrames`
+walks innermost-first, skipping CE's own hook frames and the forwarding layers
+(`kTerminationPlumbingModuleNames`: ntdll, kernel32, KERNELBASE, ucrtbase, msvcrt, vcruntime140), and takes the
+first frame that is neither. `ResolveTerminationOrigin` only pays for that walk when the immediate caller is one of
+those layers; a caller it can attribute directly is still answered without a stack walk. Classification stays a
+pure range check against bounds cached by `CacheTerminationOriginModuleBounds()` at hook-install time — now the
+executable, CE's own image and each plumbing module — because `NtTerminateProcess` is also reached from
+`RtlExitUserProcess` with the loader lock already held by the terminating thread.
+
+Deliberately narrow: the plumbing list is module names, not "anything under the Windows directory". NVIDIA's FG
+runtimes load from the DriverStore under `C:\Windows`, and an FG runtime killing the process while tearing down is
+the entire reason the active-FG fallback exists. Everything unprovable still dumps — an unresolvable frame stops
+the walk at `kUnknown`, a stack of nothing but forwarding layers resolves to `kUnknown`, and `kUnknown` never
+suppresses. Crash-like exit codes never consult the origin at all.
+
+Both log lines now carry `requester=`/`requesterModule=` next to the immediate caller, so a future false positive
+of this shape is one line to diagnose instead of a stack dump to read.
+
+Tests: `CrashDumpPolicyTest.LayeredTerminationRequestIsAttributedToItsRequester` encodes the exact frame layout
+from this session; `LayeredTerminationRequestFromALoadedModuleStillDumps`,
+`UnattributableTerminationRequestResolvesToUnknown` and `OnlyTerminationForwardersCountAsPlumbing` cover the
+fail-open directions. `CrashHandlerSourceTest.LayeredTerminationRequestIsAttributedByWalkingTheStack` holds the
+resolver to the walk, and `TerminationOriginIsCachedAtInstallAndResolvedWithoutTheLoader` now covers the
+classifier as well as the resolver for the no-loader invariant.
+
+**Hardware run pending**: a Portal RTX quit should log the suppression line with
+`requesterModule=...NvRemixBridge.exe` and produce **no** `crash_external_fatal_exit_NtTerminateProcess_*.dmp`.
+
 ### 2026-09-14 - DOOM Eternal black window again: the overlay's present semaphores outlived nothing
 
 Session `20260914_122133`, build 0.1.6561, black window, no crash. Same shape as `20260913_174040`
