@@ -414,6 +414,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         activeDebugSample->metricsUpdateUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - metricsUpdateStartUs);
     }
 
+    // The application's own present stream, which is what the interposer's output chain is
+    // measured against. Noted before the forward so the window closes on this frame's numbers.
+    if (m_PresentInvisibleToDetourHook) {
+        DXGIShared::NoteApplicationPresentUnderPresentInterposer();
+    }
+
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
     if (!fgActive) {

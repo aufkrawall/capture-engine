@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 740,
+    "entries": 742,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -364,6 +364,7 @@
       "hook/common/perf_logger.cpp",
       "hook/common/performance_metrics.cpp",
       "hook/common/present_callback_association.cpp",
+      "hook/common/present_interposer_tracking.cpp",
       "hook/common/screenshot_hook.cpp",
       "hook/common/screenshot_worker.cpp",
       "hook/common/swapchain_liveness.cpp",
@@ -703,6 +704,7 @@
       "tests/test_pawnio_setup.cpp",
       "tests/test_performance_metrics.cpp",
       "tests/test_present_callback_association.cpp",
+      "tests/test_present_interposer_cadence.cpp",
       "tests/test_present_pacing_policy.cpp",
       "tests/test_process_identity.cpp",
       "tests/test_process_ipc.cpp",

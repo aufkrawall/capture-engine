@@ -23,6 +23,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     ce::vulkan_dxgi_fifo::ApplyFinalPresentPolicy(pSwapChain, SyncInterval, Flags,
                                                   ce::vulkan_dxgi_fifo::FinalPresentVariant::kPresent1);
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+    // See DetourPresent: counted before every early return below.
+    NotePresentInterposerOutputPresent(pSwapChain);
 
     const APIType api = DetectAPIType(pSwapChain);
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {

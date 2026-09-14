@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "fg_runtime_state.h"
+#include "present_interposer_cadence.h"
 
 // Forward declaration for HookLog
 void HookLog(const char* fmt, ...);
@@ -52,7 +53,8 @@ public:
     int GetFGMultiplier() const {
         const auto runtimeMode = GetRuntimeMode();
         if (runtimeMode == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
-            return 2;
+            const int measured = nvidiaSMMeasuredMultiplier.load(std::memory_order_acquire);
+            return measured >= 2 ? measured : 2;
         }
         if (runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG) {
             const int fsrMultiplier = fsrFGMultiplier.load(std::memory_order_acquire);
@@ -70,6 +72,13 @@ public:
 
     // FPS metrics
     float GetOutputFPS() const {
+        // Under a present interposer the frame history only holds the application's presents, so
+        // the cached rate is the BASE rate. The output rate is the one measured on the
+        // interposer's private chain.
+        const float interposerOutput = nvidiaSMMeasuredOutputFps.load(std::memory_order_acquire);
+        if (interposerOutput > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
+            return interposerOutput;
+        }
         return cachedOutputFPS.load();
     }
     float GetBaseFPS() const {
@@ -78,6 +87,10 @@ public:
         // ECL-count-based cachedBaseFPS for DLSS FG (where our ECL hook counts
         // ALL queues including Streamline's internal FG queue).  For heuristic
         // FSR FG, cachedMultiplier from pattern analysis provides the multiplier.
+        const float interposerApplication = nvidiaSMMeasuredApplicationFps.load(std::memory_order_acquire);
+        if (interposerApplication > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
+            return interposerApplication;
+        }
         const int mult = GetFGMultiplier();
         if (mult >= 2) {
             float output = cachedOutputFPS.load();
@@ -121,6 +134,12 @@ public:
         return nvidiaSmoothMotionDetected.load(std::memory_order_acquire);
     }
     void DetectNvidiaSmoothMotion();
+
+    // Structural Smooth Motion evidence: the measured ratio between the present interposer's
+    // private output chain and the application's own present stream. In DX12 this is the only
+    // evidence there is — the application presents once per rendered frame however many frames
+    // the driver generates, so the command-list and present-gap heuristics below never fire.
+    void NotePresentInterposerCadence(const ce::present_interposer::CadenceVerdict& verdict);
 
     // NvPresent64.dll module detection (driver-level Smooth Motion)
     bool IsNvPresentLoaded() {
@@ -248,6 +267,10 @@ private:
     std::atomic<bool> streamlineSupportPresent{false};
     std::atomic<bool> fsrSupportPresent{false};
     std::atomic<bool> nvidiaSmoothMotionDetected{false};
+    // Measured from the interposer's two present streams; 0 until a window closes.
+    std::atomic<int> nvidiaSMMeasuredMultiplier{0};
+    std::atomic<float> nvidiaSMMeasuredOutputFps{0.0f};
+    std::atomic<float> nvidiaSMMeasuredApplicationFps{0.0f};
 
     // Direct signal from Streamline hook — set IMMEDIATELY when
     // slDLSSGSetOptions transitions FG on/off.  Faster than heuristic.

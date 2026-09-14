@@ -155,7 +155,10 @@ anchors that predate the split are approximate.
     `ngx_feature_lifecycle.h`), `dxgi_shared*.cpp` (central Present routing: hooks,
     hooks_present = entry/body inline-hook install and the leave-entry decision,
     hooks_present_vtable = swapchain vtable-slot ownership/repair/teardown, present,
-    present1, routing, steam, resize, original), `fg_session_state*.cpp`
+    present1, routing, steam, resize, original),
+    `present_interposer_cadence.h` + `present_interposer_tracking.cpp` (NVIDIA Smooth Motion:
+    the interposer's private output chain measured against the application's present stream
+    - see `present-interposers.md`), `fg_session_state*.cpp`
     (state core + names + log units), `custom_overlay_*.cpp` (per-backend + internal
     headers + render units), `overlay_adapter*.cpp` (adapter + render + render_frame),
     `custom_overlay_dx12_{render,inline_upload,retirement}.cpp` (callback draw recording, GPU-completed upload slots,

@@ -32,7 +32,7 @@ Primary sources:
 - For build and tooling questions, read `build.py.md` and `codestyle.md`.
 - Streamline API generation (1.x vs 2.x) is an ABI precondition for hooking `slSetTag`/`slEvaluateFeature` and for `streamline_dll_path`; see `frame-generation/guardrails.md`.
 - `streamline_upgrade` runs a 2.x runtime inside a 1.x game (DLSS-G on SL1 titles). `frame-generation/streamline-generation-bridge.md` carries the **measured 1.x ABI** - function signatures, feature values, and the `Constants` / `Resource` / `DLSSConstants` / `DLSSSettings` / `DLSSGConstants` layouts - which exists in no public source and cannot be re-derived from documentation. Read it before touching anything 1.x-shaped.
-- For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
+- For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `present-interposers.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
 - `configuration.md`
@@ -82,7 +82,9 @@ Primary sources:
 - `vulkan-fg-switch-test.md`
   - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`
-  - Current visible FG status publication rules across DX11, DX12, and Vulkan, including early capability-clamped publication of a configured MFG factor, NVIDIA Smooth Motion, and authoritative first-confirmed Reflex-driven Streamline suspend edges. Last verified 2026-09-01.
+  - Current visible FG status publication rules across DX11, DX12, and Vulkan, including early capability-clamped publication of a configured MFG factor, NVIDIA Smooth Motion, and authoritative first-confirmed Reflex-driven Streamline suspend edges. Last verified 2026-09-14.
+- `present-interposers.md`
+  - NVIDIA Smooth Motion and anything else that replaces DXGI for the application: the proxy-swapchain/private-output-chain topology, why a `dxgi!Present` body hook is not a view of the application's chain, where CE's overlay goes, how the generation factor is measured from the two present streams, and why forced vsync cannot reach the display. Stale-risk medium (module-name keyed). Last verified 2026-09-14.
 - `debug-tools.md`
   - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`

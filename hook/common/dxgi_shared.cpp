@@ -102,6 +102,8 @@ std::unordered_set<IDXGISwapChain*> s_startupBlockingOverlayTaggedSwapchains;
 
 namespace DXGIShared {
 std::unordered_set<IDXGISwapChain*> s_presentInterposerPrivateSwapchains;
+// Lock-free gate so the present path pays one atomic load when no interposer is in the chain.
+std::atomic<size_t> s_presentInterposerPrivateSwapchainCount{0};
 }
 
 namespace DXGIShared {
@@ -188,6 +190,8 @@ void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) 
 
     std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
     s_presentInterposerPrivateSwapchains.insert(pSwapChain);
+    s_presentInterposerPrivateSwapchainCount.store(s_presentInterposerPrivateSwapchains.size(),
+                                                   std::memory_order_release);
 }
 }
 
@@ -199,12 +203,20 @@ void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain
 
     std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
     s_presentInterposerPrivateSwapchains.erase(pSwapChain);
+    s_presentInterposerPrivateSwapchainCount.store(s_presentInterposerPrivateSwapchains.size(),
+                                                   std::memory_order_release);
+}
+}
+
+namespace DXGIShared {
+bool HasPresentInterposerPrivateSwapchains() {
+    return s_presentInterposerPrivateSwapchainCount.load(std::memory_order_acquire) != 0;
 }
 }
 
 namespace DXGIShared {
 bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain) {
+    if (!pSwapChain || !HasPresentInterposerPrivateSwapchains()) {
         return false;
     }
 

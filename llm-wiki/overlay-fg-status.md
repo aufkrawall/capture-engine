@@ -1,8 +1,10 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-09-01 (PID-scoped Vulkan/DLSS FG publication, shared ABI 53)
+Last cross-checked: 2026-09-14 (Smooth Motion status now comes from the present interposer's output cadence, not from command-list work populations or paired Present gaps; the 2026-07-29 heuristics survive only as the DX11/Vulkan fallback. PID-scoped Vulkan/DLSS FG publication and shared ABI 53 unchanged.)
 
 Primary sources:
+- `hook/common/present_interposer_cadence.h`
+- `hook/common/present_interposer_tracking.cpp`
 - `hook/common/overlay_metrics_publisher.cpp`
 - `hook/common/overlay_metrics_planner_publisher.cpp`
 - `hook/common/overlay_fg_metric_policy.h`
@@ -15,6 +17,7 @@ Primary sources:
 - `common/shared_defs_detail/{capture_state,shared_memory_layout}.h`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
+- `tests/test_present_interposer_cadence.cpp`
 - `tests/{test_streamline_runtime_policy,test_streamline_runtime_policy_part2}.cpp`
 
 ## Scope
@@ -25,6 +28,34 @@ This page records how the current tree publishes visible FG status to the overla
 - `PublishDetectedOverlayFGMetrics()` is the direct-render-path adapter: it snapshots the existing detector's active
   state, runtime mode, output/base FPS, and multiplier, then delegates to the same canonical publisher. It does not
   alter detection or runtime priority.
+### NVIDIA Smooth Motion: the output cadence is the evidence
+- `NvPresent64` is a present interposer, not an in-process FG runtime: it hands the application a proxy swapchain
+  and keeps a private real DXGI chain, on its own command queue, for the interpolated output. See
+  `dx12-overlay-third-party-coexistence.md` for the topology and the device-removal it caused.
+- **The application's present stream is 1x by construction under Smooth Motion.** Every heuristic below - the
+  two-work-population test and the paired-gap test - reads whatever stream `RecordFrame()` is fed, and it is fed
+  from `DX12_ProcessFrame`. Those heuristics only ever reported 2x while CE was processing NvPresent64's PRIVATE
+  output chain, which is exactly what removed the D3D12 device in session `20260914_102700`. Do not "restore" them
+  by putting CE back on that chain.
+- The authoritative DX12 signal is the ratio between the two present streams CE legitimately sees: the interposer's
+  private-chain presents (counted at the top of `DetourPresent`/`DetourPresent1`, before every early return) against
+  the application's presents (counted in `CWrapDXGISwapChain::Present` while that wrapper is CE's only Present view).
+  One second per window, at least 20 application presents, >= 1.5x to count as generating, rounded and clamped to 4x.
+  Session `20260914_105853` measures exactly two private-chain presents per application present.
+- 1:1 forwarding means Smooth Motion is loaded and NOT engaged. It must publish as no frame generation, never as a
+  1x generator.
+- Base and output FPS for Smooth Motion come from those same two measured streams, not from `cachedOutputFPS`: the
+  frame history only holds the application's presents, so the cached rate is the BASE rate and dividing it by the
+  multiplier would halve it.
+- The 2026-07-29 command-work and paired-gap heuristics remain in place for the DX11 and Vulkan paths, where CE has
+  no second stream to measure. `NotePresentInterposerCadence()` cannot override an active in-process FG runtime:
+  DLSS-G and FFX own the swapchain themselves and their presents are not an interposer's output chain.
+- Forced vsync does not reach the display under Smooth Motion. CE applies `vsync_mode` at the interposer's input,
+  the only legitimate place for it, and NvPresent64 does not propagate it - its output presents were observed as
+  `SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`, which is its flip metering. Forcing FIFO on those is the
+  regression already fixed for Portal RTX (`display-change-timing.md`, 2026-09-13). Once Smooth Motion is detected
+  CE takes its normal FG path and stops applying the override; the driver's own V-Sync setting is the control.
+
 - NvPresent module detection disables the FG detector's default dormant mode. This is necessary because Smooth
   Motion has no DLSS/FFX API activation to wake pattern analysis, and its active state requires the existing
   confirmed 2x frame pattern rather than module presence alone. Strange Brigade DX12 session `20260729_182021`

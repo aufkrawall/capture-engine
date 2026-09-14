@@ -51,6 +51,13 @@ This page records the current repo knowledge for making our overlay and capture 
 - Every API detour must test CE runtime eligibility before overlay, capture, screenshot, limiter, override, or mutable state work. Dormant calls forward through the exact predecessor. This rule applies equally to Present/Present1, device wrappers, state/sampler detours, OpenGL swaps/context deletion, and Vulkan queue presentation.
 - Third-party overlay inclusion in a capture is **best effort and order-dependent**. If the foreign overlay draws before CE's capture point, it is included; if it draws later, forcing an extra invocation or reordering its private GPU work is unsafe. Coexistence and visibility take priority: CE must preserve the natural chain and must not hide or disable either overlay merely to force it into the recording.
 
+## Present interposers are a separate class — see `present-interposers.md` (2026-09-14, build 0.1.6555)
+
+NVIDIA Smooth Motion's `NvPresent64` is neither an overlay nor an in-process FG runtime: it hands the application a
+proxy swapchain and keeps a private real DXGI chain on its own queue, so the below-the-chain deep body hook is a view
+of that private chain and never of the application's — "CE has a body view" stops implying coverage. Compositing into
+it removed the device with `DXGI_ERROR_ACCESS_DENIED` (`20260914_102700`). Topology and invariants on that page.
+
 ## RESOLVED: CE must stay out of a Present entry a foreign overlay owns (2026-08-12, builds 0.1.5934 / 0.1.5960)
 
 ### The invariant

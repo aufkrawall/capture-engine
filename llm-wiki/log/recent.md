@@ -1,5 +1,57 @@
 # llm-wiki Log
 
+### 2026-09-14 - NVIDIA Smooth Motion is a present interposer, and CE was overlaying its private chain
+
+Strange Brigade DX12 with driver Smooth Motion crashed on the first frame, session `20260914_102700` (0.1.6550).
+`NvPresent64.dll` does not wrap frame generation inside the application's swapchain the way DLSS-G or FFX do: it
+interposes DXGI itself. The application gets a proxy `IDXGISwapChain` whose whole vtable lives in NvPresent64
+(`vtableSlots(addRef=NvPresent64.dll release=NvPresent64.dll present=NvPresent64.dll resizeBuffers=NvPresent64.dll)`),
+and NvPresent64 keeps a PRIVATE real DXGI swapchain, created on its own command queue, for the interpolated output.
+
+CE's Present view was the deep `dxgi!Present` body hook it takes below a foreign overlay chain (Steam was loaded).
+That body is only ever reached by the interposer's private chain, so:
+
+- CE adopted NvPresent64's swapchain as the game's (`ProcessFrame FIRST CALL (swapchain=00000000224700D0)` while the
+  game held `0000000036316DD0`), built RTVs from its back buffers, and submitted the overlay command list on the
+  GAME's queue `0000000008CC1B00` - a queue with no relationship to that swapchain.
+- The first `ExecuteCommandLists` removed the device: `Reinit SUBMIT #1 ... devRemoved=0x887A002B` =
+  `DXGI_ERROR_ACCESS_DENIED`, then `DXGI: Device removed (hr=0x887A0005)` out of Present. **No TDR in the Windows
+  System log** - a runtime access-denied removal, not a GPU hang. CE then swallowed the application's command lists
+  (its torn-down-driver guard) and the render thread dereferenced null 1.1 s later at
+  `StrangeBrigade_DX12+0x8cdebdc` (`movzx ecx, word ptr [rbp+0Eh]`, `rbp = 0`).
+
+Fixed in 0.1.6555 (`acc543d2`): a present interposer is now its own module class, its private output chain is
+registered at create time and passed through untouched by both Present entries, "a deep body hook covers everything"
+is conditional on the app-facing swapchain's Present actually being the dxgi body CE hooked, and the swapchain
+wrapper stops delegating a Present the detour cannot see. Overlay confirmed working on hardware, session
+`20260914_105853`.
+
+### 2026-09-14 - Smooth Motion status was reading the chain CE should never have been on
+
+Same session. The FG status went to `runtime=Off` under Smooth Motion once CE moved to the application's chain, and
+that is not a regression to undo. The 2026-07-29 detection (`57a374b8`, `8240ddb5`, `bcf664d8`) infers Smooth Motion
+from command-list work populations and paired Present gaps in `RecordFrame`, and its own validation runs say what it
+was measuring: `20260729_183342` logged "56 total frames, 31 high-work frames, 130 output FPS, 72 base FPS" and
+`20260729_184536` logged Present callbacks alternating "about 0.6/13.8 ms". Those are NvPresent64's 2x output
+callbacks. **The application's own present stream is 1x by construction**, so neither heuristic can ever fire from
+it, and both only ever worked while CE was processing the driver's private chain - the same misidentification that
+removed the device.
+
+Replaced in 0.1.6556 with structural evidence: CE counts the interposer's private-chain presents and the
+application's presents and takes the ratio (`hook/common/present_interposer_cadence.h`). Session `20260914_105853`
+measures it exactly - `DetourPresent: ENTRY #1/#2` at `10:59:08.951/.952` for one `Present ENTRY #0`, and so on for
+every frame. 1:1 forwarding reads as Smooth Motion loaded and NOT engaged rather than as a 1x generator. The base
+and output FPS the overlay shows come from the same two measured streams, because the frame history now only holds
+the application's presents. Hardware confirmation of the visible label still pending.
+
+Forced vsync (`vsync_mode=fifo`) is a separate matter and is NOT within CE's reach here. CE applies the override at
+the interposer's input, which is the only place it could legitimately go, and NvPresent64 does not propagate it: its
+private output presents were observed as `SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`. Forcing FIFO on
+those output presents is exactly the metered-generator regression already fixed for Portal RTX on 2026-09-13 - it
+removes the generator's flip scheduling and bunches the pair. With Smooth Motion detected, CE now also takes its
+normal FG path and stops applying the override at all. Use the driver's own V-Sync setting alongside Smooth Motion.
+
+
 ### 2026-09-13 - Validated: forced vsync under DLSS MFG, on the vertical blank
 
 Session `20260913_201259` (0.1.6548) closes the four-round Portal RTX investigation below. `registered live-WSI

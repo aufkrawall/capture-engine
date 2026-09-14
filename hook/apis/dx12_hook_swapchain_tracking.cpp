@@ -364,6 +364,8 @@ if (!pSwapChain) {
 
 DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(pSwapChain);
 DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(pSwapChain);
+// A retired chain leaves a partial measurement window that no longer describes anything.
+DXGIShared::ResetPresentInterposerCadence();
 
 std::lock_guard<std::mutex> hwndLock(dx12_hook_s_hwndSwapchainMutex);
 for (auto it = dx12_hook_s_hwndSwapchainMap.begin(); it != dx12_hook_s_hwndSwapchainMap.end();) {

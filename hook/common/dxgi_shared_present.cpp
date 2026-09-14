@@ -474,6 +474,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     ce::vulkan_dxgi_fifo::ApplyFinalPresentPolicy(pSwapChain, SyncInterval, Flags,
                                                   ce::vulkan_dxgi_fifo::FinalPresentVariant::kPresent);
     g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
+    // Counted before every early return below: a present interposer's output chain is reached
+    // through the wrapper re-entry path, which returns long before the routing decisions.
+    NotePresentInterposerOutputPresent(pSwapChain);
 
     // DIAGNOSTIC: time the WHOLE DetourPresent call. The ECL diagnostic proved the Alt+Tab
     // freeze stall is NOT in ExecuteCommandLists, so it is in the present path. With the

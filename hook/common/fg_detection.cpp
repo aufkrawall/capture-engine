@@ -505,6 +505,33 @@ void FGCompatibility::DetectPattern() {
     // changes. Only explicit competing FG evidence resets the NvPresent epoch.
 }
 
+void FGCompatibility::NotePresentInterposerCadence(const ce::present_interposer::CadenceVerdict& verdict) {
+    nvidiaSMMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
+    nvidiaSMMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
+    nvidiaSMMeasuredMultiplier.store(verdict.generating ? verdict.multiplier : 0, std::memory_order_release);
+
+    // The cadence is the authority for the interposer, but never over a real in-process FG
+    // runtime: DLSS-G and FFX own the swapchain themselves and their presents are not an
+    // interposer's output chain.
+    if (!ce::fg_runtime::CanEvaluateNvidiaSmoothMotionPattern(CaptureDetectionSnapshot())) {
+        return;
+    }
+
+    const bool wasDetected = nvidiaSmoothMotionDetected.exchange(verdict.generating, std::memory_order_acq_rel);
+    if (wasDetected != verdict.generating) {
+        HookLog(
+            "FG: NVIDIA Smooth Motion %s from the present interposer's output cadence "
+            "(multiplier=%d output=%.1f fps application=%.1f fps)",
+            verdict.generating ? "ACTIVE" : "inactive", verdict.multiplier, verdict.outputFps,
+            verdict.applicationFps);
+    }
+    if (verdict.generating) {
+        // Keep the heuristic confirmation counter satisfied so a later DetectPattern() pass
+        // cannot walk the structural verdict back down.
+        nvidiaSMConfirmCount.store(NVIDIA_SM_CONFIRM_THRESHOLD, std::memory_order_release);
+    }
+}
+
 void FGCompatibility::DetectNvidiaSmoothMotion() {
     // Called externally to trigger SM detection
     // The actual detection happens in DetectPattern() based on frame analysis

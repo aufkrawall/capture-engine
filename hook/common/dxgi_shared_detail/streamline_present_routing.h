@@ -349,6 +349,14 @@ bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain);
 void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
 void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
 bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
+// Lock-free gate: true only while at least one interposer private chain is registered.
+bool HasPresentInterposerPrivateSwapchains();
+
+// Smooth Motion status comes from the ratio between the interposer's private output chain and the
+// application's own present stream — the only evidence there is in DX12 (present_interposer_cadence.h).
+void NotePresentInterposerOutputPresent(IDXGISwapChain* pSwapChain);
+void NoteApplicationPresentUnderPresentInterposer();
+void ResetPresentInterposerCadence();
 
 // True when `pSwapChain`'s Present really is the dxgi body CE deep-hooked below the foreign
 // overlay chain. False for a proxy whose Present lives in another module — there the deep body
