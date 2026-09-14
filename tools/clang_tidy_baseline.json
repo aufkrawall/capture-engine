@@ -23,7 +23,7 @@
   "checks": {},
   "total": 0,
   "scope": {
-    "entries": 752,
+    "entries": 754,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -360,6 +360,7 @@
       "hook/common/overlay_adapter.cpp",
       "hook/common/overlay_adapter_render.cpp",
       "hook/common/overlay_adapter_render_frame.cpp",
+      "hook/common/overlay_cpu_raster.cpp",
       "hook/common/overlay_gpu_timing.cpp",
       "hook/common/overlay_metrics_planner_publisher.cpp",
       "hook/common/overlay_metrics_publisher.cpp",
@@ -701,6 +702,7 @@
       "tests/test_nv_lod_spread_override.cpp",
       "tests/test_overlay_compat.cpp",
       "tests/test_overlay_composite_route_growth.cpp",
+      "tests/test_overlay_cpu_raster.cpp",
       "tests/test_overlay_draw_bounds.cpp",
       "tests/test_overlay_fg_status_publication.cpp",
       "tests/test_overlay_submit_queue_policy.cpp",

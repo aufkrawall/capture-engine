@@ -20,6 +20,7 @@
 #include "graph_scroll_policy.h"
 #include "../../common/recording_indicator_policy.h"
 #include "custom_overlay.h"
+#include "overlay_cpu_raster.h"
 #include "benchmark_manager.h"
 #include "ipc_client.h"
 #include "performance_metrics.h"
@@ -124,6 +125,18 @@ public:
     // this on the frames where the overlay grew past the region it had already
     // staged the game's pixels into.
     bool ResubmitLastFrame(int viewportWidth, int viewportHeight);
+
+    // Rasterize the geometry the last rendered frame built into a
+    // premultiplied BGRA image. The DirectDraw route has no GPU path into a
+    // DirectDraw surface, so producing the overlay's pixels on the GPU would
+    // cost a blocking readback on every presentation.
+    bool RasterizeLastFrame(const ce::overlay_cpu_raster::Target& target, std::vector<uint32_t>& out) const;
+
+    // Identifies the geometry the last rendered frame built. A caller that
+    // caches the rasterized result compares this instead of rasterizing again:
+    // the overlay is redrawn far more often than its content actually changes.
+    // Zero means nothing was drawn.
+    uint64_t GetLastDrawDataRevision() const;
 
 private:
     struct FrameLayoutSnapshot {

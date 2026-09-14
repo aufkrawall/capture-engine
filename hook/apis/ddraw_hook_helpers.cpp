@@ -550,45 +550,43 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_p
         return;
     }
 
-    // The game's pixels have to be under the overlay before it is blended, and
-    // the region to stage is only known from geometry that already exists. The
-    // previous frame's rectangle is the starting estimate; the frame that grows
-    // past it is corrected below rather than clipped.
-    ce::ddraw_present_policy::Rect staged = {};
-    bool haveRegion = ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, staged);
-    if (haveRegion) {
-        // Whatever CE wrote into this surface last time has to be written again,
-        // or a shrinking overlay leaves the strip it vacated holding the
-        // previous composite with nothing left to repaint it.
-        staged = ce::ddraw_present_policy::ExpandToPreviousComposite(
-            staged, capture.lastCompositeValid && capture.compositeStateSurface == compositeTarget,
-            capture.compositeStateRegion);
-    }
-    bool staging = haveRegion && capture.EnsureCompositeRegionResources(staged) &&
-                   capture.CopySurfaceRegionToOverlayBackbuffer(compositeTarget, staged);
-    if (!haveRegion) {
-        ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
-    } else if (!staging) {
-        ddraw_hook_g_PresentationDiagnostics.compositeStageFailed.fetch_add(1, std::memory_order_relaxed);
-    }
-
+    // The overlay is rasterized on the CPU and blended straight into the
+    // surface the presentation publishes. Nothing goes to the GPU and nothing
+    // is read back, so the application's own draw and the overlay landing are
+    // separated by a memory pass rather than a GPU round trip.
     g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
 
     ce::ddraw_present_policy::Rect rendered = {};
     if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
-        // Nothing was drawn this frame, so nothing has to reach the surface.
         ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    if (!staging || !RegionContains(staged, rendered)) {
-        staged = staging ? RegionUnion(staged, rendered) : rendered;
-        staging = capture.EnsureCompositeRegionResources(staged) &&
-                  capture.CopySurfaceRegionToOverlayBackbuffer(compositeTarget, staged) &&
-                  g_OverlayAdapter.ResubmitLastFrame(viewportWidth, viewportHeight);
+    // Whatever CE wrote into this surface last time has to be covered again, or
+    // a shrinking overlay leaves the strip it vacated holding the previous
+    // composite with nothing left to repaint it.
+    const ce::ddraw_present_policy::Rect staged = ce::ddraw_present_policy::ExpandToPreviousComposite(
+        rendered, capture.compositeStateRegion.IsEmpty() == false, capture.compositeStateRegion);
+
+    if (!capture.EnsureCompositeRegionResources(staged)) {
+        ddraw_hook_g_PresentationDiagnostics.compositeStageFailed.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
 
-    if (staging && capture.CopyOverlayBackbufferRegionToSurface(compositeTarget, staged)) {
+    const int64_t compositeStartUs = PerfLogger::GetQpcUs();
+    const bool blended = capture.BlendOverlaySpriteIntoSurface(compositeTarget, staged);
+    const int64_t compositeUs = PerfLogger::GetQpcUs() - compositeStartUs;
+    if (compositeUs > 0) {
+        auto& diag = ddraw_hook_g_PresentationDiagnostics;
+        diag.compositeMicrosecondsTotal.fetch_add(static_cast<uint64_t>(compositeUs), std::memory_order_relaxed);
+        uint32_t previousMax = diag.compositeMicrosecondsMax.load(std::memory_order_relaxed);
+        const auto observed = static_cast<uint32_t>(compositeUs);
+        while (observed > previousMax &&
+               !diag.compositeMicrosecondsMax.compare_exchange_weak(previousMax, observed,
+                                                                    std::memory_order_relaxed)) {
+        }
+    }
+    if (blended) {
         ddraw_hook_g_PresentationDiagnostics.compositeSucceeded.fetch_add(1, std::memory_order_relaxed);
         return;
     }

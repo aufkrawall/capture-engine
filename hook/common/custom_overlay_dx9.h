@@ -35,6 +35,15 @@ public:
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
 
+    // Render into a transparent target so the result carries the overlay's own
+    // coverage, giving a premultiplied sprite that can be blended anywhere on
+    // the CPU. The DirectDraw route needs that: it has no GPU path into a
+    // DirectDraw surface, and doing the blend on the GPU costs a readback -
+    // with the CPU/GPU synchronization it implies - on every presentation.
+    void SetPreserveAlpha(bool preserve) {
+        preserveAlpha = preserve;
+    }
+
 private:
     bool ResizeVertexBuffer(size_t requiredBytes);
     bool ResizeIndexBuffer(size_t requiredBytes);
@@ -44,6 +53,7 @@ private:
     IDirect3DVertexBuffer9* vertexBuffer = nullptr;
     IDirect3DIndexBuffer9* indexBuffer = nullptr;
     IDirect3DStateBlock9* stateBlock = nullptr;
+    bool preserveAlpha = false;
 
     size_t vertexBufferSize = 0;
     size_t indexBufferSize = 0;

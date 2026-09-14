@@ -49,398 +49,130 @@ bool Is565(const DDPIXELFORMAT& format) {
 }  // namespace
 
 bool DDrawCapture::EnsureCompositeRegionResources(const Rect& region) {
-    if (!d3d9DeviceEx)
-        return false;
-
+    // Nothing on the GPU is needed for the composite any more; only the sprite
+    // buffer has to match the rectangle being written.
     const uint32_t neededWidth = static_cast<uint32_t>(region.right - region.left);
     const uint32_t neededHeight = static_cast<uint32_t>(region.bottom - region.top);
     if (neededWidth == 0 || neededHeight == 0)
         return false;
 
-    if (d3d9RegionTarget && d3d9RegionSysMem && regionWidth == neededWidth && regionHeight == neededHeight) {
-        return true;
+    if (regionWidth != neededWidth || regionHeight != neededHeight) {
+        regionWidth = neededWidth;
+        regionHeight = neededHeight;
+        HookLogImportant("DDraw: Overlay composite region resized to %ux%u at (%d,%d)", regionWidth, regionHeight,
+                         region.left, region.top);
     }
-
-    ReleaseCompositeRegionResources();
-
-    HRESULT hr = d3d9DeviceEx->CreateRenderTarget(neededWidth, neededHeight, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0,
-                                                  FALSE, &d3d9RegionTarget, nullptr);
-    if (FAILED(hr) || !d3d9RegionTarget) {
-        HookLog("DDraw: Failed to create %ux%u overlay composite render target (hr=0x%08x)", neededWidth, neededHeight,
-                hr);
-        ReleaseCompositeRegionResources();
-        return false;
-    }
-
-    hr = d3d9DeviceEx->CreateOffscreenPlainSurface(neededWidth, neededHeight, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
-                                                   &d3d9RegionSysMem, nullptr);
-    if (FAILED(hr) || !d3d9RegionSysMem) {
-        HookLog("DDraw: Failed to create %ux%u overlay composite staging surface (hr=0x%08x)", neededWidth,
-                neededHeight, hr);
-        ReleaseCompositeRegionResources();
-        return false;
-    }
-
-    // Optional: a default-pool staging surface uploads through StretchRect,
-    // which avoids the system-memory copy UpdateSurface performs. Its absence
-    // only costs speed, so a failure here is not fatal.
-    hr = d3d9DeviceEx->CreateOffscreenPlainSurface(neededWidth, neededHeight, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
-                                                   &d3d9RegionUpload, nullptr);
-    if (FAILED(hr)) {
-        d3d9RegionUpload = nullptr;
-    }
-
-    regionWidth = neededWidth;
-    regionHeight = neededHeight;
-    HookLogImportant("DDraw: Overlay composite region resized to %ux%u at (%d,%d)", regionWidth, regionHeight,
-                     region.left, region.top);
+    compositeStateRegion = region;
     return true;
 }
 
 void DDrawCapture::InvalidateCompositeBackdrop() {
-    backdropValid = false;
-    lastCompositeValid = false;
-    compositeStateSurface = nullptr;
     compositeStateRegion = {};
 }
 
 void DDrawCapture::ReleaseCompositeRegionResources() {
     InvalidateCompositeBackdrop();
-    backdropPixels.clear();
-    backdropPixels.shrink_to_fit();
-    lastCompositePixels.clear();
-    lastCompositePixels.shrink_to_fit();
-    if (d3d9RegionUpload) {
-        d3d9RegionUpload->Release();
-        d3d9RegionUpload = nullptr;
-    }
-    if (d3d9RegionSysMem) {
-        d3d9RegionSysMem->Release();
-        d3d9RegionSysMem = nullptr;
-    }
-    if (d3d9RegionTarget) {
-        d3d9RegionTarget->Release();
-        d3d9RegionTarget = nullptr;
-    }
+    overlaySprite.clear();
+    overlaySprite.shrink_to_fit();
+    spriteRegion = {};
+    spriteRevision = 0;
     regionWidth = 0;
     regionHeight = 0;
 }
 
-bool DDrawCapture::CopySurfaceRegionToOverlayBackbuffer(IDirectDrawSurface7* surface, const Rect& region) {
-    if (!surface || !d3d9DeviceEx || !d3d9RegionSysMem)
+bool DDrawCapture::BlendOverlaySpriteIntoSurface(IDirectDrawSurface7* surface, const Rect& region) {
+    if (!surface)
         return false;
 
     const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
     const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
-
-    IDirect3DSurface9* staging = d3d9RegionUpload ? d3d9RegionUpload : d3d9RegionSysMem;
-
-    D3DLOCKED_RECT stagingLock = {};
-    if (FAILED(staging->LockRect(&stagingLock, nullptr, 0)) || !stagingLock.pBits) {
+    if (regionW == 0 || regionH == 0)
         return false;
-    }
 
-    RECT sourceRect = {region.left, region.top, region.right, region.bottom};
-    DDSURFACEDESC2 desc = {};
-    desc.dwSize = sizeof(desc);
-    bool copied = false;
-    const HRESULT lockHr = surface->Lock(&sourceRect, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
-    if (SUCCEEDED(lockHr) && desc.lpSurface) {
-        const uint8_t* src = static_cast<const uint8_t*>(desc.lpSurface);
-        uint8_t* dst = static_cast<uint8_t*>(stagingLock.pBits);
-        const uint32_t bits = desc.ddpfPixelFormat.dwRGBBitCount;
-        if (bits == 32) {
-            const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-            for (uint32_t y = 0; y < regionH; ++y) {
-                memcpy(dst, src, rowBytes);
-                src += desc.lPitch;
-                dst += stagingLock.Pitch;
-            }
-            copied = true;
-        } else if (bits == 16) {
-            const bool is565 = Is565(desc.ddpfPixelFormat);
-            for (uint32_t y = 0; y < regionH; ++y) {
-                const uint16_t* src16 = reinterpret_cast<const uint16_t*>(src);
-                uint32_t* dst32 = reinterpret_cast<uint32_t*>(dst);
-                for (uint32_t x = 0; x < regionW; ++x) {
-                    dst32[x] = is565 ? Unpack565ToBgra(src16[x]) : Unpack555ToBgra(src16[x]);
-                }
-                src += desc.lPitch;
-                dst += stagingLock.Pitch;
-            }
-            copied = true;
-        }
-        surface->Unlock(&sourceRect);
-    }
-    staging->UnlockRect();
-
-    if (!copied) {
-        // Palettized and packed-24 surfaces have no direct row form the helper
-        // can consume; GDI converts them for the same region.
-        HDC sourceDC = nullptr;
-        if (FAILED(surface->GetDC(&sourceDC)) || !sourceDC) {
-            static int sourceDcFailLogCount = 0;
-            if (sourceDcFailLogCount < 4) {
-                HookLog("DDraw: Overlay composite could not read the target surface (lock hr=0x%08x, no DC)", lockHr);
-                sourceDcFailLogCount++;
-            }
+    // The overlay is redrawn on every presentation but its content changes far
+    // less often, so the rasterized sprite is reused until the geometry or the
+    // rectangle actually moves.
+    const uint64_t revision = g_OverlayAdapter.GetLastDrawDataRevision();
+    const bool sameRegion = spriteRegion.left == region.left && spriteRegion.top == region.top &&
+                            spriteRegion.right == region.right && spriteRegion.bottom == region.bottom;
+    if (!ce::ddraw_present_policy::OverlaySpriteIsCurrent(!overlaySprite.empty(), sameRegion, spriteRevision,
+                                                          revision)) {
+        ce::overlay_cpu_raster::Target target;
+        target.left = region.left;
+        target.top = region.top;
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        target.width = static_cast<int>(regionW);
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        target.height = static_cast<int>(regionH);
+        if (!g_OverlayAdapter.RasterizeLastFrame(target, overlaySprite)) {
+            spriteRevision = 0;
             return false;
         }
-        HDC stagingDC = nullptr;
-        if (FAILED(staging->GetDC(&stagingDC)) || !stagingDC) {
-            surface->ReleaseDC(sourceDC);
-            return false;
-        }
-        const BOOL blitOk = BitBlt(stagingDC, 0, 0, static_cast<int>(regionW), static_cast<int>(regionH), sourceDC,
-                                   region.left, region.top, SRCCOPY);
-        staging->ReleaseDC(stagingDC);
-        surface->ReleaseDC(sourceDC);
-        if (!blitOk) {
-            static int bitBltFailLogCount = 0;
-            if (bitBltFailLogCount < 4) {
-                HookLog("DDraw: Overlay composite region BitBlt failed (err=%lu)", GetLastError());
-                bitBltFailLogCount++;
-            }
-            return false;
-        }
-    }
-
-    // Decide whether what was just read is the application's frame or CE's own
-    // previous output, and leave the staging surface holding the former.
-    ResolveCompositeBackdrop(staging, surface, region);
-
-    return UploadStagedRegionToOverlayBackbuffer(staging, region);
-}
-
-void DDrawCapture::ResolveCompositeBackdrop(IDirect3DSurface9* staging, IDirectDrawSurface7* surface,
-                                            const Rect& region) {
-    if (!staging)
-        return;
-
-    const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
-    const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
-    const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-    const size_t regionBytes = rowBytes * regionH;
-
-    const bool sameSurface = compositeStateSurface == surface;
-    const bool sameRegion = compositeStateRegion.left == region.left && compositeStateRegion.top == region.top &&
-                            compositeStateRegion.right == region.right &&
-                            compositeStateRegion.bottom == region.bottom;
-
-    D3DLOCKED_RECT stagingLock = {};
-    if (FAILED(staging->LockRect(&stagingLock, nullptr, 0)) || !stagingLock.pBits)
-        return;
-
-    // Is the region still byte-for-byte what CE wrote there last time? If so the
-    // application has not drawn into it since, and the pixels now in the staging
-    // surface are CE's own composite rather than a frame.
-    bool matchesLastComposite = false;
-    if (lastCompositeValid && sameSurface && sameRegion && lastCompositePixels.size() == regionBytes) {
-        matchesLastComposite = true;
-        const uint8_t* src = static_cast<const uint8_t*>(stagingLock.pBits);
-        const uint8_t* saved = lastCompositePixels.data();
-        for (uint32_t y = 0; y < regionH && matchesLastComposite; ++y) {
-            matchesLastComposite = memcmp(src, saved, rowBytes) == 0;
-            src += stagingLock.Pitch;
-            saved += rowBytes;
-        }
-    }
-
-    const bool reuseBackdrop = ce::ddraw_present_policy::CompositeBackdropIsReusable(
-        backdropValid && backdropPixels.size() == regionBytes, sameSurface, sameRegion,
-        ddraw_hook_g_CompositePresentKind, matchesLastComposite);
-
-    if (reuseBackdrop) {
-        uint8_t* dst = static_cast<uint8_t*>(stagingLock.pBits);
-        const uint8_t* saved = backdropPixels.data();
-        for (uint32_t y = 0; y < regionH; ++y) {
-            memcpy(dst, saved, rowBytes);
-            dst += stagingLock.Pitch;
-            saved += rowBytes;
-        }
-        ddraw_hook_g_PresentationDiagnostics.backdropReuses.fetch_add(1, std::memory_order_relaxed);
+        spriteRegion = region;
+        spriteRevision = revision;
+        ddraw_hook_g_PresentationDiagnostics.spriteRasterizations.fetch_add(1, std::memory_order_relaxed);
     } else {
-        backdropPixels.resize(regionBytes);
-        const uint8_t* src = static_cast<const uint8_t*>(stagingLock.pBits);
-        uint8_t* saved = backdropPixels.data();
-        for (uint32_t y = 0; y < regionH; ++y) {
-            memcpy(saved, src, rowBytes);
-            src += stagingLock.Pitch;
-            saved += rowBytes;
-        }
-        backdropValid = true;
-        compositeStateSurface = surface;
-        compositeStateRegion = region;
-        lastCompositeValid = false;
+        ddraw_hook_g_PresentationDiagnostics.spriteReuses.fetch_add(1, std::memory_order_relaxed);
     }
-
-    staging->UnlockRect();
-}
-
-void DDrawCapture::RememberCompositeResult(const uint8_t* pixels, int pitch, const Rect& region) {
-    if (!pixels || pitch <= 0) {
-        lastCompositeValid = false;
-        return;
-    }
-    const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
-    const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
-    const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-    lastCompositePixels.resize(rowBytes * regionH);
-    uint8_t* dst = lastCompositePixels.data();
-    for (uint32_t y = 0; y < regionH; ++y) {
-        memcpy(dst, pixels, rowBytes);
-        pixels += pitch;
-        dst += rowBytes;
-    }
-    lastCompositeValid = true;
-    compositeStateRegion = region;
-}
-
-bool DDrawCapture::UploadStagedRegionToOverlayBackbuffer(IDirect3DSurface9* staging, const Rect& region) {
-    IDirect3DSurface9* backBuffer = nullptr;
-    if (FAILED(d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) {
-        static int backBufferFailLogCount = 0;
-        if (backBufferFailLogCount < 4) {
-            HookLog("DDraw: Overlay composite could not reach the helper backbuffer");
-            backBufferFailLogCount++;
-        }
+    if (overlaySprite.size() != static_cast<size_t>(regionW) * regionH)
         return false;
-    }
-
-    HRESULT uploadHr = E_FAIL;
-    RECT destRect = {region.left, region.top, region.right, region.bottom};
-    if (staging == d3d9RegionUpload) {
-        uploadHr = d3d9DeviceEx->StretchRect(staging, nullptr, backBuffer, &destRect, D3DTEXF_NONE);
-    }
-    if (FAILED(uploadHr)) {
-        POINT destPoint = {region.left, region.top};
-        uploadHr = d3d9DeviceEx->UpdateSurface(d3d9RegionSysMem, nullptr, backBuffer, &destPoint);
-    }
-    backBuffer->Release();
-
-    if (FAILED(uploadHr)) {
-        static int uploadFailLogCount = 0;
-        if (uploadFailLogCount < 4) {
-            HookLog("DDraw: Overlay composite upload failed (hr=0x%08x)", uploadHr);
-            uploadFailLogCount++;
-        }
-        return false;
-    }
-    return true;
-}
-
-bool DDrawCapture::CopyOverlayBackbufferRegionToSurface(IDirectDrawSurface7* surface, const Rect& region) {
-    if (!surface || !d3d9DeviceEx || !d3d9RegionTarget || !d3d9RegionSysMem)
-        return false;
-
-    const uint32_t regionW = static_cast<uint32_t>(region.right - region.left);
-    const uint32_t regionH = static_cast<uint32_t>(region.bottom - region.top);
-
-    IDirect3DSurface9* backBuffer = nullptr;
-    if (FAILED(d3d9DeviceEx->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) || !backBuffer) {
-        return false;
-    }
-
-    RECT sourceRect = {region.left, region.top, region.right, region.bottom};
-    HRESULT hr = d3d9DeviceEx->StretchRect(backBuffer, &sourceRect, d3d9RegionTarget, nullptr, D3DTEXF_NONE);
-    backBuffer->Release();
-    if (FAILED(hr)) {
-        static int resolveFailLogCount = 0;
-        if (resolveFailLogCount < 4) {
-            HookLog("DDraw: Overlay composite readback resolve failed (hr=0x%08x)", hr);
-            resolveFailLogCount++;
-        }
-        return false;
-    }
-
-    // GetRenderTargetData reads the whole render target, which is why the
-    // render target is the region rather than the frame.
-    hr = d3d9DeviceEx->GetRenderTargetData(d3d9RegionTarget, d3d9RegionSysMem);
-    if (FAILED(hr)) {
-        static int readbackFailLogCount = 0;
-        if (readbackFailLogCount < 4) {
-            HookLog("DDraw: Overlay composite readback failed (hr=0x%08x)", hr);
-            readbackFailLogCount++;
-        }
-        return false;
-    }
-
-    D3DLOCKED_RECT readbackLock = {};
-    if (FAILED(d3d9RegionSysMem->LockRect(&readbackLock, nullptr, D3DLOCK_READONLY)) || !readbackLock.pBits) {
-        return false;
-    }
 
     RECT destRect = {region.left, region.top, region.right, region.bottom};
     DDSURFACEDESC2 desc = {};
     desc.dwSize = sizeof(desc);
-    bool written = false;
     const HRESULT lockHr = surface->Lock(&destRect, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
-    if (SUCCEEDED(lockHr) && desc.lpSurface) {
-        const uint8_t* src = static_cast<const uint8_t*>(readbackLock.pBits);
-        uint8_t* dst = static_cast<uint8_t*>(desc.lpSurface);
-        const uint32_t bits = desc.ddpfPixelFormat.dwRGBBitCount;
-        if (bits == 32) {
-            const size_t rowBytes = static_cast<size_t>(regionW) * 4u;
-            for (uint32_t y = 0; y < regionH; ++y) {
-                memcpy(dst, src, rowBytes);
-                src += readbackLock.Pitch;
-                dst += desc.lPitch;
-            }
-            // Exactly what now sits in the surface. The next composite compares
-            // its fresh read against this to tell CE's own output from a frame
-            // the application drew in the meantime.
-            RememberCompositeResult(static_cast<const uint8_t*>(readbackLock.pBits), readbackLock.Pitch, region);
-            written = true;
-        } else if (bits == 16) {
-            const bool is565 = Is565(desc.ddpfPixelFormat);
-            for (uint32_t y = 0; y < regionH; ++y) {
-                const uint32_t* src32 = reinterpret_cast<const uint32_t*>(src);
-                uint16_t* dst16 = reinterpret_cast<uint16_t*>(dst);
-                for (uint32_t x = 0; x < regionW; ++x) {
-                    dst16[x] = is565 ? Pack565FromBgra(src32[x]) : Pack555FromBgra(src32[x]);
-                }
-                src += readbackLock.Pitch;
-                dst += desc.lPitch;
-            }
-            // A packed 16-bit surface cannot be compared against the 32-bit
-            // readback, so the next composite always treats its read as a
-            // frame the application drew.
-            lastCompositeValid = false;
-            written = true;
+    if (FAILED(lockHr) || !desc.lpSurface) {
+        static int lockFailLogCount = 0;
+        if (lockFailLogCount < 4) {
+            HookLog("DDraw: Overlay blend could not lock the presented surface (hr=0x%08x)", lockHr);
+            lockFailLogCount++;
         }
-        surface->Unlock(&destRect);
+        return false;
     }
-    d3d9RegionSysMem->UnlockRect();
 
-    if (!written) {
-        HDC readbackDC = nullptr;
-        if (FAILED(d3d9RegionSysMem->GetDC(&readbackDC)) || !readbackDC) {
-            return false;
-        }
-        HDC targetDC = nullptr;
-        if (FAILED(surface->GetDC(&targetDC)) || !targetDC) {
-            d3d9RegionSysMem->ReleaseDC(readbackDC);
-            return false;
-        }
-        const BOOL blitOk = BitBlt(targetDC, region.left, region.top, static_cast<int>(regionW),
-                                   static_cast<int>(regionH), readbackDC, 0, 0, SRCCOPY);
-        surface->ReleaseDC(targetDC);
-        d3d9RegionSysMem->ReleaseDC(readbackDC);
-        lastCompositeValid = false;
-        if (!blitOk) {
-            static int writebackFailLogCount = 0;
-            if (writebackFailLogCount < 4) {
-                HookLog("DDraw: Overlay composite writeback failed (lock hr=0x%08x, err=%lu)", lockHr, GetLastError());
-                writebackFailLogCount++;
+    bool blended = false;
+    uint8_t* dst = static_cast<uint8_t*>(desc.lpSurface);
+    const uint32_t* sprite = overlaySprite.data();
+    const uint32_t bits = desc.ddpfPixelFormat.dwRGBBitCount;
+    if (bits == 32) {
+        for (uint32_t y = 0; y < regionH; ++y) {
+            uint32_t* row = reinterpret_cast<uint32_t*>(dst);
+            for (uint32_t x = 0; x < regionW; ++x) {
+                row[x] = ce::ddraw_present_policy::BlendPremultipliedOver(sprite[x], row[x]);
             }
-            return false;
+            sprite += regionW;
+            dst += desc.lPitch;
         }
+        blended = true;
+    } else if (bits == 16) {
+        const bool is565 = Is565(desc.ddpfPixelFormat);
+        for (uint32_t y = 0; y < regionH; ++y) {
+            uint16_t* row = reinterpret_cast<uint16_t*>(dst);
+            for (uint32_t x = 0; x < regionW; ++x) {
+                const uint32_t existing = is565 ? Unpack565ToBgra(row[x]) : Unpack555ToBgra(row[x]);
+                const uint32_t merged = ce::ddraw_present_policy::BlendPremultipliedOver(sprite[x], existing);
+                row[x] = is565 ? Pack565FromBgra(merged) : Pack555FromBgra(merged);
+            }
+            sprite += regionW;
+            dst += desc.lPitch;
+        }
+        blended = true;
+    }
+    surface->Unlock(&destRect);
+
+    if (!blended) {
+        static int formatLogCount = 0;
+        if (formatLogCount < 4) {
+            HookLog("DDraw: Overlay blend cannot write a %u-bit presented surface", bits);
+            formatLogCount++;
+        }
+        return false;
     }
 
     static uint32_t compositeCount = 0;
     compositeCount++;
     if (compositeCount <= 4 || (compositeCount % 600 == 0)) {
-        HookLogImportant("DDraw: Overlay composited into the presented surface (hwnd=%p region=%ux%u at %d,%d "
+        HookLogImportant("DDraw: Overlay blended into the presented surface (hwnd=%p region=%ux%u at %d,%d "
                          "frame=%ux%u count=%u)",
                          targetHwnd, regionW, regionH, region.left, region.top, width, height, compositeCount);
     }

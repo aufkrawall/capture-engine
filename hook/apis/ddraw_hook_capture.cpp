@@ -86,8 +86,8 @@ void LogDirectDrawPresentationMix(const char* reason) {
     HookLogImportant(
         "DDraw: Presentation mix (%s) flips=%u blitPresents=%u directScanoutBlits=%u ignoredBlits=%u "
         "scanoutUnlocks=%u composites=%u ok=%u noGeometry=%u stageFailed=%u writeFailed=%u reentrant=%u "
-        "skippedNoPublishedImage=%u skippedOutsideOverlay=%u backdropReuses=%u route=%s routeSwitches=%u "
-        "routeLatched=%d",
+        "skippedNoPublishedImage=%u skippedOutsideOverlay=%u raster=%u spriteReuse=%u compositeAvgUs=%llu "
+        "compositeMaxUs=%u route=%s routeSwitches=%u routeLatched=%d",
         reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
         diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
         diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.composites.load(std::memory_order_relaxed),
@@ -98,7 +98,12 @@ void LogDirectDrawPresentationMix(const char* reason) {
         diag.reentrantPresentations.load(std::memory_order_relaxed),
         diag.skippedNoPublishedImage.load(std::memory_order_relaxed),
         diag.skippedOutsideOverlay.load(std::memory_order_relaxed),
-        diag.backdropReuses.load(std::memory_order_relaxed), routeLabel,
+        diag.spriteRasterizations.load(std::memory_order_relaxed),
+        diag.spriteReuses.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(
+            diag.compositeMicrosecondsTotal.load(std::memory_order_relaxed) /
+            (std::max)(1u, diag.compositeSucceeded.load(std::memory_order_relaxed))),
+        diag.compositeMicrosecondsMax.load(std::memory_order_relaxed), routeLabel,
         ddraw_hook_g_OverlayRouteSwitches, ddraw_hook_g_OverlayRouteLatchedToComposite ? 1 : 0);
 }
 

@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-09-14 - What the instrumentation proved, and the CPU/GPU dependency it pointed at
+
+Session `20260914_193129` (0.1.6598) is the first one that could answer anything, and it retired both remaining
+theories at once. `ok=361` of `composites=361`, `stageFailed=0 writeFailed=0`: **every composite succeeded**. And
+`[Overlay] Rows changed` fired 23 times in the whole session with `valid=GV-g-Pfk-` constant and a real GPU
+reading in every one - only the very first line, before the adapter resolved, carried a `--`. **The sensor values
+were never flapping.** The counters also reconcile exactly for the first time: 31 flips + 62 blits + 235 unlocks
+= 328 presentations, of which 198 were CE's own re-entry (the composite locks and unlocks through the same
+hooks), leaving 130 real ones and `composites=130`.
+
+So the overlay is drawn, correctly, on every presentation, from stable data - and it still strobes. What is left
+is *when* it lands. The composite was a CPU/GPU round trip per presentation: read the surface region, upload it,
+blend on the GPU, and `GetRenderTargetData` it back - a call that blocks the render thread until the GPU has
+caught up. During the intro videos and loading screens the application updates the *scanout* surface about ten
+times a second, so that sequence runs between the application's own draw and the overlay reappearing, on a
+surface the display is scanning out live.
+
+There is no GPU path from a D3D9Ex device into a DirectDraw surface, so the composite cannot stay on the GPU.
+`hook/common/overlay_cpu_raster.cpp` rasterizes the shared draw list instead - the same vertices, indices and
+GDI font atlas the GPU backends consume - into a premultiplied BGRA sprite, and
+`BlendOverlaySpriteIntoSurface` blends that into the locked surface in one pass.
+**The GPU, the readback and the synchronization are gone from that route entirely.**
+
+Cost was the first question, not the last: the sprite is cached against an FNV-1a revision of the built geometry
+(`OverlayAdapter::GetLastDrawDataRevision`), so a presentation that changed nothing reuses it; the edge functions
+are stepped along each scanline rather than solved per pixel; and the mix line now reports `raster=`,
+`spriteReuse=`, `compositeAvgUs=` and `compositeMaxUs=` so the cost is a measured number rather than a claim.
+
+One rasterizer detail is worth keeping: `AddQuad` emits two triangles sharing a diagonal, so the top-left fill
+rule is load-bearing, not pedantry. Without it every pixel on that diagonal is covered by both triangles and
+blended twice - `AHalfTransparentQuadIsStoredPremultiplied` caught exactly that, 192 where 128 was expected.
+
+Still true, and still the better answer: drawing with the application's own Direct3D 7 device
+(`legacy_d3d_native_overlay`) needs no pixels on the CPU at all. It stays off by default until the Steam-overlay
+crash can be attributed, which needs the WoW64 dump gap closed first.
+
+Built and verified at 0.1.6604. **Hardware run pending.**
+
 ### 2026-09-14 - A frozen backdrop, a vacated strip, and the diagnostics that were missing
 
 Session `20260914_192142` (0.1.6594) reported both symptoms unchanged, which retired the previous round's two

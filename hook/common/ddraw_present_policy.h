@@ -264,4 +264,37 @@ inline bool BackendCanRenderRoute(OverlayRoute route, bool nativeBackendBoundToT
     return route == OverlayRoute::NativeDevice ? nativeBackendBoundToThisDevice : compositeBackendReady;
 }
 
+// One premultiplied source-over step: the sprite already carries colour
+// multiplied by its own coverage, so the destination only has to be attenuated
+// by what the sprite does not cover.
+//
+// This is what replaces the per-presentation GPU round trip. The composite used
+// to read the surface, upload it, blend on the GPU and read the result back -
+// and `GetRenderTargetData` blocks the render thread until the GPU has caught
+// up, every presentation, on a surface the display is scanning out.
+inline uint32_t BlendPremultipliedOver(uint32_t sprite, uint32_t destination) {
+    const uint32_t alpha = (sprite >> 24) & 0xFFu;
+    if (alpha == 0xFFu)
+        return sprite | 0xFF000000u;
+    if (alpha == 0u)
+        return destination;
+    const uint32_t inverse = 255u - alpha;
+    const uint32_t blue = ((sprite & 0x000000FFu) + (((destination & 0x000000FFu) * inverse + 127u) / 255u));
+    const uint32_t green =
+        (((sprite >> 8) & 0xFFu) + ((((destination >> 8) & 0xFFu) * inverse + 127u) / 255u));
+    const uint32_t red = (((sprite >> 16) & 0xFFu) + ((((destination >> 16) & 0xFFu) * inverse + 127u) / 255u));
+    const uint32_t clampedBlue = blue > 255u ? 255u : blue;
+    const uint32_t clampedGreen = green > 255u ? 255u : green;
+    const uint32_t clampedRed = red > 255u ? 255u : red;
+    return 0xFF000000u | (clampedRed << 16) | (clampedGreen << 8) | clampedBlue;
+}
+
+// The cached sprite describes one rectangle of one build of the overlay. Any
+// change to either - and the geometry changes whenever a value or the graph
+// moves - means it has to be produced again.
+inline bool OverlaySpriteIsCurrent(bool haveSprite, bool sameRegion, uint64_t cachedRevision,
+                                   uint64_t currentRevision) {
+    return haveSprite && sameRegion && cachedRevision == currentRevision;
+}
+
 }  // namespace ce::ddraw_present_policy

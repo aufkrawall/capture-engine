@@ -508,6 +508,50 @@ bool OverlayAdapter::GetLastRenderedBounds(int viewportWidth, int viewportHeight
     return true;
 }
 
+uint64_t OverlayAdapter::GetLastDrawDataRevision() const {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!renderer)
+        return 0;
+    const auto& vertices = renderer->GetVertices();
+    const auto& commands = renderer->GetCommands();
+    if (vertices.empty() || commands.empty())
+        return 0;
+
+    // FNV-1a over the built geometry. Hashing about 24 KB costs a couple of
+    // microseconds and saves rasterizing a region of a few hundred thousand
+    // pixels on every presentation that did not change anything.
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const void* data, size_t bytes) {
+        const auto* cursor = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < bytes; ++i) {
+            hash ^= cursor[i];
+            hash *= 1099511628211ull;
+        }
+    };
+    mix(vertices.data(), vertices.size() * sizeof(CustomOverlay::DrawVertex));
+    mix(commands.data(), commands.size() * sizeof(CustomOverlay::DrawCommand));
+    const auto& indices = renderer->GetIndices();
+    mix(indices.data(), indices.size() * sizeof(uint16_t));
+    return hash == 0 ? 1 : hash;
+}
+
+bool OverlayAdapter::RasterizeLastFrame(const ce::overlay_cpu_raster::Target& target,
+                                       std::vector<uint32_t>& out) const {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!renderer)
+        return false;
+
+    CustomOverlay::FontAtlas* font = renderer->GetFont();
+    ce::overlay_cpu_raster::FontAtlasView atlas;
+    if (font) {
+        atlas.pixels = font->GetTextureData();
+        atlas.width = font->GetTextureWidth();
+        atlas.height = font->GetTextureHeight();
+    }
+    return ce::overlay_cpu_raster::Rasterize(renderer->GetVertices(), renderer->GetIndices(),
+                                             renderer->GetCommands(), atlas, target, out);
+}
+
 bool OverlayAdapter::ResubmitLastFrame(int viewportWidth, int viewportHeight) {
     if (viewportWidth <= 0 || viewportHeight <= 0)
         return false;
