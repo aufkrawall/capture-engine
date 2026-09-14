@@ -217,11 +217,18 @@ inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut 
     if (!DXGIShared::HasPresentDetourHooks()) {
         return false;
     }
+    if (DXGIShared::HasCompositablePresentInterposerOutputChain()) {
+        // A present interposer (NVIDIA Smooth Motion) owns this object's Present and composites its
+        // own output chain, which CE draws on through the detour: below every overlay that patched
+        // the dxgi entry, and after the frame was generated. This wrapper must stay a pure
+        // pass-through so the frame is composited exactly once, there.
+        return true;
+    }
     if (presentInvisibleToDetourHook) {
-        // A present interposer owns this object's Present, so the detour is a view of the
-        // interposer's private output chain and never of this swapchain. Delegating would hand
-        // the frame to a hook that will deliberately pass it through, and the overlay would
-        // never be composited at all (Strange Brigade DX12 + NVIDIA Smooth Motion).
+        // A present interposer owns this object's Present, but CE never observed the queue of its
+        // output chain, so the detour has nowhere safe to draw. Delegating would hand the frame to a
+        // hook that will deliberately pass it through and the overlay would never be composited at
+        // all (Strange Brigade DX12 + NVIDIA Smooth Motion, session 20260914_105242).
         return false;
     }
     if (streamlineRuntimeNonRetainingWrapper) {

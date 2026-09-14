@@ -6,7 +6,7 @@ void ExpectFinalOutputVSyncBeforeBypass(const std::string& source, const char* f
                                        const char* bypassDeclaration) {
     const size_t branch = source.find(finalBranch);
     ASSERT_NE(branch, std::string::npos);
-    const size_t vsync = source.find("ProcessPresentVSyncOverride(SyncInterval, Flags);", branch);
+    const size_t vsync = source.find("ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);", branch);
     const size_t bypass = source.find(bypassDeclaration, branch);
     ASSERT_NE(vsync, std::string::npos);
     ASSERT_NE(bypass, std::string::npos);
@@ -41,7 +41,7 @@ TEST(DXGISharedSourceTest, RecoveredStreamlineFinalOutputsApplyConfiguredVSyncAt
     // documented DLSS-G pacer/device-hang boundary.
     const size_t startup = present.find("ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(");
     const size_t startupBypass = present.find("PFN_Present presentBypass = EnsurePresentBypassTrampoline();", startup);
-    const size_t firstVSync = present.find("ProcessPresentVSyncOverride(SyncInterval, Flags);", startup);
+    const size_t firstVSync = present.find("ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);", startup);
     ASSERT_NE(startupBypass, std::string::npos);
     ASSERT_NE(firstVSync, std::string::npos);
     EXPECT_LT(startupBypass, firstVSync);

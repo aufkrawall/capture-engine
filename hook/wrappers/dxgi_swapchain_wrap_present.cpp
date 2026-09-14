@@ -335,6 +335,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return pRealCached->Present(SyncInterval, Flags);
     }
 
+    // The application's own present stream, which is what the interposer's output chain is measured
+    // against. Counted before the delegation decision, because the delegated path is the normal one
+    // under an interposer and it returns without reaching the draw below.
+    if (m_PresentInvisibleToDetourHook) {
+        DXGIShared::NoteApplicationPresentUnderPresentInterposer();
+    }
+
     const char* delegationOverlayModule = nullptr;
     if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining,
                                                           m_PresentInvisibleToDetourHook)) {
@@ -414,16 +421,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         activeDebugSample->metricsUpdateUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - metricsUpdateStartUs);
     }
 
-    // The application's own present stream, which is what the interposer's output chain is
-    // measured against. Noted before the forward so the window closes on this frame's numbers.
-    if (m_PresentInvisibleToDetourHook) {
-        DXGIShared::NoteApplicationPresentUnderPresentInterposer();
-    }
-
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
     if (!fgActive) {
-        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, Flags);
+        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, Flags, pRealCached);
     } else if (callCount < 20) {
         WrapperLog("Present: Skipping VSync override because FG is active");
     }
@@ -620,6 +621,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
+    if (m_PresentInvisibleToDetourHook) {
+        DXGIShared::NoteApplicationPresentUnderPresentInterposer();
+    }
+
     const char* delegationOverlayModule = nullptr;
     if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining,
                                                           m_PresentInvisibleToDetourHook)) {
@@ -667,7 +672,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
     if (!g_FGCompat.IsFGActive()) {
-        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, PresentFlags);
+        DXGIShared::ProcessPresentVSyncOverride(SyncInterval, PresentFlags, pReal1Cached);
     }
 
     // CRITICAL: Process frame for capture BEFORE calling real Present

@@ -16,11 +16,46 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <string>
+
+#include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/present_interposer_cadence.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
 using namespace ce::present_interposer;
+
+// The overlay belongs ON the interposer's output chain — below every overlay that patched the dxgi
+// entry, so CE draws last and is topmost, and after the driver generated the frame, so CE's overlay
+// is not interpolated. What killed Strange Brigade DX12 was the QUEUE, not the chain: CE submitted
+// the overlay on the application's queue while drawing into buffers owned by the interposer's
+// queue. ffx_routing.h already records that HRESULT (DXGI_ERROR_ACCESS_DENIED, 0x887A002B) as the
+// signature of cross-queue backbuffer access, from the late-inject DLSS-G case.
+TEST(PresentInterposerQueuePolicyTest, OverlayGoesOnTheChainsOwnQueueOrNowhere) {
+    using ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue;
+    EXPECT_TRUE(ShouldUsePresentInterposerOutputQueue(true, true));
+
+    // No observed queue: there is no safe route onto this chain, so CE must not draw here at all
+    // rather than fall back to the application's queue.
+    EXPECT_FALSE(ShouldUsePresentInterposerOutputQueue(true, false));
+    // Not an interposer chain: normal routing owns the decision.
+    EXPECT_FALSE(ShouldUsePresentInterposerOutputQueue(false, true));
+    EXPECT_FALSE(ShouldUsePresentInterposerOutputQueue(false, false));
+}
+
+// Bypassing a runtime's own ExecuteCommandLists hook makes it treat CE's overlay as an unexpected
+// submission on its queue and remove the device. That is established for native FSR FG; an
+// interposer's output queue is the same situation.
+TEST(PresentInterposerQueuePolicyTest, OverlayEntersTheQueuesLiveECLChain) {
+    using ce::dx12_overlay_policy::ShouldSubmitOverlayThroughHookedECLChain;
+    EXPECT_TRUE(ShouldSubmitOverlayThroughHookedECLChain(true, false));
+    EXPECT_TRUE(ShouldSubmitOverlayThroughHookedECLChain(false, true));
+    EXPECT_TRUE(ShouldSubmitOverlayThroughHookedECLChain(true, true));
+    // The game's own queue keeps the raw D3D12 entry, which is what the normal overlay path uses.
+    EXPECT_FALSE(ShouldSubmitOverlayThroughHookedECLChain(false, false));
+}
 
 TEST(PresentInterposerCadenceTest, TwoOutputPresentsPerApplicationPresentIsSmoothMotion2x) {
     const CadenceVerdict verdict = ClassifyInterposerCadence(120, 240, 1000000);
@@ -103,6 +138,139 @@ TEST(PresentInterposerCadenceTest, ResetDiscardsAPartialWindow) {
     const bool closed = tracker.NoteApplicationPresent(3100000, &verdict);
     EXPECT_TRUE(closed);
     EXPECT_FALSE(verdict.generating) << "no output presents were recorded after the reset";
+}
+
+// Strange Brigade DX12 + NVIDIA Smooth Motion (session 20260914_102700). NvPresent64 hands the
+// application a proxy swapchain and keeps its own output chain, on its own command queue, for the
+// frames it puts on screen. CE's overlay belongs on that output chain — it is below every overlay
+// that patched the dxgi entry, so CE draws last and is topmost, and the frame is already generated,
+// so the overlay is not interpolated. What killed the game was the QUEUE: CE submitted the overlay
+// on the GAME's queue while drawing into the interposer's buffers, and the first
+// ExecuteCommandLists removed the device (GetDeviceRemovedReason == DXGI_ERROR_ACCESS_DENIED,
+// 0x887A002B), which ffx_routing.h already records as the signature of cross-queue backbuffer
+// access. Present then returned DXGI_ERROR_DEVICE_REMOVED and the game null-dereferenced 1.1 s later.
+TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
+    namespace fs = std::filesystem;
+    const std::string create = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+    ASSERT_FALSE(create.empty());
+    // Every create site must classify the interposer's private chain before any CE side effect,
+    // including the third-party-overlay branch that would otherwise capture its queue.
+    for (const char* context : {"CreateSwapChainForHwnd INLINE", "DetourCreateSwapChainGlobal",
+                                "DetourCreateSwapChainForHwndGlobal"}) {
+        const std::string note =
+            std::string("NotePresentInterposerPrivateSwapchainCreate(\"") + context + "\"";
+        const size_t noteAt = create.find(note);
+        ASSERT_NE(noteAt, std::string::npos) << context;
+        const size_t markAt = create.find("MarkThirdPartyOverlaySwapchain(", noteAt);
+        ASSERT_NE(markAt, std::string::npos) << context;
+        EXPECT_LT(noteAt, markAt) << context;
+    }
+
+    // The create must record the queue: that association is the only thing that makes the chain
+    // compositable, and its absence is what forces the application-facing fallback.
+    const std::string wrapPolicy = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_wrap_policy.cpp");
+    ASSERT_FALSE(wrapPolicy.empty());
+    EXPECT_NE(wrapPolicy.find("DX12_RegisterPresentInterposerPrivateSwapchain(pSwapChain, outputQueue)"),
+              std::string::npos);
+    EXPECT_NE(wrapPolicy.find("ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain("), std::string::npos);
+
+    // Both present entries pass the chain through only when no queue was observed for it.
+    for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
+        const std::string present =
+            ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / presentUnit);
+        ASSERT_FALSE(present.empty()) << presentUnit;
+        const size_t guard = present.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&");
+        ASSERT_NE(guard, std::string::npos) << presentUnit;
+        EXPECT_NE(present.find("!DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)", guard),
+                  std::string::npos)
+            << presentUnit << ": the pass-through must be conditional on having no queue";
+        const size_t overlayGuard = present.find("DX12_IsThirdPartyOverlaySwapchain(pSwapChain)");
+        ASSERT_NE(overlayGuard, std::string::npos) << presentUnit;
+        EXPECT_LT(guard, overlayGuard) << presentUnit;
+    }
+
+    // The overlay queue for that chain is the chain's own queue, never the application's.
+    const std::string phase2 = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp");
+    ASSERT_FALSE(phase2.empty());
+    const size_t interposerRoute = phase2.find("ShouldUsePresentInterposerOutputQueue(");
+    ASSERT_NE(interposerRoute, std::string::npos);
+    EXPECT_NE(phase2.find("gameQueue = interposerOutputQueue;", interposerRoute), std::string::npos);
+    // It must outrank the generic routing, which would otherwise pick the application's queue.
+    const size_t genericRouting = phase2.find("DecideSwapchainOverlayRouting(");
+    ASSERT_NE(genericRouting, std::string::npos);
+    EXPECT_LT(interposerRoute, genericRouting);
+
+    // ...and it enters that queue's live ECL chain rather than the raw D3D12 entry.
+    const std::string drawTail = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_tail.cpp");
+    ASSERT_FALSE(drawTail.empty());
+    EXPECT_NE(drawTail.find("ShouldSubmitOverlayThroughHookedECLChain("), std::string::npos);
+
+    // The wrapper stays a pure pass-through while the detour composites on the output chain, so the
+    // frame is composited exactly once and never on the application's interpolated copy.
+    const std::string wrapInternal = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap_internal.h");
+    ASSERT_FALSE(wrapInternal.empty());
+    const size_t delegateForInterposer = wrapInternal.find("HasCompositablePresentInterposerOutputChain()");
+    ASSERT_NE(delegateForInterposer, std::string::npos);
+    const size_t invisibleRefusal = wrapInternal.find("presentInvisibleToDetourHook) {", delegateForInterposer);
+    ASSERT_NE(invisibleRefusal, std::string::npos)
+        << "the no-queue refusal must come after the compositable-chain delegation";
+
+    // The object handed to the application is never a private chain, whatever the create looked
+    // like — an interposer that merely forwards the app's create must not cost CE its overlay.
+    const std::string factory = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
+    ASSERT_FALSE(factory.empty());
+    const size_t assign = factory.find("void AssignCreatedSwapchain(");
+    ASSERT_NE(assign, std::string::npos);
+    const size_t unregister =
+        factory.find("DX12_UnregisterPresentInterposerPrivateSwapchain(", assign);
+    const size_t preserve =
+        factory.find("ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(", assign);
+    ASSERT_NE(unregister, std::string::npos);
+    ASSERT_NE(preserve, std::string::npos);
+    EXPECT_LT(unregister, preserve);
+    // ...and the identity preservation must be conditioned on the deep body hook actually covering
+    // that object's Present.
+    EXPECT_NE(factory.find("IsSwapchainPresentCoveredByDeepBodyHook(", assign), std::string::npos);
+}
+
+// Forced FIFO under a present interposer. The 2026-09-13 Portal RTX result is the precedent and it
+// cuts the other way from the obvious reading: what unpaced a generated group was forcing the
+// present MODE above the generator, not stating the interval on its final flip. CE touches nothing
+// above NvPresent64 — the pair arrives at DXGI already spread by the driver's own metering, which is
+// exactly what its SyncInterval=0 + ALLOW_TEARING output present IS — so quantizing that flip onto
+// vertical blanks is vertical-blank synchronization.
+TEST(PresentInterposerSourceTest, ForcedFifoIsStatedOnTheInterposersOwnFlip) {
+    namespace fs = std::filesystem;
+    const std::string pacing = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "common" / "dxgi_shared_present_pacing.cpp");
+    ASSERT_FALSE(pacing.empty());
+    const size_t interposerBranch = pacing.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
+    ASSERT_NE(interposerBranch, std::string::npos);
+
+    // The final-flip contract is the shared one, not a second spelling of it.
+    EXPECT_NE(pacing.find("ApplyFinalDxgiFifoParameters(", interposerBranch), std::string::npos);
+    // ...and the generic input-side override must not also run for that present.
+    const size_t genericOverride = pacing.find("ProcessVSyncOverride(syncInterval, flags);");
+    ASSERT_NE(genericOverride, std::string::npos);
+    EXPECT_LT(interposerBranch, genericOverride);
+    EXPECT_NE(pacing.find("return;", interposerBranch), std::string::npos);
+
+    // Only a vertical-blank request applies: off/mailbox are not one, and the interposer's own
+    // parameters already are those.
+    EXPECT_NE(pacing.find("useMailbox", interposerBranch), std::string::npos);
+
+    // The swapchain has to reach the decision at all.
+    const std::string header = ce::test_source::ReadFile(
+        fs::current_path() / "hook" / "common" / "dxgi_shared.h");
+    ASSERT_FALSE(header.empty());
+    EXPECT_NE(header.find("ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain"),
+              std::string::npos);
 }
 
 }  // namespace

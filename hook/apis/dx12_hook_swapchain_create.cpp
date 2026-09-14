@@ -343,7 +343,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
 }
 
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
-    if (NotePresentInterposerPrivateSwapchainCreate("CreateSwapChainForHwnd INLINE", callerAddress, *ppSC)) {
+    if (NotePresentInterposerPrivateSwapchainCreate("CreateSwapChainForHwnd INLINE", callerAddress, *ppSC, pDevice)) {
         return hr;
     }
     if (callerFromThirdPartyOverlay) {
@@ -481,7 +481,7 @@ if (FAILED(hr)) {
 }
 
 if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
-    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainGlobal", callerAddress, *ppSwapChain)) {
+    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainGlobal", callerAddress, *ppSwapChain, pDevice)) {
         return hr;
     }
     if (callerFromThirdPartyOverlay) {
@@ -683,7 +683,7 @@ if (ce::dx12_overlay_policy::ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAf
 }
 
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
-    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainForHwndGlobal", callerAddress, *ppSC)) {
+    if (NotePresentInterposerPrivateSwapchainCreate("DetourCreateSwapChainForHwndGlobal", callerAddress, *ppSC, pDevice)) {
         return hr;
     }
     if (callerFromThirdPartyOverlay) {

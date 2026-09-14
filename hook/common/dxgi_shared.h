@@ -17,7 +17,10 @@ namespace DXGIShared {
 void SetVulkanActiveForDXGIPresentPath(bool active);
 bool IsVulkanActive();
 // Native FFX receives user VSync intent at its proxy input, before scheduling outputs.
-void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags);
+// `pSwapChain` identifies the chain being presented. A present interposer's output chain (NVIDIA
+// Smooth Motion) schedules its own flips and must keep the parameters it chose; pass it so the
+// override is withheld there, exactly as it is for FFX's output presents.
+void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain = nullptr);
 // Creation-time counterpart to the Present/Resize pass-through rule. This is
 // deliberately checked by every residual factory/swapchain hook because those
 // hooks may have been installed before Vulkan ownership became observable.

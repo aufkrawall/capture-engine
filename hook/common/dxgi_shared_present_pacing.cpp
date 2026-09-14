@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
+#include "vulkan_dxgi_fifo_policy.h"
 
 // Flip-queue pacing and present-queue latency overrides, split out of
 // dxgi_shared.cpp. Both are CE's D3D-side implementation of `backbuffer_count`
@@ -203,7 +204,41 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
 }
 
 namespace DXGIShared {
-void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags) {
+void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain) {
+    if (pSwapChain && DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+        // A present interposer's own output present (NVIDIA Smooth Motion) is the FINAL physical
+        // flip, and that is the one place a vertical-blank contract can still be stated for a
+        // metered frame generator. This is the Portal RTX result of 2026-09-13, restated for DXGI:
+        // what unpaced the generated group there was forcing the present MODE above the generator,
+        // not the interval on its flip. CE changes nothing above NvPresent64 - the pair arrives
+        // here already spread by the driver's own metering (it presents SyncInterval=0 with
+        // ALLOW_TEARING, which IS that scheduling) - so quantizing an already-correctly-spread
+        // group onto vertical blanks is vertical-blank synchronization, not judder.
+        //
+        // Only a vblank-paced request applies. `off` and `mailbox` are not a vertical-blank
+        // contract, and the interposer's own parameters already are those.
+        const VSyncOverride interposerOverride = GetVSyncOverride();
+        const bool vblankPacedRequested =
+            interposerOverride.shouldOverride && !interposerOverride.useMailbox &&
+            interposerOverride.presentInterval >= 1;
+        uint32_t rewrittenInterval = syncInterval;
+        uint32_t rewrittenFlags = flags;
+        const bool rewritten = ce::vulkan_dxgi_fifo_policy::ApplyFinalDxgiFifoParameters(
+            vblankPacedRequested, rewrittenInterval, rewrittenFlags);
+        if (rewritten) {
+            static std::atomic<int> s_interposerFifoLogCount{0};
+            const int logCount = s_interposerFifoLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5 || (logCount % 4096) == 0) {
+                HookLogImportant(
+                    "DXGI: stating the vertical blank on the present interposer's own flip (sc=%p sync=%u->%u "
+                    "flags=0x%X->0x%X) #%d — nothing above the generator is touched",
+                    pSwapChain, syncInterval, rewrittenInterval, flags, rewrittenFlags, logCount + 1);
+            }
+            syncInterval = rewrittenInterval;
+            flags = rewrittenFlags;
+        }
+        return;
+    }
     if (ce::present_pacing_policy::ShouldPreserveNativeFGOutputVSync(
             HookHasRuntimeOwnedNativeFGPresentPath(), DX12_IsFFXProxyPresentHookInstalled(),
             g_StreamlineFGRunning.load(std::memory_order_acquire))) {

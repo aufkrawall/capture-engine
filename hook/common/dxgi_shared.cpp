@@ -100,11 +100,6 @@ namespace DXGIShared {
 std::unordered_set<IDXGISwapChain*> s_startupBlockingOverlayTaggedSwapchains;
 }
 
-namespace DXGIShared {
-std::unordered_set<IDXGISwapChain*> s_presentInterposerPrivateSwapchains;
-// Lock-free gate so the present path pays one atomic load when no interposer is in the chain.
-std::atomic<size_t> s_presentInterposerPrivateSwapchainCount{0};
-}
 
 namespace DXGIShared {
 // Post-SL FG overlay callback (set by dx12_hook.cpp when SL FG is active).
@@ -179,49 +174,6 @@ bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain) {
 
     std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
     return s_thirdPartyOverlaySwapchains.find(pSwapChain) != s_thirdPartyOverlaySwapchains.end();
-}
-}
-
-namespace DXGIShared {
-void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
-    s_presentInterposerPrivateSwapchains.insert(pSwapChain);
-    s_presentInterposerPrivateSwapchainCount.store(s_presentInterposerPrivateSwapchains.size(),
-                                                   std::memory_order_release);
-}
-}
-
-namespace DXGIShared {
-void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
-    s_presentInterposerPrivateSwapchains.erase(pSwapChain);
-    s_presentInterposerPrivateSwapchainCount.store(s_presentInterposerPrivateSwapchains.size(),
-                                                   std::memory_order_release);
-}
-}
-
-namespace DXGIShared {
-bool HasPresentInterposerPrivateSwapchains() {
-    return s_presentInterposerPrivateSwapchainCount.load(std::memory_order_acquire) != 0;
-}
-}
-
-namespace DXGIShared {
-bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain || !HasPresentInterposerPrivateSwapchains()) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(s_thirdPartyOverlaySwapchainMutex);
-    return s_presentInterposerPrivateSwapchains.find(pSwapChain) != s_presentInterposerPrivateSwapchains.end();
 }
 }
 

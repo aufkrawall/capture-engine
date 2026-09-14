@@ -33,14 +33,19 @@ bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() {
                ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2;
 }
 
-// NVIDIA Smooth Motion (NvPresent64) creates this chain in ADDITION to the application's: it is
-// the interposer's private output chain, presented on the interposer's own command queue while the
-// application keeps a proxy object. CE must never composite into it. Strange Brigade DX12 + Smooth
-// Motion (session 20260914_102700) is what this is for: CE's deep dxgi!Present body hook handed it
-// exactly this swapchain, CE adopted it as the game's, submitted the overlay on the GAME's queue,
-// and the first ExecuteCommandLists removed the device with DXGI_ERROR_ACCESS_DENIED.
+// NVIDIA Smooth Motion (NvPresent64) creates this chain in ADDITION to the application's: it is the
+// interposer's private output chain, presented on the interposer's own command queue while the
+// application keeps a proxy object. It is where CE's overlay belongs — below every overlay that
+// patches the dxgi entry, and after the driver generated the frame — but ONLY on that queue.
+// Strange Brigade DX12 + Smooth Motion (session 20260914_102700) is what this is for: CE adopted the
+// chain and submitted the overlay on the GAME's queue, and the first ExecuteCommandLists removed the
+// device with DXGI_ERROR_ACCESS_DENIED (0x887A002B) — the cross-queue backbuffer access
+// dx12_overlay_policy/ffx_routing.h already documents by that exact HRESULT.
+//
+// `pDevice` is the D3D12 command queue for a DX12 swapchain create. Recording it here is what makes
+// the chain compositable at all; without it CE keeps the overlay on the application-facing chain.
 bool NotePresentInterposerPrivateSwapchainCreate(const char* context, const void* callerAddress,
-                                                 IDXGISwapChain* pSwapChain) {
+                                                 IDXGISwapChain* pSwapChain, IUnknown* pDevice) {
     if (!pSwapChain) {
         return false;
     }
@@ -57,15 +62,31 @@ bool NotePresentInterposerPrivateSwapchainCreate(const char* context, const void
         return false;
     }
 
-    DXGIShared::DX12_RegisterPresentInterposerPrivateSwapchain(pSwapChain);
+    ID3D12CommandQueue* outputQueue = nullptr;
+    if (pDevice) {
+        // A DX12 swapchain's "device" is its command queue; anything else (a D3D11 device) leaves
+        // the chain non-compositable, which is the safe state.
+        if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&outputQueue)))) {
+            outputQueue = nullptr;
+        }
+        if (outputQueue) {
+            // The map holds a raw pointer for identity only. The interposer owns this queue for the
+            // lifetime of its chain, and a retaining reference would pin a driver object CE has no
+            // business keeping alive.
+            outputQueue->Release();
+        }
+    }
+    DXGIShared::DX12_RegisterPresentInterposerPrivateSwapchain(pSwapChain, outputQueue);
     static std::atomic<int> s_privateChainLogCount{0};
     const int logNum = s_privateChainLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (logNum <= 10 || (logNum % 500) == 0) {
         const char* creator = callerFromPresentInterposerModule ? callerModulePath : stackModulePath;
         HookLogImportant(
-            "%s: Present interposer %s created its private output swapchain %p (#%d) — CE never composites into "
-            "it; the overlay stays on the application-facing chain",
-            context ? context : "CreateSwapChain", creator[0] ? creator : "unknown", (void*)pSwapChain, logNum);
+            "%s: Present interposer %s created its output swapchain %p on queue %p (#%d) — CE composites there, "
+            "on that queue only%s",
+            context ? context : "CreateSwapChain", creator[0] ? creator : "unknown", (void*)pSwapChain,
+            (void*)outputQueue, logNum,
+            outputQueue ? "" : "; no queue observed, so the overlay stays on the application-facing chain");
     }
     return true;
 }

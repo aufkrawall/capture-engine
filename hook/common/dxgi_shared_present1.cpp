@@ -361,7 +361,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 api == APIType::D3D12, hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
                 static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount1{0};
@@ -396,7 +396,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline synthetic Present1");
         }
-        ProcessPresentVSyncOverride(SyncInterval, Flags);
+        ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
 
         PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
         if (present1Bypass) {
@@ -502,7 +502,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present1");
         }
-        ProcessPresentVSyncOverride(SyncInterval, Flags);
+        ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
         static std::atomic<int> s_reentrantLogCount1{0};
         int reentrantNum1 = s_reentrantLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
         if (reentrantNum1 <= 10 || reentrantNum1 == 50 || reentrantNum1 == 100 || (reentrantNum1 % 500) == 0) {
@@ -574,18 +574,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
-        // Same rule as DetourPresent: the interposer's private output chain is passed through
-        // untouched, because its buffers belong to the interposer's queue and not to the game's.
-        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+        // Same rule as DetourPresent: CE composites on the interposer's output chain, but only when
+        // it observed the queue that owns it.
+        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&
+            !DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)) {
             static std::atomic<int> s_interposerPresent1BypassLogCount{0};
             const int logCount = s_interposerPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 2048) == 0) {
                 HookLogImportant(
-                    "DetourPresent1: Passing through a present interposer's private output swapchain %p untouched "
-                    "(#%d) — CE composites on the application-facing chain only",
+                    "DetourPresent1: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
+                    "through untouched; the overlay stays on the application-facing chain",
                     pSwapChain, logCount + 1);
             }
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
@@ -609,7 +610,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
 
@@ -647,7 +648,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 g_SharedFpsLimiter.Apply(true);
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
             HRESULT handoffHr = dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
             if (SUCCEEDED(handoffHr)) {
@@ -696,7 +697,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 
-    ProcessPresentVSyncOverride(SyncInterval, Flags);
+    ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
 
     const bool runtimeOwnedNativeFGPresent =
         DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();

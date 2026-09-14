@@ -481,7 +481,25 @@ gameQueue = nullptr;
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
         dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
         GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-    if (protectedOfficialFFXStartupOverlayOnly) {
+    ID3D12CommandQueue* const interposerOutputQueue = DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
+    if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(
+            DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain), interposerOutputQueue != nullptr)) {
+        // pSwapChain is the present interposer's own output chain (NVIDIA Smooth Motion), so its
+        // backbuffers belong to the queue that created it. This is the same rule as the FSR
+        // swapchain queue below, and the game queue here is exactly the cross-queue access that
+        // removes the device with DXGI_ERROR_ACCESS_DENIED.
+        gameQueue = interposerOutputQueue;
+        static std::atomic<int> s_interposerQueueLogCount{0};
+        const int logCount = s_interposerQueueLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: ProcessFrame — present interposer output chain %p, using its own queue %p "
+                "(origGame=%p primaryQ=%p cmdQ=%p) #%d",
+                pSwapChain, gameQueue, dx12_hook_g_OriginalGameQueue,
+                dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), (void*)g_CommandQueue.load(),
+                logCount + 1);
+        }
+    } else if (protectedOfficialFFXStartupOverlayOnly) {
         static std::atomic<int> s_protectedOfficialFFXStartupGpuQuietLogCount{0};
         const int logCount = s_protectedOfficialFFXStartupGpuQuietLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {

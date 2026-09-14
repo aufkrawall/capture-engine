@@ -236,6 +236,25 @@ inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromTh
     return !hasOriginalGameQueue || !capturedQueueMatchesOriginalGameQueue;
 }
 
+// A present interposer's output chain (NVIDIA Smooth Motion) is the chain CE is drawing into, so
+// the queue that created it is the ONLY queue that may carry the overlay. Submitting on the
+// application's queue instead is the cross-queue backbuffer access that removes the device with
+// DXGI_ERROR_ACCESS_DENIED (0x887A002B) on the first draw - the same failure ffx_routing.h records
+// for the DLSS-G render queue, and what killed Strange Brigade DX12 in session 20260914_102700.
+// Without an observed queue there is no safe route and CE must not draw here at all.
+inline bool ShouldUsePresentInterposerOutputQueue(bool swapchainIsInterposerOutputChain,
+                                                  bool hasInterposerOutputQueue) {
+    return swapchainIsInterposerOutputChain && hasInterposerOutputQueue;
+}
+
+// The interposer owns its queue and may track submissions on it. CE's overlay must therefore enter
+// through the queue's live ExecuteCommandLists chain rather than the raw D3D12 function, exactly as
+// it already must for a native FSR FG queue: bypassing the runtime's own ECL hook is what makes the
+// runtime treat the submission as unexpected and remove the device.
+inline bool ShouldSubmitOverlayThroughHookedECLChain(bool fsrFGActive, bool onPresentInterposerOutputQueue) {
+    return fsrFGActive || onPresentInterposerOutputQueue;
+}
+
 inline bool ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(bool swapchainKnownThirdPartyOverlay) {
     // Third-party overlays can create their own auxiliary swapchains on the
     // game's HWND. Those Presents are not authoritative game-swapchain traffic

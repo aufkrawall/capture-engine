@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-09-14 - The chain was never the problem, the queue was: overlay back on Smooth Motion's output flip
+
+0.1.6555 kept the game alive by moving CE's overlay onto the application-facing chain, and that was one step too
+far. Two consequences were wrong: the overlay was interpolated along with the game frame, and it drew BELOW Steam
+and RTSS instead of above them.
+
+`dx12_overlay_policy/ffx_routing.h` already records the real cause, by the exact HRESULT: `DXGI_ERROR_ACCESS_DENIED`
+(0x887A002B) is **cross-queue backbuffer access**, from the late-inject DLSS-G case (`20260811_221202`). CE was not
+wrong to draw on NvPresent64's output chain - RTSS draws there too, which is why its overlay is not interpolated.
+CE was wrong to submit that overlay on the GAME's queue while drawing into buffers owned by the interposer's queue.
+`Execution discovery retained queue=...8CC1B00 instead of auxiliary=...115396C0` is CE rejecting the only correct
+queue, and `scQ=0000000000000000` is the association it never recorded.
+
+0.1.6559: the interposer create records its queue, and the overlay is routed onto it - the same rule as
+`kUseFSRSwapchainQueue` ("pSwapChain is FSR's swapchain, backbuffers belong to FSR's queue"). The overlay submit
+enters that queue's live ECL chain rather than the raw D3D12 entry, for the same reason it already must on an FSR
+queue. The application-facing wrapper stays a pure pass-through so the frame is composited exactly once, and still
+counts the application's presents for the cadence measurement. Where CE never observed the interposer's create it
+has no safe queue, does not draw there at all, and falls back to the application-facing chain.
+
+Result: CE's overlay is topmost (its deep body hook is below the dxgi entry Steam and RTSS patch, so CE draws last)
+and not interpolated (the driver has already generated the frame). Hardware run pending.
+
+### 2026-09-14 - Forced FIFO under Smooth Motion: state the vertical blank on the interposer's own flip
+
+I first reported forced vsync as out of reach here. That was wrong, and `vulkan_dxgi_fifo_policy.h` says why in its
+own words: the 2026-08-30 sessions that measured "forcing FIFO unpaces a metered generator" **also forced the Vulkan
+present MODE**, and that is what collapsed NVIDIA's announced flip lead from 6842 us to 141 us. Stating the interval
+on the final flip of an already-correctly-spread group is vertical-blank synchronization; quantizing an unpaced
+burst was the judder. That is the Portal RTX fix validated on 2026-09-13 (144.0 presents/s on 144 Hz, stddev
+~360 us, no tearing).
+
+Smooth Motion is the same shape. CE touches nothing above NvPresent64, so its generated pair arrives at DXGI already
+spread by the driver's own metering - `SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)` IS that scheduling.
+`vsync_mode=fifo` is therefore applied with the same pure contract, `ApplyFinalDxgiFifoParameters`, on the
+interposer's output present only: `SyncInterval=1` with `ALLOW_TEARING`/`RESTART`/`DO_NOT_WAIT` cleared. The
+input-side override is withheld there. `off` and `mailbox` are left alone; the interposer's own parameters already
+are those. Hardware run pending.
+
+
 ### 2026-09-14 - NVIDIA Smooth Motion is a present interposer, and CE was overlaying its private chain
 
 Strange Brigade DX12 with driver Smooth Motion crashed on the first frame, session `20260914_102700` (0.1.6550).
@@ -43,13 +83,6 @@ measures it exactly - `DetourPresent: ENTRY #1/#2` at `10:59:08.951/.952` for on
 every frame. 1:1 forwarding reads as Smooth Motion loaded and NOT engaged rather than as a 1x generator. The base
 and output FPS the overlay shows come from the same two measured streams, because the frame history now only holds
 the application's presents. Hardware confirmation of the visible label still pending.
-
-Forced vsync (`vsync_mode=fifo`) is a separate matter and is NOT within CE's reach here. CE applies the override at
-the interposer's input, which is the only place it could legitimately go, and NvPresent64 does not propagate it: its
-private output presents were observed as `SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`. Forcing FIFO on
-those output presents is exactly the metered-generator regression already fixed for Portal RTX on 2026-09-13 - it
-removes the generator's flip scheduling and bunches the pair. With Smooth Motion detected, CE now also takes its
-normal FG path and stops applying the override at all. Use the driver's own V-Sync setting alongside Smooth Motion.
 
 
 ### 2026-09-13 - Validated: forced vsync under DLSS MFG, on the vertical blank

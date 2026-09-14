@@ -1,7 +1,7 @@
 # Present Interposers (NVIDIA Smooth Motion)
 
-Last verified: 2026-09-14 (build 0.1.6556, Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853`;
-overlay confirmed on hardware, the visible Smooth Motion label still pending a run)
+Last verified: 2026-09-14 (build 0.1.6559, Strange Brigade DX12 sessions `20260914_102700` / `105242` / `105853`.
+The output-chain topology below is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
 
 Primary sources:
 - `hook/common/overlay_compat_detail/module_table.h` (`IsPresentInterposerModulePath` and friends)
@@ -32,8 +32,12 @@ NVIDIA Smooth Motion (`NvPresent64.dll`, `NvPresent32.dll`) is the case this pag
    private chain ever reaches that body, so `ArePresentMethodsInterceptedBelowForeignChain()` alone does not prove
    coverage. `IsSwapchainPresentCoveredByDeepBodyHook()` is the question that must actually be asked:
    is this object's `vtable[8]` in the same module as the entry CE deep-hooked?
-2. **CE never composites into an interposer's private output chain.** Its back buffers belong to the interposer's
-   queue; anything CE submits on the application's queue is an unsynchronized write to them.
+2. **CE composites on the interposer's output chain, and submits that overlay on THAT CHAIN'S OWN QUEUE.** The
+   back buffers belong to the queue that created the chain. Submitting on the application's queue instead is
+   cross-queue backbuffer access, which removes the device with `DXGI_ERROR_ACCESS_DENIED` (0x887A002B) — the exact
+   HRESULT `dx12_overlay_policy/ffx_routing.h` already records for the late-inject DLSS-G case, and the same rule as
+   `kUseFSRSwapchainQueue`. **The chain was never the problem; the queue was.** Where CE never observed the create,
+   there is no safe queue and CE must not draw there at all — it falls back to the application-facing chain.
 3. **A swapchain created by an interposer is that interposer's private chain, permanently.** Unlike an overlay —
    which can legitimately wrap the game's own authoritative create and make the real game swapchain look foreign —
    an interposer's create is always in *addition* to the application's. No later "the game presents on it after all"
@@ -41,18 +45,31 @@ NVIDIA Smooth Motion (`NvPresent64.dll`, `NvPresent32.dll`) is the case this pag
    definition not private, so `AssignCreatedSwapchain` unregisters it. That covers an interposer that merely
    forwards the application's create unchanged.
 4. **The application's present stream is 1x under an interposer**, however many frames the driver generates.
-5. **The swapchain wrapper must not delegate a Present the detour cannot see.** Delegation exists because a foreign
-   overlay owns the entry and the detour will do the work; when the detour is a view of the interposer's private
-   chain instead, delegating sends the frame out uncomposited.
+5. **The swapchain wrapper delegates while the detour composites on the output chain, and only then.** Delegation
+   makes the wrapper a pure pass-through so the frame is composited exactly once. When there is no compositable
+   output chain, the wrapper must NOT delegate: the detour would deliberately pass the frame through and the overlay
+   would never be composited at all.
+6. **Everything above the interposer stays untouched.** No present-mode override, no interval override, no extra
+   GPU work on the application's queue. The generated group must arrive at DXGI already spread by the driver's own
+   metering; CE's only contract is stated on the final flip (see Forced vsync).
 
 ## Where CE's overlay goes
-On the application's chain, through `CWrapDXGISwapChain`. CE composites ABOVE the foreign Present chain in this mode
-(`[OVERLAY LAYER] ... site=swapchain-wrapper`), which means:
+On the interposer's **output** chain, through the deep `dxgi!Present` body hook, submitted on that chain's own queue.
+That placement is what gives both properties at once:
 
-- Steam and RTSS, which hook the dxgi entry inside NvPresent64's forward, draw on top of CE's overlay. That is the
-  correct trade — the alternative removes the device.
-- CE's overlay is interpolated along with the game frame, exactly as RTSS's is. Inherent to drawing on the
-  application's chain.
+- **Topmost.** CE's body hook sits below the dxgi Present entry, so Steam and RTSS — which patch that entry — have
+  already drawn by the time CE runs. Last to composite is topmost.
+- **Not interpolated.** The driver has already generated the frame by the time it presents this chain, so CE's
+  overlay goes onto the displayed frame, not into the interpolator's input. This is where RTSS draws too.
+- The overlay is drawn on every displayed frame, real and generated alike.
+
+The application-facing wrapper stays a pure pass-through in this mode (`ShouldDelegateDX12PresentToDetourHook`
+returns true), so the frame is composited exactly once. It still counts the application's presents for the cadence
+measurement.
+
+**Fallback**: if CE never observed the interposer's create — so it has no queue for that chain — it wraps the
+application-facing swapchain and composites there instead. That overlay IS interpolated and draws below Steam/RTSS.
+It is the safe state, not the intended one.
 
 ## Smooth Motion status
 The generation factor is the ratio between the two present streams: the interposer's private-chain presents
@@ -68,40 +85,58 @@ The 2026-07-29 command-work and paired-gap heuristics remain for DX11 and Vulkan
 See `overlay-fg-status.md` for why they cannot work in DX12.
 
 ## Diagnostics / failure modes
-- `DetourCreateSwapChainGlobal: Present interposer <path> created its private output swapchain <ptr>` — the create
-  was classified. Absent under Smooth Motion means the caller-module test missed.
+- `DetourCreateSwapChainGlobal: Present interposer <path> created its output swapchain <ptr> on queue <ptr>` — the
+  create was classified AND the queue recorded. Absent under Smooth Motion means the caller-module test missed; a
+  null queue there means the chain is not compositable and the fallback will engage.
 - `CreateSwapChain: A present interposer implements Present for the app-facing swapchain (sc=...)` — CE took the
   wrapper instead of preserving identity.
-- `SwapChain: Present for real=... is implemented above dxgi (present interposer)` — the wrapper knows it is CE's
-  only Present view and will not delegate.
-- `DetourPresent: Passing through a present interposer's private output swapchain <ptr> untouched` — invariant 2
-  holding. This line stops appearing once the wrapper takes over, because the wrapper re-entry early return fires
-  first; that is expected, not a failure.
+- `SwapChain: Present for real=... is implemented above dxgi (present interposer)` — the wrapper knows a present
+  interposer owns this object's Present.
+- `DXGI: stating the vertical blank on the present interposer's own flip (sc=... sync=0->1 flags=0x200->0x0)` —
+  forced FIFO reaching the final flip.
+- `DX12: ProcessFrame — present interposer output chain <ptr>, using its own queue <ptr>` — invariant 2 holding.
+  A `path=primaryQ`/`origGame` line for an interposer chain instead means the queue was lost: that is the crash.
+- `DetourPresent: Present interposer output swapchain <ptr> has no observed queue` — the fallback engaged.
 - `DetourPresent: Present interposer output cadence window #N — application=... output=... generating=... multiplier=...`
 - **Device removed with `DXGI_ERROR_ACCESS_DENIED` (`0x887A002B`) out of `GetDeviceRemovedReason()` right after CE's
-  first overlay `ExecuteCommandLists`, with no TDR in the Windows System log** — CE is compositing into a chain it
-  does not own. That is this page's founding bug (session `20260914_102700`): the game then crashed on a null
-  dereference 1.1 s later, after CE started swallowing its command lists.
+  first overlay `ExecuteCommandLists`, with no TDR in the Windows System log** — CE is drawing into one queue's
+  backbuffers while submitting on another. That is this page's founding bug (session `20260914_102700`): the game
+  then crashed on a null dereference 1.1 s later, after CE started swallowing its command lists.
 
 ## Forced vsync
-`vsync_mode` does not reach the display under Smooth Motion. CE applies the override at the interposer's input —
-the only legitimate place for it — and NvPresent64 does not propagate it: its output presents were observed as
-`SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`, which is its flip metering. Once Smooth Motion is detected
-CE takes its normal FG path and stops applying the override at all. The driver's own V-Sync setting is the control.
+**`vsync_mode=fifo` is stated on the interposer's own output flip**, and nowhere else. This is the Portal RTX result
+of 2026-09-13 restated for DXGI, and it cuts the opposite way from the obvious reading of that investigation:
+
+- Forcing the override at the interposer's *input* (the application-facing present) is above the generator. It is
+  also useless — NvPresent64 does not propagate it, and its output present was observed as `SyncInterval=0
+  Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`, which IS its flip scheduling.
+- Forcing it on the *output* flip is the validated contract. `vulkan_dxgi_fifo_policy.h` spells out why the earlier
+  "forcing FIFO unpaces a metered generator" conclusion was measured on the wrong thing: those sessions forced the
+  Vulkan present MODE as well, and that is what collapsed NVIDIA's announced flip lead from 6842 us to 141 us.
+  Quantizing an already-correctly-spread group onto vertical blanks is vertical-blank synchronization; quantizing an
+  unpaced burst was the judder.
+
+CE therefore reuses the same pure contract, `ce::vulkan_dxgi_fifo_policy::ApplyFinalDxgiFifoParameters`:
+`SyncInterval=1` with `ALLOW_TEARING`, `RESTART` and `DO_NOT_WAIT` cleared, on the interposer's output present only.
+`off` and `mailbox` are not a vertical-blank contract and are left alone — the interposer's own parameters already
+are those. Nothing above the generator is touched, no timer is added and no driver profile is written.
 
 ## Rejected approaches (do NOT re-pursue)
-- Compositing into the interposer's private chain, on either queue. Unsynchronized with NvPresent64's own
-  interpolation submissions, and it is what `DXGI_ERROR_ACCESS_DENIED` was reporting.
-- Forcing FIFO or clearing `ALLOW_TEARING` on the interposer's output presents to make `vsync_mode=fifo` bite. That
-  removes a metered generator's flip scheduling — the Portal RTX regression fixed on 2026-09-13
-  (`display-change-timing.md`).
+- Compositing on the interposer's output chain using the APPLICATION's queue. That is the founding bug.
+- Keeping the overlay on the application-facing chain as the normal mode. It works, but the overlay is then
+  interpolated and draws below Steam/RTSS; it is the fallback for a chain whose queue CE never saw.
+- Forcing the present MODE, or any interval, ABOVE the interposer. That is what unpaces a metered generator.
 - Restoring the old Smooth Motion heuristics by putting CE back on the driver's private chain.
 
 ## Open questions / stale-risk
 - Stale-risk **medium**: the classification is keyed on the `nvpresent` module name. A driver that renames or
   relocates the interposer, or a different vendor shipping the same topology, needs the token table extended.
-- The visible `NVIDIA SM` label from the new cadence path has not yet been confirmed on hardware; only the overlay
-  itself has (session `20260914_105853`).
+- **The output-chain topology has not been run on hardware yet.** 0.1.6555/0.1.6556 validated the app-facing
+  fallback (`20260914_105853`); 0.1.6557 moves the overlay to the output chain on the interposer's queue. Watch for
+  `devRemoved=0x887A002B` on the first `Reinit SUBMIT`: if it returns, the queue was not the whole story and the
+  next suspects are the backbuffer resource state NvPresent64 leaves before Present, and whether it tracks
+  submissions on its own queue.
+- The visible `NVIDIA SM` label from the cadence path has not been confirmed on hardware either.
 - DX11 and Vulkan Smooth Motion still rely on the older heuristics and the invisible-window guards
   (`ShouldSkipWindowForNvPresent`); whether those paths have the same proxy topology is unverified.
 - CE's factory wrapper is what sees the application-facing create. A game that reaches the real DXGI factory without

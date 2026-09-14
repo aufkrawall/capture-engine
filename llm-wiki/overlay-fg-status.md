@@ -50,11 +50,8 @@ This page records how the current tree publishes visible FG status to the overla
 - The 2026-07-29 command-work and paired-gap heuristics remain in place for the DX11 and Vulkan paths, where CE has
   no second stream to measure. `NotePresentInterposerCadence()` cannot override an active in-process FG runtime:
   DLSS-G and FFX own the swapchain themselves and their presents are not an interposer's output chain.
-- Forced vsync does not reach the display under Smooth Motion. CE applies `vsync_mode` at the interposer's input,
-  the only legitimate place for it, and NvPresent64 does not propagate it - its output presents were observed as
-  `SyncInterval=0 Flags=512 (DXGI_PRESENT_ALLOW_TEARING)`, which is its flip metering. Forcing FIFO on those is the
-  regression already fixed for Portal RTX (`display-change-timing.md`, 2026-09-13). Once Smooth Motion is detected
-  CE takes its normal FG path and stops applying the override; the driver's own V-Sync setting is the control.
+- Forced vsync IS reachable under Smooth Motion, but only on the interposer's own output flip - never above it.
+  See `present-interposers.md`.
 
 - NvPresent module detection disables the FG detector's default dormant mode. This is necessary because Smooth
   Motion has no DLSS/FFX API activation to wake pattern analysis, and its active state requires the existing

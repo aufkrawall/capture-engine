@@ -26,24 +26,26 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             if (useBypass) {
                 return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
             }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
-        // A present interposer's private output chain is never the application's swapchain: its
-        // back buffers belong to the interposer's own command queue, and NOTHING CE submits on
-        // the game's queue may touch them. Identity is the only evidence that holds below the
-        // foreign chain, and unlike an overlay create an interposer create is always in addition
-        // to the application's, so it can never be reclassified later.
-        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+        // A present interposer's output chain is where CE's overlay belongs: this Present is below
+        // every overlay that patched the dxgi entry, so CE draws last and is topmost, and the
+        // driver has already generated the frame, so the overlay is not interpolated. The one
+        // thing CE must not do is submit that overlay on the application's queue — the overlay
+        // queue comes from the chain's own creating queue (ProcessFrame's routing). Without an
+        // observed queue there is no safe way to draw here at all.
+        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&
+            !DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)) {
             static std::atomic<int> s_interposerPresentBypassLogCount{0};
             const int logCount = s_interposerPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 2048) == 0) {
                 HookLogImportant(
-                    "DetourPresent: Passing through a present interposer's private output swapchain %p untouched "
-                    "(#%d) — CE composites on the application-facing chain only",
+                    "DetourPresent: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
+                    "through untouched; the overlay stays on the application-facing chain",
                     pSwapChain, logCount + 1);
             }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
@@ -67,7 +69,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply();
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
 
@@ -104,7 +106,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 g_SharedFpsLimiter.Apply(true);
                 ApplyPresentFrameLatencyOverrides(pSwapChain);
             }
-            ProcessPresentVSyncOverride(SyncInterval, Flags);
+            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
             HRESULT handoffHr = dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
             if (SUCCEEDED(handoffHr)) {
@@ -371,7 +373,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 
-    ProcessPresentVSyncOverride(SyncInterval, Flags);
+    ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
 
     // Always wait for overlay fence before Present.  The overlay ECL was
     // submitted during ProcessFrame (non-deferred), so the fence signals

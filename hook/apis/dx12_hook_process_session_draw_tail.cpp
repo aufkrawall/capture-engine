@@ -177,7 +177,13 @@ return ProcessFrameFlow::kSkipSteamFence;
                                 if (!useDedicated && realECL && !isSLWrapperECL) {
                                     const bool fsrFGActiveForECL =
                                         g_FGCompat.GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kFSRFG;
-                                    if (fsrFGActiveForECL) {
+                                    // A present interposer's output queue is the interposer's own,
+                                    // and it may track submissions on it the same way FSR does.
+                                    const bool onInterposerOutputQueue =
+                                        eclQueue != nullptr &&
+                                        eclQueue == DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
+                                    if (ce::dx12_overlay_policy::ShouldSubmitOverlayThroughHookedECLChain(
+                                            fsrFGActiveForECL, onInterposerOutputQueue)) {
                                         // FSR FG active: use origECL (vtable/hook-aware) instead of
                                         // realECL (raw D3D12 function).  FSR hooks the game queue's
                                         // ECL vtable entry to track command list submissions.  When

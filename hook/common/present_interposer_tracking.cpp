@@ -1,16 +1,99 @@
 #include "dxgi_shared_internal.h"
 
-// Measures the two present streams a present interposer creates (see present_interposer_cadence.h)
-// and publishes the verdict as CE's Smooth Motion FG state. This is the only Smooth Motion evidence
-// available in DX12: the application's present stream stays 1x, so the command-list population and
-// present-gap heuristics in fg_detection never fire there.
+#include <unordered_map>
+
+// A present interposer (NVIDIA Smooth Motion's NvPresent64) creates a private real DXGI swapchain,
+// on its own command queue, for the frames it actually puts on screen, and hands the application a
+// proxy. CE composites on that output chain — it is below every overlay that patches the dxgi entry
+// (so CE draws last and is topmost) and after the driver has generated the frame (so CE's overlay is
+// not interpolated). What CE must never do is submit that overlay on the application's queue:
+// cross-queue backbuffer access removes the device with DXGI_ERROR_ACCESS_DENIED (0x887A002B), the
+// same failure ffx_routing.h documents for the DLSS-G render queue. This unit is therefore the
+// swapchain -> owning-queue association for those chains.
+//
+// It also measures the two present streams against each other, which is the only Smooth Motion
+// evidence available in DX12 (present_interposer_cadence.h).
 namespace DXGIShared {
 namespace {
+struct InterposerOutputChain {
+    ID3D12CommandQueue* queue = nullptr;
+};
+
+std::mutex& InterposerMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<IDXGISwapChain*, InterposerOutputChain>& InterposerChains() {
+    static std::unordered_map<IDXGISwapChain*, InterposerOutputChain> chains;
+    return chains;
+}
+
+// Lock-free gates so the present path pays two atomic loads when no interposer is in the chain.
+std::atomic<size_t> s_interposerChainCount{0};
+std::atomic<size_t> s_compositableInterposerChainCount{0};
+
+void PublishInterposerCounts() {
+    size_t total = 0;
+    size_t compositable = 0;
+    for (const auto& entry : InterposerChains()) {
+        ++total;
+        if (entry.second.queue) {
+            ++compositable;
+        }
+    }
+    s_interposerChainCount.store(total, std::memory_order_release);
+    s_compositableInterposerChainCount.store(compositable, std::memory_order_release);
+}
+
 ce::present_interposer::CadenceTracker& InterposerCadence() {
     static ce::present_interposer::CadenceTracker tracker;
     return tracker;
 }
 }  // namespace
+
+void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pOutputQueue) {
+    if (!pSwapChain) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(InterposerMutex());
+    InterposerChains()[pSwapChain].queue = pOutputQueue;
+    PublishInterposerCounts();
+}
+
+void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(InterposerMutex());
+    InterposerChains().erase(pSwapChain);
+    PublishInterposerCounts();
+}
+
+bool HasPresentInterposerPrivateSwapchains() {
+    return s_interposerChainCount.load(std::memory_order_acquire) != 0;
+}
+
+bool HasCompositablePresentInterposerOutputChain() {
+    return s_compositableInterposerChainCount.load(std::memory_order_acquire) != 0;
+}
+
+bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain || !HasPresentInterposerPrivateSwapchains()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(InterposerMutex());
+    return InterposerChains().find(pSwapChain) != InterposerChains().end();
+}
+
+ID3D12CommandQueue* DX12_GetPresentInterposerOutputQueue(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain || !HasCompositablePresentInterposerOutputChain()) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(InterposerMutex());
+    const auto it = InterposerChains().find(pSwapChain);
+    return it == InterposerChains().end() ? nullptr : it->second.queue;
+}
 
 void NotePresentInterposerOutputPresent(IDXGISwapChain* pSwapChain) {
     if (!HasPresentInterposerPrivateSwapchains() || !DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {

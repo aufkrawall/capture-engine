@@ -1,5 +1,6 @@
 #pragma once
 
+#include <d3d12.h>
 #include <dxgi1_4.h>
 #include <windows.h>
 #include <atomic>
@@ -343,14 +344,20 @@ bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
 bool DX12_IsStartupBlockingOverlayTaggedSwapchain(IDXGISwapChain* pSwapChain);
 
 // A present interposer (NVIDIA Smooth Motion's NvPresent64) hands the application a proxy
-// IDXGISwapChain and keeps this private real DXGI chain, on its own command queue, for the
-// interpolated output. CE's overlay must never composite into it: the buffers belong to the
-// interposer's queue, and submitting into them from the application's queue removes the device.
-void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
+// IDXGISwapChain and keeps this private real DXGI chain, on its own command queue, for the frames it
+// puts on screen. CE composites there — below every overlay that patches the dxgi entry, and after
+// the driver generated the frame — but ONLY on that chain's own queue. Submitting the overlay on the
+// application's queue instead is the cross-queue backbuffer access that removes the device with
+// DXGI_ERROR_ACCESS_DENIED (see dx12_overlay_policy/ffx_routing.h and present-interposers.md).
+void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pOutputQueue);
 void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
 bool DX12_IsPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain);
-// Lock-free gate: true only while at least one interposer private chain is registered.
+// The queue that created this chain, or null when CE never observed the create. Null means CE has
+// no safe queue for it and must keep its overlay on the application-facing chain instead.
+ID3D12CommandQueue* DX12_GetPresentInterposerOutputQueue(IDXGISwapChain* pSwapChain);
+// Lock-free gates: any interposer chain registered at all / at least one with a known queue.
 bool HasPresentInterposerPrivateSwapchains();
+bool HasCompositablePresentInterposerOutputChain();
 
 // Smooth Motion status comes from the ratio between the interposer's private output chain and the
 // application's own present stream — the only evidence there is in DX12 (present_interposer_cadence.h).
