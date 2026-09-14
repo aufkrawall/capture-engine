@@ -154,6 +154,61 @@ inline bool IsVideoEngine(std::string_view instanceName) {
            FindAsciiInsensitive(instanceName, "engtype_jpeg") != std::string_view::npos;
 }
 
+// Identity of the physical engine an instance names, independent of the process
+// that happened to be using it: everything from `phys_` onward, e.g.
+// `phys_0_eng_0_engtype_3d`. An instance with no `phys_` token folds into one
+// shared bucket rather than silently counting as an engine of its own.
+inline uint64_t ParseGpuEngineKey(std::string_view instanceName) {
+    const size_t physPos = FindAsciiInsensitive(instanceName, "phys_");
+    const std::string_view engine =
+        physPos == std::string_view::npos ? std::string_view{} : instanceName.substr(physPos);
+    uint64_t hash = 1469598103934665603ull;  // FNV-1a offset basis
+    for (const char raw : engine) {
+        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(LowerAscii(raw)));
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+struct GpuEngineLoadSample {
+    uint64_t engineKey = 0;
+    double utilization = 0.0;
+};
+
+// Windows publishes one `\GPU Engine(*)\Utilization Percentage` instance per
+// (process, adapter, physical engine), and those engines run CONCURRENTLY - 3D,
+// Compute and Copy can all be busy in the same microsecond. Adding them together
+// therefore does not produce a fraction of elapsed time: it produces a number
+// that passes 100 while the GPU still has idle, and clamping that to 100 throws
+// away exactly the headroom a reader is looking for. Frame generation is the
+// case that makes it unreadable, because it puts the generator's work on compute
+// beside the game's raster on 3D, so the sum sits above the clamp whatever the
+// GPU is actually doing.
+//
+// Summing is correct only WITHIN one engine, where processes time-share it. The
+// adapter's load is then its busiest engine - the same aggregation Task Manager
+// reports, and the only one that stays a fraction of elapsed time.
+inline double ResolveAdapterGpuLoadPercent(std::vector<GpuEngineLoadSample> samples) {
+    std::sort(samples.begin(), samples.end(),
+              [](const GpuEngineLoadSample& left, const GpuEngineLoadSample& right) {
+                  return left.engineKey < right.engineKey;
+              });
+    double busiestEngine = 0.0;
+    size_t runStart = 0;
+    while (runStart < samples.size()) {
+        double engineLoad = 0.0;
+        size_t runEnd = runStart;
+        while (runEnd < samples.size() && samples[runEnd].engineKey == samples[runStart].engineKey) {
+            if (std::isfinite(samples[runEnd].utilization) && samples[runEnd].utilization > 0.0)
+                engineLoad += samples[runEnd].utilization;
+            ++runEnd;
+        }
+        busiestEngine = (std::max)(busiestEngine, engineLoad);
+        runStart = runEnd;
+    }
+    return (std::min)(100.0, busiestEngine);
+}
+
 inline bool ParseGpuEngineSample(std::string_view instanceName, double utilization, GpuEngineSample& sample) {
     const std::string_view pidMarker = "pid_";
     const size_t pidPos = FindAsciiInsensitive(instanceName, pidMarker);

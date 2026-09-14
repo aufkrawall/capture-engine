@@ -4,6 +4,8 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <utility>
+#include <vector>
 #include "../common/logging.h"
 #include "host_metrics_policy.h"
 #include "sensor_plugin.h"
@@ -165,6 +167,9 @@ static_assert(static_cast<uint32_t>(metrics_policy::AdapterResolutionSource::Cap
 
 struct GpuEngineValue {
     int64_t adapterLuid = 0;
+    // Which physical engine this instance names, so concurrent engines are not
+    // added together; see metrics_policy::ResolveAdapterGpuLoadPercent.
+    uint64_t engineKey = 0;
     double utilization = 0.0;
     bool videoEngine = false;
     bool valueValid = false;
@@ -216,7 +221,8 @@ bool ReadGpuEngineValues(HostMetricsState& state, std::vector<GpuEngineValue>& v
 
         const bool valueValid = IsPdhValueValid(items[i].FmtValue.CStatus);
         const double utilization = valueValid ? items[i].FmtValue.doubleValue : 0.0;
-        values.push_back({itemLuid, utilization, metrics_policy::IsVideoEngine(items[i].szName), valueValid});
+        values.push_back({itemLuid, metrics_policy::ParseGpuEngineKey(items[i].szName), utilization,
+                          metrics_policy::IsVideoEngine(items[i].szName), valueValid});
 
         metrics_policy::GpuEngineSample processSample;
         if (metrics_policy::ParseGpuEngineSample(items[i].szName, utilization, processSample))
@@ -349,15 +355,23 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
     double totalGpuLoad = 0.0;
     bool gpuUsageValid = false;
     if (gpuCounterRead && adapter.adapterLuid != 0) {
+        // Per engine, not per instance: the 3D, Compute and Copy engines run at
+        // the same time, so their utilizations are not addends of one elapsed
+        // second. Summing them reached the 100 clamp long before the GPU was
+        // busy - which is why an in-game step from 3x to 4x multi-frame
+        // generation, measured at 36.0 base renders per second against 47.8,
+        // moved the reported load not at all.
+        std::vector<metrics_policy::GpuEngineLoadSample> engineLoads;
+        engineLoads.reserve(gpuValues.size());
         for (const GpuEngineValue& value : gpuValues) {
             if (value.adapterLuid != adapter.adapterLuid || !value.valueValid)
                 continue;
             gpuUsageValid = true;
             if (!value.videoEngine)
-                totalGpuLoad += value.utilization;
+                engineLoads.push_back({value.engineKey, value.utilization});
         }
+        totalGpuLoad = metrics_policy::ResolveAdapterGpuLoadPercent(std::move(engineLoads));
     }
-    totalGpuLoad = (std::max)(0.0, (std::min)(100.0, totalGpuLoad));
 
     static NtQuerySystemInformationPtr NtQuerySystemInformation = nullptr;
     if (!NtQuerySystemInformation) {

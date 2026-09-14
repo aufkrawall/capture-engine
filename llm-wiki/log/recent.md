@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-14 - GPU load was the sum of concurrent engines, so it lived on the 100 clamp
+
+Follow-up question from the same Portal RTX run: with the rendered-rate ceiling in place, 4x holds the base at
+**36.0 groups/s against 47.8 at 3x** (measured from the present bursts in `perf_metrics_1620.csv` of
+`20260914_120049`) - a quarter of the render work removed - and the overlay's GPU load did not move off ~100%.
+
+`captureengine/host_metrics.cpp` summed **every** non-video `\GPU Engine(*)\Utilization Percentage` instance on the
+adapter and clamped the total to 100. Those instances are per (process, adapter, physical engine) and the engines
+run **concurrently**, so the sum is not a fraction of elapsed time. Frame generation is the case that makes it
+unreadable: the generator's work is on compute, the game's raster on 3D, and the two add up past the clamp whatever
+the GPU is really doing. Scene changes still moved the number whenever the sum happened to fall below 100, which is
+why it looked responsive.
+
+Fixed: `metrics_policy::ResolveAdapterGpuLoadPercent` sums **within** one engine - where processes do time-share it -
+and takes the **maximum across** engines, which is what Task Manager reports and the only aggregation that stays a
+fraction of elapsed time. `ParseGpuEngineKey` keys the grouping on the instance name from `phys_` onward, so an
+engine's identity does not depend on which process used it and a second physical engine of the same type stays its
+own engine. Degenerate readings (no `phys_` token, negative, non-finite, PDH's occasional >100) are handled
+explicitly. Covered in `tests/test_host_metrics_policy.cpp`. Hardware run pending.
+
+Worth carrying forward: **a metric that saturates cannot be validated by watching it respond.** This one tracked
+scene changes convincingly and was still wrong by construction in exactly the regime that mattered.
+
 ### 2026-09-14 - 4x MFG was never the problem: a metered generator that outruns its panel stops metering
 
 Portal RTX session `20260914_114142` (0.1.6559, `vsync_mode=fifo`, 3840x2160 @ 144 Hz VRR). The user reported the

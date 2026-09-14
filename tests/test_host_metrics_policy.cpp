@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -13,7 +14,61 @@
 namespace {
 
 using scan_host::metrics_policy::AdapterResolutionSource;
+using scan_host::metrics_policy::GpuEngineLoadSample;
 using scan_host::metrics_policy::GpuEngineSample;
+using scan_host::metrics_policy::ParseGpuEngineKey;
+using scan_host::metrics_policy::ResolveAdapterGpuLoadPercent;
+
+// Portal RTX 20260914_120049: an in-game step from 3x to 4x multi-frame
+// generation cut the base render rate from 47.8 to 36.0 groups per second
+// (measured from the present bursts in perf_metrics_1620.csv) and the reported
+// GPU load did not move off ~100%. The engines run concurrently, so adding a
+// game's raster on 3D to a frame generator's work on compute produced a number
+// that was already past the 100 clamp - and the clamp is where the freed
+// headroom went.
+TEST(HostMetricsPolicyTest, AdapterGpuLoadIsTheBusiestEngineNotTheSumOfAllOfThem) {
+    const uint64_t render = ParseGpuEngineKey("pid_100_luid_0x0_0x1_phys_0_eng_0_engtype_3d");
+    const uint64_t compute = ParseGpuEngineKey("pid_100_luid_0x0_0x1_phys_0_eng_1_engtype_compute");
+    const uint64_t copy = ParseGpuEngineKey("pid_100_luid_0x0_0x1_phys_0_eng_2_engtype_copy");
+    ASSERT_NE(render, compute);
+    ASSERT_NE(render, copy);
+    ASSERT_NE(compute, copy);
+
+    // Three engines at 60/55/20 is a GPU that is 60% busy, not a saturated one.
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{render, 60.0}, {compute, 55.0}, {copy, 20.0}}), 60.0);
+    // Freeing a quarter of the render engine must be visible, which is the whole
+    // point: the old sum stayed pinned at the clamp across this change.
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{render, 45.0}, {compute, 62.0}, {copy, 20.0}}), 62.0);
+
+    // Processes time-share one engine, so within an engine the sum is correct.
+    const uint64_t otherProcessRender = ParseGpuEngineKey("pid_200_luid_0x0_0x1_phys_0_eng_0_engtype_3d");
+    EXPECT_EQ(otherProcessRender, render) << "the engine identity must not depend on which process used it";
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{render, 40.0}, {otherProcessRender, 35.0}, {compute, 50.0}}),
+                     75.0);
+
+    // A second physical engine of the same type is its own engine.
+    const uint64_t secondCopy = ParseGpuEngineKey("pid_100_luid_0x0_0x1_phys_1_eng_2_engtype_copy");
+    EXPECT_NE(secondCopy, copy);
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{copy, 30.0}, {secondCopy, 30.0}}), 30.0);
+}
+
+TEST(HostMetricsPolicyTest, AdapterGpuLoadStaysInRangeOnDegenerateSamples) {
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({}), 0.0);
+
+    const uint64_t render = ParseGpuEngineKey("pid_100_luid_0x0_0x1_phys_0_eng_0_engtype_3d");
+    // PDH can report a saturated engine slightly over 100, and a negative or
+    // non-finite reading is not a utilization at all.
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{render, 103.7}}), 100.0);
+    EXPECT_DOUBLE_EQ(ResolveAdapterGpuLoadPercent({{render, -5.0}}), 0.0);
+    EXPECT_DOUBLE_EQ(
+        ResolveAdapterGpuLoadPercent({{render, std::numeric_limits<double>::quiet_NaN()}, {render, 12.0}}), 12.0);
+
+    // An instance with no `phys_` token is one shared bucket, never an engine
+    // per instance - unkeyed readings must not inflate the busiest engine.
+    const uint64_t unkeyed = ParseGpuEngineKey("pid_100_luid_0x0_0x1");
+    EXPECT_EQ(unkeyed, ParseGpuEngineKey("pid_200_luid_0x0_0x1"));
+    EXPECT_NE(unkeyed, render);
+}
 
 std::string ReadProjectSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
