@@ -290,4 +290,70 @@ TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
         << "the hook DLL resolves this export by name; it must stay dllexport";
 }
 
+// Portal RTX session 20260914_114142: the same running game walked 3x/4x/2x/3x/
+// 4x on a 144 Hz panel with vsync_mode=fifo. At 3x the generator's own target
+// (48 base x 3) landed on the panel exactly and the screen series was clean
+// (fps=144.1 stddev=253us, nvFlipSchedule avgDelayUs=6127). At 4x the target
+// became 41 x 4 = 164 and the driver stopped scheduling flips at all - the
+// announced lead over a pure 4x window averaged under 10 us and the published
+// screen intervals collapsed to p50=2300us/p99=18400us at 163/s. The ceiling
+// CE took over when it stopped forcing FIFO is what re-fits that batch.
+TEST(VulkanPresentMeteringPolicyTest, MeteredGeneratorTakesTheDisplayCeilingOnTheRenderedRate) {
+    using ce::vulkan_present_metering_policy::DisplayCeilingInput;
+    using ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps;
+
+    DisplayCeilingInput input = {};
+    input.vblankPacedPresentationRequested = true;
+    input.deviceEnabledPresentMetering = true;
+    input.createdPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    input.displayRefreshFps = 144;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(input), 144)
+        << "standing down from the present-mode override is what makes this bound CE's to state";
+
+    // The ceiling is an OUTPUT rate. Dividing by the live multiplier belongs to
+    // the limiter, because the multiplier changes inside a running game.
+    DisplayCeilingInput fifoRelaxed = input;
+    fifoRelaxed.createdPresentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(fifoRelaxed), 0)
+        << "a vertical-blank-paced swapchain already gets its wait from the WSI";
+    DisplayCeilingInput fifo = input;
+    fifo.createdPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(fifo), 0);
+
+    DisplayCeilingInput notMetered = input;
+    notMetered.deviceEnabledPresentMetering = false;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(notMetered), 0)
+        << "CE forced the present mode there, so the WSI still owns the bound";
+
+    DisplayCeilingInput notRequested = input;
+    notRequested.vblankPacedPresentationRequested = false;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(notRequested), 0)
+        << "off/mailbox/default never asked for a displayed-rate bound";
+}
+
+TEST(VulkanPresentMeteringPolicyTest, DisplayCeilingRejectsImplausibleRefreshReports) {
+    using ce::vulkan_present_metering_policy::DisplayCeilingInput;
+    using ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps;
+    using ce::vulkan_present_metering_policy::kMaxCeilingRefreshFps;
+    using ce::vulkan_present_metering_policy::kMinCeilingRefreshFps;
+
+    DisplayCeilingInput input = {};
+    input.vblankPacedPresentationRequested = true;
+    input.deviceEnabledPresentMetering = true;
+    input.createdPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+
+    // EnumDisplaySettings reports 0 and 1 for "default"/"hardware default"
+    // adapter modes, and an unreadable monitor reports nothing at all. None of
+    // those is a refresh rate, and a ceiling invented from one would cap a game
+    // at a rate no display asked for.
+    for (const int unusable : {0, 1, -1, kMinCeilingRefreshFps - 1, kMaxCeilingRefreshFps + 1}) {
+        input.displayRefreshFps = unusable;
+        EXPECT_EQ(ResolveVblankCeilingOutputFps(input), 0) << "refresh report " << unusable;
+    }
+    input.displayRefreshFps = kMinCeilingRefreshFps;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(input), kMinCeilingRefreshFps);
+    input.displayRefreshFps = kMaxCeilingRefreshFps;
+    EXPECT_EQ(ResolveVblankCeilingOutputFps(input), kMaxCeilingRefreshFps);
+}
+
 }  // namespace

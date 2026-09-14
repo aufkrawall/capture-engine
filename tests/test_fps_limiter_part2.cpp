@@ -257,6 +257,85 @@ TEST(FpsLimiterPolicyTest, FinalOutputInjectRouteKeepsCaptureGridAtDisplayedRate
     EXPECT_EQ(vfr.source, LimiterConstraintSource::kGeneral);
 }
 
+// The whole chain the 3x/4x asymmetry turns on. Portal RTX 20260914_114142 ran
+// 48 base x 3 = 144 on a 144 Hz panel (clean) and then 41 x 4 = 164 on the same
+// panel, at which point NVIDIA's generator stopped scheduling its flips. With
+// the ceiling stated as an output rate, the limiter divides it by the LIVE
+// multiplier, so the generator's metered batch is exactly one image per
+// vertical blank at every multiplier - and the driver interval, which is
+// frame-generation aware, still receives the output rate rather than the base.
+TEST(FpsLimiterPolicyTest, DisplayVblankCeilingFitsTheMeteredBatchAtEveryMultiplier) {
+    using ce::fps_limiter_policy::DriverLowLatencyIntervalCoversGeneratedFrames;
+    using ce::fps_limiter_policy::LimiterConstraintSource;
+    using ce::fps_limiter_policy::ResolveCadenceScaleMultiplier;
+    using ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget;
+    using ce::fps_limiter_policy::ResolveLimiterTargetSelection;
+    using ce::fps_limiter_policy::ResolveNativeDriverPacingTargetFps;
+
+    constexpr int kRefreshFps = 144;
+    for (int multiplier = 1; multiplier <= 4; ++multiplier) {
+        const bool fgActive = multiplier >= 2;
+        const auto selected = ResolveLimiterTargetSelection(
+            false, false, 0, 0, false, false, 0, fgActive, multiplier, false, true, kRefreshFps);
+        ASSERT_EQ(selected.source, LimiterConstraintSource::kDisplayVblankCeiling) << "multiplier " << multiplier;
+        EXPECT_TRUE(selected.UsesDisplayVblankCeiling());
+        EXPECT_FALSE(selected.UsesCaptureSync());
+        EXPECT_EQ(selected.targetFps, kRefreshFps);
+        EXPECT_EQ(selected.displayCeilingTargetFps, kRefreshFps);
+
+        const int baseTarget =
+            ResolveFrameGenerationBaseTarget(selected.targetFps, fgActive, multiplier, true);
+        EXPECT_EQ(baseTarget, kRefreshFps / multiplier) << "multiplier " << multiplier;
+        EXPECT_EQ(ResolveCadenceScaleMultiplier(fgActive, multiplier, true), multiplier);
+        EXPECT_EQ(ResolveNativeDriverPacingTargetFps(
+                      selected.targetFps, baseTarget, fgActive, multiplier, true,
+                      DriverLowLatencyIntervalCoversGeneratedFrames(ce::fg_runtime::RuntimeMode::kDLSSFG)),
+                  kRefreshFps)
+            << "the driver interval bounds displayed frames under DLSS-G, so it takes the output rate";
+    }
+}
+
+TEST(FpsLimiterPolicyTest, DisplayVblankCeilingNeverLoosensAConfiguredLimiter) {
+    using ce::fps_limiter_policy::LimiterConstraintSource;
+    using ce::fps_limiter_policy::ResolveLimiterTargetSelection;
+
+    // A stricter user cap owns the rate; the ceiling is only the bound CE took
+    // over when it stopped forcing a vertical-blank-paced present mode.
+    const auto stricterGeneral = ResolveLimiterTargetSelection(
+        false, false, 0, 0, false, true, 90, true, 4, false, true, 144);
+    EXPECT_EQ(stricterGeneral.source, LimiterConstraintSource::kGeneral);
+    EXPECT_EQ(stricterGeneral.targetFps, 90);
+    EXPECT_EQ(stricterGeneral.displayCeilingTargetFps, 144);
+
+    // A looser one does not get to exceed the display: 240 output frames on a
+    // 144 Hz panel is the state the generator cannot schedule.
+    const auto looserGeneral = ResolveLimiterTargetSelection(
+        false, false, 0, 0, false, true, 240, true, 4, false, true, 144);
+    EXPECT_EQ(looserGeneral.source, LimiterConstraintSource::kDisplayVblankCeiling);
+    EXPECT_EQ(looserGeneral.targetFps, 144);
+
+    // Capture sync keeps its grid phase while it is at least as strict, and is
+    // compared in the same final-output domain everything else uses.
+    const auto captureFinalOutput = ResolveLimiterTargetSelection(
+        true, true, 120, 1, false, false, 0, true, 4, true, true, 144);
+    EXPECT_EQ(captureFinalOutput.source, LimiterConstraintSource::kCaptureSync);
+    const auto captureBaseDomain = ResolveLimiterTargetSelection(
+        true, true, 120, 1, false, false, 0, true, 4, true, false, 144);
+    EXPECT_EQ(captureBaseDomain.captureOutputEquivalentFps, 480);
+    EXPECT_EQ(captureBaseDomain.source, LimiterConstraintSource::kDisplayVblankCeiling);
+
+    // No ceiling published (no metered generator, or the display could not be
+    // read) leaves every existing selection byte-identical.
+    const auto noCeiling = ResolveLimiterTargetSelection(
+        false, false, 0, 0, false, true, 240, true, 4, false, true, 0);
+    EXPECT_EQ(noCeiling.source, LimiterConstraintSource::kGeneral);
+    EXPECT_EQ(noCeiling.targetFps, 240);
+    EXPECT_EQ(noCeiling.displayCeilingTargetFps, 0);
+    const auto nothingAtAll = ResolveLimiterTargetSelection(
+        false, false, 0, 0, false, false, 0, true, 4, false, true, 0);
+    EXPECT_FALSE(nothingAtAll.IsActive());
+}
+
 TEST_F(FpsLimiterTest, ReflexGeneralCapSurvivesCaptureAndEffectiveMfgFactorChanges) {
     MockNativePacingBackend mock;
     limiter.SetNativePacingBackend(MakeMockNativePacingBackend(&mock));

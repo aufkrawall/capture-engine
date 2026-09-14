@@ -64,10 +64,28 @@
 // withdrawn first; it is the one that also costs the game NVIDIA's native
 // present path (see llm-wiki/vulkan-forced-fifo.md).
 //
-// The unowned consequence is stated rather than papered over: nothing now bounds
-// a metered generator that outruns its display. That ceiling belongs on the
-// *rendered* rate, which is the unit the metering spreads - not on the placement
-// of images the generator has already scheduled.
+// That ceiling belongs on the *rendered* rate, which is the unit the metering
+// spreads - not on the placement of images the generator has already scheduled.
+//
+// **And it is owned there now (2026-09-14).** Portal RTX session
+// `20260914_114142` is the consequence arriving. At 3x the generator's own
+// target happened to land exactly on the panel (48 base x 3 = 144 on 144 Hz)
+// and the published screen series was clean: `fps=144.1 stddev=253us
+// displayJagUs=217`, `nvFlipSchedule avgDelayUs=6127`. One in-game step to 4x
+// made that target 41 x 4 = 164 fps against the same 144 Hz panel, and the
+// driver stopped scheduling its flips at all - the announced lead over a pure
+// 4x window averages under 10 us against 6127 us at 3x, and the screen series
+// collapsed to `p50=2300us p99=18400us` at 163/s with a 1% low of 54 fps and a
+// 6.9 ms frame-time stddev. Talos at the same 4x multiplier, whose 135/s fits
+// under the same panel, reads `avgDelayUs=8952` and `stddevUs=1074`
+// (`20260913_184745`): 4x is not the problem, exceeding the refresh is.
+//
+// A batch the generator cannot place inside the refresh is a batch it stops
+// placing at all, and restating the vertical blank on the final flip cannot
+// re-spread a schedule that was never spread. `refresh / multiplier` rendered
+// frames per second make the generator's own metered target exactly one image
+// per vertical blank - which is what the final `SyncInterval=1` was always
+// supposed to be synchronizing.
 
 namespace ce::vulkan_present_metering_policy {
 
@@ -232,6 +250,55 @@ inline Decision Decide(const Input& input) {
 
     decision.preserveMetering = true;
     return decision;
+}
+
+// The rendered-rate ceiling CE owns whenever its present-mode override stood
+// down for a metered generator, expressed as an OUTPUT rate.
+//
+// The output domain is deliberate: every consumer of a frame-generation-aware
+// limiter target already speaks it (ce::fps_limiter_policy), and dividing by
+// the live multiplier has to stay there rather than being baked in here. The
+// multiplier changes inside a running game - Portal RTX walked 3x/4x/2x/3x/4x
+// in one session - while the swapchain this is resolved on does not.
+//
+// Returns 0 - no ceiling - whenever CE is not the component that removed the
+// bound. An application that created a vertical-blank-paced swapchain itself
+// still gets its wait from the WSI, and a mode CE never stood down from is
+// already limited; claiming a ceiling in either case would be CE capping a
+// rate somebody else already bounds.
+struct DisplayCeilingInput {
+    // The resolved profile asked for `fifo` or `adaptive`
+    // (see RequestsVblankPacedPresentation).
+    bool vblankPacedPresentationRequested = false;
+    // VK_NV_present_metering appeared in VkDeviceCreateInfo's own extension
+    // list, which is the application saying a metered generator may run here.
+    bool deviceEnabledPresentMetering = false;
+    // The present mode the swapchain was actually created with, which is the
+    // one CE passed to the driver rather than the one the game asked for.
+    VkPresentModeKHR createdPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    // Maximum refresh of the output the swapchain's window is on, measured from
+    // the display mode itself, 0 when it could not be read. Never a configured
+    // constant and never a per-system tuning value.
+    int displayRefreshFps = 0;
+};
+
+// What a display mode can plausibly report. Outside this the value is not a
+// refresh rate and no ceiling is claimed from it: 0 and 1 are what Windows
+// reports for "default"/"hardware default" adapter modes.
+inline constexpr int kMinCeilingRefreshFps = 20;
+inline constexpr int kMaxCeilingRefreshFps = 1000;
+
+inline int ResolveVblankCeilingOutputFps(const DisplayCeilingInput& input) {
+    PresentModeOverrideInput overrideInput = {};
+    overrideInput.vblankPacedPresentationRequested = input.vblankPacedPresentationRequested;
+    overrideInput.deviceEnabledPresentMetering = input.deviceEnabledPresentMetering;
+    if (!ShouldSkipPresentModeOverride(overrideInput))
+        return 0;
+    if (IsVblankPacedPresentMode(input.createdPresentMode))
+        return 0;
+    if (input.displayRefreshFps < kMinCeilingRefreshFps || input.displayRefreshFps > kMaxCeilingRefreshFps)
+        return 0;
+    return input.displayRefreshFps;
 }
 
 }  // namespace ce::vulkan_present_metering_policy

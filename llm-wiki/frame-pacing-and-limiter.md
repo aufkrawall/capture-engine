@@ -1,8 +1,9 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-09-13 (GPU-completion-aware front-load reservation; split out of `graphics-overrides-and-frame-pacing.md`; `PresentSite` call-site
-contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an overrun-learned
-reservation)
+Last cross-checked: 2026-09-14 (display vertical-blank ceiling as a third simultaneous constraint;
+GPU-completion-aware front-load reservation; split out of `graphics-overrides-and-frame-pacing.md`; `PresentSite`
+call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an
+overrun-learned reservation)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -254,6 +255,20 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   an explicit final-output route keeps the same 120-fps capture grid and driver request. FG suspension likewise keeps
   the 120-fps contract. Both the game's selected factor and `dlss_fg_factor=` override converge into the same effective
   `FGCompatibility` multiplier before this decision, so limiter behavior is independent of factor provenance.
+- **A third simultaneous constraint: the display's vertical-blank ceiling** (`kDisplayVblankCeiling`, 0.1.6560). It
+  exists only while CE's Vulkan present-mode override has stood down for a metered frame generator, which is the one
+  case where CE itself removed the bound on the presented rate - see
+  [vulkan-forced-fifo.md](vulkan-forced-fifo.md), "the ceiling on the rendered rate". The layer publishes the
+  display's own maximum refresh (`SetDisplayVblankCeilingFps`, read from the swapchain window's display mode at
+  swapchain creation, never a configured constant) as an *output* rate, and the limiter divides it by the live FG
+  multiplier like every other final-output target. `refresh / multiplier` rendered frames per second are what make a
+  metered batch land one image per vertical blank; Portal RTX 4x asked for 41 x 4 = 164 fps on a 144 Hz panel and
+  NVIDIA's generator responded by not scheduling its flips at all. Ranked in the same final-output domain as the
+  other two and always last on ties, so a configured cap is never loosened; it carries no limiter mode, so AUTO hands
+  it to the driver's own frame-generation-aware interval where Reflex is active. Diagnostics report it as
+  `constraints=... vblankCeiling:N` and `sync=vblank-ceiling` in the `FPS Limiter: Active` line. Validated on
+  hardware in `20260914_120049`, which reports `effective=36|48|72, group=144/4|3|2, driver=144` across live
+  4x/3x/2x changes with the Vulkan Reflex native handoff armed.
 - DX12/Vulkan publish final-output inject-route availability directly to the process-local limiter before media's
   delayed inject handshake. The handshake says that inject transport is requested; it cannot by itself say whether
   that transport currently publishes base application frames or final generated outputs. Active-state diagnostics

@@ -1,6 +1,67 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_boundary.h"
 
+namespace {
+
+// The maximum refresh of the output a window is on, read from the display mode
+// itself so it works on any system without a configured value. A variable
+// refresh panel varies *below* this; the mode reports the ceiling, which is the
+// only part of it a rate bound cares about.
+int QueryDisplayRefreshFps(HWND window) {
+    if (!window)
+        return 0;
+    HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    if (!monitor)
+        return 0;
+    MONITORINFOEXW info = {};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info))
+        return 0;
+    DEVMODEW mode = {};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode))
+        return 0;
+    return static_cast<int>(mode.dmDisplayFrequency);
+}
+
+// Standing down from the present-mode override leaves a metered generator with
+// nothing above the WSI bounding its rate, and a generator whose target does
+// not fit inside the refresh stops scheduling its flips altogether rather than
+// overshooting gracefully (Portal RTX 20260914_114142 at 4x: announced flip
+// lead under 10 us against 6127 us at 3x on the same panel). CE therefore takes
+// that bound over, on the rendered rate the metering actually spreads.
+void PublishVblankCeiling(const DeviceDispatch* disp, const VkSwapchainCreateInfoKHR& finalCI, HWND window) {
+    const char* vsyncMode = VulkanLayerState::Get().GetVsyncMode();
+    ce::vulkan_present_metering_policy::DisplayCeilingInput ceilingInput = {};
+    ceilingInput.vblankPacedPresentationRequested =
+        vsyncMode != nullptr &&
+        ce::vulkan_present_metering_policy::RequestsVblankPacedPresentation(vsyncMode);
+    ceilingInput.deviceEnabledPresentMetering = disp && disp->applicationEnabledPresentMetering;
+    ceilingInput.createdPresentMode = finalCI.presentMode;
+    // A create on a device that never enabled metering says nothing about the
+    // metered generator's bound, so it must not clear one: the limiter is
+    // per-process while swapchains are not, and a title can hold a second
+    // device (a launcher, a compositor surface) whose creates interleave with
+    // the game's. Only the metered device publishes, in either direction.
+    if (!ceilingInput.deviceEnabledPresentMetering)
+        return;
+    ceilingInput.displayRefreshFps =
+        ceilingInput.vblankPacedPresentationRequested ? QueryDisplayRefreshFps(window) : 0;
+    const int ceilingFps = ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps(ceilingInput);
+    const int previous = g_SharedFpsLimiter.GetDisplayVblankCeilingFps();
+    g_SharedFpsLimiter.SetDisplayVblankCeilingFps(ceilingFps);
+    if (ceilingFps != previous) {
+        LayerLog(
+            "Vulkan Layer: display vertical-blank ceiling %d -> %d fps (vsync=%s displayRefresh=%d "
+            "presentMode=%d window=%p) - the rendered rate CE bounds while its present-mode override "
+            "stands down for a metered frame generator",
+            previous, ceilingFps, vsyncMode ? vsyncMode : "(null)", ceilingInput.displayRefreshFps,
+            static_cast<int>(finalCI.presentMode), (void*)window);
+    }
+}
+
+}  // namespace
+
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
                                                      VkQueue* pQueue) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
@@ -207,6 +268,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                  count, pCreateInfo->minImageCount, pFinalCI->minImageCount);
 
         sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
+        PublishVblankCeiling(disp, *pFinalCI, sd->window);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
         const bool activateNow = g_LayerState.whitelisted.load(std::memory_order_acquire);
         if (activateNow && isTinySwapchain) {

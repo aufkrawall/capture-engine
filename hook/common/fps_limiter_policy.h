@@ -103,6 +103,10 @@ enum class LimiterConstraintSource : uint8_t {
     kNone,
     kCaptureSync,
     kGeneral,
+    // The display's own maximum refresh, owned by CE only while its Vulkan
+    // present-mode override stood down for a metered frame generator; see
+    // ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps.
+    kDisplayVblankCeiling,
 };
 
 struct LimiterTargetSelection {
@@ -111,6 +115,7 @@ struct LimiterTargetSelection {
     int captureTargetFps = 0;
     int captureOutputEquivalentFps = 0;
     int generalTargetFps = 0;
+    int displayCeilingTargetFps = 0;
     bool captureSourceIsFinalOutput = false;
 
     bool IsActive() const {
@@ -119,6 +124,10 @@ struct LimiterTargetSelection {
 
     bool UsesCaptureSync() const {
         return source == LimiterConstraintSource::kCaptureSync;
+    }
+
+    bool UsesDisplayVblankCeiling() const {
+        return source == LimiterConstraintSource::kDisplayVblankCeiling;
     }
 };
 
@@ -132,15 +141,18 @@ inline int SaturatingPositiveProduct(int value, int multiplier) {
     return value * multiplier;
 }
 
-// Capture sync and the general limiter are simultaneous constraints, not a
-// priority list. Compare them in the final-output domain so starting a base-
-// frame inject capture cannot silently replace a stricter displayed-rate cap.
-// Equal constraints prefer capture sync to retain its stable CFR grid phase.
+// Capture sync, the general limiter and the display's vertical-blank ceiling
+// are simultaneous constraints, not a priority list. Compare them in the
+// final-output domain so starting a base-frame inject capture cannot silently
+// replace a stricter displayed-rate cap. Equal constraints prefer capture sync
+// to retain its stable CFR grid phase, then the general limiter, because both
+// are things the user configured and the ceiling is only the bound CE took
+// over when it stopped forcing a vertical-blank-paced present mode.
 inline LimiterTargetSelection ResolveLimiterTargetSelection(
     bool captureRequested, bool captureSyncEnabled, int captureFps, int captureSyncMultiplier,
     bool useVfr, bool generalEnabled, int generalFps, bool frameGenerationActive,
     int frameGenerationMultiplier, bool injectVideoCaptureRequested,
-    bool injectFinalOutputAvailable) {
+    bool injectFinalOutputAvailable, int displayVblankCeilingFps = 0) {
     LimiterTargetSelection selection;
     const bool captureAvailable = captureRequested && captureSyncEnabled && !useVfr &&
                                   captureFps > 0 && captureSyncMultiplier >= 1 &&
@@ -160,13 +172,20 @@ inline LimiterTargetSelection ResolveLimiterTargetSelection(
         }
     }
 
+    const bool ceilingAvailable = displayVblankCeilingFps > 0;
+    selection.displayCeilingTargetFps = ceilingAvailable ? displayVblankCeilingFps : 0;
+
     if (captureAvailable &&
-        (!generalAvailable || selection.captureOutputEquivalentFps <= generalFps)) {
+        (!generalAvailable || selection.captureOutputEquivalentFps <= generalFps) &&
+        (!ceilingAvailable || selection.captureOutputEquivalentFps <= displayVblankCeilingFps)) {
         selection.source = LimiterConstraintSource::kCaptureSync;
         selection.targetFps = selection.captureTargetFps;
-    } else if (generalAvailable) {
+    } else if (generalAvailable && (!ceilingAvailable || generalFps <= displayVblankCeilingFps)) {
         selection.source = LimiterConstraintSource::kGeneral;
         selection.targetFps = generalFps;
+    } else if (ceilingAvailable) {
+        selection.source = LimiterConstraintSource::kDisplayVblankCeiling;
+        selection.targetFps = displayVblankCeilingFps;
     }
     return selection;
 }

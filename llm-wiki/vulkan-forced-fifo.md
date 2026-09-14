@@ -1,12 +1,15 @@
 # Forced FIFO Presentation Under Vulkan
 
-Last verified on hardware: 2026-09-13, session `20260913_201259` (144.0 presents/s on a 144 Hz panel, screen-time
-stddev ~360 us, no tearing, generator scheduling intact).
+Last verified on hardware: 2026-09-14, session `20260914_120049` (2x/3x/4x all at 143.6-144.2 presents/s on a
+144 Hz panel, screen-time stddev 269-1062 us, announced flip lead 6357-7475 us, no tearing). The 2026-09-13
+`20260913_201259` run covered 3x only, where the generator's own target happened to land on the panel exactly; 4x
+needed the rendered-rate ceiling below.
 
-Last cross-checked: 2026-09-13 (for a metered frame generator CE now changes nothing above the WSI - both the
+Last cross-checked: 2026-09-14 (for a metered frame generator CE changes nothing above the WSI - both the
 VK_EXT_present_timing scheduling and the present-mode override are retired, because NVIDIA's announced flip lead
-collapses from 6842 us to 141 us when FIFO is forced - and states the vertical blank on the WSI's own final DXGI
-flip instead; earlier 2026-08-30 state otherwise unchanged)
+collapses from 6842 us to 141 us when FIFO is forced - states the vertical blank on the WSI's own final DXGI flip,
+and now also bounds the *rendered* rate at `refresh / multiplier` so the metered batch still fits the panel;
+earlier 2026-08-30 state otherwise unchanged)
 
 Summary: what it takes for `[Graphics] vsync_mode=fifo` to actually mean "one presented frame per vertical blank" in a
 Vulkan title, and why frame generation is the case that breaks every partial answer. Three boundaries are involved -
@@ -152,6 +155,58 @@ screen.
 - The withholding is kept because two pacing authorities on one set of presents is still wrong, and because it costs
   nothing when the runtime does not use the extension - but it is no longer offered as the explanation for anything.
   See "the DXGI override was the bug" below for where the evidence now points.
+
+### The ceiling on the rendered rate: a generator that outruns its panel stops metering
+
+- **The multiplier is not the discriminator, the refresh is.** Portal RTX session `20260914_114142` walks
+  3x/4x/2x/3x/4x inside one running game on a 144 Hz panel with `vsync_mode=fifo`. 2x (132.5/s) and 3x (144.1/s)
+  fit the panel and are clean - `stddev=253 us`, `displayJagUs=217`, `nvFlipSchedule` lead 6127 us at 3x. 4x asks
+  for 41 base x 4 = **164 fps on a 144 Hz panel**, and there the driver stops scheduling its flips: differencing the
+  cumulative `avgDelayUs x applied` across the pure-4x window gives an announced lead **under 10 us**, and
+  `publishedInterval` collapses to `p50=2300us p99=18400us` around a 6142 us mean at 163/s - three images inside one
+  refresh, then a wait. The overlay's frame-time graph draws that comb faithfully; it is not a graph bug.
+- Talos at the same 4x multiplier, whose 135/s fits under the same panel, reads `avgDelayUs=8952 stddevUs=1074`
+  (`20260913_184745`). **4x meters fine when it fits.** The 3x hardware validation in `20260913_201259` looked
+  perfect only because 48 x 3 landed on 144 exactly; the ceiling was never actually tested there.
+- **A batch the generator cannot place inside the refresh is a batch it stops placing at all**, and restating the
+  vertical blank on the final DXGI flip cannot re-spread a schedule that was never spread. This is the consequence
+  `vulkan_present_metering_policy.h` had already named when `VK_EXT_present_timing` was retired: "nothing now bounds
+  a metered generator that outruns its display. That ceiling belongs on the *rendered* rate, which is the unit the
+  metering spreads."
+- **Fix (0.1.6560): CE owns that ceiling, on the rendered rate.** When the present-mode override stands down,
+  `ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps` states the display's own maximum refresh as an
+  *output* rate and `hook/vulkan_layer/vulkan_layer_swapchain.cpp` publishes it to the shared limiter at swapchain
+  creation. The limiter divides it by the **live** multiplier
+  (`ResolveFrameGenerationBaseTarget` / `ResolveCadenceScaleMultiplier`), so `refresh / multiplier` rendered frames
+  per second make the generator's metered batch exactly one image per vertical blank at every multiplier - which is
+  what the final `SyncInterval=1` was always supposed to be synchronizing. Keeping the division in the limiter
+  rather than in the policy is deliberate: the multiplier changes inside a running game, the swapchain does not.
+- The refresh comes from the swapchain window's own display mode
+  (`MonitorFromWindow` -> `GetMonitorInfoW` -> `EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS)`), never a configured
+  constant. A VRR panel varies *below* that mode; the mode reports the ceiling, which is the only part a rate bound
+  cares about. Values outside 20-1000 are refused, because `0`/`1` are what Windows reports for "default" adapter
+  modes and a ceiling invented from one would cap a game at a rate no display asked for.
+- It is a **simultaneous constraint, never a replacement**: `LimiterConstraintSource::kDisplayVblankCeiling` is
+  compared against capture sync and the general cap in the same final-output domain, and a stricter configured cap
+  still wins. It carries no limiter mode of its own, so AUTO hands it to NVIDIA's own frame-generation-aware
+  `minimumIntervalUs` wherever Reflex is active - CE then adds no wait at all - and falls back to CE's own cadence
+  otherwise.
+- Publication is scoped to the metered device. A create on a device that never enabled `VK_NV_present_metering` says
+  nothing about the generator's bound and must not clear one: the limiter is per-process while swapchains are not,
+  and a title can hold a second device (a launcher, a compositor surface) whose creates interleave with the game's.
+- Coverage: `tests/test_vulkan_present_metering_policy.cpp`
+  (`MeteredGeneratorTakesTheDisplayCeilingOnTheRenderedRate`, `DisplayCeilingRejectsImplausibleRefreshReports`) and
+  `tests/test_fps_limiter_part2.cpp` (`DisplayVblankCeilingFitsTheMeteredBatchAtEveryMultiplier`,
+  `DisplayVblankCeilingNeverLoosensAConfiguredLimiter`). Runtime proof is the
+  `display vertical-blank ceiling N -> M fps` line in `vulkan_layer.log` plus `constraints=... vblankCeiling:M` in
+  the `FPS Limiter: Active` line.
+- **Validated on hardware, session `20260914_120049`** (0.1.6560, same game and panel, walking 3x/4x/3x/2x/4x/3x).
+  4x now reads like 3x: 143.6-144.2/s, screen-time stddev 269-1062 us, `displayJagUs` 215-847,
+  `publishedInterval meanUs=6942-6981 p50=6900`, and the announced flip lead back from under 10 us to 6880-7475 us.
+  The limiter reports `sync=vblank-ceiling, limiter=reflex, target=144, effective=36|48|72, group=144/4|3|2,
+  driver=144` and arms `Vulkan Reflex ... native driver pacing handoff`, so the driver's own interval paces it and
+  CE adds no wait. The `0 -> 144 -> 0 -> 144` arming sequence is Remix creating a FIFO chain and then recreating it
+  as IMMEDIATE for DLFG; clearing on the FIFO one is correct, the WSI owns that wait.
 
 ### VK_EXT_present_timing is retired: it bunched the metered batch it was meant to bound
 

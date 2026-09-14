@@ -208,6 +208,20 @@ public:
         injectFinalOutputCaptureAvailable_.store(available, std::memory_order_release);
     }
 
+    // The display's maximum refresh, in the OUTPUT domain, while CE owes the
+    // rendered-rate ceiling it took over by standing down from its Vulkan
+    // present-mode override on a metered frame generator; 0 when it owes none.
+    // Published from the swapchain-creation path, which is the one place that
+    // knows both facts; see
+    // ce::vulkan_present_metering_policy::ResolveVblankCeilingOutputFps.
+    void SetDisplayVblankCeilingFps(int fps) {
+        displayVblankCeilingFps_.store(fps > 0 ? fps : 0, std::memory_order_release);
+    }
+
+    int GetDisplayVblankCeilingFps() const {
+        return displayVblankCeilingFps_.load(std::memory_order_acquire);
+    }
+
     // Called each frame before present. DXGI/DX12 call sites can allow explicit
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
@@ -385,6 +399,7 @@ private:
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
+    std::atomic<int> displayVblankCeilingFps_{0};
     uint32_t applyActiveDedupCount_ = 0;
     uint32_t applyWaitCount_ = 0;
     uint32_t applySuccessCount_ = 0;

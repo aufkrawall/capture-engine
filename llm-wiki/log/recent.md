@@ -1,5 +1,65 @@
 # llm-wiki Log
 
+### 2026-09-14 - 4x MFG was never the problem: a metered generator that outruns its panel stops metering
+
+Portal RTX session `20260914_114142` (0.1.6559, `vsync_mode=fifo`, 3840x2160 @ 144 Hz VRR). The user reported the
+overlay's frame-time graph looking "rendered twice" after an in-game 3x -> 4x step. The graph was faithful; the
+screen series really is a comb.
+
+The session walks 3x/4x/2x/3x/4x inside one running game, so every multiplier is measured against the same scene:
+
+| multiplier | output | screen-time stddev | displayJag | 1% low | `nvFlipSchedule` lead |
+| --- | --- | --- | --- | --- | --- |
+| 3x | 144.1/s | 253 us | 217 us | ~54-115 fps | 6127 us |
+| 2x | 132.5/s | 905 us | 541 us | 53.7 fps | - |
+| **4x** | **162.5/s** | **6980 us** | **8866 us** | **54.2 fps** | **< 10 us** |
+
+`nvFlipSchedule avgDelayUs` is cumulative in the health line; differencing `avg x applied` across windows gives the
+per-window lead, and the 11:42:57-11:43:07 window (pure 4x, 1628 flips) comes out under 10 us against 6127 us for the
+pure 3x window. **Zero announced lead is the driver not scheduling its flips at all.** `publishedInterval` for that
+window is `p50=2300us p99=18400us` around a 6142 us mean - three images inside one refresh and then a wait, which is
+exactly the comb in the screenshot.
+
+The discriminator is not the multiplier, it is the refresh. Base rates fell with the multiplier (66/48/41), so
+2x -> 132 and 3x -> 144 fit the panel while 4x asks for 41 x 4 = **164 fps on a 144 Hz panel**. Talos at the same
+4x multiplier, whose 135/s fits, reads `avgDelayUs=8952 stddevUs=1074` (`20260913_184745`): 4x meters fine when it
+fits. The 3x validation in `20260913_201259` looked perfect only because 48 x 3 landed on 144 exactly.
+
+`hook/vulkan_layer/vulkan_present_metering_policy.h` had already written down the gap in its own words - "nothing
+now bounds a metered generator that outruns its display. That ceiling belongs on the *rendered* rate, which is the
+unit the metering spreads". This is that consequence arriving, and restating the vertical blank on the final DXGI
+flip cannot re-spread a schedule that was never spread.
+
+**Fix (0.1.6560): own the ceiling on the rendered rate.** When CE's present-mode override stands down for a metered
+generator, `ResolveVblankCeilingOutputFps` states the display's own maximum refresh (read from the swapchain
+window's display mode - `EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS)`, never a configured constant) as an *output*
+rate, and the limiter divides it by the LIVE multiplier: `refresh / multiplier` rendered frames per second make the
+generator's metered batch exactly one image per vertical blank at every multiplier. It is a new simultaneous
+constraint (`LimiterConstraintSource::kDisplayVblankCeiling`), never a replacement - a stricter capture-sync or
+general cap still wins, compared in the same final-output domain. It carries no mode of its own, so AUTO hands it to
+NVIDIA's own frame-generation-aware `minimumIntervalUs` where Reflex is active and CE adds no wait at all.
+
+Publication is scoped to the metered device: a create on a device that never enabled the extension says nothing
+about the generator's bound and must not clear one, because the limiter is per-process while swapchains are not.
+
+**VALIDATED on hardware the same day**, session `20260914_120049` (0.1.6560, same game, same panel, walking
+3x/4x/3x/2x/4x/3x):
+
+| multiplier | output | screen-time stddev | displayJag | announced flip lead |
+| --- | --- | --- | --- | --- |
+| 3x | 143.6-144.1/s | 269-588 us | 215-469 us | 6357-6498 us |
+| 2x | 107.9/s | 383 us | 273 us | 4526 us |
+| **4x** | **143.6-144.2/s** | **269-1062 us** | **215-847 us** | **6880-7475 us** |
+
+4x now reads like 3x. `publishedInterval meanUs=6942-6981 p50=6900` is one image per vertical blank, and the
+announced lead is back from under 10 us to ~7 ms - the generator is scheduling its flips again. The limiter chose
+`sync=vblank-ceiling, limiter=reflex, target=144, effective=36|48|72, group=144/4|3|2, driver=144` and armed
+`Vulkan Reflex ... native driver pacing handoff`, so NVIDIA's own interval does the pacing and CE adds no wait at
+all. The 0 -> 144 -> 0 -> 144 arming sequence in `vulkan_layer.log` is Remix creating a FIFO chain and then
+recreating it as IMMEDIATE for DLFG: clearing on the FIFO one is correct, the WSI owns that wait. Residual: the one
+10 s window containing a 2x -> 4x switch reads `stddev=3438us`, a transition artifact inside the window; the next
+window is clean.
+
 ### 2026-09-14 - The chain was never the problem, the queue was: overlay back on Smooth Motion's output flip
 
 0.1.6555 kept the game alive by moving CE's overlay onto the application-facing chain, and that was one step too

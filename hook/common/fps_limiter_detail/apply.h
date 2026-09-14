@@ -99,11 +99,20 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     const auto targetSelection = ce::fps_limiter_policy::ResolveLimiterTargetSelection(
         captureRequested, captureSyncEnabled, captureFps, captureSyncMultiplier, useVFR,
         generalEnabled, generalFps, fgActive, fgMultiplier, injectVideoCaptureRequested,
-        injectFinalOutputAvailable);
+        injectFinalOutputAvailable, displayVblankCeilingFps_.load(std::memory_order_acquire));
     const bool limiterActive = targetSelection.IsActive();
     const int targetFps = targetSelection.targetFps;
     const bool usingCaptureSync = targetSelection.UsesCaptureSync();
-    const uint32_t configuredMode = usingCaptureSync ? captureSyncMode : generalMode;
+    // The ceiling is a bound, not a configured limiter, so it carries no mode
+    // of its own: AUTO hands it to the driver's own frame-generation-aware
+    // interval where one is active and falls back to CE's cadence otherwise.
+    const uint32_t configuredMode = usingCaptureSync ? captureSyncMode
+                                    : targetSelection.UsesDisplayVblankCeiling()
+                                        ? LimiterModeValues::kAuto
+                                        : generalMode;
+    const char* constraintName = usingCaptureSync                              ? "capture"
+                                 : targetSelection.UsesDisplayVblankCeiling() ? "vblank-ceiling"
+                                                                              : "general";
 
     if (!limiterActive) {
         // The cadence lock serializes this cleanup against a concurrent owner
@@ -404,19 +413,20 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
 
         TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d "
                   "fgSignal=%d/%dx fgProof=%s driver=%d captureEq=%d general=%d captureSource=%s",
-                  usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
+                  constraintName, modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
                   cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
                   fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps,
                   targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
                   targetSelection.captureSourceIsFinalOutput ? "final" : "base");
         HookLog(
             "FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, group=%d/%d, fg=%d/%dx, "
-            "fgSignal=%d/%dx, fgProof=%s, driver=%d, capReq=%d, constraints=capture:%d/output general:%d, "
-            "captureSource=%s)%s",
-            usingCaptureSync ? "capture" : "general", modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
+            "fgSignal=%d/%dx, fgProof=%s, driver=%d, capReq=%d, constraints=capture:%d/output general:%d "
+            "vblankCeiling:%d, captureSource=%s)%s",
+            constraintName, modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
             cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
             fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps, captureRequested ? 1 : 0,
             targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
+            targetSelection.displayCeilingTargetFps,
             targetSelection.captureSourceIsFinalOutput ? "final" : "base", availNote);
         loggedActive_ = true;
         lastTargetFps_ = effectiveTargetFps;
