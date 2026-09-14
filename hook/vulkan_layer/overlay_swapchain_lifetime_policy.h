@@ -72,3 +72,66 @@ constexpr Decision Decide(const Input& input) {
 }
 
 }  // namespace ce::overlay_swapchain_lifetime
+
+// When CE's overlay may destroy the binary semaphores its composites signal.
+//
+// Every composited present waits on one of `OverlayState::semaphores`:
+// `RenderOverlay` hands the slot's semaphore back and the present hook rewrites
+// `VkPresentInfoKHR::pWaitSemaphores` to it. That wait is executed by the
+// presentation engine, and *nothing CE can observe proves it has run*.
+// `vkDeviceWaitIdle` does not: it covers queue operations, not a present that
+// has already been handed to the presentation engine. CE's own submission-ring
+// reuse already says so - a slot may only be reused once the image's acquire
+// generation has moved on, "because the fence proves the submission retired and
+// says nothing about the present that waits on the semaphore". The teardown
+// path contradicted that and destroyed the whole ring behind a device-idle wait.
+//
+// DOOM Eternal `20260914_122133` is that failure, and it survived the
+// release-before-destroy ordering above. `perf_metrics_25856.csv` holds exactly
+// two frames: the overlay composited once into the startup swapchain at
+// 12:27:18.158 and the game destroyed that swapchain at .223, 15 ms after the
+// present. CE waited for device idle, destroyed the ring - semaphores included -
+// at .223-.255, the driver's `vkDestroySwapchainKHR` ran, and `nvlddmkm` logged
+// event 153 at .2572. The first present on the replacement returned
+// VK_ERROR_DEVICE_LOST and the window stayed black. Session `20260913_193606`
+// shows the discriminator: its first two swapchain destroys carried no composite
+// at all and did not fault, while the third came after ten composited presents
+// and faulted 1 ms into the teardown.
+//
+// The one point CE can prove is the swapchain's own destruction: a present is
+// made against a swapchain, so once `vkDestroySwapchainKHR` has returned no
+// pending present of that swapchain can still be waiting on anything. The ring's
+// semaphores therefore outlive the rest of the overlay state by exactly that
+// much - released into a deferred batch tagged with the swapchain they were
+// presented against, and destroyed once the driver has destroyed it (or when the
+// device itself goes away, by which point the application has destroyed every
+// swapchain on it).
+//
+// Note the asymmetry with the image views and framebuffers above: those must be
+// destroyed *before* the driver's destroy because the presentable images die
+// with the swapchain, while the semaphores must be destroyed *after* it. They
+// are independent objects, so both rules hold at once.
+
+namespace ce::overlay_present_semaphore_lifetime {
+
+struct Input {
+    // The swapchain the deferred batch's semaphores were presented against.
+    uint64_t deferredSwapchain = 0;
+    // The swapchain the driver has just destroyed. Zero when the drain is not
+    // driven by a swapchain destroy.
+    uint64_t destroyedSwapchain = 0;
+    // The device is being destroyed, so every swapchain on it is already gone.
+    bool deviceTeardown = false;
+};
+
+constexpr bool MayDestroy(const Input& input) {
+    if (input.deviceTeardown)
+        return true;
+    // A batch that names no swapchain was never presented against one, so no
+    // present can refer to it.
+    if (input.deferredSwapchain == 0)
+        return true;
+    return input.destroyedSwapchain != 0 && input.deferredSwapchain == input.destroyedSwapchain;
+}
+
+}  // namespace ce::overlay_present_semaphore_lifetime

@@ -314,6 +314,11 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwap
     RetireCaptureSwapchain(device, swapchain);
     if (disp && disp->fp_vkDestroySwapchainKHR)
         disp->fp_vkDestroySwapchainKHR(device, swapchain, pAllocator);
+    // The other half of the ordering: the semaphores composited presents waited
+    // on may only be destroyed once the swapchain those presents were made
+    // against is gone. A device-idle wait does not prove a present's semaphore
+    // wait has executed - see overlay_present_semaphore_lifetime.
+    DestroyDeferredOverlayPresentSemaphores(device, swapchain);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
 }
 

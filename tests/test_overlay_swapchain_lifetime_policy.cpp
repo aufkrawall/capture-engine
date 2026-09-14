@@ -120,3 +120,86 @@ TEST(OverlaySwapchainLifetimeSourceTest, InitializeOverlayRecordsTheOwningSwapch
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("state.swapchain = swapchain;"), std::string::npos);
 }
+
+namespace {
+
+using ce::overlay_present_semaphore_lifetime::MayDestroy;
+
+ce::overlay_present_semaphore_lifetime::Input MakeSemaphoreInput(uint64_t deferred, uint64_t destroyed) {
+    ce::overlay_present_semaphore_lifetime::Input input = {};
+    input.deferredSwapchain = deferred;
+    input.destroyedSwapchain = destroyed;
+    return input;
+}
+
+}  // namespace
+
+// The DOOM Eternal `20260914_122133` failure: one composited present was still
+// outstanding when the game destroyed the swapchain, and CE destroyed the
+// semaphore that present waits on behind a device-idle wait that proves nothing
+// about it. Destroying the swapchain is the point that does.
+TEST(OverlayPresentSemaphoreLifetimeTest, DestroysWithTheSwapchainItWasPresentedAgainst) {
+    EXPECT_TRUE(MayDestroy(MakeSemaphoreInput(kSwapchainA, kSwapchainA)));
+}
+
+// Another swapchain's destroy says nothing about presents still pending on this
+// one, so the batch has to keep waiting.
+TEST(OverlayPresentSemaphoreLifetimeTest, HoldsAcrossAnUnrelatedSwapchainDestroy) {
+    EXPECT_FALSE(MayDestroy(MakeSemaphoreInput(kSwapchainA, kSwapchainB)));
+}
+
+// A drain that is not driven by a swapchain destroy cannot release a batch that
+// still names a live swapchain.
+TEST(OverlayPresentSemaphoreLifetimeTest, HoldsWhenNoSwapchainWasDestroyed) {
+    EXPECT_FALSE(MayDestroy(MakeSemaphoreInput(kSwapchainA, 0)));
+}
+
+// An application destroys every swapchain before the device, so device teardown
+// releases the whole store.
+TEST(OverlayPresentSemaphoreLifetimeTest, ReleasesEverythingOnDeviceTeardown) {
+    auto input = MakeSemaphoreInput(kSwapchainA, 0);
+    input.deviceTeardown = true;
+    EXPECT_TRUE(MayDestroy(input));
+}
+
+// A state that never recorded a swapchain never composited into one, so nothing
+// can be presenting its semaphores.
+TEST(OverlayPresentSemaphoreLifetimeTest, ReleasesABatchThatNamesNoSwapchain) {
+    EXPECT_TRUE(MayDestroy(MakeSemaphoreInput(0, 0)));
+}
+
+// The mirror image of the image-view rule: views die before the driver's
+// destroy, the present-wait semaphores after it.
+TEST(OverlaySwapchainLifetimeSourceTest, DestroyHookReleasesPresentSemaphoresAfterTheDriverDestroy) {
+    const std::string source = StripComments(ReadLayerSource("vulkan_layer_swapchain.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    const size_t hook = source.find("Capture_vkDestroySwapchainKHR(VkDevice device");
+    ASSERT_NE(hook, std::string::npos);
+    const size_t driverDestroy = source.find("fp_vkDestroySwapchainKHR(device, swapchain", hook);
+    const size_t drain = source.find("DestroyDeferredOverlayPresentSemaphores(device, swapchain)", hook);
+    ASSERT_NE(driverDestroy, std::string::npos);
+    ASSERT_NE(drain, std::string::npos) << "the destroy hook must release the deferred present semaphores";
+    EXPECT_LT(driverDestroy, drain) << "a pending present of this swapchain may still wait on them until it is gone";
+}
+
+// Both overlay teardown paths run while presents can still be pending - the
+// swapchain-destroy one, and the `oldSwapchain` retirement that goes through
+// CleanupOverlay - so neither may destroy the ring's semaphores itself.
+TEST(OverlaySwapchainLifetimeSourceTest, OverlayTeardownDefersThePresentSemaphores) {
+    const std::string source = StripComments(ReadLayerSource("layer_overlay.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    size_t defers = 0;
+    for (size_t index = source.find("DeferPresentSemaphoresLocked(state, device)"); index != std::string::npos;
+         index = source.find("DeferPresentSemaphoresLocked(state, device)", index + 1)) {
+        ++defers;
+    }
+    EXPECT_EQ(defers, 2u) << "CleanupOverlayState and CleanupOverlay both have to defer";
+
+    // The loop both paths used to run. A slot the ring rolls back in
+    // PopSubmissionRingSlot was never presented and is still destroyed inline,
+    // so only the whole-ring teardown is checked for here.
+    EXPECT_EQ(source.find("for (auto s : state.semaphores)"), std::string::npos)
+        << "the ring's semaphores may only be destroyed from the deferred store";
+}

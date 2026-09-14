@@ -36,6 +36,74 @@ static const char* DetectTranslatedGraphicsAPIName() {
 std::mutex g_OverlayMutex;
 std::unordered_map<VkDevice, OverlayState> g_OverlayStates;
 
+namespace {
+
+// Overlay semaphores a present may still be waiting on, kept alive until the
+// swapchain they were presented against is gone. See
+// overlay_present_semaphore_lifetime in overlay_swapchain_lifetime_policy.h.
+struct DeferredPresentSemaphores {
+    VkDevice device = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> semaphores;
+};
+
+std::vector<DeferredPresentSemaphores> g_DeferredPresentSemaphores;
+
+uint64_t SwapchainKey(VkSwapchainKHR swapchain) {
+#if (VK_USE_64_BIT_PTR_DEFINES == 1)
+    return reinterpret_cast<uint64_t>(swapchain);
+#else
+    return static_cast<uint64_t>(swapchain);
+#endif
+}
+
+// Hands the ring's present-signalling semaphores to the deferred store instead
+// of destroying them with the rest of the state. Caller holds g_OverlayMutex.
+void DeferPresentSemaphoresLocked(OverlayState& state, VkDevice device) {
+    DeferredPresentSemaphores batch;
+    batch.device = device;
+    batch.swapchain = state.swapchain;
+    batch.semaphores = std::move(state.semaphores);
+    state.semaphores.clear();
+    g_DeferredPresentSemaphores.push_back(std::move(batch));
+}
+
+// Caller holds g_OverlayMutex.
+void DrainDeferredPresentSemaphoresLocked(VkDevice device, VkSwapchainKHR swapchain, bool deviceTeardown) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    size_t destroyed = 0;
+    for (auto batch = g_DeferredPresentSemaphores.begin(); batch != g_DeferredPresentSemaphores.end();) {
+        ce::overlay_present_semaphore_lifetime::Input input = {};
+        input.deferredSwapchain = SwapchainKey(batch->swapchain);
+        input.destroyedSwapchain = SwapchainKey(swapchain);
+        input.deviceTeardown = deviceTeardown;
+        if (batch->device != device || !ce::overlay_present_semaphore_lifetime::MayDestroy(input)) {
+            ++batch;
+            continue;
+        }
+        if (disp && disp->fp_vkDestroySemaphore) {
+            for (VkSemaphore semaphore : batch->semaphores) {
+                if (semaphore != VK_NULL_HANDLE) {
+                    disp->fp_vkDestroySemaphore(device, semaphore, nullptr);
+                    ++destroyed;
+                }
+            }
+        }
+        batch = g_DeferredPresentSemaphores.erase(batch);
+    }
+    if (destroyed > 0) {
+        LayerLog("Vulkan Layer: destroyed %zu overlay present semaphores held past swapchain %p", destroyed,
+                 swapchain);
+    }
+}
+
+}  // namespace
+
+void DestroyDeferredOverlayPresentSemaphores(VkDevice device, VkSwapchainKHR swapchain) {
+    std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    DrainDeferredPresentSemaphoresLocked(device, swapchain, false);
+}
+
 void SyncOverlayActiveFlagLocked() {
     bool overlayActive = false;
     // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - only existence of any initialized state matters
@@ -156,12 +224,11 @@ static void CleanupOverlayState(OverlayState& state, VkDevice device, DeviceDisp
             }
         }
 
-        // Cleanup semaphores
-        for (auto s : state.semaphores) {
-            if (s != VK_NULL_HANDLE) {
-                disp->fp_vkDestroySemaphore(device, s, nullptr);
-            }
-        }
+        // The ring's semaphores are the ones composited presents wait on, and a
+        // device-idle wait does not prove those waits have executed. They go to
+        // the deferred store and die with the swapchain they were presented
+        // against.
+        DeferPresentSemaphoresLocked(state, device);
 
         // Cleanup command pool
         if (state.commandPool != VK_NULL_HANDLE) {
@@ -636,11 +703,11 @@ void CleanupOverlay(VkDevice device) {
                 disp->fp_vkDestroyFence(device, f, nullptr);
             }
         }
-        for (auto s : state.semaphores) {
-            if (s != VK_NULL_HANDLE) {
-                disp->fp_vkDestroySemaphore(device, s, nullptr);
-            }
-        }
+        // Deferred for the same reason as in CleanupOverlayState: this path also
+        // runs while the old swapchain is only retired through
+        // VkSwapchainCreateInfoKHR::oldSwapchain, so its presents can still be
+        // pending on these.
+        DeferPresentSemaphoresLocked(state, device);
 
         if (state.commandPool != VK_NULL_HANDLE) {
             disp->fp_vkDestroyCommandPool(device, state.commandPool, nullptr);
@@ -662,4 +729,9 @@ void CleanupOverlay(VkDevice device) {
     g_OverlayStates.erase(it);
     SyncOverlayActiveFlagLocked();
     LayerLog("Vulkan Layer: CleanupOverlay complete");
+}
+
+void DestroyAllDeferredOverlayPresentSemaphores(VkDevice device) {
+    std::lock_guard<std::mutex> lock(g_OverlayMutex);
+    DrainDeferredPresentSemaphoresLocked(device, VK_NULL_HANDLE, true);
 }

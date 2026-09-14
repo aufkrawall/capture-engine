@@ -325,6 +325,35 @@ Primary sources:
   destroy-then-create sequence has lost the ordering. A Windows System-log `nvlddmkm` 153 whose timestamp lands
   inside a CE teardown window is the signature to look for, not a driver fault to write off.
 
+### The overlay's present-wait semaphores die *after* the swapchain, not with it
+
+- **Every composited present waits on a CE-owned binary semaphore.** `RenderOverlay` hands back the submission
+  slot's `OverlayState::semaphores[slot]` and the present hook rewrites `VkPresentInfoKHR::pWaitSemaphores` to it
+  (`chainedWaitSemaphore` in `vulkan_layer_present.cpp`). The presentation engine executes that wait, and **nothing
+  CE can observe proves it has run** - `vkDeviceWaitIdle` covers queue operations, not a present already handed to
+  the presentation engine. CE's submission-ring reuse already encodes this: a slot may only be reused once the
+  image's acquire generation has moved on, because the fence proves only that the submission retired.
+- The rule is therefore the mirror image of the image-view rule above, and both hold at once because the objects
+  are independent: image views, framebuffers and the compute route's descriptor sets/command buffers must be
+  destroyed **before** `vkDestroySwapchainKHR` (the presentable images die with the swapchain); the ring's
+  semaphores must be destroyed **after** it (destroying the swapchain is the one point that proves no pending
+  present of it is still waiting).
+- `ce::overlay_present_semaphore_lifetime::MayDestroy` (`overlay_swapchain_lifetime_policy.h`) owns the decision.
+  `CleanupOverlayState` and `CleanupOverlay` both move the ring's semaphores into a deferred store tagged with
+  `OverlayState::swapchain`; `Capture_vkDestroySwapchainKHR` drains the matching batch after the driver's destroy
+  returns, and `Capture_vkDestroyDevice` drains the remainder (an application destroys every swapchain before the
+  device). `CleanupOverlay` has to defer too: the `oldSwapchain` path in `vkCreateSwapchainKHR` calls it while the
+  old swapchain is only retired and its presents can still be pending.
+- A slot that `PopSubmissionRingSlot` rolls back was never presented, so it is still destroyed inline.
+- **DOOM Eternal (session `20260914_122133`, fixed in 0.1.6562)** proved the gap. The 0.1.6537 ordering had run,
+  and the fault repeated: one composite at 12:27:18.158, the swapchain destroyed at .223, CE's ring destroyed
+  behind a device-idle wait at .223-.255, `nvlddmkm` 153 at .2572, `VK_ERROR_DEVICE_LOST` on the first present of
+  the replacement, black window for the rest of the process. `perf_metrics_25856.csv` (two frames) and session
+  `20260913_193606` (two composite-free destroys that did not fault, one after ten composited presents that did)
+  are the discriminator: only a destroy that follows composited presents faults.
+- Diagnostics: `destroyed %zu overlay present semaphores held past swapchain %p` on each drain. Zero of those on a
+  session whose overlay was drawing means the deferral did not take effect.
+
 ## Queue-depth and frame pacing
 
 Moved to `frame-pacing-and-limiter.md`: producer-queue CPU/present depth enforcement, the rational FPS-limiting

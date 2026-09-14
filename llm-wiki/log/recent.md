@@ -1,5 +1,40 @@
 # llm-wiki Log
 
+### 2026-09-14 - DOOM Eternal black window again: the overlay's present semaphores outlived nothing
+
+Session `20260914_122133`, build 0.1.6561, black window, no crash. Same shape as `20260913_174040`
+(`nvlddmkm` 153 at 12:27:18.2572, then `Vulkan Prerender: wait failed result=-4` and
+`device loss latched from submission-slot fence probe` on the first present of the replacement swapchain) - but
+this time the 0.1.6537 release-before-destroy ordering was in place and had run:
+`Releasing overlay state built over swapchain 0000019E8FF100D0 before the driver destroys it (deviceIdleWait=1)`
+at .223, `Partial cleanup complete` at .255, the fault at .257. So the image views were not the whole story.
+
+`perf_metrics_25856.csv` holds exactly two frames and pins the discriminator: the overlay composited **once**, into
+the startup swapchain at .158, and the game destroyed that swapchain 15 ms after the present. Session
+`20260913_193606` (0.1.6542) confirms it from the other side: its first two swapchain destroys carried no composite
+at all and did not fault, while the third came after ten composited presents and faulted 1 ms into the teardown.
+A destroy that follows composites faults; one that does not, does not.
+
+Root cause: every composited present waits on one of `OverlayState::semaphores` - `RenderOverlay` returns the
+slot's binary semaphore and the present hook rewrites `pWaitSemaphores` to it (`chainedWaitSemaphore`). That wait
+is executed by the presentation engine, and `vkDeviceWaitIdle` does not prove it has run: it covers queue
+operations, not a present already handed to the presentation engine. CE's own submission-ring reuse says exactly
+this ("the fence proves the submission retired and says nothing about the present that waits on the semaphore",
+which is why slot reuse gates on the acquire generation), but both teardown paths destroyed the whole ring behind
+a device-idle wait anyway.
+
+Fix (0.1.6562): `overlay_present_semaphore_lifetime` in `overlay_swapchain_lifetime_policy.h`. The ring's
+semaphores are moved into a deferred store tagged with the swapchain they were presented against instead of being
+destroyed with the state, by both `CleanupOverlayState` (swapchain destroy) and `CleanupOverlay` (the
+`oldSwapchain` retirement path, which also runs while presents can be pending).
+`Capture_vkDestroySwapchainKHR` drains the matching batch **after** the driver's `vkDestroySwapchainKHR` returns -
+the one point that proves no pending present of that swapchain can still be waiting - and `Capture_vkDestroyDevice`
+drains the rest. Note the asymmetry that makes both rules hold at once: image views and framebuffers must die
+*before* the driver destroy because the presentable images die with the swapchain; the semaphores must die *after*
+it. Nine regression tests cover the policy plus both source orderings. Hardware re-check pending: a cold DOOM
+Eternal start has to survive the startup swapchain recreate repeatedly with
+`destroyed N overlay present semaphores held past swapchain ...` in the layer log and no `nvlddmkm` 153.
+
 ### 2026-09-14 - GPU load was the sum of concurrent engines, so it lived on the 100 clamp
 
 Follow-up question from the same Portal RTX run: with the rendered-rate ceiling in place, 4x holds the base at

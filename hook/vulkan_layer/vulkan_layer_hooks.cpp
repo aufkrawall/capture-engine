@@ -739,6 +739,9 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllo
     // needs is still live at this point.
     ForgetBorrowedOverlaySubmitQueue(device);
     CleanupOverlay(device);
+    // Every swapchain on the device is destroyed before the device is, so no
+    // present can still be waiting on the deferred overlay semaphores.
+    DestroyAllDeferredOverlayPresentSemaphores(device);
     CleanupCapture(device);
     CleanupPrerenderFences(device);
     g_VulkanReflexLimiter.ShutdownDevice(device);

@@ -512,6 +512,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 // destroy hook calls this before the driver frees those images; see
 // overlay_swapchain_lifetime_policy.h.
 void ReleaseOverlayForSwapchain(VkDevice device, VkSwapchainKHR swapchain);
+// Destroys the overlay semaphores composited presents of `swapchain` waited on.
+// They outlive the rest of the state deliberately: nothing short of the
+// swapchain's own destruction proves a pending present has executed its
+// semaphore wait. Call after the driver's vkDestroySwapchainKHR.
+void DestroyDeferredOverlayPresentSemaphores(VkDevice device, VkSwapchainKHR swapchain);
+// The same store, drained unconditionally for a device that is going away.
+void DestroyAllDeferredOverlayPresentSemaphores(VkDevice device);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore* signalSemaphoreOut, bool gameSubmitsConcurrently,
