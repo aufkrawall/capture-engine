@@ -381,6 +381,47 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     return true;
 }
 
+void NoteDirectDrawPresentationAttempt(ce::ddraw_present_policy::PresentOperation operation, HRESULT result) {
+    if (HookIsShuttingDown())
+        return;
+    // CE's own composite re-enters the hooked surface methods, so only the
+    // application's outermost presentation counts.
+    if (ddraw_hook_g_CaptureRecurse != 0)
+        return;
+
+    // An application calling Flip/Blt and getting an answer has a live render
+    // thread, whatever the runtime answered. Arming the freeze watchdog on the
+    // successful path alone meant a title whose presents all fail never armed
+    // it at all: Gothic II session 20260916_005504 issued thousands of
+    // presentations over 15 s with `renderLoopObserved=0` the whole time, so
+    // the watchdog dumped a false-positive dialog while the game was running
+    // and then refused to assert the freeze that actually followed.
+    g_RenderWatchdog.Heartbeat();
+
+    static std::atomic<bool> s_presentationFailing{false};
+    static std::atomic<uint32_t> s_failureLogCount{0};
+    if (FAILED(result)) {
+        // A presentation the runtime rejects is invisible everywhere else: the
+        // overlay composite still runs, the mix counters still move, and the
+        // application keeps looping. Say it once per failure run.
+        if (!s_presentationFailing.exchange(true, std::memory_order_relaxed)) {
+            const uint32_t occurrence = s_failureLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (occurrence <= 8 || (occurrence & (occurrence - 1)) == 0) {
+                HookLogImportant(
+                    "DDraw: Application presentation FAILED (operation=%s hr=0x%08x occurrence=%u) - nothing reaches "
+                    "the screen while this persists",
+                    ce::ddraw_present_policy::DescribePresentOperation(operation), static_cast<unsigned>(result),
+                    occurrence);
+            }
+        }
+        return;
+    }
+    if (s_presentationFailing.exchange(false, std::memory_order_relaxed)) {
+        HookLogImportant("DDraw: Application presentation recovered (operation=%s)",
+                         ce::ddraw_present_policy::DescribePresentOperation(operation));
+    }
+}
+
 void NotePresentationComplete() {
     if (HookIsShuttingDown())
         return;

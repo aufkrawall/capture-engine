@@ -415,6 +415,11 @@ void ReleaseLegacyD3D7TextureBindings();
 
 void LogDirectDrawPresentationMix(const char* reason);
 
+// One application presentation call that has returned, whatever it returned.
+// Arms the freeze watchdog and reports a presentation the runtime rejected;
+// `NotePresentationComplete` stays on the success path for frame timing.
+void NoteDirectDrawPresentationAttempt(ce::ddraw_present_policy::PresentOperation operation, HRESULT result);
+
 inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
 
 inline bool ddraw_hook_g_DirectDrawCreateInlineInstalled = false;

@@ -55,6 +55,7 @@ struct DialogInfo {
 
 struct DialogSearchContext {
     DWORD processId = 0;
+    HWND presentationWindow = nullptr;
     DialogInfo* info = nullptr;
 };
 
@@ -79,6 +80,11 @@ BOOL CALLBACK FindProcessDialogWindowProc(HWND hwnd, LPARAM lParam) {
         return TRUE;
     }
 
+    // The window the application presents into cannot be what is blocking it.
+    if (!ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(hwnd, context->presentationWindow)) {
+        return TRUE;
+    }
+
     context->info->hwnd = hwnd;
     context->info->threadId = windowThreadId;
     context->info->visible = IsWindowVisible(hwnd) != FALSE;
@@ -86,9 +92,10 @@ BOOL CALLBACK FindProcessDialogWindowProc(HWND hwnd, LPARAM lParam) {
     return FALSE;
 }
 
-bool FindBlockingDialogWindow(DWORD processId, DialogInfo& info) {
+bool FindBlockingDialogWindow(DWORD processId, HWND presentationWindow, DialogInfo& info) {
     DialogSearchContext context = {};
     context.processId = processId;
+    context.presentationWindow = presentationWindow;
     context.info = &info;
     EnumWindows(FindProcessDialogWindowProc, reinterpret_cast<LPARAM>(&context));
     return info.hwnd != nullptr;
@@ -562,7 +569,8 @@ void FreezeWatchdog::WatchdogThread() {
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double sinceStartup = (now - startupTime_.load(std::memory_order_acquire)) / 1'000'000.0;
         DialogInfo dialogInfo = {};
-        bool hasDialog = FindBlockingDialogWindow(processId_, dialogInfo);
+        bool hasDialog = FindBlockingDialogWindow(
+            processId_, presentationWindow_.load(std::memory_order_acquire), dialogInfo);
         if (hasDialog) {
             std::string currentDialogDescription = DescribeDialog(dialogInfo);
             std::string currentDialogIdentity = GetDialogIdentity(dialogInfo);

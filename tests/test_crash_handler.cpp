@@ -484,6 +484,24 @@ TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRout
     EXPECT_LT(publish, livePatch);
 }
 
+// Gothic II 20260916_005504: the watchdog found a visible `#32770` window in the
+// process and wrote a 29 MB "blocking dialog" dump for it 5.1 s later - while
+// the game was presenting ~270 times a second into that very window. Gothic's
+// own render window is registered with the dialog class, and CE always knows
+// which window it composites into.
+TEST(FreezeWatchdogPolicyTest, ThePresentationWindowIsNeverABlockingDialog) {
+    HWND renderWindow = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x320ae0));
+    HWND otherDialog = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x123456));
+
+    EXPECT_FALSE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(renderWindow, renderWindow));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(otherDialog, renderWindow));
+
+    // Before any presentation window is known - early startup - every dialog
+    // still counts, which is what preserves the startup-crash dumps.
+    EXPECT_TRUE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(renderWindow, nullptr));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(nullptr, nullptr));
+}
+
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {
     EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false, false));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, true, false));

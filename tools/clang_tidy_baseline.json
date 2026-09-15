@@ -45,7 +45,7 @@
   },
   "total": 1904,
   "scope": {
-    "entries": 762,
+    "entries": 763,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -629,6 +629,7 @@
       "tests/test_d3d9_capture_policy.cpp",
       "tests/test_d3d9_vtable_abi.cpp",
       "tests/test_d3dkmt_abi.cpp",
+      "tests/test_ddraw_lock_flags.cpp",
       "tests/test_ddraw_present_override_policy.cpp",
       "tests/test_ddraw_present_policy.cpp",
       "tests/test_directdraw_vtable_abi.cpp",

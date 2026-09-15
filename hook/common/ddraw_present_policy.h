@@ -54,6 +54,26 @@ enum class PresentKind {
 // without including the legacy Windows headers.
 enum class PresentOperation { None, Flip, Blt, BltFast };
 
+inline const char* DescribePresentOperation(PresentOperation operation) {
+    switch (operation) {
+        case PresentOperation::Flip:
+            return "flip";
+        case PresentOperation::Blt:
+            return "blt";
+        case PresentOperation::BltFast:
+            return "bltfast";
+        default:
+            return "none";
+    }
+}
+
+// Whether a classified call publishes an image, and therefore whether a
+// returned call from it is evidence of a live application render loop.
+inline bool PresentKindIsPresentation(PresentKind kind) {
+    return kind == PresentKind::FlipChain || kind == PresentKind::BlitPresent ||
+           kind == PresentKind::DirectScanout;
+}
+
 enum class VsyncRequest {
     ApplicationControlled,
     Immediate,

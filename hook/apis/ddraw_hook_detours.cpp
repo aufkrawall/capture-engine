@@ -242,6 +242,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
     presentationOverride.PrepareForCall();
     const HRESULT hr = record.flip(surface, destOverride, ddraw_hook_flags);
     presentationOverride.Complete(hr);
+    NoteDirectDrawPresentationAttempt(policy::PresentOperation::Flip, hr);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0) {
         ddraw_hook_g_DDrawCapture.PublishCompositeState(presentSource, surface, true);
         PublishNativeLegacyD3DOverlay(presentSource, surface, true);
@@ -279,6 +280,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
     presentationOverride.PrepareForCall();
     const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::Blt, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }
@@ -320,6 +324,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
     presentationOverride.PrepareForCall();
     const HRESULT hr = record.bltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::BltFast, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }
@@ -468,6 +475,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface7Flip(surface, destOverride, ddraw_hook_flags);
     presentationOverride.Complete(hr);
+    NoteDirectDrawPresentationAttempt(policy::PresentOperation::Flip, hr);
 
     if (SUCCEEDED(hr)) {
         ddraw_hook_g_DDrawCapture.PublishCompositeState(flipPresentSource, surface, true);
@@ -500,6 +508,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  ID
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags);
     presentationOverride.Complete(hr);
+    NoteDirectDrawPresentationAttempt(policy::PresentOperation::Flip, hr);
     if (SUCCEEDED(hr)) {
         ddraw_hook_g_DDrawCapture.PublishCompositeState(flipPresentSource, surface, true);
         PublishNativeLegacyD3DOverlay(flipPresentSource, surface, true);
@@ -548,6 +557,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::Blt, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }
@@ -601,6 +613,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::BltFast, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }
@@ -651,6 +666,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::Blt, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }
@@ -701,6 +719,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, 
     presentationOverride.PrepareForCall();
     HRESULT hr = ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
     presentationOverride.Complete(hr);
+    if (policy::PresentKindIsPresentation(presentation.kind)) {
+        NoteDirectDrawPresentationAttempt(policy::PresentOperation::BltFast, hr);
+    }
     if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
         RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
     }

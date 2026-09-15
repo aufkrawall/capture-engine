@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-09-16 - Gothic II froze with every present failing, and the watchdog dumped the wrong 5 seconds
+
+Session `20260916_005504`. The game did not freeze at start: it ran about 3,600 presentations at
+~270/s for fifteen seconds, then its render thread produced its last log line at 00:55:27.8 and never
+another, with GPU load dropping 71% -> 1%. Four findings, three of them CE's.
+
+**Every application `Flip` failed for the whole session.** `NotePresentationComplete()` runs only on
+`SUCCEEDED(hr)`, and it never ran once: `renderLoopObserved=0` across all 91 s and no presentation-mix
+line, while the composite counted 3,600 presentations. Both healthy sessions armed the render loop
+within a second. CE logged nothing about it, because a failing Flip was invisible to every counter CE
+keeps - the overlay composite still ran, the mix counters still moved, and the application kept
+looping. `NoteDirectDrawPresentationAttempt` now reports a rejected presentation with its operation
+and HRESULT, once per failure run plus a recovery line.
+
+**CE retried a failed surface lock without `DDLOCK_NOSYSLOCK`.** One second before the wedge the
+overlay composite's `Lock` started returning E_FAIL, and the fallback dropped the flag - which makes a
+`DDLOCK_WAIT` lock take the Win16 lock, on the application's render thread, inside its own present,
+in a process that also hosts Steam's overlay and a message pump. Two capture locks had the same
+"progressively compatible" ladder. The flag is now kept on every attempt; only the read-only hint is
+negotiable, and a lock CE cannot take is a frame CE does not composite - which both callers already
+handled. `DDrawLockFlagsTest` reads the sources so the fallback cannot return as a compatibility fix.
+
+**The watchdog wrote a 29 MB "blocking dialog" dump for the game's own render window.** `hwnd=00320ae0`
+is the window CE composites into - `Overlay target changed ... newHwnd=00320ae0` names it - and Gothic
+II registers it with class `#32770`. The dump landed at 00:55:17, while the game was running at 270
+presentations a second. CE always knows its presentation window, so that window is now excluded from
+the dialog scan outright.
+
+**CE could then never dump the actual freeze.** `renderLoopObserved=0` (the first finding) made
+`ShouldAssertRenderThreadFreeze` refuse for the rest of the session; the watchdog logged
+"no authoritative present is in flight" every ten seconds and the one dump it did take was ten seconds
+early. An application that called Flip and got an answer has a live render thread whatever the runtime
+answered, so the watchdog now arms on a returned presentation rather than an accepted one.
+
+The user's own Task Manager dump of the frozen process carries no 32-bit stacks either - the same
+WoW64 gap `d1eb4998` closed for CE's helper, which Task Manager's x64 writer still has. CE's dump is
+the only one that can show this freeze, which is why the two watchdog defects mattered more than they
+look. Whether the wedge itself is the Win16 lock is not yet proven; the next occurrence should say so
+directly.
+
 ### 2026-09-16 - A Direct3D 7 state block restored a texture the game had already destroyed
 
 Gothic II/SystemPack session `20260916_000027` crashed about seven seconds in, during the intro

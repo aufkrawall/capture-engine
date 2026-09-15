@@ -37,6 +37,16 @@ inline bool ShouldAssertRenderThreadFreeze(bool liveRenderLoopEvidence, bool pre
     return liveRenderLoopEvidence || presentInFlight || forceMonitor || runtimePresentationMonitor;
 }
 
+// The window the application presents into is never a blocking dialog, however
+// its class is registered. Gothic II's own render window is class `#32770` with
+// no title, so session 20260916_005504 wrote a 29 MB "blocking dialog" dump for
+// the window CE was compositing into while the game ran at ~270 presentations a
+// second. CE always knows that window - it is the one it renders the overlay
+// onto - so this is a fact, not a heuristic.
+inline bool DialogWindowCanBlockPresentation(HWND dialog, HWND presentationWindow) {
+    return dialog != nullptr && (presentationWindow == nullptr || dialog != presentationWindow);
+}
+
 // A same-process #32770 window is useful diagnostic evidence, but it is not by
 // itself evidence of a freeze: third-party overlays create ordinary dialogs in
 // the game process while presentation continues. Preserve early startup dumps
@@ -141,6 +151,12 @@ public:
     // Set the thread to monitor (call from the monitored thread). An explicit,
     // provenance-checked claim outranks the Vulkan layer's published present
     // thread, so the cross-API poll stops re-claiming it afterwards.
+    // The window the application presents into, so a dialog-class render window
+    // is never mistaken for a blocking dialog. Zero clears it.
+    void SetPresentationWindow(HWND hwnd) {
+        presentationWindow_.store(hwnd, std::memory_order_release);
+    }
+
     void SetMonitoredThread(DWORD threadId = GetCurrentThreadId()) {
         monitoredThreadId_.store(threadId);
         monitoredThreadFromVulkanLayer_.store(false, std::memory_order_release);
@@ -193,6 +209,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> renderLoopObserved_{false};
+    std::atomic<HWND> presentationWindow_{nullptr};
     std::atomic<bool> d3dRenderLoopObserved_{false};
     std::atomic<bool> vulkanLayerRenderLoopObserved_{false};
     std::atomic<bool> monitoredThreadFromVulkanLayer_{false};

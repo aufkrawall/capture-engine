@@ -175,6 +175,11 @@ bool DDrawCapture::EnsureOverlayDevice(HWND hwnd,  uint32_t w,  uint32_t ddraw_h
         height = ddraw_hook_h;
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
+        // The freeze watchdog scans the process for a #32770 window and calls it a
+        // blocking dialog. A DirectDraw title's own render window can be registered
+        // with that class, so tell the watchdog which window this actually is.
+        g_RenderWatchdog.SetPresentationWindow(hwnd);
+
         // The CPU composite needs no device. The LUID still has to be published
         // so the out-of-process VRAM telemetry can bind to the adapter.
         PublishOverlayAdapterLuidOnce();

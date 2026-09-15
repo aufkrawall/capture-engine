@@ -39,10 +39,14 @@ DirectDrawRgbFormat ClassifyDirectDrawRgbFormat(const DDPIXELFORMAT& format) {
 }
 
 HRESULT LockDirectDrawSurfaceForRead(IDirectDrawSurface7* surface, DDSURFACEDESC2& desc) {
+    // Every attempt keeps DDLOCK_NOSYSLOCK. Dropping it makes a DDLOCK_WAIT lock
+    // take the Win16 lock on the application's render thread, inside its own
+    // present, alongside whatever other overlay is resident - a process-wide
+    // deadlock, which is worse than the capture missing a frame. Only the
+    // read-only hint is negotiable, for drivers that reject it.
     constexpr DWORD kLockAttempts[] = {
         DDLOCK_WAIT | DDLOCK_READONLY | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK,
-        DDLOCK_WAIT | DDLOCK_READONLY | DDLOCK_SURFACEMEMORYPTR,
-        DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR,
+        DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK,
     };
     HRESULT hr = DDERR_GENERIC;
     for (DWORD flags : kLockAttempts) {
@@ -263,18 +267,14 @@ bool DDrawCapture::CaptureFrameFromSurface(IDirectDrawSurface7* surface) {
 
         DDSURFACEDESC2 desc = {};
         desc.dwSize = sizeof(desc);
+        // DDLOCK_NOSYSLOCK stays on every attempt; see LockDirectDrawSurfaceForRead.
         HRESULT hr = surface->Lock(nullptr, &desc,
                                    DDLOCK_WAIT | DDLOCK_READONLY | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK,
                                    nullptr);
         if (FAILED(hr)) {
             desc = {};
             desc.dwSize = sizeof(desc);
-            hr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_READONLY | DDLOCK_SURFACEMEMORYPTR, nullptr);
-        }
-        if (FAILED(hr)) {
-            desc = {};
-            desc.dwSize = sizeof(desc);
-            hr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
+            hr = surface->Lock(nullptr, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK, nullptr);
         }
         const DDPIXELFORMAT& sourceFormat = desc.ddpfPixelFormat;
         const uint32_t sourceBits = sourceFormat.dwRGBBitCount;

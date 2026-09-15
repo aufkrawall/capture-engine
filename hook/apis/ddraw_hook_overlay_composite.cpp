@@ -139,16 +139,16 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
     desc.dwSize = sizeof(desc);
 
     const int64_t lockStartUs = PerfLogger::GetQpcUs();
-    // NOSYSLOCK keeps the Win16 system lock out of the way; it is an
-    // optimization, not a requirement, so a driver that rejects it gets a plain
-    // wait-and-lock retry.
-    HRESULT lockHr =
+    // DDLOCK_NOSYSLOCK is not an optimization and must never be dropped. Without
+    // it a DDLOCK_WAIT lock takes the Win16 lock, and this call runs on the
+    // application's render thread inside its present, with a co-resident
+    // overlay and a message pump in the same process. Gothic II session
+    // 20260916_005504 is that shape: this lock started returning E_FAIL, and
+    // the render thread never came back out of the presentation a second later.
+    // A lock CE cannot take without the system lock is a frame CE does not
+    // composite - the caller already treats failure that way.
+    const HRESULT lockHr =
         surface->Lock(&lockRect, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK, nullptr);
-    if (FAILED(lockHr)) {
-        desc = {};
-        desc.dwSize = sizeof(desc);
-        lockHr = surface->Lock(&lockRect, &desc, DDLOCK_WAIT | DDLOCK_SURFACEMEMORYPTR, nullptr);
-    }
     const int64_t lockUs = PerfLogger::GetQpcUs() - lockStartUs;
     if (FAILED(lockHr) || !desc.lpSurface) {
         static std::atomic<int> s_lockFailLogCount{0};

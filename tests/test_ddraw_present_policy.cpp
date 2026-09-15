@@ -365,3 +365,26 @@ TEST(DDrawPresentPolicyTest, UnknownOrOverflowedNativeDamageRefusesUnsafeFullReb
         overflowed.RecordWrite(true, {i * 3, 0, i * 3 + 1, 1});
     EXPECT_EQ(overflowed.CopyRepairs(nullptr, 0, count), native_damage::State::Unsafe);
 }
+
+// Gothic II 20260916_005504: every application Flip failed for the whole
+// session, so the success-gated heartbeat never armed the freeze watchdog
+// (`renderLoopObserved=0` across 91 s and thousands of presentations). The
+// watchdog then dumped a false-positive dialog while the game ran and refused
+// to assert the freeze that followed. A returned presentation call is evidence
+// of a live render loop whatever the runtime answered.
+TEST(DDrawPresentPolicyTest, EveryPublishingKindCountsAsAPresentation) {
+    using ce::ddraw_present_policy::PresentKind;
+    EXPECT_TRUE(ce::ddraw_present_policy::PresentKindIsPresentation(PresentKind::FlipChain));
+    EXPECT_TRUE(ce::ddraw_present_policy::PresentKindIsPresentation(PresentKind::BlitPresent));
+    EXPECT_TRUE(ce::ddraw_present_policy::PresentKindIsPresentation(PresentKind::DirectScanout));
+    // An ordinary drawing blit publishes nothing and must not arm anything.
+    EXPECT_FALSE(ce::ddraw_present_policy::PresentKindIsPresentation(PresentKind::None));
+}
+
+TEST(DDrawPresentPolicyTest, PresentOperationsDescribeThemselvesForTheFailureLog) {
+    using ce::ddraw_present_policy::PresentOperation;
+    EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::Flip), "flip");
+    EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::Blt), "blt");
+    EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::BltFast), "bltfast");
+    EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::None), "none");
+}
