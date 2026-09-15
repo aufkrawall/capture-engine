@@ -139,7 +139,20 @@ TEST(UE5ConsoleRegistryTest, ValueOffsetAndObjectPlausibility) {
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(0));
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(0x400));      // first page
     EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(0x10004));    // unaligned
-    EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(uintptr_t{1} << 48));
+
+    // An ordinary 32-bit heap address must pass on every architecture. The bound used to be
+    // `uintptr_t{1} << 47`, which is undefined in the 32-bit hook build and folded to a
+    // constant false, rejecting every address and silently disabling all [UE5] overrides
+    // there. unit_tests.exe is x64-only, so this case cannot observe that by itself - the
+    // static_assert in ue5_console_registry.h is what covers the 32-bit compile.
+    EXPECT_TRUE(ce::ue5_registry::IsPlausibleConsoleObject(0x00A00000));
+    EXPECT_GT(ce::ue5_registry::kMaxCanonicalUserAddress, uintptr_t{0x10000});
+
+    // Above the canonical range, expressed so the constant stays representable in a 32-bit
+    // uintptr_t rather than shifting past the width of the type.
+    if constexpr (sizeof(uintptr_t) >= 8) {
+        EXPECT_FALSE(ce::ue5_registry::IsPlausibleConsoleObject(ce::ue5_registry::kMaxCanonicalUserAddress));
+    }
 }
 
 TEST(UE5RegistrySweepTest, ResumingAfterAPauseCoversExactlyTheSameChunks) {

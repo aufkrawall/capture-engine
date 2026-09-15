@@ -117,7 +117,18 @@ void SyncOverlayActiveFlagLocked() {
 }
 
 // Find graphics queue family index
+//
+// The instance dispatch is genuinely optional here: VulkanLayerState::GetInstanceDispatch
+// returns nullptr for a VkInstance the layer never recorded and cannot resolve through the
+// loader registry, which is why every other use in this file is guarded. Taking the same
+// fallback this function already documents for "no graphics family found" keeps the layer
+// transparent instead of faulting a call it cannot attribute.
 static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDispatch* instDisp) {
+    if (!instDisp || !instDisp->fp_vkGetPhysicalDeviceQueueFamilyProperties) {
+        LayerLog("Vulkan Layer: [Warning] No instance dispatch for queue-family lookup - using family 0");
+        return 0;
+    }
+
     uint32_t queueFamilyCount = 0;
     instDisp->fp_vkGetPhysicalDeviceQueueFamilyProperties(physDevice, &queueFamilyCount, nullptr);
 

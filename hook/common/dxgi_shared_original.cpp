@@ -160,19 +160,39 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                                             "Steam trampoline chain", &guardedSteamHr)) {
                 return guardedSteamHr;
             }
-            return presentBypass(pSwapChain, SyncInterval, Flags);
+            // The clean DXGI bypass is this chain's documented fail-closed fallback, but it only
+            // exists when EnsurePresentBypassTrampoline succeeded. Calling it unconditionally is a
+            // call through NULL - the RIP=0 DEP signature CrashHandlerExceptionFilter fingerprints
+            // explicitly. Every other bypass site in this function proves the pointer first, either
+            // locally or through a policy predicate that takes `presentBypass != nullptr`; this one
+            // did not, because IsSteamExternalChainTrampoline does not consider the bypass at all.
+            // Without a bypass, the trampoline transport below is not a substitute either: it
+            // re-enters the very Steam chain the guarded invoke just declined. Fall through to the
+            // transports after this block instead.
+            if (presentBypass) {
+                return presentBypass(pSwapChain, SyncInterval, Flags);
+            }
+            static std::atomic<int> s_steamChainNoBypassLogCount{0};
+            const int noBypassNum = s_steamChainNoBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (noBypassNum <= 10 || (noBypassNum % 500) == 0) {
+                HookLogImportant(
+                    "CallOriginalPresent: Steam trampoline chain declined with no bypass trampoline #%d "
+                    "(trampoline=%p) - falling through to the remaining transports",
+                    noBypassNum, (void*)presentTrampoline);
+            }
+        } else {
+            // Non-Steam external chain (e.g. RTSS's thunk) with a single foreign overlay: the
+            // preserved trampoline re-issues exactly the entry jump CE prepended over, which is
+            // what the game itself would have executed. A multi-overlay chain never reaches this
+            // branch — InstallPresentInlineHooks leaves that entry unpatched entirely, because no
+            // forwarding choice from CE's side can repair a chain the other tools have already
+            // re-linked through CE.
+            static int s_copLogCount = 0;
+            if (s_copLogCount++ < 5) {
+                HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
+            }
+            return presentTrampoline(pSwapChain, SyncInterval, Flags);
         }
-        // Non-Steam external chain (e.g. RTSS's thunk) with a single foreign overlay: the
-        // preserved trampoline re-issues exactly the entry jump CE prepended over, which is
-        // what the game itself would have executed. A multi-overlay chain never reaches this
-        // branch — InstallPresentInlineHooks leaves that entry unpatched entirely, because no
-        // forwarding choice from CE's side can repair a chain the other tools have already
-        // re-linked through CE.
-        static int s_copLogCount = 0;
-        if (s_copLogCount++ < 5) {
-            HookLog("CallOriginalPresent: trampoline path=%p", presentTrampoline);
-        }
-        return presentTrampoline(pSwapChain, SyncInterval, Flags);
     }
 
     if (forceSteamDX12Bypass) {

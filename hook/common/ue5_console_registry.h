@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace ce::ue5_registry {
 
@@ -94,10 +95,32 @@ constexpr bool IsAcceptableValueOffset(std::size_t offset) noexcept {
     return false;
 }
 
+// The 47-bit canonical limit is an x86-64 concept. `hook/*.cpp` is globbed for both
+// architectures, so this header is also compiled into the 32-bit hook DLL, where
+// `uintptr_t{1} << 47` shifts past the width of the type. That is undefined behaviour,
+// and clang folds the whole predicate to a constant `false` - which silently disabled
+// every `[UE5]` console-variable override in 32-bit Unreal titles, with no diagnostic.
+// On 32-bit every representable user address is canonical, so the type maximum is the
+// correct bound there.
+// A ternary would not do: both arms are still parsed, so the 47-bit shift would remain
+// ill-formed in the 32-bit build. Select the constant itself instead.
+#if UINTPTR_MAX > 0xFFFFFFFFu
+constexpr uintptr_t kMaxCanonicalUserAddress = uintptr_t{1} << 47;
+#else
+constexpr uintptr_t kMaxCanonicalUserAddress = (std::numeric_limits<uintptr_t>::max)();
+#endif
+
+// The unit tests are built x64-only, so no test run can observe the 32-bit value of this
+// bound. Assert the property that actually matters here, where the x86 hook compile sees
+// it too: a bound at or below the first-page floor makes IsPlausibleConsoleObject reject
+// every address, which is exactly how the previous UB shift failed - silently.
+static_assert(kMaxCanonicalUserAddress > 0x10000,
+              "canonical user-address bound must leave a usable range above the first-page floor");
+
 constexpr bool IsPlausibleConsoleObject(uintptr_t object) noexcept {
     // Heap objects are at least pointer-aligned, and a user-mode address is
-    // never in the lowest page or above the 47-bit canonical range.
-    return object >= 0x10000 && (object % 8) == 0 && object < (uintptr_t{1} << 47);
+    // never in the lowest page or above the canonical range for this architecture.
+    return object >= 0x10000 && (object % 8) == 0 && object < kMaxCanonicalUserAddress;
 }
 
 // Progress of the sweep that locates the registry's element storage.
