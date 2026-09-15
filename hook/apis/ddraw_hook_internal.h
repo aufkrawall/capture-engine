@@ -421,7 +421,11 @@ void LogDirectDrawPresentationMix(const char* reason);
 // the render thread's stack is gone.
 void RecordDirectDrawPresentEntryPoints(void** surfaceVTable);
 void* ResolveDirectDrawOwnedPresentFunction(void* surface, size_t slot);
-void* AcquireDirectDrawPresentCycleEscape(void* surface, size_t slot, const char* operation);
+// Reports one nested presentation, naming the module that re-entered CE. The
+// nested call returns without presenting; handing the caller another function
+// to call does not end the cycle (session 20260916_013230).
+void NoteDirectDrawPresentCycle(void* surface, size_t slot, const char* operation, void* returnAddress,
+                                void* savedOriginal);
 
 // Depth of CE's own presentation detours on this thread. A second entry is a
 // foreign overlay calling back into the slot CE owns, never the application

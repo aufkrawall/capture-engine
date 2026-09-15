@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-09-16 - Handing the cycle another function to call did not end it
+
+Session `20260916_013230`, the first run with the cycle break from `23fc0101`. The guard fired on the
+very first flip and kept firing: `occurrence=1` through `32768` inside two milliseconds, every line
+reporting that it had found a DirectDraw-owned entry point and called it. The game died five seconds
+later with exit code `0xC0000005` and an empty `crash.log`.
+
+So the escape was wrong, and worse than wrong: removing the 4K composite from each level turned a
+recursion that took thirteen seconds into one that exhausted the stack in two milliseconds. The
+recorded entry point was not the problem in the obvious way - `Recorded 3 of 3` for vtable
+`7a1bd040`, snapshotted on the bootstrap thread before the game's surfaces existed, and
+`ddraw!DD_Surface_Flip` disassembles with no dispatch back through a surface vtable. Something else
+re-enters CE there, and the fact of the recursion alone cannot say what.
+
+A nested presentation now returns without calling anything. That is the only response that cannot
+recurse by construction; the cost is one dropped presentation. `NoteDirectDrawPresentCycle` reports
+the module that re-entered CE, CE's saved original, and the entry point recorded before CE patched
+the slot - three names that separate a co-resident overlay from DirectDraw itself from CE calling
+back into its own detour, which is what the next occurrence has to settle.
+
+**Method note, twice over now on this bug.** The previous entry's reading of
+`20260916_005504`/`011148` was corrected by a dump; this one was corrected by the very next run. Both
+times the failure was reasoning past the evidence to a mechanism that fit. The guard shipped here is
+deliberately the version that needs no theory of the caller to be safe.
+
 ### 2026-09-16 - Gothic II's freeze was CE and Steam calling each other's Flip detour forever
 
 Session `20260916_011148`, diagnosed from a dump taken of the live hung process. The repeating cycle

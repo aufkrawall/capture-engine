@@ -87,12 +87,19 @@ TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
     }
     EXPECT_EQ(scopes, 9u) << "a presentation detour lost its re-entry guard";
 
-    size_t escapes = 0;
-    for (size_t at = contents.find("PresentCycleEscape<"); at != std::string::npos;
-         at = contents.find("PresentCycleEscape<", at + 1)) {
-        ++escapes;
+    size_t refusals = 0;
+    for (size_t at = contents.find("RefuseReenteredPresentation(surface"); at != std::string::npos;
+         at = contents.find("RefuseReenteredPresentation(surface", at + 1)) {
+        ++refusals;
     }
-    EXPECT_EQ(escapes, 9u) << "a re-entry guard stopped breaking out through DirectDraw's own entry point";
+    EXPECT_EQ(refusals, 9u) << "a re-entry guard stopped refusing the nested presentation";
+
+    // Session 20260916_013230: answering the cycle by calling another function -
+    // even one captured before CE patched the slot and validated as ddraw-owned -
+    // did not end it. Returning without calling anything is the only response
+    // that cannot recurse, so no guard may call through a function pointer.
+    EXPECT_EQ(contents.find("AcquireDirectDrawPresentCycleEscape"), std::string::npos)
+        << "a re-entry guard is calling through a pointer again";
 }
 
 // The escape is only an escape if it belongs to DirectDraw. Another overlay's
@@ -107,6 +114,9 @@ TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
     EXPECT_NE(contents.find("IsDirectDrawOwnedCode"), std::string::npos);
     EXPECT_NE(contents.find("GetModuleHandleA(\"ddraw.dll\")"), std::string::npos);
     EXPECT_NE(contents.find("GetModuleInformation"), std::string::npos);
+    // The recursion cannot be attributed from the fact of it alone, so the
+    // report has to name the module that re-entered CE.
+    EXPECT_NE(contents.find("DescribeCodeAddress"), std::string::npos);
     // The snapshot has to happen before CE patches the slot, or it records CE.
     const std::string installer =
         ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/apis" / "ddraw_hook_install.cpp");
