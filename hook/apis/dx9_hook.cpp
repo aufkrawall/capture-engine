@@ -550,9 +550,8 @@ void DX9Hook::Init() {
         IDirect3D9* dummyD3D9 = pfnCreate9(D3D_SDK_VERSION);
         if (dummyD3D9) {
             uintptr_t* vtable = *(uintptr_t**)dummyD3D9;
-            bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
-                               (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
-            if (vtable && vtableValid) {
+            const bool vtableValid = IsPlausibleVTablePointer(vtable);
+            if (vtableValid) {
                 VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&dx9_hook_oCreateDevice);
                 EarlyLog("DX9: Plain IDirect3D9::CreateDevice hooked (vtable=%p)", (void*)vtable);
             }

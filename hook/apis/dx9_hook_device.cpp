@@ -492,9 +492,8 @@ IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     IDirect3D9* d3d9 = dx9_hook_oDirect3DCreate9(SDKVersion);
     if (d3d9 && !HookIsShuttingDown()) {
         uintptr_t* vtable = *(uintptr_t**)d3d9;
-        bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
-                           (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
-        if (vtable && vtableValid && !dx9_hook_oCreateDevice) {
+        const bool vtableValid = IsPlausibleVTablePointer(vtable);
+        if (vtableValid && !dx9_hook_oCreateDevice) {
             if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&dx9_hook_oCreateDevice) ==
                 VTableHook::Success) {
                 EarlyLog("DX9: CreateDevice hook installed on native D3D9 factory");

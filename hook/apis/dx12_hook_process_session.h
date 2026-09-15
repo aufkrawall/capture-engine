@@ -25,8 +25,30 @@ public:
           applicationSourcePresent(applicationSourcePresent),
           frameGenerationPresentationActive(frameGenerationPresentationActive),
           diagnostics(diagnostics) {}
+
+    // The per-frame backbuffer is acquired with GetBuffer() and must not outlive the
+    // present: DrawSubmitCoreFront's own comment records that a frame generator watches
+    // the backbuffer reference count and fails when extra references are held. There is
+    // exactly one release point deep inside DrawSubmitCoreTail, and two early returns
+    // above it (device-removed, and the Steam-deferred submit) skipped it. Owning the
+    // reference here means every exit path releases it, including ones added later.
+    ~FrameProcessSession() { ReleaseBackBuffer(); }
+
+    FrameProcessSession(const FrameProcessSession&) = delete;
+    FrameProcessSession& operator=(const FrameProcessSession&) = delete;
+
     void Run();
     void LogFrameMetrics();
+
+    // Idempotent: the normal path still releases at the original point in DrawSubmitCoreTail,
+    // and the destructor is the backstop for every other exit.
+    void ReleaseBackBuffer() {
+        if (bbNeedsRelease && bb) {
+            bb->Release();
+        }
+        bb = nullptr;
+        bbNeedsRelease = false;
+    }
 
 private:
     IDXGISwapChain* pSwapChain;
@@ -135,8 +157,10 @@ public:
     LARGE_INTEGER perfQI, perfGetBuf, perfRecord, perfSubmit, perfEnd, perfFreq{};
     UINT swapchainBufferIdx;
     UINT bufferIdx;
-    ID3D12Resource* bb;
-    bool bbNeedsRelease;
+    // Default-initialized: the destructor reads both on every exit, including presents that
+    // never reach the GetBuffer() call that assigns them.
+    ID3D12Resource* bb = nullptr;
+    bool bbNeedsRelease = false;
     bool cmdRecordOk;
     bool usedPrimaryOverlayBackend;
     bool usedDescFree;

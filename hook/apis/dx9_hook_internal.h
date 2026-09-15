@@ -165,6 +165,26 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
 
 void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);
 
+// Sanity check for a vtable pointer read out of a COM object before any slot is patched.
+//
+// Both call sites used to spell the upper bound as a literal `< 0x7FFFFFFF0000`, which does
+// not fit in a 32-bit uintptr_t: in the x86 hook build that comparison is always true, so
+// the guard degraded to "non-null and above the first page" exactly where legacy D3D9 titles
+// run. Selecting the bound by pointer width keeps one meaningful check in both builds. On
+// 32-bit every representable address is inside the user range, so only the floor applies.
+inline bool IsPlausibleVTablePointer(const void* vtable) noexcept {
+    if (vtable == nullptr)
+        return false;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(vtable);
+    if (address < 0x10000)
+        return false;
+#if UINTPTR_MAX > 0xFFFFFFFFu
+    return address < 0x7FFFFFFF0000;
+#else
+    return true;
+#endif
+}
+
 // Original function pointers for VTable hooks
 inline Present_t dx9_hook_oPresent = nullptr;
 

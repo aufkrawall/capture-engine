@@ -574,9 +574,10 @@ return ProcessFrameFlow::kSkipSteamFence;
                                 dx12_hook_s_startupOverlayFirstDrawProbeMs = 0;
                             }
                         }
-                        // FG-SAFE: Release per-frame backbuffer reference
-                        if (bbNeedsRelease)
-                            bb->Release();
+                        // FG-SAFE: Release per-frame backbuffer reference. Idempotent, and the
+                        // session destructor repeats it for the early returns above that never
+                        // reach this point.
+                        ReleaseBackBuffer();
     return ProcessFrameFlow::kContinue;
 }
 

@@ -312,10 +312,14 @@ TEST_F(DynamicRingBufferTest, MovedFromBufferIsSafelyEmpty) {
 
     DynamicRingBuffer<int> destination(std::move(source));
 
-    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from buffer contract
+    // Deliberately exercising the moved-from object: these three lines ARE the contract
+    // under test. clang-analyzer-cplusplus.Move reports the same use as
+    // bugprone-use-after-move under a different check name, so both have to be named here.
+    // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_EQ(source.Capacity(), 0u);
     EXPECT_TRUE(source.Empty());
     EXPECT_FALSE(source.Push(2));
+    // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 
     int value = 0;
     ASSERT_TRUE(destination.Pop(value));
@@ -329,10 +333,14 @@ TEST_F(DynamicRingBufferTest, MoveAssignmentLeavesSourceSafelyEmpty) {
 
     destination = std::move(source);
 
-    // NOLINTNEXTLINE(bugprone-use-after-move) - intentionally verify the moved-from buffer contract
+    // Deliberately exercising the moved-from object: these three lines ARE the contract
+    // under test. clang-analyzer-cplusplus.Move reports the same use as
+    // bugprone-use-after-move under a different check name, so both have to be named here.
+    // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     EXPECT_EQ(source.Capacity(), 0u);
     EXPECT_TRUE(source.Empty());
     EXPECT_FALSE(source.Push(8));
+    // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 
     int value = 0;
     ASSERT_TRUE(destination.Pop(value));

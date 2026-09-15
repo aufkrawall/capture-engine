@@ -155,13 +155,34 @@ TEST(DXGISharedSourceTest, GetBufferFailureForcesRtvReinitButSuccessPathKeepsOve
     const size_t nextFunction = text.find("ProcessFrameFlow FrameProcessSession::DrawSc3Else() {", tail);
     ASSERT_NE(nextFunction, std::string::npos);
     const std::string tailBody = text.substr(tail, nextFunction - tail);
-    EXPECT_NE(tailBody.find("if (bbNeedsRelease)"), std::string::npos)
-        << "the per-frame backbuffer reference release must remain";
-    EXPECT_NE(tailBody.find("bb->Release();"), std::string::npos);
+    EXPECT_NE(tailBody.find("ReleaseBackBuffer();"), std::string::npos)
+        << "the per-frame backbuffer reference release must remain on the normal path";
+    // The release used to be written inline as `if (bbNeedsRelease) bb->Release();` at the very
+    // end of this function, so the two early returns above it - the device-removed exit and the
+    // Steam-deferred submit - leaked one backbuffer reference each time they were taken.
+    // FrameProcessSession now owns the reference, so assert the ownership itself rather than the
+    // single call site: that is the property that keeps every future exit path correct.
+    EXPECT_EQ(tailBody.find("bb->Release();"), std::string::npos)
+        << "the raw release must go through the owning helper, not a bare call";
     EXPECT_EQ(tailBody.find("dx12_hook_g_State.overlayInit = false;"), std::string::npos)
         << "successful draws must never invalidate the overlay state";
     EXPECT_EQ(tailBody.find("CleanupRTVs();"), std::string::npos)
         << "successful draws must never tear down RTV state";
+
+    // The leak this guards against is an early return between the GetBuffer() acquisition and
+    // the release. Only session ownership makes that impossible, so require it: a destructor
+    // that releases, and default-initialized members so that destructor is safe on presents
+    // that never reach the acquisition.
+    const fs::path sessionHeader = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session.h";
+    ASSERT_TRUE(fs::exists(sessionHeader));
+    const std::string sessionText = ce::test_source::ReadLogicalSource(sessionHeader);
+    ASSERT_FALSE(sessionText.empty());
+    EXPECT_NE(sessionText.find("~FrameProcessSession() { ReleaseBackBuffer(); }"), std::string::npos)
+        << "FrameProcessSession must release the backbuffer on every exit path";
+    EXPECT_NE(sessionText.find("ID3D12Resource* bb = nullptr;"), std::string::npos)
+        << "bb must be default-initialized; the destructor reads it on presents that never acquire one";
+    EXPECT_NE(sessionText.find("bool bbNeedsRelease = false;"), std::string::npos)
+        << "bbNeedsRelease must be default-initialized for the same reason";
 }
 
 // Strange Brigade DX12 session 20260806_174024: after the first successful draw

@@ -21,11 +21,12 @@
     "  bugprone-exception-escape                 destructors; see git log for rationale"
   ],
   "checks": {
+    "clang-analyzer-core.CallAndMessage": 25,
+    "clang-analyzer-core.NullDereference": 1,
     "clang-diagnostic-cast-function-type-mismatch": 56,
     "clang-diagnostic-deprecated-declarations": 2,
     "clang-diagnostic-dll-attribute-on-redeclaration": 2,
     "clang-diagnostic-extra-tokens": 2,
-    "clang-diagnostic-format": 0,
     "clang-diagnostic-ignored-attributes": 6,
     "clang-diagnostic-inconsistent-dllimport": 8,
     "clang-diagnostic-inconsistent-missing-override": 186,
@@ -35,7 +36,6 @@
     "clang-diagnostic-missing-designated-field-initializers": 12,
     "clang-diagnostic-missing-field-initializers": 150,
     "clang-diagnostic-missing-format-attribute": 217,
-    "clang-diagnostic-reorder-ctor": 0,
     "clang-diagnostic-shadow": 802,
     "clang-diagnostic-sign-compare": 9,
     "clang-diagnostic-undefined-inline": 35,
@@ -47,7 +47,7 @@
     "clang-diagnostic-unused-private-field": 426,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 2212,
+  "total": 2238,
   "scope": {
     "entries": 756,
     "translation_units": [

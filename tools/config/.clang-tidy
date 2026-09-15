@@ -3,9 +3,23 @@
 # Run automatically as part of `python build.py --lint` (and default mode).
 # Uses compile_commands.json — does NOT recompile.
 
+# clang-analyzer-core/cplusplus are the path-sensitive checks. They are enabled because a
+# one-off run found three real defects this project's own risk model cares most about and
+# that no other gate could see: a null dereference in the implicit Vulkan layer, a call
+# through a null function pointer on the Steam Present fallback, and an unguarded frame
+# pointer in the encoder loop. Cross-translation-unit policy predicates produce a fair
+# number of false positives here (a null-guard expressed as a bool argument to a function
+# in another header is invisible to the analyzer); those are carried in the baseline rather
+# than papered over with inline suppressions.
+#
+# clang-analyzer-deadcode.DeadStores is deliberately NOT enabled: it is noisy in this tree
+# and its findings are cosmetic next to the core checks.
 Checks: >
   bugprone-*,
   performance-*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  misc-use-after-move,
   -bugprone-easily-swappable-parameters,
   -bugprone-reserved-identifier,
   -bugprone-implicit-widening-of-multiplication-result,

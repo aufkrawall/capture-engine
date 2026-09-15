@@ -459,6 +459,13 @@ void DX12Hook::Shutdown() {
     // Clean up descriptor-free backend
     ShutdownDescFreeBackend("DX12Hook::Shutdown", true);
 
+    // Disable the post-SL overlay callback and drain any in-flight invocation BEFORE
+    // releasing the queues it submits on. This used to run after the releases below, so a
+    // callback already executing could keep using dx12_hook_g_SwapchainQueue (or a
+    // g_DeviceQueues entry) whose last reference had just been dropped.
+    SetPostSLCallbackInstalled(false, "DX12: Shutdown");
+    WaitForInFlightPostSLCallbacks("DX12: Shutdown");
+
     {
         std::lock_guard<std::recursive_mutex> lock(g_DeviceQueuesMutex);
         for (auto& pair : g_DeviceQueues)
@@ -471,9 +478,6 @@ void DX12Hook::Shutdown() {
         dx12_hook_g_SwapchainQueue = nullptr;
         dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
     }
-    // Disable post-SL overlay callback before tearing down D3D12 resources.
-    SetPostSLCallbackInstalled(false, "DX12: Shutdown");
-    WaitForInFlightPostSLCallbacks("DX12: Shutdown");
     dx12_hook_g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
     ClearPostSLQueues("DX12: Shutdown");
     ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");

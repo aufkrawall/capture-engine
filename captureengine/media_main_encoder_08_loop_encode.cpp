@@ -183,7 +183,11 @@ void MediaEncoderSession::LoopEncode() {
                 ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64());
             UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs, encoderStartupWindowActive);
 
-            if (popped && frameToProcess->isInjectMode) {
+            // frameToProcess is null-checked at every other use in this loop (the duplicate
+            // fallback above and the inject-mode credit below); this one relied on `popped`
+            // alone. Keep the guard consistent rather than resting on an invariant nothing
+            // states - clang-analyzer reports a path where popped is set without a frame.
+            if (popped && frameToProcess && frameToProcess->isInjectMode) {
                 if (encodeDeferred) {
                     const InjectFrameLineage deferredLineage = MakeInjectFrameLineage(*frameToProcess);
                     frameCreditAccumulator = std::max(frameCreditAccumulator, 1.0);
