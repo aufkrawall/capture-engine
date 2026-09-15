@@ -1,8 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <iterator>
+
+#include "../hook/common/ddraw_native_overlay_damage.h"
 #include "../hook/common/ddraw_present_policy.h"
 
 namespace policy = ce::ddraw_present_policy;
+namespace native_damage = ce::ddraw_native_overlay;
 
 namespace {
 
@@ -136,6 +140,18 @@ TEST(DDrawPresentPolicyTest, DirectScanoutTreatsTouchingEdgesAsDisjoint) {
     EXPECT_TRUE(policy::DirectScanoutNeedsComposite(overlayBounds, true, policy::Rect{99, 0, 200, 100}));
 }
 
+TEST(DDrawPresentPolicyTest, SingleBufferedScanoutWritesAreAlwaysPresentations) {
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/false, 0));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(false, 1));
+}
+
+TEST(DDrawPresentPolicyTest, AFrontBufferWriteNeedsTwoWritesWithoutAFlip) {
+    EXPECT_EQ(policy::kScanoutWritesWithoutFlipThreshold, 2u);
+    EXPECT_FALSE(policy::ScanoutWriteIsPresentation(/*destOwnsFlipChain=*/true, 1));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, 2));
+    EXPECT_TRUE(policy::ScanoutWriteIsPresentation(true, 42));
+}
+
 TEST(DDrawPresentPolicyTest, CompositeRegionGrowsToTheStagingGrid) {
     policy::Rect region;
     ASSERT_TRUE(policy::AlignCompositeRegion(policy::Rect{14, 14, 470, 250}, 3840, 2160, 64, region));
@@ -179,99 +195,13 @@ TEST(DDrawPresentPolicyTest, RegionSizeIsAFractionOfTheFrameItReplaces) {
     EXPECT_LT(regionPixels * 20, framePixels);
 }
 
-// ============================================================================
-// Overlay route - which renderer may draw a given presentation, and the rule
-// that nothing renders while the loaded backend cannot serve the route.
-// ============================================================================
-
-TEST(DDrawPresentPolicyTest, OnlyAFlipTheDeviceRenderedCanUseTheNativeRoute) {
-    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::FlipChain, true), policy::OverlayRoute::NativeDevice);
-    // The device is rendering somewhere else, so drawing with it would put the
-    // overlay where nobody looks.
-    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::FlipChain, false),
-              policy::OverlayRoute::HelperComposite);
-}
-
-TEST(DDrawPresentPolicyTest, BlitAndDirectScanoutPresentationsAlwaysComposite) {
-    // A blit publishes an offscreen image and a direct scanout write is not a
-    // device operation at all, so the application's 3D device cannot draw them
-    // even when it is otherwise live.
-    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::BlitPresent, true),
-              policy::OverlayRoute::HelperComposite);
-    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::DirectScanout, true),
-              policy::OverlayRoute::HelperComposite);
-    EXPECT_EQ(policy::SelectOverlayRoute(policy::PresentKind::None, true), policy::OverlayRoute::HelperComposite);
-}
-
-TEST(DDrawPresentPolicyTest, TheCompositeRouteRefusesToRenderThroughTheNativeBackend) {
-    // The Gothic II crash, encoded: the composite ran while the backend was
-    // still bound to the application's own Direct3D 7 device, so every frame
-    // issued device work the application never asked for and then read back a
-    // helper backbuffer the overlay had never been drawn into.
-    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite,
-                                               /*nativeBackendBoundToThisDevice=*/true,
-                                               /*compositeBackendReady=*/false));
-    EXPECT_TRUE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite, false, true));
-}
-
-TEST(DDrawPresentPolicyTest, TheNativeRouteRefusesToRenderThroughTheCompositeBackend) {
-    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice,
-                                               /*nativeBackendBoundToThisDevice=*/false,
-                                               /*compositeBackendReady=*/true));
-    EXPECT_TRUE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, true, false));
-}
-
-TEST(DDrawPresentPolicyTest, ANativeBackendBoundToAnotherDeviceCannotRender) {
-    // A device the application recreated leaves the backend bound to one that
-    // renders nothing; the caller reports that as "not bound to this device".
-    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, false, false));
-}
-
-TEST(DDrawPresentPolicyTest, NoBackendLoadedRendersNothingOnEitherRoute) {
-    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::NativeDevice, false, false));
-    EXPECT_FALSE(policy::BackendCanRenderRoute(policy::OverlayRoute::HelperComposite, false, false));
-}
-
-// ============================================================================
-// Composite backdrop - the overlay must never be blended over itself, and must
-// never freeze the application's pixels underneath it either.
-// ============================================================================
-
-TEST(DDrawPresentPolicyTest, AFreshBackdropIsReadFromTheSurface) {
-    // Nothing saved yet: the composite has to read the application's pixels.
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(/*haveBackdrop=*/false, /*sameSurface=*/true,
-                                                     /*sameRegion=*/true, policy::PresentKind::DirectScanout,
-                                                     /*regionMatchesLastComposite=*/true));
-}
-
-TEST(DDrawPresentPolicyTest, AnUntouchedRegionStillHoldsCesOwnOutput) {
-    // The region read back is byte-identical to what CE wrote there, so the
-    // application has not drawn into it since. Blending over it again would
-    // darken a translucent overlay a little more.
-    EXPECT_TRUE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout, true));
-}
-
-TEST(DDrawPresentPolicyTest, AChangedRegionIsTheApplicationsFrameAndBecomesTheBackdrop) {
-    // This is what made a loading screen freeze under the overlay: reusing a
-    // saved backdrop while the application was animating replaced its pixels
-    // with stale ones, every frame, for as long as the reuse lasted.
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::DirectScanout,
-                                                     /*regionMatchesLastComposite=*/false));
-}
-
-TEST(DDrawPresentPolicyTest, AFlipAlwaysReadsTheFreshlyRenderedImage) {
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::FlipChain, true));
-}
-
-TEST(DDrawPresentPolicyTest, ABlitPresentAlsoBringsCleanPixels) {
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, true, policy::PresentKind::BlitPresent, true));
-}
-
-TEST(DDrawPresentPolicyTest, ABackdropSavedForAnotherSurfaceOrRectangleIsNotReused) {
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, /*sameSurface=*/false, true,
-                                                     policy::PresentKind::DirectScanout, true));
-    EXPECT_FALSE(policy::CompositeBackdropIsReusable(true, true, /*sameRegion=*/false,
-                                                     policy::PresentKind::DirectScanout, true));
+TEST(DDrawPresentPolicyTest, NativeEndSceneRenderingHonorsOverlayExcludedRecording) {
+    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, /*recording=*/false,
+                                                /*captureIncludesOverlay=*/false));
+    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, true, true));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, true, true, false));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(false, true, false, true));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, false, false, true));
 }
 
 TEST(DDrawPresentPolicyTest, TheWrittenRectangleCoversWhatCeWroteLastTime) {
@@ -299,4 +229,98 @@ TEST(DDrawPresentPolicyTest, NoPreviousCompositeLeavesTheRectangleAlone) {
     EXPECT_EQ(merged.top, 64);
     EXPECT_EQ(merged.right, 512);
     EXPECT_EQ(merged.bottom, 384);
+}
+
+TEST(DDrawPresentPolicyTest, ARealHigherLevelDeviceAlwaysSuppressesSyntheticDirectDrawBootstrap) {
+    EXPECT_TRUE(policy::ShouldSkipDirectDrawBootstrap(/*higherLevelDeviceCreated=*/true,
+                                                      /*higherLevelModuleLoaded=*/false,
+                                                      /*directDrawEvidence=*/true));
+}
+
+TEST(DDrawPresentPolicyTest, ALoadedD3DModuleAloneDoesNotOverrideObservedDirectDraw) {
+    EXPECT_FALSE(policy::ShouldSkipDirectDrawBootstrap(/*higherLevelDeviceCreated=*/false,
+                                                       /*higherLevelModuleLoaded=*/true,
+                                                       /*directDrawEvidence=*/true));
+}
+
+TEST(DDrawPresentPolicyTest, ALoadedD3DModuleDefersBootstrapUntilTheApplicationProvidesEvidence) {
+    EXPECT_TRUE(policy::ShouldSkipDirectDrawBootstrap(/*higherLevelDeviceCreated=*/false,
+                                                      /*higherLevelModuleLoaded=*/true,
+                                                      /*directDrawEvidence=*/false));
+    EXPECT_FALSE(policy::ShouldSkipDirectDrawBootstrap(/*higherLevelDeviceCreated=*/false,
+                                                       /*higherLevelModuleLoaded=*/false,
+                                                       /*directDrawEvidence=*/false));
+}
+
+TEST(DDrawPresentPolicyTest, StoredRgb565CompositeRoundTripsToAStableCanonicalValue) {
+    const uint32_t blended = policy::BlendPremultipliedOver(0x80613527u, 0xFF173B91u);
+    const uint16_t stored = policy::PackRgb565(blended);
+    const uint32_t canonical = policy::ExpandRgb565(stored);
+    EXPECT_EQ(policy::PackRgb565(canonical), stored);
+    EXPECT_EQ(policy::ExpandRgb565(policy::PackRgb565(canonical)), canonical);
+}
+
+TEST(DDrawPresentPolicyTest, StoredRgb555CompositeRoundTripsToAStableCanonicalValue) {
+    const uint32_t blended = policy::BlendPremultipliedOver(0x80613527u, 0xFF173B91u);
+    const uint16_t stored = policy::PackRgb555(blended);
+    const uint32_t canonical = policy::ExpandRgb555(stored);
+    EXPECT_EQ(policy::PackRgb555(canonical), stored);
+    EXPECT_EQ(policy::ExpandRgb555(policy::PackRgb555(canonical)), canonical);
+}
+
+TEST(DDrawPresentPolicyTest, NativeOverlayIgnoresExactWritesOutsideItsBounds) {
+    native_damage::DamageTracker tracker;
+    tracker.SetCurrent({10, 10, 110, 110});
+    tracker.RecordWrite(true, {200, 200, 220, 220});
+    size_t count = 99;
+    EXPECT_EQ(tracker.CopyRepairs(nullptr, 0, count), native_damage::State::Current);
+    EXPECT_EQ(count, 0u);
+}
+
+TEST(DDrawPresentPolicyTest, NativeOverlayRetainsSeparateLShapedRepairRectangles) {
+    native_damage::DamageTracker tracker;
+    tracker.SetCurrent({0, 0, 100, 100});
+    tracker.RecordWrite(true, {0, 0, 60, 20});
+    tracker.RecordWrite(true, {0, 0, 20, 60});
+    policy::Rect repairs[native_damage::DamageTracker::kMaxRepairRects] = {};
+    size_t count = 0;
+    EXPECT_EQ(tracker.CopyRepairs(repairs, std::size(repairs), count), native_damage::State::Repairable);
+    EXPECT_EQ(count, 2u);
+}
+
+TEST(DDrawPresentPolicyTest, NativeOverlayCoalescesGaplessRepairsAndBecomesCurrentAgain) {
+    native_damage::DamageTracker tracker;
+    tracker.SetCurrent({0, 0, 100, 100});
+    tracker.RecordWrite(true, {10, 10, 30, 30});
+    tracker.RecordWrite(true, {30, 10, 50, 30});
+    policy::Rect repairs[native_damage::DamageTracker::kMaxRepairRects] = {};
+    size_t count = 0;
+    ASSERT_EQ(tracker.CopyRepairs(repairs, std::size(repairs), count), native_damage::State::Repairable);
+    ASSERT_EQ(count, 1u);
+    EXPECT_EQ(repairs[0].left, 10);
+    EXPECT_EQ(repairs[0].right, 50);
+    tracker.CompleteRepair(repairs[0]);
+    EXPECT_EQ(tracker.CopyRepairs(nullptr, 0, count), native_damage::State::Current);
+}
+
+TEST(DDrawPresentPolicyTest, FullExactWriteRemovesAllOldNativeOverlayPixels) {
+    native_damage::DamageTracker tracker;
+    tracker.SetCurrent({10, 10, 110, 110});
+    tracker.RecordWrite(true, {0, 0, 200, 200});
+    size_t count = 0;
+    EXPECT_EQ(tracker.CopyRepairs(nullptr, 0, count), native_damage::State::Absent);
+}
+
+TEST(DDrawPresentPolicyTest, UnknownOrOverflowedNativeDamageRefusesUnsafeFullReblend) {
+    native_damage::DamageTracker unknown;
+    unknown.SetCurrent({0, 0, 100, 100});
+    unknown.RecordWrite(false, {});
+    size_t count = 0;
+    EXPECT_EQ(unknown.CopyRepairs(nullptr, 0, count), native_damage::State::Unsafe);
+
+    native_damage::DamageTracker overflowed;
+    overflowed.SetCurrent({0, 0, 100, 100});
+    for (int i = 0; i <= static_cast<int>(native_damage::DamageTracker::kMaxRepairRects); ++i)
+        overflowed.RecordWrite(true, {i * 3, 0, i * 3 + 1, 1});
+    EXPECT_EQ(overflowed.CopyRepairs(nullptr, 0, count), native_damage::State::Unsafe);
 }

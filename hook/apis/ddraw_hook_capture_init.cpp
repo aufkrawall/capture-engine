@@ -1,5 +1,7 @@
 #include "ddraw_hook_internal.h"
 
+#include <bit>
+
 
 bool DDrawCapture::CreateD3D11Device() {
 
@@ -38,8 +40,7 @@ bool DDrawCapture::CreateD3D11Device() {
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
                 DXGI_ADAPTER_DESC desc;
                 adapter->GetDesc(&desc);
-                // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                luidLow = desc.AdapterLuid.LowPart;
+                luidLow = std::bit_cast<int32_t>(desc.AdapterLuid.LowPart);
                 luidHigh = desc.AdapterLuid.HighPart;
 
                 // Report LUID to shared memory for out-of-process polling
@@ -55,10 +56,16 @@ bool DDrawCapture::CreateD3D11Device() {
             if (SUCCEEDED(d3d11Device->QueryInterface(IID_PPV_ARGS(&device5)))) {
                 if (SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence)))) {
                     HANDLE hTemp = NULL;
-                    fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &hTemp);
-                    sharedFenceHandle.store(hTemp, std::memory_order_release);
-                    useFences = true;
-                    HookLog("DDraw: D3D11.3 fence sync enabled");
+                    const HRESULT shareHr = fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &hTemp);
+                    if (SUCCEEDED(shareHr) && hTemp) {
+                        sharedFenceHandle.store(hTemp, std::memory_order_release);
+                        sharedFenceHandleOwned.store(true, std::memory_order_release);
+                        useFences = true;
+                        HookLog("DDraw: D3D11.3 fence sync enabled");
+                    } else {
+                        HookLog("DDraw: Fence sharing unavailable (hr=0x%08x); using implicit synchronization",
+                                shareHr);
+                    }
                 }
                 device5->Release();
             }
@@ -114,105 +121,30 @@ bool DDrawCapture::CreateSharedTextures() {
 
             // Get shared handle
             IDXGIResource* resource = nullptr;
-            sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            const HRESULT resourceHr = sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            if (FAILED(resourceHr) || !resource) {
+                HookLog("DDraw: Shared texture %d has no IDXGIResource (hr=0x%08x)", i, resourceHr);
+                return false;
+            }
             HANDLE hTemp = NULL;
-            resource->GetSharedHandle(&hTemp);
-            sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+            const HRESULT handleHr = resource->GetSharedHandle(&hTemp);
             resource->Release();
+            if (FAILED(handleHr) || !hTemp) {
+                HookLog("DDraw: Failed to export shared texture %d (hr=0x%08x)", i, handleHr);
+                return false;
+            }
+            sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+            sharedTextureHandleOwned[i].store(false, std::memory_order_release);
         }
 
         HookLog("DDraw: Shared textures created");
         return true;
 
 }
-bool DDrawCapture::CreateD3D9ExWrapper(HWND hwnd) {
-
-
-        HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-        if (!d3d9)
-            d3d9 = ce::security::LoadSystemLibrary(L"d3d9.dll");
-        if (!d3d9) {
-            HookLog("DDraw: D3D9 DLL not found");
-            return false;
-        }
-
-        typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex**);
-        PFN_Direct3DCreate9Ex pDirect3DCreate9Ex = (PFN_Direct3DCreate9Ex)GetProcAddress(d3d9, "Direct3DCreate9Ex");
-
-        if (!pDirect3DCreate9Ex) {
-            HookLog("DDraw: Direct3DCreate9Ex not found");
-            return false;
-        }
-
-        HRESULT hr = pDirect3DCreate9Ex(D3D_SDK_VERSION, &d3d9Ex);
-        if (FAILED(hr)) {
-            HookLog("DDraw: Failed to create D3D9Ex (hr=0x%08x)", hr);
-            return false;
-        }
-
-        // The DirectDraw app already controls frame pacing on its own presentation path.
-        // The helper swap chain should avoid introducing a second vsync throttle.
-        UINT presentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
-
-        auto tryCreateDevice = [&](D3DSWAPEFFECT swapEffect, UINT backBufferCount) {
-            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-            D3DPRESENT_PARAMETERS d3dpp = {};
-            d3dpp.Windowed = TRUE;
-            d3dpp.SwapEffect = swapEffect;
-            d3dpp.hDeviceWindow = hwnd;
-            d3dpp.BackBufferFormat = D3DFMT_A8R8G8B8;
-            d3dpp.BackBufferWidth = width;
-            d3dpp.BackBufferHeight = height;
-            d3dpp.BackBufferCount = backBufferCount;
-            d3dpp.PresentationInterval = presentationInterval;
-            return d3d9Ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
-                                          D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &d3dpp, NULL,
-                                          &d3d9DeviceEx);
-        };
-
-        {
-            DX9InternalBypassScope dx9Bypass;
-            hr = tryCreateDevice(D3DSWAPEFFECT_DISCARD, 1);
-            if (SUCCEEDED(hr)) {
-                d3d9UsesFlipEx = false;
-            } else {
-                hr = tryCreateDevice(D3DSWAPEFFECT_FLIPEX, 2);
-                d3d9UsesFlipEx = SUCCEEDED(hr);
-            }
-        }
-
-        if (FAILED(hr)) {
-            HookLog("DDraw: Failed to create D3D9Ex device (hr=0x%08x)", hr);
-            return false;
-        }
-
-        DX9_RegisterInternalHelperDevice(d3d9DeviceEx);
-
-        LUID helperLuid = {};
-        const HRESULT luidHr = d3d9Ex->GetAdapterLUID(D3DADAPTER_DEFAULT, &helperLuid);
-        if (SUCCEEDED(luidHr) && (helperLuid.LowPart != 0 || helperLuid.HighPart != 0)) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            luidLow = helperLuid.LowPart;
-            luidHigh = helperLuid.HighPart;
-            ReportLUID(luidLow, luidHigh);
-            HookLog("DDraw: Published D3D9Ex overlay-helper LUID %08x:%08x", luidHigh, luidLow);
-        } else {
-            HookLog("DDraw: D3D9Ex overlay-helper LUID unavailable (hr=0x%08x)", luidHr);
-        }
-
-        HookLog("DDraw: Created D3D9Ex helper device with %s swap effect", d3d9UsesFlipEx ? "FLIPEX" : "DISCARD");
-
-        d3d9DeviceEx->SetMaximumFrameLatency(1);
-
-        // The composite staging surfaces are sized to the overlay's own
-        // bounding rectangle, not to the frame, and are created on first use.
-        HookLog("DDraw: D3D9Ex wrapper created for overlay");
-        return true;
-
-}
 bool DDrawCapture::EnsureOverlayDevice(HWND hwnd,  uint32_t w,  uint32_t ddraw_hook_h) {
 
 
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (!hwnd || w == 0 || ddraw_hook_h == 0) {
             static int invalidOverlayStateLogCount = 0;
             if (invalidOverlayStateLogCount < 3) {
@@ -229,9 +161,12 @@ bool DDrawCapture::EnsureOverlayDevice(HWND hwnd,  uint32_t w,  uint32_t ddraw_h
             // EnsureCaptureResources drain/rebuild it before mutating them.
             return false;
         }
-        if ((hwndChanged || sizeChanged) && d3d9DeviceEx) {
-            HookLog("DDraw: Recreating overlay helper (oldHwnd=%p newHwnd=%p old=%ux%u new=%ux%u)", targetHwnd, hwnd,
+        if (hwndChanged || sizeChanged) {
+            HookLog("DDraw: Overlay target changed (oldHwnd=%p newHwnd=%p old=%ux%u new=%ux%u)", targetHwnd, hwnd,
                     width, height, w, ddraw_hook_h);
+            // The composite's backdrop and sprite belong to the old surface
+            // geometry; keeping them across a size or target change would write
+            // stale pixels into the new one.
             ReleaseOverlayResources();
         }
 
@@ -240,30 +175,9 @@ bool DDrawCapture::EnsureOverlayDevice(HWND hwnd,  uint32_t w,  uint32_t ddraw_h
         height = ddraw_hook_h;
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-        // The helper device is created only if the composite route actually
-        // needs it. A DX7 title draws the overlay with its own device, and
-        // standing up a second D3D9Ex device for that costs VRAM and a driver
-        // context for nothing.
+        // The CPU composite needs no device. The LUID still has to be published
+        // so the out-of-process VRAM telemetry can bind to the adapter.
         PublishOverlayAdapterLuidOnce();
-        return true;
-
-}
-bool DDrawCapture::EnsureOverlayCompositeDevice() {
-
-
-        if (d3d9DeviceEx) {
-            return true;
-        }
-        if (!targetHwnd || width == 0 || height == 0) {
-            return false;
-        }
-
-        if (!CreateD3D9ExWrapper(targetHwnd)) {
-            HookLog("DDraw: Overlay composite disabled (D3D9Ex wrapper failed)");
-            return false;
-        }
-
-        HookLog("DDraw: Overlay helper ready (hwnd=%p, size=%ux%u)", targetHwnd, width, height);
         return true;
 
 }
@@ -271,9 +185,10 @@ void DDrawCapture::PublishOverlayAdapterLuidOnce() {
 
 
         // The host's GPU/VRAM telemetry needs an adapter identity even in
-        // overlay-only runs, where no capture device is ever created. The
-        // default adapter's LUID is available from the D3D9Ex factory alone,
-        // so it no longer depends on the helper device existing.
+        // overlay-only runs, where no capture device is ever created. DXGI
+        // answers that without loading d3d9.dll: the DirectDraw route no longer
+        // has a D3D9 helper device, and a process that merely contains d3d9.dll
+        // must not look like a D3D9 title.
         if (luidLow != 0 || luidHigh != 0) {
             return;
         }
@@ -284,31 +199,39 @@ void DDrawCapture::PublishOverlayAdapterLuidOnce() {
         }
         attempted = true;
 
-        HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-        if (!d3d9)
-            d3d9 = ce::security::LoadSystemLibrary(L"d3d9.dll");
-        if (!d3d9)
-            return;
-
-        typedef HRESULT(WINAPI * PFN_Direct3DCreate9Ex)(UINT, IDirect3D9Ex**);
-        auto createD3D9Ex = reinterpret_cast<PFN_Direct3DCreate9Ex>(GetProcAddress(d3d9, "Direct3DCreate9Ex"));
-        if (!createD3D9Ex)
-            return;
-
-        IDirect3D9Ex* factory = nullptr;
-        if (FAILED(createD3D9Ex(D3D_SDK_VERSION, &factory)) || !factory)
-            return;
-
-        LUID adapterLuid = {};
-        const HRESULT luidHr = factory->GetAdapterLUID(D3DADAPTER_DEFAULT, &adapterLuid);
-        factory->Release();
-        if (FAILED(luidHr) || (adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0)) {
-            HookLog("DDraw: Overlay adapter LUID unavailable (hr=0x%08x)", luidHr);
+        HMODULE dxgi = ce::security::LoadSystemLibrary(L"dxgi.dll");
+        if (!dxgi) {
             return;
         }
 
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        luidLow = adapterLuid.LowPart;
+        typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void**);
+        auto createFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+        if (!createFactory) {
+            return;
+        }
+
+        IDXGIFactory1* factory = nullptr;
+        if (FAILED(createFactory(IID_PPV_ARGS(&factory))) || !factory) {
+            return;
+        }
+
+        IDXGIAdapter1* adapter = nullptr;
+        LUID adapterLuid = {};
+        const HRESULT enumHr = factory->EnumAdapters1(0, &adapter);
+        if (SUCCEEDED(enumHr) && adapter) {
+            DXGI_ADAPTER_DESC1 desc = {};
+            if (SUCCEEDED(adapter->GetDesc1(&desc)))
+                adapterLuid = desc.AdapterLuid;
+            adapter->Release();
+        }
+        factory->Release();
+
+        if ((adapterLuid.LowPart == 0 && adapterLuid.HighPart == 0)) {
+            HookLog("DDraw: Overlay adapter LUID unavailable (hr=0x%08x)", enumHr);
+            return;
+        }
+
+        luidLow = std::bit_cast<int32_t>(adapterLuid.LowPart);
         luidHigh = adapterLuid.HighPart;
         ReportLUID(luidLow, luidHigh);
         HookLog("DDraw: Published overlay adapter LUID %08x:%08x", luidHigh, luidLow);
@@ -317,6 +240,7 @@ void DDrawCapture::PublishOverlayAdapterLuidOnce() {
 bool DDrawCapture::EnsureCaptureResources(IDirectDrawSurface7* surface,  HWND hwnd,  uint32_t w,  uint32_t ddraw_hook_h) {
 
 
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (!surface || w == 0 || ddraw_hook_h == 0) {
             HookLog("DDraw: EnsureCaptureResources skipped (surface=%p, size=%ux%u)", surface, w, ddraw_hook_h);
             return false;

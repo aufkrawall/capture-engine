@@ -1,5 +1,12 @@
 #include "ddraw_hook_internal.h"
 
+#include "ddraw_hook_composite_state.h"
+
+DDrawCapture::~DDrawCapture() {
+        delete compositeState;
+        compositeState = nullptr;
+}
+
 
 DirectDrawBootstrapScope::~DirectDrawBootstrapScope() {
 
@@ -10,18 +17,26 @@ DirectDrawBootstrapScope::~DirectDrawBootstrapScope() {
 void DDrawCapture::ReleaseOverlayResources() {
 
 
+        // The CPU composite owns no graphics device. Releasing its state drops
+        // the sprite cache and every surface backdrop, which is what a route or
+        // device change has to invalidate.
         ReleaseCompositeRegionResources();
-        if (d3d9DeviceEx) {
-            DX9_UnregisterInternalHelperDevice(d3d9DeviceEx);
-            d3d9DeviceEx->Release();
-            d3d9DeviceEx = nullptr;
-        }
-        if (d3d9Ex) {
-            d3d9Ex->Release();
-            d3d9Ex = nullptr;
-        }
-        d3d9UsesFlipEx = false;
+        ResetDirectDrawSurfaceWrites();
 
+}
+void DDrawCapture::ReleaseGdiCaptureResources() {
+        if (captureGdiDc && captureGdiPreviousBitmap)
+            SelectObject(captureGdiDc, captureGdiPreviousBitmap);
+        captureGdiPreviousBitmap = NULL;
+        if (captureGdiBitmap) {
+            DeleteObject(captureGdiBitmap);
+            captureGdiBitmap = NULL;
+        }
+        if (captureGdiDc) {
+            DeleteDC(captureGdiDc);
+            captureGdiDc = NULL;
+        }
+        captureGdiBits = nullptr;
 }
 void DDrawCapture::Cleanup() {
 
@@ -68,10 +83,10 @@ bool DDrawCapture::CleanupDDraw(bool force) {
             context4->Release();
             context4 = nullptr;
         }
-        if (sharedFenceHandle) {
-            CloseHandle(sharedFenceHandle);
-            sharedFenceHandle = NULL;
-        }
+        HANDLE publishedFenceHandle = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
+        const bool publishedFenceOwned = sharedFenceHandleOwned.exchange(false, std::memory_order_acq_rel);
+        if (publishedFenceHandle && publishedFenceOwned)
+            CloseHandle(publishedFenceHandle);
 
         if (d3d11Context) {
             d3d11Context->Release();
@@ -83,6 +98,8 @@ bool DDrawCapture::CleanupDDraw(bool force) {
         }
 
         ReleaseOverlayResources();
+        ReleaseGdiCaptureResources();
+        ReleaseNativeLegacyD3DOverlay();
 
         ddrawSurface = nullptr;
         targetHwnd = NULL;

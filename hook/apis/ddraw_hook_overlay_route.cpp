@@ -1,113 +1,121 @@
 #include "ddraw_hook_internal.h"
 
-// Which renderer the DirectDraw overlay route uses, and the rule that the
-// backend the adapter holds must always match the route actually executing.
-//
-// Gothic II session `20260914_182411` is what this exists to prevent. The
-// native Direct3D 7 backend came up on the first Flip, the application then
-// stopped rendering into the surface being presented, and the route fell back
-// to the D3D9Ex composite - but `OverlayAdapter::InitDX9` silently succeeds
-// when an adapter is already initialized, so the backend stayed bound to the
-// application's own device. Every composite frame afterwards issued
-// `BeginScene`, sampler and render-state changes, a draw and `EndScene` on the
-// game's device, at a point the game never asked for, outside
-// `LegacyD3DInternalScope` - so the forced-filtering layer recorded CE's
-// sampler states as the application's - and then read back a helper backbuffer
-// the overlay had never been drawn into. Half a second later Steam's overlay
-// copied from a null frame pointer and the process died.
-//
-// So: the required backend is derived from the presentation, the adapter is
-// switched to it before anything renders, and nothing renders at all while the
-// two disagree.
+#include <array>
+
+// The native Direct3D 7 renderer is an auxiliary backend. The adapter itself
+// stays on the headless CPU backend so a loading screen that switches from
+// EndScene/Flip to 2D blits never tears down a device backend or loses dozens of
+// frames waiting for a route-stability counter. Native draws happen immediately
+// before the application's real EndScene; Flip only observes that the pixels
+// are already present. This avoids the synthetic BeginScene/EndScene pair that
+// twice drove Steam's co-resident overlay through an invalid frame boundary.
 
 namespace {
 
-// An application that alternated presentation shapes could otherwise re-upload
-// the font atlas on every frame. The composite route works for every shape, so
-// it is what the route latches to once the budget is spent.
-constexpr uint32_t kOverlayRouteSwitchLimit = 8;
+namespace policy = ce::ddraw_present_policy;
 
-void RetireOverlayBackendForRouteChange() {
-    if (!g_OverlayAdapter.IsInitialized())
-        return;
-    // Releasing the native backend hands Direct3D 7 objects back through the
-    // application's own interfaces, which the forced-filtering layer watches.
-    LegacyD3DInternalScope internalScope;
-    g_OverlayAdapter.Shutdown();
+constexpr size_t kMaxNativeSurfaceStates = 8;
+
+struct NativeSurfaceState {
+    uintptr_t identity = 0;
+    ce::ddraw_native_overlay::DamageTracker damage;
+    uint32_t lastUse = 0;
+};
+
+struct NativeOverlayState {
+    std::mutex mutex;
+    std::unique_ptr<CustomOverlay::D3D7Backend> backend;
+    std::array<NativeSurfaceState, kMaxNativeSurfaceStates> surfaces = {};
+    uint32_t useCounter = 0;
+    void* failureDevice = nullptr;
+    uint32_t retryInterval = 0;
+    uint32_t retryCountdown = 0;
+};
+
+NativeOverlayState g_nativeOverlay;
+
+NativeSurfaceState* FindNativeSurfaceLocked(uintptr_t identity) {
+    for (auto& candidate : g_nativeOverlay.surfaces) {
+        if (candidate.identity == identity)
+            return &candidate;
+    }
+    return nullptr;
 }
 
-// A route change only takes effect once this many presentations in a row have
-// asked for it. The application's render target legitimately alternates - a
-// Gothic II session moved between its flip target and something else five
-// times in eight seconds - and acting on every single presentation rebuilt the
-// backend's GPU objects, inside the Flip detour, each time.
-constexpr uint32_t kOverlayRouteStabilityPresentations = 45;
+NativeSurfaceState* AcquireNativeSurfaceLocked(uintptr_t identity) {
+    if (auto* existing = FindNativeSurfaceLocked(identity)) {
+        existing->lastUse = ++g_nativeOverlay.useCounter;
+        return existing;
+    }
+    NativeSurfaceState* entry = nullptr;
+    for (auto& candidate : g_nativeOverlay.surfaces) {
+        if (candidate.identity == 0) {
+            entry = &candidate;
+            break;
+        }
+        if (!entry || candidate.lastUse < entry->lastUse)
+            entry = &candidate;
+    }
+    if (!entry)
+        return nullptr;
+    *entry = {};
+    entry->identity = identity;
+    entry->lastUse = ++g_nativeOverlay.useCounter;
+    return entry;
+}
 
-bool RouteChangeIsStable(DDrawOverlayRoute requestedRoute) {
-    if (ddraw_hook_g_OverlayRoutePending != requestedRoute) {
-        ddraw_hook_g_OverlayRoutePending = requestedRoute;
-        ddraw_hook_g_OverlayRoutePendingPresentations = 1;
-        return false;
+void ClearNativeSurfacePixelsLocked() {
+    for (auto& surface : g_nativeOverlay.surfaces)
+        surface.damage.Clear();
+}
+
+void RecordNativeBackendFailureLocked(void* device) {
+    constexpr uint32_t kMaximumRetryInterval = 512;
+    if (g_nativeOverlay.failureDevice != device) {
+        g_nativeOverlay.failureDevice = device;
+        g_nativeOverlay.retryInterval = 1;
+    } else {
+        g_nativeOverlay.retryInterval =
+            (std::min)(kMaximumRetryInterval, (std::max)(1u, g_nativeOverlay.retryInterval * 2u));
     }
-    if (ddraw_hook_g_OverlayRoutePendingPresentations < kOverlayRouteStabilityPresentations) {
-        ++ddraw_hook_g_OverlayRoutePendingPresentations;
+    g_nativeOverlay.retryCountdown = g_nativeOverlay.retryInterval;
+}
+
+void ClearNativeBackendFailureLocked() {
+    g_nativeOverlay.failureDevice = nullptr;
+    g_nativeOverlay.retryInterval = 0;
+    g_nativeOverlay.retryCountdown = 0;
+}
+
+bool DeferNativeBackendRetryLocked(void* device) {
+    if (g_nativeOverlay.failureDevice != device || g_nativeOverlay.retryCountdown == 0)
         return false;
-    }
+    --g_nativeOverlay.retryCountdown;
     return true;
-}
-
-bool AllowOverlayRouteSwitch() {
-    if (ddraw_hook_g_OverlayRouteLatchedToComposite)
-        return false;
-    if (ddraw_hook_g_OverlayRouteSwitches < kOverlayRouteSwitchLimit)
-        return true;
-
-    ddraw_hook_g_OverlayRouteLatchedToComposite = true;
-    HookLogImportant(
-        "DDraw: Overlay route switched %u times; latching on the D3D9Ex composite, which works for every "
-        "presentation shape",
-        ddraw_hook_g_OverlayRouteSwitches);
-    return false;
 }
 
 }  // namespace
 
 IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* presentedSurface) {
-    if (!presentedSurface || ddraw_hook_g_OverlayRouteLatchedToComposite)
-        return nullptr;
-
-    // Opt-in. Drawing the overlay with the application's own Direct3D 7 device
-    // removes the composite's readback, but it has twice taken down a
-    // co-resident Steam overlay in Gothic II with an identical fault inside
-    // gameoverlayrenderer.dll, and the crash dumps carry no 32-bit stack to
-    // attribute it further. The composite draws the same overlay on every
-    // title, so it is what runs unless this is turned on deliberately.
-    if (!GetActiveGraphicsConfig().legacyD3DNativeOverlay)
+    if (!presentedSurface || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
         return nullptr;
 
     IDirect3DDevice7* device = AcquireLegacyD3D7Device();
     if (!device)
         return nullptr;
 
-    // The device has to be rendering into the exact surface this presentation
-    // publishes. Drawing into anything else would put the overlay where nobody
-    // looks and issue device work the application never asked for.
     using GetRenderTarget7_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice7*, IDirectDrawSurface7**);
     void** deviceVTable = *(void***)device;
     auto getRenderTarget = reinterpret_cast<GetRenderTarget7_t>(deviceVTable[D3D7_VTABLE_GETRENDERTARGET]);
 
     IDirectDrawSurface7* renderTarget = nullptr;
     bool targetsThisSurface = false;
-    if (getRenderTarget && SUCCEEDED(getRenderTarget(device, &renderTarget)) && renderTarget != nullptr) {
-        // DirectDraw hands out one IDirectDrawSurface7 per surface, so the
-        // pointers match outright in every normal case; the COM identity
-        // comparison is only the fallback for an aggregated or wrapped object.
+    if (getRenderTarget && SUCCEEDED(getRenderTarget(device, &renderTarget)) && renderTarget) {
         targetsThisSurface = renderTarget == presentedSurface ||
                              DirectDrawObjectIdentity(renderTarget) == DirectDrawObjectIdentity(presentedSurface);
     }
     if (renderTarget)
         renderTarget->Release();
-
     if (!targetsThisSurface) {
         device->Release();
         return nullptr;
@@ -115,115 +123,237 @@ IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* pr
     return device;
 }
 
-bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7* nativeDevice) {
+bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7*) {
+    if (requiredRoute != DDrawOverlayRoute::HelperComposite)
+        return false;
+
     const OverlayBackendType currentBackend = g_OverlayAdapter.GetBackendType();
+    if (currentBackend == OverlayBackendType::CpuRaster) {
+        ddraw_hook_g_OverlayRoute = requiredRoute;
+        return true;
+    }
 
-    if (requiredRoute == DDrawOverlayRoute::NativeLegacyD3D) {
-        auto* nativeBackend = currentBackend == OverlayBackendType::D3D7
-                                  ? static_cast<CustomOverlay::D3D7Backend*>(g_OverlayAdapter.GetBackend())
-                                  : nullptr;
-        const bool boundToThisDevice = nativeBackend && nativeBackend->GetDevice() == static_cast<void*>(nativeDevice);
-        if (ce::ddraw_present_policy::BackendCanRenderRoute(ce::ddraw_present_policy::OverlayRoute::NativeDevice,
-                                                            boundToThisDevice, false)) {
-            ddraw_hook_g_OverlayRoute = requiredRoute;
-            ddraw_hook_g_OverlayRoutePending = requiredRoute;
-            ddraw_hook_g_OverlayRoutePendingPresentations = 0;
-            return true;
-        }
-
-        if (!RouteChangeIsStable(requiredRoute) || !AllowOverlayRouteSwitch())
-            return false;
-
-        RetireOverlayBackendForRouteChange();
-        // The composite's staging surfaces belong to a route that is not
-        // running; the native path never touches them.
-        ddraw_hook_g_DDrawCapture.ReleaseCompositeRegionResources();
-
-        bool initialized = false;
-        {
-            LegacyD3DInternalScope internalScope;
-            initialized = g_OverlayAdapter.InitD3D7(nativeDevice);
-        }
-        if (!initialized) {
-            ddraw_hook_g_OverlayRouteLatchedToComposite = true;
-            HookLogImportant("DDraw: Direct3D 7 overlay backend unavailable; latching on the D3D9Ex composite");
-            return false;
-        }
-
-        // OverlayAdapter::Init* reports success for an adapter that is already
-        // initialized with a different backend. Confirming the backend that is
-        // actually loaded is what keeps that from silently leaving the wrong
-        // one in place, which is exactly how the Gothic II crash happened.
-        auto* initializedBackend = g_OverlayAdapter.GetBackendType() == OverlayBackendType::D3D7
-                                       ? static_cast<CustomOverlay::D3D7Backend*>(g_OverlayAdapter.GetBackend())
-                                       : nullptr;
-        if (!initializedBackend || initializedBackend->GetDevice() != static_cast<void*>(nativeDevice)) {
-            ddraw_hook_g_OverlayRouteLatchedToComposite = true;
-            HookLogImportant("DDraw: Direct3D 7 overlay backend did not take the device; latching on the composite");
-            return false;
-        }
-
+    if (currentBackend != OverlayBackendType::None) {
+        LegacyD3DInternalScope internalScope;
+        g_OverlayAdapter.Shutdown();
         ++ddraw_hook_g_OverlayRouteSwitches;
-        ddraw_hook_g_OverlayRoute = requiredRoute;
-        if (ddraw_hook_g_CachedHwnd)
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-        HookLogImportant("DDraw: Overlay route -> the application's Direct3D 7 device (device=%p switch=%u)",
-                         static_cast<void*>(nativeDevice), ddraw_hook_g_OverlayRouteSwitches);
-        return true;
     }
-
-    if (ce::ddraw_present_policy::BackendCanRenderRoute(
-            ce::ddraw_present_policy::OverlayRoute::HelperComposite, false,
-            currentBackend == OverlayBackendType::DX9 && ddraw_hook_g_DDrawCapture.d3d9DeviceEx != nullptr)) {
-        ddraw_hook_g_OverlayRoute = requiredRoute;
-        ddraw_hook_g_OverlayRoutePending = requiredRoute;
-        ddraw_hook_g_OverlayRoutePendingPresentations = 0;
-        return true;
+    ddraw_hook_g_DDrawCapture.ReleaseCompositeRegionResources();
+    if (ddraw_hook_g_CachedHwnd) {
+        InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
+        g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
     }
-
-    if (currentBackend == OverlayBackendType::D3D7) {
-        // The native backend is loaded and this presentation cannot use it.
-        // Nothing renders until the change has proved stable, because tearing
-        // the backend down and rebuilding it on every alternating presentation
-        // churns Direct3D 7 objects inside the application's Flip.
-        if (!RouteChangeIsStable(requiredRoute))
-            return false;
-        RetireOverlayBackendForRouteChange();
-        if (AllowOverlayRouteSwitch())
-            ++ddraw_hook_g_OverlayRouteSwitches;
-    }
-
-    if (!ddraw_hook_g_DDrawCapture.EnsureOverlayCompositeDevice())
-        return false;
-
-    if (!g_OverlayAdapter.IsInitialized()) {
-        if (ddraw_hook_g_CachedHwnd) {
-            InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-        }
-        if (!g_OverlayAdapter.InitDX9(ddraw_hook_g_DDrawCapture.d3d9DeviceEx)) {
-            return false;
-        }
-        if (ddraw_hook_g_CachedHwnd)
-            g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
-        HookLogImportant("DDraw: Overlay route -> the D3D9Ex composite (helper=%p switch=%u)",
-                         static_cast<void*>(ddraw_hook_g_DDrawCapture.d3d9DeviceEx),
-                         ddraw_hook_g_OverlayRouteSwitches);
-    }
-
-    // A backend that is neither of the two this route knows how to drive would
-    // render into something the route is not reading back. This is the check
-    // whose absence produced the Gothic II crash, so it is explicit rather
-    // than implied by the branches above.
-    if (g_OverlayAdapter.GetBackendType() != OverlayBackendType::DX9) {
-        static std::atomic<int> s_mismatchLogCount{0};
-        if (s_mismatchLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
-            HookLogImportant("DDraw: Overlay suppressed - the composite route cannot render through backend %d",
-                             static_cast<int>(g_OverlayAdapter.GetBackendType()));
-        }
+    if (!g_OverlayAdapter.InitCpuRaster()) {
+        HookLogImportant("DDraw: CPU overlay backend unavailable; the overlay stays off for this route");
         return false;
     }
-
+    if (ddraw_hook_g_CachedHwnd)
+        g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
     ddraw_hook_g_OverlayRoute = requiredRoute;
+    HookLogImportant("DDraw: Overlay adapter -> persistent CPU renderer (switch=%u)",
+                     ddraw_hook_g_OverlayRouteSwitches);
     return true;
+}
+
+void ResetDirectDrawPresentationStateForPrimaryChange() {
+    // Surface identities are raw COM identities by design; retaining a
+    // reference would keep an obsolete fullscreen chain alive. Drop every
+    // byte-derived proof at a primary-chain boundary so allocator address reuse
+    // can never make a new surface look like an old composite.
+    ddraw_hook_g_DDrawCapture.ReleaseOverlayResources();
+    ReleaseNativeLegacyD3DOverlay();
+    ddraw_hook_g_ScanoutWritesSinceFlip.store(0, std::memory_order_relaxed);
+    ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::Undecided;
+}
+
+bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
+    if (!device || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    if (g_nativeOverlay.backend && g_nativeOverlay.backend->GetDevice() == static_cast<void*>(device) &&
+        g_nativeOverlay.backend->IsUsable()) {
+        return true;
+    }
+
+    {
+        LegacyD3DInternalScope internalScope;
+        g_nativeOverlay.backend.reset();
+    }
+    ClearNativeSurfacePixelsLocked();
+    if (DeferNativeBackendRetryLocked(device))
+        return false;
+
+    auto backend = std::make_unique<CustomOverlay::D3D7Backend>(device);
+    bool initialized = false;
+    {
+        LegacyD3DInternalScope internalScope;
+        initialized = g_OverlayAdapter.InitializeAuxiliaryBackend(*backend);
+    }
+    if (!initialized) {
+        RecordNativeBackendFailureLocked(device);
+        HookLogImportant("DDraw: Native D3D7 sidecar initialization failed; retaining the CPU composite");
+        return false;
+    }
+    g_nativeOverlay.backend = std::move(backend);
+    HookLogImportant("DDraw: Native D3D7 sidecar primed at a presentation boundary (device=%p)", device);
+    return true;
+}
+
+bool DrawNativeLegacyD3DOverlayAtEndScene(void* opaqueDevice) {
+    auto* device = static_cast<IDirect3DDevice7*>(opaqueDevice);
+    SharedMemoryLayout* shared = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const bool recording = g_IPC && g_IPC->IsRecording();
+    const bool nativeAllowed =
+        shared && policy::NativeOverlayShouldDraw(GetActiveGraphicsConfig().legacyD3DNativeOverlay,
+                                                  shared->overlayConfig.showOverlay, recording,
+                                                  shared->overlayConfig.captureIncludeOverlay);
+    if (!device || !nativeAllowed) {
+        std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+        ClearNativeSurfacePixelsLocked();
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+        if (!g_nativeOverlay.backend || g_nativeOverlay.backend->GetDevice() != opaqueDevice) {
+            ClearNativeSurfacePixelsLocked();
+            return false;
+        }
+    }
+
+    using GetRenderTarget7_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice7*, IDirectDrawSurface7**);
+    void** deviceVTable = *(void***)device;
+    auto getRenderTarget = reinterpret_cast<GetRenderTarget7_t>(deviceVTable[D3D7_VTABLE_GETRENDERTARGET]);
+    IDirectDrawSurface7* renderTarget = nullptr;
+    if (!getRenderTarget || FAILED(getRenderTarget(device, &renderTarget)) || !renderTarget)
+        return false;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    const uintptr_t identity = DirectDrawObjectIdentity(renderTarget);
+    const bool haveGeometry = GetSurfaceSize(renderTarget, width, height) && width > 0 && height > 0;
+    if (!identity || !haveGeometry ||
+        !ddraw_hook_g_DDrawCapture.EnsureOverlayDevice(ResolveDirectDrawTargetWindow(), width, height) ||
+        !PrepareDirectDrawOverlayAdapter(static_cast<int>(width), static_cast<int>(height))) {
+        renderTarget->Release();
+        return false;
+    }
+
+    policy::Rect bounds = {};
+    bool rendered = false;
+    bool attempted = false;
+    {
+        std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+        auto* backend = g_nativeOverlay.backend.get();
+        NativeSurfaceState* surfaceState = FindNativeSurfaceLocked(identity);
+        // Only draw into a surface a real Flip/Blt presentation has already
+        // published. D3D7 applications may EndScene offscreen render targets;
+        // stamping the UI into one would corrupt a later texture pass.
+        if (backend && backend->GetDevice() == opaqueDevice && surfaceState) {
+            attempted = true;
+            g_OverlayAdapter.RenderOverlay(static_cast<int>(width), static_cast<int>(height));
+            RECT renderedBounds = {};
+            {
+                LegacyD3DInternalScope internalScope;
+                rendered = g_OverlayAdapter.RenderWithAuxiliaryBackend(*backend, static_cast<int>(width),
+                                                                        static_cast<int>(height), &renderedBounds);
+            }
+            rendered = rendered && backend->LastRenderSucceeded();
+            if (rendered) {
+                bounds = {renderedBounds.left, renderedBounds.top, renderedBounds.right, renderedBounds.bottom};
+                surfaceState->damage.SetCurrent(bounds);
+                ClearNativeBackendFailureLocked();
+            } else {
+                surfaceState->damage.Clear();
+                if (!backend->IsUsable())
+                    RecordNativeBackendFailureLocked(device);
+                rendered = false;
+            }
+        }
+    }
+    renderTarget->Release();
+
+    auto& diagnostics = ddraw_hook_g_PresentationDiagnostics;
+    if (rendered) {
+        diagnostics.nativeSceneDraws.fetch_add(1, std::memory_order_relaxed);
+        ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::NativeLegacyD3D;
+    } else if (attempted) {
+        diagnostics.nativeDrawFailures.fetch_add(1, std::memory_order_relaxed);
+    }
+    return rendered;
+}
+
+ce::ddraw_native_overlay::State QueryNativeLegacyD3DOverlay(IUnknown* surface, policy::Rect* repairRects,
+                                                            size_t repairCapacity, size_t& repairCount) {
+    repairCount = 0;
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return ce::ddraw_native_overlay::State::Absent;
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    NativeSurfaceState* surfaceState = FindNativeSurfaceLocked(identity);
+    return surfaceState ? surfaceState->damage.CopyRepairs(repairRects, repairCapacity, repairCount)
+                        : ce::ddraw_native_overlay::State::Absent;
+}
+
+void RecordNativeLegacyD3DSurfaceWrite(IUnknown* surface, bool haveChangedRect,
+                                       const policy::Rect& changedRect) {
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return;
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    NativeSurfaceState* state = FindNativeSurfaceLocked(identity);
+    if (state)
+        state->damage.RecordWrite(haveChangedRect, changedRect);
+}
+
+void CompleteNativeLegacyD3DOverlayRepair(IUnknown* surface, const policy::Rect& repairedRect) {
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return;
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    NativeSurfaceState* state = FindNativeSurfaceLocked(identity);
+    if (state)
+        state->damage.CompleteRepair(repairedRect);
+}
+
+void ClearNativeLegacyD3DOverlayState(IUnknown* surface) {
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return;
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    NativeSurfaceState* state = FindNativeSurfaceLocked(identity);
+    if (!state)
+        return;
+    state->damage.Clear();
+}
+
+void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool flipSwapsSurfaceMemory) {
+    const uintptr_t sourceIdentity = DirectDrawObjectIdentity(source);
+    const uintptr_t destinationIdentity = DirectDrawObjectIdentity(destination);
+    if (!sourceIdentity || !destinationIdentity || sourceIdentity == destinationIdentity)
+        return;
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    AcquireNativeSurfaceLocked(sourceIdentity);
+    AcquireNativeSurfaceLocked(destinationIdentity);
+    NativeSurfaceState* sourceState = FindNativeSurfaceLocked(sourceIdentity);
+    NativeSurfaceState* destinationState = FindNativeSurfaceLocked(destinationIdentity);
+    if (!sourceState || !destinationState)
+        return;
+    if (flipSwapsSurfaceMemory) {
+        std::swap(sourceState->damage, destinationState->damage);
+    } else {
+        destinationState->damage = sourceState->damage;
+    }
+    sourceState->lastUse = ++g_nativeOverlay.useCounter;
+    destinationState->lastUse = ++g_nativeOverlay.useCounter;
+}
+
+void ReleaseNativeLegacyD3DOverlay() {
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    LegacyD3DInternalScope internalScope;
+    g_nativeOverlay.backend.reset();
+    g_nativeOverlay.surfaces = {};
+    g_nativeOverlay.useCounter = 0;
+    ClearNativeBackendFailureLocked();
 }

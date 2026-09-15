@@ -41,6 +41,21 @@ raster::Target MakeTarget(int left, int top, int width, int height) {
     return target;
 }
 
+CustomOverlay::DrawCommand MakeMergedCommand(const std::vector<CustomOverlay::DrawVertex>& vertices,
+                                             const std::vector<uint16_t>& indices) {
+    return {0, static_cast<uint32_t>(vertices.size()), 0, static_cast<uint32_t>(indices.size()), false};
+}
+
+void ExpectCacheMatchesFullRaster(const raster::CommandCache& cache,
+                                  const std::vector<CustomOverlay::DrawVertex>& vertices,
+                                  const std::vector<uint16_t>& indices,
+                                  const std::vector<CustomOverlay::DrawCommand>& commands,
+                                  const raster::Target& target) {
+    std::vector<uint32_t> expected;
+    ASSERT_TRUE(raster::Rasterize(vertices, indices, commands, raster::FontAtlasView{}, target, expected));
+    EXPECT_EQ(cache.composed, expected);
+}
+
 }  // namespace
 
 TEST(OverlayCpuRasterTest, AnOpaqueQuadFillsItsOwnPixelsAndNothingElse) {
@@ -91,6 +106,37 @@ TEST(OverlayCpuRasterTest, AHalfTransparentQuadIsStoredPremultiplied) {
     EXPECT_LE(blue, 0x83u);
 }
 
+TEST(OverlayCpuRasterTest, FractionalQuadEdgesMatchPixelCentreCoverage) {
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 1.7f, 1.7f, 3.0f, 3.0f, 0xFFFFFFFFu);
+    std::vector<CustomOverlay::DrawCommand> commands{{0, 4, 0, 6, false}};
+
+    std::vector<uint32_t> out;
+    ASSERT_TRUE(raster::Rasterize(vertices, indices, commands, raster::FontAtlasView{}, MakeTarget(0, 0, 7, 7), out));
+    EXPECT_EQ(out[1 * 7 + 1], 0u);
+    EXPECT_EQ(out[2 * 7 + 2], 0xFFFFFFFFu);
+    EXPECT_EQ(out[4 * 7 + 4], 0xFFFFFFFFu);
+    EXPECT_EQ(out[5 * 7 + 5], 0u);
+}
+
+TEST(OverlayCpuRasterTest, TexturedQuadPremultipliesByAtlasAndVertexAlpha) {
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 0.0f, 0.0f, 2.0f, 2.0f, 0x800000FFu);
+    std::vector<CustomOverlay::DrawCommand> commands{{0, 4, 0, 6, true}};
+    const uint8_t whiteAtlas[] = {255, 255, 255, 255};
+    const raster::FontAtlasView atlas{whiteAtlas, 1, 1};
+
+    std::vector<uint32_t> out;
+    ASSERT_TRUE(raster::Rasterize(vertices, indices, commands, atlas, MakeTarget(0, 0, 2, 2), out));
+    const uint32_t pixel = out[0];
+    EXPECT_EQ((pixel >> 24) & 0xFFu, 0x80u);
+    EXPECT_GE((pixel >> 16) & 0xFFu, 0x7Du);
+    EXPECT_LE((pixel >> 16) & 0xFFu, 0x83u);
+    EXPECT_EQ(pixel & 0xFFFFu, 0u);
+}
+
 TEST(OverlayCpuRasterTest, AnEmptyDrawListRasterizesNothing) {
     std::vector<uint32_t> out;
     EXPECT_FALSE(raster::Rasterize({}, {}, {}, raster::FontAtlasView{}, MakeTarget(0, 0, 8, 8), out));
@@ -122,6 +168,115 @@ TEST(OverlayCpuRasterTest, ACommandReachingPastTheIndexBufferIsIgnored) {
     EXPECT_FALSE(raster::Rasterize(vertices, indices, commands, raster::FontAtlasView{}, MakeTarget(0, 0, 4, 4), out));
 }
 
+TEST(OverlayCpuRasterTest, PrimitiveCacheRepaintsOnlyTheMovingQuadInsideAMergedCommand) {
+    const auto target = MakeTarget(0, 0, 20, 10);
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 0.0f, 0.0f, 8.0f, 8.0f, 0x800000FFu);
+    AppendQuad(vertices, indices, 12.0f, 1.0f, 4.0f, 2.0f, 0xFFFFFFFFu);
+    std::vector<CustomOverlay::DrawCommand> commands{MakeMergedCommand(vertices, indices)};
+
+    raster::CommandCache cache;
+    raster::RasterStats firstStats;
+    raster::PixelRect firstDirty;
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target,
+                                           firstStats, firstDirty));
+    EXPECT_EQ(firstStats.fullRasters, 1u);
+
+    for (size_t i = 4; i < 8; ++i)
+        vertices[i].y += 2.0f;
+    raster::RasterStats secondStats;
+    raster::PixelRect secondDirty;
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target,
+                                           secondStats, secondDirty));
+
+    EXPECT_EQ(secondStats.fullRasters, 0u);
+    EXPECT_EQ(secondStats.dirtyRasters, 1u);
+    EXPECT_GT(secondDirty.left, 8);
+    EXPECT_EQ(secondStats.primitiveReuses, 1u);
+    ExpectCacheMatchesFullRaster(cache, vertices, indices, commands, target);
+}
+
+TEST(OverlayCpuRasterTest, PrimitiveCacheClearsPixelsVacatedByARemovedPrimitive) {
+    const auto target = MakeTarget(0, 0, 24, 8);
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 1.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    AppendQuad(vertices, indices, 9.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    AppendQuad(vertices, indices, 17.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    std::vector<CustomOverlay::DrawCommand> commands{MakeMergedCommand(vertices, indices)};
+
+    raster::CommandCache cache;
+    raster::RasterStats stats;
+    raster::PixelRect dirty;
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+
+    vertices.clear();
+    indices.clear();
+    AppendQuad(vertices, indices, 1.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    AppendQuad(vertices, indices, 17.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    commands[0] = MakeMergedCommand(vertices, indices);
+    stats = {};
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+
+    EXPECT_EQ(stats.dirtyRasters, 1u);
+    EXPECT_GE(stats.primitiveReuses, 2u);
+    EXPECT_EQ(cache.composed[2 * target.width + 10], 0u);
+    ExpectCacheMatchesFullRaster(cache, vertices, indices, commands, target);
+}
+
+TEST(OverlayCpuRasterTest, PrimitiveCacheNeverBlendsOntoAnObsoleteCachedPrefix) {
+    const auto target = MakeTarget(0, 0, 16, 8);
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 1.0f, 1.0f, 5.0f, 5.0f, 0x800000FFu);
+    AppendQuad(vertices, indices, 9.0f, 1.0f, 5.0f, 5.0f, 0x8000FF00u);
+    std::vector<CustomOverlay::DrawCommand> commands{{0, 4, 0, 6, false}, {4, 4, 6, 6, false}};
+
+    raster::CommandCache cache;
+    raster::RasterStats stats;
+    raster::PixelRect dirty;
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+
+    for (size_t i = 4; i < 8; ++i)
+        vertices[i].y += 1.0f;
+    stats = {};
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+
+    for (size_t i = 0; i < 4; ++i)
+        vertices[i].x += 1.0f;
+    stats = {};
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+    EXPECT_EQ(stats.dirtyRasters, 1u);
+    ExpectCacheMatchesFullRaster(cache, vertices, indices, commands, target);
+}
+
+TEST(OverlayCpuRasterTest, PrimitiveCacheDoesNoRasterWorkForAnIdenticalFrame) {
+    const auto target = MakeTarget(0, 0, 8, 8);
+    std::vector<CustomOverlay::DrawVertex> vertices;
+    std::vector<uint16_t> indices;
+    AppendQuad(vertices, indices, 1.0f, 1.0f, 4.0f, 4.0f, 0xFFFFFFFFu);
+    std::vector<CustomOverlay::DrawCommand> commands{MakeMergedCommand(vertices, indices)};
+    raster::CommandCache cache;
+    raster::RasterStats stats;
+    raster::PixelRect dirty;
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+
+    stats = {};
+    ASSERT_TRUE(raster::UpdateCommandCache(cache, vertices, indices, commands, raster::FontAtlasView{}, target, stats,
+                                           dirty));
+    EXPECT_EQ(stats.spriteReuses, 1u);
+    EXPECT_EQ(stats.fullRasters, 0u);
+    EXPECT_EQ(stats.dirtyRasters, 0u);
+    EXPECT_TRUE(dirty.IsEmpty());
+}
+
 // ---------------------------------------------------------------------------
 // The one blend step that puts the sprite into a DirectDraw surface.
 // ---------------------------------------------------------------------------
@@ -149,11 +304,4 @@ TEST(OverlayCpuRasterTest, BlendingIsIdempotentForAnOpaqueSprite) {
     const uint32_t once = policy::BlendPremultipliedOver(0xFF204080u, 0xFF000000u);
     const uint32_t twice = policy::BlendPremultipliedOver(0xFF204080u, once);
     EXPECT_EQ(once, twice);
-}
-
-TEST(OverlayCpuRasterTest, TheSpriteCacheHoldsUntilGeometryOrRectangleMoves) {
-    EXPECT_TRUE(policy::OverlaySpriteIsCurrent(true, true, 42u, 42u));
-    EXPECT_FALSE(policy::OverlaySpriteIsCurrent(true, true, 42u, 43u));
-    EXPECT_FALSE(policy::OverlaySpriteIsCurrent(true, false, 42u, 42u));
-    EXPECT_FALSE(policy::OverlaySpriteIsCurrent(false, true, 42u, 42u));
 }

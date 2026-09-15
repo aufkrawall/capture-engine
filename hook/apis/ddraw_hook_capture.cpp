@@ -81,37 +81,65 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
 void LogDirectDrawPresentationMix(const char* reason) {
     auto& diag = ddraw_hook_g_PresentationDiagnostics;
     const char* routeLabel = ddraw_hook_g_OverlayRoute == DDrawOverlayRoute::NativeLegacyD3D ? "native-d3d7"
-                             : ddraw_hook_g_OverlayRoute == DDrawOverlayRoute::HelperComposite ? "d3d9ex-composite"
+                             : ddraw_hook_g_OverlayRoute == DDrawOverlayRoute::HelperComposite ? "cpu-composite"
                                                                                                : "undecided";
+    const uint32_t nativePresentations = diag.nativePresentations.load(std::memory_order_relaxed);
+    const auto averageUs = [](std::atomic<uint64_t>& total, uint32_t divisor) {
+        return static_cast<unsigned long long>(total.load(std::memory_order_relaxed) / (std::max)(1u, divisor));
+    };
     HookLogImportant(
         "DDraw: Presentation mix (%s) flips=%u blitPresents=%u directScanoutBlits=%u ignoredBlits=%u "
-        "scanoutUnlocks=%u composites=%u ok=%u noGeometry=%u stageFailed=%u writeFailed=%u reentrant=%u "
-        "skippedNoPublishedImage=%u skippedOutsideOverlay=%u raster=%u spriteReuse=%u compositeAvgUs=%llu "
-        "compositeMaxUs=%u route=%s routeSwitches=%u routeLatched=%d",
+        "primaryUnlocks=%u scanoutUnlocks=%u getDcPresents=%u surfaces=%u hookReuses=%u nativeScene=%u "
+        "nativePresent=%u nativeFail=%u nativeRepair=%u nativeDeferred=%u captureNativeDeferred=%u "
+        "composites=%u ok=%u noGeometry=%u "
+        "writeFailed=%u reentrant=%u skippedNoPublishedImage=%u skippedOutsideOverlay=%u leftToFlip=%u writeMarks=%u clean=%u "
+        "partial=%u "
+        "full=%u raster=%u rasterFull=%u rasterIncr=%u spriteReuse=%u compositeAvgUs=%llu compositeMaxUs=%u "
+        "rasterAvgUs=%llu rasterMaxUs=%u lockAvgUs=%llu lockMaxUs=%u writeAvgUs=%llu writeMaxUs=%u "
+        "route=%s routeSwitches=%u",
         reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
         diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
-        diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.composites.load(std::memory_order_relaxed),
+        diag.primaryUnlockPresentations.load(std::memory_order_relaxed),
+        diag.scanoutUnlocks.load(std::memory_order_relaxed), diag.getDcPresentations.load(std::memory_order_relaxed),
+        diag.surfaceCreations.load(std::memory_order_relaxed),
+        diag.surfaceHookReuses.load(std::memory_order_relaxed),
+        diag.nativeSceneDraws.load(std::memory_order_relaxed), nativePresentations,
+        diag.nativeDrawFailures.load(std::memory_order_relaxed),
+        diag.nativeRepairRegions.load(std::memory_order_relaxed),
+        diag.nativeUnsafeDeferrals.load(std::memory_order_relaxed),
+        diag.captureNativeDeferrals.load(std::memory_order_relaxed),
+        diag.composites.load(std::memory_order_relaxed),
         diag.compositeSucceeded.load(std::memory_order_relaxed),
         diag.compositeNoGeometry.load(std::memory_order_relaxed),
-        diag.compositeStageFailed.load(std::memory_order_relaxed),
         diag.compositeWriteFailed.load(std::memory_order_relaxed),
         diag.reentrantPresentations.load(std::memory_order_relaxed),
         diag.skippedNoPublishedImage.load(std::memory_order_relaxed),
         diag.skippedOutsideOverlay.load(std::memory_order_relaxed),
+        diag.scanoutWritesLeftToFlip.load(std::memory_order_relaxed),
+        diag.applicationWritesMarked.load(std::memory_order_relaxed),
+        diag.compositesSkippedClean.load(std::memory_order_relaxed),
+        diag.compositePartialWrites.load(std::memory_order_relaxed),
+        diag.compositeFullWrites.load(std::memory_order_relaxed),
         diag.spriteRasterizations.load(std::memory_order_relaxed),
+        diag.spriteFullRasters.load(std::memory_order_relaxed),
+        diag.spriteIncrementalUpdates.load(std::memory_order_relaxed),
         diag.spriteReuses.load(std::memory_order_relaxed),
-        static_cast<unsigned long long>(
-            diag.compositeMicrosecondsTotal.load(std::memory_order_relaxed) /
-            (std::max)(1u, diag.compositeSucceeded.load(std::memory_order_relaxed))),
-        diag.compositeMicrosecondsMax.load(std::memory_order_relaxed), routeLabel,
-        ddraw_hook_g_OverlayRouteSwitches, ddraw_hook_g_OverlayRouteLatchedToComposite ? 1 : 0);
+        averageUs(diag.compositeMicrosecondsTotal,
+                  diag.compositeTimedPresentations.load(std::memory_order_relaxed)),
+        diag.compositeMicrosecondsMax.load(std::memory_order_relaxed),
+        averageUs(diag.rasterMicrosecondsTotal, diag.rasterPasses.load(std::memory_order_relaxed)),
+        diag.rasterMicrosecondsMax.load(std::memory_order_relaxed),
+        averageUs(diag.lockMicrosecondsTotal, diag.surfaceWritePasses.load(std::memory_order_relaxed)),
+        diag.lockMicrosecondsMax.load(std::memory_order_relaxed),
+        averageUs(diag.writeMicrosecondsTotal, diag.surfaceWritePasses.load(std::memory_order_relaxed)),
+        diag.writeMicrosecondsMax.load(std::memory_order_relaxed), routeLabel, ddraw_hook_g_OverlayRouteSwitches);
 }
 
-void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,
+bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,
                          ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
                          const ce::ddraw_present_policy::Rect& changedRect) {
     if (HookIsShuttingDown())
-        return;
+        return false;
 
     auto& diag = ddraw_hook_g_PresentationDiagnostics;
     switch (kind) {
@@ -128,22 +156,31 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
             break;
     }
 
-    // The composite needs to know what published this image: a flip always
-    // brings freshly rendered pixels, a repeat write into the scanout surface
-    // may still be carrying the previous composite.
-    ddraw_hook_g_CompositePresentKind = kind;
+    if (kind == ce::ddraw_present_policy::PresentKind::FlipChain) {
+        ddraw_hook_g_ScanoutWritesSinceFlip.store(0, std::memory_order_relaxed);
+    } else if (kind == ce::ddraw_present_policy::PresentKind::DirectScanout) {
+        const uint32_t writes = ddraw_hook_g_ScanoutWritesSinceFlip.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!ce::ddraw_present_policy::ScanoutWriteIsPresentation(ScanoutSurfaceOwnsFlipChain(visibleSurface),
+                                                                 writes)) {
+            // Writing the scanned-out member of an advancing flip chain is not
+            // its presentation. Touching it here creates the visible tear the
+            // next Flip immediately replaces.
+            diag.scanoutWritesLeftToFlip.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
 
     const auto target = ce::ddraw_present_policy::SelectCompositeTarget(kind, presentSource != nullptr);
     if (target == ce::ddraw_present_policy::CompositeTarget::None) {
         if (kind != ce::ddraw_present_policy::PresentKind::None)
             diag.skippedNoPublishedImage.fetch_add(1, std::memory_order_relaxed);
-        return;
+        return false;
     }
 
     IDirectDrawSurface7* compositeTarget =
         target == ce::ddraw_present_policy::CompositeTarget::PresentSource ? presentSource : visibleSurface;
     if (!compositeTarget)
-        return;
+        return false;
 
     // Compositing re-enters DirectDraw through the same hooked surface methods
     // (Lock/Unlock, GetDC/ReleaseDC), so the recursion guard has to cover the
@@ -155,7 +192,7 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
         // silently dropped and made the mix counters impossible to reconcile.
         diag.reentrantPresentations.fetch_add(1, std::memory_order_relaxed);
         ddraw_hook_g_CaptureRecurse--;
-        return;
+        return false;
     }
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -196,7 +233,7 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
             if (!ce::ddraw_present_policy::DirectScanoutNeedsComposite(bounds, true, changedRect)) {
                 diag.skippedOutsideOverlay.fetch_add(1, std::memory_order_relaxed);
                 ddraw_hook_g_CaptureRecurse--;
-                return;
+                return false;
             }
         }
     }
@@ -204,7 +241,13 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     auto doOverlay = [&]() {
         if (shouldDrawOverlay) {
             diag.composites.fetch_add(1, std::memory_order_relaxed);
-            DrawDDrawOverlay(compositeTarget, kind);
+            DrawDDrawOverlay(compositeTarget, kind, haveChangedRect, changedRect);
+        } else {
+            // Hiding the overlay while a partial-update screen is up (a loading
+            // screen that only repaints a progress bar) leaves CE's rectangle
+            // with nothing to repaint it, so the saved application backdrop has
+            // to be put back explicitly.
+            ddraw_hook_g_DDrawCapture.RestoreCompositeRegion(compositeTarget);
         }
     };
 
@@ -219,6 +262,26 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     auto doCapture = [&]() {
         if (!isRecording || !changeCoversSurface)
             return;
+        if (!captureIncludeOverlay) {
+            size_t repairCount = 0;
+            const auto nativeState = QueryNativeLegacyD3DOverlay(compositeTarget, nullptr, 0, repairCount);
+            if (nativeState != ce::ddraw_native_overlay::State::Absent) {
+                // Native pixels have no saved CPU backdrop. During the unusual
+                // transition from a D3D scene to partial 2D updates, defer this
+                // one capture rather than violate overlay-excluded recording;
+                // CFR repeats the previous clean frame until the game replaces
+                // the old native pixels.
+                ddraw_hook_g_DDrawCapture.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                const uint32_t occurrence =
+                    diag.captureNativeDeferrals.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (occurrence <= 4 || (occurrence & (occurrence - 1)) == 0) {
+                    HookLogImportant("DDraw: Deferring overlay-excluded capture while native overlay pixels may "
+                                     "remain (surface=%p state=%d occurrence=%u)",
+                                     compositeTarget, static_cast<int>(nativeState), occurrence);
+                }
+                return;
+            }
+        }
         if (!ddraw_hook_g_DDrawCapture.initialized && haveSurfaceSize) {
             ddraw_hook_g_DDrawCapture.EnsureCaptureResources(compositeTarget, targetHwnd, surfaceWidth, surfaceHeight);
         }
@@ -238,6 +301,7 @@ void ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     }
 
     ddraw_hook_g_CaptureRecurse--;
+    return true;
 }
 
 void NotePresentationComplete() {
@@ -279,7 +343,7 @@ void NotePresentationComplete() {
     }
 }
 
-void HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDrawSurface4* presentSource,
+bool HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDrawSurface4* presentSource,
                                 ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
                                 const ce::ddraw_present_policy::Rect& changedRect) {
     IDirectDrawSurface7* visibleSurface7 = QuerySurface7(visibleSurface);
@@ -289,19 +353,20 @@ void HandlePresentationSurface4(IDirectDrawSurface4* visibleSurface, IDirectDraw
             HookLog("DDraw: Failed to upgrade DirectDraw4 surface to DirectDraw7 for capture/overlay");
             primaryUpgradeFailLogCount++;
         }
-        return;
+        return false;
     }
 
     IDirectDrawSurface7* presentSource7 = QuerySurface7(presentSource);
-    ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
+    const bool accepted = ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
 
     if (presentSource7) {
         presentSource7->Release();
     }
     visibleSurface7->Release();
+    return accepted;
 }
 
-void HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirectDrawSurface* presentSource,
+bool HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirectDrawSurface* presentSource,
                                      ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
                                      const ce::ddraw_present_policy::Rect& changedRect) {
     IDirectDrawSurface7* visibleSurface7 = QuerySurface7(visibleSurface);
@@ -310,11 +375,12 @@ void HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirect
         if (s_upgradeFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
             HookLogImportant("DDraw: Failed to upgrade legacy surface to Surface7 for capture/overlay");
         }
-        return;
+        return false;
     }
     IDirectDrawSurface7* presentSource7 = QuerySurface7(presentSource);
-    ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
+    const bool accepted = ComposePresentation(visibleSurface7, presentSource7, kind, haveChangedRect, changedRect);
     if (presentSource7)
         presentSource7->Release();
     visibleSurface7->Release();
+    return accepted;
 }

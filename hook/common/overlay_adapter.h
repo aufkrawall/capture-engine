@@ -27,7 +27,7 @@
 #include "system_metrics.h"
 
 // Backend type enum
-enum class OverlayBackendType { None, D3D7, DX8, DX9, DX10, DX11, DX12, OpenGL, Vulkan };
+enum class OverlayBackendType { None, DX8, DX9, DX10, DX11, DX12, OpenGL, Vulkan, CpuRaster };
 
 class OverlayAdapter {
 public:
@@ -35,9 +35,6 @@ public:
     ~OverlayAdapter();
 
     // Initialize with graphics API-specific parameters
-    // IDirect3DDevice7*: a DX6/DX7 title's own device, so the overlay is drawn
-    // into the surface it is about to present with no CPU round trip.
-    bool InitD3D7(void* device);
     bool InitDX8(void* device);   // IDirect3DDevice8*
     bool InitDX9(void* device);   // IDirect3DDevice9*
     bool InitDX10(void* device);  // ID3D10Device*
@@ -46,6 +43,10 @@ public:
     bool InitDX12(void* device, void* queue,
                   int rtvFormat);  // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
     bool InitOpenGL();
+
+    // Headless backend: builds the shared draw list but does not draw it. The DirectDraw
+    // composite rasterizes that list on the CPU, so the route needs no graphics device.
+    bool InitCpuRaster();
     bool InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily, void* deviceDispatch = nullptr,
                     void* instanceDispatch = nullptr);  // VkDevice, VkPhysicalDevice, VkQueue,
                                                         // DeviceDispatch*, InstanceDispatch*
@@ -114,31 +115,31 @@ public:
     // Render the overlay (called after BeginFrame in hook's render path)
     void RenderOverlay(int viewportWidth, int viewportHeight);
 
+    // Initializes and replays the current draw list through an auxiliary
+    // backend without replacing the adapter's primary backend. DirectDraw uses
+    // this to keep its always-available CPU renderer while a D3D7 sidecar draws
+    // inside the application's real scene.
+    bool InitializeAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary) const;
+    bool RenderWithAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary, int viewportWidth,
+                                    int viewportHeight, RECT* renderedBounds = nullptr) const;
+
     // Bounding box, in viewport pixels, of the geometry the last rendered frame
-    // emitted. The legacy DirectDraw/DX6/DX7 route composites through a CPU
-    // round trip and must move only the pixels the overlay can actually touch;
-    // a full 4K surface costs about 66 MB per present either way.
+    // emitted. The legacy DirectDraw/DX6/DX7 CPU fallback moves only these
+    // pixels; a full 4K surface pass costs about 33 MB in each direction.
     bool GetLastRenderedBounds(int viewportWidth, int viewportHeight, RECT& outBounds) const;
 
-    // Re-submit the geometry the last RenderOverlay built, without rebuilding it
-    // and without advancing any per-frame state. The DirectDraw composite needs
-    // this on the frames where the overlay grew past the region it had already
-    // staged the game's pixels into.
-    bool ResubmitLastFrame(int viewportWidth, int viewportHeight);
-
-    // Rasterize the geometry the last rendered frame built into a
-    // premultiplied BGRA image. The DirectDraw route has no GPU path into a
-    // DirectDraw surface, so producing the overlay's pixels on the GPU would
-    // cost a blocking readback on every presentation.
-    bool RasterizeLastFrame(const ce::overlay_cpu_raster::Target& target, std::vector<uint32_t>& out) const;
-
-    // Identifies the geometry the last rendered frame built. A caller that
-    // caches the rasterized result compares this instead of rasterizing again:
-    // the overlay is redrawn far more often than its content actually changes.
-    // Zero means nothing was drawn.
-    uint64_t GetLastDrawDataRevision() const;
+    // Incremental rasterization for the DirectDraw CPU composite:
+    // primitives whose geometry did not move keep their cached pixels, and
+    // `changedBounds` (target-relative) is empty when the whole frame is
+    // already current. Rebuilding and re-rasterizing the static panel on every
+    // presentation is what held the composite at tens of milliseconds.
+    bool RenderRasterCache(ce::overlay_cpu_raster::CommandCache& cache, const ce::overlay_cpu_raster::Target& target,
+                           ce::overlay_cpu_raster::RasterStats& stats,
+                           ce::overlay_cpu_raster::PixelRect& changedBounds) const;
 
 private:
+    bool GetLastRenderedBoundsLocked(int viewportWidth, int viewportHeight, RECT& outBounds) const;
+
     struct FrameLayoutSnapshot {
         uint32_t rowMask = 0;
         uint32_t rowCount = 0;

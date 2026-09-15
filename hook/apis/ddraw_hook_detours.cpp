@@ -11,6 +11,21 @@ struct BlitPresentation {
     bool haveChangedRect = false;
 };
 
+bool BlitCopiesSourceExactly(DWORD flags) {
+    // Scheduling/presentation hints do not change pixels. Every other Blt flag
+    // can key, alpha-blend, fill, rotate, ROP or otherwise transform the source;
+    // in that case compose into the destination after the operation instead of
+    // assuming an overlay stamped into the source will survive the copy.
+    constexpr DWORD kPassThroughFlags =
+        DDBLT_ASYNC | DDBLT_WAIT | DDBLT_DONOTWAIT | DDBLT_PRESENTATION | DDBLT_LAST_PRESENTATION;
+    return (flags & ~kPassThroughFlags) == 0;
+}
+
+bool BltFastCopiesSourceExactly(DWORD flags) {
+    constexpr DWORD kPassThroughFlags = DDBLTFAST_WAIT | DDBLTFAST_DONOTWAIT;
+    return (flags & ~kPassThroughFlags) == 0;
+}
+
 policy::Rect ToPolicyRect(const RECT& rect) {
     return policy::Rect{static_cast<int>(rect.left), static_cast<int>(rect.top), static_cast<int>(rect.right),
                         static_cast<int>(rect.bottom)};
@@ -49,12 +64,22 @@ bool ReadSurfaceGeometry(IDirectDrawSurface* surface, policy::Extent& extent, DW
 // A blit onto a flip chain's images is ordinary drawing - Flip publishes them -
 // so only a single-buffered scanout surface can be presented to this way.
 template <typename SurfaceT>
-BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT* source, const RECT* sourceRect) {
+BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT* source, const RECT* sourceRect,
+                                  bool sourceCopyIsExact) {
     BlitPresentation result;
     policy::BlitGeometry geometry;
     DWORD destCaps = 0;
     if (!ReadSurfaceGeometry(dest, geometry.dest, destCaps))
         return result;
+
+    // The destination extent makes a null Blt rectangle exact as well. Keep
+    // this even for offscreen/back-buffer writes: a native overlay may already
+    // be in that surface even though the write is not itself a presentation.
+    result.haveChangedRect = true;
+    result.changedRect = destRect
+                             ? ToPolicyRect(*destRect)
+                             : policy::Rect{0, 0, static_cast<int>(geometry.dest.width),
+                                            static_cast<int>(geometry.dest.height)};
 
     // Only the primary surface is being scanned out. A back buffer carries
     // DDSCAPS_BACKBUFFER without DDSCAPS_PRIMARYSURFACE and is published later
@@ -74,7 +99,7 @@ BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT
     }
 
     DWORD sourceCaps = 0;
-    if (source && ReadSurfaceGeometry(source, geometry.source, sourceCaps)) {
+    if (sourceCopyIsExact && source && ReadSurfaceGeometry(source, geometry.source, sourceCaps)) {
         geometry.haveSource = true;
         if (sourceRect) {
             geometry.haveSourceRect = true;
@@ -83,11 +108,6 @@ BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT
     }
 
     result.kind = policy::ClassifyBlit(geometry);
-    result.haveChangedRect = geometry.haveDestRect;
-    result.changedRect = geometry.haveDestRect
-                             ? geometry.destRect
-                             : policy::Rect{0, 0, static_cast<int>(geometry.dest.width),
-                                            static_cast<int>(geometry.dest.height)};
     return result;
 }
 
@@ -95,7 +115,7 @@ BlitPresentation ClassifyBlitCall(SurfaceT* dest, const RECT* destRect, SurfaceT
 // placed at the given corner.
 template <typename SurfaceT>
 BlitPresentation ClassifyBltFastCall(SurfaceT* dest, DWORD destX, DWORD destY, SurfaceT* source,
-                                     const RECT* sourceRect) {
+                                     const RECT* sourceRect, bool sourceCopyIsExact) {
     policy::Extent sourceExtent;
     DWORD sourceCaps = 0;
     const bool haveSource = source && ReadSurfaceGeometry(source, sourceExtent, sourceCaps);
@@ -107,7 +127,7 @@ BlitPresentation ClassifyBltFastCall(SurfaceT* dest, DWORD destX, DWORD destY, S
     }
     RECT destRect = {static_cast<LONG>(destX), static_cast<LONG>(destY),
                      static_cast<LONG>(destX) + copyWidth, static_cast<LONG>(destY) + copyHeight};
-    return ClassifyBlitCall(dest, &destRect, source, sourceRect);
+    return ClassifyBlitCall(dest, &destRect, source, sourceRect, sourceCopyIsExact);
 }
 
 IDirectDrawSurface4* AcquireFlipPresentSource4(IDirectDrawSurface4* primarySurface,
@@ -169,14 +189,22 @@ HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis
         }
     }
 
+    const uint32_t createOrdinal =
+        ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
     const HRESULT hr = record.createSurface(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
+            ResetDirectDrawPresentationStateForPrimaryChange();
+            ddraw_hook_g_PrimarySurface = nullptr;
+            ddraw_hook_g_PrimarySurface4 = nullptr;
+        }
         AssociateDirectDrawSurface(*ppSurface, record.version);
         InstallSurfaceHooksForLegacySurface(*ppSurface, ce::graphics_api_identity::DirectDrawLabel(record.version));
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
-            HookLog("DDraw: %s CreateSurface accepted surface=%p primary=%d",
+        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && logCreate) {
+            HookLog("DDraw: %s CreateSurface accepted surface=%p primary=%d ordinal=%u",
                     ce::graphics_api_identity::DirectDrawLabel(record.version), *ppSurface,
-                    IsPrimarySurfaceDesc(pDesc) ? 1 : 0);
+                    IsPrimarySurfaceDesc(pDesc) ? 1 : 0, createOrdinal);
         }
     }
     return hr;
@@ -201,17 +229,20 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.flip)
         return DDERR_GENERIC;
+    IDirectDrawSurface* presentSource = nullptr;
     if (!HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        IDirectDrawSurface* presentSource = AcquireFlipPresentSourceLegacy(surface, destOverride);
+        presentSource = AcquireFlipPresentSourceLegacy(surface, destOverride);
         HandlePresentationLegacySurface(surface, presentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
-        if (presentSource)
-            presentSource->Release();
     }
     const HRESULT hr = record.flip(surface, destOverride, ddraw_hook_flags);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(presentSource, surface, true);
+        PublishNativeLegacyD3DOverlay(presentSource, surface, true);
         NotePresentationComplete();
     }
+    if (presentSource)
+        presentSource->Release();
     return hr;
 
 }
@@ -227,7 +258,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
         return DDERR_GENERIC;
     const bool live = !HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0;
     const BlitPresentation presentation =
-        live ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+        live ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect,
+                                BlitCopiesSourceExactly(ddraw_hook_flags))
+             : BlitPresentation{};
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
     }
@@ -235,11 +268,18 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
         HandlePresentationLegacySurface(surface, srcSurface, presentation.kind, false, policy::Rect{});
     }
     const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                                        presentation.changedRect);
+        if (HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                            presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
     return hr;
 
@@ -254,7 +294,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
         return DDERR_GENERIC;
     const bool live = !HookIsShuttingDown() && ddraw_hook_g_DDrawBootstrapDepth == 0;
     const BlitPresentation presentation =
-        live ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+        live ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect,
+                                   BltFastCopiesSourceExactly(dwTrans))
+             : BlitPresentation{};
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
     }
@@ -262,41 +304,18 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
         HandlePresentationLegacySurface(surface, srcSurface, presentation.kind, false, policy::Rect{});
     }
     const HRESULT hr = record.bltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                                        presentation.changedRect);
-    }
-    return hr;
-
-}
-
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface,  LPRECT destRect, 
-                                                           DDSURFACEDESC* surfaceDesc,  DWORD ddraw_hook_flags,  HANDLE ddraw_hook_event) {
-
-
-    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
-    return record.lock ? record.lock(surface, destRect, surfaceDesc, ddraw_hook_flags, ddraw_hook_event) : DDERR_GENERIC;
-
-}
-
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface,  LPVOID ddraw_hook_surfaceData) {
-
-
-    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
-    if (!record.unlock)
-        return DDERR_GENERIC;
-    const HRESULT hr = record.unlock(surface, ddraw_hook_surfaceData);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
-        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
-        // The application drew straight into the scanout surface, so the frame
-        // is already visible and the overlay goes back on top of it.
-        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
-        HandlePresentationLegacySurface(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
-        NotePresentationComplete();
+        if (HandlePresentationLegacySurface(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                            presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
     return hr;
 
@@ -307,8 +326,13 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis,  D
                                                                 IDirectDrawSurface7** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
 
 
-    HookLog("DDraw: DetourDirectDraw7CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
-            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
+    const uint32_t createOrdinal =
+        ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
+    if (logCreate) {
+        HookLog("DDraw: DetourDirectDraw7CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x ordinal=%u)",
+                pThis, pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0, createOrdinal);
+    }
 
     if (!HookIsShuttingDown() && pDesc && g_IPC) {
         int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
@@ -329,9 +353,15 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis,  D
             original = it->second;
     }
     HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
-    HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p", hr,
-            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (logCreate) {
+        HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p ordinal=%u", hr,
+                (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr, createOrdinal);
+    }
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
+            ResetDirectDrawPresentationStateForPrimaryChange();
+            ddraw_hook_g_PrimarySurface4 = nullptr;
+        }
         AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
         InstallSurfaceHooksForSurface(*ppSurface, "CreateSurface");
         if (IsPrimarySurfaceDesc(pDesc)) {
@@ -352,8 +382,13 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis,  D
                                                                 IDirectDrawSurface4** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
 
 
-    HookLog("DDraw: DetourDirectDraw4CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x)", pThis,
-            pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0);
+    const uint32_t createOrdinal =
+        ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
+    if (logCreate) {
+        HookLog("DDraw: DetourDirectDraw4CreateSurface called (ddraw=%p, flags=0x%08x, caps=0x%08x ordinal=%u)",
+                pThis, pDesc ? pDesc->dwFlags : 0, pDesc ? pDesc->ddsCaps.dwCaps : 0, createOrdinal);
+    }
 
     if (!HookIsShuttingDown() && pDesc && g_IPC) {
         int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
@@ -374,9 +409,15 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis,  D
             original = it->second;
     }
     HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
-    HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p", hr,
-            (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
+    if (logCreate) {
+        HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p ordinal=%u", hr,
+                (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr, createOrdinal);
+    }
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
+            ResetDirectDrawPresentationStateForPrimaryChange();
+            ddraw_hook_g_PrimarySurface = nullptr;
+        }
         AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
         InstallSurfaceHooksForSurface4(*ppSurface, "CreateSurface4");
         if (IsPrimarySurfaceDesc(pDesc)) {
@@ -406,9 +447,6 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
     // then replaces that surface with one the overlay never touched.
     IDirectDrawSurface7* flipPresentSource = AcquireFlipPresentSource(surface, destOverride);
     ComposePresentation(surface, flipPresentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
-    if (flipPresentSource)
-        flipPresentSource->Release();
-
     if (g_IPC) {
         std::string mode = g_IPC->GetSharedMem()->graphicsConfig.vsyncMode;
         if (mode != "default") {
@@ -436,7 +474,13 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
         ApplyPrerenderLimitDDraw(surface, 0.0f);
     }
 
-    NotePresentationComplete();
+    if (SUCCEEDED(hr)) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(flipPresentSource, surface, true);
+        PublishNativeLegacyD3DOverlay(flipPresentSource, surface, true);
+        NotePresentationComplete();
+    }
+    if (flipPresentSource)
+        flipPresentSource->Release();
 
     return hr;
 
@@ -456,11 +500,14 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  ID
 
     IDirectDrawSurface4* flipPresentSource = AcquireFlipPresentSource4(surface, destOverride);
     HandlePresentationSurface4(surface, flipPresentSource, policy::PresentKind::FlipChain, false, policy::Rect{});
+    HRESULT hr = ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags);
+    if (SUCCEEDED(hr)) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(flipPresentSource, surface, true);
+        PublishNativeLegacyD3DOverlay(flipPresentSource, surface, true);
+        NotePresentationComplete();
+    }
     if (flipPresentSource)
         flipPresentSource->Release();
-
-    HRESULT hr = ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags);
-    NotePresentationComplete();
     return hr;
 
 }
@@ -483,7 +530,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
     const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype &&
                           (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
     const BlitPresentation presentation =
-        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect,
+                                    BlitCopiesSourceExactly(ddraw_hook_flags))
+                 : BlitPresentation{};
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -495,11 +544,18 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
     }
 
     HRESULT hr = ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                            presentation.changedRect);
+        if (ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
 
     return hr;
@@ -524,7 +580,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
     const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype &&
                           (!ddraw_hook_g_PrimarySurface || surface == ddraw_hook_g_PrimarySurface);
     const BlitPresentation presentation =
-        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect,
+                                       BltFastCopiesSourceExactly(dwTrans))
+                 : BlitPresentation{};
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -534,11 +592,18 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
     }
 
     HRESULT hr = ddraw_hook_oDDSurface7BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                            presentation.changedRect);
+        if (ComposePresentation(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
 
     return hr;
@@ -563,18 +628,27 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
     const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
                           (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4);
     const BlitPresentation presentation =
-        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect) : BlitPresentation{};
+        eligible ? ClassifyBlitCall(surface, destRect, srcSurface, srcRect,
+                                    BlitCopiesSourceExactly(ddraw_hook_flags))
+                 : BlitPresentation{};
 
     if (presentation.kind == policy::PresentKind::BlitPresent) {
         HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});
     }
 
     HRESULT hr = ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                                   presentation.changedRect);
+        if (HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                       presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
 
     return hr;
@@ -599,74 +673,29 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, 
     const bool eligible = surface && surface != ddraw_hook_g_HookSurfacePrototype4 &&
                           (!ddraw_hook_g_PrimarySurface4 || surface == ddraw_hook_g_PrimarySurface4);
     const BlitPresentation presentation =
-        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect) : BlitPresentation{};
+        eligible ? ClassifyBltFastCall(surface, dwX, dwY, srcSurface, srcRect,
+                                       BltFastCopiesSourceExactly(dwTrans))
+                 : BlitPresentation{};
 
     if (presentation.kind == policy::PresentKind::BlitPresent) {
         HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});
     }
 
     HRESULT hr = ddraw_hook_oDDSurface4BltFast(surface, dwX, dwY, srcSurface, srcRect, dwTrans);
+    if (SUCCEEDED(hr) && presentation.kind != policy::PresentKind::BlitPresent) {
+        RecordNativeLegacyD3DSurfaceWrite(surface, presentation.haveChangedRect, presentation.changedRect);
+    }
     if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::BlitPresent) {
+        ddraw_hook_g_DDrawCapture.PublishCompositeState(srcSurface, surface, false);
+        PublishNativeLegacyD3DOverlay(srcSurface, surface, false);
         NotePresentationComplete();
     } else if (SUCCEEDED(hr) && presentation.kind == policy::PresentKind::DirectScanout) {
-        HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
-                                   presentation.changedRect);
+        if (HandlePresentationSurface4(surface, nullptr, presentation.kind, presentation.haveChangedRect,
+                                       presentation.changedRect)) {
+            NotePresentationComplete();
+        }
     }
 
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface,  LPRECT destRect,  void* surfaceDesc, 
-                                                      DWORD ddraw_hook_flags,  HANDLE ddraw_hook_event) {
-
-
-    HRESULT hr = ddraw_hook_oDDSurface7Lock(surface, destRect, surfaceDesc, ddraw_hook_flags, ddraw_hook_event);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface != ddraw_hook_g_HookSurfacePrototype &&
-        !ddraw_hook_g_PrimarySurface) {
-        MaybeTrackPrimarySurface(surface, "Lock");
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface,  LPRECT destRect,  void* surfaceDesc, 
-                                                      DWORD ddraw_hook_flags,  HANDLE ddraw_hook_event) {
-
-
-    HRESULT hr = ddraw_hook_oDDSurface4Lock(surface, destRect, surfaceDesc, ddraw_hook_flags, ddraw_hook_event);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface != ddraw_hook_g_HookSurfacePrototype4 &&
-        !ddraw_hook_g_PrimarySurface4) {
-        MaybeTrackPrimarySurface4(surface, "Lock4");
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface,  LPRECT ddraw_hook_rect) {
-
-
-    HRESULT hr = ddraw_hook_oDDSurface7Unlock(surface, ddraw_hook_rect);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface) {
-        // Software rendering straight into the scanout surface: the frame is
-        // already visible, so the overlay is restored on top of it.
-        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
-        ComposePresentation(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
-        NotePresentationComplete();
-    }
-    return hr;
-
-}
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface,  LPRECT ddraw_hook_rect) {
-
-
-    HRESULT hr = ddraw_hook_oDDSurface4Unlock(surface, ddraw_hook_rect);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface4) {
-        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
-        HandlePresentationSurface4(surface, nullptr, policy::PresentKind::DirectScanout, false, policy::Rect{});
-        NotePresentationComplete();
-    }
     return hr;
 
 }

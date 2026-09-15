@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-08-11
+Last cross-checked: 2026-09-15
 
 Primary sources:
 - top-level repo layout (verified against the working tree)
@@ -135,14 +135,16 @@ anchors that predate the split are approximate.
     - DX8: `dx8_hook_capture_{lifecycle,init,frame,copy}.cpp`, `dx8_hook_detours.cpp`,
       `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
     - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_capture.cpp` (presentation
-      policy entry points), `ddraw_hook_overlay_composite.cpp` (region-scoped D3D9Ex composite
-      fallback; the preferred route is `hook/common/custom_overlay_d3d7.{h,cpp}`, which draws with
-      the application's own Direct3D 7 device),
-      `ddraw_hook_overlay_route.cpp` (which renderer draws which presentation, and the
-      backend/route match rule), `ddraw_hook_detours.cpp` (surface detours + blit classification),
+      and capture ordering), `ddraw_hook_overlay_composite.cpp` + `ddraw_hook_composite_state.h`
+      (per-surface CPU backdrop/composite state), `ddraw_hook_overlay_route.cpp` (persistent CPU
+      adapter plus auxiliary native D3D7 sidecar and damage state), `ddraw_hook_write_tracking.{h,cpp}`
+      (exact application-write history), `ddraw_hook_detours.cpp` (Flip/Blt classification),
+      `ddraw_hook_detours_surface_access.cpp` (Lock/DC access and direct-scanout presentation),
       `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception), `ddraw_hook_install.cpp`,
-      `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; the policy itself is
-      `hook/common/ddraw_present_policy.h`.
+      `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; shared implementation/policy lives in
+      `hook/common/{ddraw_present_policy,ddraw_native_overlay_damage,overlay_cpu_raster}.h` plus
+      `hook/common/overlay_cpu_raster.cpp`, while `hook/common/custom_overlay_d3d7.{h,cpp}` draws
+      immediately before the application's real D3D7 `EndScene`.
     - OpenGL: `opengl_hook_capture.cpp` (detours, swap begin/end, overlay draw),
       `opengl_hook_install.cpp` (inline + IAT hook installation, `OpenGLHook::Init/Shutdown`),
       `opengl_hook_capture_{lifecycle,init,frame}.cpp`, `opengl_hook_internal.h`.

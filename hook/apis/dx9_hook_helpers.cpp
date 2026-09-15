@@ -79,6 +79,11 @@ void RegisterD3D9DeviceIdentity(IDirect3DDevice9* device,  bool isEx,  const cha
 
 }
 
+bool WasGameD3D9DeviceCreated() {
+    std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9IdentityMutex);
+    return !dx9_hook_g_D3D9ExDevices.empty();
+}
+
 bool ResolveD3D9DeviceIsEx(IDirect3DDevice9* device) {
 
 

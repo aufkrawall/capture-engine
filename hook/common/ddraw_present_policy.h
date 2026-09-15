@@ -81,6 +81,52 @@ inline bool RectsIntersect(const Rect& a, const Rect& b) {
     return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
+// The smallest rectangle covering both inputs. An empty rectangle is the
+// identity, which is what a dirty region accumulator starts from.
+inline Rect UnionRect(const Rect& a, const Rect& b) {
+    if (a.IsEmpty())
+        return b;
+    if (b.IsEmpty())
+        return a;
+    Rect merged;
+    merged.left = a.left < b.left ? a.left : b.left;
+    merged.top = a.top < b.top ? a.top : b.top;
+    merged.right = a.right > b.right ? a.right : b.right;
+    merged.bottom = a.bottom > b.bottom ? a.bottom : b.bottom;
+    return merged;
+}
+
+// The overlap of two rectangles; empty when they do not intersect.
+inline Rect IntersectRect(const Rect& a, const Rect& b) {
+    Rect clipped;
+    if (!RectsIntersect(a, b))
+        return clipped;
+    clipped.left = a.left > b.left ? a.left : b.left;
+    clipped.top = a.top > b.top ? a.top : b.top;
+    clipped.right = a.right < b.right ? a.right : b.right;
+    clipped.bottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+    return clipped;
+}
+
+// The DirectDraw bootstrap creates a synthetic DirectDraw object (and, through
+// the Windows DDraw implementation, a Direct3D device) on CE's worker thread.
+// With a co-resident third-party overlay that has already hooked
+// Direct3DCreate9, that is the BioShock Infinite crash family. Module presence
+// alone is not evidence the application renders through the higher-level API -
+// ddraw.dll, d3d9.dll and d3d8.dll are routinely loaded as transitive
+// dependencies, and Gothic II session 20260914_195422 is a DirectDraw7 title
+// whose process also contains d3d9.dll. Only a created device, or a module
+// load with no proof that DirectDraw is actually in use, suppresses the
+// bootstrap.
+inline bool ShouldSkipDirectDrawBootstrap(bool higherLevelDeviceCreated, bool higherLevelModuleLoaded,
+                                          bool directDrawEvidence) {
+    if (higherLevelDeviceCreated)
+        return true;
+    if (!higherLevelModuleLoaded)
+        return false;
+    return !directDrawEvidence;
+}
+
 // A blit is a presentation only when it replaces the whole visible surface from
 // another surface of the same size. Everything narrower is a 2D update - a HUD
 // piece, a cursor, a video rectangle - and a game can issue dozens of those per
@@ -134,43 +180,6 @@ inline CompositeTarget SelectCompositeTarget(PresentKind kind, bool havePresentS
     return CompositeTarget::None;
 }
 
-// The composite is a read-modify-write: it reads the target's pixels, blends
-// the overlay over them and writes the result back. That is only correct while
-// the pixels it reads are the application's - if the region still holds a
-// previous composite, the overlay is blended over itself, and a translucent
-// overlay darkens a little more with every repetition.
-//
-// A flip publishes a freshly rendered image, so the region read after one is
-// always clean. Consecutive writes into the same scanout surface with no flip
-// between them are not: the application may have changed only part of the
-// surface and left the overlay's own pixels in place. Gothic II does both - it
-// flips 86 times a second and writes its front buffer 11 times a second during
-// gameplay, and during the intro logos the ratio inverts to about ten writes
-// per flip - which is what was left strobing.
-//
-// So the clean pixels are kept: read once for a given surface and rectangle,
-// reused for every repeat composite into the same place, and thrown away as
-// soon as a flip publishes a new image.
-// `regionMatchesLastComposite` is the decisive one: the region was read back
-// and is byte-identical to what CE last wrote there, so the application has not
-// drawn into it since and the pixels under the overlay are still the ones saved.
-// Anything else - a different surface, a different rectangle, a flip or
-// blit-present republishing the image, or content that simply differs - means
-// what was just read IS the application's frame and becomes the new backdrop.
-//
-// Reusing a backdrop without that check freezes the game's pixels under the
-// overlay for as long as the reuse lasts, which on a loading screen is the
-// whole screen.
-inline bool CompositeBackdropIsReusable(bool haveBackdrop, bool sameSurface, bool sameRegion, PresentKind kind,
-                                        bool regionMatchesLastComposite) {
-    if (!haveBackdrop || !sameSurface || !sameRegion || !regionMatchesLastComposite)
-        return false;
-    // A flip publishes what the application just rendered and a blit-present
-    // overwrites its destination from a source, so both bring pixels that are
-    // clean by construction and must be read.
-    return kind == PresentKind::DirectScanout;
-}
-
 // The rectangle CE has to write this time: at least the overlay's own, and at
 // least everything CE wrote into this surface last time. Without the second
 // part a shrinking overlay leaves the strip it vacated holding the previous
@@ -184,6 +193,17 @@ inline Rect ExpandToPreviousComposite(const Rect& region, bool havePrevious, con
     merged.right = region.right > previous.right ? region.right : previous.right;
     merged.bottom = region.bottom > previous.bottom ? region.bottom : previous.bottom;
     return merged;
+}
+
+// How many writes into a flip chain's front buffer have to pile up without a
+// Flip before those writes are the presentation. The first may be incidental
+// front-buffer drawing a live flip immediately replaces; the second proves the
+// chain has stopped advancing (the common loading-screen shape).
+inline constexpr uint32_t kScanoutWritesWithoutFlipThreshold = 2;
+
+inline bool ScanoutWriteIsPresentation(bool destOwnsFlipChain, uint32_t scanoutWritesSinceFlip,
+                                       uint32_t threshold = kScanoutWritesWithoutFlipThreshold) {
+    return !destOwnsFlipChain || scanoutWritesSinceFlip >= threshold;
 }
 
 // A direct-scanout update only needs the overlay restored when it actually
@@ -201,9 +221,8 @@ inline bool DirectScanoutNeedsComposite(const Rect& overlayBounds, bool haveChan
 // is what held the DirectDraw route to roughly 17 presents per second.
 //
 // The rectangle is grown to an alignment so a value row that changes width by a
-// few pixels does not force the staging surfaces to be recreated, and is
-// clamped to the surface so a stale viewport can never produce an out-of-bounds
-// lock.
+// few pixels does not resize the raster/backdrop caches, and is clamped to the
+// surface so a stale viewport can never produce an out-of-bounds lock.
 inline bool AlignCompositeRegion(const Rect& bounds, uint32_t surfaceWidth, uint32_t surfaceHeight, int alignment,
                                  Rect& out) {
     out = Rect{};
@@ -233,35 +252,11 @@ inline bool AlignCompositeRegion(const Rect& bounds, uint32_t surfaceWidth, uint
     return true;
 }
 
-// Which renderer can draw a given presentation.
-enum class OverlayRoute {
-    // The application's own 3D device, straight into the surface it is about to
-    // present: no readback, no second device, nothing leaving the GPU.
-    NativeDevice,
-    // A private helper device plus a CPU round trip. Works for any surface.
-    HelperComposite,
-};
-
-// The native route only exists where the application's device is rendering into
-// the very surface being published. A flip publishes what the device rendered;
-// a blit publishes an offscreen image the device is not rendering to, and a
-// direct scanout write is not a device operation at all.
-inline OverlayRoute SelectOverlayRoute(PresentKind kind, bool deviceRendersThePresentedSurface) {
-    if (kind == PresentKind::FlipChain && deviceRendersThePresentedSurface)
-        return OverlayRoute::NativeDevice;
-    return OverlayRoute::HelperComposite;
-}
-
-// Nothing may be rendered while the loaded backend cannot draw for the running
-// route. Gothic II session `20260914_182411` is the reason this is a rule and
-// not an assumption: the composite route ran with the native backend still
-// loaded, so every frame issued `BeginScene`, state changes, a draw and
-// `EndScene` on the application's own Direct3D 7 device from the composite
-// path - device work at a point the application never asked for - and then read
-// back a helper backbuffer the overlay had never been drawn into.
-inline bool BackendCanRenderRoute(OverlayRoute route, bool nativeBackendBoundToThisDevice,
-                                  bool compositeBackendReady) {
-    return route == OverlayRoute::NativeDevice ? nativeBackendBoundToThisDevice : compositeBackendReady;
+// Native pixels are already in the render target when capture reads it. An
+// overlay-excluded recording therefore stays on the CPU path, which can capture
+// first and composite afterwards.
+inline bool NativeOverlayShouldDraw(bool enabled, bool showOverlay, bool recording, bool captureIncludesOverlay) {
+    return enabled && showOverlay && (!recording || captureIncludesOverlay);
 }
 
 // One premultiplied source-over step: the sprite already carries colour
@@ -289,12 +284,34 @@ inline uint32_t BlendPremultipliedOver(uint32_t sprite, uint32_t destination) {
     return 0xFF000000u | (clampedRed << 16) | (clampedGreen << 8) | clampedBlue;
 }
 
-// The cached sprite describes one rectangle of one build of the overlay. Any
-// change to either - and the geometry changes whenever a value or the graph
-// moves - means it has to be produced again.
-inline bool OverlaySpriteIsCurrent(bool haveSprite, bool sameRegion, uint64_t cachedRevision,
-                                   uint64_t currentRevision) {
-    return haveSprite && sameRegion && cachedRevision == currentRevision;
+// DirectDraw's 16-bit surfaces store fewer bits than the canonical backdrop.
+// State comparisons must retain the expanded value of the bytes actually
+// written, not the unquantized blend result, or CE can never recognize its own
+// previous composite and repeatedly blends the overlay over itself.
+inline uint16_t PackRgb565(uint32_t color) {
+    return static_cast<uint16_t>(((color >> 8) & 0xF800u) | ((color >> 5) & 0x07E0u) |
+                                 ((color >> 3) & 0x001Fu));
+}
+
+inline uint32_t ExpandRgb565(uint16_t value) {
+    const uint32_t red = (value >> 11) & 0x1Fu;
+    const uint32_t green = (value >> 5) & 0x3Fu;
+    const uint32_t blue = value & 0x1Fu;
+    return 0xFF000000u | (((red << 3) | (red >> 2)) << 16) |
+           (((green << 2) | (green >> 4)) << 8) | ((blue << 3) | (blue >> 2));
+}
+
+inline uint16_t PackRgb555(uint32_t color) {
+    return static_cast<uint16_t>(((color >> 9) & 0x7C00u) | ((color >> 6) & 0x03E0u) |
+                                 ((color >> 3) & 0x001Fu));
+}
+
+inline uint32_t ExpandRgb555(uint16_t value) {
+    const uint32_t red = (value >> 10) & 0x1Fu;
+    const uint32_t green = (value >> 5) & 0x1Fu;
+    const uint32_t blue = value & 0x1Fu;
+    return 0xFF000000u | (((red << 3) | (red >> 2)) << 16) |
+           (((green << 3) | (green >> 2)) << 8) | ((blue << 3) | (blue >> 2));
 }
 
 }  // namespace ce::ddraw_present_policy

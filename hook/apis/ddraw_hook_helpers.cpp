@@ -321,20 +321,34 @@ HWND ResolveDirectDrawTargetWindow() {
 void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface,  const char* ddraw_hook_reason) {
 
 
-    if (!surface || surface == ddraw_hook_g_HookSurfacePrototype || ddraw_hook_g_PrimarySurface)
+    if (!surface || surface == ddraw_hook_g_HookSurfacePrototype || surface == ddraw_hook_g_PrimarySurface ||
+        !SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
         return;
+    }
 
+    if (ddraw_hook_g_PrimarySurface)
+        ResetDirectDrawPresentationStateForPrimaryChange();
     ddraw_hook_g_PrimarySurface = surface;
     HookLog("DDraw: Tracking runtime primary surface from %s (%p)", ddraw_hook_reason, surface);
 
 }
 
+bool ScanoutSurfaceOwnsFlipChain(IDirectDrawSurface7* surface) {
+    ce::ddraw_present_policy::Extent extent = {};
+    DWORD caps = 0;
+    return ResolveSurfaceGeometry(surface, extent, caps) && (caps & DDSCAPS_FLIP) != 0;
+}
+
 void MaybeTrackPrimarySurface4(IDirectDrawSurface4* surface,  const char* ddraw_hook_reason) {
 
 
-    if (!surface || surface == ddraw_hook_g_HookSurfacePrototype4 || ddraw_hook_g_PrimarySurface4)
+    if (!surface || surface == ddraw_hook_g_HookSurfacePrototype4 || surface == ddraw_hook_g_PrimarySurface4 ||
+        !SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
         return;
+    }
 
+    if (ddraw_hook_g_PrimarySurface4)
+        ResetDirectDrawPresentationStateForPrimaryChange();
     ddraw_hook_g_PrimarySurface4 = surface;
     HookLog("DDraw: Tracking runtime primary surface4 from %s (%p)", ddraw_hook_reason, surface);
 
@@ -407,8 +421,8 @@ void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface,  float limit) {
 
 namespace {
 
-// Growing the staged rectangle to a grid keeps a value row that widens by a few
-// pixels from recreating the staging surfaces every time it changes.
+// Growing the composite rectangle to a grid keeps a value row that widens by a
+// few pixels from resizing the raster/backdrop caches every time it changes.
 constexpr int kCompositeRegionAlignment = 64;
 
 ce::ddraw_present_policy::Rect ToPolicyRect(const RECT& rect) {
@@ -416,22 +430,7 @@ ce::ddraw_present_policy::Rect ToPolicyRect(const RECT& rect) {
                                           static_cast<int>(rect.right), static_cast<int>(rect.bottom)};
 }
 
-bool RegionContains(const ce::ddraw_present_policy::Rect& outer, const ce::ddraw_present_policy::Rect& inner) {
-    return outer.left <= inner.left && outer.top <= inner.top && outer.right >= inner.right &&
-           outer.bottom >= inner.bottom;
-}
-
-ce::ddraw_present_policy::Rect RegionUnion(const ce::ddraw_present_policy::Rect& a,
-                                           const ce::ddraw_present_policy::Rect& b) {
-    ce::ddraw_present_policy::Rect merged;
-    merged.left = std::min(a.left, b.left);
-    merged.top = std::min(a.top, b.top);
-    merged.right = std::max(a.right, b.right);
-    merged.bottom = std::max(a.bottom, b.bottom);
-    return merged;
-}
-
-// The rectangle the overlay's geometry occupies, grown to the staging grid and
+// The rectangle the overlay's geometry occupies, grown to the cache grid and
 // clamped to the frame. False means the overlay drew nothing.
 bool ResolveOverlayCompositeRegion(int viewportWidth,  int viewportHeight,  ce::ddraw_present_policy::Rect& region) {
 
@@ -480,12 +479,11 @@ IDirect3DDevice7* AcquireLegacyD3D7Device() {
 
 }
 
-void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_policy::PresentKind kind) {
-
-
+bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
     auto& capture = ddraw_hook_g_DDrawCapture;
-    if (!compositeTarget || capture.width == 0 || capture.height == 0)
-        return;
+    std::lock_guard<std::recursive_mutex> captureLock(capture.captureMutex);
+    if (viewportWidth <= 0 || viewportHeight <= 0)
+        return false;
 
     if (capture.targetHwnd && capture.targetHwnd != ddraw_hook_g_CachedHwnd) {
         ddraw_hook_g_CachedHwnd = capture.targetHwnd;
@@ -503,107 +501,136 @@ void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget,  ce::ddraw_present_p
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
     g_OverlayAdapter.SetGraphicsAPI(ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion),
                                     "active DirectDraw presentation surface");
+    return EnsureOverlayRouteBackend(DDrawOverlayRoute::HelperComposite, nullptr);
+}
+
+void DrawDDrawOverlay(IDirectDrawSurface7* compositeTarget, ce::ddraw_present_policy::PresentKind kind,
+                      bool haveChangedRect, const ce::ddraw_present_policy::Rect& changedRect) {
+    auto& capture = ddraw_hook_g_DDrawCapture;
+    std::lock_guard<std::recursive_mutex> captureLock(capture.captureMutex);
+    if (!compositeTarget || capture.width == 0 || capture.height == 0)
+        return;
 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int viewportWidth = static_cast<int>(capture.width);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     const int viewportHeight = static_cast<int>(capture.height);
-
-    // A Direct3D 7 title can draw the overlay with its own device, straight
-    // into the surface it is about to present: no readback, no second device
-    // and no CPU/GPU synchronization on the present path. That only holds for
-    // a flip, where the device is rendering into the flip target; a blit or a
-    // direct write to the scanout surface publishes something the device is
-    // not rendering to, and the composite handles those.
-    IDirect3DDevice7* nativeDevice = kind == ce::ddraw_present_policy::PresentKind::FlipChain
-                                         ? AcquireNativeLegacyD3DDeviceForSurface(compositeTarget)
-                                         : nullptr;
-    const DDrawOverlayRoute requiredRoute =
-        nativeDevice ? DDrawOverlayRoute::NativeLegacyD3D : DDrawOverlayRoute::HelperComposite;
-
-    // Nothing is rendered while the adapter's backend and the running route
-    // disagree: a backend bound to the application's device cannot draw into
-    // the helper's backbuffer, and driving it from here issues device work the
-    // application never asked for.
-    const bool backendReady = EnsureOverlayRouteBackend(requiredRoute, nativeDevice);
-    if (nativeDevice) {
-        nativeDevice->Release();
-    }
-    if (!backendReady) {
+    if (!PrepareDirectDrawOverlayAdapter(viewportWidth, viewportHeight))
         return;
-    }
 
-    if (requiredRoute == DDrawOverlayRoute::NativeLegacyD3D) {
-        {
-            // Every state and sampler call the backend makes is CE's, not the
-            // application's, and must not reach the forced-filtering layer.
-            LegacyD3DInternalScope internalScope;
-            g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
-        }
-        static uint32_t nativeDrawCount = 0;
-        nativeDrawCount++;
-        if (nativeDrawCount <= 4 || (nativeDrawCount % 600 == 0)) {
+    const auto noteNativePresentation = [&]() {
+        auto& diagnostics = ddraw_hook_g_PresentationDiagnostics;
+        const uint32_t nativeCount = diagnostics.nativePresentations.fetch_add(1, std::memory_order_relaxed) + 1;
+        ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::NativeLegacyD3D;
+        if (nativeCount <= 4 || (nativeCount % 600) == 0) {
             HookLogImportant(
-                "DDraw: Overlay drawn natively by the application's Direct3D 7 device (surface=%p %dx%d count=%u)",
-                compositeTarget, viewportWidth, viewportHeight, nativeDrawCount);
+                "DDraw: Presentation reused the overlay drawn at the application's EndScene "
+                "(surface=%p kind=%d %dx%d count=%u)",
+                compositeTarget, static_cast<int>(kind), viewportWidth, viewportHeight, nativeCount);
         }
-        return;
-    }
-
-    // The overlay is rasterized on the CPU and blended straight into the
-    // surface the presentation publishes. Nothing goes to the GPU and nothing
-    // is read back, so the application's own draw and the overlay landing are
-    // separated by a memory pass rather than a GPU round trip.
-    g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
-
-    ce::ddraw_present_policy::Rect rendered = {};
-    if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
-        ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-
-    // Whatever CE wrote into this surface last time has to be covered again, or
-    // a shrinking overlay leaves the strip it vacated holding the previous
-    // composite with nothing left to repaint it.
-    const ce::ddraw_present_policy::Rect staged = ce::ddraw_present_policy::ExpandToPreviousComposite(
-        rendered, capture.compositeStateRegion.IsEmpty() == false, capture.compositeStateRegion);
-
-    if (!capture.EnsureCompositeRegionResources(staged)) {
-        ddraw_hook_g_PresentationDiagnostics.compositeStageFailed.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-
-    const int64_t compositeStartUs = PerfLogger::GetQpcUs();
-    const bool blended = capture.BlendOverlaySpriteIntoSurface(compositeTarget, staged);
-    const int64_t compositeUs = PerfLogger::GetQpcUs() - compositeStartUs;
-    if (compositeUs > 0) {
+    };
+    const auto accumulateCompositeTime = [&](int64_t startedUs) {
+        const int64_t compositeUs = PerfLogger::GetQpcUs() - startedUs;
+        if (compositeUs <= 0)
+            return;
         auto& diag = ddraw_hook_g_PresentationDiagnostics;
         diag.compositeMicrosecondsTotal.fetch_add(static_cast<uint64_t>(compositeUs), std::memory_order_relaxed);
+        diag.compositeTimedPresentations.fetch_add(1, std::memory_order_relaxed);
         uint32_t previousMax = diag.compositeMicrosecondsMax.load(std::memory_order_relaxed);
         const auto observed = static_cast<uint32_t>(compositeUs);
         while (observed > previousMax &&
                !diag.compositeMicrosecondsMax.compare_exchange_weak(previousMax, observed,
                                                                     std::memory_order_relaxed)) {
         }
-    }
-    if (blended) {
-        ddraw_hook_g_PresentationDiagnostics.compositeSucceeded.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    // EndScene may already have drawn the overlay into this exact buffer. A
+    // later exact 2D write damages only named pixels; repair those from the
+    // unchanged draw list and leave every other native pixel alone. This is the
+    // transition that otherwise double-blends the panel when a loading screen
+    // takes over from 3D rendering.
+    ce::ddraw_present_policy::Rect repairRects[ce::ddraw_native_overlay::DamageTracker::kMaxRepairRects] = {};
+    size_t repairCount = 0;
+    const ce::ddraw_native_overlay::State nativeState =
+        QueryNativeLegacyD3DOverlay(compositeTarget, repairRects,
+                                    ce::ddraw_native_overlay::DamageTracker::kMaxRepairRects, repairCount);
+    if (nativeState == ce::ddraw_native_overlay::State::Current) {
+        noteNativePresentation();
         return;
     }
-    ddraw_hook_g_PresentationDiagnostics.compositeWriteFailed.fetch_add(1, std::memory_order_relaxed);
-
-    // The overlay could not be placed inside the image the application is about
-    // to publish. The helper's own swapchain is the only remaining route; it is
-    // occluded for as long as the application holds the display, which is why
-    // it is never the normal path.
-    static std::atomic<int> s_compositeFallbackLogCount{0};
-    if (s_compositeFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
-        HookLogImportant("DDraw: In-frame overlay composite unavailable (target=%p %dx%d); falling back to the "
-                         "helper swapchain present",
-                         compositeTarget, viewportWidth, viewportHeight);
+    if (nativeState == ce::ddraw_native_overlay::State::Repairable) {
+        ce::ddraw_present_policy::Rect rendered = {};
+        if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
+            ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const int64_t compositeStartUs = PerfLogger::GetQpcUs();
+        bool repaired = true;
+        for (size_t i = 0; i < repairCount; ++i) {
+            if (!capture.CompositeOverlaySprite(compositeTarget, rendered, kind, true, repairRects[i], true)) {
+                repaired = false;
+                break;
+            }
+            CompleteNativeLegacyD3DOverlayRepair(compositeTarget, repairRects[i]);
+            ddraw_hook_g_PresentationDiagnostics.nativeRepairRegions.fetch_add(1, std::memory_order_relaxed);
+        }
+        accumulateCompositeTime(compositeStartUs);
+        if (repaired) {
+            ClearDirectDrawSurfaceWrites(compositeTarget);
+            noteNativePresentation();
+        }
+        return;
     }
-    capture.PresentOverlay();
+    if (nativeState == ce::ddraw_native_overlay::State::Unsafe) {
+        const uint32_t occurrence =
+            ddraw_hook_g_PresentationDiagnostics.nativeUnsafeDeferrals.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (occurrence <= 4 || (occurrence & (occurrence - 1)) == 0) {
+            HookLogImportant(
+                "DDraw: Deferring CPU overlay after an unbounded write over native D3D7 pixels "
+                "(surface=%p kind=%d occurrence=%u)",
+                compositeTarget, static_cast<int>(kind), occurrence);
+        }
+        return;
+    }
 
+    // The shared renderer builds the draw list exactly as it does for the GPU
+    // backends; the CPU composite rasterizes it and writes it into the surface
+    // the presentation publishes. Nothing goes to the GPU and nothing is read
+    // back, so the application's own draw and the overlay landing are separated
+    // by a memory pass rather than a GPU round trip.
+    g_OverlayAdapter.RenderOverlay(viewportWidth, viewportHeight);
+
+    // Initialization creates and uploads the font texture. Doing it here, at a
+    // presentation boundary outside BeginScene/EndScene, keeps resource work
+    // out of the application's active scene; the following frame can then use
+    // the zero-copy EndScene path.
+    if (kind != ce::ddraw_present_policy::PresentKind::DirectScanout) {
+        IDirect3DDevice7* nativeDevice = AcquireNativeLegacyD3DDeviceForSurface(compositeTarget);
+        if (nativeDevice) {
+            PrimeNativeLegacyD3DOverlay(nativeDevice);
+            nativeDevice->Release();
+        }
+    }
+
+    ce::ddraw_present_policy::Rect rendered = {};
+    if (!ResolveOverlayCompositeRegion(viewportWidth, viewportHeight, rendered)) {
+        ddraw_hook_g_PresentationDiagnostics.compositeNoGeometry.fetch_add(1, std::memory_order_relaxed);
+        // A valid CPU composite can outlive the draw list when the last
+        // visible row/notification disappears. Partial-update applications
+        // may never repaint the old rectangle themselves, so remove CE's
+        // pixels from the saved backdrop as soon as the renderer becomes
+        // empty instead of leaving a stale panel on screen.
+        capture.RestoreCompositeRegion(compositeTarget);
+        return;
+    }
+
+    const int64_t compositeStartUs = PerfLogger::GetQpcUs();
+    const bool composited =
+        capture.CompositeOverlaySprite(compositeTarget, rendered, kind, haveChangedRect, changedRect);
+    accumulateCompositeTime(compositeStartUs);
+    // Success and write-failure counters belong to the composite itself, which
+    // knows whether it wrote or deliberately skipped a clean region.
+    (void)composited;
 }
 
 bool GetSurfaceSize(IDirectDrawSurface7* surface,  uint32_t& w,  uint32_t& ddraw_hook_h) {

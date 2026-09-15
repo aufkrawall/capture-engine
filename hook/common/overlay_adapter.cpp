@@ -246,26 +246,6 @@ bool OverlayAdapter::InitDX9(void* device) {
     return true;
 }
 
-bool OverlayAdapter::InitD3D7(void* device) {
-#ifndef VK_LAYER_CE_OVERLAY
-    std::lock_guard<std::mutex> lock(stateMutex);
-    if (initialized.load(std::memory_order_acquire))
-        return true;
-    if (!device) {
-        HookLogImportant("[Overlay] InitD3D7 failed: null device pointer");
-        return false;
-    }
-
-    HookLogImportant("[Overlay] Initializing D3D7 backend (device=%p)", device);
-    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
-    return InitializeBackendLocked(new CustomOverlay::D3D7Backend(device), OverlayBackendType::D3D7, "D3D7",
-                                   dpiScale);
-#else
-    (void)device;
-    return true;
-#endif
-}
-
 bool OverlayAdapter::InitDX8(void* device) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
@@ -350,6 +330,15 @@ bool OverlayAdapter::InitDX12(void* device, void* queue, int rtvFormat) {
     return success;
 #endif
     return true;
+}
+
+bool OverlayAdapter::InitCpuRaster() {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (initialized.load(std::memory_order_acquire))
+        return true;
+    float dpiScale = GetWindowsDpiScale(reinterpret_cast<HWND>(hwnd));
+    return InitializeBackendLocked(new CustomOverlay::CpuRasterBackend(), OverlayBackendType::CpuRaster, "CpuRaster",
+                                   dpiScale);
 }
 
 bool OverlayAdapter::InitOpenGL() {
@@ -477,6 +466,10 @@ bool OverlayAdapter::GetLastRenderedBounds(int viewportWidth, int viewportHeight
         return false;
 
     std::lock_guard<std::mutex> lock(stateMutex);
+    return GetLastRenderedBoundsLocked(viewportWidth, viewportHeight, outBounds);
+}
+
+bool OverlayAdapter::GetLastRenderedBoundsLocked(int viewportWidth, int viewportHeight, RECT& outBounds) const {
     if (!renderer)
         return false;
 
@@ -508,35 +501,33 @@ bool OverlayAdapter::GetLastRenderedBounds(int viewportWidth, int viewportHeight
     return true;
 }
 
-uint64_t OverlayAdapter::GetLastDrawDataRevision() const {
+bool OverlayAdapter::InitializeAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary) const {
     std::lock_guard<std::mutex> lock(stateMutex);
     if (!renderer)
-        return 0;
-    const auto& vertices = renderer->GetVertices();
-    const auto& commands = renderer->GetCommands();
-    if (vertices.empty() || commands.empty())
-        return 0;
-
-    // FNV-1a over the built geometry. Hashing about 24 KB costs a couple of
-    // microseconds and saves rasterizing a region of a few hundred thousand
-    // pixels on every presentation that did not change anything.
-    uint64_t hash = 1469598103934665603ull;
-    const auto mix = [&hash](const void* data, size_t bytes) {
-        const auto* cursor = static_cast<const uint8_t*>(data);
-        for (size_t i = 0; i < bytes; ++i) {
-            hash ^= cursor[i];
-            hash *= 1099511628211ull;
-        }
-    };
-    mix(vertices.data(), vertices.size() * sizeof(CustomOverlay::DrawVertex));
-    mix(commands.data(), commands.size() * sizeof(CustomOverlay::DrawCommand));
-    const auto& indices = renderer->GetIndices();
-    mix(indices.data(), indices.size() * sizeof(uint16_t));
-    return hash == 0 ? 1 : hash;
+        return false;
+    CustomOverlay::FontAtlas* font = renderer->GetFont();
+    return font && auxiliary.Initialize(font->GetTextureWidth(), font->GetTextureHeight(), font->GetTextureData());
 }
 
-bool OverlayAdapter::RasterizeLastFrame(const ce::overlay_cpu_raster::Target& target,
-                                       std::vector<uint32_t>& out) const {
+bool OverlayAdapter::RenderWithAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary, int viewportWidth,
+                                                 int viewportHeight, RECT* renderedBounds) const {
+    if (renderedBounds)
+        *renderedBounds = RECT{};
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (!renderer || renderer->GetVertices().empty() || renderer->GetIndices().empty() ||
+        renderer->GetCommands().empty()) {
+        return false;
+    }
+    auxiliary.OnDrawDataChanged();
+    auxiliary.Render(renderer->GetVertices(), renderer->GetIndices(), renderer->GetCommands(), viewportWidth,
+                      viewportHeight);
+    return !renderedBounds || GetLastRenderedBoundsLocked(viewportWidth, viewportHeight, *renderedBounds);
+}
+
+bool OverlayAdapter::RenderRasterCache(ce::overlay_cpu_raster::CommandCache& cache,
+                                       const ce::overlay_cpu_raster::Target& target,
+                                       ce::overlay_cpu_raster::RasterStats& stats,
+                                       ce::overlay_cpu_raster::PixelRect& changedBounds) const {
     std::lock_guard<std::mutex> lock(stateMutex);
     if (!renderer)
         return false;
@@ -548,17 +539,8 @@ bool OverlayAdapter::RasterizeLastFrame(const ce::overlay_cpu_raster::Target& ta
         atlas.width = font->GetTextureWidth();
         atlas.height = font->GetTextureHeight();
     }
-    return ce::overlay_cpu_raster::Rasterize(renderer->GetVertices(), renderer->GetIndices(),
-                                             renderer->GetCommands(), atlas, target, out);
-}
-
-bool OverlayAdapter::ResubmitLastFrame(int viewportWidth, int viewportHeight) {
-    if (viewportWidth <= 0 || viewportHeight <= 0)
-        return false;
-    std::lock_guard<std::mutex> lock(stateMutex);
-    if (!initialized.load(std::memory_order_acquire) || !renderer)
-        return false;
-    return renderer->RenderCachedFrame(viewportWidth, viewportHeight);
+    return ce::overlay_cpu_raster::UpdateCommandCache(cache, renderer->GetVertices(), renderer->GetIndices(),
+                                                      renderer->GetCommands(), atlas, target, stats, changedBounds);
 }
 
 uint32_t OverlayAdapter::GetLoadColor(float load) {

@@ -359,12 +359,12 @@ void CheckAndInstallHooks() {
   // Skip DirectDraw hooks when the Vulkan layer owns presentation. In the DXVK
   // D3D9 case the DX9 hook stays active, and synthesizing DirectDraw objects on
   // our worker thread can recurse into external overlays and crash.
-  // Also skip DDraw hooks when a higher-level D3D API (d3d9, d3d8) is present,
-  // because ddraw.dll is often a transitive system dependency and bootstrapping
-  // DDraw (which internally creates a D3D9 device) can crash third-party overlays
-  // that have already hooked Direct3DCreate9 (see DDrawHook::Init for details).
-  if (!s_vulkanActive && !g_DDrawHook && GetModuleHandleA("ddraw.dll") &&
-      !GetModuleHandleA("d3d9.dll") && !GetModuleHandleA("d3d8.dll")) {
+  // Always install the DirectDrawCreate export hooks when ddraw.dll is present.
+  // DDrawHook::Init independently decides whether synthetic bootstrap is safe;
+  // conflating the two decisions leaves a mixed-module DirectDraw game no way
+  // to produce the real interface evidence that identifies it.
+  const bool ddrawDllLoaded = GetModuleHandleA("ddraw.dll") != nullptr;
+  if (!s_vulkanActive && !g_DDrawHook && ddrawDllLoaded) {
     HookLog("Detected ddraw.dll. Installing DirectDraw hooks... (dx12Used=%d)",
             d3d12UseEvidence ? 1 : 0);
     g_DDrawHook = new DDrawHook();
@@ -377,10 +377,8 @@ void CheckAndInstallHooks() {
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DDraw hooks installed (init=%.1f ms)", _initMs);
-  } else if (!s_vulkanActive && !g_DDrawHook && GetModuleHandleA("ddraw.dll")) {
-    HookLog("DDraw hooks skipped (higher-level D3D API present: d3d9=%d d3d8=%d)",
-            GetModuleHandleA("d3d9.dll") ? 1 : 0,
-            GetModuleHandleA("d3d8.dll") ? 1 : 0);
+  } else if (s_vulkanActive && !g_DDrawHook && ddrawDllLoaded) {
+    HookLog("DDraw hooks suppressed because the Vulkan layer owns presentation");
   }
 
   d3d12UseEvidence = HasD3D12RuntimeUseEvidence();

@@ -1,17 +1,14 @@
 /**
  * Custom Overlay - Direct3D 7 Backend
  *
- * Draws the overlay with the game's own IDirect3DDevice7, into the surface the
- * game is about to present.
+ * Draws the overlay with the game's own IDirect3DDevice7 immediately before the
+ * game's real EndScene, while its scene is still active.
  *
- * The DirectDraw compatibility route composites through a private D3D9Ex device
- * instead, which costs a CPU round trip per present: the frame's pixels up, the
- * composite back down, and a GetRenderTargetData in between that blocks the
- * render thread until the GPU has caught up. That readback is a hard CPU/GPU
- * serialization point on the game's own present path. A DX6/DX7 title already
- * owns a device that can draw transformed, alpha-blended, textured triangles -
- * which is exactly what the overlay's draw list is - so nothing has to leave
- * the GPU at all.
+ * The universal DirectDraw fallback rasterizes on the CPU and locks only the
+ * overlay's dirty region, but a video-memory lock can still serialize the old
+ * graphics pipeline. A DX6/DX7 title already owns a device that can draw
+ * transformed, alpha-blended, textured triangles, so its normal 3D frames need
+ * no CPU surface access at all.
  *
  * The legacy Direct3D headers (`d3d.h` / `d3dtypes.h`) redefine enumerators and
  * typedefs that `d3d9.h` also defines, so they cannot appear in any header a
@@ -45,6 +42,12 @@ public:
     void* GetDevice() const {
         return device;
     }
+    bool LastRenderSucceeded() const {
+        return lastRenderSucceeded;
+    }
+    bool IsUsable() const {
+        return initialized && stateBlock != 0 && !needsReinitialize;
+    }
 
 private:
     bool CreateFontSurface(int width, int height, const uint8_t* pixels);
@@ -57,11 +60,14 @@ private:
     // Transformed-and-lit vertices are handed to DrawIndexedPrimitive straight
     // from this scratch buffer; D3D7 takes user memory, so there is no vertex
     // or index buffer to manage or to stall on.
-    std::vector<uint8_t> scratchVertices;
+    // uint32_t storage gives the legacy D3DTLVERTEX view its required
+    // four-byte alignment without exposing that legacy type in this header.
+    std::vector<uint32_t> scratchVertices;
 
     uint32_t stateBlock = 0;
-    bool stateBlockUsable = true;
     bool lastUseTexture = false;
+    bool lastRenderSucceeded = false;
+    bool needsReinitialize = false;
     bool initialized = false;
 };
 

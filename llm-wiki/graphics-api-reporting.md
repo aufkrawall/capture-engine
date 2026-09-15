@@ -1,6 +1,6 @@
 # Graphics API reporting
 
-Last verified: 2026-07-16
+Last verified: 2026-09-15
 
 ## Summary
 
@@ -44,7 +44,8 @@ device-scope registry live in `hook/common/graphics_api_identity.h`; accepted vi
   cannot promote the application label.
 - D3D11 revision evidence is monotonic per real device, but switching to another swapchain/device selects that
   device's independent revision.
-- DirectDraw's D3D9Ex overlay bridge is an implementation detail and does not turn DirectDraw into `DX9Ex`.
+- DirectDraw's CPU raster and auxiliary native D3D7 overlay paths are implementation details; neither may promote
+  the application's label beyond the DirectDraw/legacy-D3D evidence observed on its actual surface and device.
 - Repeated per-frame submissions of an unchanged label are no-ops and must not invalidate cached overlay layout.
 
 ## Tests

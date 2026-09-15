@@ -184,6 +184,10 @@ HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device) {
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
         record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);
+    // The application is still inside its own scene here. Drawing before the
+    // one real EndScene avoids the synthetic scene boundary that confused the
+    // co-resident Steam overlay, while keeping every overlay pixel on the GPU.
+    DrawNativeLegacyD3DOverlayAtEndScene(ddraw_hook_device);
     return endScene(ddraw_hook_device);
 
 }

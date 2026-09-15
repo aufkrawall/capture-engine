@@ -313,16 +313,24 @@ void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface,  const cha
         VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_LOCK]), (LPVOID)&DetourDDSurfaceLegacyLock, (LPVOID*)&record.lock);
     const VTableHook::Status unlockStatus = VTableHook::Create(
         reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_UNLOCK]), (LPVOID)&DetourDDSurfaceLegacyUnlock, (LPVOID*)&record.unlock);
+    const VTableHook::Status getDcStatus = VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_GETDC]),
+                                                              (LPVOID)&DetourDDSurfaceLegacyGetDC, (LPVOID*)&record.getDc);
+    const VTableHook::Status releaseDcStatus = VTableHook::Create(
+        reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_RELEASEDC]), (LPVOID)&DetourDDSurfaceLegacyReleaseDC,
+        (LPVOID*)&record.releaseDc);
     ddraw_hook_g_LegacySurfaceVTables.emplace(vtable, record);
     if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success && bltFastStatus == VTableHook::Success &&
-        lockStatus == VTableHook::Success && unlockStatus == VTableHook::Success && record.flip && record.blt &&
-        record.bltFast && record.lock && record.unlock) {
+        lockStatus == VTableHook::Success && unlockStatus == VTableHook::Success &&
+        getDcStatus == VTableHook::Success && releaseDcStatus == VTableHook::Success && record.flip && record.blt &&
+        record.bltFast && record.lock && record.unlock && record.getDc && record.releaseDc) {
         HookLog("DDraw: Legacy surface hooks installed via %s (surface=%p, vtable=%p)", ddraw_hook_reason, surface, vtable);
     } else {
-        HookLogImportant("DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s bltFast=%s lock=%s unlock=%s)",
+        HookLogImportant("DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s bltFast=%s lock=%s "
+                         "unlock=%s getDc=%s releaseDc=%s)",
                          ddraw_hook_reason, VTableHook::StatusToString(flipStatus), VTableHook::StatusToString(bltStatus),
                          VTableHook::StatusToString(bltFastStatus), VTableHook::StatusToString(lockStatus),
-                         VTableHook::StatusToString(unlockStatus));
+                         VTableHook::StatusToString(unlockStatus), VTableHook::StatusToString(getDcStatus),
+                         VTableHook::StatusToString(releaseDcStatus));
     }
 
 }
@@ -372,8 +380,13 @@ void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface,  const char* d
     }
 
     if (HasHookedVTable(ddraw_hook_g_HookedSurfaceVTables, surfaceVTable)) {
-        HookLog("DDraw: InstallSurfaceHooksForSurface4 skipped for %s - vtable already hooked (surface=%p, vtable=%p)",
-                ddraw_hook_reason, surface, surfaceVTable);
+        const uint32_t reuseOrdinal =
+            ddraw_hook_g_PresentationDiagnostics.surfaceHookReuses.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (reuseOrdinal <= 4 || (reuseOrdinal % 256) == 0) {
+            HookLog("DDraw: InstallSurfaceHooksForSurface4 reused vtable via %s "
+                    "(surface=%p, vtable=%p ordinal=%u)",
+                    ddraw_hook_reason, surface, surfaceVTable, reuseOrdinal);
+        }
         return;
     }
 
@@ -429,6 +442,25 @@ void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface,  const char* d
         HookLog("DDraw: Unlock4 hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(unlockStatus));
     }
 
+    VTableHook::Status getDcStatus = VTableHook::Create(
+        reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_GETDC]), (LPVOID)&DetourDDSurface4GetDC,
+        ddraw_hook_oDDSurface4GetDC ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface4GetDC);
+    if (getDcStatus == VTableHook::Success) {
+        HookLog("DDraw: GetDC4 hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: GetDC4 hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(getDcStatus));
+    }
+
+    VTableHook::Status releaseDcStatus = VTableHook::Create(
+        reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_RELEASEDC]), (LPVOID)&DetourDDSurface4ReleaseDC,
+        ddraw_hook_oDDSurface4ReleaseDC ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface4ReleaseDC);
+    if (releaseDcStatus == VTableHook::Success) {
+        HookLog("DDraw: ReleaseDC4 hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: ReleaseDC4 hook install via %s returned %s", ddraw_hook_reason,
+                VTableHook::StatusToString(releaseDcStatus));
+    }
+
 }
 
 
@@ -445,8 +477,13 @@ void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface,  const char* dd
     }
 
     if (HasHookedVTable(ddraw_hook_g_HookedSurfaceVTables, surfaceVTable)) {
-        HookLog("DDraw: InstallSurfaceHooksForSurface skipped for %s - vtable already hooked (surface=%p, vtable=%p)",
-                ddraw_hook_reason, surface, surfaceVTable);
+        const uint32_t reuseOrdinal =
+            ddraw_hook_g_PresentationDiagnostics.surfaceHookReuses.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (reuseOrdinal <= 4 || (reuseOrdinal % 256) == 0) {
+            HookLog("DDraw: InstallSurfaceHooksForSurface reused vtable via %s "
+                    "(surface=%p, vtable=%p ordinal=%u)",
+                    ddraw_hook_reason, surface, surfaceVTable, reuseOrdinal);
+        }
         return;
     }
 
@@ -500,6 +537,25 @@ void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface,  const char* dd
         HookLog("DDraw: Unlock hook installed via %s", ddraw_hook_reason);
     } else {
         HookLog("DDraw: Unlock hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(unlockStatus));
+    }
+
+    VTableHook::Status getDcStatus = VTableHook::Create(
+        reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_GETDC]), (LPVOID)&DetourDDSurface7GetDC,
+        ddraw_hook_oDDSurface7GetDC ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface7GetDC);
+    if (getDcStatus == VTableHook::Success) {
+        HookLog("DDraw: GetDC hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: GetDC hook install via %s returned %s", ddraw_hook_reason, VTableHook::StatusToString(getDcStatus));
+    }
+
+    VTableHook::Status releaseDcStatus = VTableHook::Create(
+        reinterpret_cast<void*>(&surfaceVTable[DDSURFACE7_VTABLE_RELEASEDC]), (LPVOID)&DetourDDSurface7ReleaseDC,
+        ddraw_hook_oDDSurface7ReleaseDC ? nullptr : (LPVOID*)&ddraw_hook_oDDSurface7ReleaseDC);
+    if (releaseDcStatus == VTableHook::Success) {
+        HookLog("DDraw: ReleaseDC hook installed via %s", ddraw_hook_reason);
+    } else {
+        HookLog("DDraw: ReleaseDC hook install via %s returned %s", ddraw_hook_reason,
+                VTableHook::StatusToString(releaseDcStatus));
     }
 
     IDirectDrawSurface4* surface4 = nullptr;

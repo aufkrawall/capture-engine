@@ -124,7 +124,12 @@ bool D3D7Backend::CreateFontSurface(int width, int height, const uint8_t* pixels
             src += 4;
         }
     }
-    surface->Unlock(nullptr);
+    hr = surface->Unlock(nullptr);
+    if (FAILED(hr)) {
+        HookLogImportant("[Overlay] D3D7: font atlas unlock failed (hr=0x%08X)", static_cast<unsigned>(hr));
+        surface->Release();
+        return false;
+    }
     fontSurface = surface;
     return true;
 }
@@ -156,6 +161,22 @@ bool D3D7Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const 
         return false;
     }
 
+    // Resource and state-block creation happens while priming at Flip, outside
+    // the application's active scene. EndScene then performs draw calls only.
+    DWORD handle = 0;
+    const HRESULT stateHr = Device(device)->CreateStateBlock(D3DSBT_ALL, &handle);
+    if (FAILED(stateHr) || handle == 0) {
+        HookLogImportant("[Overlay] D3D7: state block creation failed (hr=0x%08X)",
+                         static_cast<unsigned>(stateHr));
+        Surface(fontSurface)->Release();
+        fontSurface = nullptr;
+        ddraw->Release();
+        directDraw = nullptr;
+        return false;
+    }
+    stateBlock = static_cast<uint32_t>(handle);
+
+    needsReinitialize = false;
     initialized = true;
     HookLogImportant("[Overlay] D3D7 backend initialized (device=%p atlas=%dx%d)", device, fontTextureWidth,
                      fontTextureHeight);
@@ -178,6 +199,8 @@ void D3D7Backend::Shutdown() {
     scratchVertices.clear();
     scratchVertices.shrink_to_fit();
     lastUseTexture = false;
+    lastRenderSucceeded = false;
+    needsReinitialize = false;
     initialized = false;
 }
 
@@ -203,7 +226,8 @@ void D3D7Backend::ApplyStageMode(bool useTexture) {
 
 void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                          const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
-    if (!initialized || !device || vertices.empty() || indices.empty() || commands.empty())
+    lastRenderSucceeded = false;
+    if (!IsUsable() || !device || vertices.empty() || indices.empty() || commands.empty())
         return;
     if (viewportWidth <= 0 || viewportHeight <= 0)
         return;
@@ -211,33 +235,22 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     IDirect3DDevice7* dev = Device(device);
 
     // A state block restores everything the application had set, including the
-    // states this backend does not touch. Without one a DX7 title inherits the
-    // overlay's blend and stage setup on its next draw, so the overlay is
-    // suppressed rather than risking that.
-    if (!stateBlock && stateBlockUsable) {
-        DWORD handle = 0;
-        const HRESULT createHr = dev->CreateStateBlock(D3DSBT_ALL, &handle);
-        if (FAILED(createHr) || handle == 0) {
-            stateBlockUsable = false;
-            HookLogImportant("[Overlay] D3D7::Render: state block unavailable (hr=0x%08X); overlay suppressed to keep "
-                             "the application's device state intact",
-                             static_cast<unsigned>(createHr));
-        } else {
-            stateBlock = static_cast<uint32_t>(handle);
-        }
-    }
+    // states this backend does not touch. Without one a DX7 title would inherit
+    // the overlay's blend and stage setup on its next draw.
     if (!stateBlock)
         return;
     if (FAILED(dev->CaptureStateBlock(stateBlock))) {
         static int captureFailureLogCount = 0;
         if (captureFailureLogCount < 4) {
-            HookLogImportant("[Overlay] D3D7::Render: state capture failed; skipping this frame");
+            HookLogImportant("[Overlay] D3D7::Render: state capture failed; reinitializing with bounded retry");
             captureFailureLogCount++;
         }
+        needsReinitialize = true;
         return;
     }
 
-    scratchVertices.resize(vertices.size() * sizeof(D3DTLVERTEX));
+    const size_t scratchBytes = vertices.size() * sizeof(D3DTLVERTEX);
+    scratchVertices.resize((scratchBytes + sizeof(uint32_t) - 1u) / sizeof(uint32_t));
     auto* transformed = reinterpret_cast<D3DTLVERTEX*>(scratchVertices.data());
     for (size_t i = 0; i < vertices.size(); ++i) {
         const DrawVertex& source = vertices[i];
@@ -291,23 +304,11 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-    // A device that is already inside a scene is mid-way through the
-    // application's own geometry. Injecting the overlay there would put it
-    // inside a draw sequence the application is still building, so the frame is
-    // skipped instead: at a flip the application has always ended its scene.
-    if (FAILED(dev->BeginScene())) {
-        static int busySceneLogCount = 0;
-        if (busySceneLogCount < 4) {
-            HookLogImportant("[Overlay] D3D7::Render: device already in a scene; skipping this frame");
-            busySceneLogCount++;
-        }
-        dev->ApplyStateBlock(stateBlock);
-        return;
-    }
-
     lastUseTexture = !commands.front().useTexture;
 
     static int drawLogCount = 0;
+    bool drew = false;
+    bool allDrawsSucceeded = true;
     for (const auto& command : commands) {
         if (command.indexCount == 0 ||
             static_cast<size_t>(command.indexOffset) + command.indexCount > indices.size()) {
@@ -321,7 +322,9 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
                                       static_cast<DWORD>(vertices.size()),
                                       const_cast<WORD*>(reinterpret_cast<const WORD*>(indices.data())) +
                                           command.indexOffset,
-                                      command.indexCount, 0);
+                                       command.indexCount, 0);
+        drew = true;
+        allDrawsSucceeded = allDrawsSucceeded && SUCCEEDED(drawHr);
         if (drawLogCount < 4) {
             HookLogImportant("[Overlay] D3D7::Draw: hr=0x%08X verts=%u idxOff=%u idxCnt=%u tex=%d",
                              static_cast<unsigned>(drawHr), static_cast<unsigned>(vertices.size()),
@@ -330,7 +333,6 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         }
     }
 
-    dev->EndScene();
     dev->SetTexture(0, nullptr);
 
     // A failed restore leaves the application's device carrying the overlay's
@@ -343,7 +345,18 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
                          static_cast<unsigned>(applyHr));
         dev->DeleteStateBlock(stateBlock);
         stateBlock = 0;
-        stateBlockUsable = false;
+        return;
+    }
+    lastRenderSucceeded = drew && allDrawsSucceeded;
+    if (drew && !allDrawsSucceeded) {
+        needsReinitialize = true;
+        static uint32_t drawFailureCount = 0;
+        ++drawFailureCount;
+        if (drawFailureCount <= 4 || (drawFailureCount & (drawFailureCount - 1)) == 0) {
+            HookLogImportant("[Overlay] D3D7::Render: draw submission failed; reinitializing the native sidecar "
+                             "(occurrence=%u)",
+                             drawFailureCount);
+        }
     }
 }
 

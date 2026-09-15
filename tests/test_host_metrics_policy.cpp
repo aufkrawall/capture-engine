@@ -295,26 +295,33 @@ TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessPr
     EXPECT_NE(layerIpc.find("SetLuidSourcePid(publisherPid)"), std::string::npos);
 }
 
-TEST(HostMetricsSourceInvariantTest, DirectDrawOverlayHelperPublishesAdapterWithoutRecording) {
+TEST(HostMetricsSourceInvariantTest, DirectDrawOverlayPublishesAdapterWithoutRecordingOrD3D9Helper) {
     const std::string source = ReadProjectSource("hook/apis/ddraw_hook.cpp");
     ASSERT_FALSE(source.empty());
 
-    // The internal header carries prototypes; anchor on the definitions in the
-    // ddraw_hook_helpers / ddraw_hook_capture_impl units (rfind: definitions
-    // follow the prototypes in the logical source).
-    const size_t helperCreate = source.rfind("bool CreateD3D9ExWrapper");
-    const size_t luidQuery = source.find("GetAdapterLUID(D3DADAPTER_DEFAULT", helperCreate);
-    const size_t luidPublish = source.find("ReportLUID(luidLow, luidHigh)", luidQuery);
+    const size_t overlayEnsure = source.rfind("bool DDrawCapture::EnsureOverlayDevice");
+    const size_t publishCall = source.find("PublishOverlayAdapterLuidOnce();", overlayEnsure);
+    const size_t publishDefinition = source.rfind("void DDrawCapture::PublishOverlayAdapterLuidOnce()");
+    const size_t factoryCreate = source.find("CreateDXGIFactory1", publishDefinition);
+    const size_t adapterQuery = source.find("EnumAdapters1(0", factoryCreate);
+    const size_t luidPublish = source.find("ReportLUID(luidLow, luidHigh)", adapterQuery);
     const size_t recordingCapture = source.rfind("bool CaptureFrameFromSurface");
-    ASSERT_NE(helperCreate, std::string::npos);
-    ASSERT_NE(luidQuery, std::string::npos);
+    ASSERT_NE(overlayEnsure, std::string::npos);
+    ASSERT_NE(publishCall, std::string::npos);
+    ASSERT_NE(publishDefinition, std::string::npos);
+    ASSERT_NE(factoryCreate, std::string::npos);
+    ASSERT_NE(adapterQuery, std::string::npos);
     ASSERT_NE(luidPublish, std::string::npos);
     ASSERT_NE(recordingCapture, std::string::npos);
-    EXPECT_LT(helperCreate, luidQuery);
-    EXPECT_LT(luidQuery, luidPublish);
-    // The helper publishes the adapter LUID independently of the capture path;
-    // the two live in separate semantic units now, so only presence is asserted
-    // for the capture entry point.
+    EXPECT_LT(overlayEnsure, publishCall);
+    EXPECT_LT(publishCall, publishDefinition);
+    EXPECT_LT(publishDefinition, factoryCreate);
+    EXPECT_LT(factoryCreate, adapterQuery);
+    EXPECT_LT(adapterQuery, luidPublish);
+    // Overlay-only sessions still publish telemetry identity, but doing so must
+    // not recreate the D3D9Ex helper whose device/context stalls the legacy GPU.
+    EXPECT_EQ(source.find("CreateD3D9ExWrapper"), std::string::npos);
+    EXPECT_EQ(source.find("GetAdapterLUID(D3DADAPTER_DEFAULT"), std::string::npos);
 }
 
 // ============================================================================

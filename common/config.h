@@ -191,11 +191,9 @@ struct GraphicsConfig {
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     // Force the NVIDIA GL/VK driver's FERMI_UNOPT_LOD_SPREAD path ON inside the
     // game process. Process-local; the driver files stay untouched.
-    // Draw the DirectDraw/DX6/DX7 overlay with the application's own Direct3D
-    // device instead of compositing through a private D3D9Ex helper. Removes a
-    // per-present CPU/GPU synchronization, but has crashed a co-resident Steam
-    // overlay in Gothic II twice and is not validated; see llm-wiki.
-    bool legacyD3DNativeOverlay = false;
+    // Draw Direct3D 7 frames inside the application's real EndScene. The CPU
+    // composite remains available for 2D blit/lock presentation paths.
+    bool legacyD3DNativeOverlay = true;
     bool nvLodSpreadFix = false;
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
     float cpuPrerenderLimit = -1.0f;     // integer semantics: -1 = default, 0 = fully serialized, 1-6 = queued frames

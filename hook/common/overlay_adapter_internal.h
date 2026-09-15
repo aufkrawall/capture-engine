@@ -30,7 +30,6 @@
 // VK_LAYER_CE_OVERLAY is defined when building the Vulkan layer
 #ifndef VK_LAYER_CE_OVERLAY
 // Full backends for hook DLL
-#include "custom_overlay_d3d7.h"
 #include "custom_overlay_dx10.h"
 #include "custom_overlay_dx11.h"
 #include "custom_overlay_dx12.h"
@@ -40,6 +39,10 @@
 #endif
 
 #include "custom_overlay_vk.h"
+
+// The CPU raster backend is API-agnostic, so both the hook DLL and the Vulkan layer
+// build carry it; the DirectDraw composite needs it in either context.
+#include "custom_overlay_cpu_raster_backend.h"
 
 #include <algorithm>
 
