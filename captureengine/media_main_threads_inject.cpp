@@ -261,6 +261,35 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         qf.fenceValue = slot.fenceValue;
                     }
 
+                    // Pin the frame's source PID to the process that owns this capture session.
+                    //
+                    // qf.sourcePid decides which process the encoder opens with
+                    // PROCESS_DUP_HANDLE to duplicate the frame's texture and fence handles
+                    // (video_encoder_encode_input.cpp). It arrives from the inject frame ring in
+                    // shared memory, which is written by the hook inside the game - so it is
+                    // session data, not something the encoder should take on trust. The session
+                    // owner publishes its own PID once (hook/main_hookthread.cpp SetSourcePid),
+                    // and a slot that disagrees is either stale from a previous capture epoch or
+                    // was not written by the process CE injected into. Either way the handles in
+                    // it cannot be resolved against the current source, so drop the frame rather
+                    // than open an unrelated process.
+                    const uint32_t sessionSourcePid = media_main_g_pSharedMem->GetSourcePid();
+                    if (sessionSourcePid != 0 && slot.sourcePid != 0 && slot.sourcePid != sessionSourcePid) {
+                        static std::atomic<uint32_t> s_mismatchCount{0};
+                        const uint32_t seen = s_mismatchCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (seen <= 5 || (seen % 500) == 0) {
+                            LogWarn(
+                                "[Inject Thread] Dropping frame whose slot source PID %lu does not match the "
+                                "session source PID %lu (occurrence %lu)",
+                                static_cast<unsigned long>(slot.sourcePid),
+                                static_cast<unsigned long>(sessionSourcePid),
+                                static_cast<unsigned long>(seen));
+                        }
+                        // Use the existing drop path rather than `continue`: the only loop
+                        // enclosing this point is the thread's outer while, so continuing here
+                        // would skip the rest of the iteration, not just this frame.
+                        dropFrame = true;
+                    }
                     qf.sourcePid = slot.sourcePid;
                     qf.width = media_main_g_pSharedMem->GetWidth();
                     qf.height = media_main_g_pSharedMem->GetHeight();
