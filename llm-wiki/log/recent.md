@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-09-16 - Gothic II runs; the alt-tab freeze is the game's own error dialog
+
+Session `20260916_014133` is the first clean Gothic II run since the DirectDraw work started. The
+native D3D7 sidecar primed, the render loop armed within a second (`monitoredTid=812`), the route
+held `native-d3d7` with `nativeFail=0` across 4,040 flips, and **the presentation re-entry guard
+logged nothing at all** - the cycle that killed the previous three sessions did not form.
+
+The whole diagnostic chain worked for the first time: the watchdog saw a dialog at five seconds and
+*suppressed* the dump because the render heartbeat was fresh, then dumped at 26.5 s once the
+heartbeat went stale, and the dump carried 35 WoW64 thread stacks. Everything added over the previous
+commits earned its place in one run.
+
+The alt-tab freeze is not CE's. At `01:42:36.820` four consecutive
+`IDirectDraw7::CreateSurface` calls returned `0x8876024E` (`DDERR_UNSUPPORTEDMODE`) with
+`surface=NULL`, after ~280 successful ones - the display mode was gone. Gothic/SystemPack then put up
+its own modal `Error-Message` box, and the frozen render thread is parked in that dialog's message
+pump (`NtdllDialogWndProc_W` -> `NtdllDispatchMessage_W` -> `PeekMessageW`, drawing through
+`gdi32full!ExtTextOutW`). No CE frame is in that chain; the `capture_hook_x86` symbols on that stack
+sit above the live frame and are residue from an earlier logging call. On a fullscreen DirectDraw
+title that dialog is invisible behind the game window, which is what "froze" looks like.
+
+Not established either way: CE holds DirectDraw references of its own in that process - the bootstrap
+object, and the sidecar's device, `IDirectDraw7` and font surface - and whether those contribute to
+the mode restore failing has not been tested. The cheap experiment is an alt-tab with CE not
+injected.
+
+Worth a look when the DirectDraw CPU composite next gets attention: `compositeMaxUs=55856`,
+`lockMaxUs=27109`, `writeMaxUs=44395` in this session - single hitches of tens of milliseconds on the
+render thread, on the loading-screen path rather than the native route.
+
 ### 2026-09-16 - Handing the cycle another function to call did not end it
 
 Session `20260916_013230`, the first run with the cycle break from `23fc0101`. The guard fired on the
