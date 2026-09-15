@@ -294,7 +294,7 @@ void ShutdownImGui();
 
 void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend);
 
-void CleanupOverlay();;
+void CleanupOverlay();
 
 void CleanupRTVs();
 
@@ -308,7 +308,6 @@ void DX12_HookDeviceVTable(ID3D12Device* device);
 
 void DX12_AdjustWrapperResizeDepth(int delta);
 
-void CleanupRTVs();
 
 void DX12_InvalidateSwapchain();
 
@@ -322,11 +321,8 @@ void DX12_NotifyCommandLists(UINT numCommandLists);
 
 void DX12_OnSwapchainResizeEnd();
 
-void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend);
 
-void CleanupRTVs();
 
-void DX12_InvalidateSwapchain();
 
 void EnsureDX12Hook();
 
@@ -350,7 +346,6 @@ void RemoveGlobalVTableHooks();
 
 void DX12_InstallPresentHooksForSwapchain(IDXGISwapChain* pSwapChain);
 
-void ShutdownImGui();
 
 bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd);
 
@@ -360,13 +355,10 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
 
 void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* gameQueue);
 
-void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend);
 
-void CleanupRTVs();
 
 void DX12_OnSwapchainResizeBegin();
 
-void DX12_OnSwapchainResizeEnd();
 
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 
@@ -411,11 +403,9 @@ extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPres
 
 extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pGameQueue);
 
-void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
 
 __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 
-void DX12_HookDeviceVTable(ID3D12Device* device);
 
 
 
@@ -431,20 +421,19 @@ void DX12_ServiceDeferredECLProbe();
 
 DWORD WINAPI UnloadThread(LPVOID lpParam);
 
-bool IsActualFrameGenerationActive();;
+bool IsActualFrameGenerationActive();
 
-bool IsStreamlineLoaded();;
+bool IsStreamlineLoaded();
 
-bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue, bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain = false, IDXGISwapChain* associatedSwapchain = nullptr, bool authoritativeNormalSwapchainReturn = false);;
+bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue, bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain = false, IDXGISwapChain* associatedSwapchain = nullptr, bool authoritativeNormalSwapchainReturn = false);
 
-bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked( bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source);;
+bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked( bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source);
 
-void PostSLOverlayRender(IDXGISwapChain* pSwapChain);;
+void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 const char* DX12OverlayRenderRouteName(uint32_t route);
 void NoteDX12OverlayCoverageGate(const char* gate);
 DX12OverlayCoverageSnapshot GetOverlayCoverageSnapshot();
 
-const char* DX12OverlayRenderRouteName(uint32_t route);;
 void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source);
 void LogOverlayCoverageSummary(const char* edge);
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route);
@@ -483,35 +472,31 @@ bool HasRetainedStreamlineStartupActivationSwapchain();
 bool HasUsableRetainedStreamlineStartupActivationSwapchainCandidate();
 bool HasStartupActivationSwapchainCandidateForECLProbe();
 
-bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue);;
+bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue);
 
-bool HookHasSafePostFSRBootstrapPathImpl();;
+bool HookHasSafePostFSRBootstrapPathImpl();
 
-void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);;
+void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 
-void ClearPostSLQueues(const char* reason);;
+void ClearPostSLQueues(const char* reason);
 
-void ResetFFXPresentCallbackOverlayBackend(const char* reason);;
+void ResetFFXPresentCallbackOverlayBackend(const char* reason);
 void SetPostSLCallbackInstalled(bool installed, const char* reason);
 void WaitForInFlightPostSLCallbacks(const char* reason);
 void WaitForOverlayGpuIdle(const char* reason);
 
-void CleanupDeferredPostSLQueuesIfSafe(const char* reason);;
+void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 
-void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);;
+void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 
-void WaitForOverlayGpuIdle(const char* reason);;
 
-void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain = false);;
+void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain = false);
 void ClearPostSLPinnedSLWrapperQueue(const char* reason);
 void DetachPostSLQueuesLocked(ID3D12CommandQueue** lockedQueueOut, ID3D12CommandQueue** dedicatedQueueOut);
 void ReleaseDetachedPostSLQueues(const char* reason, ID3D12CommandQueue* lockedQueue, ID3D12CommandQueue* dedicatedQueue);
-void ClearPostSLQueues(const char* reason);
-void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
 void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQueue* queue);
 void InvalidateAllOverlayCachedFrames();
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain);
-void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 void MarkForwardedCreateSwapchainForHwndInlineSideEffectsHandled();
 bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOut, size_t modulePathOutCount, HMODULE* moduleHandleOut = nullptr);
 bool Dx12TraceEnabled();
@@ -536,7 +521,7 @@ void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capturedQueue,
 bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const char* source);
 void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool runtimeOwnsSwapchain, bool runtimeOwnershipJustActivated, ID3D12CommandQueue* capturedQueue);
 
-bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue, const char* context);;
+bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue, const char* context);
 OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm);
 bool IsDX12ObserverOnlyModeActive(SharedMemoryLayout* shm);
 bool IsDX12ObserverPolicyOnlyModeActive(SharedMemoryLayout* shm);
@@ -565,7 +550,7 @@ bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* sh
                              UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata = nullptr,
                              ExecuteCommandListsPtr executeCommandLists = nullptr);
 
-const char* DX12WaitResultName(DWORD waitResult);;
+const char* DX12WaitResultName(DWORD waitResult);
 bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr);
 bool IsFFXPresentCallbackStalled();
 ProgressResolvedOfficialFFXOverlayFallbackProof EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
@@ -577,27 +562,22 @@ void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback();
 bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason = nullptr);
 void SyncSecondaryDx12OverlayColorState(DXGI_FORMAT format);
 bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMAT format, const char* logPrefix, int* outColorSpace = nullptr, bool* outSupported = nullptr);
-void ResetFFXPresentCallbackOverlayBackend(const char* reason);
 void ForceClearNativeFSRInternalNoCallbackComposition(const char* reason);
 bool UpdateHeuristicFSRFGState(bool active, const char* source);
-void CleanupOverlay();
 
-void DrawOverlay(ID3D12GraphicsCommandList* list, bool isRealFrame, UINT bufferIdx, D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride = nullptr);;
+void DrawOverlay(ID3D12GraphicsCommandList* list, bool isRealFrame, UINT bufferIdx, D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride = nullptr);
 
-void ResetStartupOverlayBackendActivationStage();;
+void ResetStartupOverlayBackendActivationStage();
 bool IsStartupOverlayCompatibilityActive();
 bool ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
 void UpdateStartupOverlayCompatibilityState();
 const char* GetStartupOverlayFirstDrawProbeStageName(StartupOverlayFirstDrawProbeStage stage);
-void ResetStartupOverlayBackendActivationStage();
-bool IsActualFrameGenerationActive();
 bool IsFSRFrameGenerationActive();
 bool IsDLSSFrameGenerationActive();
 bool IsNvidiaSmoothMotionActiveRuntime();
 
-ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);;
+ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
 
-bool IsStreamlineLoaded();;
 bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr);
 bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase);
 void ProbeRealD3D12ECL(ID3D12Device* device);
@@ -614,9 +594,6 @@ bool ShouldDelayOverlayInitAfterStartupResumeCompat(bool allowOverlayRender, HWN
 bool ApplyOverlayStartupCompatMode(HWND gameWindow);
 void DisableDedicatedOverlayQueueForOverlayCompat();
 void EnsureDedicatedOverlayQueueForFGCompat();
-ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
-bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue);
-bool HookHasSafePostFSRBootstrapPathImpl();
 bool ShouldReserveInactiveFGOverlaySpaceNow();
 ID3D12CommandQueue* GetFrameClassificationQueue();
 bool ShouldSuppressLikelyDuplicateTopLevelPresent(IDXGISwapChain3* sc3, UINT backBufferIdx);
@@ -633,19 +610,17 @@ bool HandlePostSLRouteForNormalSwapchainReturn(const char* context, ID3D12Comman
 void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence);
 
 // Forward declarations
-void InstallGlobalVTableHooks();;
+void InstallGlobalVTableHooks();
 
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false, bool guardedSystemRouteOnly = false);
 void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);
 void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);
 void StartTransitionCooldown();
-bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked( bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source);
 void MarkThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain, const char* creatorModulePath = nullptr);
 void MarkThirdPartyOverlaySwapchain(IDXGISwapChain1* pSwapChain, const char* creatorModulePath = nullptr);
 void ForgetSwapchainFromTracking(IDXGISwapChain* pSwapChain);
 void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd);
 
-bool IsStreamlineLoaded();
 bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice);
 bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView();
 bool ShouldPreserveDX12SwapchainIdentityForForeignChain(IUnknown* pDevice, IDXGISwapChain* pSwapChain);
@@ -655,17 +630,11 @@ bool NotePresentInterposerPrivateSwapchainCreate(const char* context, const void
                                                  IDXGISwapChain* pSwapChain, IUnknown* pDevice);
 HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
-bool IsStreamlineLoaded();
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
-void InstallGlobalVTableHooks();
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly);
-void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT bufferIdx, D3D12_CPU_DESCRIPTOR_HANDLE* rtvOverride);
 bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format);
-bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue, const char* context);
 void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive);
-void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
-void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain);
 bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const char* callerContext);
 bool IsSteamOverlayModulePath(const char* modulePath);
 bool IsD3D12ModuleAddress(void* address);
@@ -688,4 +657,3 @@ void Dx12SampleVaSpace(uint32_t* outCommitMB, uint32_t* outFreeMB, uint32_t* out
 void DX12_DumpFocusAnalysisRing(const char* reason);
 void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm);
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent, bool frameGenerationPresentationActive, ce::dx12_process_frame_diagnostics::StageTimings* diagnostics);
-const char* DX12WaitResultName(DWORD waitResult);

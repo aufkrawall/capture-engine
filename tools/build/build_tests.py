@@ -571,6 +571,136 @@ def count_source_lines(path: str) -> int:
         return len(handle.read().splitlines())
 
 
+# The line ceiling above measures lines, so a tool that packs many declarations onto one
+# line satisfies it while making the file less readable, not more. That is exactly what the
+# source splitter did: ddraw_hook_internal.h carried 16 lines over 200 characters, one of
+# them 820 characters holding seven separate declarations, and the size ratchet saw nothing.
+# 200 is chosen to sit well clear of clang-format's wrap column so ordinary long signatures
+# and comments never trip it; only packed lines do.
+SOURCE_LINE_LENGTH_LIMIT = 200
+
+
+def collect_overlong_source_lines() -> Dict[str, int]:
+    """Project-relative path -> longest line, for C++ sources exceeding the length limit.
+
+    Scoped to C++ only. Markdown prose wraps at whatever width its author chose, and the
+    generated Python in this tree is already covered by flake8's own length rule.
+    """
+    overlong: Dict[str, int] = {}
+    for path in collect_lintable_cpp_sources(FILE_SIZE_SOURCE_SUFFIXES):
+        try:
+            with open(path, "rb") as handle:
+                longest = max((len(line) for line in handle.read().splitlines()), default=0)
+        except OSError as error:
+            log(f"WARNING: could not measure line lengths in {path}: {error}")
+            continue
+        if longest > SOURCE_LINE_LENGTH_LIMIT:
+            overlong[project_relative_key(path)] = longest
+    return overlong
+
+
+SOURCE_LINE_LENGTH_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "source_line_length_baseline.json")
+
+
+def load_source_line_length_baseline() -> Optional[Dict[str, int]]:
+    """Read the accepted longest-line lengths; None when no baseline exists yet."""
+    if not os.path.exists(SOURCE_LINE_LENGTH_BASELINE_PATH):
+        return None
+    try:
+        with open(SOURCE_LINE_LENGTH_BASELINE_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return {str(path): int(length) for path, length in data.get("files", {}).items()}
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        log(f"ERROR: Unreadable source-line-length baseline {SOURCE_LINE_LENGTH_BASELINE_PATH}: {error}")
+        sys.exit(2)
+
+
+def write_source_line_length_baseline(violations: Mapping[str, int]) -> bool:
+    payload: Dict[str, Any] = {
+        "_comment": [
+            "Accepted C++ files carrying a line longer than the limit, with that longest length.",
+            f"The limit is {SOURCE_LINE_LENGTH_LIMIT} characters.",
+            "build.py fails lint when a recorded file's longest line grows, or a new file crosses",
+            "the limit. Shorter lines are folded in automatically and a file that drops back under",
+            "the limit is removed, so the slack cannot be silently reclaimed.",
+            "",
+            "Every entry here is debt being worked off, not an endorsement. These are declarations",
+            "packed several to a line by the source splitter to satisfy the 800-line file ceiling -",
+            "the two rules pull against each other, and packing is the wrong way to resolve it.",
+            "Break the line at its declaration boundaries and split the file instead.",
+        ],
+        "limit": SOURCE_LINE_LENGTH_LIMIT,
+        "files": dict(sorted(violations.items())),
+        "count": len(violations),
+    }
+    return write_text_atomic_if_changed(SOURCE_LINE_LENGTH_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
+
+
+def evaluate_source_line_length(lint_details: Dict[str, Any], *, mutate_baseline: bool = True) -> None:
+    """Fail when a C++ source line grows past the limit; fold in shortening automatically.
+
+    Mirrors the file-size ratchet, and exists because that one measures *lines*: a tool that
+    packs many declarations onto one line satisfies the 800-line ceiling while making the file
+    harder to read, and the size ratchet sees nothing. ddraw_hook_internal.h carried a
+    541-character line holding eight separate declarations; wgc_capture_internal.h still
+    carries one of 2053.
+
+    Like the file-size walk this is filesystem-based and always complete, so improvements can
+    be folded in unconditionally - there is no scope problem to guard against.
+    """
+    update_requested = mutate_baseline and "--update-lint-baseline" in sys.argv
+    baseline = load_source_line_length_baseline()
+    violations = collect_overlong_source_lines()
+
+    lint_details["source_line_length_violations"] = len(violations)
+
+    if baseline is None or update_requested:
+        write_source_line_length_baseline(violations)
+        action = "Updated" if baseline is not None else "Created"
+        lint_details["source_line_length_baseline"] = "written"
+        log(f"{action} source-line-length baseline: {SOURCE_LINE_LENGTH_BASELINE_PATH}")
+        log(f"  {len(violations)} file(s) with a line over {SOURCE_LINE_LENGTH_LIMIT} characters")
+        return
+
+    regressions = []
+    for path, longest in sorted(violations.items()):
+        accepted = baseline.get(path)
+        if accepted is None:
+            regressions.append(f"{path}: longest line {longest} characters, past the {SOURCE_LINE_LENGTH_LIMIT}-character limit (new violation)")
+        elif longest > accepted:
+            regressions.append(f"{path}: longest line grew {accepted} -> {longest} characters")
+
+    if regressions:
+        lint_details["source_line_length_baseline"] = "regressed"
+        log("ERROR: source lines grew past the accepted line-length baseline:")
+        for entry in regressions:
+            log(f"  {entry}")
+        log(f"Baseline: {SOURCE_LINE_LENGTH_BASELINE_PATH}")
+        log("A line this long is normally several declarations packed together by a split tool.")
+        log("Break it at the declaration boundaries instead of raising the limit.")
+        record_verification_step(
+            "lint",
+            "failed",
+            details={**lint_details, "reason": "source_line_length_regression"},
+        )
+        sys.exit(1)
+
+    improvements = {
+        path: (accepted, violations.get(path))
+        for path, accepted in baseline.items()
+        if path not in violations or violations[path] < accepted
+    }
+    if mutate_baseline and improvements:
+        write_source_line_length_baseline(violations)
+        lint_details["source_line_length_baseline"] = "tightened"
+        resolved = sum(1 for _, now in improvements.values() if now is None)
+        log(f"source-line-length baseline tightened: {len(improvements)} file(s) improved, {resolved} now under the limit")
+        return
+
+    lint_details["source_line_length_baseline"] = "unchanged"
+    log(f"source line length: OK ({len(violations)} accepted file(s) over {SOURCE_LINE_LENGTH_LIMIT} characters, none grew)")
+
+
 def collect_source_file_sizes() -> Dict[str, int]:
     """Project-relative line counts for every file the size ratchet governs."""
     sizes: Dict[str, int] = {}

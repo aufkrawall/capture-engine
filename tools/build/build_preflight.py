@@ -92,6 +92,7 @@ def run_verify_preflight(env: Dict[str, str]) -> None:
     started = time.time()
     details: Dict[str, Any] = {}
     evaluate_file_size_baseline(collect_source_file_sizes(), details, mutate_baseline=False)
+    evaluate_source_line_length(details, mutate_baseline=False)
 
     clang_tidy = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-tidy.exe")
     if IS_LINUX:

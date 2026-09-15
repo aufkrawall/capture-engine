@@ -26,7 +26,7 @@
     "clang-diagnostic-cast-function-type-mismatch": 56,
     "clang-diagnostic-deprecated-declarations": 2,
     "clang-diagnostic-dll-attribute-on-redeclaration": 2,
-    "clang-diagnostic-extra-tokens": 2,
+    "clang-diagnostic-extra-tokens": 0,
     "clang-diagnostic-ignored-attributes": 6,
     "clang-diagnostic-inconsistent-dllimport": 8,
     "clang-diagnostic-inconsistent-missing-override": 186,
@@ -47,7 +47,7 @@
     "clang-diagnostic-unused-private-field": 426,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 2231,
+  "total": 2229,
   "scope": {
     "entries": 755,
     "translation_units": [

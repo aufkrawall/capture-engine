@@ -519,120 +519,28 @@ public:
     DirectDrawBootstrapScope() {
         ++ddraw_hook_g_DDrawBootstrapDepth;
     }~DirectDrawBootstrapScope();
-};uintptr_t DirectDrawObjectIdentity(IUnknown* object);void AssociateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion version);void AssociateLegacyD3DSurface(IUnknown* surface, unsigned d3dVersion);void ActivateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion fallbackVersion);UINT QueryD3D7MaxAnisotropy(void* opaqueDevice);UINT QueryD3D6MaxAnisotropy(void* opaqueDevice);bool ShouldSuppressDirectDrawHooking();
+};
+uintptr_t DirectDrawObjectIdentity(IUnknown* object);
+void AssociateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion version);
+void AssociateLegacyD3DSurface(IUnknown* surface, unsigned d3dVersion);
+void ActivateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion fallbackVersion);
+UINT QueryD3D7MaxAnisotropy(void* opaqueDevice);
+UINT QueryD3D6MaxAnisotropy(void* opaqueDevice);
+bool ShouldSuppressDirectDrawHooking();
 
-bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable);bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc);bool IsPrimarySurfaceDesc(const DDSURFACEDESC* surfaceDesc);bool SurfaceHasCaps(IDirectDrawSurface* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask);bool SurfaceHasCaps(IDirectDrawSurface4* surface, DWORD capsMask);IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike);
+bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);
+bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vtable);
+bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc);
+bool IsPrimarySurfaceDesc(const DDSURFACEDESC* surfaceDesc);
+bool SurfaceHasCaps(IDirectDrawSurface* surface, DWORD capsMask);
+bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask);
+bool SurfaceHasCaps(IDirectDrawSurface4* surface, DWORD capsMask);
+IDirectDrawSurface7* QuerySurface7(IUnknown* surfaceLike);
 
-HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
-                                                                IDirectDrawSurface7** ppSurface, IUnknown* ddraw_hook_pUnkOuter);
-
-HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
-                                                                IDirectDrawSurface4** ppSurface, IUnknown* ddraw_hook_pUnkOuter);
-
-HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
-                                                                     IDirectDrawSurface** ppSurface,
-                                                                     IUnknown* ddraw_hook_pUnkOuter);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
-                                                           IDirectDrawSurface* destOverride, DWORD ddraw_hook_flags);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
-                                                          IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
-                                                          DDBLTFX* ddraw_hook_bltFx);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surface, DWORD dwX, DWORD dwY,
-                                                              IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD dwTrans);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
-                                                           DDSURFACEDESC* surfaceDesc, DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID ddraw_hook_surfaceData);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
-                                                      DWORD ddraw_hook_flags);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
-                                                      DWORD ddraw_hook_flags);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRECT destRect,
-                                                     IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
-                                                     void* ddraw_hook_bltFx);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface, LPRECT destRect,
-                                                     IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
-                                                     void* ddraw_hook_bltFx);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
-                                                         IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
-                                                         IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
-                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
-                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT ddraw_hook_rect);
-
-HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT ddraw_hook_rect);HRESULT STDMETHODCALLTYPE DetourDDSurface7GetDC(IDirectDrawSurface7* surface, HDC* hdc);HRESULT STDMETHODCALLTYPE DetourDDSurface7ReleaseDC(IDirectDrawSurface7* surface, HDC hdc);HRESULT STDMETHODCALLTYPE DetourDDSurface4GetDC(IDirectDrawSurface4* surface, HDC* hdc);HRESULT STDMETHODCALLTYPE DetourDDSurface4ReleaseDC(IDirectDrawSurface4* surface, HDC hdc);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyGetDC(IDirectDrawSurface* surface, HDC* hdc);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyReleaseDC(IDirectDrawSurface* surface, HDC hdc);
-
-HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device, DWORD Type, DWORD ddraw_hook_Value);
-
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
-                                                             DWORD ddraw_hook_Value);
-
-HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
-                                                             DWORD* ddraw_hook_pValue);
-
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD ddraw_hook_Value);
-
-HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD* ddraw_hook_pValue);
-
-HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device);
-
-HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
-
-HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device);
-
-HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
-                                                        IDirectDrawSurface7* target, IDirect3DDevice7** ddraw_hook_device);
-
-HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
-                                                        IDirectDrawSurface4* target, IUnknown** ddraw_hook_device,
-                                                        IUnknown* ddraw_hook_outer);
-
-HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* ddraw_hook_pUnkOuter);
-
-HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* ddraw_hook_pUnkOuter);
-
-void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* ddraw_hook_reason);
-
-void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype = false);
-
-void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason,
-                                           bool ddraw_hook_markPrototype = false);
-
-void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
-
-void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* ddraw_hook_reason);
-
-void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
-                                                    ce::graphics_api_identity::DirectDrawVersion version,
-                                                    const char* ddraw_hook_reason);
-
-void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* ddraw_hook_reason);
-
-void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
-
-void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t ddraw_hook_directDrawCreate);
-
-void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t ddraw_hook_directDrawCreateEx);
-
-void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);LegacyD3DSamplerVTableRecord* ResolveLegacyD3DSamplerVTable(
-    ce::legacy_d3d_sampler_state::Api api, void* ddraw_hook_device);void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, void* ddraw_hook_device, bool newDevice,
-                                        const char* ddraw_hook_reason);HWND ResolveDirectDrawTargetWindow();void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason);void MaybeTrackPrimarySurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason);void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit);void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t ddraw_hook_directDrawCreate);void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t ddraw_hook_directDrawCreateEx);void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);
+// The detour entry points and the hook-installation helpers that drive them live in their
+// own header: this one reached 827 lines once the packed declaration lines it carried were
+// broken apart, and the two groups have no interdependency.
+#include "ddraw_hook_detour_decls.h"
 
 // DirectDraw Capture class
 class DDrawCapture : public HookCaptureBase {
@@ -730,9 +638,17 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
 void NotePresentationComplete();void InstallAttachedBackBufferHooks(IDirectDrawSurface7* primarySurface, const char* ddraw_hook_reason);
 
 // Get surface dimensions from DDSURFACEDESC2
-bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* ddraw_hook_reason);void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
+bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& ddraw_hook_h);
+void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* ddraw_hook_reason);
+void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
                                                     ce::graphics_api_identity::DirectDrawVersion version,
-                                                    const char* ddraw_hook_reason);void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* ddraw_hook_reason);void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* ddraw_hook_reason);void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
+                                                    const char* ddraw_hook_reason);
+void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);
+void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason, bool ddraw_hook_markPrototype);
+void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* ddraw_hook_reason);
+void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* ddraw_hook_reason);
+void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
+void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* ddraw_hook_reason);
 
 // Presentation entry points for the DirectDraw4 and legacy surface interfaces,
 // which reach the same policy after upgrading their surfaces to Surface7.
@@ -743,16 +659,22 @@ bool HandlePresentationLegacySurface(IDirectDrawSurface* visibleSurface, IDirect
                                      ce::ddraw_present_policy::PresentKind kind, bool haveChangedRect,
                                      const ce::ddraw_present_policy::Rect& changedRect);HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
                                                                      IDirectDrawSurface** ppSurface,
-                                                                     IUnknown* ddraw_hook_pUnkOuter);LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* surface);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
-                                                           IDirectDrawSurface* destOverride, DWORD ddraw_hook_flags);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
+                                                                     IUnknown* ddraw_hook_pUnkOuter);
+LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* surface);
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
+                                                           IDirectDrawSurface* destOverride, DWORD ddraw_hook_flags);
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                           DDBLTFX* ddraw_hook_bltFx);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
-                                                           DDSURFACEDESC* surfaceDesc, DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID ddraw_hook_surfaceData);
+                                                           DDSURFACEDESC* surfaceDesc, DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
+HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID ddraw_hook_surfaceData);
 
 // Hook: IDirectDraw7::CreateSurface
 HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
-                                                                IDirectDrawSurface7** ppSurface, IUnknown* ddraw_hook_pUnkOuter);HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
-                                                                IDirectDrawSurface4** ppSurface, IUnknown* ddraw_hook_pUnkOuter);HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
+                                                                IDirectDrawSurface7** ppSurface, IUnknown* ddraw_hook_pUnkOuter);
+HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
+                                                                IDirectDrawSurface4** ppSurface, IUnknown* ddraw_hook_pUnkOuter);
+HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                       DWORD ddraw_hook_flags);HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
                                                       DWORD ddraw_hook_flags);
 
@@ -762,10 +684,25 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface, LPRE
                                                      void* ddraw_hook_bltFx);HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface, LPRECT destRect,
                                                      IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD ddraw_hook_flags,
                                                      void* ddraw_hook_bltFx);HRESULT STDMETHODCALLTYPE DetourDDSurface7Lock(IDirectDrawSurface7* surface, LPRECT destRect, void* surfaceDesc,
-                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
-                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT ddraw_hook_rect);HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT ddraw_hook_rect);void ReportLegacyD3DUse(unsigned version, const char* evidence);HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
-                                                        IDirectDrawSurface7* target, IDirect3DDevice7** ddraw_hook_device);HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
+                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
+HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surface, LPRECT destRect, void* surfaceDesc,
+                                                      DWORD ddraw_hook_flags, HANDLE ddraw_hook_event);
+HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT ddraw_hook_rect);
+HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT ddraw_hook_rect);
+void ReportLegacyD3DUse(unsigned version, const char* evidence);
+HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
+                                                        IDirectDrawSurface7* target, IDirect3DDevice7** ddraw_hook_device);
+HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
                                                         IDirectDrawSurface4* target, IUnknown** ddraw_hook_device,
-                                                        IUnknown* ddraw_hook_outer);HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device, DWORD Type, DWORD ddraw_hook_Value);HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
+                                                        IUnknown* ddraw_hook_outer);
+HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device, DWORD Type, DWORD ddraw_hook_Value);
+HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
                                                              DWORD ddraw_hook_Value);HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
-                                                             DWORD* ddraw_hook_pValue);HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD ddraw_hook_Value);HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD* ddraw_hook_pValue);HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device);HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device);HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* ddraw_hook_pUnkOuter);HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* ddraw_hook_pUnkOuter);
+                                                             DWORD* ddraw_hook_pValue);
+HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD ddraw_hook_Value);
+HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD* ddraw_hook_pValue);
+HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device);
+HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device);
+HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* ddraw_hook_pUnkOuter);
+HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* ddraw_hook_pUnkOuter);

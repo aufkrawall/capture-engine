@@ -141,6 +141,7 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
 
     b.log("Checking source file sizes...")
     b.evaluate_file_size_baseline(b.collect_source_file_sizes(), lint_details)
+    b.evaluate_source_line_length(lint_details)
 
     try:
         subprocess.run([sys.executable, "-m", "flake8", "--version"], capture_output=True, check=True)
