@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-09-15 - Ungated compiler diagnostics closed; three latent defects and two dead subsystems removed
+
+An audit of the whole tree found the project's quality gates were tight where they looked and absent where they
+did not. `clang-tidy` ran with `-extra-arg=-w`, which switched every compiler warning off for the lint pass; with
+no `-Werror` on the build either, `-Wall`/`-Wextra`/`-Wshadow`/`-Wformat=2` were completely ungated. The baseline
+truthfully reported "0 warnings" over 756 translation units while 231 unique first-party warning sites sat unread
+in the build log. `clang-analyzer-*` was not enabled at all.
+
+Dropping the flag routes compiler diagnostics into the existing ratchet as `clang-diagnostic-<name>` with no new
+infrastructure - `analyze_warning_output` already buckets on the trailing `[check]` token. Baseline recorded at
+2224 and worked down to 1900 in the same pass. `clang-analyzer-core.*`/`cplusplus.*` and `misc-use-after-move`
+are enabled too; some of their findings are cross-translation-unit false positives (a null-guard passed as a bool
+into a policy header is invisible to the analyzer) and are carried in the baseline rather than suppressed inline.
+
+Three defects these checks had been hiding, all fixed:
+
+- `layer_overlay.cpp` dereferenced an `InstanceDispatch` that `GetInstanceDispatch` explicitly returns `nullptr`
+  for on two paths and that the same function null-checks at two other uses. Reachable whenever the reserved
+  overlay queue is absent, in an implicit GLOBAL Vulkan layer - so the fault lands in the host application.
+- `CallOriginalPresent`'s Steam external-chain fallback called `presentBypass` unconditionally; every other
+  bypass site proves the pointer first. Calling through NULL there is the RIP=0 DEP signature the crash handler
+  is built to fingerprint.
+- `ue5_console_registry.h` used `uintptr_t{1} << 47`, undefined in the 32-bit hook build. Verified from the
+  emitted IR that clang folded `IsPlausibleConsoleObject` to a constant `false` there, so every `[UE5]` console
+  variable override was silently inert in 32-bit Unreal titles. `unit_tests.exe` is x64-only and could not
+  observe it; the invariant is now a `static_assert` the x86 compile sees.
+
+Two dead subsystems removed: `IPCManager` (487 lines, instantiated nowhere, shipping a permissive shared-memory
+SDDL under a comment promising low-integrity support the live inject path never provided), and the Steam-ECL
+deferred overlay submission retired in `c4a93a44`, whose enable call was deleted while ~230 lines across 12 files
+stayed. The latter also removed a real trap: `ProcessFrameFlow::kSkipSteamFence` was the one flow value whose
+original goto label sat mid-function, so returning it skipped everything between - including the per-frame
+backbuffer release. `FrameProcessSession` now owns that reference in a destructor.
+
+Also: the crash dump worker copies `EXCEPTION_RECORD`/`CONTEXT` instead of holding pointers into the crashing
+thread's stack, which the filter's 5 s wait routinely outlives; libav diagnostics are routed into the session log
+with RTMP endpoints redacted, instead of going to a stderr nobody reads; `--verify-runtime` exists because
+`--verify` never launches anything (`integration_tests=not_run`, `test_apps=compiled_not_executed`,
+`fuzz=not_run`); and a line-length ratchet covers what the 800-line file ceiling cannot see - the splitter had
+packed eight declarations onto one 541-character line to satisfy it, and `wgc_capture_internal.h` still carries
+one of 2053.
+
 ### 2026-09-15 - DirectDraw screenshots now complete in-game; healthy overlay dialogs are not freezes
 
 Gothic II/SystemPack session `20260915_124517` continued presenting DirectDraw frames at 144 FPS after both

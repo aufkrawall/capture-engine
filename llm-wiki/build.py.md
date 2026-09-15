@@ -22,6 +22,7 @@ Primary sources:
 - `tools/tests/test_pe_hardening.py`
 - `tools/tests/test_clang_tidy_baseline.py`
 - `tools/clang_tidy_baseline.json`
+- `tools/source_line_length_baseline.json`
 - `tests/test_sequence_lock_stress.cpp`
 
 ## Scope
@@ -144,7 +145,7 @@ No-build verification reuses `common/build_version.h`; it does not mint an ident
 
 The default development loop is `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` (about 5-7 s). Stay in it while writing code and reach for a product build or a heavier gate only when closing out the change; do not repeat a clean build after every small edit.
 
-`--verify` is the complete gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run:
+`--verify` is the complete **static** gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run. It never launches anything: a passing run records `coverage.integration_tests=not_run`, `coverage.test_apps=compiled_not_executed` and `coverage.fuzz=not_run`, so it proves nothing about a real D3D/Vulkan present path or a parser corpus. `python build.py --verify-runtime --skip-updates --concise` is that gate plus the smoke integration matrix and the fuzz targets; it is the release-candidate gate, not a per-change one, because it launches test apps:
 
 ```powershell
 python build.py --verify --skip-updates --concise
@@ -153,6 +154,28 @@ python build.py --verify --skip-updates --concise
 `python build.py --verify --verify-clean --skip-updates --concise` is the same gate with the strict clean product rebuild (every object recompiled) and is the required invocation for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes; the plain `--verify` gate covers the capture/CFR/FG/audio path categories. `--verify-clean` without `--verify` exits 2.
 
 Timing reference (2026-08-06, warm caches, 529 translation units): plain `--verify --skip-package` completed in 89 s (only the build-version identity TU recompiled; product relinks for the new identity; sanitizer child incremental and concurrent; lint warm). `--verify --verify-clean` completed in 347 s with every object recompiled (the sanitizer stage still reused its exact-input manifest from the preceding run). Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings.
+
+### Ratchets: what each one actually measures
+
+`tools/clang_tidy_baseline.json` records accepted counts per check over the translation units they were measured
+over. It covers **compiler** diagnostics as well as clang-tidy checks: the lint pass used to run with
+`-extra-arg=-w`, which switched every `-Wall`/`-Wextra`/`-Wshadow`/`-Wformat=2` warning off, and with no `-Werror`
+on the build the project's own warnings were ungated entirely - a truthful "0 warnings" over 756 translation units
+while 231 unique first-party warning sites sat unread in the build log. They now arrive as
+`clang-diagnostic-<name>` and ratchet like anything else. The baseline is large and is accepted debt: reduce it,
+never regenerate it to make a new warning go away. `clang-analyzer-core.*`/`cplusplus.*` and `misc-use-after-move`
+are enabled too; a number of their findings are cross-translation-unit false positives, because a null-guard
+expressed as a bool argument to a policy function in another header is invisible to the analyzer.
+
+`tools/file_size_baseline.json` enforces the 800-line ceiling, and `tools/source_line_length_baseline.json` the
+200-character line limit. The second exists because the first measures *lines*: packing several declarations onto
+one line satisfies the ceiling while making a file harder to read, which is exactly what the source splitter did.
+The two rules pull against each other, and packing is the wrong way to resolve it - break the line at its
+declaration boundaries and split the file.
+
+x86 ASan/UBSan is unavailable, not skipped: MSYS2's clang64 ships `libclang_rt.asan/ubsan` for `x86_64` only, with
+no i386 variant, so x86 sanitizer binaries fail at link time. `--sanitize-x86` exists and exits 2 rather than
+silently dropping coverage, and the recorded value is `unavailable_no_mingw_i386_runtime`.
 
 **The gates are nested, not cumulative.** `--verify` performs the content-validated product build (clean with `--verify-clean`), full suite, Python self-tests, lint ratchet, and fresh or exact-input-proven sanitizer coverage itself, so when a change requires `--verify` it is the only gate to run. Prefixing it with `--incremental`, `--no-build --run-tests`, or `--no-build --lint` repeats covered work. The cheaper gates are alternatives for changes that do **not** require `--verify`:
 
