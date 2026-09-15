@@ -290,7 +290,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     ip.vulkanReactivateEvent = vulkanReactivateEvent.release();
     injectedProcesses.push_back(ip);
 
-    LogInfo("Injected %s into %s (PID: %d)", isWow64 ? "x86" : "x64", processName.c_str(), pid);
+    LogInfo("Injected %s into %s (PID: %lu)", isWow64 ? "x86" : "x64", processName.c_str(), pid);
     return true;
 }
 
@@ -302,7 +302,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
             SYNCHRONIZE,
         FALSE, pid);
     if (!hProcess) {
-        LogError("[APC] OpenProcess failed for PID %d: %d", pid, GetLastError());
+        LogError("[APC] OpenProcess failed for PID %lu: %lu", pid, GetLastError());
         return false;
     }
 
@@ -382,7 +382,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     }
 
     LogInfo(
-        "[APC] APC queued successfully for PID %d - DLL will load before "
+        "[APC] APC queued successfully for PID %lu - DLL will load before "
         "import resolution",
         pid);
 

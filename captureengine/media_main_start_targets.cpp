@@ -212,7 +212,7 @@ bool MediaProcessSession::primeConfiguredMonitorTarget(HWND targetWindow, HMONIT
     const ce::monitor_selection::MonitorDescriptor& monitor = resolved.descriptor;
     LogInfo(
         "[CaptureTarget] resolved selector=%s reason=%s context=%s monitor=0x%p id=%s device=%s name=%s "
-        "bounds=(%ld,%ld)-(%ld,%ld) primary=%d adapter=%08X:%08X source=%u target=%u",
+        "bounds=(%ld,%ld)-(%ld,%ld) primary=%d adapter=%08X:%08lX source=%u target=%u",
         selector.canonical.c_str(), resolved.reason.c_str(), context, resolved.monitor, monitor.stableId.c_str(),
         monitor.deviceName.c_str(), monitor.friendlyName.c_str(), monitor.desktopRect.left, monitor.desktopRect.top,
         monitor.desktopRect.right, monitor.desktopRect.bottom, monitor.primary ? 1 : 0,

@@ -212,9 +212,11 @@ SystemMetricsCollector& SystemMetricsCollector::Get() {
     return instance;
 }
 
+// Member order follows the declaration order in system_metrics.h; initializers run in that
+// order regardless of how they are written here.
 SystemMetricsCollector::SystemMetricsCollector()
-    : threadRunning(false),
-      stopThread(false),
+    : stopThread(false),
+      threadRunning(false),
       pdhInitialized(false),
       gpuPdhInitialized(false),
       vramPdhInitialized(false) {}

@@ -22,8 +22,24 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-CACHE_SCHEMA = 1
-RUN_FLAGS = ("-extra-arg=-w", "-quiet")
+CACHE_SCHEMA = 2
+# Compiler diagnostics are deliberately NOT suppressed here.
+#
+# This used to pass "-extra-arg=-w", which switched every compiler warning off for the
+# clang-tidy run. Combined with the build having no -Werror and no warning ratchet of its
+# own, that left the project's own -Wall/-Wextra/-Wshadow/-Wformat=2 output completely
+# ungated: 231 unique first-party warning sites accumulated, including a shift past the
+# width of a type that silently disabled a whole feature in the 32-bit build, three goto
+# labels orphaned by a refactor, and several always-true pointer guards.
+#
+# Without -w, clang-tidy reports those diagnostics as `clang-diagnostic-<name>` checks.
+# analyze_warning_output() already buckets on the trailing "[check]" token, so they flow
+# into the existing check counts and therefore into evaluate_clang_tidy_baseline() with no
+# other change - reusing a ratchet that is already scope-aware and refuses to fold in
+# counts measured over a partial compilation database.
+#
+# CACHE_SCHEMA was bumped because the recorded output for every translation unit changes.
+RUN_FLAGS = ("-quiet",)
 _ATOMIC_REPLACE_LOCK = threading.Lock()
 
 

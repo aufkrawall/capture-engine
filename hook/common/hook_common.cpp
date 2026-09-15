@@ -232,7 +232,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     uint64_t seq = g_LogSequence.fetch_add(1, std::memory_order_relaxed);
 
     int len =
-        snprintf(lineBuffer, sizeof(lineBuffer), "[%02d:%02d:%02d.%03d] [T:%04X] [S:%llu] [%s] %s", st.wHour,
+        snprintf(lineBuffer, sizeof(lineBuffer), "[%02d:%02d:%02d.%03d] [T:%04lX] [S:%llu] [%s] %s", st.wHour,
                  st.wMinute, st.wSecond, st.wMilliseconds, tid, (unsigned long long)seq, g_ProcessName, formatBuffer);
 
     if (len <= 0)

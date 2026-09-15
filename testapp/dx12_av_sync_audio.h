@@ -303,7 +303,7 @@ inline bool AudioRenderer::Initialize() {
 
     const LONGLONG stimulusQpc = stimulusStartQpc_ ? stimulusStartQpc_->QuadPart : 0;
     testapp::Log(
-        "AVSYNC START audio channels=%u sampleRate=%u bits=%u blockAlign=%u float=%d pcm=%d bufferFrames=%u "
+        "AVSYNC START audio channels=%u sampleRate=%lu bits=%u blockAlign=%u float=%d pcm=%d bufferFrames=%u "
         "requestedBufferMs=%d audioLeadMs=%.3f renderLatencyUs=%llu audioClock=%d audioClockFrequency=%llu "
         "audioStartQpc=%lld stimulusStartQpc=%lld\n",
         mixFormat_->nChannels, mixFormat_->nSamplesPerSec, mixFormat_->wBitsPerSample, mixFormat_->nBlockAlign,

@@ -721,6 +721,11 @@ int main(int argc, char* argv[]) {
         case kFsrCreateFailed:
             testapp::Log("[FG-DIAG] FSR FG ffxCreateContext failed (no AMD GPU or unsupported runtime version?)\n");
             break;
+        case kFsrSwapChainFailed:
+            // No path returns this today; handling it keeps the switch exhaustive so a new
+            // FsrInitResult value is reported by -Wswitch instead of falling through silently.
+            testapp::Log("[FG-DIAG] FSR FG swapchain replacement failed\n");
+            break;
     }
     testapp::LogFlush();
     testapp::Log("Running... (FSR FG will enable after ~2 seconds)\n\n");

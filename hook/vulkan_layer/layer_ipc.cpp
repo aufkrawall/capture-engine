@@ -325,7 +325,7 @@ bool LayerIPC_Init() {
                 DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
                 if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0] != '\0') {
                     CreateDirectoryA(pDisc->logsPath, nullptr);
-                    snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%d.csv", pDisc->logsPath,
+                    snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%lu.csv", pDisc->logsPath,
                              GetCurrentProcessId());
                     pathFound = true;
                     LayerLog("Using logsPath from discovery: %s", pDisc->logsPath);
@@ -345,7 +345,7 @@ bool LayerIPC_Init() {
                     char logsDir[MAX_PATH];
                     snprintf(logsDir, sizeof(logsDir), "%s\\logs", gameDir);
                     CreateDirectoryA(logsDir, nullptr);
-                    snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%d.csv", logsDir, GetCurrentProcessId());
+                    snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%lu.csv", logsDir, GetCurrentProcessId());
                     LayerLog("[Hook] PerfLogger: Using fallback logs path: %s", logsDir);
                 }
             }

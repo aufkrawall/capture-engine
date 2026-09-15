@@ -589,7 +589,13 @@ inline bool IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(const char* fo
 }
 
 // Loader-free: true if any known third-party overlay module is loaded. Defined in terms of
-// the cached GetLoadedThirdPartyOverlayModuleName() below (forward-declared here).
+// the cached GetLoadedThirdPartyOverlayModuleName(), which is forward-declared here and
+// defined in overlay_compat_detail/routing_policy.h - not "below" in this header, as this
+// comment used to claim before the two were split apart. Every translation unit that
+// odr-uses IsThirdPartyOverlayLoaded() therefore has to see routing_policy.h as well;
+// clang reports the forward declaration as clang-diagnostic-undefined-inline, which is
+// accepted in the lint baseline rather than resolved by an include, because routing_policy.h
+// includes this header in turn.
 inline const char* GetLoadedThirdPartyOverlayModuleName();
 inline bool IsThirdPartyOverlayLoaded() {
     return GetLoadedThirdPartyOverlayModuleName() != nullptr;

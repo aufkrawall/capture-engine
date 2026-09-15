@@ -500,7 +500,6 @@ bool MediaEngine::PullTrackGapAndBuffer(AudioPullState& s, int track, const std:
             deferForSourceBuffer = false;
             finalStopDrain = audioStopDrainRequested.load(std::memory_order_acquire) ||
                                         audioFinalizingCfrStop.load(std::memory_order_acquire);
-                ce::audio::kDefaultAudioPullQuantumSamples * 4;
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
                 isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);

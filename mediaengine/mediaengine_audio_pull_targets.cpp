@@ -71,8 +71,6 @@ bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimeli
         // target because of a route-local delivery backlog. Drain that backlog through resampler
         // compensation only when the CFR timeline itself is healthy; wall-time video debt naturally
         // buffers every live audio source and must be repaid by video holds, not app-only pitch change.
-            ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
-
         for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
             ServiceAudioEpochResetOnPull(audioSources[srcIdx], srcIdx);
         }

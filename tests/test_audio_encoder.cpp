@@ -547,7 +547,11 @@ TEST(AudioEncoderContractTest, BoundaryLengthsFinalizeExactlyForEveryCodec) {
             EXPECT_EQ(report.expectedDecodedSamples, targetSamples) << codec << " target=" << targetSamples;
             EXPECT_GE(report.codecSubmittedSamples, targetSamples) << codec << " target=" << targetSamples;
             EXPECT_EQ(report.durationlessPacketCount, 0u) << codec << " target=" << targetSamples;
-            EXPECT_EQ(report.controlPacketCount, codec == "flac" ? 1u : 0u) << codec << " target=" << targetSamples;
+            // `codec` is a const char*, so `codec == "flac"` compared pointers, not text: the
+            // FLAC arm never fired and every codec was asserted against 0. Same idiom as the
+            // std::string comparison this file already uses for the "opus" case above.
+            EXPECT_EQ(report.controlPacketCount, std::string(codec) == "flac" ? 1u : 0u)
+                << codec << " target=" << targetSamples;
             EXPECT_TRUE(report.drainReachedEof) << codec << " target=" << targetSamples;
             EXPECT_FALSE(report.protocolError) << codec << " target=" << targetSamples;
             EXPECT_FALSE(packets.empty()) << codec << " target=" << targetSamples;

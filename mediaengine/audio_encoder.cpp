@@ -1,13 +1,15 @@
 #include "audio_encoder_internal.h"
 
 AudioEncoder::AudioEncoder()
+    // Order matches the member declaration order in audio_encoder.h; initializers run in
+    // declaration order regardless of the order written here.
     : codecCtx(nullptr),
       resampler(nullptr),
+      audioFifo(nullptr),
       frame(nullptr),
       samplesCount(0),
       streamIndex(-1),
       initDone(false),
-      audioFifo(nullptr),
       savedCodecId(AV_CODEC_ID_NONE),
       firstTimestamp(-1),
       recordingStartUs(-1),

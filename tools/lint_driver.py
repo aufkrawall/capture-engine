@@ -47,9 +47,10 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
             lint_details["compile_database_sha256"] = b.sha256_file(compile_commands_path)
             clang_tidy_scope = b.clang_tidy_scope_from_entries(compile_db_data)
             b.record_verification_artifact("compile_commands", compile_commands_path)
+            # Mirrors clang_tidy_cache.RUN_FLAGS; this list is only what gets logged as the
+            # command, so it has to stay in step with the flags that actually run.
             clang_tidy_command = [
                 clang_tidy,
-                "-extra-arg=-w",
                 "-quiet",
                 f"-p={os.path.dirname(compile_commands_path)}",
                 "<content-addressed translation units>",
