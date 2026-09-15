@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 
+#include <libavutil/log.h>
+
 extern "C" {
 
 // Global Logger
@@ -18,6 +20,62 @@ MEDIAENGINE_API void DLL_Log(const char* fmt, ...) {
     callback(buffer);
 }
 
+}  // extern "C"
+
+namespace {
+
+// Route libav* diagnostics into CaptureEngine's own log.
+//
+// Without this, every message libavformat/libavcodec/libavutil produces goes to the
+// process's stderr, which a windowless CaptureEngine process discards: encoder rejections,
+// muxer timestamp complaints and RTMP transport errors were all invisible in session logs,
+// leaving only CE's own view of a failed recording. Nothing in the tree redirects stderr, so
+// the callback is the only way to keep them.
+//
+// It also removes the reason the live path had to silence libav entirely. FFmpeg composes
+// its diagnostics from the URL it was handed, and for a live stream that URL ends in the
+// stream key, so the level was pinned to AV_LOG_QUIET for live output. Redacting here means
+// the endpoint can never reach the log and the diagnostics can stay on.
+void CaptureEngineAvLogCallback(void* avcl, int level, const char* fmt, va_list args) {
+    if (level > av_log_get_level() || level == AV_LOG_QUIET)
+        return;
+
+    // Fixed stack buffer: this runs on the encode path and must not allocate.
+    char line[1024];
+    int printPrefix = 1;
+    const int written = av_log_format_line2(avcl, level, fmt, args, line, static_cast<int>(sizeof(line)), &printPrefix);
+    if (written <= 0)
+        return;
+    line[sizeof(line) - 1] = '\0';
+
+    // libav repeats identical messages per frame on a sustained fault; keep the first burst
+    // and then sample, so one bad stream cannot flood a session log.
+    static std::atomic<uint32_t> s_count{0};
+    const uint32_t seen = s_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seen > 200 && (seen % 500) != 0)
+        return;
+
+    std::string message(line);
+    while (!message.empty() && (message.back() == '\n' || message.back() == '\r'))
+        message.pop_back();
+    if (message.empty())
+        return;
+
+    DLL_Log("[ffmpeg] %s", ce::privacy::RedactStreamEndpointsForLog(message).c_str());
+}
+
+void InstallAvLogCallback() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        av_log_set_callback(CaptureEngineAvLogCallback);
+        DLL_Log("[Media] libav diagnostics routed into the session log (endpoints redacted)");
+    });
+}
+
+}  // namespace
+
+extern "C" {
+
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
     g_LogCallback.store(callback, std::memory_order_release);
     DLL_Log("MediaEngine Logging Initialized");
@@ -26,6 +84,8 @@ MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
+    // Before anything can touch avformat/avcodec, so no diagnostic is lost to stderr.
+    InstallAvLogCallback();
     if (!mediaengine_g_Engine) {
         mediaengine_g_Engine = std::make_unique<MediaEngine>();
     }

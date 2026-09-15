@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <string>
 
 #include "../common/log_privacy.h"
+#include "source_fragment_reader.h"
 
 namespace privacy = ce::privacy;
 
@@ -113,4 +115,60 @@ TEST(LogPrivacyTest, CollapsePreservesForwardSlashStyleLeafJoiner) {
     // the leaf with their original separator style.
     EXPECT_EQ(privacy::CollapsePathForLog("/var/tmp/capture.mkv"), ".../capture.mkv");
     EXPECT_EQ(privacy::CollapsePathForLog("https://example.com/a/b.png"), ".../b.png");
+}
+
+TEST(LogPrivacyTest, StreamEndpointRedactionKeepsTheHostAndDropsThePlaypath) {
+    // The trailing component of an RTMP URL is the stream key - a password equivalent. The
+    // host is the useful diagnostic (which service, and whether it resolved), so it stays.
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("rtmp://live.example/app/live_123_SECRET failed"),
+              "rtmp://live.example/<redacted> failed");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("Cannot open rtmps://ingest.example/live/abc123"),
+              "Cannot open rtmps://ingest.example/<redacted>");
+}
+
+TEST(LogPrivacyTest, StreamEndpointRedactionIsCaseInsensitiveAndHandlesQuotesAndRepeats) {
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("RTMP://Host/App/Key"), "RTMP://Host/<redacted>");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("url='rtmp://h/a/k' retry"), "url='rtmp://h/<redacted>' retry");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("rtmp://h/a/k1 then rtmp://h/a/k2"),
+              "rtmp://h/<redacted> then rtmp://h/<redacted>");
+}
+
+TEST(LogPrivacyTest, StreamEndpointRedactionLeavesHarmlessTextAlone) {
+    // A host-only URL carries no key, and unrelated text must survive untouched - the
+    // callback that uses this runs over every libav diagnostic, not just failures.
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("rtmp://live.example"), "rtmp://live.example");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("rtmp://live.example/"), "rtmp://live.example/<redacted>");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("Qavg: 120.000 TNS(L): 0.0%"), "Qavg: 120.000 TNS(L): 0.0%");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog("https://example.com/a/b"), "https://example.com/a/b");
+    EXPECT_EQ(privacy::RedactStreamEndpointsForLog(""), "");
+}
+
+TEST(LogPrivacySourceTest, LibavDiagnosticsAreRoutedIntoTheSessionLogAndRedacted) {
+    // libav writes to stderr by default, and nothing in the tree redirects stderr, so a
+    // windowless CaptureEngine process discarded every encoder, muxer and RTMP diagnostic.
+    // The callback is the only thing keeping them, and it has to be installed before any
+    // avformat/avcodec call can run.
+    namespace fs = std::filesystem;
+    const std::string engine = ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "mediaengine.cpp");
+    ASSERT_FALSE(engine.empty());
+    EXPECT_NE(engine.find("av_log_set_callback(CaptureEngineAvLogCallback);"), std::string::npos);
+    EXPECT_NE(engine.find("ce::privacy::RedactStreamEndpointsForLog(message).c_str()"), std::string::npos)
+        << "every libav message must be redacted before it reaches the log";
+
+    const size_t install = engine.find("InstallAvLogCallback();");
+    const size_t engineInit = engine.find("return mediaengine_g_Engine->Init(config);");
+    ASSERT_NE(install, std::string::npos);
+    ASSERT_NE(engineInit, std::string::npos);
+    EXPECT_LT(install, engineInit) << "the callback must be installed before the engine initializes";
+
+    // Redaction is what allows the live path to keep its diagnostics; AV_LOG_QUIET used to be
+    // the only protection for the stream key and silenced the transport entirely.
+    const std::string configure =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "video_encoder_configure.cpp");
+    ASSERT_FALSE(configure.empty());
+    // Match the call, not the token: the surrounding comment explains why AV_LOG_QUIET was
+    // dropped and legitimately names it.
+    EXPECT_EQ(configure.find("av_log_set_level(liveOutput"), std::string::npos)
+        << "live output must not be silenced now that endpoints are redacted";
+    EXPECT_NE(configure.find("av_log_set_level(AV_LOG_WARNING);"), std::string::npos);
 }

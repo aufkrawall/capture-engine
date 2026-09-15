@@ -144,4 +144,62 @@ inline std::string CollapsePathForLog(const std::string& path) {
     return path.substr(0, root) + "..." + joiner + path.substr(lastSeparator + 1);
 }
 
+// RedactStreamEndpointsForLog - strips the playpath from any RTMP(S) URL in a message.
+//
+// A live-streaming destination is `rtmp://host/app/<stream key>`: the host says which
+// service and whether it resolved, and the trailing component is a credential equivalent to
+// a password. FFmpeg composes its own diagnostics from the URL it was given, and that text
+// is not under our control, so any message forwarded from libav* has to be filtered rather
+// than trusted.
+//
+// Keeps the scheme and host, drops everything from the first path separator:
+//   "rtmp://live.example/app/secret123 failed" -> "rtmp://live.example/<redacted> failed"
+// A URL with no path is already free of a key and is left alone.
+inline std::string RedactStreamEndpointsForLog(const std::string& message) {
+    static constexpr const char* kSchemes[] = {"rtmps://", "rtmp://"};
+    std::string result = message;
+    for (const char* scheme : kSchemes) {
+        const size_t schemeLength = std::strlen(scheme);
+        size_t search = 0;
+        for (;;) {
+            size_t start = std::string::npos;
+            for (size_t i = search; i + schemeLength <= result.size(); ++i) {
+                size_t k = 0;
+                for (; k < schemeLength; ++k) {
+                    const char left = result[i + k];
+                    const char right = scheme[k];
+                    const char lowered =
+                        (left >= 'A' && left <= 'Z') ? static_cast<char>(left - 'A' + 'a') : left;
+                    if (lowered != right)
+                        break;
+                }
+                if (k == schemeLength) {
+                    start = i;
+                    break;
+                }
+            }
+            if (start == std::string::npos)
+                break;
+
+            // The URL ends at the first character that cannot appear in one.
+            size_t end = start + schemeLength;
+            while (end < result.size()) {
+                const unsigned char c = static_cast<unsigned char>(result[end]);
+                if (c <= 0x20 || c == '"' || c == '\'' || c == 0x7f)
+                    break;
+                ++end;
+            }
+            const size_t pathSeparator = result.find('/', start + schemeLength);
+            if (pathSeparator == std::string::npos || pathSeparator >= end) {
+                search = end;  // Host only: nothing secret to remove.
+                continue;
+            }
+            static constexpr const char kMask[] = "<redacted>";
+            result.replace(pathSeparator + 1, end - (pathSeparator + 1), kMask);
+            search = pathSeparator + 1 + (sizeof(kMask) - 1);
+        }
+    }
+    return result;
+}
+
 }  // namespace ce::privacy

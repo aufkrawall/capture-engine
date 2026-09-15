@@ -66,9 +66,12 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
 
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
     // Native RTMP diagnostics can include the publish playpath (normally the stream key), and
-    // provider-generated error text is not under our control. Live failures are reported through
-    // the redacted operation/error-code path instead. Local recordings retain FFmpeg warnings.
-    av_log_set_level(liveOutput ? AV_LOG_QUIET : AV_LOG_WARNING);
+    // provider-generated error text is not under our control. That used to force AV_LOG_QUIET
+    // for live output, which discarded every transport diagnostic exactly where they matter
+    // most. MediaEngine_InstallAvLogCallback now redacts the endpoint out of every libav
+    // message before it reaches the log, so live output keeps the same warnings as a local
+    // recording.
+    av_log_set_level(AV_LOG_WARNING);
 
     DLL_Log("[VideoEncoder] Step 3: Deferring staging output reservation until recording start");
     outputReservation.CleanupOwnedFile();
