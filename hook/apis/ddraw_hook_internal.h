@@ -85,6 +85,8 @@ typedef float D3DVALUE;
 
 #include "../common/overlay_adapter.h"
 
+#include "../common/screenshot_hook.h"
+
 #include "../../common/secure_dll_loading.h"
 
 #include "../common/overlay_compat.h"
@@ -690,6 +692,9 @@ public:
     void PublishOverlayAdapterLuidOnce();
     bool EnsureCaptureResources(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);
     bool CaptureFrameFromSurface(IDirectDrawSurface7* surface);
+    bool CaptureScreenshotFromSurface(IDirectDrawSurface7* surface, SharedMemoryLayout* sharedMemory,
+                                      uint64_t requestId, uint32_t screenshotWidth, uint32_t screenshotHeight,
+                                      bool includeOverlay);
     void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t ddraw_hook_h);
     void CaptureFrame(void* bits, int pitch, uint32_t sourceBitCount, bool sourceIs565);
 

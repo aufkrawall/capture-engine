@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include <vector>
+
 #include "../../common/shared_defs.h"
 #include "presentation_color.h"
 
@@ -20,6 +22,10 @@ void CompleteScreenshotRequest(SharedMemoryLayout* sharedMemory, uint64_t reques
 bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, const uint8_t* pixels, uint32_t width,
                            uint32_t height, uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
                            ScreenshotColorEncoding colorEncoding);
+
+bool QueueOwnedScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, std::vector<uint8_t>&& pixels,
+                                uint32_t width, uint32_t height, uint32_t rowPitch,
+                                ScreenshotPixelFormat pixelFormat, ScreenshotColorEncoding colorEncoding);
 
 bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
                                      SharedMemoryLayout* sharedMemory, uint64_t requestId,

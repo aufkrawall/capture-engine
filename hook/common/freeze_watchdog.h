@@ -37,6 +37,17 @@ inline bool ShouldAssertRenderThreadFreeze(bool liveRenderLoopEvidence, bool pre
     return liveRenderLoopEvidence || presentInFlight || forceMonitor || runtimePresentationMonitor;
 }
 
+// A same-process #32770 window is useful diagnostic evidence, but it is not by
+// itself evidence of a freeze: third-party overlays create ordinary dialogs in
+// the game process while presentation continues. Preserve early startup dumps
+// before a render loop exists and immediate known-critical error dialogs, then
+// require the normal render heartbeat to be stale before calling any other
+// persistent dialog a freeze.
+inline bool ShouldCapturePersistentDialogDump(bool criticalDialog, bool renderLoopObserved,
+                                              double heartbeatElapsedSeconds, double freezeTimeoutSeconds) {
+    return criticalDialog || !renderLoopObserved || heartbeatElapsedSeconds >= freezeTimeoutSeconds;
+}
+
 // Which thread a freeze dump must capture when nothing has claimed the
 // monitored render thread. A present that is still in flight is a thread stuck
 // inside CE's own hook, so its stack is the freeze - DOOM Eternal

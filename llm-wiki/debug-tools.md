@@ -45,7 +45,8 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
 
 | Tool | Purpose | Installed/default path |
 | --- | --- | --- |
-| `cdb.exe` | Command-line `.dmp` debugging and stack inspection | `C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe` |
+| `cdb.exe` | Command-line 64-bit `.dmp` debugging and stack inspection | `C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe` |
+| `cdb.exe` | Command-line 32-bit/WoW64 `.dmp` debugging and stack inspection | `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86\cdb.exe` |
 | `windbg.exe` | Interactive `.dmp` debugging | `C:\Program Files\Windows Kits\10\Debuggers\x64\windbg.exe` |
 | `WinDbgX.exe` | Interactive WinDbg Preview `.dmp` debugging | `%LOCALAPPDATA%\Microsoft\WindowsApps\WinDbgX.exe` |
 | `dumpchk.exe` | Validate dump readability and basic dump metadata | `C:\Program Files\Windows Kits\10\Debuggers\x64\dumpchk.exe` |

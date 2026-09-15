@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-09-15 - DirectDraw screenshots now complete in-game; healthy overlay dialogs are not freezes
+
+Gothic II/SystemPack session `20260915_124517` continued presenting DirectDraw frames at 144 FPS after both
+screenshot hotkeys, but the hook emitted no `[Screenshot]` line. Request 1 stayed Pending for the controller's
+full 15-second wait and failed only as the game exited; the desktop fallback then saved it, while the queued second
+hotkey ran after source teardown. The DirectDraw presentation route never consumed the shared screenshot request.
+
+`ComposePresentation` now reads the request at the exact Flip/blit publication boundary and sends owned BGRA8
+pixels to the common asynchronous worker. Standard 32/24/565/555 surfaces convert directly; GDI is a one-request
+fallback for unusual/non-lockable layouts. Included screenshots run after the native or CPU overlay. Excluded
+screenshots restore the reversible CPU composite, run before it, and suppress native D3D7 EndScene drawing for
+that frame; an after-EndScene request defers only until the next real frame rather than returning the wrong image.
+Recording and screenshot overlay inclusion remain independent, and no encoding or GPU wait enters presentation.
+
+The session's dump was a false positive. It was triggered five seconds after a same-process `#32770` window
+appeared on Steam's `gameoverlayrenderer` thread, while the adopted DirectDraw render thread kept heartbeating and
+continued for roughly 104 seconds after dump completion. An ordinary persistent dialog now requires the render
+heartbeat to reach the configured freeze timeout once a render loop has been observed. Critical `ERR_GFX_STATE`
+and pre-render-loop startup dialogs keep their prior immediate/early diagnostic behavior. The documented x86 CDB
+path was also corrected to the Windows SDK's 32-bit location under `C:\Program Files (x86)`.
+
 ### 2026-09-15 - DirectDraw stopped inventing GPU dependencies and scene boundaries
 
 Gothic II/SystemPack session `20260914_203653` isolated the remaining fallback cost. By the ten-second sample the

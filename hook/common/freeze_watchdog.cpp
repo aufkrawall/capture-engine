@@ -516,6 +516,7 @@ void FreezeWatchdog::WatchdogThread() {
     std::string dialogDescription;
     std::string dialogIdentity;
     bool dialogDumpWritten = false;
+    bool healthyDialogSuppressionLogged = false;
     bool freezeDumpSuppressionLogged = false;
     uint64_t lastDialogDumpTime = 0;
     std::string lastDialogDumpIdentity;
@@ -571,6 +572,7 @@ void FreezeWatchdog::WatchdogThread() {
                 dialogDescription = currentDialogDescription;
                 dialogIdentity = currentDialogIdentity;
                 dialogDumpWritten = false;
+                healthyDialogSuppressionLogged = false;
                 freezeDumpSuppressionLogged = false;
                 HookLogImportant("FreezeWatchdog: Detected %s (hwnd=%p tid=%lu)", dialogDescription.c_str(),
                                  dialogInfo.hwnd, dialogThreadId);
@@ -587,6 +589,7 @@ void FreezeWatchdog::WatchdogThread() {
             dialogDescription.clear();
             dialogIdentity.clear();
             dialogDumpWritten = false;
+            healthyDialogSuppressionLogged = false;
             freezeDumpSuppressionLogged = false;
         }
 
@@ -630,7 +633,19 @@ void FreezeWatchdog::WatchdogThread() {
             const double requiredDialogDumpDelay = isErrGfxStateDialog ? 0.0 : kDialogDumpDelaySeconds;
             const bool withinDialogDumpWindow = sinceStartup <= kDialogStartupWindowSeconds || isErrGfxStateDialog;
             if (dialogElapsed >= requiredDialogDumpDelay && withinDialogDumpWindow) {
-                if (!dialogIdentity.empty() && dialogIdentity == lastDialogDumpIdentity &&
+                const double freezeTimeout = timeoutSeconds_.load(std::memory_order_acquire);
+                const bool renderLoopObserved = renderLoopObserved_.load(std::memory_order_acquire);
+                if (!ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+                        isErrGfxStateDialog, renderLoopObserved, elapsed, freezeTimeout)) {
+                    if (!healthyDialogSuppressionLogged) {
+                        HookLogImportant(
+                            "FreezeWatchdog: Persistent dialog remains visible after %.1fs, but the render "
+                            "heartbeat is fresh (age=%.1fs timeout=%.1fs) - suppressing dialog dump",
+                            dialogElapsed, elapsed, freezeTimeout);
+                        healthyDialogSuppressionLogged = true;
+                    }
+                    continue;
+                } else if (!dialogIdentity.empty() && dialogIdentity == lastDialogDumpIdentity &&
                     (now - lastDialogDumpTime) < kDialogDumpDedupWindowMicros) {
                     HookLogImportant(
                         "FreezeWatchdog: Suppressing duplicate dialog dump for %s because a dump was already captured "

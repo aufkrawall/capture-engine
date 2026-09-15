@@ -197,11 +197,52 @@ TEST(DDrawPresentPolicyTest, RegionSizeIsAFractionOfTheFrameItReplaces) {
 
 TEST(DDrawPresentPolicyTest, NativeEndSceneRenderingHonorsOverlayExcludedRecording) {
     EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, /*recording=*/false,
-                                                /*captureIncludesOverlay=*/false));
-    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, true, true));
-    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, true, true, false));
-    EXPECT_FALSE(policy::NativeOverlayShouldDraw(false, true, false, true));
-    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, false, false, true));
+                                                /*captureIncludesOverlay=*/false,
+                                                /*screenshotPending=*/false,
+                                                /*screenshotIncludesOverlay=*/false));
+    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, true, true, false, false));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, true, true, false, false, true));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(false, true, false, true, false, true));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, false, false, true, false, true));
+}
+
+TEST(DDrawPresentPolicyTest, NativeEndSceneRenderingHonorsOverlayExcludedScreenshot) {
+    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, false, true,
+                                                /*screenshotPending=*/true,
+                                                /*screenshotIncludesOverlay=*/true));
+    EXPECT_FALSE(policy::NativeOverlayShouldDraw(true, true, false, true,
+                                                 /*screenshotPending=*/true,
+                                                 /*screenshotIncludesOverlay=*/false));
+    EXPECT_TRUE(policy::NativeOverlayShouldDraw(true, true, false, true,
+                                                /*screenshotPending=*/false,
+                                                /*screenshotIncludesOverlay=*/false));
+}
+
+TEST(DDrawPresentPolicyTest, ScreenshotOverlayOptionSelectsTheExactReadPhase) {
+    EXPECT_EQ(policy::SelectOverlayReadPhase(/*requested=*/false, true, true),
+              policy::OverlayReadPhase::None);
+    EXPECT_EQ(policy::SelectOverlayReadPhase(/*requested=*/true, /*showOverlay=*/true,
+                                             /*includeOverlay=*/false),
+              policy::OverlayReadPhase::BeforeOverlay);
+    EXPECT_EQ(policy::SelectOverlayReadPhase(/*requested=*/true, /*showOverlay=*/true,
+                                             /*includeOverlay=*/true),
+              policy::OverlayReadPhase::AfterOverlay);
+    EXPECT_EQ(policy::SelectOverlayReadPhase(/*requested=*/true, /*showOverlay=*/false,
+                                             /*includeOverlay=*/true),
+              policy::OverlayReadPhase::BeforeOverlay);
+}
+
+TEST(DDrawPresentPolicyTest, RecordingAndScreenshotOverlayChoicesRemainIndependent) {
+    for (bool captureIncludesOverlay : {false, true}) {
+        for (bool screenshotIncludesOverlay : {false, true}) {
+            const auto capture =
+                policy::SelectOverlayReadPhase(true, true, captureIncludesOverlay);
+            const auto screenshot =
+                policy::SelectOverlayReadPhase(true, true, screenshotIncludesOverlay);
+            EXPECT_EQ(capture == policy::OverlayReadPhase::AfterOverlay, captureIncludesOverlay);
+            EXPECT_EQ(screenshot == policy::OverlayReadPhase::AfterOverlay, screenshotIncludesOverlay);
+        }
+    }
 }
 
 TEST(DDrawPresentPolicyTest, TheWrittenRectangleCoversWhatCeWroteLastTime) {

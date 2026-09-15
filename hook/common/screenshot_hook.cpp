@@ -244,6 +244,25 @@ bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId,
     return true;
 }
 
+bool QueueOwnedScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, std::vector<uint8_t>&& pixels,
+                                uint32_t width, uint32_t height, uint32_t rowPitch,
+                                ScreenshotPixelFormat pixelFormat, ScreenshotColorEncoding colorEncoding) {
+    ScreenshotTask task;
+    if (!BuildScreenshotTask(sharedMemory, requestId, width, height, rowPitch, pixelFormat, colorEncoding, task))
+        return false;
+    if (pixels.size() != task.header.payloadSize) {
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_INVALID_DATA);
+        return false;
+    }
+
+    task.pixels = std::move(pixels);
+    if (!EnqueueScreenshotTask(std::move(task))) {
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Busy, ERROR_BUSY);
+        return false;
+    }
+    return true;
+}
+
 bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
                                      SharedMemoryLayout* sharedMemory, uint64_t requestId,
                                      ce::presentation_color::Encoding presentationEncoding) {

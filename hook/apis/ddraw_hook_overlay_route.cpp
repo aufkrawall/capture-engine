@@ -204,10 +204,12 @@ bool DrawNativeLegacyD3DOverlayAtEndScene(void* opaqueDevice) {
     auto* device = static_cast<IDirect3DDevice7*>(opaqueDevice);
     SharedMemoryLayout* shared = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const bool recording = g_IPC && g_IPC->IsRecording();
+    const bool screenshotPending = GetPendingScreenshotRequestId(shared) != 0;
     const bool nativeAllowed =
         shared && policy::NativeOverlayShouldDraw(GetActiveGraphicsConfig().legacyD3DNativeOverlay,
                                                   shared->overlayConfig.showOverlay, recording,
-                                                  shared->overlayConfig.captureIncludeOverlay);
+                                                  shared->overlayConfig.captureIncludeOverlay, screenshotPending,
+                                                  shared->overlayConfig.screenshotIncludeOverlay);
     if (!device || !nativeAllowed) {
         std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
         ClearNativeSurfacePixelsLocked();

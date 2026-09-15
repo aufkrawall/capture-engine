@@ -489,6 +489,24 @@ TEST(FreezeWatchdogPolicyTest, CrossApiPresentLivenessSuppressesOnlyWhileFresh) 
     EXPECT_FALSE(ce::freeze_watchdog_policy::IsObservedPresentRecent(100000, 99999, kMaxAgeMs));
 }
 
+TEST(FreezeWatchdogPolicyTest, PersistentDialogRequiresAStaleRenderHeartbeat) {
+    constexpr double kFreezeTimeoutSeconds = 30.0;
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+        /*criticalDialog=*/false, /*renderLoopObserved=*/true, 0.0, kFreezeTimeoutSeconds));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+        /*criticalDialog=*/false, /*renderLoopObserved=*/true, 29.999, kFreezeTimeoutSeconds));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+        /*criticalDialog=*/false, /*renderLoopObserved=*/true, kFreezeTimeoutSeconds, kFreezeTimeoutSeconds));
+}
+
+TEST(FreezeWatchdogPolicyTest, StartupAndCriticalDialogsRemainDumpable) {
+    constexpr double kFreezeTimeoutSeconds = 30.0;
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+        /*criticalDialog=*/false, /*renderLoopObserved=*/false, 0.0, kFreezeTimeoutSeconds));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldCapturePersistentDialogDump(
+        /*criticalDialog=*/true, /*renderLoopObserved=*/true, 0.0, kFreezeTimeoutSeconds));
+}
+
 // DOOM Eternal may rotate Vulkan presents across an idTech worker pool while
 // its WSI transport also traverses CE-observed D3D12/DXGI helper paths. Once a
 // Vulkan call returns, neither the last worker nor historical helper activity

@@ -252,11 +252,21 @@ inline bool AlignCompositeRegion(const Rect& bounds, uint32_t surfaceWidth, uint
     return true;
 }
 
-// Native pixels are already in the render target when capture reads it. An
-// overlay-excluded recording therefore stays on the CPU path, which can capture
-// first and composite afterwards.
-inline bool NativeOverlayShouldDraw(bool enabled, bool showOverlay, bool recording, bool captureIncludesOverlay) {
-    return enabled && showOverlay && (!recording || captureIncludesOverlay);
+enum class OverlayReadPhase { None, BeforeOverlay, AfterOverlay };
+
+inline OverlayReadPhase SelectOverlayReadPhase(bool requested, bool showOverlay, bool includeOverlay) {
+    if (!requested)
+        return OverlayReadPhase::None;
+    return showOverlay && includeOverlay ? OverlayReadPhase::AfterOverlay : OverlayReadPhase::BeforeOverlay;
+}
+
+// Native pixels are already in the render target when recording or screenshot
+// capture reads it. Any overlay-excluded consumer therefore keeps this frame on
+// the CPU path, which can read first and composite afterwards.
+inline bool NativeOverlayShouldDraw(bool enabled, bool showOverlay, bool recording, bool captureIncludesOverlay,
+                                    bool screenshotPending, bool screenshotIncludesOverlay) {
+    return enabled && showOverlay && (!recording || captureIncludesOverlay) &&
+           (!screenshotPending || screenshotIncludesOverlay);
 }
 
 // One premultiplied source-over step: the sprite already carries colour

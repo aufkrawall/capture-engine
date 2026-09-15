@@ -189,6 +189,34 @@ TEST(ScreenshotPresentThreadPolicyTest, TheD3D12ProducerSubmitsTheCopyWithoutWai
         << "mapping the readback implies the copy already completed, which only the worker may assume";
 }
 
+TEST(ScreenshotPresentThreadPolicyTest, DirectDrawConsumesTheRequestAtItsPresentationBoundary) {
+    const std::string presentation =
+        ReadSource(std::filesystem::path("hook") / "apis" / "ddraw_hook_capture.cpp");
+    const std::string capture =
+        ReadSource(std::filesystem::path("hook") / "apis" / "ddraw_hook_capture_frame.cpp");
+    ASSERT_FALSE(presentation.empty());
+    ASSERT_FALSE(capture.empty());
+
+    const size_t compose = presentation.find("bool ComposePresentation(");
+    const size_t complete = presentation.find("void NotePresentationComplete()", compose);
+    ASSERT_NE(compose, std::string::npos);
+    ASSERT_NE(complete, std::string::npos);
+    const std::string composeBody = presentation.substr(compose, complete - compose);
+    EXPECT_NE(composeBody.find("GetPendingScreenshotRequestId(shm)"), std::string::npos);
+    EXPECT_NE(composeBody.find("CaptureScreenshotFromSurface(compositeTarget"), std::string::npos);
+    EXPECT_NE(composeBody.find("RestoreCompositeRegion(compositeTarget)"), std::string::npos)
+        << "an overlay-excluded screenshot must remove a persistent CPU composite before reading";
+
+    const size_t producer = capture.find("bool DDrawCapture::CaptureScreenshotFromSurface(");
+    const size_t recording = capture.find("bool DDrawCapture::CaptureFrameFromSurface(", producer);
+    ASSERT_NE(producer, std::string::npos);
+    ASSERT_NE(recording, std::string::npos);
+    const std::string producerBody = capture.substr(producer, recording - producer);
+    EXPECT_NE(producerBody.find("QueueDirectDrawScreenshot"), std::string::npos);
+    EXPECT_EQ(producerBody.find("WaitForSingleObject"), std::string::npos)
+        << "the DirectDraw presentation thread may copy CPU pixels but must not wait for screenshot encoding";
+}
+
 TEST(ScreenshotPresentThreadPolicyTest, OnlyTheWorkerWaitsAndItNeverWaitsForever) {
     const std::string worker = ReadSource(std::filesystem::path("hook") / "common" / "screenshot_worker.cpp");
     ASSERT_FALSE(worker.empty());

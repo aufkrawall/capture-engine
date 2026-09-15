@@ -197,8 +197,17 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
+    const bool screenshotIncludeOverlay = shm ? shm->overlayConfig.screenshotIncludeOverlay : true;
     const bool shouldDrawOverlay = shm && shm->overlayConfig.showOverlay;
     const bool isRecording = g_IPC && g_IPC->IsRecording();
+    const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
+    const bool screenshotRequested = screenshotRequestId != 0;
+    const auto capturePhase = ce::ddraw_present_policy::SelectOverlayReadPhase(
+        isRecording, shouldDrawOverlay, captureIncludeOverlay);
+    const auto screenshotPhase = ce::ddraw_present_policy::SelectOverlayReadPhase(
+        screenshotRequested, shouldDrawOverlay, screenshotIncludeOverlay);
+    const bool screenshotAfterOverlay =
+        screenshotPhase == ce::ddraw_present_policy::OverlayReadPhase::AfterOverlay;
     HWND targetHwnd = ResolveDirectDrawTargetWindow();
 
     uint32_t surfaceWidth = 0;
@@ -222,6 +231,7 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
 
     // A direct-scanout change is already on screen; only the part of it that
     // overwrote the overlay's own pixels needs the overlay put back.
+    bool overlayNeedsComposite = shouldDrawOverlay;
     if (shouldDrawOverlay && kind == ce::ddraw_present_policy::PresentKind::DirectScanout && haveChangedRect) {
         RECT overlayBounds = {};
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
@@ -232,23 +242,60 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
                 static_cast<int>(overlayBounds.right), static_cast<int>(overlayBounds.bottom)};
             if (!ce::ddraw_present_policy::DirectScanoutNeedsComposite(bounds, true, changedRect)) {
                 diag.skippedOutsideOverlay.fetch_add(1, std::memory_order_relaxed);
-                ddraw_hook_g_CaptureRecurse--;
-                return false;
+                overlayNeedsComposite = false;
+                if (!screenshotRequested) {
+                    ddraw_hook_g_CaptureRecurse--;
+                    return false;
+                }
             }
         }
     }
 
     auto doOverlay = [&]() {
-        if (shouldDrawOverlay) {
+        if (overlayNeedsComposite) {
             diag.composites.fetch_add(1, std::memory_order_relaxed);
             DrawDDrawOverlay(compositeTarget, kind, haveChangedRect, changedRect);
-        } else {
+        } else if (!shouldDrawOverlay) {
             // Hiding the overlay while a partial-update screen is up (a loading
             // screen that only repaints a progress bar) leaves CE's rectangle
             // with nothing to repaint it, so the saved application backdrop has
             // to be put back explicitly.
             ddraw_hook_g_DDrawCapture.RestoreCompositeRegion(compositeTarget);
         }
+    };
+
+    auto doScreenshot = [&]() {
+        if (!screenshotRequested)
+            return;
+        if (!haveSurfaceSize) {
+            HookLogImportant("[Screenshot] DirectDraw request=%llu has no surface geometry",
+                             static_cast<unsigned long long>(screenshotRequestId));
+            CompleteScreenshotRequest(shm, screenshotRequestId, ScreenshotRequestStatus::Failed,
+                                      ERROR_INVALID_DATA);
+            return;
+        }
+        if (!screenshotAfterOverlay) {
+            size_t repairCount = 0;
+            const auto nativeState = QueryNativeLegacyD3DOverlay(compositeTarget, nullptr, 0, repairCount);
+            if (nativeState != ce::ddraw_native_overlay::State::Absent) {
+                // The request may arrive between EndScene and Flip, after the
+                // native sidecar already wrote this frame. Keep it pending for
+                // the next EndScene, which sees the request and selects the
+                // reversible CPU composite before presentation.
+                static std::atomic<uint64_t> s_loggedDeferredRequest{0};
+                if (s_loggedDeferredRequest.exchange(screenshotRequestId, std::memory_order_relaxed) !=
+                    screenshotRequestId) {
+                    HookLogImportant(
+                        "[Screenshot] DirectDraw deferring overlay-excluded request=%llu until native pixels are "
+                        "replaced (surface=%p state=%d)",
+                        static_cast<unsigned long long>(screenshotRequestId), compositeTarget,
+                        static_cast<int>(nativeState));
+                }
+                return;
+            }
+        }
+        ddraw_hook_g_DDrawCapture.CaptureScreenshotFromSurface(compositeTarget, shm, screenshotRequestId,
+                                                               surfaceWidth, surfaceHeight, screenshotAfterOverlay);
     };
 
     // A partial scanout update restores the overlay but is not a frame: feeding
@@ -262,7 +309,7 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
     auto doCapture = [&]() {
         if (!isRecording || !changeCoversSurface)
             return;
-        if (!captureIncludeOverlay) {
+        if (capturePhase == ce::ddraw_present_policy::OverlayReadPhase::BeforeOverlay) {
             size_t repairCount = 0;
             const auto nativeState = QueryNativeLegacyD3DOverlay(compositeTarget, nullptr, 0, repairCount);
             if (nativeState != ce::ddraw_native_overlay::State::Absent) {
@@ -290,15 +337,32 @@ bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface
         }
     };
 
-    // Both the recording and the screen now read the same image, so the only
-    // question left is whether the recording sees the overlay in it.
-    if (captureIncludeOverlay) {
+    // DirectDraw composites persist in a surface until the application writes
+    // those pixels again. Restore only CE's still-matching pixels before an
+    // overlay-free consumer, then put the overlay back for the screen. This
+    // also lets recording and screenshot inclusion be configured independently.
+    const bool captureBeforeOverlay =
+        capturePhase == ce::ddraw_present_policy::OverlayReadPhase::BeforeOverlay;
+    const bool screenshotBeforeOverlay =
+        screenshotPhase == ce::ddraw_present_policy::OverlayReadPhase::BeforeOverlay;
+    if (!shouldDrawOverlay) {
         doOverlay();
-        doCapture();
     } else {
-        doCapture();
-        doOverlay();
+        if (captureBeforeOverlay || screenshotBeforeOverlay) {
+            ddraw_hook_g_DDrawCapture.RestoreCompositeRegion(compositeTarget);
+            overlayNeedsComposite = true;
+        }
     }
+    if (captureBeforeOverlay)
+        doCapture();
+    if (screenshotBeforeOverlay)
+        doScreenshot();
+    if (shouldDrawOverlay)
+        doOverlay();
+    if (capturePhase == ce::ddraw_present_policy::OverlayReadPhase::AfterOverlay)
+        doCapture();
+    if (screenshotAfterOverlay)
+        doScreenshot();
 
     ddraw_hook_g_CaptureRecurse--;
     return true;

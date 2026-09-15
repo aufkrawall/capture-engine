@@ -11,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -120,6 +121,30 @@ TEST_F(ScreenshotWorkerTest, PublishesExactRawPayloadBeforeSignalingSuccess) {
     EXPECT_EQ(header.totalSize, sizeof(header) + pixels.size());
     EXPECT_EQ(header.payloadSize, pixels.size());
     EXPECT_EQ(storedPixels, pixels);
+}
+
+TEST_F(ScreenshotWorkerTest, PublishesOwnedPixelsWithoutASecondProducerCopy) {
+    directory_ = UniqueDirectory();
+    ASSERT_TRUE(std::filesystem::create_directories(directory_));
+    const std::filesystem::path partPath = directory_ / L"owned.part";
+    const std::filesystem::path readyPath = directory_ / L"owned.ready";
+    constexpr uint64_t requestId = 19;
+    ASSERT_TRUE(PrepareRequest(partPath, requestId));
+
+    std::vector<uint8_t> pixels{10, 20, 30, 255, 40, 50, 60, 255};
+    const std::vector<uint8_t> expected = pixels;
+    ASSERT_TRUE(QueueOwnedScreenshotPixels(&shared_, requestId, std::move(pixels), 2, 1, 8,
+                                           ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB));
+    ASSERT_EQ(WaitForSingleObject(event_.get(), 5000), WAIT_OBJECT_0);
+
+    std::ifstream input(readyPath, std::ios::binary);
+    ScreenshotRawHeaderV2 header{};
+    std::vector<uint8_t> stored(expected.size());
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    input.read(reinterpret_cast<char*>(stored.data()), static_cast<std::streamsize>(stored.size()));
+    ASSERT_TRUE(input.good());
+    EXPECT_EQ(header.requestId, requestId);
+    EXPECT_EQ(stored, expected);
 }
 
 TEST_F(ScreenshotWorkerTest, ReportsWorkerPublicationFailureWithoutLeavingPartFile) {
