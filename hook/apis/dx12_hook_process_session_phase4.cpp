@@ -2,7 +2,9 @@
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::Phase4() {
-skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue ProcessFrame
+// Phase3 returns kSkipOverlayInit to reach this point: the original code used a
+// `goto skipOverlayInit` whose label sat here, and Run() calling Phase4 after Phase3
+// lands in the same place.
 
     // CRITICAL FIX: Decrement FG transition cooldown when overlayInit=true but syncInit=false.
     // The !overlayInit path (line 4783) decrements when overlay needs full reinit.
@@ -229,7 +231,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     focusLossBackgroundRuntimeOwnedPresentation =
         dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() || DXGIShared::DoesFGRuntimeOwnSwapchain();
     focusLossBackgroundSteamDeferredSubmit =
-        dx12_hook_g_deferOverlaySubmitToSteamECL && !focusLossBackgroundUsingDedicatedQueue;
+        false;  // Steam-ECL deferred submit retired in c4a93a44
     focusLossBackgroundFrameGenerationActive =
         g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     // v8 visibility-gated backbuffer hold.

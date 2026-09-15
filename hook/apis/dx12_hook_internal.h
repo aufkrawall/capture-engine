@@ -157,9 +157,7 @@ bool HookHasFSRFGHistory();
 
 bool HookHasExplicitStreamlineSetOptionsActivation();
 
-extern "C" __declspec(dllexport) void DX12_SetDeferOverlaySubmitToSteamECL(bool defer);
 
-extern "C" __declspec(dllexport) bool DX12_IsDeferOverlaySubmitPending();
 
 ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay();
 
@@ -362,7 +360,6 @@ void DX12_OnSwapchainResizeBegin();
 
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 
-extern "C" __declspec(dllexport) void DX12_SubmitSteamDeferredOverlay();
 
 extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr, BOOL isFullscreen, BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
 
@@ -635,7 +632,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThi
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly);
 bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format);
 void ApplyPrerenderLimitDX12(float limit, bool frameGenerationPresentationActive);
-bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const char* callerContext);
 bool IsSteamOverlayModulePath(const char* modulePath);
 bool IsD3D12ModuleAddress(void* address);
 // Writes one session-local diagnostic minidump when a CreateSwapChainForHwnd E_ACCESSDENIED recovery

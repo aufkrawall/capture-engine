@@ -454,7 +454,6 @@ ProcessFrameFlow FrameProcessSession::DrawOverlayFrame() {
     if (flow != ProcessFrameFlow::kContinue) {
         goto overlay_done;
     }
-    skip_overlay_draw:;
     overlay_done:;
     }
     return ProcessFrameFlow::kContinue;

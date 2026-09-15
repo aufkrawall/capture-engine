@@ -225,13 +225,6 @@ struct DX12OverlayState {
 void Cleanup();
 };
 
-struct SteamDeferredOverlaySubmitState {
-    ID3D12CommandList* cmdList = nullptr;
-    int allocIdx = -1;
-    ID3D12CommandQueue* eclQueue = nullptr;
-    bool pending = false;
-};
-
 struct DX12Context {
     ID3D12Device* device = nullptr;
     ID3D12CommandQueue* queue = nullptr;
@@ -473,8 +466,6 @@ extern std::atomic<int> dx12_hook_g_FGTransitionCooldown;
 extern int dx12_hook_g_FramesSinceFGActive;
 extern DX12DescFreeBackend* dx12_hook_g_DescFreeBackend;
 extern DX12OverlayState dx12_hook_g_State;
-extern bool dx12_hook_g_deferOverlaySubmitToSteamECL;
-extern SteamDeferredOverlaySubmitState dx12_hook_g_steamDeferredOverlay;
 extern SharedCaptureD3D12 dx12_hook_g_SharedCaptureD3D12;
 extern OverlayAdapter dx12_hook_g_D3D11On12Adapter;
 extern OverlayAdapter dx12_hook_g_SLFGAdapter;

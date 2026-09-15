@@ -4,16 +4,27 @@
 
 // FrameProcessSession: the former ProcessFrame body in dx12_hook_process.cpp, split into
 // phase methods + a recursive draw-region chunk tree. Early returns and forward gotos are
-// routed via ProcessFrameFlow; Run() stops on kReturn and the DrawOverlay wrapper owns the
-// skip_overlay_draw/overlay_done labels.
-
+// routed via ProcessFrameFlow.
+//
+// Only two values are ever compared by name: Run() stops on kReturn, and the Draw* chain
+// treats anything that is not kContinue as "stop this sub-chain" and jumps to overlay_done.
+// The three remaining values are distinct for readability at the return site, and are
+// equivalent in handling because of where the original goto targets sat:
+//
+//   kSkipOverlayInit - the old `goto skipOverlayInit` jumped to the first statement of
+//                      Phase4, which is exactly where Run() continues after Phase3 returns.
+//   kSkipOverlayDraw - its label sat immediately before overlay_done with nothing between.
+//   kOverlayDone     - the overlay_done label itself, which is still a real goto target.
+//
+// kSkipSteamFence is gone with the Steam-ECL deferred submit it belonged to (retired in
+// c4a93a44). It was the one value whose label sat *mid-function*, so returning it skipped
+// everything between - including the backbuffer release.
 enum class ProcessFrameFlow {
     kContinue,
     kReturn,
     kSkipOverlayInit,
     kSkipOverlayDraw,
     kOverlayDone,
-    kSkipSteamFence,
 };
 
 class FrameProcessSession {

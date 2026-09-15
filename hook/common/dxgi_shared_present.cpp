@@ -10,9 +10,6 @@
 #ifdef BUILDING_CAPTURE_HOOK
 extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
-extern "C" void DX12_SetDeferOverlaySubmitToSteamECL(bool defer);
-extern "C" void DX12_SubmitSteamDeferredOverlay();
-extern "C" bool DX12_IsDeferOverlaySubmitPending();
 extern "C" void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval,
                                                    UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
                                                    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
@@ -57,15 +54,6 @@ void NoteDX12PresentResultForVtablePath(IDXGISwapChain* pSwapChain, const char* 
 
 // Inline wrappers for the new Steam ECL deferred overlay functions.
 // Since BUILDING_CAPTURE_HOOK is defined, these are direct calls to the exports.
-static void InvokeDX12SetDeferOverlaySubmitToSteamECL(bool defer) {
-    DX12_SetDeferOverlaySubmitToSteamECL(defer);
-}
-static void InvokeDX12SubmitSteamDeferredOverlay() {
-    DX12_SubmitSteamDeferredOverlay();
-}
-static bool InvokeDX12IsDeferOverlaySubmitPending() {
-    return DX12_IsDeferOverlaySubmitPending();
-}
 #else
 using PFN_DX12WaitForOverlayCompletion = void (*)(ID3D12CommandQueue* pQueue);
 using PFN_DX12FlushDeferredSignal = void (*)();
@@ -119,71 +107,7 @@ void InvokeDX12FlushDeferredSignal() {
     }
 }
 
-// Steam ECL deferred overlay functions (stubs for non-hook builds).
-// In the test stub build these should never be called meaningfully.
-using PFN_DX12SetDeferOverlay = void (*)(bool);
-using PFN_DX12SubmitDeferredOverlay = void (*)();
-using PFN_DX12IsDeferOverlayPending = bool (*)();
 
-static PFN_DX12SetDeferOverlay ResolveDX12SetDeferOverlay() {
-    static std::once_flag s_once;
-    static PFN_DX12SetDeferOverlay s_fn = nullptr;
-    std::call_once(s_once, []() {
-        HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook)
-            hHook = GetModuleHandleA("capture_hook_x86.dll");
-        if (hHook) {
-            s_fn = reinterpret_cast<PFN_DX12SetDeferOverlay>(
-                GetProcAddress(hHook, "DX12_SetDeferOverlaySubmitToSteamECL"));
-        }
-    });
-    return s_fn;
-}
-
-static PFN_DX12SubmitDeferredOverlay ResolveDX12SubmitSteamDeferredOverlay() {
-    static std::once_flag s_once;
-    static PFN_DX12SubmitDeferredOverlay s_fn = nullptr;
-    std::call_once(s_once, []() {
-        HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook)
-            hHook = GetModuleHandleA("capture_hook_x86.dll");
-        if (hHook) {
-            s_fn = reinterpret_cast<PFN_DX12SubmitDeferredOverlay>(
-                GetProcAddress(hHook, "DX12_SubmitSteamDeferredOverlay"));
-        }
-    });
-    return s_fn;
-}
-
-static PFN_DX12IsDeferOverlayPending ResolveDX12IsDeferOverlayPending() {
-    static std::once_flag s_once;
-    static PFN_DX12IsDeferOverlayPending s_fn = nullptr;
-    std::call_once(s_once, []() {
-        HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook)
-            hHook = GetModuleHandleA("capture_hook_x86.dll");
-        if (hHook) {
-            s_fn = reinterpret_cast<PFN_DX12IsDeferOverlayPending>(
-                GetProcAddress(hHook, "DX12_IsDeferOverlaySubmitPending"));
-        }
-    });
-    return s_fn;
-}
-
-static void InvokeDX12SetDeferOverlaySubmitToSteamECL(bool defer) {
-    PFN_DX12SetDeferOverlay fn = ResolveDX12SetDeferOverlay();
-    if (fn)
-        fn(defer);
-}
-static void InvokeDX12SubmitSteamDeferredOverlay() {
-    PFN_DX12SubmitDeferredOverlay fn = ResolveDX12SubmitSteamDeferredOverlay();
-    if (fn)
-        fn();
-}
-static bool InvokeDX12IsDeferOverlaySubmitPending() {
-    PFN_DX12IsDeferOverlayPending fn = ResolveDX12IsDeferOverlayPending();
-    return fn ? fn() : false;
-}
 
 // Stub for non-hook/test builds; present-result occlusion tracking lives in the hook DLL.
 void NoteDX12PresentResultForVtablePath(IDXGISwapChain*, const char*, UINT, UINT, HRESULT) {}

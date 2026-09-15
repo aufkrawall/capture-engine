@@ -118,19 +118,6 @@ bool HookHasFSRFGHistory() {
 bool HookHasExplicitStreamlineSetOptionsActivation() {
     return StreamlineHook::HasExplicitSetOptionsActivationForCurrentComeback();
 }
-extern "C" __declspec(dllexport) void DX12_SetDeferOverlaySubmitToSteamECL(bool defer) {
-    dx12_hook_g_deferOverlaySubmitToSteamECL = defer;
-    if (!defer) {
-        // Clear any stale deferred state
-        dx12_hook_g_steamDeferredOverlay.pending = false;
-        dx12_hook_g_steamDeferredOverlay.cmdList = nullptr;
-        dx12_hook_g_steamDeferredOverlay.allocIdx = -1;
-        dx12_hook_g_steamDeferredOverlay.eclQueue = nullptr;
-    }
-}
-extern "C" __declspec(dllexport) bool DX12_IsDeferOverlaySubmitPending() {
-    return dx12_hook_g_steamDeferredOverlay.pending;
-}
 bool HookHasSafePostFSRBootstrapPath() {
     return HookHasSafePostFSRBootstrapPathImpl();
 }

@@ -163,9 +163,7 @@ DX12DescFreeBackend* dx12_hook_g_DescFreeBackend = nullptr;
 
 DX12OverlayState dx12_hook_g_State;
 
-bool dx12_hook_g_deferOverlaySubmitToSteamECL = false;
 
-SteamDeferredOverlaySubmitState dx12_hook_g_steamDeferredOverlay;
 
 SharedCaptureD3D12 dx12_hook_g_SharedCaptureD3D12;
 

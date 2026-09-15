@@ -663,13 +663,6 @@ skip_command_queue_registration:
 
     ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
 
-    // Detect Steam overlay ECL: if the caller is from gameoverlayrenderer64.dll
-    // AND we have a deferred CE overlay pending (set by DetourPresent for the
-    // non-SL Steam invoke path), submit CE overlay commands AFTER Steam's ECL.
-    // This ensures CE overlay renders on top of Steam's cleared backbuffer
-    // instead of being overwritten by Steam's clear.
-    const bool eclCallerIsSteam = eclCallerModulePath[0] != '\0' && IsSteamOverlayModulePath(eclCallerModulePath);
-    const bool hasDeferredOverlay = dx12_hook_g_steamDeferredOverlay.pending;
 
     if (original) {
         const bool streamlineUiObservers = !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclStreamlineUiHooksOff);
@@ -685,26 +678,6 @@ skip_command_queue_registration:
         }
         if (streamlineUiObservers) {
             ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
-        }
-    }
-
-    // After Steam's ECL completes: submit CE deferred overlay to the same queue.
-    if (eclCallerIsSteam && hasDeferredOverlay) {
-        static std::atomic<int> s_deferredECLSubmitCount{0};
-        int eclSubmitNum = s_deferredECLSubmitCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (eclSubmitNum <= 50 || (eclSubmitNum % 500) == 0) {
-            HookLogImportant(
-                "DX12: ECL hook detected Steam with deferred overlay pending #%d (queue=%p, eclCount=%llu)",
-                eclSubmitNum, pThis, (unsigned long long)eclCount);
-        }
-        SubmitSteamDeferredOverlay(pThis, "ecl_hook");
-    } else if (eclCallerIsSteam && !hasDeferredOverlay) {
-        static std::atomic<int> s_deferredECLSkipCount{0};
-        int eclSkipNum = s_deferredECLSkipCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (eclSkipNum == 1 || eclSkipNum <= 20 || (eclSkipNum % 500) == 0) {
-            HookLogImportant(
-                "DX12: ECL hook detected Steam but no deferred overlay pending #%d (queue=%p, eclCount=%llu)",
-                eclSkipNum, pThis, (unsigned long long)eclCount);
         }
     }
 }

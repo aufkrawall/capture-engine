@@ -148,29 +148,6 @@ return ProcessFrameFlow::kOverlayDone;
                                 }
                             }
 
-                            // Steam ECL deferred submit: when g_deferOverlaySubmitToSteamECL
-                            // is true (non-SL Steam overlay path), skip the normal overlay ECL
-                            // submission.  The overlay command list is closed and ready, but
-                            // submission is deferred to DetourExecuteCommandLists which fires
-                            // AFTER Steam's overlay handler submits its ECL.  This ensures CE
-                            // overlay renders on top of Steam's cleared backbuffer.
-                            if (dx12_hook_g_deferOverlaySubmitToSteamECL && !useDedicated) {
-                                dx12_hook_g_steamDeferredOverlay.cmdList = list;
-                                dx12_hook_g_steamDeferredOverlay.allocIdx = idx;
-                                dx12_hook_g_steamDeferredOverlay.eclQueue = eclQueue;
-                                dx12_hook_g_steamDeferredOverlay.pending = true;
-                                static std::atomic<int> s_deferredSkipLogCount{0};
-                                int deferredSkipNum =
-                                    s_deferredSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                                if (deferredSkipNum <= 20 || (deferredSkipNum % 200) == 0) {
-                                    HookLogImportant(
-                                        "DX12: Deferring overlay ECL submit to Steam ECL hook #%d "
-                                        "(eclQueue=%p, list=%p, allocIdx=%d, bb=%p, bufIdx=%u)",
-                                        deferredSkipNum, eclQueue, list, idx, bb, bufferIdx);
-                                }
-                                // Skip the normal fence signal too - ECL hook will signal it.
-return ProcessFrameFlow::kSkipSteamFence;
-                            }
 
                             {
                                 ScopedCEOverlayECLSubmission ceOverlayECLGuard("normal overlay submit");
@@ -319,8 +296,9 @@ return ProcessFrameFlow::kSkipSteamFence;
                                         deviceLostForFence = FAILED(fenceDev->GetDeviceRemovedReason());
                                     }
                                 }
-                                const bool steamDeferredOverlaySubmit =
-                                    dx12_hook_g_deferOverlaySubmitToSteamECL && !useDedicated;
+                                // The Steam-ECL deferred submit was retired in c4a93a44; nothing
+                                // enables it any more, so this predicate is constant.
+                                constexpr bool steamDeferredOverlaySubmit = false;
                                 const bool focusLossImmediateFence = ce::dx12_overlay_policy::
                                     ShouldSignalD3D12FocusLossOverlayFenceImmediately(
                                         presentContext.valid, !frameDesc.Windowed, processHasForeground,
@@ -498,7 +476,7 @@ return ProcessFrameFlow::kSkipSteamFence;
                                             presentContext.valid, !frameDesc.Windowed, processHasForeground,
                                             iconicWindow, zeroSizedSwapchain, true, false, anyFGForFence,
                                             runtimeOwnedPresentation, useDedicated,
-                                            dx12_hook_g_deferOverlaySubmitToSteamECL && !useDedicated, false,
+                                            /*steamDeferredOverlaySubmit=*/false, false,
                                             dx12_hook_g_State.fenceEvent != nullptr, eclQueue != nullptr, 0),
                                         presentContext.presentName ? presentContext.presentName : "Present",
                                         presentContext.callCount, eclQueue, foregroundWindow, foregroundPid,
@@ -507,7 +485,6 @@ return ProcessFrameFlow::kSkipSteamFence;
                                         anyFGForFence ? 1 : 0, runtimeOwnedPresentation ? 1 : 0);
                                 }
                             }
-                        skip_steam_deferred_fence_signal:
                             cmdRecordOk = true;
                             QueryPerformanceCounter(&perfSubmit);
                         }

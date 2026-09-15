@@ -136,13 +136,6 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
 }
 
 
-extern "C" __declspec(dllexport) void DX12_SubmitSteamDeferredOverlay() {
-    if (dx12_hook_g_steamDeferredOverlay.pending && dx12_hook_g_steamDeferredOverlay.eclQueue) {
-        SubmitSteamDeferredOverlay(dx12_hook_g_steamDeferredOverlay.eclQueue, "fallback");
-    }
-}
-
-
 bool IsD3D12FocusLossPresentDeviceLostHRESULT(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
 }
