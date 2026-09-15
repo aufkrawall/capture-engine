@@ -39,7 +39,10 @@ Build Modes & Targets:
 
 Gates & Quality Checks:
   --verify                 Content-validated product build, tests, python self-tests, lint ratchets, ASan/UBSan
+                           (does NOT launch anything: integration tests, test apps and fuzzing all stay not_run)
   --verify-clean           Used with --verify for a clean product rebuild instead of content-validated reuse
+  --verify-runtime         --verify plus the stages that actually run code: integration matrix and fuzz targets.
+                           For release candidates; launches test apps, so not for the per-change loop.
   --run-tests              Run native GoogleTest suite (unit_tests.exe)
   --gtest-filter=<pattern> Filter unit tests by name pattern (e.g. --gtest-filter=SystemLatency*)
   --run-integration-tests  Run integration tests
@@ -153,6 +156,13 @@ def main():
     default_quality_mode = is_default_quality_invocation(args)
     verify_flag = "--verify" in sys.argv
     verify_clean_flag = "--verify-clean" in sys.argv
+    # --verify is build + unit tests + lint + sanitizers. It deliberately does not launch
+    # anything, so no gate exercises a real D3D/Vulkan present path or a parser corpus:
+    # integration_tests, test_apps and fuzz all report not_run on a passing --verify.
+    # --verify-runtime is that gate plus the two stages that actually run code. It is meant
+    # for release candidates, not for the per-change loop, because it launches test apps and
+    # takes minutes longer.
+    verify_runtime_flag = "--verify-runtime" in sys.argv
     skip_package_flag = "--skip-package" in sys.argv
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
@@ -316,11 +326,19 @@ def main():
         lint_flag = True
         sanitize_regression_flag = True
 
+    if verify_runtime_flag:
+        verify_flag = True
+
     if verify_flag:
         log("Verification mode: running canonical post-change checks in one pass")
         run_tests_flag = True
         lint_flag = True
         sanitize_regression_flag = True
+
+    if verify_runtime_flag:
+        log("Runtime verification mode: also running the integration matrix and the fuzz targets")
+        run_integration_flag = True
+        run_fuzz_flag = True
 
     if full_integration_flag:
         run_integration_flag = True
@@ -340,7 +358,11 @@ def main():
         "sanitizers",
         "x64_asan_ubsan" if sanitize_flag or sanitize_regression_flag else "not_run",
     )
-    record_verification_coverage("x86_sanitizers", "unavailable")
+    # Not a gap anyone can close by passing a flag: MSYS2's clang64 toolchain ships
+    # libclang_rt.asan/ubsan for x86_64 only, with no i386 variant, so x86 sanitizer binaries
+    # fail at link time. --sanitize-x86 exists and fails closed rather than skipping silently
+    # (see above). Record the reason so the constant does not read as an unexamined default.
+    record_verification_coverage("x86_sanitizers", "unavailable_no_mingw_i386_runtime")
     if not run_fuzz_flag:
         record_verification_coverage("fuzz", "not_run")
     if run_integration_flag:
