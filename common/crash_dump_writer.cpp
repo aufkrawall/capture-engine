@@ -7,21 +7,61 @@
 
 #include <atomic>
 #include <cstdio>
-#include <memory>
 #include <mutex>
 #include <string>
 
 #include "crash_dump_policy.h"
 #include "secure_dll_loading.h"
 
+// Everything MiniDumpWriteDump needs, owned independently of the crashing thread.
+//
+// This used to hold the raw EXCEPTION_POINTERS the filter was handed. That structure and the
+// EXCEPTION_RECORD and CONTEXT it points at live on the crashing thread's stack, and the
+// filter only waits 5 s for the worker before returning EXCEPTION_CONTINUE_SEARCH. Five
+// seconds is not a generous bound for this workload - the comment above the external-helper
+// branch below records a 61.6 s in-process MiniDumpNormal with the Steam overlay loaded - so
+// the timeout is a normal outcome. If an SEH frame then handles the exception and execution
+// continues, that stack is reused while the worker is still reading it, and the dump is
+// written from freed memory.
+//
+// Deep copies remove the coupling: both structures are fixed-size PODs. The instance is a
+// single static slot rather than a heap allocation because `new` inside a crash filter can
+// deadlock when the crash happened while the heap lock was held. Ownership of the slot is the
+// g_DumpAttemptInProgress compare-exchange that already gates this path.
 struct DumpParams {
-    EXCEPTION_POINTERS* pExceptionPointers;
-    DWORD threadId;
+    EXCEPTION_RECORD record{};
+    CONTEXT context{};
+    EXCEPTION_POINTERS pointers{};
+    DWORD threadId = 0;
+
+    void CaptureFrom(EXCEPTION_POINTERS* source, DWORD crashingThreadId) {
+        if (source && source->ExceptionRecord)
+            record = *source->ExceptionRecord;
+        if (source && source->ContextRecord)
+            context = *source->ContextRecord;
+        // The copies are self-referential; the nested ExceptionRecord chain is deliberately
+        // not followed, so clear it rather than leave a pointer into the crashed stack.
+        record.ExceptionRecord = nullptr;
+        pointers.ExceptionRecord = &record;
+        pointers.ContextRecord = &context;
+        threadId = crashingThreadId;
+    }
 };
+
+static DumpParams g_DumpParamsSlot;
 
 // Worker thread to write minidump safely away from the crashed stack
 DWORD WINAPI DumpWorker(LPVOID lpParam) {
-    std::unique_ptr<DumpParams> params(static_cast<DumpParams*>(lpParam));
+    DumpParams* params = static_cast<DumpParams*>(lpParam);
+
+    // The worker, not the filter, owns g_DumpAttemptInProgress from here on. The filter used
+    // to clear it as soon as its 5 s wait expired, which let a second crash start a second
+    // worker while the first was still writing - two workers sharing the dump slot and the
+    // dump directory. Releasing it here instead means the flag stays set exactly as long as a
+    // worker is actually running, whether or not the filter is still waiting for it.
+    struct AttemptReleaser {
+        ~AttemptReleaser() { g_DumpAttemptInProgress.store(false, std::memory_order_release); }
+    } attemptReleaser;
 
     ActivateCrashTrace();
     TraceCrash("DumpWorker started");
@@ -107,7 +147,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     if (hFile != INVALID_HANDLE_VALUE) {
         MINIDUMP_EXCEPTION_INFORMATION mdei;
         mdei.ThreadId = params->threadId;
-        mdei.ExceptionPointers = params->pExceptionPointers;
+        mdei.ExceptionPointers = &params->pointers;
         mdei.ClientPointers = FALSE;
 
         struct DumpAttempt {
@@ -609,9 +649,13 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Heap-allocate params to avoid dangling pointer if this function returns
-    // before the worker thread starts reading the data.
-    auto* params = new DumpParams{pExceptionPointers, GetCurrentThreadId()};
+    // Copy the exception state out of the crashing thread's stack before handing it to a
+    // thread that can outlive this filter. See the DumpParams comment: the 5 s wait below
+    // expires routinely on large dumps, and the stack is reused as soon as the exception is
+    // handled elsewhere. The static slot is owned by the g_DumpAttemptInProgress exchange
+    // above, and released by the worker rather than here.
+    DumpParams* params = &g_DumpParamsSlot;
+    params->CaptureFrom(pExceptionPointers, GetCurrentThreadId());
 
     // Spawn thread to handle dump writing (crucial for Stack Overflow exceptions)
     HANDLE hThread = CreateThread(NULL, 0, DumpWorker, params, 0, NULL);
@@ -620,17 +664,18 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         TraceCrash("Worker thread spawned, waiting (5s timeout)...");
         DWORD waitResult = WaitForSingleObject(hThread, 5000);
         if (waitResult == WAIT_TIMEOUT) {
-            TraceCrash("Worker thread timed out after 5s - continuing without dump");
+            // The worker keeps running and still owns the slot and the attempt flag. Its dump
+            // is written from the copies above, so returning here cannot corrupt it.
+            TraceCrash("Worker thread timed out after 5s - returning while it finishes");
         } else {
             TraceCrash("Worker thread finished.");
         }
         CloseHandle(hThread);
     } else {
         TraceCrash("Failed to create worker thread! Attempting inline dump...");
-        DumpWorker(params);  // Fallback to inline if thread creation fails (DumpWorker takes ownership)
+        DumpWorker(params);  // Fallback to inline if thread creation fails
     }
 
-    g_DumpAttemptInProgress.store(false, std::memory_order_release);
     TraceCrash("Handler finished - Returning EXCEPTION_CONTINUE_SEARCH");
     return EXCEPTION_CONTINUE_SEARCH;
 }

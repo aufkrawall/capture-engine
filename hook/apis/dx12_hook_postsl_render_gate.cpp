@@ -13,7 +13,7 @@ if (DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) 
     static int s_scInvalid = 0;
     if (s_scInvalid++ < 5)
         HookLog("DX12: PostSL SKIP — swapchainInvalid=true");
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 const bool officialUiCoverageActive = ce::dx12_streamline_ui_overlay::HasActiveCoverage();
 const bool requireExactPostSLStartupOutputDraw =
@@ -225,7 +225,7 @@ if (!queue) {
     if (s_noQueue++ < 5)
         HookLog("DX12: PostSL SKIP — no queue (cmdQueue=%p scQueue=%p)", (void*)g_CommandQueue.load(),
                 dx12_hook_g_SwapchainQueue);
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 {
     ID3D12CommandQueue* oldLockedQueue = nullptr;
@@ -357,7 +357,7 @@ if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) || !swapChain3
     if (s_callsSinceReactivation <= 20)
         HookLogImportant("DX12: PostSL EARLY-EXIT: QI for IDXGISwapChain3 failed (call#%d)",
                          s_callsSinceReactivation);
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 bufIdx = swapChain3->GetCurrentBackBufferIndex();
 bb = nullptr;
@@ -367,7 +367,7 @@ if (FAILED(getBufHr) || !bb) {
     if (s_callsSinceReactivation <= 20)
         HookLogImportant("DX12: PostSL EARLY-EXIT: GetBuffer(%u) failed hr=0x%08X (call#%d)", bufIdx, getBufHr,
                          s_callsSinceReactivation);
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 if (bufIdx >= (UINT)dx12_hook_g_State.bufferCount) {
     if (bufIdx < 8) {

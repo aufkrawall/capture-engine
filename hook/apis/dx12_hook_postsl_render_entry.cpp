@@ -15,7 +15,7 @@ if (!dx12_hook_g_PostSLRenderMutex.try_lock()) {
     static int s_lockSkip = 0;
     if (s_lockSkip++ < 10)
         HookLogImportant("DX12: PostSL SKIP — another thread already rendering (tid=0x%04X)", GetCurrentThreadId());
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 auto renderLockGuard = ce::make_scope_guard([]() { dx12_hook_g_PostSLRenderMutex.unlock(); });
 SharedMemoryLayout* finalOutputShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -417,7 +417,7 @@ if (!active && !keepAliveRenderAfterExplicitOff) {
     static int s_gateSkip = 0;
     if (s_gateSkip++ < 5)
         HookLog("DX12: PostSL SKIP — g_PostSLOverlayActive=false");
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 int cooldownLeft = dx12_hook_g_PostSLCooldownRemaining.load(std::memory_order_acquire);
 if (cooldownLeft > 0 && !keepAliveRenderAfterExplicitOff) {
@@ -426,7 +426,7 @@ if (cooldownLeft > 0 && !keepAliveRenderAfterExplicitOff) {
     static int s_cooldownSkip = 0;
     if (s_cooldownSkip++ < 5)
         HookLog("DX12: PostSL SKIP — FG transition cooldown active (%d frames left)", cooldownLeft);
-        return PostSLFlow::kReturn;
+    return PostSLFlow::kReturn;
 }
 constexpr int kPostSLReactivationWarmup = 30;
 constexpr int kPostSLColdStartWarmup = 15;

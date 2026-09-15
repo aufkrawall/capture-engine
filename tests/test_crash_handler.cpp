@@ -283,6 +283,38 @@ TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
     EXPECT_NE(contents.find("si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;"), std::string::npos);
 }
 
+TEST(CrashHandlerSourceTest, DumpWorkerOwnsItsExceptionStateAndTheAttemptFlag) {
+    // The dump worker can outlive the filter that spawned it: the filter waits 5 s, and this
+    // file's own notes record a 61.6 s in-process dump with the Steam overlay loaded. It must
+    // therefore never hold a pointer into the crashing thread's stack - EXCEPTION_POINTERS,
+    // EXCEPTION_RECORD and CONTEXT all live there, and that stack is reused as soon as some
+    // SEH frame handles the exception and execution continues.
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "common" / "crash_dump_writer.cpp";
+    const std::string contents = ReadSourceFile(source);
+    ASSERT_FALSE(contents.empty());
+
+    // Deep copies, not the caller's pointers.
+    EXPECT_NE(contents.find("EXCEPTION_RECORD record{};"), std::string::npos);
+    EXPECT_NE(contents.find("CONTEXT context{};"), std::string::npos);
+    EXPECT_NE(contents.find("pointers.ExceptionRecord = &record;"), std::string::npos);
+    EXPECT_NE(contents.find("pointers.ContextRecord = &context;"), std::string::npos);
+    EXPECT_NE(contents.find("mdei.ExceptionPointers = &params->pointers;"), std::string::npos)
+        << "the dump must be written from the copies, not the crashed stack";
+    EXPECT_EQ(contents.find("mdei.ExceptionPointers = params->pExceptionPointers;"), std::string::npos);
+
+    // No heap allocation on the crash path: the crash may have happened while the heap lock
+    // was held, so `new` here can deadlock.
+    EXPECT_EQ(contents.find("new DumpParams"), std::string::npos)
+        << "allocating inside a crash filter can deadlock on a held heap lock";
+    EXPECT_NE(contents.find("static DumpParams g_DumpParamsSlot;"), std::string::npos);
+
+    // The worker releases the attempt flag, so a second crash cannot start a second worker
+    // while the first is still writing.
+    EXPECT_NE(contents.find("~AttemptReleaser() { g_DumpAttemptInProgress.store(false, std::memory_order_release); }"),
+              std::string::npos);
+}
+
 TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
     const std::filesystem::path source =
         std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook_trampoline.cpp";

@@ -31,7 +31,7 @@
     "clang-diagnostic-inconsistent-dllimport": 8,
     "clang-diagnostic-inconsistent-missing-override": 186,
     "clang-diagnostic-macro-redefined": 14,
-    "clang-diagnostic-misleading-indentation": 7,
+    "clang-diagnostic-misleading-indentation": 0,
     "clang-diagnostic-mismatched-tags": 23,
     "clang-diagnostic-missing-designated-field-initializers": 12,
     "clang-diagnostic-missing-field-initializers": 150,
@@ -47,9 +47,9 @@
     "clang-diagnostic-unused-private-field": 426,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 2238,
+  "total": 2231,
   "scope": {
-    "entries": 756,
+    "entries": 755,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -68,7 +68,6 @@
       "captureengine/injection_manager.cpp",
       "captureengine/injection_security.cpp",
       "captureengine/injection_wmi_events.cpp",
-      "captureengine/ipc.cpp",
       "captureengine/limiter_main.cpp",
       "captureengine/logger_service.cpp",
       "captureengine/main.cpp",
