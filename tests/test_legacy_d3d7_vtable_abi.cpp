@@ -30,6 +30,7 @@ TEST(LegacyD3D7VTableAbiTest, DeviceIndicesUsedByTheHookMatchTheInterface) {
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetRenderState) / sizeof(void*), 20u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, GetTextureStageState) / sizeof(void*), 36u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetTextureStageState) / sizeof(void*), 37u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetTexture) / sizeof(void*), 35u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, ApplyStateBlock) / sizeof(void*), 39u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, GetCaps) / sizeof(void*), 3u);
 }

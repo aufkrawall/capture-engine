@@ -167,6 +167,9 @@ void DDrawHook::Shutdown() {
     ce::legacy_d3d_sampler_state::LogSummary(ce::legacy_d3d_sampler_state::Api::D3D6);
     ce::legacy_d3d_sampler_state::LogSummary(ce::legacy_d3d_sampler_state::Api::D3D7);
     ResetDirectDrawPresentationOverrides();
+    // The sidecar is gone from here on, so the references CE held purely to keep
+    // a state-block restore legal have no purpose left.
+    ReleaseLegacyD3D7TextureBindings();
 
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();

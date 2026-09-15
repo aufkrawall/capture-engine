@@ -36,6 +36,10 @@ HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d,  REFCLSID devi
         InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api::D3D7, *ddraw_hook_device,
                                     ddraw_hook_g_DDrawBootstrapDepth == 0, "IDirect3D7::CreateDevice");
         if (ddraw_hook_g_DDrawBootstrapDepth == 0) {
+            // A device is only safe to bracket with a state block while CE owns
+            // a reference to every texture bound to it, and creation is the one
+            // moment CE can prove it has seen every binding the device holds.
+            ResetLegacyD3D7TextureBindingsForNewDevice(*ddraw_hook_device);
             TrackLegacyD3D7Device(*ddraw_hook_device);
             AssociateLegacyD3DSurface(target, 7);
             ReportLegacyD3DUse(7, "IDirect3D7::CreateDevice");

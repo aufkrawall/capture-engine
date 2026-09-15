@@ -120,6 +120,9 @@ typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState6_t)(IUnknown* ddraw_hook
 
 typedef HRESULT(STDMETHODCALLTYPE* GetTextureStageState6_t)(IUnknown* ddraw_hook_device, DWORD Stage, DWORD Type, DWORD* ddraw_hook_pValue);
 
+typedef HRESULT(STDMETHODCALLTYPE* SetTexture7_t)(IDirect3DDevice7* ddraw_hook_device, DWORD Stage,
+                                                  IDirectDrawSurface7* ddraw_hook_texture);
+
 typedef HRESULT(STDMETHODCALLTYPE* LegacyD3DEndScene_t)(void* ddraw_hook_device);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D7ApplyStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
@@ -150,6 +153,8 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_ho
 #define D3D7_VTABLE_SETRENDERSTATE 20
 
 #define D3D7_VTABLE_ENDSCENE 6
+
+#define D3D7_VTABLE_SETTEXTURE 35
 
 #define D3D7_VTABLE_GETTEXTURESTAGESTATE 36
 
@@ -397,6 +402,17 @@ void ClearNativeLegacyD3DOverlayState(IUnknown* surface);
 void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool flipSwapsSurfaceMemory);
 void ReleaseNativeLegacyD3DOverlay();
 
+// Ownership of the application's Direct3D 7 texture bindings
+// (`ddraw_hook_texture_bindings.cpp`). A `D3DSBT_ALL` state block records them
+// as unreferenced surface pointers, so the overlay sidecar may only restore one
+// while CE holds a reference to every binding it could put back.
+void ResetLegacyD3D7TextureBindingsForNewDevice(void* device);
+void RecordLegacyD3D7TextureBinding(void* device, DWORD stage, void* texture);
+bool LegacyD3D7TextureBindingsAreRestoreSafe(void* device);
+// Returns the application's binding with a reference the caller releases.
+IUnknown* AcquireLegacyD3D7TextureBinding(void* device, DWORD stage);
+void ReleaseLegacyD3D7TextureBindings();
+
 void LogDirectDrawPresentationMix(const char* reason);
 
 inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
@@ -451,6 +467,7 @@ struct LegacyD3DSamplerVTableRecord {
     std::atomic<ce::legacy_d3d_sampler_state::GetTextureStageStateFn> getState{nullptr};
     std::atomic<LegacyD3DEndScene_t> endScene{nullptr};
     std::atomic<D3D7ApplyStateBlock_t> applyStateBlock{nullptr};
+    std::atomic<SetTexture7_t> setTexture{nullptr};
 };
 
 inline std::mutex ddraw_hook_g_LegacyD3DSamplerVTableMutex;

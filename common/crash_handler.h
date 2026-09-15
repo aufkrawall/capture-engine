@@ -28,6 +28,10 @@ void SetCrashProcessName(const char* name);
 // Trace function for debugging the crash handler itself
 void TraceCrash(const char* msg);
 
+// Enables TraceCrash output. The in-process worker activates it on the crash
+// path; a standalone helper process activates it for its whole run.
+void ActivateCrashTrace();
+
 // Optional hook-module callback for recoverable execute faults such as lazy
 // trampoline-pool DEP faults. Passing nullptr unregisters the handler.
 using CrashExecutionFaultHandler = LONG (*)(EXCEPTION_POINTERS* pExceptionPointers, ULONG_PTR accessType,

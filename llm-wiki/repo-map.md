@@ -71,6 +71,11 @@ anchors that predate the split are approximate.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.
+  - External crash-dump helper: `dump_helper.{h,cpp}` plus
+    `dump_helper_wow64_stacks.{h,cpp}`, which supplies a WoW64 target's 32-bit thread stacks
+    through dbghelp's memory callback (range arithmetic and caps in
+    `common/wow64_stack_range_policy.h`). Without it an x64 helper records only the syscall
+    thunk and no 32-bit caller can be recovered.
   - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_wmi_events.cpp`,
     `injection_inject.cpp`,
     `injection_security.cpp`, `inject_main.cpp`, `inject_config.cpp`,
@@ -143,9 +148,12 @@ anchors that predate the split are approximate.
       and CPU presentation-depth ownership), `ddraw_hook_runtime_state.h` (narrow shared diagnostics/bootstrap
       state), `ddraw_hook_detours_surface_access.cpp` (Lock/DC access and
       direct-scanout presentation),
-      `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception), `ddraw_hook_install.cpp`,
+      `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception),
+      `ddraw_hook_texture_bindings.cpp` (CE-owned references to the application's D3D7 texture
+      bindings, which is what makes the sidecar's state-block restore legal), `ddraw_hook_install.cpp`,
       `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; shared implementation/policy lives in
-      `hook/common/{ddraw_present_policy,ddraw_native_overlay_damage,overlay_cpu_raster}.h` plus
+      `hook/common/{ddraw_present_policy,ddraw_native_overlay_damage,overlay_cpu_raster,
+      legacy_d3d_texture_bindings}.h` plus
       `hook/common/overlay_cpu_raster.cpp`, while `hook/common/custom_overlay_d3d7.{h,cpp}` draws
       immediately before the application's real D3D7 `EndScene`.
     - OpenGL: `opengl_hook_capture.cpp` (detours, swap begin/end, overlay draw),

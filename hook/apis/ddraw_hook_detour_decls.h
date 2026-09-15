@@ -69,6 +69,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyReleaseDC(IDirectDrawSurface* sur
 
 HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* ddraw_hook_device, DWORD Type, DWORD ddraw_hook_Value);
 
+HRESULT STDMETHODCALLTYPE DetourSetTexture7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage,
+                                                   IDirectDrawSurface7* ddraw_hook_texture);
+
 HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* ddraw_hook_device, DWORD Stage, DWORD Type,
                                                              DWORD ddraw_hook_Value);
 

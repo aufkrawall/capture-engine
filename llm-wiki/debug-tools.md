@@ -35,6 +35,29 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
 - `!peb` (live session only) shows the process command line; minimal dumps do
   not include it.
 
+- **A 32-bit game's crash dump is written by CE's x64 helper, and the helper has
+  to be told about the 32-bit stacks.** `MiniDumpWriteDump` records a thread's
+  stack from the CONTEXT it can see, which for a WoW64 thread written by a
+  64-bit dumper is the x64 side - nothing but the syscall thunk. Such a dump
+  loads, resolves symbols, and reports registers, and then cannot produce one
+  caller: every session before 2026-09-16 (both crashes in commit 339eccf0 and
+  Gothic II `20260916_000027`) had to be attributed from opcodes and register
+  values alone. `captureengine/dump_helper_wow64_stacks.{h,cpp}` now supplies
+  each thread's committed 32-bit stack through dbghelp's `MemoryCallback`, with
+  the pointers read inside the thread callback where the target is already
+  frozen for the dump. `crash.log` records `DumpHelper: WoW64 target - added N
+  32-bit thread stack range(s)`; a run reporting zero means the stacks are
+  absent again and the dump is only good for the faulting instruction.
+  Range arithmetic and its caps: `common/wow64_stack_range_policy.h`,
+  `tests/test_wow64_stack_range_policy.cpp`.
+
+- Reading a WoW64 dump: open it with the x64 `cdb.exe`, then `.effmach x86`
+  before `dds`/`u`/`dd`. `k` still walks the x64 side; walk the 32-bit frames
+  from the saved EBP chain (`dds <ebp>`) instead. `!address <esp>` reports the
+  stack's reservation even when the bytes are missing, which is how to tell a
+  shallow frame from a deep one. Note that `-c` swallows the rest of the command
+  string after `.effmach`, so put multi-command scripts in a file and use `-cf`.
+
 - Unhandled C++ exceptions: MinGW/clang raises 0x20474343 (" GCC"), MSVC
   0xE06D7363. The minimal dump normally does NOT contain the thrown exception
   object, so the message is unreadable from the dump; the crash handler now logs

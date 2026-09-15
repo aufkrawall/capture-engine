@@ -92,6 +92,18 @@ void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api,  void* d
                 record->endScene.store(original, std::memory_order_release);
             }
         }
+        // The state block below restores the application's textures, and a
+        // Direct3D 7 block holds them without a reference. Shadowing every
+        // binding is what makes that restore legal; without this hook the
+        // native sidecar must stay off (see PrimeNativeLegacyD3DOverlay).
+        if (isD3D7 && !record->setTexture.load(std::memory_order_acquire)) {
+            SetTexture7_t original = nullptr;
+            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D7_VTABLE_SETTEXTURE]),
+                                   reinterpret_cast<LPVOID>(&DetourSetTexture7),
+                                   reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
+                record->setTexture.store(original, std::memory_order_release);
+            }
+        }
         if (isD3D7 && !record->applyStateBlock.load(std::memory_order_acquire)) {
             D3D7ApplyStateBlock_t original = nullptr;
             if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D7_VTABLE_APPLYSTATEBLOCK]),

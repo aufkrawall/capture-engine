@@ -4,6 +4,7 @@
 
 #include <shellapi.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
@@ -12,6 +13,7 @@
 
 #include "../common/crash_dump_policy.h"
 #include "../common/crash_handler.h"
+#include "dump_helper_wow64_stacks.h"
 
 namespace {
 
@@ -124,10 +126,36 @@ int RunDumpHelperFromCommandLine() {
         return 4;
     }
 
-    const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid,
-                                                      ce::crash_dump_policy::kRichCrashDumpType);
+    // This helper is x64. Against a 32-bit target every thread stack the dump
+    // records is the WoW64 syscall thunk, which is why this crash and the two
+    // sessions in commit 339eccf0 could not be walked past the faulting
+    // instruction. The collector hands dbghelp the 32-bit stacks as extra
+    // memory regions; a 64-bit target needs none of it and gets the dump it
+    // always got.
+    ActivateCrashTrace();
+    Wow64StackCollector wow64Stacks(targetProcess, targetPid);
+    MINIDUMP_CALLBACK_INFORMATION callbackInformation = {};
+    PMINIDUMP_CALLBACK_INFORMATION callbackParam = nullptr;
+    if (wow64Stacks.Active()) {
+        callbackInformation = wow64Stacks.CallbackInformation();
+        callbackParam = &callbackInformation;
+    }
+
+    const bool wroteDump =
+        WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid,
+                                   ce::crash_dump_policy::kRichCrashDumpType, nullptr, nullptr, callbackParam);
+
+    if (wow64Stacks.Active()) {
+        char message[192];
+        snprintf(message, sizeof(message),
+                 "DumpHelper: WoW64 target - added %llu 32-bit thread stack range(s), %llu bytes",
+                 static_cast<unsigned long long>(wow64Stacks.RangeCount()), wow64Stacks.RangeBytes());
+        TraceCrash(message);
+    }
     CloseHandle(targetProcess);
 
+    TraceCrash(wroteDump ? "DumpHelper: External pre-termination dump captured"
+                         : "DumpHelper: External pre-termination dump failed");
     OutputDebugStringA(wroteDump ? "[DumpHelper] External pre-termination dump captured\n"
                                  : "[DumpHelper] External pre-termination dump failed\n");
     return wroteDump ? 0 : 5;

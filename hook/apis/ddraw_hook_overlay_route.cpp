@@ -66,6 +66,28 @@ NativeSurfaceState* AcquireNativeSurfaceLocked(uintptr_t identity) {
     return entry;
 }
 
+// The sidecar leaves stage 0 unbound and relies on the state block to put the
+// application's texture back. Restoring it explicitly removes that dependency:
+// a Direct3D 7 title that caches its own bindings and skips a redundant
+// SetTexture would otherwise draw its next material untextured if the block
+// ever stopped carrying textures. The binding comes from the shadow, which owns
+// a reference to it, so this can never hand the runtime a released surface.
+void RestoreApplicationStageZeroTexture(IDirect3DDevice7* device) {
+    if (!device)
+        return;
+    IUnknown* texture = AcquireLegacyD3D7TextureBinding(device, 0);
+    if (!texture)
+        return;
+    using SetTexture7_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice7*, DWORD, IUnknown*);
+    void** deviceVTable = *(void***)device;
+    auto setTexture = reinterpret_cast<SetTexture7_t>(deviceVTable[D3D7_VTABLE_SETTEXTURE]);
+    if (setTexture) {
+        LegacyD3DInternalScope internalScope;
+        setTexture(device, 0, texture);
+    }
+    texture->Release();
+}
+
 void ClearNativeSurfacePixelsLocked() {
     for (auto& surface : g_nativeOverlay.surfaces)
         surface.damage.Clear();
@@ -173,6 +195,22 @@ bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
     if (!device || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
         return false;
 
+    // The sidecar's `D3DSBT_ALL` block restores the application's textures, and
+    // a Direct3D 7 block holds them without a reference. Drawing is only legal
+    // while CE owns a reference to every binding that restore could put back;
+    // otherwise the CPU composite - which touches no device state at all - is
+    // the route, and the overlay still appears.
+    if (!LegacyD3D7TextureBindingsAreRestoreSafe(device)) {
+        static std::atomic<void*> loggedDevice{nullptr};
+        if (loggedDevice.exchange(device, std::memory_order_relaxed) != static_cast<void*>(device)) {
+            HookLogImportant(
+                "DDraw: Native D3D7 sidecar withheld for device=%p - CE does not own its texture bindings, so a "
+                "state-block restore could re-bind a released surface; the CPU composite keeps the overlay",
+                device);
+        }
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
     if (g_nativeOverlay.backend && g_nativeOverlay.backend->GetDevice() == static_cast<void*>(device) &&
         g_nativeOverlay.backend->IsUsable()) {
@@ -265,6 +303,7 @@ bool DrawNativeLegacyD3DOverlayAtEndScene(void* opaqueDevice) {
                                                                         static_cast<int>(height), &renderedBounds);
             }
             rendered = rendered && backend->LastRenderSucceeded();
+            RestoreApplicationStageZeroTexture(device);
             if (rendered) {
                 bounds = {renderedBounds.left, renderedBounds.top, renderedBounds.right, renderedBounds.bottom};
                 surfaceState->damage.SetCurrent(bounds);

@@ -1,5 +1,56 @@
 # llm-wiki Log
 
+### 2026-09-16 - A Direct3D 7 state block restored a texture the game had already destroyed
+
+Gothic II/SystemPack session `20260916_000027` crashed about seven seconds in, during the intro
+videos: `0xC0000005` reading address 0 at `D3DIM700.dll+0x9982`, which symbols resolve to
+`DIRECT3DDEVICEI::SetTextureInternal+0x12`. The instruction is `mov eax,[eax]` after
+`mov eax,[pSurface+4]`, so the surface interface handed to `IDirect3DDevice7::SetTexture` had a NULL
+`lpLcl` - a DirectDraw surface that has already been destroyed.
+
+The caller is not the application. `SetTextureInternal` is reachable only through device vtable slot
+82; the public `SetTexture` wrapper (slot 35) dispatches into it and keeps EBX as its 0/1 multithread
+flag, while the crash recorded `EBX=0x0a4d9d40`. The other route to that slot is the pointer the
+device caches at `+0x3280` for its table-driven state replay, refreshed in `EndScene`. CE's overlay
+sidecar is the only state-block user in the process.
+
+A Direct3D 7 `D3DSBT_ALL` block records each stage's texture as a raw `IDirectDrawSurface7*` and takes
+no reference. Nothing in such a process ever re-binds an old texture, so an application releasing a
+still-bound surface is legal - the device keeps its internal texture object alive and the surface
+interface is never touched again. CE's `ApplyStateBlock` is what re-binds it, and that is what turned
+a legal application pattern into an access violation. The earlier attributions of this title's
+crashes to "the native backend running at all" (339eccf0) named the right subsystem for the wrong
+reason.
+
+The fix supplies the missing lifetime guarantee rather than removing the state block: CE hooks
+`IDirect3DDevice7::SetTexture` on the same vtable it already hooks for forced filtering, and owns a
+reference to every binding for as long as the device holds it - at most one surface per stage,
+released the moment the application binds something else. The sidecar refuses to prime on a device
+whose bindings CE has not owned since `IDirect3D7::CreateDevice`, falling back to the CPU composite,
+and stage 0 is restored explicitly from that shadow after the block so the sidecar no longer depends
+on the block carrying textures at all. `LegacyD3DTextureBindingsTest` covers the ownership rules;
+`LegacyD3D7VTableAbiTest` pins slot 35.
+
+Hardware validation in Gothic II is still pending.
+
+### 2026-09-16 - WoW64 crash dumps now contain the 32-bit stacks
+
+Diagnosing the above took opcode archaeology because the dump had no 32-bit stack at all, and that is
+the second time: commit 339eccf0 recorded the same gap as open. CE's external dump helper is x64, and
+`MiniDumpWriteDump` records a thread's stack from the CONTEXT it can see - for a WoW64 thread written
+by a 64-bit dumper, the x64 side, which holds only the syscall thunk. The dump loads, resolves
+symbols and prints registers, and cannot produce a single caller.
+
+`captureengine/dump_helper_wow64_stacks.{h,cpp}` supplies each thread's committed 32-bit stack
+through dbghelp's `MemoryCallback`. The stack pointers are read inside dbghelp's own thread callback,
+where the target is already frozen for the dump, so nothing is suspended twice and no context can be
+torn; a thread sweep covers a dbghelp that would ask for memory first. The walk follows adjacent
+committed regions of the same reservation and is capped at 1 MiB per thread, 64 MiB and 512 ranges in
+total, so a process with hundreds of threads cannot turn a crash dump into a full-memory dump. A
+64-bit target is untouched. `crash.log` now records how many ranges were added, and
+`WriteSupplementalCrashDump`'s smaller-dump retries re-emit the same ranges instead of the first
+attempt consuming them. `Wow64StackRangePolicyTest` covers the arithmetic and the caps.
+
 ### 2026-09-15 - DirectDraw overrides now own the presentation operation that actually runs
 
 Gothic II/SystemPack session `20260915_132705` proved that profile resolution was not the problem:
