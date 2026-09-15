@@ -28,6 +28,14 @@ bool BltFastCopiesSourceExactly(DWORD flags) {
     return (flags & ~kPassThroughFlags) == 0;
 }
 
+// The DirectDraw-owned entry point a re-entered presentation detour breaks
+// out through, or null when none was recorded for this vtable. See
+// ddraw_hook_present_reentry.cpp for why the saved original cannot be used.
+template <typename Fn>
+Fn PresentCycleEscape(void* surface, size_t slot, const char* operation) {
+    return reinterpret_cast<Fn>(AcquireDirectDrawPresentCycleEscape(surface, slot, operation));
+}
+
 policy::Rect ToPolicyRect(const RECT& rect) {
     return policy::Rect{static_cast<int>(rect.left), static_cast<int>(rect.top), static_cast<int>(rect.right),
                         static_cast<int>(rect.bottom)};
@@ -231,6 +239,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.flip)
         return DDERR_GENERIC;
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant()) {
+        auto escape = PresentCycleEscape<DDSurfaceLegacyFlip_t>(surface, DDSURFACE7_VTABLE_FLIP, "Flip");
+        return escape ? escape(surface, destOverride, ddraw_hook_flags) : DD_OK;
+    }
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::Flip, true, ddraw_hook_flags);
     IDirectDrawSurface* presentSource = nullptr;
@@ -271,6 +284,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::Blt,
         presentation.kind == policy::PresentKind::BlitPresent, ddraw_hook_flags);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurfaceLegacyBlt_t>(surface, DDSURFACE7_VTABLE_BLT, "Blt");
+        return escape ? escape(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx) : DD_OK;
+    }
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
     }
@@ -315,6 +333,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::BltFast,
         presentation.kind == policy::PresentKind::BlitPresent, dwTrans);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurfaceLegacyBltFast_t>(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast");
+        return escape ? escape(surface, dwX, dwY, srcSurface, srcRect, dwTrans) : DD_OK;
+    }
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
     }
@@ -462,6 +485,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
         return ddraw_hook_oDDSurface7Flip ? ddraw_hook_oDDSurface7Flip(surface, destOverride, ddraw_hook_flags)
                                          : DDERR_GENERIC;
     }
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant()) {
+        auto escape = PresentCycleEscape<DDSurface7Flip_t>(surface, DDSURFACE7_VTABLE_FLIP, "Flip");
+        return escape ? escape(surface, destOverride, ddraw_hook_flags) : DD_OK;
+    }
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
     MaybeTrackPrimarySurface(surface, "Flip");
     DirectDrawPresentationOverrideScope presentationOverride(
@@ -497,6 +525,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  ID
     if (HookIsShuttingDown()) {
         return ddraw_hook_oDDSurface4Flip ? ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags)
                                          : DDERR_GENERIC;
+    }
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant()) {
+        auto escape = PresentCycleEscape<DDSurface4Flip_t>(surface, DDSURFACE7_VTABLE_FLIP, "Flip");
+        return escape ? escape(surface, destOverride, ddraw_hook_flags) : DD_OK;
     }
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
     MaybeTrackPrimarySurface4(surface, "Flip4");
@@ -544,6 +577,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::Blt,
         presentation.kind == policy::PresentKind::BlitPresent, ddraw_hook_flags);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurface7Blt_t>(surface, DDSURFACE7_VTABLE_BLT, "Blt");
+        return escape ? escape(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx) : DD_OK;
+    }
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -602,6 +640,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::BltFast,
         presentation.kind == policy::PresentKind::BlitPresent, dwTrans);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurface7BltFast_t>(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast");
+        return escape ? escape(surface, dwX, dwY, srcSurface, srcRect, dwTrans) : DD_OK;
+    }
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -658,6 +701,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::Blt,
         presentation.kind == policy::PresentKind::BlitPresent, ddraw_hook_flags);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurface4Blt_t>(surface, DDSURFACE7_VTABLE_BLT, "Blt");
+        return escape ? escape(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx) : DD_OK;
+    }
 
     if (presentation.kind == policy::PresentKind::BlitPresent) {
         HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});
@@ -711,6 +759,11 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, 
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::BltFast,
         presentation.kind == policy::PresentKind::BlitPresent, dwTrans);
+    DirectDrawPresentDetourScope presentDetourScope;
+    if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
+        auto escape = PresentCycleEscape<DDSurface4BltFast_t>(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast");
+        return escape ? escape(surface, dwX, dwY, srcSurface, srcRect, dwTrans) : DD_OK;
+    }
 
     if (presentation.kind == policy::PresentKind::BlitPresent) {
         HandlePresentationSurface4(surface, srcSurface, presentation.kind, false, policy::Rect{});

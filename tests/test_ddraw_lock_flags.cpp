@@ -60,3 +60,60 @@ TEST(DDrawLockFlagsTest, TheOverlayCompositeNeverTakesTheWin16Lock) {
 TEST(DDrawLockFlagsTest, CaptureNeverTakesTheWin16Lock) {
     ExpectEveryDirectDrawLockKeepsNoSysLock("hook/apis", "ddraw_hook_capture_frame.cpp");
 }
+
+// Gothic II session 20260916_011148: CE and Steam's gameoverlayrenderer each
+// hooked IDirectDrawSurface7's Flip slot, in an order that left each holding
+// the other's detour as "the original". Calling it recursed - three frames
+// repeating down eight megabytes of the render thread's stack, each level
+// running a full 4K overlay composite. From outside that looked like a game
+// presenting 3,600 times at ~270/s for thirteen seconds; not one flip ever
+// completed, which is why nothing reached the screen.
+//
+// Every presentation detour must therefore refuse to re-enter itself on one
+// thread, and must break out through an entry point that provably belongs to
+// DirectDraw rather than through the saved original that leads back.
+TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours.cpp";
+    const std::string contents = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(contents.empty()) << source.string();
+
+    // Three Flip detours (legacy/4/7) and six blit presentation detours.
+    size_t scopes = 0;
+    for (size_t at = contents.find("DirectDrawPresentDetourScope presentDetourScope");
+         at != std::string::npos;
+         at = contents.find("DirectDrawPresentDetourScope presentDetourScope", at + 1)) {
+        ++scopes;
+    }
+    EXPECT_EQ(scopes, 9u) << "a presentation detour lost its re-entry guard";
+
+    size_t escapes = 0;
+    for (size_t at = contents.find("PresentCycleEscape<"); at != std::string::npos;
+         at = contents.find("PresentCycleEscape<", at + 1)) {
+        ++escapes;
+    }
+    EXPECT_EQ(escapes, 9u) << "a re-entry guard stopped breaking out through DirectDraw's own entry point";
+}
+
+// The escape is only an escape if it belongs to DirectDraw. Another overlay's
+// detour is exactly what must not be re-entered, so the recorded entry points
+// are validated against ddraw.dll's module range before they are kept.
+TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_present_reentry.cpp";
+    const std::string contents = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(contents.empty()) << source.string();
+
+    EXPECT_NE(contents.find("IsDirectDrawOwnedCode"), std::string::npos);
+    EXPECT_NE(contents.find("GetModuleHandleA(\"ddraw.dll\")"), std::string::npos);
+    EXPECT_NE(contents.find("GetModuleInformation"), std::string::npos);
+    // The snapshot has to happen before CE patches the slot, or it records CE.
+    const std::string installer =
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/apis" / "ddraw_hook_install.cpp");
+    ASSERT_FALSE(installer.empty());
+    const size_t record = installer.find("RecordDirectDrawPresentEntryPoints(surfaceVTable)");
+    const size_t patch = installer.find("VTableHook::Create", record);
+    EXPECT_NE(record, std::string::npos);
+    EXPECT_NE(patch, std::string::npos);
+    EXPECT_LT(record, patch);
+}

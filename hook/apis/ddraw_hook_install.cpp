@@ -327,6 +327,8 @@ void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface,  const cha
     if (ddraw_hook_g_LegacySurfaceVTables.find(vtable) != ddraw_hook_g_LegacySurfaceVTables.end())
         return;
 
+    RecordDirectDrawPresentEntryPoints(vtable);
+
     LegacySurfaceVTableRecord record;
     const VTableHook::Status flipStatus =
         VTableHook::Create(reinterpret_cast<void*>(&vtable[DDSURFACE7_VTABLE_FLIP]), (LPVOID)&DetourDDSurfaceLegacyFlip, (LPVOID*)&record.flip);
@@ -416,6 +418,10 @@ void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface,  const char* d
         return;
     }
 
+    // Before CE patches anything: whatever presentation entry points this
+    // vtable still has that belong to DirectDraw itself are the only safe way
+    // out of a hook cycle with another overlay.
+    RecordDirectDrawPresentEntryPoints(surfaceVTable);
     ddraw_hook_g_HookedSurfaceVTables.push_back(surfaceVTable);
     if (ddraw_hook_markPrototype && !ddraw_hook_g_HookSurfacePrototype4)
         ddraw_hook_g_HookSurfacePrototype4 = surface;
@@ -513,6 +519,10 @@ void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface,  const char* dd
         return;
     }
 
+    // Before CE patches anything: whatever presentation entry points this
+    // vtable still has that belong to DirectDraw itself are the only safe way
+    // out of a hook cycle with another overlay.
+    RecordDirectDrawPresentEntryPoints(surfaceVTable);
     ddraw_hook_g_HookedSurfaceVTables.push_back(surfaceVTable);
     if (ddraw_hook_markPrototype && !ddraw_hook_g_HookSurfacePrototype)
         ddraw_hook_g_HookSurfacePrototype = surface;

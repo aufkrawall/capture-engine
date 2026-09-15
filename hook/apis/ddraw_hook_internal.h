@@ -415,6 +415,39 @@ void ReleaseLegacyD3D7TextureBindings();
 
 void LogDirectDrawPresentationMix(const char* reason);
 
+// Presentation hook-cycle escape (`ddraw_hook_present_reentry.cpp`). Two
+// overlays hooking the same surface vtable slot in the wrong order each end up
+// holding the other's detour as "the original", so calling it recurses until
+// the render thread's stack is gone.
+void RecordDirectDrawPresentEntryPoints(void** surfaceVTable);
+void* ResolveDirectDrawOwnedPresentFunction(void* surface, size_t slot);
+void* AcquireDirectDrawPresentCycleEscape(void* surface, size_t slot, const char* operation);
+
+// Depth of CE's own presentation detours on this thread. A second entry is a
+// foreign overlay calling back into the slot CE owns, never the application
+// presenting twice at once.
+inline thread_local int ddraw_hook_g_PresentDetourDepth = 0;
+
+class DirectDrawPresentDetourScope {
+public:
+    DirectDrawPresentDetourScope() : reentrant_(ddraw_hook_g_PresentDetourDepth > 0) {
+        ++ddraw_hook_g_PresentDetourDepth;
+    }
+    ~DirectDrawPresentDetourScope() {
+        --ddraw_hook_g_PresentDetourDepth;
+    }
+
+    bool IsReentrant() const {
+        return reentrant_;
+    }
+
+    DirectDrawPresentDetourScope(const DirectDrawPresentDetourScope&) = delete;
+    DirectDrawPresentDetourScope& operator=(const DirectDrawPresentDetourScope&) = delete;
+
+private:
+    bool reentrant_ = false;
+};
+
 // One application presentation call that has returned, whatever it returned.
 // Arms the freeze watchdog and reports a presentation the runtime rejected;
 // `NotePresentationComplete` stays on the success path for frame timing.

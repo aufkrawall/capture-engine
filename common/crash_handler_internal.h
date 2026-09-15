@@ -18,6 +18,47 @@ typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD ProcessId, HANDLE
 
 // Defined in crash_handler.cpp.
 extern std::mutex g_DumpDirMutex;
+extern std::atomic<DWORD> g_DumpDirMutexOwnerThread;
+
+// Takes a mutex unless the calling thread already holds it, in which case it
+// proceeds unlocked. Windows re-enters a vectored exception handler on the same
+// thread when a fault is raised while the handler is running, so a plain lock
+// on the crash path is a lock a thread can end up waiting on for itself.
+// Gothic II session 20260916_011148 froze there: the render thread overflowed
+// its stack, CE's filter ran, and TraceCrash blocked in pthread_mutex_lock with
+// crash.log still empty - the stack-overflow dump that would have named the
+// recursion was never written.
+//
+// Only correct where the protected work is safe to re-enter on one thread:
+// appending to crash.log and reading the dump directory both are.
+class ExceptionSafeLock {
+public:
+    ExceptionSafeLock(std::mutex& mutex, std::atomic<DWORD>& owner) : mutex_(mutex), owner_(owner) {
+        const DWORD self = GetCurrentThreadId();
+        if (owner_.load(std::memory_order_acquire) == self) {
+            return;
+        }
+        mutex_.lock();
+        held_ = true;
+        owner_.store(self, std::memory_order_release);
+    }
+
+    ~ExceptionSafeLock() {
+        if (!held_) {
+            return;
+        }
+        owner_.store(0, std::memory_order_release);
+        mutex_.unlock();
+    }
+
+    ExceptionSafeLock(const ExceptionSafeLock&) = delete;
+    ExceptionSafeLock& operator=(const ExceptionSafeLock&) = delete;
+
+private:
+    std::mutex& mutex_;
+    std::atomic<DWORD>& owner_;
+    bool held_ = false;
+};
 extern HMODULE g_hDbgHelp;
 extern std::atomic<bool> g_DumpAttemptInProgress;
 extern std::atomic<bool> g_DumpSuccessfullyWritten;

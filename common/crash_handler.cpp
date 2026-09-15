@@ -29,6 +29,18 @@ static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
 static std::atomic<bool (*)(const char*)> g_ExternalCrashDumpCapture{nullptr};
 static std::atomic<bool (*)()> g_ForeignOverlayLoadedQuery{nullptr};
 static std::mutex g_TraceCrashMutex;
+// TraceCrash runs from a vectored exception handler, which Windows can re-enter
+// on the same thread - a fault raised while the handler is already running
+// dispatches straight back into it. A plain std::mutex is not recursive, so the
+// second entry blocks on a lock the same thread holds and the handler never
+// returns. Gothic II session 20260916_011148 froze exactly there: the render
+// thread overflowed its stack, CE's filter ran, and TraceCrash deadlocked in
+// pthread_mutex_lock with crash.log still empty - the stack-overflow dump that
+// should have named the recursion was never written. Ownership is tracked
+// explicitly so a re-entrant call writes without the lock instead of waiting
+// for itself.
+static std::atomic<DWORD> g_TraceCrashOwnerThread{0};
+std::atomic<DWORD> g_DumpDirMutexOwnerThread{0};
 std::atomic<int> g_VEHCallCount{0};
 std::atomic<int> g_RPCDisconnectedExceptionCount{0};
 std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
@@ -287,7 +299,7 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
 
     std::string dumpDir;
     {
-        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        ExceptionSafeLock dirLock(g_DumpDirMutex, g_DumpDirMutexOwnerThread);
         dumpDir = CrashDumpDirectoryStorage();
     }
     if (dumpDir.empty()) {
@@ -504,10 +516,10 @@ void TraceCrash(const char* msg) {
     if (!msg || !g_CrashTraceActive.load(std::memory_order_acquire)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_TraceCrashMutex);
+    ExceptionSafeLock lock(g_TraceCrashMutex, g_TraceCrashOwnerThread);
     std::string dumpDir;
     {
-        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        ExceptionSafeLock dirLock(g_DumpDirMutex, g_DumpDirMutexOwnerThread);
         dumpDir = CrashDumpDirectoryStorage();
     }
     char path[MAX_PATH];

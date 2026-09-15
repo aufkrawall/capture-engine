@@ -1,5 +1,49 @@
 # llm-wiki Log
 
+### 2026-09-16 - Gothic II's freeze was CE and Steam calling each other's Flip detour forever
+
+Session `20260916_011148`, diagnosed from a dump taken of the live hung process. The repeating cycle
+runs down eight megabytes of the render thread's stack - 322 copies in a single 48 KB window:
+
+    capture_hook_x86!DetourDDSurface7Flip+0xde
+    gameoverlayrenderer!OverlayHookD3D3+0x8dbc
+    gameoverlayrenderer!VulkanSteamOverlayProcessCapturedFrame+0x83330
+      -> capture_hook_x86!DetourDDSurface7Flip+0xde ...
+
+`+0xde` is the return address of exactly one instruction, `call eax` at `+0xdc`, where
+`eax = ddraw_hook_oDDSurface7Flip`. CE calling its own saved original lands in Steam's overlay, and
+Steam's call to *its* original comes straight back into CE's vtable detour. Both overlays hooked
+`IDirectDrawSurface7` slot 11, interleaved, and each ended up holding the other's detour.
+`VTableHook::Create` has no equivalent of the `IsAlreadyHooked` / "preserving external entry"
+protection `InlineHook` already carries.
+
+**This invalidates the previous session's reading.** `NoteDirectDrawPresentationAttempt` sits at
+`+0xed`, after the call that never returns, so `renderLoopObserved=0` was never a watchdog defect -
+no Flip ever returned. And the "3,600 presentations at ~270/s over thirteen seconds" was 3,600
+*recursion levels*, each running a full 4K composite: at the measured ~3.7 ms per composite that is
+13.3 s, which is exactly the window. Nothing reached the screen because the real flip was never
+called. The `DDERR_SURFACELOST`/E_FAIL locks at the end are the stack running out, not a cause.
+
+The fix keeps an escape that provably belongs to DirectDraw.
+`RecordDirectDrawPresentEntryPoints` snapshots the Flip/Blt/BltFast slots before CE patches them and
+keeps each one only if it lies inside `ddraw.dll`; all nine presentation detours now refuse to
+re-enter themselves on a thread and break out through that pointer instead of their saved original,
+so the cycle ends at its first bounce with the flip still performed. Without a recorded entry point
+the nested call returns without presenting - one dropped frame is bounded, a hang is not. A nested
+blit that is not classified as a presentation is ordinary CE capture work and still passes through.
+
+**Second defect, which is why there was no dump:** the overflow did reach CE. The frozen thread sat
+in `KiUserExceptionDispatcher -> RtlDispatchException -> RtlpCallVectoredHandlers ->
+CrashHandlerExceptionFilter -> TraceCrash -> pthread_mutex_lock -> WaitForSingleObject`, with
+`crash.log` still empty. Windows re-enters a vectored handler on the same thread, and `TraceCrash`
+took a non-recursive `std::mutex`, so the handler waited on a lock its own thread held.
+`ExceptionSafeLock` now takes `g_TraceCrashMutex` and `g_DumpDirMutex` only when the calling thread
+does not already own them.
+
+Also confirmed working from this session: the presentation-window dialog fix (`dialogTid=0`, was
+28632), and the WoW64 stack collector, which is the only reason any of this was recoverable - the
+user's own Task Manager dump of the same frozen process had no 32-bit stacks at all.
+
 ### 2026-09-16 - Gothic II froze with every present failing, and the watchdog dumped the wrong 5 seconds
 
 Session `20260916_005504`. The game did not freeze at start: it ran about 3,600 presentations at

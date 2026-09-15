@@ -33,8 +33,8 @@
     "clang-diagnostic-mismatched-tags": 23,
     "clang-diagnostic-missing-designated-field-initializers": 12,
     "clang-diagnostic-missing-field-initializers": 150,
-    "clang-diagnostic-missing-format-attribute": 218,
-    "clang-diagnostic-shadow": 807,
+    "clang-diagnostic-missing-format-attribute": 219,
+    "clang-diagnostic-shadow": 812,
     "clang-diagnostic-sign-compare": 7,
     "clang-diagnostic-undefined-inline": 35,
     "clang-diagnostic-unknown-pragmas": 89,
@@ -43,9 +43,9 @@
     "clang-diagnostic-unused-private-field": 106,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 1904,
+  "total": 1910,
   "scope": {
-    "entries": 763,
+    "entries": 764,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -179,6 +179,7 @@
       "hook/apis/ddraw_hook_overlay_composite.cpp",
       "hook/apis/ddraw_hook_overlay_route.cpp",
       "hook/apis/ddraw_hook_present_overrides.cpp",
+      "hook/apis/ddraw_hook_present_reentry.cpp",
       "hook/apis/ddraw_hook_texture_bindings.cpp",
       "hook/apis/ddraw_hook_write_tracking.cpp",
       "hook/apis/dx11_hook.cpp",

@@ -69,7 +69,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     // Read dump directory under mutex
     std::string dumpDir;
     {
-        std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
+        ExceptionSafeLock dirLock(g_DumpDirMutex, g_DumpDirMutexOwnerThread);
         dumpDir = CrashDumpDirectoryStorage();
     }
 

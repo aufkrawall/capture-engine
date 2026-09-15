@@ -51,6 +51,13 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
   Range arithmetic and its caps: `common/wow64_stack_range_policy.h`,
   `tests/test_wow64_stack_range_policy.cpp`.
 
+- **A hung WoW64 process can be dumped with CE's own helper, without a debugger attach:**
+  `captureengine.exe --dump-helper --dump-helper-pid=<pid> --dump-helper-dir=<dir>
+  --dump-helper-hint=<name>.dmp`. It writes through the same path the crash handler uses, so
+  the 32-bit stacks are included, and it suspends the target only while writing. Gothic II
+  `20260916_011148` was diagnosed this way after the in-process watchdog produced nothing;
+  Task Manager's own dump of the same process had no 32-bit stacks.
+
 - Reading a WoW64 dump: open it with the x64 `cdb.exe`, then `.effmach x86`
   before `dds`/`u`/`dd`. `k` still walks the x64 side; walk the 32-bit frames
   from the saved EBP chain (`dds <ebp>`) instead. `!address <esp>` reports the
