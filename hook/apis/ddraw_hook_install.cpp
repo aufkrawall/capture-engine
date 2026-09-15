@@ -98,10 +98,21 @@ void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api,  void* d
         // native sidecar must stay off (see PrimeNativeLegacyD3DOverlay).
         if (isD3D7 && !record->setTexture.load(std::memory_order_acquire)) {
             SetTexture7_t original = nullptr;
-            if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D7_VTABLE_SETTEXTURE]),
+            const VTableHook::Status status =
+                VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D7_VTABLE_SETTEXTURE]),
                                    reinterpret_cast<LPVOID>(&DetourSetTexture7),
-                                   reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
+                                   reinterpret_cast<LPVOID*>(&original));
+            if (status == VTableHook::Success) {
                 record->setTexture.store(original, std::memory_order_release);
+            } else {
+                // Silence here would be the worst outcome: the sidecar would go
+                // on restoring state blocks while shadowing nothing, which is
+                // the crash this hook exists to prevent. The route gate refuses
+                // the sidecar as well; this says why.
+                HookLogImportant(
+                    "DDraw: D3D7 SetTexture hook FAILED for vtable=%p (status=%d); CE cannot own the application's "
+                    "texture bindings, so the native sidecar stays off and the CPU composite draws the overlay",
+                    vtable, static_cast<int>(status));
             }
         }
         if (isD3D7 && !record->applyStateBlock.load(std::memory_order_acquire)) {

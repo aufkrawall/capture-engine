@@ -31,7 +31,15 @@ and stage 0 is restored explicitly from that shadow after the block so the sidec
 on the block carrying textures at all. `LegacyD3DTextureBindingsTest` covers the ownership rules;
 `LegacyD3D7VTableAbiTest` pins slot 35.
 
-Hardware validation in Gothic II is still pending.
+Validated on hardware the same night, session `20260916_004304`: the sidecar primed, the route
+stayed `native-d3d7` for the whole run with `nativeFail=0` over 5,994 flips, pacing held 144.0 fps at
+11 us frame-time standard deviation, an included screenshot completed mid-run, and the process exited
+cleanly with no `crash.log` and no dump. Verifying that also exposed a gap in the gate itself: it
+proved the device had been seen at `CreateDevice` but not that the `SetTexture` interception had
+actually installed, so a vtable slot another overlay owned would have left an empty shadow looking
+trustworthy. The gate now requires both, and a failed install is logged instead of silent.
+
+The WoW64 dump work below is still unexercised - nothing crashed, so no dump was written.
 
 ### 2026-09-16 - WoW64 crash dumps now contain the 32-bit stacks
 

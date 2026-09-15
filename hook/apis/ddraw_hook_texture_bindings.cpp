@@ -135,6 +135,16 @@ bool LegacyD3D7TextureBindingsAreRestoreSafe(void* ddraw_hook_device) {
     if (!ddraw_hook_device)
         return false;
 
+    // Seeing the device created is not enough on its own. The shadow is written
+    // from the SetTexture detour, so an interception that never installed -
+    // another overlay owning that slot, a vtable CE could not patch - would
+    // leave the shadow empty while the device looked trustworthy, which is
+    // exactly the state this gate exists to refuse.
+    const LegacyD3DSamplerVTableRecord* record =
+        ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device);
+    if (!record || !record->setTexture.load(std::memory_order_acquire))
+        return false;
+
     std::lock_guard<std::mutex> lock(g_TextureBindingMutex);
     const DeviceTextureBindings* entry = FindLocked(ddraw_hook_device);
     return entry && entry->ownedSinceCreation && entry->bindings.RestoreIsReferenceSafe();

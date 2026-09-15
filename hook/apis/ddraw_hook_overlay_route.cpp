@@ -237,7 +237,11 @@ bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
         return false;
     }
     g_nativeOverlay.backend = std::move(backend);
-    HookLogImportant("DDraw: Native D3D7 sidecar primed at a presentation boundary (device=%p)", device);
+    // The gate above already refused any device whose texture bindings CE does
+    // not own, so saying so here makes a later session provable from the log.
+    HookLogImportant(
+        "DDraw: Native D3D7 sidecar primed at a presentation boundary (device=%p, texture bindings owned by CE)",
+        device);
     return true;
 }
 
