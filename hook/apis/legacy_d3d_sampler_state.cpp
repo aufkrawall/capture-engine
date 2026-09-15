@@ -23,8 +23,20 @@ constexpr std::array<DWORD, kStateCount> kTrackedTypes = {13, 14, 25, 16, 17, 18
 struct StageState {
     std::array<DWORD, kStateCount> logical{};
     std::array<DWORD, kStateCount> physical{};
+    uint64_t loggedMipFingerprint = ~uint64_t{0};
+    int loggedAfDecision = -1;
+    UINT loggedAfRequest = 0;
+    bool loggedAfAggressive = false;
     bool initialized = false;
     bool bootstrapAttempted = false;
+};
+
+struct MipMappingResult {
+    sampler_override::LegacyD3DMipMappingDecision decision =
+        sampler_override::LegacyD3DMipMappingDecision::OverrideDisabled;
+    DWORD magFilter = 0;
+    DWORD minFilter = 0;
+    DWORD mipFilter = 0;
 };
 
 struct DeviceState {
@@ -45,6 +57,9 @@ std::array<std::atomic<uint64_t>, 3> g_reconciliations{};
 std::array<std::atomic<uint64_t>, 3> g_driverWrites{};
 std::array<std::atomic<uint64_t>, 3> g_bootstraps{};
 std::array<std::atomic<uint64_t>, 3> g_externalResyncs{};
+std::array<std::atomic<int>, 3> g_deviceLogs{};
+std::array<std::atomic<int>, 3> g_decisionLogs{};
+std::array<std::atomic<int>, 3> g_mipDecisionLogs{};
 std::array<std::atomic<int>, 3> g_transitionLogs{};
 std::array<std::atomic<int>, 3> g_failureLogs{};
 
@@ -80,6 +95,8 @@ void ResetStage(StageState& state, Api api, bool defaultsAreKnown) {
     state = {};
     state.logical = {1, 1, 1, traits.pointMag, traits.pointMin, traits.mipNone, 0, 0, 1};
     state.physical = state.logical;
+    state.loggedMipFingerprint = ~uint64_t{0};
+    state.loggedAfDecision = -1;
     state.initialized = defaultsAreKnown;
     state.bootstrapAttempted = defaultsAreKnown;
 }
@@ -189,19 +206,10 @@ bool RefreshPhysicalStageState(DeviceState& deviceState, DWORD stage, StageState
 
 std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, const StageState& state,
                                             const GraphicsConfig& gfx,
-                                            sampler_override::LegacyD3DForcedAFDecision* decision) {
+                                            sampler_override::LegacyD3DForcedAFDecision* decision,
+                                            MipMappingResult* mipResult) {
     const auto traits = TraitsFor(deviceState.api);
     std::array<DWORD, kStateCount> desired = state.logical;
-    const auto materialAddress = [](DWORD address) { return address >= 1 && address <= 3; };
-    const bool safeAddress =
-        gfx.samplerOverrideMode == "aggressive" ||
-        (materialAddress(desired[0]) && materialAddress(desired[1]) && materialAddress(desired[2]));
-
-    if (desired[5] != traits.mipNone && safeAddress) {
-        ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::ParseMode(gfx.mipMapping), traits.pointMag,
-                                              traits.linearMag, traits.pointMin, traits.linearMin, traits.mipPoint,
-                                              traits.mipLinear, desired[3], desired[4], desired[5]);
-    }
 
     sampler_override::LegacyD3DSamplerForcedAFInfo info = {};
     info.addressU = desired[0];
@@ -211,6 +219,22 @@ std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, cons
     info.minFilter = desired[4];
     info.mipFilter = desired[5];
     info.deviceMaxAnisotropy = deviceState.maxAnisotropy;
+    const auto mipDecision = sampler_override::ClassifyLegacyD3DSamplerForMipMapping(info, traits, gfx);
+    if (mipDecision == sampler_override::LegacyD3DMipMappingDecision::Allow) {
+        ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::ParseMode(gfx.mipMapping), traits.pointMag,
+                                              traits.linearMag, traits.pointMin, traits.linearMin, traits.mipPoint,
+                                              traits.mipLinear, desired[3], desired[4], desired[5]);
+    }
+    if (mipResult) {
+        mipResult->decision = mipDecision;
+        mipResult->magFilter = desired[3];
+        mipResult->minFilter = desired[4];
+        mipResult->mipFilter = desired[5];
+    }
+
+    info.magFilter = desired[3];
+    info.minFilter = desired[4];
+    info.mipFilter = desired[5];
     const auto afDecision = sampler_override::ClassifyLegacyD3DSamplerForForcedAF(info, traits, gfx);
     if (decision)
         *decision = afDecision;
@@ -234,6 +258,124 @@ std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, cons
     }
     desired[6] = std::bit_cast<DWORD>(FinalizeMipBias(gfx, bias));
     return desired;
+}
+
+const char* DecisionLabel(sampler_override::LegacyD3DForcedAFDecision decision) {
+    using Decision = sampler_override::LegacyD3DForcedAFDecision;
+    switch (decision) {
+        case Decision::Allow:
+            return "allow";
+        case Decision::OverrideDisabled:
+            return "override-disabled";
+        case Decision::MipFilterDisabled:
+            return "mip-filter-disabled";
+        case Decision::BorderAddress:
+            return "border-address";
+        case Decision::NonMaterialAddress:
+            return "non-material-address";
+        case Decision::PointMinMag:
+            return "point-min-mag";
+        case Decision::Unsupported:
+            return "unsupported";
+    }
+    return "unknown";
+}
+
+const char* MipDecisionLabel(sampler_override::LegacyD3DMipMappingDecision decision) {
+    using Decision = sampler_override::LegacyD3DMipMappingDecision;
+    switch (decision) {
+        case Decision::Allow:
+            return "allow";
+        case Decision::OverrideDisabled:
+            return "override-disabled";
+        case Decision::MipFilterDisabled:
+            return "mip-filter-disabled";
+        case Decision::NonMaterialAddress:
+            return "non-material-address";
+    }
+    return "unknown";
+}
+
+uint64_t MipDecisionFingerprint(const StageState& state, const GraphicsConfig& gfx,
+                                const MipMappingResult& result) {
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](uint64_t value) {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    };
+    mix(static_cast<uint64_t>(ce::mip_mapping::ParseMode(gfx.mipMapping)));
+    mix(static_cast<uint64_t>(result.decision));
+    mix(gfx.samplerOverrideMode == "aggressive" ? 1u : 0u);
+    mix(state.logical[0]);
+    mix(state.logical[1]);
+    mix(state.logical[2]);
+    mix(state.logical[3]);
+    mix(state.logical[4]);
+    mix(state.logical[5]);
+    mix(result.magFilter);
+    mix(result.minFilter);
+    mix(result.mipFilter);
+    return hash;
+}
+
+void LogMipDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state, const GraphicsConfig& gfx,
+                    const MipMappingResult& result) {
+    if (!ce::mip_mapping::IsExplicit(ce::mip_mapping::ParseMode(gfx.mipMapping))) {
+        state.loggedMipFingerprint = ~uint64_t{0};
+        return;
+    }
+
+    const uint64_t fingerprint = MipDecisionFingerprint(state, gfx, result);
+    if (state.loggedMipFingerprint == fingerprint)
+        return;
+    state.loggedMipFingerprint = fingerprint;
+
+    const int logIndex = g_mipDecisionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
+    if (logIndex < 32) {
+        HookLogImportant(
+            "%s: Sampler mip decision stage=%u decision=%s mode=%s address=%u/%u/%u "
+            "min=%u->%u mag=%u->%u mip=%u->%u policy=%s (#%d)",
+            ApiName(deviceState.api), stageIndex, MipDecisionLabel(result.decision), gfx.mipMapping.c_str(),
+            state.logical[0], state.logical[1], state.logical[2], state.logical[4], result.minFilter,
+            state.logical[3], result.magFilter, state.logical[5], result.mipFilter,
+            gfx.samplerOverrideMode.c_str(), logIndex + 1);
+    }
+}
+
+void LogAfDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state,
+                   const GraphicsConfig& gfx, sampler_override::LegacyD3DForcedAFDecision decision,
+                   const std::array<DWORD, kStateCount>& desired) {
+    const bool configured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
+    if (!configured) {
+        state.loggedAfDecision = -1;
+        state.loggedAfRequest = 0;
+        state.loggedAfAggressive = false;
+        return;
+    }
+
+    const int decisionValue = static_cast<int>(decision);
+    const UINT requested = sampler_override::IsAnisotropicOverrideEnabled(gfx)
+                               ? sampler_override::GetConfiguredMaxAnisotropy(gfx)
+                               : 1;
+    const bool aggressive = gfx.samplerOverrideMode == "aggressive";
+    if (state.loggedAfDecision == decisionValue && state.loggedAfRequest == requested &&
+        state.loggedAfAggressive == aggressive) {
+        return;
+    }
+    state.loggedAfDecision = decisionValue;
+    state.loggedAfRequest = requested;
+    state.loggedAfAggressive = aggressive;
+
+    const int logIndex = g_decisionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
+    if (logIndex < 32) {
+        HookLogImportant(
+            "%s: Sampler AF decision stage=%u decision=%s address=%u/%u/%u min=%u mag=%u mip=%u "
+            "af=%s desiredAnisotropy=%u cap=%u policy=%s (#%d)",
+            ApiName(deviceState.api), stageIndex, DecisionLabel(decision), state.logical[0], state.logical[1],
+            state.logical[2], state.logical[4], state.logical[3], state.logical[5],
+            gfx.anisotropicFiltering.c_str(), desired[8], deviceState.maxAnisotropy,
+            gfx.samplerOverrideMode.c_str(), logIndex + 1);
+    }
 }
 
 bool WriteCompanions(DeviceState& deviceState, DWORD stage, StageState& state,
@@ -268,7 +410,10 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
                     SetTextureStageStateFn setState) {
     sampler_override::LegacyD3DForcedAFDecision decision =
         sampler_override::LegacyD3DForcedAFDecision::OverrideDisabled;
-    const auto desired = BuildDesired(deviceState, state, gfx, &decision);
+    MipMappingResult mipResult = {};
+    const auto desired = BuildDesired(deviceState, state, gfx, &decision, &mipResult);
+    LogMipDecision(deviceState, stageIndex, state, gfx, mipResult);
+    LogAfDecision(deviceState, stageIndex, state, gfx, decision, desired);
     if (desired == state.physical)
         return true;
 
@@ -344,6 +489,7 @@ void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn 
     if (!newDevice)
         return;
 
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     deviceState->maxAnisotropy = queryMaxAnisotropy ? std::max<UINT>(1, queryMaxAnisotropy(device)) : 1;
     for (StageState& stage : deviceState->stages)
@@ -352,6 +498,16 @@ void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn 
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
     deviceState->bootstrapSweepPending = false;
+    const int logIndex = g_deviceLogs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+    if (logIndex < 8) {
+        HookLogImportant(
+            "%s: Sampler override device registered maxAnisotropy=%u af=%s policy=%s mip=%s bias=%s "
+            "overrideConfigured=%d "
+            "(#%d)",
+            ApiName(api), deviceState->maxAnisotropy, gfx.anisotropicFiltering.c_str(),
+            gfx.samplerOverrideMode.c_str(), gfx.mipMapping.c_str(), gfx.mipBias.c_str(),
+            HasOverride(gfx) ? 1 : 0, logIndex + 1);
+    }
 }
 
 HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWORD value,
@@ -386,7 +542,10 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
 
     sampler_override::LegacyD3DForcedAFDecision decision =
         sampler_override::LegacyD3DForcedAFDecision::OverrideDisabled;
-    const auto desired = BuildDesired(*deviceState, state, gfx, &decision);
+    MipMappingResult mipResult = {};
+    const auto desired = BuildDesired(*deviceState, state, gfx, &decision, &mipResult);
+    LogMipDecision(*deviceState, stage, state, gfx, mipResult);
+    LogAfDecision(*deviceState, stage, state, gfx, decision, desired);
     const DWORD requestedValue = combinedAddress ? value : desired[static_cast<size_t>(stateIndex)];
     const HRESULT hr = setState(device, stage, type, requestedValue);
     if (SUCCEEDED(hr)) {

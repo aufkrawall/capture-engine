@@ -96,6 +96,8 @@ void LogDirectDrawPresentationMix(const char* reason) {
         "partial=%u "
         "full=%u raster=%u rasterFull=%u rasterIncr=%u spriteReuse=%u compositeAvgUs=%llu compositeMaxUs=%u "
         "rasterAvgUs=%llu rasterMaxUs=%u lockAvgUs=%llu lockMaxUs=%u writeAvgUs=%llu writeMaxUs=%u "
+        "vblank=%u vblankFail=%u appVblankReuse=%u vblankAvgUs=%llu vblankMaxUs=%u "
+        "queueChecks=%u queueWaits=%u queueFail=%u queueAvgUs=%llu queueMaxUs=%u "
         "route=%s routeSwitches=%u",
         reason, diag.flips.load(std::memory_order_relaxed), diag.blitPresents.load(std::memory_order_relaxed),
         diag.directScanoutBlits.load(std::memory_order_relaxed), diag.ignoredBlits.load(std::memory_order_relaxed),
@@ -132,7 +134,18 @@ void LogDirectDrawPresentationMix(const char* reason) {
         averageUs(diag.lockMicrosecondsTotal, diag.surfaceWritePasses.load(std::memory_order_relaxed)),
         diag.lockMicrosecondsMax.load(std::memory_order_relaxed),
         averageUs(diag.writeMicrosecondsTotal, diag.surfaceWritePasses.load(std::memory_order_relaxed)),
-        diag.writeMicrosecondsMax.load(std::memory_order_relaxed), routeLabel, ddraw_hook_g_OverlayRouteSwitches);
+        diag.writeMicrosecondsMax.load(std::memory_order_relaxed),
+        diag.vblankWaits.load(std::memory_order_relaxed),
+        diag.vblankWaitFailures.load(std::memory_order_relaxed),
+        diag.applicationVblankWaitsReused.load(std::memory_order_relaxed),
+        averageUs(diag.vblankWaitMicrosecondsTotal, diag.vblankWaits.load(std::memory_order_relaxed)),
+        diag.vblankWaitMicrosecondsMax.load(std::memory_order_relaxed),
+        diag.prerenderChecks.load(std::memory_order_relaxed),
+        diag.prerenderWaits.load(std::memory_order_relaxed),
+        diag.prerenderWaitFailures.load(std::memory_order_relaxed),
+        averageUs(diag.prerenderWaitMicrosecondsTotal, diag.prerenderWaits.load(std::memory_order_relaxed)),
+        diag.prerenderWaitMicrosecondsMax.load(std::memory_order_relaxed), routeLabel,
+        ddraw_hook_g_OverlayRouteSwitches);
 }
 
 bool ComposePresentation(IDirectDrawSurface7* visibleSurface, IDirectDrawSurface7* presentSource,

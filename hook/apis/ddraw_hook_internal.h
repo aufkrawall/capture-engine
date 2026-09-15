@@ -71,6 +71,8 @@ typedef float D3DVALUE;
 
 #include "ddraw_hook_write_tracking.h"
 
+#include "ddraw_hook_runtime_state.h"
+
 #include "../common/fps_limiter.h"
 
 #include "../common/frame_timing.h"
@@ -316,13 +318,9 @@ inline IDirectDrawSurface4* ddraw_hook_g_HookSurfacePrototype4 = nullptr;
 
 inline thread_local int ddraw_hook_g_CaptureRecurse = 0;
 
-inline std::vector<IDirectDrawSurface7*> ddraw_hook_g_PrerenderSurfaces;
-
 inline std::vector<void**> ddraw_hook_g_HookedDDrawVTables;
 
 inline std::vector<void**> ddraw_hook_g_HookedSurfaceVTables;
-
-inline uint32_t ddraw_hook_g_PrerenderIdx = 0;
 
 // The game's own Direct3D 7 device, kept referenced so the overlay can draw
 // with it. Updated only when the device actually changes; the previous one is
@@ -399,59 +397,6 @@ void ClearNativeLegacyD3DOverlayState(IUnknown* surface);
 void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool flipSwapsSurfaceMemory);
 void ReleaseNativeLegacyD3DOverlay();
 
-// Presentation mix for the DirectDraw route. DirectDraw has no single present
-// entry point, so a route that composites nothing is otherwise
-// indistinguishable from one that is simply never called - which is exactly
-// what a loading screen that blits instead of flipping looks like.
-struct DDrawPresentationDiagnostics {
-    std::atomic<uint32_t> flips{0};
-    std::atomic<uint32_t> blitPresents{0};
-    std::atomic<uint32_t> directScanoutBlits{0};
-    std::atomic<uint32_t> ignoredBlits{0};
-    std::atomic<uint32_t> scanoutUnlocks{0};
-    std::atomic<uint32_t> composites{0};
-    std::atomic<uint32_t> skippedNoPublishedImage{0};
-    std::atomic<uint32_t> skippedOutsideOverlay{0};
-    std::atomic<uint32_t> scanoutWritesLeftToFlip{0};
-    std::atomic<uint32_t> compositeSucceeded{0};
-    std::atomic<uint32_t> compositeNoGeometry{0};
-    std::atomic<uint32_t> compositeWriteFailed{0};
-    std::atomic<uint32_t> reentrantPresentations{0};
-    std::atomic<uint32_t> spriteRasterizations{0};
-    std::atomic<uint32_t> spriteReuses{0};
-    std::atomic<uint32_t> compositesSkippedClean{0};
-    std::atomic<uint32_t> compositePartialWrites{0};
-    std::atomic<uint32_t> compositeFullWrites{0};
-    std::atomic<uint32_t> applicationWritesMarked{0};
-    std::atomic<uint32_t> primaryUnlockPresentations{0};
-    std::atomic<uint32_t> getDcPresentations{0};
-    std::atomic<uint32_t> surfaceCreations{0};
-    std::atomic<uint32_t> surfaceHookReuses{0};
-    std::atomic<uint32_t> nativeSceneDraws{0};
-    std::atomic<uint32_t> nativePresentations{0};
-    std::atomic<uint32_t> nativeDrawFailures{0};
-    std::atomic<uint32_t> nativeRepairRegions{0};
-    std::atomic<uint32_t> nativeUnsafeDeferrals{0};
-    std::atomic<uint32_t> captureNativeDeferrals{0};
-    std::atomic<uint32_t> spriteFullRasters{0};
-    std::atomic<uint32_t> spriteIncrementalUpdates{0};
-    std::atomic<uint32_t> rasterPasses{0};
-    std::atomic<uint32_t> surfaceWritePasses{0};
-    std::atomic<uint32_t> compositeTimedPresentations{0};
-    std::atomic<uint64_t> rasterMicrosecondsTotal{0};
-    std::atomic<uint32_t> rasterMicrosecondsMax{0};
-    std::atomic<uint64_t> lockMicrosecondsTotal{0};
-    std::atomic<uint32_t> lockMicrosecondsMax{0};
-    std::atomic<uint64_t> writeMicrosecondsTotal{0};
-    std::atomic<uint32_t> writeMicrosecondsMax{0};
-    std::atomic<uint64_t> compositeMicrosecondsTotal{0};
-    std::atomic<uint32_t> compositeMicrosecondsMax{0};
-    std::atomic<uint32_t> lastLogTick{0};
-};
-
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - atomic members are constant-initialized
-inline DDrawPresentationDiagnostics ddraw_hook_g_PresentationDiagnostics;
-
 void LogDirectDrawPresentationMix(const char* reason);
 
 inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
@@ -459,8 +404,6 @@ inline bool ddraw_hook_g_DirectDrawCreateExInlineInstalled = false;
 inline bool ddraw_hook_g_DirectDrawCreateInlineInstalled = false;
 
 inline HWND ddraw_hook_g_DDrawBootstrapWindow = NULL;
-
-inline thread_local unsigned ddraw_hook_g_DDrawBootstrapDepth = 0;
 
 inline std::atomic<int> ddraw_hook_g_ActiveDirectDrawVersion{0};
 

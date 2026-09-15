@@ -64,13 +64,37 @@ Primary sources:
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `cross-api-forced-af.md`
-  - D3D10 creation-time, D3D9/D3D6-8 event/state-block-driven, and OpenGL parameter/storage/cached-bind sampler architecture, shared mip-filter policy, safety rules, zero-draw-overhead invariants, diagnostics, and legacy runtime stale-risk. Last verified 2026-07-18.
+  - D3D10 creation-time, D3D9/D3D6-8 event/state-block-driven, and OpenGL
+    parameter/storage/cached-bind sampler architecture, shared mip-filter policy, safety rules,
+    zero-draw-overhead invariants, SDK-backed legacy ABI coverage, resolved legacy-device AF/mip/cap diagnostics,
+    and runtime stale-risk.
+    Last verified 2026-09-15.
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, no device mutation hooks when every override is default, complete Agility SDK/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements. Last verified 2026-09-09.
 - `graphics-overrides-and-frame-pacing.md`
-  - Cross-API sampler/config semantics including normalized mip filtering, dual NGX MFG-factor contracts, Vulkan compute-present overlay compositing and live same-swapchain present-family relearning, upstream Streamline FIFO propagation before DLSS-G observes swapchain creation, the DLSS on-screen indicator, authoritative NGX/Streamline RR lifecycle evidence, NGX foreign-resolver/proxy coexistence, the DRS-sourced DLSS FG render preset, the process-local NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`), the DLSS/Streamline runtime DLL override loader including the no-duplicate-instance redirect invariant and the process-tree-scoped ownership gate in front of it, the Vulkan swapchain image-count floor (`backbuffer_count` may raise `minImageCount`, never lower it), the two-sided swapchain-lifetime rule - every overlay object built over presentable images is released before `vkDestroySwapchainKHR` reaches the driver, while the ring's present-wait semaphores are destroyed only after it - the rule that CE never writes diagnostics to the host process's standard streams, diagnostics, and the runtime validation matrix. Queue depth and everything the FPS limiter owns moved to `frame-pacing-and-limiter.md`; the `[UE5]` console-variable overrides to `ue5-cvar-overrides.md`; display-change frame timing to `display-change-timing.md`; forced FIFO presentation under Vulkan to `vulkan-forced-fifo.md`. Last verified 2026-09-14.
+  - Cross-API sampler/config semantics including normalized mip filtering, native DirectDraw
+    Flip/full-surface-Blt overrides and the fixed-refresh-versus-DXGI-VRR boundary, dual NGX
+    MFG-factor contracts, Vulkan compute-present overlay compositing and live same-swapchain
+    present-family relearning, upstream Streamline FIFO propagation before DLSS-G observes
+    swapchain creation, the DLSS on-screen indicator, authoritative NGX/Streamline RR lifecycle
+    evidence, NGX foreign-resolver/proxy coexistence, the DRS-sourced DLSS FG render preset, and
+    the process-local NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`). Also covers the
+    DLSS/Streamline runtime DLL override loader and its no-duplicate-instance/process-tree ownership
+    gates, the Vulkan swapchain image-count floor (`backbuffer_count` may raise `minImageCount`, never
+    lower it), the two-sided swapchain-lifetime rule, diagnostics, and the runtime validation matrix.
+    Queue depth and the FPS limiter moved to `frame-pacing-and-limiter.md`; `[UE5]` console-variable
+    overrides to `ue5-cvar-overrides.md`; display-change timing to `display-change-timing.md`; and
+    forced Vulkan FIFO to `vulkan-forced-fifo.md`. Last verified 2026-09-15.
 - `frame-pacing-and-limiter.md`
-  - Producer-queue CPU/present depth enforcement and the whole FPS limiter: the exact rational QPC/Bresenham cadence grid, the `ce::fps_limiter_policy::PresentSite` call-site contract that replaced the 2 ms duplicate-present time window (DXGI top-level presents are recursion-guarded, so every entry is gated on the grid), front-loaded cadence placement (the deadline decides when a frame is presented, not when it is built) with a reservation learned from real overruns and a capture-sync opt-out, deterministic FG output-group admission and exact rational group cadence, composed capture/general constraints, explicit base-versus-final-output inject semantics, phase-preserving capture-sync recovery, the display vertical-blank ceiling as a third simultaneous constraint, and post-gap native Reflex handoff. Last verified 2026-09-14; the front-loaded placement, its overrun controller, and the vertical-blank ceiling need a hardware re-check.
+  - Producer-queue CPU/present depth enforcement, including typed DirectDraw Flip/Blt completion
+    ownership, and the whole FPS limiter: the exact rational QPC/Bresenham cadence grid, the
+    `ce::fps_limiter_policy::PresentSite` call-site contract, front-loaded cadence placement with a
+    reservation learned from real overruns and a capture-sync opt-out, deterministic FG output-group
+    admission and rational group cadence, composed capture/general constraints, explicit
+    base-versus-final-output inject semantics, phase-preserving capture-sync recovery, the display
+    vertical-blank ceiling as a third simultaneous constraint, and post-gap native Reflex handoff.
+    Last verified 2026-09-15; front-loaded placement, its overrun controller, and the vertical-blank
+    ceiling need a hardware re-check.
 - `vulkan-forced-fifo.md`
   - What `vsync_mode=fifo` has to reach in a Vulkan title: Streamline's Vulkan proxy above the layer, the layer's own present-mode override, and the `VK_NV_present_metering` capability that overrides both for the life of the device. What CE does for a metered generator is exactly two things: state the vertical blank on the WSI's own final DXGI flip (`SyncInterval=1`, `ALLOW_TEARING` cleared - re-armed 2026-09-13 once the present-mode override, not the interception, was identified as what unpaced the batch), and bound the *rendered* rate at `refresh / multiplier` so the batch still fits the panel. Two mechanisms stay retired and why: the present-mode override (NVIDIA's announced flip lead collapses from 6842 us to 141 us) and `VK_EXT_present_timing` relative scheduling (it bunched the metered batch it was meant to bound - 0.43 ms vs 6.91 ms screen-time stddev across a live `vsync_mode` change in one Portal RTX session - and its swapchain flag cost the game NVIDIA's native present path). Also the overlay submission ring that must never pace the game and the compute-composite acquire barrier that has to name the stage its submit waits at. Last verified on hardware 2026-09-14: 2x/3x/4x all pace at 143.6-144.2/s with 269-1062 us screen-time stddev once the rendered-rate ceiling is stated (before it, 41 x 4 = 164 fps on a 144 Hz panel made the generator stop scheduling flips entirely).
 - `display-change-timing.md`

@@ -1,5 +1,7 @@
 #include "ddraw_hook_internal.h"
 
+#include "ddraw_hook_present_overrides.h"
+
 static int64_t g_LastSleepUs = 0;
 
 static HHOOK g_DDrawBootstrapHook = nullptr;
@@ -164,6 +166,7 @@ void DDrawHook::Shutdown() {
     HookLog("DDrawHook::Shutdown()");
     ce::legacy_d3d_sampler_state::LogSummary(ce::legacy_d3d_sampler_state::Api::D3D6);
     ce::legacy_d3d_sampler_state::LogSummary(ce::legacy_d3d_sampler_state::Api::D3D7);
+    ResetDirectDrawPresentationOverrides();
 
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();
@@ -174,5 +177,6 @@ void DDrawHook::Shutdown() {
 
 void DDrawHook::OnHostDisconnect() {
     HookLog("DDrawHook::OnHostDisconnect()");
+    ResetDirectDrawPresentationOverrides();
     ddraw_hook_g_DDrawCapture.CleanupDDraw(true);
 }

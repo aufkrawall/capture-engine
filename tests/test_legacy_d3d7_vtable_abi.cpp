@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include "../common/mip_mapping_policy.h"
+
 // The legacy Direct3D headers redefine enumerators that `d3d9.h` also defines,
 // so `ddraw_hook_internal.h` cannot include them and reaches the application's
 // IDirect3DDevice7 by vtable index instead. Those indices are ABI, and nothing
@@ -34,6 +36,80 @@ TEST(LegacyD3D7VTableAbiTest, DeviceIndicesUsedByTheHookMatchTheInterface) {
 
 TEST(LegacyD3D7VTableAbiTest, Direct3D7CreateDeviceIndexMatchesTheInterface) {
     EXPECT_EQ(offsetof(IDirect3D7Vtbl, CreateDevice) / sizeof(void*), 4u);
+}
+
+TEST(LegacyD3D7VTableAbiTest, Direct3D6IndicesUsedByTheHookMatchTheInterfaces) {
+    EXPECT_EQ(offsetof(IDirect3D3Vtbl, CreateDevice) / sizeof(void*), 8u);
+    EXPECT_EQ(offsetof(IDirect3DDevice3Vtbl, EndScene) / sizeof(void*), 10u);
+    EXPECT_EQ(offsetof(IDirect3DDevice3Vtbl, GetTextureStageState) / sizeof(void*), 39u);
+    EXPECT_EQ(offsetof(IDirect3DDevice3Vtbl, SetTextureStageState) / sizeof(void*), 40u);
+}
+
+TEST(LegacyD3D7VTableAbiTest, LegacyFilterEnumsProduceNearestBilinearAndTrilinearMappings) {
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_ADDRESS), 12u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_ADDRESSU), 13u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_ADDRESSV), 14u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MAGFILTER), 16u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MINFILTER), 17u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MIPFILTER), 18u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MIPMAPLODBIAS), 19u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MAXMIPLEVEL), 20u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTSS_MAXANISOTROPY), 21u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFG_POINT), 1u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFG_LINEAR), 2u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFG_ANISOTROPIC), 5u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFN_POINT), 1u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFN_LINEAR), 2u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFN_ANISOTROPIC), 3u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFP_NONE), 1u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFP_POINT), 2u);
+    EXPECT_EQ(static_cast<DWORD>(D3DTFP_LINEAR), 3u);
+
+    constexpr DWORD pointMag = D3DTFG_POINT;
+    constexpr DWORD linearMag = D3DTFG_LINEAR;
+    constexpr DWORD pointMin = D3DTFN_POINT;
+    constexpr DWORD linearMin = D3DTFN_LINEAR;
+    constexpr DWORD pointMip = D3DTFP_POINT;
+    constexpr DWORD linearMip = D3DTFP_LINEAR;
+    DWORD mag = linearMag;
+    DWORD min = linearMin;
+    DWORD mip = linearMip;
+    ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::Mode::Nearest, pointMag, linearMag,
+                                          pointMin, linearMin, pointMip, linearMip,
+                                          mag, min, mip);
+    EXPECT_EQ(mag, pointMag);
+    EXPECT_EQ(min, pointMin);
+    EXPECT_EQ(mip, pointMip);
+
+    ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::Mode::Bilinear, pointMag, linearMag,
+                                          pointMin, linearMin, pointMip, linearMip,
+                                          mag, min, mip);
+    EXPECT_EQ(mag, linearMag);
+    EXPECT_EQ(min, linearMin);
+    EXPECT_EQ(mip, pointMip);
+
+    ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::Mode::Trilinear, pointMag, linearMag,
+                                          pointMin, linearMin, pointMip, linearMip,
+                                          mag, min, mip);
+    EXPECT_EQ(mag, linearMag);
+    EXPECT_EQ(min, linearMin);
+    EXPECT_EQ(mip, linearMip);
+}
+
+TEST(LegacyD3D7VTableAbiTest, DirectDrawPresentationIndicesMatchEveryUsedInterface) {
+    EXPECT_EQ(offsetof(IDirectDrawVtbl, WaitForVerticalBlank) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirectDraw2Vtbl, WaitForVerticalBlank) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirectDraw3Vtbl, WaitForVerticalBlank) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirectDraw4Vtbl, WaitForVerticalBlank) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirectDraw7Vtbl, WaitForVerticalBlank) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirectDrawSurfaceVtbl, GetBltStatus) / sizeof(void*), 13u);
+    EXPECT_EQ(offsetof(IDirectDrawSurfaceVtbl, GetFlipStatus) / sizeof(void*), 18u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface4Vtbl, GetBltStatus) / sizeof(void*), 13u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface4Vtbl, GetFlipStatus) / sizeof(void*), 18u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface4Vtbl, GetDDInterface) / sizeof(void*), 36u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface7Vtbl, GetBltStatus) / sizeof(void*), 13u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface7Vtbl, GetFlipStatus) / sizeof(void*), 18u);
+    EXPECT_EQ(offsetof(IDirectDrawSurface7Vtbl, GetDDInterface) / sizeof(void*), 36u);
 }
 
 TEST(LegacyD3D7VTableAbiTest, OverlayVertexFormatIsTransformedAndLit) {

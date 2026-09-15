@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "../../../common/config.h"
+#include "../../../common/mip_mapping_policy.h"
 
 // Override enablement, sampler descriptor rewriting, and per-API state tracking.
 
@@ -150,6 +151,31 @@ struct LegacyD3DSamplerForcedAFInfo {
     DWORD addressW = 1;
     UINT deviceMaxAnisotropy = 1;
 };
+
+enum class LegacyD3DMipMappingDecision {
+    Allow,
+    OverrideDisabled,
+    MipFilterDisabled,
+    NonMaterialAddress,
+};
+
+inline LegacyD3DMipMappingDecision ClassifyLegacyD3DSamplerForMipMapping(
+    const LegacyD3DSamplerForcedAFInfo& info, const LegacyD3DSamplerTraits& traits, const GraphicsConfig& gfx) {
+    if (!mip_mapping::IsExplicit(mip_mapping::ParseMode(gfx.mipMapping))) {
+        return LegacyD3DMipMappingDecision::OverrideDisabled;
+    }
+    if (info.mipFilter == traits.mipNone) {
+        return LegacyD3DMipMappingDecision::MipFilterDisabled;
+    }
+    if (gfx.samplerOverrideMode != "aggressive") {
+        const auto materialAddress = [](DWORD address) { return address >= 1 && address <= 3; };
+        if (!materialAddress(info.addressU) || !materialAddress(info.addressV) ||
+            !materialAddress(info.addressW)) {
+            return LegacyD3DMipMappingDecision::NonMaterialAddress;
+        }
+    }
+    return LegacyD3DMipMappingDecision::Allow;
+}
 
 enum class LegacyD3DForcedAFDecision {
     Allow,

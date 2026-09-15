@@ -1,5 +1,7 @@
 #include "ddraw_hook_internal.h"
 
+#include "ddraw_hook_present_overrides.h"
+
 #include <array>
 
 // The native Direct3D 7 renderer is an auxiliary backend. The adapter itself
@@ -162,6 +164,7 @@ void ResetDirectDrawPresentationStateForPrimaryChange() {
     // can never make a new surface look like an old composite.
     ddraw_hook_g_DDrawCapture.ReleaseOverlayResources();
     ReleaseNativeLegacyD3DOverlay();
+    ResetDirectDrawPresentationOverrides();
     ddraw_hook_g_ScanoutWritesSinceFlip.store(0, std::memory_order_relaxed);
     ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::Undecided;
 }

@@ -156,7 +156,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         std::hash<std::string>{}(std::string(graphics.vsyncMode)) ^
         (std::hash<std::string>{}(std::string(graphics.anisotropicFiltering)) << 1) ^
         (std::hash<std::string>{}(std::string(graphics.samplerOverrideMode)) << 2) ^
-        (std::hash<std::string>{}(std::string(graphics.mipBias)) << 3) ^
+        (std::hash<std::string>{}(std::string(graphics.mipMapping)) << 3) ^
+        (std::hash<std::string>{}(std::string(graphics.mipBias)) << 4) ^
         (static_cast<uint64_t>(graphics.backbufferCount) << 3) ^
         (static_cast<uint64_t>(sharedMemory->fpsLimiter.GetGeneralFps()) << 4) ^
         (static_cast<uint64_t>(sharedMemory->fpsLimiter.GetGeneralEnabled()) << 5) ^
@@ -207,7 +208,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
 
     if (completeSummaryHash != configSummaryHash) {
         LogInfo(
-            "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s mipBias=%s mode=%s cpuPrerender=%.2f "
+            "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s sampler=%s mip=%s mipBias=%s "
+            "mode=%s cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s systemLatency=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
@@ -218,7 +220,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "ue5HdrUiLuminance=%.1f ue5HdrMinLuminance=%.4f ue5HdrColorGamut=%d "
             "ue5CustomMask=0x%016llX",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
-            graphics.mipBias, graphics.mipBiasMode, graphics.prerenderLimit, graphics.backbufferCount,
+            graphics.samplerOverrideMode, graphics.mipMapping, graphics.mipBias, graphics.mipBiasMode,
+            graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
             sharedMemory->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF", sharedMemory->overlayConfig.showOverlay,
             sharedMemory->overlayConfig.observerOnly, sharedMemory->overlayConfig.observerPolicyOnly,

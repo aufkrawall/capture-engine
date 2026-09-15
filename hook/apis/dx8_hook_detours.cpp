@@ -1,5 +1,13 @@
 #include "dx8_hook_internal.h"
 
+#include <cstddef>
+
+// GetDeviceCaps writes a D3DCAPS8. D3DCAPS9 has the same prefix through
+// MaxAnisotropy and is larger, so it is a safe local storage type without
+// importing the D3D8 header into the production translation unit.
+static_assert(offsetof(D3DCAPS9, MaxAnisotropy) == 108);
+static_assert(sizeof(D3DCAPS9) >= 212);
+
 namespace {
 
 struct Direct3DCreate8Publication {

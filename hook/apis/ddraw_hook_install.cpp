@@ -1,5 +1,7 @@
 #include "ddraw_hook_internal.h"
 
+#include "ddraw_hook_present_overrides.h"
+
 namespace {
 
 struct DirectDrawCreatePublication {
@@ -346,6 +348,7 @@ void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
     void** vtable = *(void***)ddraw;
     if (!vtable)
         return;
+    InstallDirectDrawWaitForVerticalBlankHook(ddraw, ddraw_hook_reason);
 
     std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
     if (ddraw_hook_g_LegacyDDrawVTables.find(vtable) != ddraw_hook_g_LegacyDDrawVTables.end())
@@ -580,6 +583,7 @@ void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4,  const char* ddraw
         HookLog("DDraw: InstallDirectDraw4HooksForInstance skipped for %s - null vtable (object=%p)", ddraw_hook_reason, ddraw4);
         return;
     }
+    InstallDirectDrawWaitForVerticalBlankHook(ddraw4, ddraw_hook_reason);
 
     if (HasHookedVTable(ddraw_hook_g_HookedDDrawVTables, ddraw4VTable)) {
         HookLog(
@@ -685,6 +689,7 @@ void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7,  const char* ddraw_
         HookLog("DDraw: InstallDirectDrawHooksForInstance skipped for %s - null vtable (object=%p)", ddraw_hook_reason, ddraw7);
         return;
     }
+    InstallDirectDrawWaitForVerticalBlankHook(ddraw7, ddraw_hook_reason);
 
     if (HasHookedVTable(ddraw_hook_g_HookedDDrawVTables, ddraw7VTable)) {
         HookLog(

@@ -125,7 +125,6 @@ void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);Lega
 HWND ResolveDirectDrawTargetWindow();
 void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason);
 void MaybeTrackPrimarySurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason);
-void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit);
 void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t ddraw_hook_directDrawCreate);
 void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t ddraw_hook_directDrawCreateEx);
 void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);

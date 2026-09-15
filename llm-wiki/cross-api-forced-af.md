@@ -1,6 +1,6 @@
 # Cross-API Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-18
+Last cross-checked: 2026-09-15 (legacy AF/mip decisions and SDK ABI constants are covered)
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
@@ -9,6 +9,7 @@ Primary sources:
 - `hook/apis/{ddraw_hook,dx8_hook,dx9_hook,dx11_hook,opengl_hook}.cpp`
 - `hook/wrappers/{d3d9_device_wrap,d3d10_device_wrap}.*`
 - `tests/{test_mip_mapping_policy,test_sampler_override_utils,test_inject_capture_source}.cpp`
+- `tests/{test_legacy_d3d7_vtable_abi,test_legacy_d3d8_vtable_abi}.cpp`
 - `llm-wiki/{dx11-forced-af,dx12-forced-af}.md`
 
 ## Summary
@@ -49,7 +50,10 @@ that material textures received the intended AF effect, performance was good, an
   Get/SetTextureStageState and slot 39 for ApplyStateBlock. D3D6 uses Device3 slots 39/40. Legacy MAG anisotropy is
   value 5 (`D3DTFG_ANISOTROPIC`), not MIN's value 3; using 3 as MAG selects flat-cubic filtering. D3D5 and older expose
   no anisotropic value in their pre-stage `D3DTEXTUREFILTER` render states, so there is no generic AF action to take.
-  Pure DirectDraw 2D exposes no mip sampler; DirectDraw-hosted sampler overrides are the D3D6/7 device paths.
+  The mip override uses each API's real enum family: nearest is point MIN/MAG plus point MIP, bilinear is linear
+  MIN/MAG plus point MIP, and trilinear is linear MIN/MAG plus linear MIP. It preserves `MIPFILTER=NONE` because an
+  override cannot invent missing texture levels; safe mode also preserves non-material address modes. Pure DirectDraw
+  2D exposes no mip sampler; DirectDraw-hosted sampler overrides are the D3D6/7 device paths.
 - **OpenGL:** core bound-texture APIs, sampler objects, core DSA, and EXT DSA parameter variants share one policy.
   Texture image/compressed image/copy-image allocation, immutable storage, texture-view creation, and mip-generation
   entry points trigger reconciliation when mip availability can change. Texture/sampler binds reconcile each object
@@ -71,8 +75,13 @@ that material textures received the intended AF effect, performance was good, an
 - OpenGL has no draw interception. Bind interception queries an object only once per context/config/object generation;
   parameter/storage mutation events reconcile directly, and an already-correct filter or anisotropy value skips the
   redundant driver write.
-- Transition, bootstrap failure, descriptor retry, and safety-decision logs are rate-limited. Shutdown summaries report
-  reconciliations, driver writes, bootstrap attempts, and OpenGL storage/parameter events.
+- Transition, bootstrap failure, descriptor retry, and safety-decision logs are rate-limited. DX6-8 device
+  registration reports the resolved AF/mip policy and maximum anisotropy. Per-stage AF logs identify allow,
+  disabled-mip, point-filter, special-address, and unsupported-cap decisions even when no physical transition is
+  needed. Per-stage mip logs independently report allow, disabled mip filtering, or protected addressing and the
+  exact logical-to-target MIN/MAG/MIP values. The shared-memory publication summary includes both
+  `sampler_override_mode` and `mip_mapping`, distinguishing a missing profile from a deliberately preserved sampler.
+  Shutdown summaries report reconciliations, driver writes, bootstrap attempts, and OpenGL storage/parameter events.
 
 ## Verification
 
@@ -82,6 +91,9 @@ that material textures received the intended AF effect, performance was good, an
   suite and all five Python tool self-tests. Focused policy/config/source coverage exercises the shared filter triples,
   all four OpenGL mip MIN enums, Vulkan's independent mip/AF eligibility, legacy per-vtable/state-block wiring, and
   transactional fallback.
+- The 2026-09-15 focused legacy audit passed SDK-backed D3D6/7/8 vtable and enum tests plus the mip eligibility and
+  shared filter-policy suites. This proves the hook's numeric ABI assumptions and policy transforms, not a vendor
+  driver's runtime behavior.
 - Native runtime validation remains intentionally separate for the APIs listed below; the existing BioShock result
   establishes the D3D11 behavior, not legacy/OpenGL/Vulkan driver behavior.
 

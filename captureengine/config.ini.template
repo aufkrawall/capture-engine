@@ -539,12 +539,15 @@ general_limiter_mode=basic
 ; These settings affect injected applications only. default leaves the
 ; application's setting alone.
 ; vsync_mode: default, off, fifo, adaptive, or mailbox. fifo is normal V-Sync.
+; Native borderless DirectDraw Blt uses fixed-refresh vertical-blank pacing for
+; fifo; it is not a DXGI flip-model/VRR promotion.
 vsync_mode=default
 ; anisotropic_filtering: default, off, 2x, 4x, 8x, or 16x.
 anisotropic_filtering=default
 ; safe avoids special-purpose samplers. aggressive changes more samplers.
 sampler_override_mode=safe
 ; mip_mapping: default, nearest, bilinear, or trilinear.
+; Overrides only samplers that already use mipmaps; it cannot create missing mip levels.
 mip_mapping=default
 ; mip_bias is default or a number from -16 to 15.99. Negative values sharpen
 ; distant textures. strict replaces the application's bias, offset adds to it,

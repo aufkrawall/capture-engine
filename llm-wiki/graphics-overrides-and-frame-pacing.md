@@ -1,6 +1,7 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-09-13 (the sl.* runtime preload is demand-driven now - mapping sl.interposer.dll costs a Vulkan game NVIDIA's native present path; plus the `PresentSite` call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an overrun-learned reservation)
+Last cross-checked: 2026-09-15 (DirectDraw Flip and full-surface Blt presentation overrides;
+native borderless Blt versus DXGI flip/VRR ownership)
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -14,11 +15,14 @@ Primary sources:
 - `hook/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api,streamline_hook_state}.cpp`
+- `hook/apis/ddraw_hook_{detours,install,present_overrides}.cpp`
+- `hook/common/ddraw_present_policy.h`
 - `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
 - `tests/{test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
+- `tests/{test_ddraw_present_override_policy,test_legacy_d3d7_vtable_abi,test_legacy_d3d8_vtable_abi}.cpp`
 
 ## Configuration contract
 
@@ -148,13 +152,41 @@ Primary sources:
   DX6/7 refresh at EndScene and DX8 at Present. D3D7/8 ApplyStateBlock interception refreshes physical state and
   immediately reapplies the policy. D3D7 MAG anisotropy is value 5, and its sampler vtable slots are 36/37; D3D5 and
   older have no anisotropic filter value to force generically. Pure DirectDraw 2D has no mip sampler state; the
-  DirectDraw-hosted mip override is the D3D6/7 path.
+  DirectDraw-hosted mip override is the D3D6/7 path. SDK-backed ABI tests cover D3D6/7/8's distinct vtable and filter
+  enums. A per-stage diagnostic records why an explicit mip override was applied or preserved and its exact
+  logical-to-target MIN/MAG/MIP values.
 - OpenGL intercepts bound texture parameters, sampler objects, core/EXT DSA, mip allocation/storage/copy, and mip
   generation. Version-cached texture/sampler bind hooks reconcile late/default objects without adding draw hooks;
   texture/sampler deletion invalidates caches across contexts so reused GL names cannot inherit a stale decision.
   Integer, vector, and float parameter entry points share the same filter mapping, including
   `GL_NEAREST_MIPMAP_NEAREST`. It verifies actual mip storage and device limits at those mutation boundaries. CPU
   prerender sync rings remain owned per HGLRC.
+
+## DirectDraw presentation overrides
+
+- DirectDraw has two materially different presentation shapes. A flip chain publishes through `Flip`; a
+  single-buffered/windowed primary is commonly published by an exact full-surface `Blt` or `BltFast`. Session
+  `20260915_132705` resolved the Gothic II profile correctly but recorded 1,505 blit presents and zero flips, so the
+  old Surface7-Flip-only override could not affect either `vsync_mode` or `cpu_prerender_limit`.
+- FIFO normalizes Flip to one synchronized interval by clearing `NOVSYNC`, `DONOTWAIT`, and interval-2/3/4 flags and
+  setting `WAIT`. For a structurally proven full-surface Blt present it removes asynchronous/do-not-wait submission,
+  sets the operation's wait flag, performs overlay/capture composition, and then calls the surface owner's
+  `WaitForVerticalBlank(DDWAITVB_BLOCKBEGIN)` immediately before the actual Blt/BltFast. A successful synchronous
+  application `BLOCKBEGIN` wait on the same thread is consumed by the next present, avoiding a second refresh wait;
+  event and end-of-blank waits do not qualify. Each hooked DirectDraw vtable gets a distinct indexed wait detour, so
+  a later foreign shadow-vtable or follower hook still dispatches to the predecessor CE captured for that exact slot.
+  Arbitrary texture, HUD, transformed, partial, and flip-chain blits never enter this pacing path.
+- `off` and the legacy approximation of `mailbox` request `NOVSYNC` on Flip. A Blt has no corresponding no-vsync
+  presentation bit: its `WAIT`/`ASYNC` flags govern accelerator availability, not scanout synchronization, so CE does
+  not manufacture failure-prone asynchronous behavior for it.
+- This is a native, zero-copy fixed-refresh FIFO route, not VRR promotion. Borderless VRR requires a windowed
+  flip-model DXGI swapchain created with tearing support; changing DirectDraw Blt flags cannot create one. A generic
+  promotion would have to move DDraw/D3D7 resource and presentation ownership onto a DXGI-backed translation backend.
+  Copying the final legacy surface into a second swapchain every frame is intentionally rejected as a performance and
+  latency regression.
+- `DDraw: Presentation overrides` logs the recognized operation, effective route, queue depth, and original/effective
+  flags once per configuration. The periodic presentation mix reports vertical-blank and completion-query counts,
+  failures, average waits, and maximum waits.
 
 ## Overlay submission queue (Vulkan)
 

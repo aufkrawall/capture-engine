@@ -134,6 +134,40 @@ TEST(SamplerOverrideUtilsTest, LegacyD3DPolicyModelsDistinctD3D7MagFilterValues)
     EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx), LegacyD3DForcedAFDecision::BorderAddress);
 }
 
+TEST(SamplerOverrideUtilsTest, LegacyD3DMipMappingRequiresAnExistingMipChainAndSafeAddressing) {
+    GraphicsConfig gfx;
+    gfx.mipMapping = "trilinear";
+    LegacyD3DSamplerTraits d3d7Traits = {};
+    d3d7Traits.anisotropicMag = 5;
+    d3d7Traits.mipNone = 1;
+    d3d7Traits.mipPoint = 2;
+    d3d7Traits.mipLinear = 3;
+    LegacyD3DSamplerForcedAFInfo info = {};
+    info.addressU = 1;
+    info.addressV = 2;
+    info.addressW = 3;
+    info.mipFilter = d3d7Traits.mipNone;
+
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForMipMapping(info, d3d7Traits, gfx),
+              LegacyD3DMipMappingDecision::MipFilterDisabled);
+
+    info.mipFilter = d3d7Traits.mipPoint;
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForMipMapping(info, d3d7Traits, gfx),
+              LegacyD3DMipMappingDecision::Allow);
+
+    info.addressU = 5;
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForMipMapping(info, d3d7Traits, gfx),
+              LegacyD3DMipMappingDecision::NonMaterialAddress);
+
+    gfx.samplerOverrideMode = "aggressive";
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForMipMapping(info, d3d7Traits, gfx),
+              LegacyD3DMipMappingDecision::Allow);
+
+    gfx.mipMapping = "default";
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForMipMapping(info, d3d7Traits, gfx),
+              LegacyD3DMipMappingDecision::OverrideDisabled);
+}
+
 TEST(SamplerOverrideUtilsTest, OpenGLForcedAFUsesAllocatedMipAndMaterialAddressSafety) {
     GraphicsConfig gfx;
     gfx.anisotropicFiltering = "16x";

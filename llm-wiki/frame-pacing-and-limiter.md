@@ -1,9 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-09-14 (display vertical-blank ceiling as a third simultaneous constraint;
-GPU-completion-aware front-load reservation; split out of `graphics-overrides-and-frame-pacing.md`; `PresentSite`
-call-site contract, DXGI top-level presents gated on the cadence grid, front-loaded cadence release with an
-overrun-learned reservation)
+Last cross-checked: 2026-09-15 (typed DirectDraw Flip/Blt completion rings and native Blt FIFO pacing)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -18,6 +15,8 @@ Primary sources:
 - `hook/wrappers/dxgi_swapchain_wrap_present.cpp`
 - `hook/vulkan_layer/{vulkan_layer_present,vulkan_layer_swapchain,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/vulkan_present_boundary.h`
+- `hook/apis/ddraw_hook_present_overrides.{h,cpp}`
+- `hook/common/ddraw_present_policy.h`
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 
 Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and the NGX/DLSS surface),
@@ -35,6 +34,13 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   unknown-provenance runtime Presents skip only this limiter; their overlay/capture routing remains unchanged.
   Waiting on a runtime-generated Present or rebinding the ring to a runtime wrapper/presenter queue can deadlock
   because that queue may not retire until the same Present returns.
+- DirectDraw owns one fixed-capacity ring across recognized application presents. Limit `0` queries completion of the
+  just-submitted operation; limits `1-6` wait for the successful submission exactly that many presents behind before
+  replacing its slot. Flip uses `GetFlipStatus(DDGFS_ISFLIPDONE)` (Surface slot 18), while Blt/BltFast use
+  `GetBltStatus(DDGBS_ISBLTDONE)` (slot 13). Each queued COM interface is referenced until waited or reset, and a
+  primary-chain or configuration transition drains ownership without retaining stale raw surface pointers. The retired
+  implementation called slot 13 as if it were `GetFlipStatus`, stored unreferenced pointers, and approximated
+  fractional limits with a sleep; all three violated the integer queue contract.
 - Vulkan `cpu_prerender_limit=1-6` uses a per-queue seven-fence marker ring; `0` waits the current marker. OpenGL uses
   the same lookback semantics per context. Vulkan drains and resets outstanding markers when the configured depth
   changes so a previously signaled fence is never resubmitted. A non-graphics present queue does not disable the
@@ -310,4 +316,3 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 - Frame-generation scaling depends on the captured source. WGC/DXGI and explicit DX12/Vulkan final-output inject
   routes see presented/generated frames and scale the base target; only ordinary/base inject capture keeps its
   application-rendered capture-sync target undivided.
-

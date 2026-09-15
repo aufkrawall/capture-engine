@@ -139,7 +139,10 @@ anchors that predate the split are approximate.
       (per-surface CPU backdrop/composite state), `ddraw_hook_overlay_route.cpp` (persistent CPU
       adapter plus auxiliary native D3D7 sidecar and damage state), `ddraw_hook_write_tracking.{h,cpp}`
       (exact application-write history), `ddraw_hook_detours.cpp` (Flip/Blt classification),
-      `ddraw_hook_detours_surface_access.cpp` (Lock/DC access and direct-scanout presentation),
+      `ddraw_hook_present_overrides.{h,cpp}` (typed Flip/Blt scheduling, vertical-blank pacing,
+      and CPU presentation-depth ownership), `ddraw_hook_runtime_state.h` (narrow shared diagnostics/bootstrap
+      state), `ddraw_hook_detours_surface_access.cpp` (Lock/DC access and
+      direct-scanout presentation),
       `ddraw_hook_detours_legacy_d3d.cpp` (DX6/DX7 device interception), `ddraw_hook_install.cpp`,
       `ddraw_hook_helpers.cpp`, `ddraw_hook_internal.h`; shared implementation/policy lives in
       `hook/common/{ddraw_present_policy,ddraw_native_overlay_damage,overlay_cpu_raster}.h` plus

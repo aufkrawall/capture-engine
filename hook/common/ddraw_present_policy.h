@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <string_view>
 
 // Where a DirectDraw overlay composite belongs.
 //
@@ -46,6 +48,86 @@ enum class PresentKind {
     // The application changed the scanout surface itself, so the change is already visible.
     DirectScanout,
 };
+
+// DirectDraw's presentation calls expose three different scheduling flag
+// vocabularies. Keep their numeric ABI here so the policy stays unit-testable
+// without including the legacy Windows headers.
+enum class PresentOperation { None, Flip, Blt, BltFast };
+
+enum class VsyncRequest {
+    ApplicationControlled,
+    Immediate,
+    Fifo,
+};
+
+inline constexpr uint32_t kFlipWait = 0x00000001u;
+inline constexpr uint32_t kFlipNoVsync = 0x00000008u;
+inline constexpr uint32_t kFlipDoNotWait = 0x00000020u;
+inline constexpr uint32_t kFlipIntervalMask = 0x0F000000u;
+inline constexpr uint32_t kBltAsync = 0x00000200u;
+inline constexpr uint32_t kBltWait = 0x01000000u;
+inline constexpr uint32_t kBltDoNotWait = 0x08000000u;
+inline constexpr uint32_t kBltFastWait = 0x00000010u;
+inline constexpr uint32_t kBltFastDoNotWait = 0x00000020u;
+inline constexpr uint32_t kWaitVblankBlockBegin = 0x00000001u;
+inline constexpr uint32_t kWaitVblankBlockBeginEvent = 0x00000002u;
+inline constexpr uint32_t kWaitVblankBlockEnd = 0x00000004u;
+
+inline VsyncRequest ParseVsyncRequest(std::string_view mode) {
+    if (mode == "fifo" || mode == "adaptive")
+        return VsyncRequest::Fifo;
+    if (mode == "off" || mode == "mailbox")
+        return VsyncRequest::Immediate;
+    return VsyncRequest::ApplicationControlled;
+}
+
+// WAIT/DONOTWAIT describe whether the call may return while the accelerator is
+// busy; they do not select vertical synchronization. FIFO makes a present
+// reliable as well as synchronized, while immediate mode changes only the
+// actual no-vsync/interval request and preserves the application's queueing
+// preference.
+inline uint32_t ApplyVsyncFlags(uint32_t flags, PresentOperation operation, VsyncRequest request) {
+    if (request == VsyncRequest::ApplicationControlled)
+        return flags;
+
+    if (operation == PresentOperation::Flip) {
+        flags &= ~kFlipIntervalMask;
+        if (request == VsyncRequest::Immediate)
+            return flags | kFlipNoVsync;
+        flags &= ~(kFlipNoVsync | kFlipDoNotWait);
+        return flags | kFlipWait;
+    }
+
+    if (request != VsyncRequest::Fifo)
+        return flags;
+    if (operation == PresentOperation::Blt) {
+        flags &= ~(kBltAsync | kBltDoNotWait);
+        return flags | kBltWait;
+    }
+    if (operation == PresentOperation::BltFast) {
+        flags &= ~kBltFastDoNotWait;
+        return flags | kBltFastWait;
+    }
+    return flags;
+}
+
+inline bool NeedsExplicitVblankWait(VsyncRequest request, PresentOperation operation,
+                                    bool applicationAlreadyWaited) {
+    return request == VsyncRequest::Fifo && !applicationAlreadyWaited &&
+           (operation == PresentOperation::Blt || operation == PresentOperation::BltFast);
+}
+
+inline bool IsReusableVblankBeginWait(uint32_t flags) {
+    return (flags & kWaitVblankBlockBegin) != 0 &&
+           (flags & (kWaitVblankBlockBeginEvent | kWaitVblankBlockEnd)) == 0;
+}
+
+inline int ResolvePrerenderQueueDepth(float configuredLimit) {
+    if (!std::isfinite(configuredLimit) || configuredLimit < 0.0f || configuredLimit > 6.0f)
+        return -1;
+    const int depth = static_cast<int>(configuredLimit);
+    return static_cast<float>(depth) == configuredLimit ? depth : -1;
+}
 
 // Which surface the overlay must be composited into.
 enum class CompositeTarget {

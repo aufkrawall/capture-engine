@@ -758,5 +758,6 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn('elif env.get("CE_SKIP_PACKAGE") == "1":', source)
         self.assertIn('record_verification_step("package_archives", "skipped"', source)
 
+
 if __name__ == "__main__":
     unittest.main()
