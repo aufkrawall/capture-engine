@@ -55,7 +55,6 @@ static bool s_wasActive = false;
 static uint32_t s_seenLifecycleEpoch = 0;
 static HANDLE s_dedicatedFenceEvent = nullptr;
 static ID3D12Fence* s_dedicatedSyncFence = nullptr;
-static UINT64 s_dedicatedSyncFenceValue = 0;
 static bool s_wasSLFGActive = false;
 static bool s_postSLFGSuspended = false;
 const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
@@ -370,7 +369,6 @@ if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive,
         CloseHandle(s_dedicatedFenceEvent);
         s_dedicatedFenceEvent = nullptr;
     }
-    s_dedicatedSyncFenceValue = 0;
     if (ce::dx12_overlay_policy::ShouldResetPostSLStartupProgressOnReactivation(
             previouslyConfirmed, previousStableFrameCount, previousStallCount,
             previousRuntimeStateStabilizationLogged)) {

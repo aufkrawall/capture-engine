@@ -20,8 +20,11 @@ namespace {
 bool NamesThisLayer(const char* layerName) {
     if (layerName == nullptr)
         return false;
-    return strncmp(layerName, "VK_LAYER_CE_overlay", 19) == 0 ||
-           strcmp(layerName, "VK_LAYER_CAPTURE_overlay") == 0;
+    // The legacy "VK_LAYER_CAPTURE_overlay" name is deliberately not accepted. Its manifest
+    // named a VkLayer_capture.dll that no build has produced for a long time, so any surviving
+    // registration is already broken, and vulkan_layer_registration.cpp actively removes it
+    // (kLegacyManifestName). Answering to a name CE no longer publishes only hides that.
+    return strncmp(layerName, "VK_LAYER_CE_overlay", 19) == 0;
 }
 
 InstanceDispatch* ResolveInstanceDispatchForPhysicalDevice(VkPhysicalDevice physicalDevice) {

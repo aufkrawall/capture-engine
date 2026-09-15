@@ -48,16 +48,22 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     sharedMemory->benchmark.outputDir[sizeof(sharedMemory->benchmark.outputDir) - 1] = '\0';
 
     auto& graphics = sharedMemory->graphicsConfig;
-    strncpy(graphics.vsyncMode, config.graphics.vsyncMode.c_str(), 31);
-    strncpy(graphics.anisotropicFiltering, config.graphics.anisotropicFiltering.c_str(), 31);
+    strncpy(graphics.vsyncMode, config.graphics.vsyncMode.c_str(), sizeof(graphics.vsyncMode) - 1);
+    graphics.vsyncMode[sizeof(graphics.vsyncMode) - 1] = '\0';
+    strncpy(graphics.anisotropicFiltering, config.graphics.anisotropicFiltering.c_str(), sizeof(graphics.anisotropicFiltering) - 1);
+    graphics.anisotropicFiltering[sizeof(graphics.anisotropicFiltering) - 1] = '\0';
     strncpy(graphics.samplerOverrideMode, config.graphics.samplerOverrideMode.c_str(),
             sizeof(graphics.samplerOverrideMode) - 1);
     graphics.samplerOverrideMode[sizeof(graphics.samplerOverrideMode) - 1] = '\0';
-    strncpy(graphics.mipMapping, config.graphics.mipMapping.c_str(), 31);
-    strncpy(graphics.mipBias, config.graphics.mipBias.c_str(), 31);
-    strncpy(graphics.mipBiasMode, config.graphics.mipBiasMode.c_str(), 31);
+    strncpy(graphics.mipMapping, config.graphics.mipMapping.c_str(), sizeof(graphics.mipMapping) - 1);
+    graphics.mipMapping[sizeof(graphics.mipMapping) - 1] = '\0';
+    strncpy(graphics.mipBias, config.graphics.mipBias.c_str(), sizeof(graphics.mipBias) - 1);
+    graphics.mipBias[sizeof(graphics.mipBias) - 1] = '\0';
+    strncpy(graphics.mipBiasMode, config.graphics.mipBiasMode.c_str(), sizeof(graphics.mipBiasMode) - 1);
+    graphics.mipBiasMode[sizeof(graphics.mipBiasMode) - 1] = '\0';
     graphics.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
-    strncpy(graphics.msaaSamples, config.graphics.msaaSamples.c_str(), 31);
+    strncpy(graphics.msaaSamples, config.graphics.msaaSamples.c_str(), sizeof(graphics.msaaSamples) - 1);
+    graphics.msaaSamples[sizeof(graphics.msaaSamples) - 1] = '\0';
     graphics.nvLodSpreadFix = config.graphics.nvLodSpreadFix;
     graphics.legacyD3DNativeOverlay = config.graphics.legacyD3DNativeOverlay;
     graphics.forceRayReconstruction = config.graphics.forceRayReconstruction;
@@ -84,8 +90,10 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.backbufferCount = config.graphics.backbufferCount;
     graphics.sgssaa = config.graphics.sgssaa;
     graphics.disableAutoMipBias = config.graphics.disableAutoMipBias;
-    strncpy(graphics.dlssAutoExposure, config.graphics.dlssAutoExposure.c_str(), 31);
-    strncpy(graphics.dlssExposureNormalization, config.graphics.dlssExposureNormalization.c_str(), 31);
+    strncpy(graphics.dlssAutoExposure, config.graphics.dlssAutoExposure.c_str(), sizeof(graphics.dlssAutoExposure) - 1);
+    graphics.dlssAutoExposure[sizeof(graphics.dlssAutoExposure) - 1] = '\0';
+    strncpy(graphics.dlssExposureNormalization, config.graphics.dlssExposureNormalization.c_str(), sizeof(graphics.dlssExposureNormalization) - 1);
+    graphics.dlssExposureNormalization[sizeof(graphics.dlssExposureNormalization) - 1] = '\0';
 
     graphics.dlssPresetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
     graphics.dlssPresetQuality = ParseDlssPreset(config.graphics.dlssPresetQuality);

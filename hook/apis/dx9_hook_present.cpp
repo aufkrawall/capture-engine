@@ -451,7 +451,6 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             static thread_local uint32_t s_StatsFrameCount = 0;
             static thread_local int64_t s_StatsTotalSubmitUs = 0;
             static thread_local int64_t s_StatsTotalConsumeUs = 0;
-            static thread_local uint32_t s_StatsDropped = 0;
 
             s_StatsFrameCount++;
             s_StatsTotalSubmitUs += dx9_hook_g_DX9Capture.stagingStretchRectUs + dx9_hook_g_DX9Capture.stagingReadbackSubmitUs;
@@ -471,7 +470,6 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
                 s_StatsFrameCount = 0;
                 s_StatsTotalSubmitUs = 0;
                 s_StatsTotalConsumeUs = 0;
-                s_StatsDropped = 0;
                 s_StatsLastQpc = qpc.QuadPart;
             }
         }

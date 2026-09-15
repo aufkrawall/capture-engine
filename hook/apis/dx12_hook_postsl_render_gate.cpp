@@ -229,7 +229,6 @@ if (!queue) {
 }
 {
     ID3D12CommandQueue* oldLockedQueue = nullptr;
-    bool lockedQueueWasUpdated = false;
     bool shouldKeepExistingLockedQueue = false;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
@@ -265,7 +264,6 @@ if (!queue) {
             oldLockedQueue = dx12_hook_g_PostSLLockedQueue;
             dx12_hook_g_PostSLLockedQueue = queue;
             queue->AddRef();  // prevent locked queue from being freed between PostSL calls
-            lockedQueueWasUpdated = true;
 
             if (oldLockedQueue) {
                 if (queue == directQueueBehindWrapper) {

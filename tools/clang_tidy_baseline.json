@@ -40,14 +40,14 @@
     "clang-diagnostic-sign-compare": 9,
     "clang-diagnostic-undefined-inline": 35,
     "clang-diagnostic-unknown-pragmas": 89,
-    "clang-diagnostic-unused-but-set-variable": 3,
+    "clang-diagnostic-unused-but-set-variable": 0,
     "clang-diagnostic-unused-const-variable": 5,
     "clang-diagnostic-unused-function": 73,
     "clang-diagnostic-unused-label": 3,
-    "clang-diagnostic-unused-private-field": 426,
+    "clang-diagnostic-unused-private-field": 106,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 2229,
+  "total": 1906,
   "scope": {
     "entries": 755,
     "translation_units": [

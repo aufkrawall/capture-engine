@@ -401,8 +401,6 @@ private:
     std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
     std::atomic<int> displayVblankCeilingFps_{0};
     uint32_t applyActiveDedupCount_ = 0;
-    uint32_t applyWaitCount_ = 0;
-    uint32_t applySuccessCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;
     int64_t applyInterFrameSum_ = 0;
     uint32_t applyInterFrameCount_ = 0;
