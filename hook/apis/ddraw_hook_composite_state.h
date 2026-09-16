@@ -46,6 +46,9 @@ struct DDrawCapture::DDrawCompositeState {
     // One row of the dirty rectangle, in ordinary cached memory. The composite
     // copies a row out of the locked surface, computes over it here and copies
     // it back, so neither video-memory stream is ever accessed pixel by pixel.
+    // A 16-bit surface needs the packed row as well: it is copied whole, then
+    // expanded into and repacked out of `rowScratch`.
     std::vector<uint32_t> rowScratch;
+    std::vector<uint16_t> packedRowScratch;
     uint32_t useCounter = 0;
 };
