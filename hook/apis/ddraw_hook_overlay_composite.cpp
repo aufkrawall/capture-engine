@@ -127,7 +127,7 @@ void ResizeSurfaceState(DDrawCapture::DDrawCompositeState::SurfaceState& entry, 
 bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry,
                           IDirectDrawSurface7* surface, const Rect& writeRegion, const Rect& dirty,
                           const std::vector<uint32_t>& sprite, bool restoreOnly,
-                          bool preserveNativeOverlayState) {
+                          bool preserveNativeOverlayState, std::vector<uint32_t>& rowScratch) {
     const uint32_t regionWidth = static_cast<uint32_t>(writeRegion.right - writeRegion.left);
     const uint32_t dirtyWidth = static_cast<uint32_t>(dirty.right - dirty.left);
     const uint32_t dirtyHeight = static_cast<uint32_t>(dirty.bottom - dirty.top);
@@ -169,57 +169,61 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
     const bool is555 = IsRgb555(desc.ddpfPixelFormat);
     bool wrote = false;
 
-    if (is888) {
-        const int32_t pitch = desc.lPitch;
-        for (uint32_t y = 0; y < dirtyHeight; ++y) {
-            const uint32_t regionY = static_cast<uint32_t>(dirty.top + static_cast<int>(y)) -
-                                     static_cast<uint32_t>(writeRegion.top);
-            auto* row = reinterpret_cast<uint32_t*>(base + static_cast<ptrdiff_t>(y) * pitch);
-            const uint32_t* spritePixels = spriteRow ? spriteRow + static_cast<size_t>(regionY) * regionWidth +
-                                                           static_cast<size_t>(dirty.left - writeRegion.left)
-                                                     : nullptr;
-            for (uint32_t x = 0; x < dirtyWidth; ++x) {
-                const uint32_t regionX = static_cast<uint32_t>(dirty.left + static_cast<int>(x)) -
-                                         static_cast<uint32_t>(writeRegion.left);
-                const size_t index = static_cast<size_t>(regionY) * regionWidth + regionX;
-                uint32_t application = row[x] | 0xFF000000u;
-                if (entry.valid && application == entry.lastComposite[index])
-                    application = entry.backdrop[index];
-                entry.backdrop[index] = application;
-                const uint32_t result = restoreOnly || !spritePixels ? application
-                                                                     : policy::BlendPremultipliedOver(spritePixels[x], application);
-                entry.lastComposite[index] = result;
-                row[x] = result;
-            }
+    // A locked DirectDraw surface is video memory. Reading it one pixel at a
+    // time, interleaved with stores to the same addresses, is the worst access
+    // pattern that hardware has: every read is an uncached round trip and every
+    // store breaks up write combining. Gothic II session 20260916_014133
+    // measured 3.2 ms average and 44 ms peak inside this write, on the
+    // application's render thread. One linear copy out, the arithmetic in
+    // ordinary cached memory, one linear copy back keeps both streams
+    // sequential and leaves the result identical.
+    const bool writableFormat = is888 || is565 || is555;
+    if (writableFormat) {
+        try {
+            rowScratch.resize(dirtyWidth);
+        } catch (...) {
+            rowScratch.clear();
         }
-        wrote = true;
-    } else if (is565 || is555) {
+    }
+
+    if (writableFormat && rowScratch.size() == dirtyWidth) {
         const int32_t pitch = desc.lPitch;
+        const size_t rowBytes = static_cast<size_t>(dirtyWidth) * (is888 ? 4u : 2u);
         for (uint32_t y = 0; y < dirtyHeight; ++y) {
             const uint32_t regionY = static_cast<uint32_t>(dirty.top + static_cast<int>(y)) -
                                      static_cast<uint32_t>(writeRegion.top);
-            auto* row = reinterpret_cast<uint16_t*>(base + static_cast<ptrdiff_t>(y) * pitch);
-            const uint32_t* spritePixels = spriteRow ? spriteRow + static_cast<size_t>(regionY) * regionWidth +
-                                                           static_cast<size_t>(dirty.left - writeRegion.left)
-                                                     : nullptr;
-            for (uint32_t x = 0; x < dirtyWidth; ++x) {
-                const uint32_t regionX = static_cast<uint32_t>(dirty.left + static_cast<int>(x)) -
-                                         static_cast<uint32_t>(writeRegion.left);
-                const size_t index = static_cast<size_t>(regionY) * regionWidth + regionX;
-                const uint32_t read = is565 ? policy::ExpandRgb565(row[x]) : policy::ExpandRgb555(row[x]);
-                uint32_t application = read;
-                if (entry.valid && application == entry.lastComposite[index])
-                    application = entry.backdrop[index];
-                entry.backdrop[index] = application;
-                const uint32_t result = restoreOnly || !spritePixels ? application
-                                                                     : policy::BlendPremultipliedOver(spritePixels[x], application);
-                const uint16_t packed = is565 ? policy::PackRgb565(result) : policy::PackRgb555(result);
-                row[x] = packed;
-                // Keep exactly what the next lock expands from the surface.
-                // Comparing against the higher-precision blend result made
-                // every 16-bit frame look application-modified.
-                entry.lastComposite[index] =
-                    is565 ? policy::ExpandRgb565(packed) : policy::ExpandRgb555(packed);
+            const size_t rowIndex = static_cast<size_t>(regionY) * regionWidth +
+                                    static_cast<size_t>(dirty.left - writeRegion.left);
+            uint8_t* row = base + static_cast<ptrdiff_t>(y) * pitch;
+            const uint32_t* spritePixels = spriteRow ? spriteRow + rowIndex : nullptr;
+
+            if (is888) {
+                memcpy(rowScratch.data(), row, rowBytes);
+            } else {
+                const auto* packedRow = reinterpret_cast<const uint16_t*>(row);
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    rowScratch[x] = is565 ? policy::ExpandRgb565(packedRow[x]) : policy::ExpandRgb555(packedRow[x]);
+                }
+            }
+
+            policy::ComposeCompositeSpan(rowScratch.data(), dirtyWidth, spritePixels,
+                                         entry.backdrop.data() + rowIndex, entry.lastComposite.data() + rowIndex,
+                                         entry.valid, restoreOnly);
+
+            if (is888) {
+                memcpy(row, rowScratch.data(), rowBytes);
+            } else {
+                auto* packedRow = reinterpret_cast<uint16_t*>(row);
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    const uint16_t packed =
+                        is565 ? policy::PackRgb565(rowScratch[x]) : policy::PackRgb555(rowScratch[x]);
+                    packedRow[x] = packed;
+                    // Keep exactly what the next lock expands from the surface.
+                    // Comparing against the higher-precision blend result made
+                    // every 16-bit frame look application-modified.
+                    entry.lastComposite[rowIndex + x] =
+                        is565 ? policy::ExpandRgb565(packed) : policy::ExpandRgb555(packed);
+                }
             }
         }
         wrote = true;
@@ -239,7 +243,12 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
     if (!wrote) {
         static std::atomic<int> s_formatLogCount{0};
         if (s_formatLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
-            HookLogImportant("DDraw: Overlay composite cannot write a %u-bit presented surface", bits);
+            if (writableFormat) {
+                HookLogImportant(
+                    "DDraw: Overlay composite could not stage a %u-pixel row for the presented surface", dirtyWidth);
+            } else {
+                HookLogImportant("DDraw: Overlay composite cannot write a %u-bit presented surface", bits);
+            }
         }
         RequeueDirectDrawSurfaceWrite(surface);
         return false;
@@ -403,7 +412,7 @@ bool DDrawCapture::CompositeOverlaySprite(IDirectDrawSurface7* surface, const Re
 
     const int64_t writeStartUs = PerfLogger::GetQpcUs();
     const bool wrote = WriteCompositeRegion(*entry, surface, writeRegion, dirty, state.spriteCache.composed, false,
-                                            repairExistingNative);
+                                            repairExistingNative, state.rowScratch);
     const int64_t writeUs = PerfLogger::GetQpcUs() - writeStartUs;
     if (!wrote) {
         diagnostics.compositeWriteFailed.fetch_add(1, std::memory_order_relaxed);
@@ -437,8 +446,8 @@ bool DDrawCapture::RestoreCompositeRegion(IDirectDrawSurface7* surface) {
     const Rect& region = entry->region;
     ddraw_hook_g_PresentationDiagnostics.compositeFullWrites.fetch_add(1, std::memory_order_relaxed);
     const int64_t writeStartUs = PerfLogger::GetQpcUs();
-    const bool wrote =
-        WriteCompositeRegion(*entry, surface, region, region, std::vector<uint32_t>(), true, false);
+    const bool wrote = WriteCompositeRegion(*entry, surface, region, region, std::vector<uint32_t>(), true, false,
+                                            compositeState->rowScratch);
     if (!wrote)
         return false;
     AccumulateMicroseconds(ddraw_hook_g_PresentationDiagnostics.writeMicrosecondsTotal,
@@ -494,6 +503,8 @@ void DDrawCapture::ReleaseCompositeRegionResources() {
         return;
     compositeState->spriteCache = {};
     compositeState->spriteCache.composed.shrink_to_fit();
+    compositeState->rowScratch.clear();
+    compositeState->rowScratch.shrink_to_fit();
     compositeState->surfaces.clear();
     compositeState->surfaces.shrink_to_fit();
 }

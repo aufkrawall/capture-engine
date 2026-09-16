@@ -43,5 +43,9 @@ struct DDrawCapture::DDrawCompositeState {
 
     ce::overlay_cpu_raster::CommandCache spriteCache;
     std::vector<SurfaceState> surfaces;
+    // One row of the dirty rectangle, in ordinary cached memory. The composite
+    // copies a row out of the locked surface, computes over it here and copies
+    // it back, so neither video-memory stream is ever accessed pixel by pixel.
+    std::vector<uint32_t> rowScratch;
     uint32_t useCounter = 0;
 };

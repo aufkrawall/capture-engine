@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <iterator>
 
 #include "../hook/common/ddraw_native_overlay_damage.h"
@@ -387,4 +388,126 @@ TEST(DDrawPresentPolicyTest, PresentOperationsDescribeThemselvesForTheFailureLog
     EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::Blt), "blt");
     EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::BltFast), "bltfast");
     EXPECT_STREQ(ce::ddraw_present_policy::DescribePresentOperation(PresentOperation::None), "none");
+}
+
+// The CPU composite used to read, blend and store the surface one pixel at a
+// time. It now copies a row out of video memory, computes over it in ordinary
+// memory and copies it back; ComposeCompositeSpan is that arithmetic, and these
+// tests pin the behaviour the per-pixel loop had.
+namespace {
+
+// The loop that stood in ddraw_hook_overlay_composite.cpp before the staged
+// row copy, written out so the span has something independent to match.
+void ReferenceComposeSpan(uint32_t* pixels, size_t count, const uint32_t* sprite, uint32_t* backdrop,
+                          uint32_t* lastComposite, bool haveProof, bool restoreOnly) {
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t application = pixels[i] | 0xFF000000u;
+        if (haveProof && application == lastComposite[i])
+            application = backdrop[i];
+        backdrop[i] = application;
+        const uint32_t result =
+            restoreOnly || !sprite ? application : policy::BlendPremultipliedOver(sprite[i], application);
+        lastComposite[i] = result;
+        pixels[i] = result;
+    }
+}
+
+}  // namespace
+
+TEST(DDrawPresentPolicyTest, ARepeatedCompositeWritesTheSamePixelsInsteadOfBlendingOverItself) {
+    uint32_t backdrop[1] = {0u};
+    uint32_t lastComposite[1] = {0u};
+    const uint32_t sprite[1] = {0x80204060u};
+
+    uint32_t pixels[1] = {0xFF102030u};
+    policy::ComposeCompositeSpan(pixels, 1, sprite, backdrop, lastComposite, /*haveProof=*/false,
+                                 /*restoreOnly=*/false);
+    const uint32_t firstComposite = pixels[0];
+    EXPECT_EQ(backdrop[0], 0xFF102030u);
+    EXPECT_EQ(lastComposite[0], firstComposite);
+
+    // The application has not drawn, so the surface still holds CE's output.
+    policy::ComposeCompositeSpan(pixels, 1, sprite, backdrop, lastComposite, /*haveProof=*/true,
+                                 /*restoreOnly=*/false);
+    EXPECT_EQ(pixels[0], firstComposite);
+    EXPECT_EQ(backdrop[0], 0xFF102030u);
+}
+
+TEST(DDrawPresentPolicyTest, AnApplicationWriteUnderTheOverlayBecomesTheNewBackdrop) {
+    uint32_t backdrop[1] = {0xFF102030u};
+    uint32_t lastComposite[1] = {0xFF445566u};
+    const uint32_t sprite[1] = {0x80204060u};
+    uint32_t pixels[1] = {0xFF778899u};
+
+    policy::ComposeCompositeSpan(pixels, 1, sprite, backdrop, lastComposite, /*haveProof=*/true,
+                                 /*restoreOnly=*/false);
+    EXPECT_EQ(backdrop[0], 0xFF778899u);
+    EXPECT_EQ(pixels[0], policy::BlendPremultipliedOver(sprite[0], 0xFF778899u));
+}
+
+TEST(DDrawPresentPolicyTest, ARestoringSpanPutsTheBackdropBackWithoutTheSprite) {
+    uint32_t backdrop[1] = {0xFF102030u};
+    uint32_t lastComposite[1] = {0xFF445566u};
+    uint32_t pixels[1] = {0xFF445566u};
+
+    policy::ComposeCompositeSpan(pixels, 1, nullptr, backdrop, lastComposite, /*haveProof=*/true,
+                                 /*restoreOnly=*/true);
+    EXPECT_EQ(pixels[0], 0xFF102030u);
+    EXPECT_EQ(lastComposite[0], 0xFF102030u);
+}
+
+TEST(DDrawPresentPolicyTest, TheStagedSpanMatchesThePerPixelCompositeItReplaced) {
+    constexpr size_t kCount = 64;
+    uint32_t sprite[kCount] = {};
+    uint32_t seedPixels[kCount] = {};
+    uint32_t seedBackdrop[kCount] = {};
+    uint32_t seedLastComposite[kCount] = {};
+    uint32_t state = 0x1234567u;
+    const auto next = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return state;
+    };
+    for (size_t i = 0; i < kCount; ++i) {
+        sprite[i] = next();
+        seedPixels[i] = next() | 0xFF000000u;
+        seedBackdrop[i] = next() | 0xFF000000u;
+        // Every fourth pixel is still exactly what CE wrote, which is the case
+        // the proof exists for.
+        seedLastComposite[i] = (i % 4 == 0) ? seedPixels[i] : (next() | 0xFF000000u);
+    }
+
+    for (int haveProof = 0; haveProof <= 1; ++haveProof) {
+        for (int restoreOnly = 0; restoreOnly <= 1; ++restoreOnly) {
+            uint32_t pixels[kCount] = {};
+            uint32_t backdrop[kCount] = {};
+            uint32_t lastComposite[kCount] = {};
+            uint32_t referencePixels[kCount] = {};
+            uint32_t referenceBackdrop[kCount] = {};
+            uint32_t referenceLastComposite[kCount] = {};
+            std::copy(std::begin(seedPixels), std::end(seedPixels), std::begin(pixels));
+            std::copy(std::begin(seedBackdrop), std::end(seedBackdrop), std::begin(backdrop));
+            std::copy(std::begin(seedLastComposite), std::end(seedLastComposite), std::begin(lastComposite));
+            std::copy(std::begin(seedPixels), std::end(seedPixels), std::begin(referencePixels));
+            std::copy(std::begin(seedBackdrop), std::end(seedBackdrop), std::begin(referenceBackdrop));
+            std::copy(std::begin(seedLastComposite), std::end(seedLastComposite), std::begin(referenceLastComposite));
+
+            policy::ComposeCompositeSpan(pixels, kCount, sprite, backdrop, lastComposite, haveProof != 0,
+                                         restoreOnly != 0);
+            ReferenceComposeSpan(referencePixels, kCount, sprite, referenceBackdrop, referenceLastComposite,
+                                 haveProof != 0, restoreOnly != 0);
+
+            for (size_t i = 0; i < kCount; ++i) {
+                EXPECT_EQ(pixels[i], referencePixels[i]) << "pixel " << i;
+                EXPECT_EQ(backdrop[i], referenceBackdrop[i]) << "backdrop " << i;
+                EXPECT_EQ(lastComposite[i], referenceLastComposite[i]) << "lastComposite " << i;
+            }
+        }
+    }
+}
+
+TEST(DDrawPresentPolicyTest, AStagedSpanWithoutStateDoesNothing) {
+    uint32_t pixels[1] = {0xFF102030u};
+    uint32_t lastComposite[1] = {0u};
+    policy::ComposeCompositeSpan(pixels, 1, nullptr, nullptr, lastComposite, true, false);
+    EXPECT_EQ(pixels[0], 0xFF102030u);
 }

@@ -426,4 +426,32 @@ inline uint32_t ExpandRgb555(uint16_t value) {
            (((green << 3) | (green >> 2)) << 8) | ((blue << 3) | (blue >> 2));
 }
 
+// One row of the CPU composite, over pixels that have already been read out of
+// the surface into ordinary memory.
+//
+// `pixels` arrives holding the application's canonical 0xAARRGGBB values and
+// leaves holding what belongs in the surface. `backdrop` and `lastComposite`
+// point at this row's first pixel inside the region-sized state arrays, and
+// `sprite` is null when there is nothing to blend.
+//
+// `haveProof` is the state's `valid` flag: with it, a pixel that still equals
+// what CE wrote last time proves the application has not touched it, so the
+// saved backdrop - not CE's own output - is the application's image. Without
+// it there is no proof and everything read is taken as the application's.
+inline void ComposeCompositeSpan(uint32_t* pixels, size_t count, const uint32_t* sprite, uint32_t* backdrop,
+                                 uint32_t* lastComposite, bool haveProof, bool restoreOnly) {
+    if (!pixels || !backdrop || !lastComposite)
+        return;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t application = pixels[i] | 0xFF000000u;
+        if (haveProof && application == lastComposite[i])
+            application = backdrop[i];
+        backdrop[i] = application;
+        const uint32_t result =
+            (restoreOnly || !sprite) ? application : BlendPremultipliedOver(sprite[i], application);
+        lastComposite[i] = result;
+        pixels[i] = result;
+    }
+}
+
 }  // namespace ce::ddraw_present_policy
