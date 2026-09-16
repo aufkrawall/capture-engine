@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "../common/hook_common.h"
+#include "../common/overlay_compat.h"
 
 namespace VTableHook {
 
@@ -156,6 +157,24 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
             "VTableHook: DEBUG - Target %p in region: Base=%p, Size=%zu, "
             "Protect=0x%X",
             ppEntry, mbi.BaseAddress, mbi.RegionSize, mbi.Protect);
+    }
+
+    // Whatever CE keeps as "the original" is what CE will call. When that is
+    // another injector's detour rather than the vtable's own implementation,
+    // the chain CE joins runs through code CE does not control - and if that
+    // injector reinstalls after CE, its own "original" becomes CE's detour and
+    // the pair calls each other forever. Gothic II session 20260916_011148 is
+    // that cycle, eight megabytes of stack deep, and the recursion alone could
+    // not say who the other party was. Say it here instead, at install time.
+    if (ce::vtable_hook_policy::SavedOriginalIsForeignChain(hCurrentTarget, slotMemory.AllocationBase, hSelf)) {
+        char ownerPath[MAX_PATH] = {};
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(currentValue, ownerPath, sizeof(ownerPath));
+        HookLogImportant(
+            "VTableHook: Create - CE is chaining into a foreign entry at %p for slot %p (owner=%s "
+            "recognizedOverlay=%d vtableModule=%p). A later reinstall by that module would put CE and it in each "
+            "other's chain",
+            currentValue, ppEntry, ownerPath[0] ? ownerPath : "unknown",
+            ce::overlay_compat::IsThirdPartyOverlayModulePath(ownerPath) ? 1 : 0, slotMemory.AllocationBase);
     }
 
     // Save original function pointer if requested
