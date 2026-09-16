@@ -511,3 +511,47 @@ TEST(DDrawPresentPolicyTest, AStagedSpanWithoutStateDoesNothing) {
     policy::ComposeCompositeSpan(pixels, 1, nullptr, nullptr, lastComposite, true, false);
     EXPECT_EQ(pixels[0], 0xFF102030u);
 }
+
+// Gothic II session 20260916_021049 named the caller on the first occurrence
+// after the cycle report shipped: CE's saved Flip original was genuine
+// DDRAW.dll code, and gameoverlayrenderer re-entered CE's detour from below it.
+// The nested call was on the primary surface - the game's real screen flip - and
+// returning DD_OK dropped one per frame, which is why the picture stopped
+// updating while the 3D scene ran.
+TEST(DDrawPresentPolicyTest, AnInjectorsEntryPatchIsRecognizedByItsJumpShape) {
+    const unsigned char nearJump[] = {0xE9u, 0x12u, 0x34u, 0x56u, 0x78u};
+    const unsigned char indirectJump[] = {0xFFu, 0x25u, 0x00u, 0x00u, 0x00u, 0x00u};
+    const unsigned char ordinaryPrologue[] = {0x8Bu, 0xFFu, 0x55u, 0x8Bu, 0xECu};
+    const unsigned char conditionalJump[] = {0x0Fu, 0x85u, 0x00u, 0x00u, 0x00u, 0x00u};
+
+    EXPECT_TRUE(policy::EntryLooksInlinePatched(nearJump, sizeof(nearJump)));
+    EXPECT_TRUE(policy::EntryLooksInlinePatched(indirectJump, sizeof(indirectJump)));
+    EXPECT_FALSE(policy::EntryLooksInlinePatched(ordinaryPrologue, sizeof(ordinaryPrologue)));
+    EXPECT_FALSE(policy::EntryLooksInlinePatched(conditionalJump, sizeof(conditionalJump)));
+
+    // An FF byte alone is not a jump, and nothing is claimed for no bytes.
+    const unsigned char truncated[] = {0xFFu};
+    EXPECT_FALSE(policy::EntryLooksInlinePatched(truncated, sizeof(truncated)));
+    EXPECT_FALSE(policy::EntryLooksInlinePatched(nullptr, 8));
+    EXPECT_FALSE(policy::EntryLooksInlinePatched(nearJump, 0));
+}
+
+TEST(DDrawPresentPolicyTest, ANestedPresentationRunsTheRealImplementationExactlyOnce) {
+    // The first nested call, with a bypass to use, is the frame that would
+    // otherwise be lost.
+    EXPECT_TRUE(policy::NestedPresentationMayRunRealImplementation(1, true, false));
+
+    // Not twice on one thread: the second time would be a call from inside the
+    // bypass, which is where an unbounded recursion would start.
+    EXPECT_FALSE(policy::NestedPresentationMayRunRealImplementation(1, true, true));
+    EXPECT_FALSE(policy::NestedPresentationMayRunRealImplementation(2, true, false));
+    EXPECT_FALSE(policy::NestedPresentationMayRunRealImplementation(3, true, false));
+
+    // With no bypass there is nothing safe to call: session 20260916_013230
+    // answered the cycle with CE's own saved original and reached 32,768 levels
+    // in two milliseconds.
+    EXPECT_FALSE(policy::NestedPresentationMayRunRealImplementation(1, false, false));
+
+    // The outermost presentation is not nested at all.
+    EXPECT_FALSE(policy::NestedPresentationMayRunRealImplementation(0, true, false));
+}

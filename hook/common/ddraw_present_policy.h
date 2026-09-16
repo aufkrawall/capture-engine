@@ -426,6 +426,41 @@ inline uint32_t ExpandRgb555(uint16_t value) {
            (((green << 3) | (green >> 2)) << 8) | ((blue << 3) | (blue >> 2));
 }
 
+// Whether a function's first bytes are an unconditional jump of the shape an
+// injector writes over an entry point: a five-byte `E9 rel32` or a fourteen-byte
+// `FF 25` indirect jump. This is what CE's own InlineHook writes, what Steam's
+// overlay writes, and what DXGIShared::HasExternalEntryHook already keys on for
+// Present; DirectDraw needs the same question answered about the function CE
+// holds as "the original".
+inline bool EntryLooksInlinePatched(const unsigned char* bytes, size_t count) {
+    if (!bytes)
+        return false;
+    if (count >= 1 && bytes[0] == 0xE9u)
+        return true;
+    return count >= 2 && bytes[0] == 0xFFu && bytes[1] == 0x25u;
+}
+
+// Whether a nested presentation may run the real DirectDraw implementation.
+//
+// A nested presentation is still a presentation somebody asked for, so dropping
+// it is a lost frame - Gothic II session 20260916_021049 dropped every one of
+// them and the screen kept showing the menu while the game rendered. But CE may
+// never answer it by calling its own saved original: when another injector owns
+// that function's entry, that call comes straight back into CE's detour (32,768
+// levels in two milliseconds in session 20260916_013230).
+//
+// So the answer is the real implementation reached past that patch, and it is
+// allowed exactly once per outermost presentation: at the first nested level,
+// with a bypass that exists, and never twice on one thread. Anything deeper -
+// including a re-entry that arrives from inside the bypass - is refused, so this
+// cannot recurse however the chain above CE is wired.
+// `nestedLevel` counts nesting below the outermost presentation: 1 is the first
+// nested call, 2 is a call from inside the bypass.
+inline bool NestedPresentationMayRunRealImplementation(int nestedLevel, bool bypassAvailable,
+                                                       bool bypassAlreadyUsedOnThread) {
+    return nestedLevel == 1 && bypassAvailable && !bypassAlreadyUsedOnThread;
+}
+
 // One row of the CPU composite, over pixels that have already been read out of
 // the surface into ordinary memory.
 //

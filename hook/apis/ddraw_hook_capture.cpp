@@ -144,7 +144,9 @@ void LogDirectDrawPresentationMix(const char* reason) {
         diag.prerenderWaits.load(std::memory_order_relaxed),
         diag.prerenderWaitFailures.load(std::memory_order_relaxed),
         averageUs(diag.prerenderWaitMicrosecondsTotal, diag.prerenderWaits.load(std::memory_order_relaxed)),
-        diag.prerenderWaitMicrosecondsMax.load(std::memory_order_relaxed), routeLabel,
+        diag.prerenderWaitMicrosecondsMax.load(std::memory_order_relaxed),
+        diag.reentrantPresentationsBypassed.load(std::memory_order_relaxed),
+        diag.reentrantPresentationsDropped.load(std::memory_order_relaxed), routeLabel,
         ddraw_hook_g_OverlayRouteSwitches);
 }
 

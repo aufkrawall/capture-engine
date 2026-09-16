@@ -71,7 +71,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
         return DDERR_GENERIC;
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant()) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_FLIP, "Flip", reinterpret_cast<void*>(record.flip), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_FLIP, "Flip", reinterpret_cast<void*>(record.flip),
+                                          CE_DDRAW_RETURN_ADDRESS(), record.flip, surface, destOverride,
+                                          ddraw_hook_flags);
     }
     DirectDrawPresentationOverrideScope presentationOverride(
         surface, policy::PresentOperation::Flip, true, ddraw_hook_flags);
@@ -115,7 +117,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
         presentation.kind == policy::PresentKind::BlitPresent, ddraw_hook_flags);
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_BLT, "Blt", reinterpret_cast<void*>(record.blt), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_BLT, "Blt", reinterpret_cast<void*>(record.blt),
+                                          CE_DDRAW_RETURN_ADDRESS(), record.blt, surface, destRect, srcSurface,
+                                          srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     }
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
@@ -163,7 +167,9 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surfa
         presentation.kind == policy::PresentKind::BlitPresent, dwTrans);
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast", reinterpret_cast<void*>(record.bltFast), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast",
+                                          reinterpret_cast<void*>(record.bltFast), CE_DDRAW_RETURN_ADDRESS(),
+                                          record.bltFast, surface, dwX, dwY, srcSurface, srcRect, dwTrans);
     }
     if (presentation.kind != policy::PresentKind::None) {
         ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
@@ -261,7 +267,10 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
     }
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant()) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_FLIP, "Flip", reinterpret_cast<void*>(ddraw_hook_oDDSurface7Flip), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_FLIP, "Flip",
+                                          reinterpret_cast<void*>(ddraw_hook_oDDSurface7Flip),
+                                          CE_DDRAW_RETURN_ADDRESS(), ddraw_hook_oDDSurface7Flip, surface,
+                                          destOverride, ddraw_hook_flags);
     }
     ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
     MaybeTrackPrimarySurface(surface, "Flip");
@@ -316,7 +325,10 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
         presentation.kind == policy::PresentKind::BlitPresent, ddraw_hook_flags);
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_BLT, "Blt", reinterpret_cast<void*>(ddraw_hook_oDDSurface7Blt), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_BLT, "Blt",
+                                          reinterpret_cast<void*>(ddraw_hook_oDDSurface7Blt),
+                                          CE_DDRAW_RETURN_ADDRESS(), ddraw_hook_oDDSurface7Blt, surface, destRect,
+                                          srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     }
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);
@@ -378,7 +390,10 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, 
         presentation.kind == policy::PresentKind::BlitPresent, dwTrans);
     DirectDrawPresentDetourScope presentDetourScope;
     if (presentDetourScope.IsReentrant() && policy::PresentKindIsPresentation(presentation.kind)) {
-        return RefuseReenteredPresentation(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast", reinterpret_cast<void*>(ddraw_hook_oDDSurface7BltFast), CE_DDRAW_RETURN_ADDRESS());
+        return AnswerReenteredPresentation(surface, DDSURFACE7_VTABLE_BLTFAST, "BltFast",
+                                          reinterpret_cast<void*>(ddraw_hook_oDDSurface7BltFast),
+                                          CE_DDRAW_RETURN_ADDRESS(), ddraw_hook_oDDSurface7BltFast, surface, dwX,
+                                          dwY, srcSurface, srcRect, dwTrans);
     }
     if (eligible && presentation.kind == policy::PresentKind::None) {
         ddraw_hook_g_PresentationDiagnostics.ignoredBlits.fetch_add(1, std::memory_order_relaxed);

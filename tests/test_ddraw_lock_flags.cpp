@@ -88,17 +88,18 @@ TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
     }
     EXPECT_EQ(scopes, 9u) << "a presentation detour lost its re-entry guard";
 
-    size_t refusals = 0;
-    for (size_t at = contents.find("RefuseReenteredPresentation(surface"); at != std::string::npos;
-         at = contents.find("RefuseReenteredPresentation(surface", at + 1)) {
-        ++refusals;
+    size_t answers = 0;
+    for (size_t at = contents.find("AnswerReenteredPresentation(surface"); at != std::string::npos;
+         at = contents.find("AnswerReenteredPresentation(surface", at + 1)) {
+        ++answers;
     }
-    EXPECT_EQ(refusals, 9u) << "a re-entry guard stopped refusing the nested presentation";
+    EXPECT_EQ(answers, 9u) << "a re-entry guard stopped answering the nested presentation";
 
     // Session 20260916_013230: answering the cycle by calling another function -
     // even one captured before CE patched the slot and validated as ddraw-owned -
-    // did not end it. Returning without calling anything is the only response
-    // that cannot recurse, so no guard may call through a function pointer.
+    // did not end it, because that address is where the foreign entry patch sits.
+    // The answer is the implementation reached *past* that patch, never the
+    // recorded entry point and never CE's own saved original.
     EXPECT_EQ(contents.find("AcquireDirectDrawPresentCycleEscape"), std::string::npos)
         << "a re-entry guard is calling through a pointer again";
 }
@@ -127,4 +128,33 @@ TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
     EXPECT_NE(record, std::string::npos);
     EXPECT_NE(patch, std::string::npos);
     EXPECT_LT(record, patch);
+}
+
+// The answer to a nested presentation may never be CE's own saved original -
+// that pointer is what leads back into the injector that re-entered CE - but it
+// must still present. Session 20260916_021049: every nested Flip was on the
+// primary surface and every one was dropped, so the screen kept the last image
+// it had while the game ran on.
+TEST(DDrawLockFlagsTest, ANestedPresentationRunsTheRealImplementationThroughABypass) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook/apis" / "ddraw_hook.cpp";
+    const std::string contents = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(contents.empty()) << source.string();
+
+    // The bypass is built from the module's own on-disk bytes, past the foreign
+    // entry patch, exactly as DXGIShared does for a patched dxgi!Present.
+    EXPECT_NE(contents.find("InlineHook::CreateBypassTrampoline"), std::string::npos);
+    EXPECT_NE(contents.find("EntryLooksInlinePatched"), std::string::npos);
+
+    // And it is still never the saved original that gets called back.
+    EXPECT_EQ(contents.find("AcquireDirectDrawPresentCycleEscape"), std::string::npos)
+        << "a re-entry guard is calling the recorded entry point again";
+
+    // The answer itself is shared by all three DirectDraw generations, so it
+    // lives in the classification header rather than in any one unit.
+    const std::filesystem::path shared =
+        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_blit_classification.h";
+    const std::string sharedContents = ce::test_source::ReadLogicalSource(shared);
+    ASSERT_FALSE(sharedContents.empty()) << shared.string();
+    EXPECT_NE(sharedContents.find("NestedPresentationMayRunRealImplementation"), std::string::npos);
+    EXPECT_NE(sharedContents.find("AcquireDirectDrawPresentEntryBypass"), std::string::npos);
 }

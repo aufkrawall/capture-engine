@@ -36,10 +36,11 @@ inline bool BltFastCopiesSourceExactly(DWORD flags) {
     return (flags & ~kPassThroughFlags) == 0;
 }
 
-// A nested presentation returns without calling anything: that is the only
-// answer that cannot recurse. See ddraw_hook_present_reentry.cpp. The macro
-// captures the caller of the detour, which is the one fact that separates a
-// co-resident overlay from DirectDraw itself from CE re-entering its own hook.
+// A nested presentation is answered without ever calling CE's own saved
+// original: that pointer is what leads back into the injector that re-entered
+// CE. See ddraw_hook_present_reentry.cpp. The macro captures the caller of the
+// detour, which is the one fact that separates a co-resident overlay from
+// DirectDraw itself from CE re-entering its own hook.
 #if !defined(CE_DDRAW_RETURN_ADDRESS)
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_DDRAW_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
@@ -48,10 +49,34 @@ inline bool BltFastCopiesSourceExactly(DWORD flags) {
 #endif
 #endif
 
-inline HRESULT RefuseReenteredPresentation(void* surface, size_t slot, const char* operation, void* savedOriginal,
-                                           void* returnAddress) {
-    NoteDirectDrawPresentCycle(surface, slot, operation, returnAddress, savedOriginal);
-    return DD_OK;
+// The nested presentation still has to happen. Gothic II session
+// 20260916_021049 dropped one per frame - on the primary surface, the game's
+// real screen flip - and the screen kept showing the menu while the 3D scene
+// ran. When the saved original's entry carries another injector's patch, CE
+// answers with a bypass trampoline that runs DirectDraw's own implementation
+// past that patch; otherwise it drops the presentation exactly as before.
+//
+// `PresentFn` is the detour's own signature, so the nested call is forwarded
+// with the arguments it was made with. The bypass runs at most once per
+// outermost presentation, which is what keeps this bounded.
+template <typename PresentFn, typename... Args>
+inline HRESULT AnswerReenteredPresentation(void* surface, size_t slot, const char* operation, void* savedOriginal,
+                                           void* returnAddress, PresentFn, Args... args) {
+    void* bypass = AcquireDirectDrawPresentEntryBypass(savedOriginal, operation);
+    // The scope has already counted this call, so the outermost presentation
+    // reads 1 and the first nested one reads 2.
+    const bool runReal = policy::NestedPresentationMayRunRealImplementation(
+        ddraw_hook_g_PresentDetourDepth - 1, bypass != nullptr, ddraw_hook_g_PresentBypassUsedOnThread);
+    if (!runReal) {
+        ddraw_hook_g_PresentationDiagnostics.reentrantPresentationsDropped.fetch_add(1, std::memory_order_relaxed);
+        NoteDirectDrawPresentCycle(surface, slot, operation, returnAddress, savedOriginal, "dropped");
+        return DD_OK;
+    }
+
+    ddraw_hook_g_PresentBypassUsedOnThread = true;
+    ddraw_hook_g_PresentationDiagnostics.reentrantPresentationsBypassed.fetch_add(1, std::memory_order_relaxed);
+    NoteDirectDrawPresentCycle(surface, slot, operation, returnAddress, savedOriginal, "bypass");
+    return reinterpret_cast<PresentFn>(bypass)(args...);
 }
 
 inline policy::Rect ToPolicyRect(const RECT& rect) {

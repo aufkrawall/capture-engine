@@ -21,6 +21,11 @@ struct DDrawPresentationDiagnostics {
     std::atomic<uint32_t> compositeNoGeometry{0};
     std::atomic<uint32_t> compositeWriteFailed{0};
     std::atomic<uint32_t> reentrantPresentations{0};
+    // A nested presentation CE ran through the bypass trampoline, and one it
+    // could only drop. A growing `dropped` count is a frame that never reached
+    // the screen, which is what Gothic II session 20260916_021049 looked like.
+    std::atomic<uint32_t> reentrantPresentationsBypassed{0};
+    std::atomic<uint32_t> reentrantPresentationsDropped{0};
     std::atomic<uint32_t> spriteRasterizations{0};
     std::atomic<uint32_t> spriteReuses{0};
     std::atomic<uint32_t> compositesSkippedClean{0};

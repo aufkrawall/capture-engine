@@ -421,16 +421,29 @@ void LogDirectDrawPresentationMix(const char* reason);
 // the render thread's stack is gone.
 void RecordDirectDrawPresentEntryPoints(void** surfaceVTable);
 void* ResolveDirectDrawOwnedPresentFunction(void* surface, size_t slot);
-// Reports one nested presentation, naming the module that re-entered CE. The
-// nested call returns without presenting; handing the caller another function
-// to call does not end the cycle (session 20260916_013230).
+// Reports one nested presentation, naming the module that re-entered CE and how
+// CE answered it ("bypass" ran the real implementation, "dropped" did not
+// present). Handing the caller CE's own saved original does not end the cycle
+// (session 20260916_013230), so that is never what happens.
 void NoteDirectDrawPresentCycle(void* surface, size_t slot, const char* operation, void* returnAddress,
-                                void* savedOriginal);
+                                void* savedOriginal, const char* answer);
+
+// The real DirectDraw implementation behind a saved original whose entry another
+// injector has patched, reached past that patch. Null when the entry carries no
+// foreign patch, when the bypass could not be built, or when CE is shutting
+// down; the caller then drops the nested presentation rather than calling
+// anything. Cached per target, so the trampoline is built at most once.
+void* AcquireDirectDrawPresentEntryBypass(void* savedOriginal, const char* operation);
 
 // Depth of CE's own presentation detours on this thread. A second entry is a
 // foreign overlay calling back into the slot CE owns, never the application
 // presenting twice at once.
 inline thread_local int ddraw_hook_g_PresentDetourDepth = 0;
+
+// One bypass call per outermost presentation. A re-entry that arrives from
+// inside the bypass finds this set and is refused, which is what bounds the
+// answer no matter how the chain above CE is wired.
+inline thread_local bool ddraw_hook_g_PresentBypassUsedOnThread = false;
 
 class DirectDrawPresentDetourScope {
 public:
@@ -439,6 +452,8 @@ public:
     }
     ~DirectDrawPresentDetourScope() {
         --ddraw_hook_g_PresentDetourDepth;
+        if (ddraw_hook_g_PresentDetourDepth == 0)
+            ddraw_hook_g_PresentBypassUsedOnThread = false;
     }
 
     bool IsReentrant() const {
