@@ -1,5 +1,38 @@
 # llm-wiki Log
 
+### 2026-09-16 - The nested presentation was the game's screen flip, and CE was dropping it
+
+Gothic II session `20260916_021049`: after the intro videos the picture stopped updating - the 2D menu
+stayed on screen while the loaded 3D scene ran with its audio. The cycle report added the day before
+named the caller on its first real occurrence:
+
+    Re-entered from gameoverlayrenderer.dll+0x76ACC; CE's saved original is DDRAW.dll+0x37C50;
+    the entry point recorded before CE patched the slot was DDRAW.dll+0x37C50
+
+Three things follow from that one line. CE's saved original is **genuine DirectDraw**, so the previous
+session's reading - CE and Steam each holding the other's vtable pointer - was wrong. The other
+injector sits *below* CE: CE calls `DDRAW+0x37C50`, that injector owns the entry, and it re-issues the
+presentation through the surface vtable, which is CE's detour. And that is precisely why
+`20260916_013230` recursed 32,768 levels deep when CE answered the cycle with the entry point recorded
+before patching the slot - the same address, the same patch.
+
+The nested Flip was on `0da10fa0`, the surface CE itself tracked as the primary. So the guard's stated
+cost, "one dropped presentation", was the whole frame, every frame: `flips=14633` with roughly one
+refusal each, and nothing reaching the screen. A guard that cannot recurse is not automatically a guard
+that is safe.
+
+A nested presentation is now answered by running DirectDraw's own implementation past the foreign entry
+patch, through a bypass trampoline built from the module's on-disk bytes - `CreateBypassTrampoline`,
+which CE already used for a patched `dxgi!Present` and had never applied to DirectDraw. The other
+overlay has already drawn by the time it delegates, so nothing is cut out of the chain. Bounded: once
+per outermost presentation, refusal below that, refusal when the entry carries no `E9`/`FF 25` patch at
+all. The probe is deliberately not cached negatively, because the injector can hook after CE does.
+
+Also this session: the stack-only freeze dump proved itself on hardware - 273 KB and 35 WoW64 thread
+stacks for the game's own alt-tab dialog, against 30 MB the run before - and the Surface4 split turned
+out to have broken a source-policy test that counted presentation owners in one unit. The `--verify`
+that would have caught it had been interrupted; it reads the whole hook family now.
+
 ### 2026-09-16 - Working through the hand-off's open items
 
 Six follow-ups from the Gothic II session, none of them needing a new hardware run to justify.
