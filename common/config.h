@@ -596,7 +596,9 @@ struct AppConfig {
 
     // Screenshot
     std::string screenshotDir;  // Output directory (empty = "captures" next to exe)
-    std::string screenshotColorSpace = "auto";  // "auto" preserves HDR; "bt709" tone-maps HDR to SDR PNG
+    // "auto" preserves HDR; "bt709" tone-maps HDR to SDR PNG; "both" publishes an
+    // HDR source as both variants of the one capture.
+    std::string screenshotColorSpace = "both";
 
     // FPS Limiter
     FpsLimiterConfig fpsLimiter;

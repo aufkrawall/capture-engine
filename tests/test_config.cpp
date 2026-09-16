@@ -204,7 +204,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
     EXPECT_NE(generatedText.find("Choosing inject or always can trigger anti-cheat protection"), std::string::npos);
     EXPECT_NE(generatedText.find("output_dir and screenshot_dir are independent"), std::string::npos);
-    EXPECT_NE(generatedText.find("auto saves an HDR source as a native 10-bit BT.2020/PQ AVIF"), std::string::npos);
+    EXPECT_NE(generatedText.find("both saves an HDR source twice from the one capture"), std::string::npos);
+    EXPECT_NE(generatedText.find("color_space=both"), std::string::npos);
     EXPECT_NE(generatedText.find("start_stop, which falls back to F9"), std::string::npos);
     EXPECT_NE(generatedText.find("Seconds between keyframes"), std::string::npos);
     EXPECT_NE(generatedText.find("Quality target from 0 to 100"), std::string::npos);

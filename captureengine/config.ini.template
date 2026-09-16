@@ -110,10 +110,15 @@ b_frames=0
 ; synchronized timeline into one 48 kHz stereo AAC track.
 
 [Screenshot]
-; auto saves an HDR source as a native 10-bit BT.2020/PQ AVIF and an SDR source
-; as PNG. bt709 always saves PNG and tone-maps HDR using the Windows SDR white
-; level, matching forced-SDR video capture.
-color_space=auto
+; both saves an HDR source twice from the one capture: a native 10-bit
+; BT.2020/PQ AVIF plus a tone-mapped SDR PNG, published under one name that
+; differs only by extension. The two encodes run concurrently, so the pair
+; costs little more than the AVIF alone. A source that is not in HDR has no
+; second variant and still saves exactly one PNG.
+; auto saves an HDR source only as AVIF and an SDR source as PNG. bt709 always
+; saves PNG and tone-maps HDR using the Windows SDR white level, matching
+; forced-SDR video capture.
+color_space=both
 
 [Video]
 ; Choose an encoder supported by your GPU. CaptureEngine does not silently switch

@@ -187,7 +187,7 @@ bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>
 }
 
 bool SavePixelsAsPng(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
-                     std::filesystem::path& publishedPath) {
+                     const OutputNameSeed* nameSeed, std::filesystem::path& publishedPath) {
     std::vector<uint8_t> bgra;
     if (!ConvertSdrToTightBgra(screenshot, bgra))
         return false;
@@ -286,7 +286,10 @@ bool SavePixelsAsPng(const std::filesystem::path& outputDirectory, const RawScre
         LogError("[Screenshot] PNG staging flush failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
-    if (!staging.PublishToNewPath(outputDirectory, L"screenshot", L".png")) {
+    const bool publishedToNewPath =
+        nameSeed ? staging.PublishToNewPathWithSeed(outputDirectory, L"screenshot", L".png", *nameSeed)
+                 : staging.PublishToNewPath(outputDirectory, L"screenshot", L".png");
+    if (!publishedToNewPath) {
         LogError("[Screenshot] PNG atomic publication failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
@@ -601,10 +604,69 @@ bool ConvertHdrPixelToSdrBgra(ScreenshotPixelFormat format, const uint8_t* pixel
     return true;
 }
 
+bool IsHdrScreenshotSource(const RawScreenshot& screenshot) {
+    const auto format = static_cast<ScreenshotPixelFormat>(screenshot.header.pixelFormat);
+    const auto encoding = static_cast<ScreenshotColorEncoding>(screenshot.header.colorEncoding);
+    return (format == ScreenshotPixelFormat::R10G10B10A2 && encoding == ScreenshotColorEncoding::BT2020_PQ) ||
+           (format == ScreenshotPixelFormat::RGBA16F && encoding == ScreenshotColorEncoding::LinearScRGB);
+}
+
+namespace {
+
+bool SaveToneMappedPng(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
+                       float sdrWhiteNits, const OutputNameSeed* nameSeed, std::filesystem::path& publishedPath) {
+    RawScreenshot converted;
+    return ConvertHdrToSdrScreenshot(screenshot, sdrWhiteNits, converted) &&
+           SavePixelsAsPng(outputDirectory, converted, nameSeed, publishedPath);
+}
+
+// One capture, both variants. The AVIF pipeline dominates the wall clock by an
+// order of magnitude (about 950 ms versus about 250 ms at 4K), so the SDR
+// branch runs concurrently and the combined publication costs barely more than
+// the HDR-only one. The AVIF branch takes the worker because it never touches
+// COM; the WIC PNG writer stays on the caller's already-initialized apartment.
+// Both variants publish under one shared name seed, so the pair differs only by
+// extension. Neither branch is allowed to mask the other's failure.
+bool SaveHdrAndSdrScreenshots(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
+                              float sdrWhiteNits, ScreenshotPublication& published) {
+    const OutputNameSeed nameSeed = ce::capture_output::MakeOutputNameSeed();
+    std::filesystem::path hdrPath;
+    bool hdrSaved = false;
+    std::thread hdrWorker;
+    try {
+        hdrWorker = std::thread(
+            [&]() { hdrSaved = SaveHdrAvif(outputDirectory, screenshot, &nameSeed, hdrPath); });
+    } catch (const std::system_error& error) {
+        LogWarn("[Screenshot] Concurrent AVIF worker creation failed (%s); encoding both variants in sequence",
+                error.what());
+    }
+
+    std::filesystem::path sdrPath;
+    const bool sdrSaved = SaveToneMappedPng(outputDirectory, screenshot, sdrWhiteNits, &nameSeed, sdrPath);
+    if (hdrWorker.joinable())
+        hdrWorker.join();
+    else
+        hdrSaved = SaveHdrAvif(outputDirectory, screenshot, &nameSeed, hdrPath);
+
+    if (hdrSaved)
+        published.hdrPath = hdrPath;
+    if (sdrSaved)
+        published.sdrPath = sdrPath;
+    if (hdrSaved && sdrSaved)
+        return true;
+    // Whatever did publish is a complete, atomically named file and is kept;
+    // the request still failed, and the log names the variant that failed.
+    LogError("[Screenshot] Combined publication incomplete: hdr=%s sdr=%s", hdrSaved ? "ok" : "failed",
+             sdrSaved ? "ok" : "failed");
+    return false;
+}
+
+}  // namespace
+
 bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
-                       std::filesystem::path& publishedPath, ScreenshotOutputColorSpace outputColorSpace,
+                       ScreenshotPublication& published, ScreenshotOutputColorSpace outputColorSpace,
                        float sdrWhiteNits) {
-    publishedPath.clear();
+    published = {};
     if (screenshot.pixels.size() != screenshot.header.payloadSize ||
         !ValidateRawHeader(screenshot.header, screenshot.header.totalSize, screenshot.header.requestId)) {
         return false;
@@ -615,17 +677,17 @@ bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawSc
         (format == ScreenshotPixelFormat::R10G10B10A2 &&
          (encoding == ScreenshotColorEncoding::BT709_G22 || encoding == ScreenshotColorEncoding::SRGB)) ||
         (format == ScreenshotPixelFormat::RGBA16F && encoding == ScreenshotColorEncoding::LinearScRGBSdr)) {
-        return SavePixelsAsPng(outputDirectory, screenshot, publishedPath);
+        // An SDR presentation has no HDR variant to preserve, whatever the
+        // requested policy: the single PNG already is the whole capture.
+        return SavePixelsAsPng(outputDirectory, screenshot, nullptr, published.sdrPath);
     }
-    if (format != ScreenshotPixelFormat::R10G10B10A2 && format != ScreenshotPixelFormat::RGBA16F)
+    if (!IsHdrScreenshotSource(screenshot))
         return false;
-    if (outputColorSpace == ScreenshotOutputColorSpace::Bt709) {
-        RawScreenshot converted;
-        if (!ConvertHdrToSdrScreenshot(screenshot, sdrWhiteNits, converted))
-            return false;
-        return SavePixelsAsPng(outputDirectory, converted, publishedPath);
-    }
-    return SaveHdrAvif(outputDirectory, screenshot, publishedPath);
+    if (outputColorSpace == ScreenshotOutputColorSpace::Bt709)
+        return SaveToneMappedPng(outputDirectory, screenshot, sdrWhiteNits, nullptr, published.sdrPath);
+    if (outputColorSpace == ScreenshotOutputColorSpace::SourceAndBt709)
+        return SaveHdrAndSdrScreenshots(outputDirectory, screenshot, sdrWhiteNits, published);
+    return SaveHdrAvif(outputDirectory, screenshot, nullptr, published.hdrPath);
 }
 
 }  // namespace ce::screenshot

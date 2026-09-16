@@ -181,7 +181,7 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
     EXPECT_EQ(config.video.fps, 120);
     EXPECT_EQ(config.video.bFrames, 0);
     EXPECT_EQ(config.video.hdrNominalPeakNits, 1000);
-    EXPECT_EQ(config.screenshotColorSpace, "auto");
+    EXPECT_EQ(config.screenshotColorSpace, "both");
     EXPECT_EQ(config.video.mfQuality, 80);
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_TRUE(config.wgcSmoothnessFloorAuto);

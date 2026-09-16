@@ -70,9 +70,10 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
     config.benchmark.outputDir = reader.GetStr("Benchmark", "output_dir", "");
 
     config.screenshotDir = reader.GetStrCompat("Output", "screenshot_dir", "Screenshot", "screenshot_dir", "");
-    config.screenshotColorSpace = Lowercase(Trim(reader.GetStr("Screenshot", "color_space", "auto")));
-    if (config.screenshotColorSpace != "auto" && config.screenshotColorSpace != "bt709") {
-        LogInvalidConfigBoundary("Screenshot", "color_space", config.screenshotColorSpace, "auto");
-        config.screenshotColorSpace = "auto";
+    config.screenshotColorSpace = Lowercase(Trim(reader.GetStr("Screenshot", "color_space", "both")));
+    if (config.screenshotColorSpace != "auto" && config.screenshotColorSpace != "bt709" &&
+        config.screenshotColorSpace != "both") {
+        LogInvalidConfigBoundary("Screenshot", "color_space", config.screenshotColorSpace, "both");
+        config.screenshotColorSpace = "both";
     }
 }

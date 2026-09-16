@@ -540,3 +540,26 @@ TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
     EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
     EXPECT_TRUE(IsOverlayDx12FocusAnalysis(config.overlay));
 }
+
+TEST_F(ConfigTest, ScreenshotColorSpaceAcceptsEveryDocumentedMode) {
+    WriteConfig(
+        "[Screenshot]\n"
+        "color_space=auto\n");
+    AppConfig autoConfig;
+    LoadConfig(tempConfigFile, autoConfig);
+    EXPECT_EQ(autoConfig.screenshotColorSpace, "auto");
+
+    WriteConfig(
+        "[Screenshot]\n"
+        "color_space=BOTH\n");
+    AppConfig bothConfig;
+    LoadConfig(tempConfigFile, bothConfig);
+    EXPECT_EQ(bothConfig.screenshotColorSpace, "both");
+
+    // Combined HDR plus SDR publication is the shipped default, so an absent
+    // section must not quietly fall back to the HDR-only policy.
+    WriteConfig("[Video]\n");
+    AppConfig defaultConfig;
+    LoadConfig(tempConfigFile, defaultConfig);
+    EXPECT_EQ(defaultConfig.screenshotColorSpace, "both");
+}

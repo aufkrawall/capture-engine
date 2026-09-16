@@ -34,6 +34,7 @@ using ce::screenshot::RawScreenshot;
 using ce::screenshot::ReadRawScreenshot;
 using ce::screenshot::SaveRawScreenshot;
 using ce::screenshot::ScreenshotOutputColorSpace;
+using ce::screenshot::ScreenshotPublication;
 
 constexpr DWORD kHookScreenshotTimeoutMs = 15000;
 
@@ -463,6 +464,38 @@ bool TryWgcScreenshot(RawScreenshot& screenshot) {
     return captured;
 }
 
+ScreenshotOutputColorSpace ResolveOutputColorSpace(const std::string& colorSpace) {
+    if (colorSpace == "bt709")
+        return ScreenshotOutputColorSpace::Bt709;
+    if (colorSpace == "auto")
+        return ScreenshotOutputColorSpace::PreserveSource;
+    // "both" is the documented default; the configuration layer already
+    // rejected anything else before it reached this call.
+    return ScreenshotOutputColorSpace::SourceAndBt709;
+}
+
+const char* DescribeOutputColorSpace(ScreenshotOutputColorSpace outputColorSpace) {
+    switch (outputColorSpace) {
+        case ScreenshotOutputColorSpace::Bt709:
+            return "BT.709 SDR PNG";
+        case ScreenshotOutputColorSpace::SourceAndBt709:
+            return "HDR AVIF plus BT.709 SDR PNG";
+        default:
+            return "preserve source";
+    }
+}
+
+void LogPublication(const char* source, const ScreenshotPublication& published) {
+    if (!published.hdrPath.empty()) {
+        LogInfo("[Screenshot] Saved (%s HDR): %s", source,
+                ce::privacy::CollapsePathForLog(WideToUtf8(published.hdrPath.wstring())).c_str());
+    }
+    if (!published.sdrPath.empty()) {
+        LogInfo("[Screenshot] Saved (%s SDR): %s", source,
+                ce::privacy::CollapsePathForLog(WideToUtf8(published.sdrPath.wstring())).c_str());
+    }
+}
+
 bool TakeGdiScreenshot(RawScreenshot& screenshot) {
     const int width = GetSystemMetrics(SM_CXSCREEN);
     const int height = GetSystemMetrics(SM_CYSCREEN);
@@ -526,18 +559,20 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
     }
 
     RawScreenshot screenshot;
-    std::filesystem::path publishedPath;
-    const auto outputColorSpace = colorSpace == "bt709" ? ScreenshotOutputColorSpace::Bt709
-                                                         : ScreenshotOutputColorSpace::PreserveSource;
+    ScreenshotPublication published;
+    const ScreenshotOutputColorSpace outputColorSpace = ResolveOutputColorSpace(colorSpace);
+    // Every policy but plain "auto" can tone-map, and only a measured Windows
+    // SDR white level makes that tone map match forced-SDR video.
     const float sdrWhiteNits =
-        outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? QueryPrimarySdrWhiteNits() : 203.0f;
+        outputColorSpace == ScreenshotOutputColorSpace::PreserveSource ? 203.0f : QueryPrimarySdrWhiteNits();
     LogInfo("[Screenshot] Output color policy: requested=%s resolved=%s", colorSpace.c_str(),
-            outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "BT.709 SDR PNG" : "preserve source");
+            DescribeOutputColorSpace(outputColorSpace));
     if (TryHookScreenshot(outputDirectory, screenshot)) {
-        if (SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
-            LogInfo("[Screenshot] Saved (hook): %s", ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
+        if (SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
+            LogPublication("hook", published);
             return true;
         }
+        LogPublication("hook", published);
         LogError("[Screenshot] Hook capture encoding failed; no partial output was published");
         return false;
     }
@@ -545,21 +580,21 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
     if (IsHdrDesktop()) {
         LogInfo("[Screenshot] HDR desktop detected; using WGC readback");
         if (TryWgcScreenshot(screenshot) &&
-            SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
-            LogInfo("[Screenshot] Saved (WGC %s): %s",
-                    outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "HDR->SDR" : "HDR",
-                    ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
+            SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
+            LogPublication("WGC", published);
             return true;
         }
+        LogPublication("WGC", published);
         LogError("[Screenshot] HDR WGC capture failed; refusing to publish a clipped SDR fallback");
         return false;
     }
 
     if (!TakeGdiScreenshot(screenshot) ||
-        !SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
+        !SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
+        LogPublication("GDI", published);
         LogError("[Screenshot] GDI capture failed; no partial output was published");
         return false;
     }
-    LogInfo("[Screenshot] Saved (GDI): %s", ce::privacy::CollapsePathForLog(WideToUtf8(publishedPath.wstring())).c_str());
+    LogPublication("GDI", published);
     return true;
 }

@@ -75,6 +75,10 @@ std::optional<std::wstring> BuildFilename(const std::wstring& prefix, const std:
 
 }  // namespace
 
+OutputNameSeed MakeOutputNameSeed() {
+    return CurrentSeed();
+}
+
 std::filesystem::path GetExecutableDirectory() {
     std::wstring buffer(32768, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));

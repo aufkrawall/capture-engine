@@ -290,13 +290,14 @@ TEST(ScreenshotRawHeaderTest, SavesTenBitSdrPresentationAsRegularPng) {
         ScreenshotColorEncoding::BT709_G22, screenshot));
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
-    std::filesystem::path publishedPath;
-    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath);
+    ce::screenshot::ScreenshotPublication published;
+    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, published);
     if (SUCCEEDED(comResult))
         CoUninitialize();
     EXPECT_TRUE(saved);
-    EXPECT_EQ(publishedPath.extension(), L".png");
-    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+    EXPECT_TRUE(published.hdrPath.empty());
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
 
     std::filesystem::remove_all(directory, error);
 }
@@ -316,13 +317,14 @@ TEST(ScreenshotRawHeaderTest, SavesLinearFp16SdrPresentationAsRegularPng) {
         ScreenshotColorEncoding::LinearScRGBSdr, screenshot));
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
-    std::filesystem::path publishedPath;
-    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath);
+    ce::screenshot::ScreenshotPublication published;
+    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, published);
     if (SUCCEEDED(comResult))
         CoUninitialize();
     EXPECT_TRUE(saved);
-    EXPECT_EQ(publishedPath.extension(), L".png");
-    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+    EXPECT_TRUE(published.hdrPath.empty());
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
 
     std::filesystem::remove_all(directory, error);
 }
@@ -340,9 +342,10 @@ TEST(ScreenshotRawHeaderTest, RefusesToEncodeAnInconsistentInMemoryPayload) {
     ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
                                                   ScreenshotColorEncoding::SRGB, screenshot));
     screenshot.header.payloadSize++;
-    std::filesystem::path publishedPath = directory / L"must-not-exist.png";
-    EXPECT_FALSE(ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath));
-    EXPECT_TRUE(publishedPath.empty());
+    ce::screenshot::ScreenshotPublication published;
+    published.sdrPath = directory / L"must-not-exist.png";
+    EXPECT_FALSE(ce::screenshot::SaveRawScreenshot(directory, screenshot, published));
+    EXPECT_FALSE(published.Any());
     EXPECT_TRUE(std::filesystem::is_empty(directory));
 
     std::error_code error;
@@ -447,16 +450,17 @@ TEST(ScreenshotColorTest, ExplicitBt709PublishesAnHdrSourceAsPng) {
 
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
-    std::filesystem::path publishedPath;
+    ce::screenshot::ScreenshotPublication published;
     const bool saved = ce::screenshot::SaveRawScreenshot(
-        directory, screenshot, publishedPath, ce::screenshot::ScreenshotOutputColorSpace::Bt709, 80.0f);
+        directory, screenshot, published, ce::screenshot::ScreenshotOutputColorSpace::Bt709, 80.0f);
     if (SUCCEEDED(comResult))
         CoUninitialize();
     EXPECT_TRUE(saved);
-    EXPECT_EQ(publishedPath.extension(), L".png");
-    EXPECT_TRUE(std::filesystem::exists(publishedPath));
-    if (std::filesystem::exists(publishedPath))
-        EXPECT_GT(std::filesystem::file_size(publishedPath), 64u);
+    EXPECT_TRUE(published.hdrPath.empty());
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
+    if (std::filesystem::exists(published.sdrPath))
+        EXPECT_GT(std::filesystem::file_size(published.sdrPath), 64u);
 
     std::error_code error;
     std::filesystem::remove_all(directory, error);
@@ -480,18 +484,19 @@ TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
                                                   ScreenshotPixelFormat::R10G10B10A2,
                                                   ScreenshotColorEncoding::BT2020_PQ, screenshot));
 
-    std::filesystem::path publishedPath;
+    ce::screenshot::ScreenshotPublication published;
     const std::filesystem::path logPath = directory / L"encode.log";
     Log_Init(WideToUtf8(logPath.wstring()), LogLevel::Debug);
-    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath);
+    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, published);
     Log_Shutdown();
     std::ifstream logInput(logPath, std::ios::binary);
     const std::string encodeLog((std::istreambuf_iterator<char>(logInput)), std::istreambuf_iterator<char>());
     EXPECT_TRUE(saved) << encodeLog;
-    EXPECT_EQ(publishedPath.extension(), L".avif");
-    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+    EXPECT_TRUE(published.sdrPath.empty());
+    EXPECT_EQ(published.hdrPath.extension(), L".avif");
+    EXPECT_TRUE(std::filesystem::exists(published.hdrPath));
 
-    const DecodedAvifInfo decoded = DecodeAvif(publishedPath);
+    const DecodedAvifInfo decoded = DecodeAvif(published.hdrPath);
     EXPECT_TRUE(decoded.decoded);
     EXPECT_EQ(decoded.width, 4);
     EXPECT_EQ(decoded.height, 4);
@@ -511,6 +516,158 @@ TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
         EXPECT_LE(error(decoded.firstRow[index].u, expected.u), 32u);
         EXPECT_LE(error(decoded.firstRow[index].v, expected.v), 32u);
     }
+
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST(ScreenshotColorTest, ClassifiesOnlyGenuineHdrPayloadsAsHdrSources) {
+    std::array<uint8_t, 32> pixels{};
+    ce::screenshot::RawScreenshot screenshot;
+
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::R10G10B10A2,
+                                                  ScreenshotColorEncoding::BT2020_PQ, screenshot));
+    EXPECT_TRUE(ce::screenshot::IsHdrScreenshotSource(screenshot));
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 16, ScreenshotPixelFormat::RGBA16F,
+                                                  ScreenshotColorEncoding::LinearScRGB, screenshot));
+    EXPECT_TRUE(ce::screenshot::IsHdrScreenshotSource(screenshot));
+
+    // Ten-bit storage and FP16 storage are not evidence of HDR content: a
+    // combined request must not invent an AVIF for an SDR presentation.
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::R10G10B10A2,
+                                                  ScreenshotColorEncoding::BT709_G22, screenshot));
+    EXPECT_FALSE(ce::screenshot::IsHdrScreenshotSource(screenshot));
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 16, ScreenshotPixelFormat::RGBA16F,
+                                                  ScreenshotColorEncoding::LinearScRGBSdr, screenshot));
+    EXPECT_FALSE(ce::screenshot::IsHdrScreenshotSource(screenshot));
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
+                                                  ScreenshotColorEncoding::SRGB, screenshot));
+    EXPECT_FALSE(ce::screenshot::IsHdrScreenshotSource(screenshot));
+}
+
+TEST(ScreenshotColorTest, CombinedModePublishesPairedHdrAndSdrVariantsOfOneCapture) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    std::vector<uint32_t> pixels(16, 0x3FFFFFFFu);
+    pixels[0] = 0;
+    pixels[1] = 0x000003FFu;
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(reinterpret_cast<const uint8_t*>(pixels.data()), 4, 4, 16,
+                                                  ScreenshotPixelFormat::R10G10B10A2,
+                                                  ScreenshotColorEncoding::BT2020_PQ, screenshot));
+
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    ce::screenshot::ScreenshotPublication published;
+    const std::filesystem::path logPath = directory / L"encode.log";
+    Log_Init(WideToUtf8(logPath.wstring()), LogLevel::Debug);
+    const bool saved = ce::screenshot::SaveRawScreenshot(
+        directory, screenshot, published, ce::screenshot::ScreenshotOutputColorSpace::SourceAndBt709, 200.0f);
+    Log_Shutdown();
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+    std::ifstream logInput(logPath, std::ios::binary);
+    const std::string encodeLog((std::istreambuf_iterator<char>(logInput)), std::istreambuf_iterator<char>());
+
+    EXPECT_TRUE(saved) << encodeLog;
+    EXPECT_EQ(published.hdrPath.extension(), L".avif");
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(published.hdrPath));
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
+    // One capture, one name: the pair must differ only by extension so the two
+    // variants stay recognizable as the same screenshot.
+    EXPECT_EQ(published.hdrPath.parent_path(), directory);
+    EXPECT_EQ(published.hdrPath.stem(), published.sdrPath.stem());
+
+    // Exactly the two published variants beside this test's own log file: no
+    // staging placeholder and no third output survives the publication.
+    size_t publishedFiles = 0;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory)) {
+        if (entry.is_regular_file() && entry.path() != logPath)
+            ++publishedFiles;
+    }
+    EXPECT_EQ(publishedFiles, 2u) << encodeLog;
+
+    const DecodedAvifInfo decoded = DecodeAvif(published.hdrPath);
+    EXPECT_TRUE(decoded.decoded);
+    EXPECT_EQ(decoded.format, AV_PIX_FMT_YUV444P10LE);
+    EXPECT_EQ(decoded.colorTransfer, AVCOL_TRC_SMPTE2084);
+
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST(ScreenshotColorTest, CombinedModePublishesBothVariantsOfAnScRgbHdrCapture) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    std::vector<uint16_t> pixels(4 * 4 * 4, 0x3C00u);
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(reinterpret_cast<const uint8_t*>(pixels.data()), 4, 4, 32,
+                                                  ScreenshotPixelFormat::RGBA16F,
+                                                  ScreenshotColorEncoding::LinearScRGB, screenshot));
+
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    ce::screenshot::ScreenshotPublication published;
+    const bool saved = ce::screenshot::SaveRawScreenshot(
+        directory, screenshot, published, ce::screenshot::ScreenshotOutputColorSpace::SourceAndBt709, 80.0f);
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+
+    EXPECT_TRUE(saved);
+    EXPECT_EQ(published.hdrPath.extension(), L".avif");
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_EQ(published.hdrPath.stem(), published.sdrPath.stem());
+    EXPECT_TRUE(std::filesystem::exists(published.hdrPath));
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
+
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST(ScreenshotColorTest, CombinedModePublishesOnlyOnePngForAnSdrSource) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    const std::array<uint8_t, 8> pixels{0, 0, 0, 255, 255, 255, 255, 255};
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 1, 8, ScreenshotPixelFormat::BGRA8,
+                                                  ScreenshotColorEncoding::SRGB, screenshot));
+
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    ce::screenshot::ScreenshotPublication published;
+    const bool saved = ce::screenshot::SaveRawScreenshot(
+        directory, screenshot, published, ce::screenshot::ScreenshotOutputColorSpace::SourceAndBt709, 200.0f);
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+
+    // Windows and the game are not in HDR mode, so there is no HDR variant to
+    // publish: a combined request must not fabricate one from SDR pixels.
+    EXPECT_TRUE(saved);
+    EXPECT_TRUE(published.hdrPath.empty());
+    EXPECT_EQ(published.sdrPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
+    size_t publishedFiles = 0;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory)) {
+        if (entry.is_regular_file())
+            ++publishedFiles;
+    }
+    EXPECT_EQ(publishedFiles, 1u);
 
     std::error_code error;
     std::filesystem::remove_all(directory, error);

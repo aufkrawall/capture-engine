@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-09-15 (DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
+Last cross-checked: 2026-09-16 (combined HDR-plus-SDR publication of one capture under a shared name seed, DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
 
 Primary sources:
 - `common/shared_defs.h`
@@ -11,6 +11,8 @@ Primary sources:
 - `hook/apis/dx12_hook_postsl_render_submit.cpp`
 - `captureengine/screenshot.{h,cpp}`
 - `captureengine/screenshot_encoding.{h,cpp}`
+- `captureengine/screenshot_hdr_encoding.cpp`
+- `common/reserved_capture_output.{h,cpp}`
 - `tests/test_screenshot_encoding.cpp`
 - `tests/test_screenshot_source.cpp`
 - `tests/test_screenshot_hook_worker.cpp`
@@ -21,7 +23,17 @@ Injected screenshots use the current exact shared-memory ABI 38 and the generati
 
 The request state is explicit: request ID, completed request ID, `Idle|Pending|Writing|Succeeded|Busy|Failed`, Windows error, payload kind, raw path, and completion-event name. A busy worker produces an explicit `Busy` result rather than spawning a detached writer or racing the existing task.
 
-`[Screenshot] color_space=auto|bt709` controls the published screenshot rather than the capture source. `auto` preserves an HDR source as 10-bit BT.2020/PQ AVIF and writes ordinary SDR as PNG. Explicit `bt709` always publishes a conventional SDR PNG; HDR FP16 scRGB and packed PQ inputs are tone-mapped using the same Windows-SDR-white-calibrated luminance knee and luminance-preserving Rec.2020-to-Rec.709 gamut compression as forced-SDR video. Invalid values log and fall back to `auto`. This is independent of `[Video] color_space`.
+`[Screenshot] color_space=both|auto|bt709` controls the published screenshot rather than the capture source. `both` is the default and publishes an HDR source twice from the one capture: the preserved 10-bit BT.2020/PQ AVIF and the tone-mapped SDR PNG. `auto` preserves an HDR source only as AVIF and writes ordinary SDR as PNG. Explicit `bt709` always publishes a conventional SDR PNG; HDR FP16 scRGB and packed PQ inputs are tone-mapped using the same Windows-SDR-white-calibrated luminance knee and luminance-preserving Rec.2020-to-Rec.709 gamut compression as forced-SDR video. Invalid values log and fall back to `both`. This is independent of `[Video] color_space`.
+
+## Combined HDR And SDR Publication
+
+Both capture routes converge on one `RawScreenshot` before any encoding: the inject hook publishes a raw payload the controller reads back, and WGC/DXGI readback fills the same structure. The combined mode therefore needs nothing from the backends — it encodes the single captured payload twice, so the two variants are pixel-identical in origin and neither route can produce a different pair.
+
+`IsHdrScreenshotSource` decides whether a second variant exists at all, from the payload's declared contract (R10 with BT.2020/PQ, or FP16 with linear scRGB HDR) rather than from storage precision. A capture taken while Windows and the game are in SDR has no HDR variant to preserve, so every policy publishes exactly one PNG for it; the combined mode never fabricates an AVIF out of SDR pixels.
+
+The two encodes run concurrently. The AVIF branch takes the worker thread because it touches no COM, while the WIC PNG writer stays on the caller's already-initialized apartment; a failed `std::thread` construction logs and falls back to sequential encoding instead of dropping a variant. The AVIF pipeline dominates the wall clock by roughly an order of magnitude (about 950 ms versus about 250 ms at 4K per the measurements below), so the pair costs little more than the HDR-only case. Both row-parallel conversions keep their existing bounded worker policy; the brief overlap of two `min(16, hardware_concurrency)` row passes is short relative to the libaom encode that is the actual critical path.
+
+Both variants publish through one `OutputNameSeed` from `ce::capture_output::MakeOutputNameSeed()`, so the pair shares a published name and differs only by extension. Distinct extensions cannot collide under a shared seed, and the ordinary collision-retry loop still applies. A partial result is reported as a failure — the log names which variant failed — but whatever did publish is already a complete, atomically renamed file and is kept rather than deleted.
 
 ## Raw Payload ABI
 
@@ -64,7 +76,7 @@ Desktop fallback must not wait 15 seconds merely because the injector service ex
 
 ## Diagnostics And Tests
 
-`ScreenshotHookWorkerTest` covers successful `.part` to `.ready` publication and worker failure. `ScreenshotReservationTest`, `ScreenshotDx12ReadbackTest` and `ScreenshotPresentThreadPolicyTest` cover the exclusive worker reservation, single-owner readback move semantics, the producer never waiting or mapping, the DirectDraw presentation request handoff, the worker's sliced wait, every PostSL submit ordering branch, suspended-output fallback ownership, and exact resource/queue device validation. `DDrawPresentPolicyTest` covers before/after-overlay selection, all independent recording/screenshot inclusion combinations, and native-sidecar suppression for an excluded screenshot. `ScreenshotEncodingTest` covers header validation, exact/truncated reads, dimension and size boundaries, deterministic SDR/PQ/scRGB conversion, correctly encoded saturated overlay color, the bounded AVIF thread/tile plan, and publication failure. `ScreenshotAvifTest` decodes a produced AVIF and verifies dimensions, 10-bit 4:4:4, BT.2020/PQ metadata, and bounded pixel error. `ReservedCaptureOutputTest` proves placeholder-free atomic publication plus collision retry without changing the existing file.
+`ScreenshotHookWorkerTest` covers successful `.part` to `.ready` publication and worker failure. `ScreenshotReservationTest`, `ScreenshotDx12ReadbackTest` and `ScreenshotPresentThreadPolicyTest` cover the exclusive worker reservation, single-owner readback move semantics, the producer never waiting or mapping, the DirectDraw presentation request handoff, the worker's sliced wait, every PostSL submit ordering branch, suspended-output fallback ownership, and exact resource/queue device validation. `DDrawPresentPolicyTest` covers before/after-overlay selection, all independent recording/screenshot inclusion combinations, and native-sidecar suppression for an excluded screenshot. `ScreenshotEncodingTest` covers header validation, exact/truncated reads, dimension and size boundaries, deterministic SDR/PQ/scRGB conversion, correctly encoded saturated overlay color, the bounded AVIF thread/tile plan, and publication failure. `ScreenshotColorTest` additionally covers HDR-source classification (ten-bit and FP16 SDR presentations are not HDR), the combined mode publishing a paired AVIF/PNG with one shared stem and no third file for both packed-PQ and scRGB HDR captures, and the combined mode publishing exactly one PNG for an SDR source. `ScreenshotAvifTest` decodes a produced AVIF and verifies dimensions, 10-bit 4:4:4, BT.2020/PQ metadata, and bounded pixel error. `ReservedCaptureOutputTest` proves placeholder-free atomic publication plus collision retry without changing the existing file.
 
 Build `0.1.5116` was validated live on the HDR desktop. Native `auto` produced a non-black 3840x2160 AVIF with AV1 High, `yuv444p10le`, full-range BT.2020-NCL/PQ metadata and a visually correct decoded tone-map preview. Forced `bt709` produced a visually correct 3840x2160 RGBA PNG with full-range RGB, BT.709 primaries and sRGB transfer; the 16-worker 4K CPU tone-map took 57.833 ms and the full WGC-readback/conversion/PNG publication completed in about 450 ms. Both modes logged keyed-mutex acquisition, and the idle injector caused no hook wait.
 

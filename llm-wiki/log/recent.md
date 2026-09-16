@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-09-16 - One capture, two files: combined HDR + SDR screenshots, concurrently
+
+The user asked for a screenshot option that saves an HDR *and* an SDR variant at once, in both the
+WGC and the inject path, ideally without paying for two screenshots — and then added the obvious
+constraint: no HDR file when Windows and the game are not in HDR mode.
+
+The pipeline made this cheap, and it is worth recording why. Both routes already converge on a single
+`RawScreenshot` before anything is encoded: the inject hook writes a raw payload the controller reads
+back, and WGC/DXGI readback fills the same structure. `SaveRawScreenshot` is the only encoder, and
+the source's declared color contract - not its storage precision - already decides which encoder runs.
+So "both variants" is one capture encoded twice, with nothing to add in any backend, and the two
+files are pixel-identical in origin by construction. No hook, no ABI, no capture code was touched.
+
+What the change actually consists of:
+
+- `ScreenshotOutputColorSpace::SourceAndBt709` and `[Screenshot] color_space=both`, now the default.
+  `auto` and `bt709` keep their meanings.
+- `SaveRawScreenshot` now reports a `ScreenshotPublication{hdrPath, sdrPath}` instead of one path,
+  because a single path cannot describe a pair. `IsHdrScreenshotSource` is the public predicate for
+  "is there a second variant at all": R10+BT.2020/PQ or FP16+linear scRGB HDR, nothing else. An SDR
+  presentation stored in ten bits or FP16 is still SDR and still yields exactly one PNG under every
+  policy - the combined mode must never fabricate an AVIF out of SDR pixels.
+- The two encodes overlap. The AVIF branch goes to the worker thread because it touches no COM; the
+  WIC PNG writer stays on the caller's initialized apartment. A `std::thread` that cannot be created
+  logs and falls back to sequential encoding rather than silently dropping a variant. Since the AVIF
+  pipeline is roughly an order of magnitude longer than the tone-mapped PNG (about 950 ms versus
+  about 250 ms at 4K), the pair costs little more than the HDR-only case.
+- Paired naming: both variants publish through one `OutputNameSeed`
+  (`ce::capture_output::MakeOutputNameSeed()`, with `PublishToNewPathWithSeed` promoted from the
+  private/ForTesting surface), so the pair shares a stem and differs only by extension. Different
+  extensions cannot collide under a shared seed.
+- A partial result is a failure and says which half failed, but the half that did publish is already
+  a complete atomically renamed file and is kept. Deleting a good screenshot to make a bool tidy
+  would be the wrong trade.
+
+Regression coverage: HDR-source classification across all five format/encoding pairs, combined
+publication of a packed-PQ and of an scRGB capture (paired stem, exactly two files, decodable
+10-bit 4:4:4 PQ AVIF), combined publication of an SDR source producing exactly one PNG, and the
+config parse/default. No runtime validation on a real HDR game yet - that stays a manual check.
+
 ### 2026-09-16 - Four startup stalls that were CE's, found by auditing rather than by a log
 
 The user reported Gothic II sitting black for ~10 s after launch and, when the first analysis blamed a

@@ -160,7 +160,7 @@ bool ConvertHdrToSdrScreenshot(const RawScreenshot& screenshot, float sdrWhiteNi
 }
 
 bool SaveHdrAvif(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
-                 std::filesystem::path& publishedPath) {
+                 const OutputNameSeed* nameSeed, std::filesystem::path& publishedPath) {
     const auto overallStarted = std::chrono::steady_clock::now();
     const AVCodec* codec = avcodec_find_encoder_by_name("libaom-av1");
     if (!EncoderSupportsYuv444p10(codec)) {
@@ -390,7 +390,10 @@ bool SaveHdrAvif(const std::filesystem::path& outputDirectory, const RawScreensh
         LogError("[Screenshot] AVIF staging flush failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
-    if (!staging.PublishToNewPath(outputDirectory, L"screenshot", L".avif")) {
+    const bool publishedToNewPath =
+        nameSeed ? staging.PublishToNewPathWithSeed(outputDirectory, L"screenshot", L".avif", *nameSeed)
+                 : staging.PublishToNewPath(outputDirectory, L"screenshot", L".avif");
+    if (!publishedToNewPath) {
         LogError("[Screenshot] AVIF atomic publication failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }

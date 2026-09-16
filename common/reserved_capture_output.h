@@ -15,6 +15,10 @@ struct OutputNameSeed {
     uint64_t sequence = 0;
 };
 
+// Fresh name seed for an output publication. Several outputs produced from one
+// capture share a seed so their published names differ only by extension.
+OutputNameSeed MakeOutputNameSeed();
+
 std::filesystem::path GetExecutableDirectory();
 std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirectory,
                                               const std::filesystem::path& executableDirectory);
@@ -62,6 +66,12 @@ public:
     // zero-byte final-extension placeholder while a slow encoder is still running.
     bool PublishToNewPath(const std::filesystem::path& directory, const std::wstring& prefix,
                           const std::wstring& extension);
+
+    // Same publication with a caller-supplied name seed, so that two outputs
+    // encoded from one capture are published under one name and differ only by
+    // extension. Distinct extensions cannot collide under a shared seed.
+    bool PublishToNewPathWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
+                                  const std::wstring& extension, const OutputNameSeed& seed);
     bool PublishToNewPathForTesting(const std::filesystem::path& directory, const std::wstring& prefix,
                                     const std::wstring& extension, const OutputNameSeed& seed);
 
@@ -78,8 +88,6 @@ private:
 
     static ReservedCaptureOutput ReserveWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
                                                  const std::wstring& extension, const OutputNameSeed& seed);
-    bool PublishToNewPathWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
-                                  const std::wstring& extension, const OutputNameSeed& seed);
     static bool QueryIdentity(HANDLE handle, FileIdentity& identity);
     bool CurrentPathMatchesReservation() const;
     void Reset() noexcept;

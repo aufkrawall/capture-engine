@@ -6,6 +6,8 @@
 // Captures the composed desktop output (includes fullscreen games, windowed games, desktop).
 // Uses WIC (Windows Imaging Component) for PNG encoding.
 // screenshotDir: output directory. Empty = "captures" subfolder next to exe.
-// colorSpace: "auto" preserves HDR as AVIF; "bt709" tone-maps HDR to an SDR PNG.
+// colorSpace: "auto" preserves HDR as AVIF; "bt709" tone-maps HDR to an SDR PNG;
+// "both" publishes an HDR source as both variants of the same capture. An SDR
+// source has no HDR variant and always yields a single PNG.
 // Returns true on success.
-bool TakeScreenshot(const std::string& screenshotDir, const std::string& colorSpace = "auto");
+bool TakeScreenshot(const std::string& screenshotDir, const std::string& colorSpace = "both");

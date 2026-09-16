@@ -14,6 +14,7 @@
 
 namespace ce::screenshot {
 
+using ce::capture_output::OutputNameSeed;
 using ce::capture_output::ReservedCaptureOutput;
 
 // Defined in screenshot_encoding.cpp.
@@ -21,9 +22,10 @@ std::string WideToUtf8(const std::wstring& text);
 bool FlushPath(const std::filesystem::path& path);
 ReservedCaptureOutput ReserveScreenshotStaging(const std::filesystem::path& outputDirectory);
 
-// Defined in screenshot_hdr_encoding.cpp.
+// Defined in screenshot_hdr_encoding.cpp. A non-null nameSeed publishes under a
+// caller-chosen name so both variants of one capture share it.
 bool ConvertHdrToSdrScreenshot(const RawScreenshot& screenshot, float sdrWhiteNits, RawScreenshot& converted);
 bool SaveHdrAvif(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
-                 std::filesystem::path& publishedPath);
+                 const OutputNameSeed* nameSeed, std::filesystem::path& publishedPath);
 
 }  // namespace ce::screenshot

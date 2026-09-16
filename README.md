@@ -361,8 +361,11 @@ Native D3D9Ex applications already get the fast GPU-only path without DXVK.
   AV1 hardware encoders. Selecting `[Video] color_space=bt709` instead performs an actual HDR-to-SDR tone and gamut
   map; it does not merely relabel HDR pixels as SDR. The conversion is calibrated from the Windows SDR-white setting.
 - **Screenshots:** screenshots can come from the active injected capture path or from the out-of-process WGC fallback.
-  With `[Screenshot] color_space=auto`, SDR is saved as PNG and HDR is preserved as 10-bit 4:4:4 BT.2020/PQ AVIF.
-  Selecting `[Screenshot] color_space=bt709` tone-maps HDR to a conventional SDR PNG independently of the video
+  The default `[Screenshot] color_space=both` saves an HDR source twice from the one capture: a 10-bit 4:4:4
+  BT.2020/PQ AVIF and a tone-mapped SDR PNG, published under one name that differs only by extension. The two
+  encodes run concurrently, so the pair costs little more than the AVIF alone. A source that is not in HDR has no
+  second variant and still saves exactly one PNG. `[Screenshot] color_space=auto` saves an HDR source only as AVIF,
+  and `[Screenshot] color_space=bt709` always tone-maps to a conventional SDR PNG, independently of the video
   setting.
 - **Audio recording:** recordings can contain video plus audio or be audio-only. CaptureEngine supports multiple
   system-output, microphone, and per-application loopback sources; each source can feed one or more tracks, and sources
