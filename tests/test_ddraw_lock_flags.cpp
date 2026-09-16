@@ -73,8 +73,9 @@ TEST(DDrawLockFlagsTest, CaptureNeverTakesTheWin16Lock) {
 // thread, and must break out through an entry point that provably belongs to
 // DirectDraw rather than through the saved original that leads back.
 TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours.cpp";
+    // The whole DirectDraw hook family, not one unit: the Surface4 generation
+    // lives in its own translation unit and its guards count the same.
+    const std::filesystem::path source = std::filesystem::current_path() / "hook/apis" / "ddraw_hook.cpp";
     const std::string contents = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(contents.empty()) << source.string();
 
