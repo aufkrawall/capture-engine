@@ -123,8 +123,10 @@ TEST(DDrawPresentOverridePolicyTest, AcceptsOnlyTheConfiguredIntegerQueueDepthCo
 
 TEST(DDrawPresentOverridePolicyTest, EveryHookedFlipAndFullSurfaceBlitUsesTheSharedOwner) {
     const std::filesystem::path root = std::filesystem::current_path();
+    // The whole DirectDraw hook family: the Surface4 generation has its own
+    // translation unit, and its three presentations use the same owner.
     const std::string detours =
-        ce::test_source::ReadFile(root / "hook" / "apis" / "ddraw_hook_detours.cpp");
+        ce::test_source::ReadLogicalSource(root / "hook" / "apis" / "ddraw_hook.cpp");
     const std::string overrides = ce::test_source::ReadFile(
         root / "hook" / "apis" / "ddraw_hook_present_overrides.cpp");
     const std::string install =
