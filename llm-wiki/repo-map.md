@@ -143,7 +143,11 @@ anchors that predate the split are approximate.
       and capture ordering), `ddraw_hook_overlay_composite.cpp` + `ddraw_hook_composite_state.h`
       (per-surface CPU backdrop/composite state), `ddraw_hook_overlay_route.cpp` (persistent CPU
       adapter plus auxiliary native D3D7 sidecar and damage state), `ddraw_hook_write_tracking.{h,cpp}`
-      (exact application-write history), `ddraw_hook_detours.cpp` (Flip/Blt classification),
+      (exact application-write history), `ddraw_hook_detours.cpp` (legacy and Surface7 detours),
+      `ddraw_hook_detours_surface4.cpp` (the DirectDraw 4 generation's detours),
+      `ddraw_hook_blit_classification.h` (the presentation classification, geometry readers and
+      nested-presentation refusal all three generations share),
+      `ddraw_hook_present_reentry.cpp` (recorded presentation entry points and the cycle report),
       `ddraw_hook_present_overrides.{h,cpp}` (typed Flip/Blt scheduling, vertical-blank pacing,
       and CPU presentation-depth ownership), `ddraw_hook_runtime_state.h` (narrow shared diagnostics/bootstrap
       state), `ddraw_hook_detours_surface_access.cpp` (Lock/DC access and
