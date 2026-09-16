@@ -10,6 +10,8 @@
 #include <cwctype>
 #include <mutex>
 
+#include "../window_text_safe.h"
+
 // Tracked third-party overlay module table and loader-free detection state.
 
 namespace ce::overlay_compat {
@@ -230,7 +232,11 @@ inline BOOL CALLBACK FindAuxiliaryProcessWindowProc(HWND hwnd, LPARAM lParam) {
         context->info->threadId = windowThreadId;
         context->info->visible = true;
         GetClassNameA(hwnd, context->info->className, static_cast<int>(sizeof(context->info->className)));
-        GetWindowTextA(hwnd, context->info->title, static_cast<int>(sizeof(context->info->title)));
+        // Bounded: reached from the DirectDraw overlay route on the game's own
+        // render thread, where an unbounded WM_GETTEXT into a busy UI thread is
+        // a present-path stall.
+        ce::window_text::ReadWindowTitleBounded(hwnd, context->info->title,
+                                                static_cast<int>(sizeof(context->info->title)));
     }
     return FALSE;
 }

@@ -46,6 +46,13 @@ private:
 
     std::vector<SuspendedThread> threads_;
     bool ready_ = false;
+
+    // Reported by the destructor, after every peer has resumed. Logging inside
+    // the suspended window can deadlock: the logger takes a lock and may
+    // allocate, and a suspended peer can be holding either one.
+    uint64_t quiesceElapsedMs_ = 0;
+    int quiescePasses_ = 0;
+    bool usedSystemSnapshot_ = false;
 };
 
 }  // namespace ce::hook_patch

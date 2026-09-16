@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-09-16 - Four startup stalls that were CE's, found by auditing rather than by a log
+
+The user reported Gothic II sitting black for ~10 s after launch and, when the first analysis blamed a
+cold page cache, kept insisting CE can *randomly* slow a start. Both readings turned out to hold
+something. The 10.6 s in `20260916_172304` really was a cold standby list - the machine booted at
+17:22:23 and that was the first launch of the boot session, the game lives on `H:`, an **external M.2
+NVMe over USB**, and the same launch 7 minutes later took 0.49 s. CE's own flip counter proves it was
+not in the way: `flips=1` before the gap and `flips=2` after, so the game issued exactly one
+presentation call across it. Note the confound that makes this indistinguishable in ordinary use: CE
+autostarts ~40 s after boot, so "first launch after a reboot" and "CE attached" are the same event,
+and no amount of normal play separates them.
+
+But auditing the startup path for the user's claim found four real defects, all with variable cost:
+
+1. `ThreadQuiescence` enumerated **every thread on the machine** per inline entry patch, peers
+   suspended throughout - 37-533 ms each, 279-1249 ms per launch, 5x run-to-run spread. The trace
+   isolates it exactly: nothing but `WriteOwnedEntryPatch` sits between the last `WriteJump:
+   Verification` line and `InlineHook: Prepended CE at`. Now `NtGetNextThread`, process-scoped.
+2. The temp-swapchain bootstrap built a WARP D3D12 device in a DirectDraw7 game - 650-1430 ms per
+   launch, bimodal, and it loads the WARP runtime into the loader lock while the game is loading its
+   own DLLs. Now refused for legacy-presentation processes.
+3. `ResolveDirectDrawTargetWindow` -> `FindAuxiliaryProcessWindow` -> `GetWindowTextA` on the game's
+   **render thread**. `GetWindowText` on a window owned by the current process sends `WM_GETTEXT` and
+   blocks with **no timeout**; the fallback is reached exactly at startup, when the UI thread is busy
+   loading and the game is not foreground yet. This was the only unbounded one.
+4. The freeze watchdog did the same unbounded send twice a second for the whole session - a watchdog
+   that can itself wedge on the thread it is judging.
+
+3 and 4 now share `ce::window_text::ReadWindowTitleBounded` (`hook/common/window_text_safe.h`), a
+50 ms `SendMessageTimeoutA(WM_GETTEXT, SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT)`; a timeout is an empty
+title, which only changes dialog identity in the case that used to hang. Same-thread windows still go
+through `GetWindowTextA`, where there is nothing to wait for.
+
+**Not proven**: none of these fired during the 10.6 s in `20260916_172304` - CE ran no code on that
+render thread across the gap. They are genuine random-stall bugs; they are not that stall. Regression
+coverage in `tests/test_startup_stall_hazards.cpp`, including a parked non-pumping window thread that
+can only be answered by the timeout, and an equivalence test between the two thread walks. See
+`dx12-injection-bootstrap.md` for the invariants.
+
 ### 2026-09-16 - The nested presentation was the game's screen flip, and CE was dropping it
 
 Gothic II session `20260916_021049`: after the intro videos the picture stopped updating - the 2D menu

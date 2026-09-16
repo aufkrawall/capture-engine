@@ -231,10 +231,36 @@ s_installed.store(true, std::memory_order_release);
 // for Strange Brigade)
 
 
+// Both dxgi.dll and d3d12.dll being mapped is not evidence that this process
+// presents through either of them; Windows maps both into plenty of processes
+// transitively. Answer once per call so the guarded route can refuse before it
+// spends one of its bounded attempts, and so the expensive routine below can
+// refuse whatever reaches it directly.
+bool TempSwapchainRefusedForLegacyPresentationProcess() {
+    const bool refuse = ce::dx12_overlay_policy::ShouldSkipTempSwapchainForLegacyPresentationProcess(
+        GetModuleHandleA("ddraw.dll") != nullptr || GetModuleHandleA("d3d8.dll") != nullptr,
+        GetModuleHandleA("d3d11.dll") != nullptr || GetModuleHandleA("d3d10.dll") != nullptr ||
+            GetModuleHandleA("d3d10_1.dll") != nullptr,
+        WasD3D11Or10DeviceCreated(), WasD3D12DeviceCreated());
+    if (!refuse)
+        return false;
+    static std::atomic<bool> s_loggedLegacySkip{false};
+    if (!s_loggedLegacySkip.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Refusing the temp-swapchain Present-hook bootstrap - this process maps ddraw/d3d8 with no "
+            "D3D11/D3D10 module and no D3D11/D3D12 device, so a throwaway WARP device, command queue and window "
+            "would buy no Present coverage. Re-evaluated on every service pass.");
+    }
+    return true;
+}
+
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly) {
 HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
 HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
 if (!hDXGI || !hD3D12)
+    return;
+
+if (TempSwapchainRefusedForLegacyPresentationProcess())
     return;
 
 typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void**);

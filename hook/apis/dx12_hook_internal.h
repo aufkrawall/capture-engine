@@ -609,6 +609,7 @@ void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pS
 // Forward declarations
 void InstallGlobalVTableHooks();
 
+bool TempSwapchainRefusedForLegacyPresentationProcess();
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false, bool guardedSystemRouteOnly = false);
 void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);
 void RefreshPresentHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source);

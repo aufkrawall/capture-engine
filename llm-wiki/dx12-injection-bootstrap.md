@@ -110,6 +110,30 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   tracking. The removed process-global flag could hide a real game swapchain created concurrently.
   A standalone same-process probe found identical ECL, Present, and Present1 method addresses on
   WARP and hardware, so hook discovery does not need a vendor UMD device.
+- **A thread quiescence walks this process, not the machine.** `ThreadQuiescence` used to enumerate
+  peers with `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)`. That flag ignores the process id it is
+  given and always snapshots **every thread on the system**, so the cost tracked total system load
+  rather than the game, and every peer thread stayed suspended for the whole of it. Measured per
+  un-batched entry patch in Gothic II: 37-533 ms, 279-1249 ms per launch, a 5x spread between runs
+  doing identical work, worst right after a boot when system thread count is highest
+  (`installed/captureengine/logs/20260916_*`). The walk now goes through
+  `ce::process_threads::WalkCurrentProcessThreads` (`hook/common/process_thread_walk.{h,cpp}`), which
+  uses `NtGetNextThread` and is proportional to this process alone; the system snapshot remains the
+  fallback and the tests' equivalence oracle. Its visitor is a two-pointer callable view, never
+  `std::function`, because a second pass runs with peers already suspended and must not touch the
+  heap. A quiescence that still takes >=8 ms logs `ThreadQuiescence: ... peer thread(s) suspended
+  for ...`, bounded, with the route that produced it - previously that stall was only visible as an
+  unexplained gap between the trampoline write and the entry patch.
+- **The temp-swapchain Present-hook bootstrap refuses legacy-presentation processes.** Its only
+  precondition used to be that `dxgi.dll` and `d3d12.dll` are *loaded*, which Windows arranges in
+  plenty of processes transitively and which says nothing about presenting through either. Gothic II
+  is a DirectDraw7 title logging `dx12Used=0` and still paid 650-1430 ms per launch - bimodal, so a
+  variable startup stall - for a throwaway WARP device, command queue, window and swapchain it could
+  never use. `ShouldSkipTempSwapchainForLegacyPresentationProcess` now refuses when ddraw/d3d8 are
+  mapped with no D3D11/D3D10 module and no D3D11/D3D12 device observed. `d3d9.dll` is deliberately
+  **not** a discriminator (modern DXGI titles map it transitively); a DirectDraw-to-DXGI wrapper
+  (dgVoodoo2, DXVK) maps `d3d11.dll`, so those keep the bootstrap. The refusal is checked before the
+  guarded route spends one of its 120 bounded attempts, and is re-evaluated every service pass.
 - **Related inline entry patches share one short quiescence.** `InstallPublishedBatch` performs
   instruction decoding, trampoline allocation, RX/CFG finalization, logging, and callable-original
   publication while peers run. It then takes one stable thread snapshot, exact-range checks every

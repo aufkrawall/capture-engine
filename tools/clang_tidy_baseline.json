@@ -45,7 +45,7 @@
   },
   "total": 1916,
   "scope": {
-    "entries": 767,
+    "entries": 769,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -398,6 +398,7 @@
       "hook/common/performance_metrics.cpp",
       "hook/common/present_callback_association.cpp",
       "hook/common/present_interposer_tracking.cpp",
+      "hook/common/process_thread_walk.cpp",
       "hook/common/screenshot_hook.cpp",
       "hook/common/screenshot_worker.cpp",
       "hook/common/swapchain_liveness.cpp",
@@ -777,6 +778,7 @@
       "tests/test_sequence_lock.cpp",
       "tests/test_sequence_lock_stress.cpp",
       "tests/test_shared_runtime_state.cpp",
+      "tests/test_startup_stall_hazards.cpp",
       "tests/test_streamline_api_generation.cpp",
       "tests/test_streamline_bridge_policy.cpp",
       "tests/test_streamline_runtime_policy.cpp",

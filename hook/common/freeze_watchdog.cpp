@@ -12,6 +12,7 @@
 #include "dxgi_shared.h"
 #include "fg_detection.h"
 #include "hook_common.h"
+#include "window_text_safe.h"
 
 FreezeWatchdog g_RenderWatchdog;
 
@@ -88,7 +89,11 @@ BOOL CALLBACK FindProcessDialogWindowProc(HWND hwnd, LPARAM lParam) {
     context->info->hwnd = hwnd;
     context->info->threadId = windowThreadId;
     context->info->visible = IsWindowVisible(hwnd) != FALSE;
-    GetWindowTextA(hwnd, context->info->title, static_cast<int>(sizeof(context->info->title)));
+    // Bounded: this window belongs to the process the watchdog lives in, so an
+    // unbounded GetWindowText would block the watchdog on the very thread it is
+    // supposed to be judging.
+    ce::window_text::ReadWindowTitleBounded(hwnd, context->info->title,
+                                            static_cast<int>(sizeof(context->info->title)));
     return FALSE;
 }
 

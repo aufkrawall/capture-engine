@@ -167,6 +167,11 @@ void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason) {
     if (DXGIShared::HasPresentInlineHooks() || DXGIShared::HasPresentDetourHooks()) {
         return;
     }
+    // Refuse before the bounded attempt budget is spent, so a process that only
+    // later gains a DXGI presenter still has its full allowance.
+    if (TempSwapchainRefusedForLegacyPresentationProcess()) {
+        return;
+    }
     // Each attempt builds a throwaway D3D12 device, command queue and window. The service pass
     // calls this every ~120 ms and the deferral it serves is a STARTUP window, so a route that
     // has not worked after this many attempts is structurally refused (a foreign module owns

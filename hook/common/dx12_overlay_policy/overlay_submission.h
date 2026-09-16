@@ -65,6 +65,35 @@ inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12Device
     return !d3d12DeviceCreated && thirdPartyOverlayLoaded;
 }
 
+inline bool ShouldSkipTempSwapchainForLegacyPresentationProcess(bool ddrawOrD3d8ModuleLoaded,
+                                                                bool d3d11Or10ModuleLoaded,
+                                                                bool d3d11Or10DeviceCreated,
+                                                                bool d3d12DeviceCreated) {
+    // The temp-swapchain bootstrap exists to reach a DXGI swapchain that
+    // predates injection. Its only precondition was that dxgi.dll and d3d12.dll
+    // are LOADED, which says nothing about the process presenting through
+    // either: Windows maps both into plenty of processes transitively. Gothic II
+    // is a DirectDraw7 title and paid 650-1430 ms per launch for a throwaway
+    // WARP D3D12 device, command queue, window and swapchain it could never
+    // use (sessions 20260915_152401 through 20260916_173308, `dx12Used=0`
+    // throughout). The cost is also bimodal at ~700/~1400 ms, so it is a
+    // variable startup stall, and the WARP runtime it loads contends for the
+    // loader lock with the game's own startup loads.
+    //
+    // ddraw.dll and d3d8.dll are the discriminator, not d3d9.dll: modern DXGI
+    // titles routinely map d3d9.dll transitively, but essentially never ddraw.
+    // A DirectDraw-to-DXGI translation wrapper (dgVoodoo2, DXVK) does map
+    // d3d11.dll, so requiring its absence keeps those on the bootstrap path.
+    // Re-evaluated every service pass, so any later DXGI evidence re-arms it.
+    if (!ddrawOrD3d8ModuleLoaded) {
+        return false;
+    }
+    if (d3d11Or10ModuleLoaded || d3d11Or10DeviceCreated || d3d12DeviceCreated) {
+        return false;
+    }
+    return true;
+}
+
 inline bool ShouldPostponeDeferredTempSwapchainPresentHookInstall(bool presentHooksInstalled,
                                                                   bool earlyInstallDeferred,
                                                                   bool d3d12DeviceCreated,

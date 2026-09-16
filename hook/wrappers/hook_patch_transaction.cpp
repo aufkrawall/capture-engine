@@ -1,9 +1,18 @@
 #include "hook_patch_transaction.h"
 
-#include <tlhelp32.h>
+#include "../common/process_thread_walk.h"
+
 #include <algorithm>
+#include <atomic>
+
+void HookLog(const char* fmt, ...);
 
 namespace ce::hook_patch {
+
+namespace {
+constexpr DWORD kQuiesceThreadAccess =
+    THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE;
+}  // namespace
 
 ThreadQuiescence::ThreadQuiescence() {
     Quiesce();
@@ -18,51 +27,47 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
 }
 
 void ThreadQuiescence::Quiesce() {
-    const DWORD processId = GetCurrentProcessId();
     const DWORD currentThreadId = GetCurrentThreadId();
+    const ULONGLONG enterMs = GetTickCount64();
     try {
         threads_.reserve(1024);
     } catch (...) {
         return;
     }
 
+    bool usedSystemSnapshot = false;
     bool stableSnapshot = false;
+    int passesRun = 0;
     for (int pass = 0; pass < 4; ++pass) {
+        ++passesRun;
         const size_t previousCount = threads_.size();
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snapshot == INVALID_HANDLE_VALUE)
-            return;
 
-        THREADENTRY32 entry = {};
-        entry.dwSize = sizeof(entry);
-        bool enumerationSucceeded = Thread32First(snapshot, &entry) != FALSE;
-        if (enumerationSucceeded) {
-            do {
-                if (entry.th32OwnerProcessID != processId || entry.th32ThreadID == currentThreadId)
-                    continue;
-                const bool tracked = std::any_of(threads_.begin(), threads_.end(), [&](const SuspendedThread& thread) {
-                    return thread.handle && thread.threadId == entry.th32ThreadID;
-                });
-                if (tracked)
-                    continue;
-                if (threads_.size() == threads_.capacity()) {
-                    enumerationSucceeded = false;
-                    break;
-                }
-                HANDLE thread =
-                    OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE,
-                               FALSE, entry.th32ThreadID);
-                if (!thread) {
-                    if (GetLastError() == ERROR_INVALID_PARAMETER)
-                        continue;  // Thread exited after the snapshot.
-                    enumerationSucceeded = false;
-                    break;
-                }
-                threads_.push_back({thread, entry.th32ThreadID, false, 0, false});
-            } while (Thread32Next(snapshot, &entry));
+        // Adopt one peer thread. Returning false aborts the walk, which fails
+        // the transaction closed exactly as an enumeration error does.
+        auto adopt = [&](HANDLE thread, DWORD threadId) -> bool {
+            const bool tracked = std::any_of(threads_.begin(), threads_.end(), [&](const SuspendedThread& known) {
+                return known.handle && known.threadId == threadId;
+            });
+            if (tracked) {
+                CloseHandle(thread);
+                return true;
+            }
+            if (threads_.size() == threads_.capacity()) {
+                CloseHandle(thread);
+                return false;
+            }
+            threads_.push_back({thread, threadId, false, 0, false});
+            return true;
+        };
+
+        ce::process_threads::WalkResult walk =
+            ce::process_threads::WalkCurrentProcessThreads(currentThreadId, kQuiesceThreadAccess, adopt);
+        if (walk == ce::process_threads::WalkResult::kUnavailable) {
+            usedSystemSnapshot = true;
+            walk = ce::process_threads::WalkCurrentProcessThreadsViaSystemSnapshot(currentThreadId,
+                                                                                   kQuiesceThreadAccess, adopt);
         }
-        CloseHandle(snapshot);
-        if (!enumerationSucceeded)
+        if (walk != ce::process_threads::WalkResult::kCompleted)
             return;
 
         for (size_t i = previousCount; i < threads_.size(); ++i) {
@@ -107,6 +112,13 @@ void ThreadQuiescence::Quiesce() {
         thread.contextCaptured = true;
     }
     ready_ = true;
+
+    // Measure here, report from the destructor. Nothing on this path may log:
+    // the logger takes a lock and can allocate, and a suspended peer thread may
+    // be holding either.
+    quiesceElapsedMs_ = GetTickCount64() - enterMs;
+    quiescePasses_ = passesRun;
+    usedSystemSnapshot_ = usedSystemSnapshot;
 }
 
 bool ThreadQuiescence::IsRangeSafe(const void* patchAddress, size_t patchSize) const {
@@ -124,11 +136,29 @@ bool ThreadQuiescence::IsRangeSafe(const void* patchAddress, size_t patchSize) c
 }
 
 ThreadQuiescence::~ThreadQuiescence() {
+    const size_t suspendedCount = threads_.size();
     for (auto it = threads_.rbegin(); it != threads_.rend(); ++it) {
         if (it->suspended)
             ResumeThread(it->handle);
         if (it->handle)
             CloseHandle(it->handle);
+    }
+
+    // Every peer thread was frozen for the quiescence window, so a slow one is
+    // a whole-process stall that is otherwise invisible - the hook log only
+    // shows an unexplained gap between the trampoline write and the entry
+    // patch. Report the outliers, bounded, with the route that produced them,
+    // now that every peer is running again.
+    if (quiesceElapsedMs_ >= 8) {
+        static std::atomic<uint32_t> s_slowQuiescenceLogs{0};
+        const uint32_t index = s_slowQuiescenceLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 8 || (index % 64) == 0) {
+            HookLog(
+                "ThreadQuiescence: %zu peer thread(s) suspended for %llu ms over %d pass(es) route=%s (#%u) - the "
+                "whole process was frozen for that window",
+                suspendedCount, static_cast<unsigned long long>(quiesceElapsedMs_), quiescePasses_,
+                usedSystemSnapshot_ ? "system-snapshot" : "process-scoped", index + 1);
+        }
     }
 }
 
