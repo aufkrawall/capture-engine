@@ -33,6 +33,20 @@ But auditing the startup path for the user's claim found four real defects, all 
 title, which only changes dialog identity in the case that used to hang. Same-thread windows still go
 through `GetWindowTextA`, where there is nothing to wait for.
 
+**Cold-cache reading CONFIRMED 2026-09-16** by a cold-boot launch with CE not running: also slow.
+Three-for-three against the Windows boot log (System event 6005/6009): boot 17:22:33 -> 17:26 launch
+10.63 s, 17:33 launch 0.49 s, 18:14 launch 0.55 s; boot 19:11:14 -> 19:12 launch 10.62 s. Cold first
+launch is ~10.6 s every time, warm ~0.5 s every time, independent of build and of CE being attached.
+`Get-WinEvent -FilterHashtable @{LogName='System';ID=6005}` dates every boot and settles this faster
+than any log analysis.
+
+**The four fixes are hardware-VALIDATED** in `20260916_191145` (0.1.6651): `DDraw hooks installed
+(init=0.5 ms)` against 77-523 ms before, the WARP bootstrap refusal logged once and skipped, one
+quiescence over 8 ms for the whole launch (`15 ms over 2 pass(es) route=process-scoped`) against seven
+totalling 279 ms, and CE's hook-install phase (DllMain -> DDraw hooks done) 1.246 s -> 0.645 s. The
+user saw no regression across several other games. Nothing here was reverted: each fix is correct on
+its own terms regardless of what caused the original report.
+
 **Not proven**: none of these fired during the 10.6 s in `20260916_172304` - CE ran no code on that
 render thread across the gap. They are genuine random-stall bugs; they are not that stall. Regression
 coverage in `tests/test_startup_stall_hazards.cpp`, including a parked non-pumping window thread that
