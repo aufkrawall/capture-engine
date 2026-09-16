@@ -223,8 +223,13 @@ void SystemMetricsCollector::UpdateVRAMTotal() {
         }
 
         for (UINT i = 0; pFactory->EnumAdapters1(i, &tempAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-            DXGI_ADAPTER_DESC1 desc;
-            tempAdapter->GetDesc1(&desc);
+            // An unchecked GetDesc1 leaves every field of an uninitialised
+            // descriptor in play - including the LUID this loop matches on.
+            DXGI_ADAPTER_DESC1 desc = {};
+            if (FAILED(tempAdapter->GetDesc1(&desc))) {
+                tempAdapter->Release();
+                continue;
+            }
 
             if (!s_LoggedEnum) {
                 EarlyLog("UpdateGPU: Checking Adapter %d: LUID %08x:%08x", i, desc.AdapterLuid.HighPart,
@@ -236,7 +241,13 @@ void SystemMetricsCollector::UpdateVRAMTotal() {
                 {
                     std::lock_guard<std::mutex> lock(mutex);
                     current.vramTotal = desc.DedicatedVideoMemory;
-                    EarlyLog("UpdateGPU: Found match! VRAM Total: %llu bytes", desc.DedicatedVideoMemory);
+                    // DXGI declares this SIZE_T, which is four bytes in the
+                    // 32-bit hook. Passing it straight to %llu read four bytes
+                    // of the neighbouring stack as the high half and reported
+                    // 8.7 exabytes of video memory in Gothic II session
+                    // 20260916_013230; the stored value was always correct.
+                    EarlyLog("UpdateGPU: Found match! VRAM Total: %llu bytes",
+                             static_cast<unsigned long long>(desc.DedicatedVideoMemory));
                 }
                 s_LoggedEnum = true;
                 tempAdapter->Release();

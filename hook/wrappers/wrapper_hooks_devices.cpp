@@ -74,7 +74,8 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
                 WrapperLog(
                     "Wrapper: D3D12CreateDevice - Adapter LUID: %08X:%08X, "
                     "VRAM: %llu MB",
-                    desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart, desc.DedicatedVideoMemory / (1024 * 1024));
+                    desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+                    static_cast<unsigned long long>(desc.DedicatedVideoMemory / (1024 * 1024)));
             }
             pDXGIAdapter->Release();
         }
