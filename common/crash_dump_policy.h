@@ -52,6 +52,16 @@ inline constexpr MINIDUMP_TYPE kCompatibilityFreezeDumpType =
     static_cast<MINIDUMP_TYPE>(MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
                                MiniDumpWithIndirectlyReferencedMemory);
 
+// A freeze the application explains itself - its own modal dialog parked on the
+// render thread - is still worth recording, but its memory is not: the process
+// is sitting in a message pump, not corrupting anything. Thread stacks, thread
+// info and the module list answer "which thread, in what call" at about a
+// megabyte instead of thirty. Memory ranges a dump callback contributes (the
+// WoW64 32-bit stacks) are still written, so a 32-bit target stays walkable.
+inline constexpr MINIDUMP_TYPE kStackOnlyDumpType =
+    static_cast<MINIDUMP_TYPE>(MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
+                               MiniDumpIgnoreInaccessibleMemory);
+
 inline constexpr MINIDUMP_TYPE kMinimalDumpType = MiniDumpNormal;
 
 inline constexpr char ToLowerAscii(char c) {

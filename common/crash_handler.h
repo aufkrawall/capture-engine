@@ -48,7 +48,10 @@ void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
 struct CrashDumpEnvironmentHooks {
     // Writes a dump of THIS process from an external helper process under
     // `dumpFileNameHint`. Returns true only when a dump was actually written.
-    bool (*captureWithExternalHelper)(const char* dumpFileNameHint) = nullptr;
+    // `stackOnly` asks the helper for thread stacks, thread info and modules
+    // instead of process memory; a caller that has no reason to shrink the
+    // dump passes false and gets exactly the dump it always got.
+    bool (*captureWithExternalHelper)(const char* dumpFileNameHint, bool stackOnly) = nullptr;
     // True when a third-party overlay module is loaded in this process.
     bool (*foreignOverlayLoaded)() = nullptr;
 };
@@ -59,7 +62,7 @@ void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks);
 // the freeze watchdog). Each answers conservatively (false) when the hook
 // module registered nothing.
 bool HasExternalCrashDumpCapture();
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint);
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly = false);
 bool IsForeignOverlayLoadedForCrashDump();
 
 // Writes an additional CE-owned dump for externally handled crashes when we still

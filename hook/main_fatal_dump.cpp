@@ -221,7 +221,8 @@ std::filesystem::path GetInstalledCaptureEnginePath() {
 }
 
 ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(const char* source,
-                                                                                const char* dumpHint) {
+                                                                                const char* dumpHint,
+                                                                                bool stackOnly) {
   const std::string dumpDir = GetCrashDumpDirectory();
   if (dumpDir.empty() || !dumpHint || dumpHint[0] == '\0') {
     return ExternalPreTerminationDumpResult::kUnavailable;
@@ -244,6 +245,9 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   commandLine += QuoteCommandLineArgument(dumpDir);
   commandLine += " --dump-helper-hint=";
   commandLine += QuoteCommandLineArgument(dumpHint);
+  if (stackOnly) {
+    commandLine += " --dump-helper-scope=stacks";
+  }
 
   std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
   mutableCommandLine.push_back('\0');
@@ -303,8 +307,8 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 // APIs (that is the ~62 s all-threads-suspended freeze from session
 // 20260817_052857), so hand it the same external helper the fatal-exit path
 // already prefers, plus the overlay presence it has to decide on.
-bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint) {
-  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint) ==
+bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint, bool stackOnly) {
+  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint, stackOnly) ==
          ExternalPreTerminationDumpResult::kCaptured;
 }
 

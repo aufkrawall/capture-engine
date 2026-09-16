@@ -447,7 +447,8 @@ double FreezeWatchdog::GetRecommendedTimeout() const {
     return DEFAULT_TIMEOUT;
 }
 
-void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD preferredThreadId) {
+void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD preferredThreadId,
+                                          bool stackOnly) {
     if (!running_.load(std::memory_order_acquire) || reason.empty()) {
         return;
     }
@@ -491,7 +492,8 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
         }
     }
 
-    HookLogImportant("FreezeWatchdog: Immediate dump requested (%s, targetTid=%lu)", reason.c_str(), targetTid);
+    HookLogImportant("FreezeWatchdog: Immediate dump requested (%s, targetTid=%lu, stackOnly=%d)",
+                     reason.c_str(), targetTid, stackOnly ? 1 : 0);
     if (freezeCallback_) {
         freezeCallback_(reason);
     }
@@ -501,6 +503,7 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
             std::lock_guard<std::mutex> lock(pendingImmediateDumpMutex_);
             pendingImmediateDumpReason_ = reason;
             pendingImmediateDumpTargetTid_ = targetTid;
+            pendingImmediateDumpStackOnly_ = stackOnly;
         }
         pendingImmediateDump_.store(true, std::memory_order_release);
         HookLogImportant(
@@ -509,7 +512,7 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
         return;
     }
 
-    CreateMinidumpWithThreadContext(reason, targetTid);
+    CreateMinidumpWithThreadContext(reason, targetTid, stackOnly);
 }
 
 void FreezeWatchdog::WatchdogThread() {
@@ -541,18 +544,22 @@ void FreezeWatchdog::WatchdogThread() {
         if (pendingImmediateDump_.exchange(false, std::memory_order_acq_rel)) {
             std::string pendingReason;
             DWORD pendingTargetTid = 0;
+            bool pendingStackOnly = false;
             {
                 std::lock_guard<std::mutex> lock(pendingImmediateDumpMutex_);
                 pendingReason = pendingImmediateDumpReason_;
                 pendingTargetTid = pendingImmediateDumpTargetTid_;
+                pendingStackOnly = pendingImmediateDumpStackOnly_;
                 pendingImmediateDumpReason_.clear();
                 pendingImmediateDumpTargetTid_ = 0;
+                pendingImmediateDumpStackOnly_ = false;
             }
 
             if (!pendingReason.empty()) {
-                HookLogImportant("FreezeWatchdog: Processing deferred immediate dump request (%s, targetTid=%lu)",
-                                 pendingReason.c_str(), pendingTargetTid);
-                CreateMinidumpWithThreadContext(pendingReason, pendingTargetTid);
+                HookLogImportant(
+                    "FreezeWatchdog: Processing deferred immediate dump request (%s, targetTid=%lu, stackOnly=%d)",
+                    pendingReason.c_str(), pendingTargetTid, pendingStackOnly ? 1 : 0);
+                CreateMinidumpWithThreadContext(pendingReason, pendingTargetTid, pendingStackOnly);
                 continue;
             }
         }
@@ -666,14 +673,23 @@ void FreezeWatchdog::WatchdogThread() {
 
                 std::string reason = dialogDescription.empty() ? "Blocking dialog detected"
                                                                : ("Blocking " + dialogDescription + " detected");
+                const bool explainedByApplicationDialog =
+                    ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+                        true, isErrGfxStateDialog, dialogThreadId,
+                        monitoredThreadId_.load(std::memory_order_acquire));
                 if (isErrGfxStateDialog) {
                     HookLogImportant("FreezeWatchdog: Critical dialog %s detected - capturing dump immediately",
                                      dialogDescription.c_str());
+                } else if (explainedByApplicationDialog) {
+                    HookLogImportant(
+                        "FreezeWatchdog: The monitored render thread (tid=%lu) owns %s, so it is running that "
+                        "dialog's message pump rather than presenting - capturing stacks only",
+                        dialogThreadId, dialogDescription.c_str());
                 } else {
                     HookLogImportant("FreezeWatchdog: Persistent dialog detected after %.1fs - capturing dump",
                                      dialogElapsed);
                 }
-                RequestImmediateDump(reason, dialogThreadId);
+                RequestImmediateDump(reason, dialogThreadId, explainedByApplicationDialog);
                 dialogDumpWritten = true;
                 lastDialogDumpTime = now;
                 lastDialogDumpIdentity = dialogIdentity;
@@ -698,9 +714,22 @@ void FreezeWatchdog::WatchdogThread() {
             OutputDebugStringA("[FreezeWatchdog] FREEZE DETECTED!\n");
             OutputDebugStringA(reason.c_str());
             OutputDebugStringA("\n");
-            HookLogImportant("FreezeWatchdog: Freeze detected (%s)", reason.c_str());
+            // A dialog this thread owns is the freeze itself, and a dump of
+            // its memory would only record a message pump.
+            const bool explainedByApplicationDialog =
+                ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+                    dialogSeenSince != 0, dialogDescription.find("ERR_GFX_STATE") != std::string::npos,
+                    dialogThreadId, monitoredThreadId_.load(std::memory_order_acquire));
+            if (explainedByApplicationDialog) {
+                HookLogImportant(
+                    "FreezeWatchdog: Freeze detected (%s) - the monitored render thread owns %s, capturing stacks "
+                    "only",
+                    reason.c_str(), dialogDescription.c_str());
+            } else {
+                HookLogImportant("FreezeWatchdog: Freeze detected (%s)", reason.c_str());
+            }
 
-            RequestImmediateDump(reason);
+            RequestImmediateDump(reason, 0, explainedByApplicationDialog);
 
             // Do NOT terminate the process: the game may recover on its own,
             // and forcefully killing it loses unsaved data and prevents the

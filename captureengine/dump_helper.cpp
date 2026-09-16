@@ -99,6 +99,12 @@ int RunDumpHelperFromCommandLine() {
                         TryGetWideArgumentValue(argc, argv, L"--dump-helper-dir=", &dirArg) &&
                         ParseDumpHelperPid(pidArg, &targetPid);
     TryGetWideArgumentValue(argc, argv, L"--dump-helper-hint=", &hintArg);
+    const wchar_t* scopeArg = nullptr;
+    TryGetWideArgumentValue(argc, argv, L"--dump-helper-scope=", &scopeArg);
+    // Only the caller knows whether the process's memory is worth recording. A
+    // freeze the application explains itself - its own modal dialog on the
+    // render thread - asks for stacks; everything else gets the rich dump.
+    const bool stackOnlyScope = scopeArg && wcscmp(scopeArg, L"stacks") == 0;
 
     const std::string dumpDir = WideToUtf8(dirArg);
     const std::string dumpHint = WideToUtf8(hintArg && hintArg[0] ? hintArg : L"fatal_exit_external_helper.dmp");
@@ -141,9 +147,13 @@ int RunDumpHelperFromCommandLine() {
         callbackParam = &callbackInformation;
     }
 
-    const bool wroteDump =
-        WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid,
-                                   ce::crash_dump_policy::kRichCrashDumpType, nullptr, nullptr, callbackParam);
+    const MINIDUMP_TYPE dumpType = stackOnlyScope ? ce::crash_dump_policy::kStackOnlyDumpType
+                                                  : ce::crash_dump_policy::kRichCrashDumpType;
+    const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid, dumpType, nullptr,
+                                                      nullptr, callbackParam);
+    if (stackOnlyScope) {
+        TraceCrash("DumpHelper: Stack-only scope requested - thread stacks, thread info and modules only");
+    }
 
     if (wow64Stacks.Active()) {
         char message[192];

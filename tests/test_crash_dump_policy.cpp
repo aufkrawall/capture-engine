@@ -411,3 +411,22 @@ TEST(CrashDumpPolicyTest, ExtractPrintableMessageRejectsShortRunsAndEmptyInput) 
     const uint8_t trailingSpace[] = {'m', 'e', 's', 's', 'a', 'g', 'e', ' ', ' ', 0x00};
     EXPECT_EQ(ce::crash_diagnostics::ExtractPrintableMessage(trailingSpace, sizeof(trailingSpace)), "message");
 }
+
+// Gothic II 20260916_014133: the game's own `Error-Message` box came up after
+// four DDERR_UNSUPPORTEDMODE primary creations, its render thread parked in the
+// dialog's message pump, and the watchdog wrote 30 MB of process memory for it
+// once the heartbeat went stale. The freeze is real, so it is still recorded -
+// but there is nothing in that process's memory worth thirty megabytes.
+TEST(CrashDumpPolicyTest, TheStackOnlyDumpKeepsThreadsAndModulesWithoutProcessMemory) {
+    const auto flags = policy::kStackOnlyDumpType;
+
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithThreadInfo));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithUnloadedModules));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpIgnoreInaccessibleMemory));
+
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithFullMemory));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithFullMemoryInfo));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithIndirectlyReferencedMemory));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithDataSegs));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithHandleData));
+}

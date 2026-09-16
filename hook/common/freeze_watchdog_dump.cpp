@@ -96,7 +96,8 @@ void FreezeWatchdog::CreateFreezeExceptionRecord(EXCEPTION_RECORD& record, const
     record.ExceptionInformation[0] = reasonInfo[0];
 }
 
-void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId) {
+void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId,
+                                                     bool stackOnly) {
     OutputDebugStringA("[FreezeWatchdog] Creating minidump with thread context...\n");
 
     std::string logsDir = GetLogsDirectory();
@@ -150,11 +151,12 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
                                                                    HasExternalCrashDumpCapture())) {
         HookLogImportant(
             "FreezeWatchdog: Foreign overlay loaded — capturing the freeze dump with the external helper "
-            "(hint=%s targetTid=%lu)",
-            dumpFileName.c_str(), dumpTargetTid);
-        if (CaptureCrashDumpWithExternalHelper(dumpFileName.c_str())) {
-            HookLogImportant("FreezeWatchdog: External helper captured the freeze dump (hint=%s targetTid=%lu)",
-                             dumpFileName.c_str(), dumpTargetTid);
+            "(hint=%s targetTid=%lu stackOnly=%d)",
+            dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0);
+        if (CaptureCrashDumpWithExternalHelper(dumpFileName.c_str(), stackOnly)) {
+            HookLogImportant(
+                "FreezeWatchdog: External helper captured the freeze dump (hint=%s targetTid=%lu stackOnly=%d)",
+                dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0);
             return;
         }
         HookLogImportant("FreezeWatchdog: External helper freeze dump failed (hint=%s)", dumpFileName.c_str());
@@ -219,16 +221,25 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
         const char* label;
     };
 
-    const DumpAttempt attempts[] = {
+    // A freeze whose cause is already established asks for the thread stacks
+    // and nothing else; the fallbacks below it stay in place for the case where
+    // even that is rejected.
+    const DumpAttempt richAttempts[] = {
         {ce::crash_dump_policy::kRichFreezeDumpType, "rich-primary"},
         {ce::crash_dump_policy::kCompatibilityFreezeDumpType, "compat-primary"},
         {ce::crash_dump_policy::kMinimalDumpType, "fallback-normal"},
     };
+    const DumpAttempt stackOnlyAttempts[] = {
+        {ce::crash_dump_policy::kStackOnlyDumpType, "stacks-primary"},
+        {ce::crash_dump_policy::kMinimalDumpType, "fallback-normal"},
+    };
+    const DumpAttempt* attempts = stackOnly ? stackOnlyAttempts : richAttempts;
+    const size_t attemptCount = stackOnly ? std::size(stackOnlyAttempts) : std::size(richAttempts);
 
     BOOL success = FALSE;
     DWORD err = ERROR_SUCCESS;
-    for (size_t i = 0; i < std::size(attempts); ++i) {
-        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, std::size(attempts), attempts[i].label);
+    for (size_t i = 0; i < attemptCount; ++i) {
+        HookLogImportant("FreezeWatchdog: Dump attempt %zu/%zu (%s)", i + 1, attemptCount, attempts[i].label);
         success = pMiniDumpWriteDump_(hProcess, processId, hFile, attempts[i].type,
                                       mei.ExceptionPointers ? &mei : nullptr, nullptr, nullptr);
         if (success) {
@@ -237,7 +248,7 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
 
         err = GetLastError();
         HookLogImportant("FreezeWatchdog: Dump attempt failed (%s, error=%lu)", attempts[i].label, err);
-        if (i + 1 < std::size(attempts)) {
+        if (i + 1 < attemptCount) {
             SetFilePointer(hFile, 0, nullptr, FILE_BEGIN);
             SetEndOfFile(hFile);
         }

@@ -58,6 +58,26 @@ inline bool ShouldCapturePersistentDialogDump(bool criticalDialog, bool renderLo
     return criticalDialog || !renderLoopObserved || heartbeatElapsedSeconds >= freezeTimeoutSeconds;
 }
 
+// A freeze the application explains itself.
+//
+// When the dialog that appeared belongs to the very thread CE monitors for
+// presents, that thread is not stuck in a driver, a hook or a lock: it is
+// running the dialog's own modal message pump, which is precisely why the
+// render heartbeat stopped. Gothic II session 20260916_014133 ends that way -
+// four DDERR_UNSUPPORTEDMODE primary creations after an alt-tab, the game's own
+// `Error-Message` box, and the render thread parked in NtdllDialogWndProc_W -
+// and CE wrote 30 MB of process memory for it.
+//
+// From the user's side that is still a frozen game, so the freeze is still
+// recorded; there is simply nothing in the process's memory to record. The
+// caller turns this into a stack-only dump. A known-critical dialog
+// (ERR_GFX_STATE) is excluded: those are dumped immediately and in full on
+// purpose.
+inline bool FreezeIsExplainedByApplicationDialog(bool haveDialog, bool criticalDialog, DWORD dialogThreadId,
+                                                 DWORD monitoredThreadId) {
+    return haveDialog && !criticalDialog && dialogThreadId != 0 && dialogThreadId == monitoredThreadId;
+}
+
 // Which thread a freeze dump must capture when nothing has claimed the
 // monitored render thread. A present that is still in flight is a thread stuck
 // inside CE's own hook, so its stack is the freeze - DOOM Eternal
@@ -188,7 +208,10 @@ public:
         preferredThreadProvider_.store(provider, std::memory_order_release);
     }
 
-    void RequestImmediateDump(const std::string& reason, DWORD preferredThreadId = 0);
+    // `stackOnly` records thread stacks, thread info and modules instead of
+    // process memory, for a freeze whose cause is already established.
+    void RequestImmediateDump(const std::string& reason, DWORD preferredThreadId = 0,
+                              bool stackOnly = false);
 
 private:
     enum class RenderLoopSource { D3DPresent, VulkanLayerPresent };
@@ -198,7 +221,8 @@ private:
     bool HasLiveRenderLoopEvidence() const;
     void PollCrossApiPresentLiveness();
     void WatchdogThread();
-    void CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId = 0);
+    void CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId = 0,
+                                         bool stackOnly = false);
     bool InitializeDbgHelp();
 
     // Capture context from frozen thread for meaningful dump
@@ -229,6 +253,7 @@ private:
     std::mutex pendingImmediateDumpMutex_;
     std::string pendingImmediateDumpReason_;
     DWORD pendingImmediateDumpTargetTid_{0};
+    bool pendingImmediateDumpStackOnly_{false};
 
     // Presents published by the CE Vulkan layer count as liveness while they
     // are at most this old. Matches the hook-install Vulkan-ownership window

@@ -20,10 +20,12 @@ ULONG_PTR g_LastFaultAddr = 0;
 
 int g_ExternalCaptureCallCount = 0;
 std::string g_LastExternalCaptureHint;
+bool g_LastExternalCaptureStackOnly = false;
 
-bool RecordExternalCapture(const char* dumpFileNameHint) {
+bool RecordExternalCapture(const char* dumpFileNameHint, bool stackOnly) {
     ++g_ExternalCaptureCallCount;
     g_LastExternalCaptureHint = dumpFileNameHint ? dumpFileNameHint : "";
+    g_LastExternalCaptureStackOnly = stackOnly;
     return true;
 }
 
@@ -139,12 +141,18 @@ TEST(CrashHandlerTest, CrashDumpEnvironmentHooksAreOptionalAndAnswerConservative
     EXPECT_TRUE(CaptureCrashDumpWithExternalHelper("crash_test.dmp"));
     EXPECT_EQ(g_ExternalCaptureCallCount, 1);
     EXPECT_EQ(g_LastExternalCaptureHint, "crash_test.dmp");
+    // The default is the dump every caller got before the scope existed.
+    EXPECT_FALSE(g_LastExternalCaptureStackOnly);
+
+    EXPECT_TRUE(CaptureCrashDumpWithExternalHelper("freeze_test.dmp", /*stackOnly=*/true));
+    EXPECT_EQ(g_ExternalCaptureCallCount, 2);
+    EXPECT_TRUE(g_LastExternalCaptureStackOnly);
 
     // An empty hint would make the helper write an unnamed artifact; refuse it
     // instead of launching the helper.
     EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(""));
     EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(nullptr));
-    EXPECT_EQ(g_ExternalCaptureCallCount, 1);
+    EXPECT_EQ(g_ExternalCaptureCallCount, 2);
 
     RegisterCrashDumpEnvironmentHooks(CrashDumpEnvironmentHooks{});
 }
@@ -620,4 +628,51 @@ TEST(FreezeWatchdogPolicyTest, FreezeDumpPrefersTheExternalHelperUnderAForeignOv
     // Helper unavailable plus foreign overlay: no dump beats a hung game thread.
     EXPECT_FALSE(ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
     EXPECT_TRUE(ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(false));
+}
+
+// Gothic II 20260916_014133. The dialog CE found was owned by the very thread
+// it monitors for presents, which is not a thread stuck in a driver, a hook or
+// a lock: it is a thread running a modal message pump, which is exactly why the
+// heartbeat stopped. CE still records the freeze - the user's game is frozen -
+// but a full-memory dump of a process sitting in DialogBox records nothing.
+TEST(FreezeWatchdogPolicyTest, ADialogOwnedByTheRenderThreadExplainsItsOwnFreeze) {
+    constexpr DWORD kRenderThread = 812;
+    constexpr DWORD kOtherThread = 4242;
+
+    EXPECT_TRUE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/true, /*criticalDialog=*/false, kRenderThread, kRenderThread));
+
+    // A dialog on another thread does not explain why the render thread stopped.
+    EXPECT_FALSE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/true, /*criticalDialog=*/false, kOtherThread, kRenderThread));
+
+    // No dialog, no explanation.
+    EXPECT_FALSE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/false, /*criticalDialog=*/false, kRenderThread, kRenderThread));
+
+    // A known-critical dialog is dumped immediately and in full on purpose.
+    EXPECT_FALSE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/true, /*criticalDialog=*/true, kRenderThread, kRenderThread));
+
+    // Nothing is claimed when either thread is unknown.
+    EXPECT_FALSE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/true, /*criticalDialog=*/false, 0, 0));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+        /*haveDialog=*/true, /*criticalDialog=*/false, kRenderThread, 0));
+}
+
+// The scope only reaches the dump writer through the helper's command line, so
+// the argument the hook emits and the argument the helper parses have to stay
+// the same string.
+TEST(FreezeWatchdogPolicyTest, TheStackOnlyScopeReachesTheExternalDumpHelper) {
+    const std::string hookSide = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "hook" / "main_fatal_dump.cpp");
+    const std::string helperSide = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "captureengine" / "dump_helper.cpp");
+    ASSERT_FALSE(hookSide.empty());
+    ASSERT_FALSE(helperSide.empty());
+
+    EXPECT_NE(hookSide.find("--dump-helper-scope=stacks"), std::string::npos);
+    EXPECT_NE(helperSide.find("L\"--dump-helper-scope=\""), std::string::npos);
+    EXPECT_NE(helperSide.find("kStackOnlyDumpType"), std::string::npos);
 }
