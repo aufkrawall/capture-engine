@@ -279,9 +279,27 @@ void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason) {
             d3d3->Release();
         if (dummySurface4)
             dummySurface4->Release();
+
+        // The bootstrap only ever wanted the vtables, and those belong to
+        // ddraw.dll rather than to this instance: the patches outlive it. What
+        // outlived it as well, until now, was a live DDSCAPS_PRIMARYSURFACE on
+        // a window this function then destroys, plus the IDirectDraw7 it kept
+        // referenced. A second object holding the primary is exactly the shape
+        // that can keep the application from re-establishing its own mode, and
+        // Gothic II session 20260916_014133 ends with four
+        // DDERR_UNSUPPORTEDMODE primary creations after an alt-tab.
+        dummySurface->Release();
+        dummySurface = nullptr;
     } else {
         HookLog("DDraw: Failed to create primary surface (hr=0x%08x)", hr);
     }
+
+    // Both prototype sentinels named objects that no longer exist. A pointer
+    // comparison against a freed surface is not identity - DirectDraw can hand
+    // the same address to one of the application's surfaces and CE would then
+    // exclude the application's own surface from presentation tracking.
+    ddraw_hook_g_HookSurfacePrototype = nullptr;
+    ddraw_hook_g_HookSurfacePrototype4 = nullptr;
 
     ddraw7->Release();
     InstallDirectDrawCreateInlineHook(pDirectDrawCreate);
