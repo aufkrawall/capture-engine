@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.1.6652
+
+Changes since [v0.1.6261](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6261).
+
+### New
+
+- **DirectDraw / Direct3D 7 games are supported** (Gothic II and other legacy titles). Overlay, recording,
+  screenshots and the `[Graphics]` overrides (V-Sync, anisotropic filtering, mip mapping) now work there. The
+  overlay draws with the game's own Direct3D 7 device (`legacy_d3d_native_overlay=on`) and falls back to a CPU
+  compositor for 2D frames, loading screens and unusual surface formats - neither route does a GPU readback on
+  the game's render thread.
+- **Screenshots can save HDR and SDR from one capture.** The new default `[Screenshot] color_space=both`
+  publishes an HDR shot twice: as a native 10-bit BT.2020/PQ AVIF and as a tone-mapped SDR PNG, under one name
+  that differs only by extension. Both encodes run at the same time, so the pair costs little more than the AVIF
+  alone, and a capture that is not in HDR still saves exactly one PNG.
+- **NVIDIA Smooth Motion is recognised.** CaptureEngine detects it, reports its status with the real base and
+  output frame rates, draws the overlay on Smooth Motion's own output flip - topmost above Steam and RTSS, and
+  not interpolated with the game frame - and applies `vsync_mode=fifo` there.
+- **FFmpeg messages now reach the session log.** Encoder, muxer and RTMP diagnostics previously went to a
+  discarded stderr. They are logged with stream keys redacted, so live streaming keeps full diagnostics instead
+  of being silenced to protect the key.
+
+### Improved
+
+- **Lower input lag from the FPS limiter.** It used to spend its entire wait after the game had already finished
+  the frame, so a finished frame aged in the present hook - 9.3 ms of it in Strange Brigade at a 90 fps cap. The
+  game is now released ahead of the deadline, with a reservation learned from real overruns and from GPU
+  completion times so smoothness is not traded away for latency. Recording with capture sync deliberately keeps
+  the old placement, because a missed deadline there costs a repeated frame in the file.
+- **GPU load is readable under frame generation.** The overlay summed the 3D, Compute and Copy engines and
+  clamped the total to 100%, which parked the reading on the clamp whenever FG was running. It now reports the
+  busiest engine, the same way Task Manager does.
+- **The GPU and VRAM rows stop flashing `--`** while a game briefly has no GPU work. Windows removes the counter
+  instance there, which means idle, not unreadable.
+- **Faster, steadier game startup.** Four variable-cost stalls are gone: a machine-wide thread snapshot taken for
+  every installed hook, a throwaway WARP Direct3D 12 device created in games that never use DX12, and two
+  unbounded window-title queries on the render thread. Hook installation dropped from about 1.25 s to 0.65 s and
+  the worst single hitch from 533 ms to 15 ms.
+- **Crash dumps from 32-bit games now contain 32-bit stacks.** The dump helper is 64-bit and had been recording
+  only the WoW64 side, which holds nothing but a syscall thunk - the same gap Task Manager's own dumps have.
+- **A freeze the game explains itself is recorded with stacks instead of 30 MB.** When the stuck thread is simply
+  running its own error dialog, the freeze is still detected and named in the log, just without a full memory dump.
+- **Privacy blackout follows virtual desktops.** `black_when_no_fullscreen_focus` now rejects cloaked windows,
+  Task View and shell windows, and keeps monitor capture tied to the process that established fullscreen focus.
+- **Cheaper Vulkan capture:** per-frame allocations removed from the present path, and a swapchain that moves to
+  another queue family mid-run re-learns its settings instead of keeping the ones chosen at startup.
+
+### Fixed
+
+- **Gothic II (DirectDraw/SystemPack):** fixed injection crashing at startup on this title's older import tables
+  and on relocated bypass code; fixed the overlay flickering every frame, disappearing during loading screens and
+  darkening itself on repeated draws; fixed a crash in the intro videos caused by the overlay re-binding a texture
+  the game had already released; fixed a full game freeze caused by a hook cycle between CaptureEngine and the
+  Steam overlay, and the frozen picture that the first fix for it produced; fixed V-Sync and anisotropic-filtering
+  overrides doing nothing in this game's borderless mode; fixed screenshots never completing in-game; fixed the
+  overlay compositor costing most of the frame rate; and fixed a VRAM reading of 8.7 exabytes.
+- **Portal RTX (RTX Remix):** fixed heavy stutter with `vsync_mode=fifo` under DLSS multi-frame generation -
+  CaptureEngine was taking the generator's own flip scheduling away. Fixed the same stutter at 4x MFG, where the
+  generated batch no longer fits the display's refresh rate: the rendered rate is now bounded by the panel, so
+  2x/3x/4x all pace cleanly on a 144 Hz display. Fixed clean exits writing a 183 MB dump.
+- **DOOM Eternal:** fixed the window going black for the rest of the session after a swapchain change (overlay
+  objects were released too late, and their present-wait semaphores too early). Fixed CaptureEngine pushing NVIDIA's
+  Vulkan driver off its native present path - visible as the Windows volume popup drawing over the fullscreen game.
+- **Strange Brigade:** fixed the frame rate running at ~130 fps against a 90 fps cap while the limiter reported a
+  perfect 90. Fixed a first-frame crash when the driver's Smooth Motion was enabled.
+- **Frame generation and the overlay:** fixed overlay text rendering as blank boxes under DLSS 4x MFG, and fixed
+  screenshots and overlay-free recording picking the wrong frame while a game had DLSS FG temporarily suspended.
+- **Forced V-Sync in Vulkan titles:** the layer's bridge functions were never actually exported, so the
+  vertical-blank correction could never run. It is verified against the shipped DLL now.
+- **32-bit games:** fixed every `[UE5]` console-variable override being silently inert in 32-bit Unreal titles,
+  and a weakened sanity check on the legacy Direct3D 9 path.
+- **Crash and freeze reporting:** dumps are written from a copy of the exception state instead of stack memory
+  that may already have been reused; a second crash can no longer start a second dump worker on top of the first;
+  the crash handler can no longer deadlock on itself; and the freeze watchdog no longer accuses Vulkan and
+  DirectDraw games it never observed presenting.
+- **Capture:** an injected frame that names a process other than the capture session's own is dropped instead of
+  being opened.
+
 ## v0.1.6261
 
 Changes since [v0.1.6143](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6143).
