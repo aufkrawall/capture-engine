@@ -99,7 +99,39 @@ what actually happened.
 (`-forced_update`, `-force_add_update`, `-bootstrap`, ...). Machine-wide, persistent, affects other
 applications - and the in-process CreateProcess route gets the same outcome deterministically.
 
-**Unvalidated on hardware:** all of it. No game run since the change.
+**Second hardware run (`20260918_223542`), and what it settled.**
+
+- **`ngx_log` works.** The session directory now contains NGX's own
+  `nvngx_dlss_310_9_1.log`, `nvngx_dlssd_310_9_1.log` and `nvngx_dlssg_310_9_1.log`.
+- **The updater refusal works, but started too late.** Nine `nvngx_update.exe` processes were
+  created at 22:35:48, every one parented to the game, while CE published its policy at
+  22:35:49.072 and refused from 22:35:49.170 onward. The CreateProcess hook had been installed
+  since DllMain - what it lacked was an answer, because `CurrentMode` returned "default" until the
+  hook thread's own config load. The injector had published the resolved value at **22:35:42.842**,
+  six seconds before the game existed. `CurrentMode` now falls back to that published value, so the
+  blind window is closed. The header comment that called the old behaviour "exactly right" was
+  wrong and now says so.
+- **The `slInit` route installs in time and still did not take effect.** It went in at 22:35:49.085
+  with `IAT patched=1`, 164 ms before CE observed the OTA core at 22:35:49.249 - and the core still
+  won, with nothing logged either way, because the hook only reported when it actually cleared bits.
+  Four causes were indistinguishable: the game called `slInit` before CE, the call missed CE's
+  routes, the struct identity check rejected it, or the flags were already clear.
+
+  The hook now logs on **every** entry with the outcome, and the foreign-core observation pairs
+  itself with `WasSlInitRouteInstalled()` / `WasSlInitObserved()` and states which of the three
+  situations produced the loss. That pairing is the whole point: "installed" and "effective" looked
+  identical in a log and cost a session to tell apart.
+
+**Open, and the next run decides it:** if the verdict reads `installed=1, seen through CE=0`, the
+game reaches `slInit` before CE is in the process at all, no in-process hook can win, and the only
+remaining lever is launching through CE (`--launch`) so injection happens at process creation.
+
+**Also observed:** the `nvngx_update.exe` processes are transient, not permanently stuck - all nine
+exited within a minute. The user's original "running and partially hanging" description matches a
+burst at game start that lingers visibly and then clears, so the earlier worry that CE's
+CreateProcess refusal might deadlock NGX teardown has no evidence behind it.
+
+**Unvalidated on hardware:** `ngx_ota=on`, the early-mode resolve, and the slInit diagnostics.
 
 
 ### 2026-09-16 - One capture, two files: combined HDR + SDR screenshots, concurrently

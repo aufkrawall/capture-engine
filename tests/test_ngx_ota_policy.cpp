@@ -243,4 +243,87 @@ TEST(NgxOtaSlInitRoute, ModuleProbeRetriesThePartialCopyRace) {
         << "the log must not claim a timing path that ShouldInjectAfterGraphicsProbe does not implement";
 }
 
+
+// The refusal is only as good as the moment the mode becomes knowable.
+//
+// Session 20260918_223542 created nine nvngx_update.exe processes at 22:35:48,
+// every one of them parented to the game, while CE published its policy at
+// 22:35:49.072 and only began refusing at 22:35:49.170. The CreateProcess hook
+// was already installed the whole time - what it lacked was an answer, because
+// CurrentMode returned "default" until the hook thread's own config load. The
+// injector had published the resolved value at 22:35:42.842, before the game
+// existed.
+TEST(NgxOtaEarlyMode, ModeResolvesFromSharedMemoryBeforeTheHookThreadPublishes) {
+    namespace fs = std::filesystem;
+    const std::string runtime =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+    ASSERT_FALSE(runtime.empty());
+
+    const size_t current = runtime.find("uint8_t CurrentMode()");
+    ASSERT_NE(current, std::string::npos);
+    const size_t fallback = runtime.find("ReadModeFromSharedMemory()", current);
+    EXPECT_NE(fallback, std::string::npos)
+        << "CurrentMode must resolve the injector's published mode rather than answering default until told";
+
+    // It must read the published mode, which is the resolved profile's value,
+    // not re-parse config.ini from a path.
+    EXPECT_NE(runtime.find("graphicsConfig.ngxOtaMode"), std::string::npos)
+        << "the early answer must come from the published resolved config";
+
+    // Reachable from the DllMain-time CreateProcess path, so it must not do
+    // anything that takes the loader lock.
+    EXPECT_EQ(runtime.find("LoadLibrary"), std::string::npos)
+        << "the early resolve runs on a loader-lock-reachable path and must not load anything";
+    EXPECT_NE(runtime.find("OpenFileMappingW"), std::string::npos)
+        << "the early resolve should use shared memory, which needs no loader lock";
+}
+
+// "Installed" and "effective" were indistinguishable in session 20260918_223542:
+// the route went in at 22:35:49.085 with the IAT patched, the OTA core still won
+// at 22:35:49.249, and nothing was logged either way because the hook only
+// reported when it actually cleared bits.
+TEST(NgxOtaSlInitRoute, EveryOutcomeOfTheHookIsDistinguishableInTheLog) {
+    namespace fs = std::filesystem;
+    const std::string route =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_ota_preferences.cpp");
+    ASSERT_FALSE(route.empty());
+
+    // Entry is counted before any early return, or "did the call reach CE"
+    // cannot be answered for the paths that return early.
+    const size_t hook = route.find("Hooked_slInit(");
+    ASSERT_NE(hook, std::string::npos);
+    const size_t entryCount = route.find("g_EntryCount.fetch_add", hook);
+    const size_t firstReturn = route.find("return original(", hook);
+    ASSERT_NE(entryCount, std::string::npos) << "slInit entries must be counted";
+    ASSERT_NE(firstReturn, std::string::npos);
+    EXPECT_LT(entryCount, firstReturn) << "the entry must be recorded before any path can return";
+
+    // Each outcome has to be separable from the others.
+    EXPECT_NE(route.find("NOT recognized"), std::string::npos) << "a rejected struct layout must say so";
+    EXPECT_NE(route.find("already disabled by the game"), std::string::npos)
+        << "an already-clear flag set must be distinguishable from never being seen";
+    EXPECT_NE(route.find("cleared eAllowOTA"), std::string::npos) << "the success case must stay reported";
+
+    EXPECT_NE(route.find("bool WasSlInitObserved()"), std::string::npos);
+    EXPECT_NE(route.find("bool WasSlInitRouteInstalled()"), std::string::npos);
+}
+
+// The verdict has to be stated where it is decidable - at the moment the foreign
+// core is observed - or the log leaves the reader to infer it, which is exactly
+// what cost a session.
+TEST(NgxOtaSlInitRoute, ForeignCoreObservationReportsWhyTheStripDidNotPrevent) {
+    namespace fs = std::filesystem;
+    const std::string redirect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+
+    const size_t latch = redirect.find("g_ForeignStreamlineCoreObserved.exchange(true");
+    ASSERT_NE(latch, std::string::npos);
+    const size_t verdict = redirect.find("WasSlInitRouteInstalled()", latch);
+    EXPECT_NE(verdict, std::string::npos)
+        << "the foreign-core observation must pair itself with whether the slInit route was installed and used";
+    EXPECT_NE(redirect.find("WasSlInitObserved()", latch), std::string::npos)
+        << "and with whether the call actually came through CE";
+}
+
 }  // namespace

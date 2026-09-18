@@ -22,4 +22,21 @@ namespace ce::streamline_ota {
 // has not been mapped yet.
 void InstallSlInitRouteIfConfigured();
 
+// Whether the game's `slInit` has actually come through CE's route, and whether
+// the route was ever installed.
+//
+// These exist because "installed" and "effective" turned out to be different
+// things and nothing in the logs could tell them apart. Session 20260918_223542
+// installed the route at 22:35:49.085 with the IAT patched, and the runtime
+// still resolved its core from the driver's OTA store at 22:35:49.249 - with no
+// log line either way, because the hook only reported when it actually cleared
+// bits. Four different causes produced that same silence.
+//
+// The caller that matters is the foreign-core observation: pairing it with
+// these answers separates "the game called slInit before CE was there" from
+// "CE's route missed the call" from "CE saw it and the flags were already
+// clear", which need completely different responses.
+bool WasSlInitObserved();
+bool WasSlInitRouteInstalled();
+
 }  // namespace ce::streamline_ota

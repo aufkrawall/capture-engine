@@ -62,6 +62,7 @@ using PFN_slInit2x = sl::Result (*)(const sl::Preferences&, uint64_t);
 std::atomic<void*> g_OriginalSlInit{nullptr};
 std::atomic<bool> g_Registered{false};
 std::atomic<uint32_t> g_AppliedCount{0};
+std::atomic<uint32_t> g_EntryCount{0};
 
 // True when the incoming struct is the `sl::Preferences` this translation unit
 // was compiled against. `BaseStructure` places `structType` and `structVersion`
@@ -73,15 +74,30 @@ bool IsKnownPreferencesLayout(const sl::Preferences& preferences) {
 }
 
 sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion) {
+    // Recorded before anything can return early. "Did the call reach CE at all"
+    // is the question every other outcome is interpreted against, and the
+    // previous version could not answer it because it only logged on success.
+    const uint32_t entry = g_EntryCount.fetch_add(1, std::memory_order_relaxed);
+
     auto original = reinterpret_cast<PFN_slInit2x>(g_OriginalSlInit.load(std::memory_order_acquire));
     if (!original) {
         // No original means CE has nothing to forward to; failing the call would
         // take the game's Streamline down with it.
+        HookLogImportant("NGX OTA: slInit reached CE with no original to forward to - refusing to break the runtime");
         return sl::Result::eErrorNotInitialized;
     }
 
     const uint8_t mode = ce::ngx_ota::CurrentMode();
-    if (!ce::ngx_ota::ShouldClearStreamlineOtaPreferences(mode) || !IsKnownPreferencesLayout(preferences)) {
+    const bool wantsClear = ce::ngx_ota::ShouldClearStreamlineOtaPreferences(mode);
+    const bool knownLayout = IsKnownPreferencesLayout(preferences);
+
+    if (!wantsClear || !knownLayout) {
+        if (entry < 4) {
+            HookLogImportant(
+                "NGX OTA: slInit observed (entry #%u) but left untouched - ngx_ota=%s, Preferences layout %s",
+                entry + 1, ce::ngx_ota::ModeName(mode),
+                knownLayout ? "recognized" : "NOT recognized (struct identity differs from the compiled SDK)");
+        }
         return original(preferences, sdkVersion);
     }
 
@@ -92,7 +108,13 @@ sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion
     const auto incoming = static_cast<uint64_t>(preferences.flags);
     const auto cleared = incoming & ~kOtaBits;
     if (cleared == incoming) {
-        return original(preferences, sdkVersion);  // The game had already opted out.
+        if (entry < 4) {
+            HookLogImportant(
+                "NGX OTA: slInit observed (entry #%u) with OTA already disabled by the game (flags=0x%016llX) - "
+                "nothing to clear",
+                entry + 1, static_cast<unsigned long long>(incoming));
+        }
+        return original(preferences, sdkVersion);
     }
 
     sl::Preferences adjusted = preferences;
@@ -160,10 +182,26 @@ void InstallSlInitRouteIfConfigured() {
         patchedIat ? 1 : 0, g_OriginalSlInit.load(std::memory_order_acquire));
 }
 
+bool WasSlInitObserved() {
+    return g_EntryCount.load(std::memory_order_acquire) != 0;
+}
+
+bool WasSlInitRouteInstalled() {
+    return g_Registered.load(std::memory_order_acquire);
+}
+
 #else
 
 void InstallSlInitRouteIfConfigured() {
     // No Streamline on x86, so there is no slInit to route.
+}
+
+bool WasSlInitObserved() {
+    return false;
+}
+
+bool WasSlInitRouteInstalled() {
+    return false;
 }
 
 #endif

@@ -9,10 +9,14 @@
  * reads, and the answer CE's CreateProcess hook gives when the NGX core tries
  * to launch `nvngx_update.exe`.
  *
- * The mode is published once the hook thread has a config. Until then the
- * accessors answer "default", which is exactly right: with no profile resolved
- * CE has no mandate to change what the driver would do, and the NGX core does
- * not reach its updater until well after that point.
+ * The mode is published once the hook thread has a config. That is NOT early
+ * enough on its own, and the original version of this comment claiming it was
+ * ("the NGX core does not reach its updater until well after that point") was
+ * wrong: session 20260918_223542 created nine nvngx_update.exe processes at
+ * 22:35:48, all parented to the game, while CE published the policy at
+ * 22:35:49.072. So `CurrentMode` falls back to the value the injector already
+ * published in shared memory, which in that session was available from
+ * 22:35:42.842 - before the game existed.
  */
 
 #include <cstdint>
@@ -28,8 +32,10 @@ namespace ce::ngx_ota {
 // log location and only the level is stated.
 void PublishPolicy(uint8_t otaMode, uint8_t logLevel, const char* sessionLogDirectory);
 
-// The currently published OTA mode, or kNgxOtaModeDefault before a profile has
-// been resolved.
+// The OTA mode in force. Before the hook thread publishes one, this resolves
+// the injector's already-published value from shared memory rather than
+// answering "default" - see the note above for why that distinction decides
+// whether the first burst of updater launches is answered at all.
 uint8_t CurrentMode();
 
 // True when CE should refuse this CreateProcess call outright. `imagePath` is

@@ -2,6 +2,9 @@
 
 #include "../common/module_enumeration.h"
 #include "apis/streamline_bridge_policy.h"
+#include "apis/streamline_ota_preferences.h"
+#include "common/ngx_ota_policy.h"
+#include "common/ngx_ota_runtime.h"
 #include "common/dll_utils.h"
 #include "common/streamline_api_generation.h"
 
@@ -246,6 +249,20 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
   }
   if (!g_ForeignStreamlineCoreObserved.exchange(true, std::memory_order_acq_rel)) {
     PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalForeignStreamlineCore);
+    // Say, at the one moment it is decidable, why the ngx_ota=off preference
+    // strip did or did not get a chance to prevent this. Without the pairing,
+    // "route installed" and "route effective" look identical in a log.
+    if (ce::ngx_ota::ShouldClearStreamlineOtaPreferences(ce::ngx_ota::CurrentMode())) {
+      const bool installed = ce::streamline_ota::WasSlInitRouteInstalled();
+      const bool observed = ce::streamline_ota::WasSlInitObserved();
+      HookLogImportant(
+          "NGX OTA: the OTA core won with ngx_ota=off - slInit route installed=%d, slInit seen through CE=%d. %s",
+          installed ? 1 : 0, observed ? 1 : 0,
+          !installed  ? "The route was never installed, so the interposer was not mapped when CE looked."
+          : !observed ? "The route was installed but the call never came through it - the game reached slInit "
+                        "before CE, or through a path the import patch does not cover."
+                      : "CE saw the call and still lost, so the core was chosen by something other than these flags.");
+    }
     HookLogImportant(
         "Streamline override disabled: the runtime resolved its core (%s) to %s, not to the configured override "
         "%s. Redirecting only the remaining plugins would build a version-mixed Streamline stack, so every sl.* "
