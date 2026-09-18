@@ -88,6 +88,10 @@ void MediaProcessSession::Loop() {
                     if (!ipc.SendResponse(ProcessResponse::Ack))
                         LogWarn("[Media] Failed to acknowledge graceful recording stop; finalizing anyway");
                     StopRecording();
+                    // StopRecording() returns immediately when startup never reached a live
+                    // recording. That case still owes both overlays a terminal state, otherwise
+                    // "Finalizing recording..." sits there until its 60 s expiry.
+                    CompleteAbortedRecordingStart("authenticated stop request");
                     releaseIdleWgcResources();
                     // Exit after recording stops to free GPU VRAM.
                     // Controller respawns on next recording via EnsureMediaProcessReady.
@@ -175,6 +179,16 @@ void MediaProcessSession::Loop() {
                     StopRecording();
                     releaseIdleWgcResources();
                     media_main_g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
+                } else {
+                    // Same ownership the authenticated stop takes: clear the hook-facing state
+                    // this process never got to own, then finalize the aborted start so the
+                    // overlays leave "Finalizing recording...".
+                    media_main_g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+                    SetInjectVideoCaptureRequestedState(false, "shared-memory stop request");
+                    SetCaptureRequestedState(false);
+                    SetRecordingVisibleState(false);
+                    PublishMediaScreenGrabTarget(0, nullptr, false, "shared-memory stop request");
+                    CompleteAbortedRecordingStart("shared-memory stop request");
                 }
                 // Exit after recording stops to free GPU VRAM.
                 LogInfo("[Media] Recording finished (shmem), exiting to release GPU resources");

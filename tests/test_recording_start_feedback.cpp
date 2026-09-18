@@ -325,3 +325,144 @@ TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAn
     EXPECT_NE(pseudo.find("PostThreadMessageW(threadId, kMsgRefresh"), std::string::npos);
     EXPECT_NE(pseudo.find("kColStarting"), std::string::npos);
 }
+
+// Regression (session 20260918_235601, r0003/r0004): the recording hotkey spawns the media
+// process, which then needs seconds to become live (render->loopback probe, engine init, capture
+// routing). A stop inside that window discarded the queued start and exited silently:
+// CompleteRecordingFinalization - the only publisher of a terminal overlay notification - was
+// never reached, so the controller's "Finalizing recording..." (60 s expiry) stayed on screen and
+// the recording manifest kept no finalization record, for a recording that produced no file.
+TEST(RecordingStartFeedbackSourceTest, MediaFinalizesAStopThatArrivedBeforeTheRecordingStarted) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    // The latch is what distinguishes an aborted start from an ordinary finalization: it is set
+    // exactly where a recording becomes live.
+    const size_t startRecording = source.find("bool StartRecording(const AppConfig& config)");
+    ASSERT_NE(startRecording, std::string::npos);
+    const size_t latch = source.find("media_main_g_RecordingEverStarted.store(true", startRecording);
+    ASSERT_NE(latch, std::string::npos);
+
+    const size_t helper = source.find("void CompleteAbortedRecordingStart(const char* reason)");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t guard = source.find("media_main_g_RecordingEverStarted.load", helper);
+    ASSERT_NE(guard, std::string::npos) << "a live recording must finalize normally, not as canceled";
+    const size_t canceled =
+        source.find("CompleteRecordingFinalization(true /*canceled*/, false /*outputSaved*/)", guard);
+    EXPECT_NE(canceled, std::string::npos);
+
+    // Both stop routes reach it: the authenticated media channel and the shared-memory command.
+    EXPECT_NE(source.find("CompleteAbortedRecordingStart(\"authenticated stop request\")"), std::string::npos);
+    EXPECT_NE(source.find("CompleteAbortedRecordingStart(\"shared-memory stop request\")"), std::string::npos);
+}
+
+// CompleteRecordingFinalization suppresses its notification when a newer recording is already
+// active, so the aborted-start path must clear the hook-facing state it never owned first -
+// otherwise the cancellation would be swallowed exactly like the silent exit it replaces.
+TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFinalizing) {
+    const std::string source = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t sharedMemoryAbort = source.find("CompleteAbortedRecordingStart(\"shared-memory stop request\")");
+    ASSERT_NE(sharedMemoryAbort, std::string::npos);
+    const size_t intentCleared =
+        source.rfind("SetRecordingStartIntent(RecordingStartIntent::Idle)", sharedMemoryAbort);
+    const size_t captureCleared = source.rfind("SetCaptureRequestedState(false)", sharedMemoryAbort);
+    const size_t visibleCleared = source.rfind("SetRecordingVisibleState(false)", sharedMemoryAbort);
+    ASSERT_NE(intentCleared, std::string::npos);
+    ASSERT_NE(captureCleared, std::string::npos);
+    ASSERT_NE(visibleCleared, std::string::npos);
+    EXPECT_LT(intentCleared, sharedMemoryAbort);
+    EXPECT_LT(captureCleared, sharedMemoryAbort);
+    EXPECT_LT(visibleCleared, sharedMemoryAbort);
+
+    // A canceled finalization is recorded in the manifest as such, so the evidence for a
+    // recording that produced nothing is no longer just a missing line.
+    const std::string manifest = ReadSource("captureengine/recording_manifest.h");
+    ASSERT_FALSE(manifest.empty());
+    EXPECT_NE(manifest.find("recording_canceled"), std::string::npos);
+}
+
+// The inject ack only proves inject set cmdStartRecording; the media process may still be
+// seconds away from a live recording. Logging "Recording started" there reported a recording
+// that did not exist and, in the aborted case, never would.
+TEST(RecordingStartFeedbackSourceTest, ControllerReportsRecordingLiveOnlyWhenMediaPublishesIt) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_EQ(source.find("LogInfo(\"[Controller] Recording started\")"), std::string::npos)
+        << "the inject command ack is not evidence that a recording started";
+    EXPECT_NE(source.find("Recording start request delivered to inject"), std::string::npos);
+
+    // The truthful transition is owned by the health check, which observes the media process's
+    // published isRecording state.
+    const size_t health = source.find("void CheckChildProcessHealth()");
+    ASSERT_NE(health, std::string::npos);
+    const size_t isRecording = source.find("runtimeState.isRecording.load(std::memory_order_acquire)", health);
+    ASSERT_NE(isRecording, std::string::npos);
+    const size_t live = source.find("Recording is live", isRecording);
+    EXPECT_NE(live, std::string::npos);
+}
+
+// The controller's own evidence for the aborted case: how long the start had been pending when
+// the stop arrived. The tick is armed on every start and cleared by every idle transition so it
+// cannot leak into a later recording.
+TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStartupWindow) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("main_g_RecordingStartRequestTick.store(GetTickCount64()"), std::string::npos);
+    EXPECT_NE(source.find("before the recording went live"), std::string::npos);
+    EXPECT_NE(source.find("Audio-only stop requested"), std::string::npos);
+
+    const size_t publish = source.find("inline bool PublishRecordingStartIntent(");
+    ASSERT_NE(publish, std::string::npos);
+    const size_t idleClear = source.find("main_g_RecordingStartRequestTick.store(0", publish);
+    EXPECT_NE(idleClear, std::string::npos) << "every idle transition must disarm the pending-start tick";
+
+    // Reported before the intent is cleared, otherwise the tick is already gone.
+    const size_t stopReport = source.find("before the recording went live");
+    const size_t stopIntent =
+        source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
+    ASSERT_NE(stopReport, std::string::npos);
+    ASSERT_NE(stopIntent, std::string::npos);
+    EXPECT_LT(stopReport, stopIntent);
+}
+
+// The ~3.2 s render->loopback probe is what makes the startup window long enough to swallow a
+// short recording. Because the media process is disposable, a process-memory cache can never hit
+// across recordings; the controller-owned session channel is what makes the probe cost once per
+// CE session. The deliberately removed disk cache must stay removed.
+TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposableMediaProcesses) {
+    const std::string spawn = ReadSource("common/process_ipc_client.cpp");
+    const std::string mediaMain = ReadSource("captureengine/media_main.cpp");
+    const std::string probe = ReadSource("mediaengine/audio_latency_probe.cpp");
+    ASSERT_FALSE(spawn.empty());
+    ASSERT_FALSE(mediaMain.empty());
+    ASSERT_FALSE(probe.empty());
+
+    // Controller -> media child: an inherited handle, never a command-line value (the key holds
+    // the audio endpoint id) and never a file.
+    EXPECT_NE(spawn.find("ce::av_sync::GetSessionLatencyChannelChildHandle()"), std::string::npos);
+    EXPECT_NE(spawn.find("--avsync-latency-handle=0x%llX"), std::string::npos);
+
+    // The child must attach the channel BEFORE the probe can run, which is inside
+    // ensureMediaEngineReady() right after the engine loads.
+    const size_t attach = mediaMain.find("MediaEngine_SetRenderLatencyChannel(latencyChannel)");
+    const size_t measure = mediaMain.find("MeasureRenderLatencyOnce(config, mediaCacheDir)");
+    ASSERT_NE(attach, std::string::npos);
+    ASSERT_NE(measure, std::string::npos);
+    EXPECT_LT(attach, measure);
+    EXPECT_NE(mediaMain.find("ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle())"),
+              std::string::npos);
+
+    // A fresh measurement is published back so the NEXT media process starts warm.
+    const size_t store = probe.find("void StoreMemoryCache(");
+    ASSERT_NE(store, std::string::npos);
+    EXPECT_NE(probe.find("ce::av_sync::UpsertLatencyChannel(*channel, key, latencyMs)", store), std::string::npos);
+    EXPECT_NE(probe.find("ce::av_sync::LookupLatencyChannel"), std::string::npos);
+
+    // The persistent endpoint-latency file stays banned; the channel is memory only.
+    EXPECT_NE(probe.find("cacheDir=deprecated"), std::string::npos);
+    EXPECT_NE(probe.find("legacyDiskCache=deleted"), std::string::npos);
+}

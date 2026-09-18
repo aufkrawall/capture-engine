@@ -35,6 +35,7 @@ MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly = nullptr;
 MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit = nullptr;
 MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed = nullptr;
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
+MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel = nullptr;
 
 static HMODULE g_MediaEngineModule = nullptr;
 
@@ -110,6 +111,8 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_MeasureRenderEndpointLatency",
                        &MediaEngine_MeasureRenderEndpointLatency);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetRenderLatencyChannel",
+                       &MediaEngine_SetRenderLatencyChannel);
 
     if (!success) {
         LogError("[MediaEngine] Failed to get all function pointers");
@@ -158,4 +161,5 @@ void MediaEngine_Unload() {
     MediaEngine_SetSourcePrefers10Bit = nullptr;
     MediaEngine_SetCursorCompositionSuppressed = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
+    MediaEngine_SetRenderLatencyChannel = nullptr;
 }

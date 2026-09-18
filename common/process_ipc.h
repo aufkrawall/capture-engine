@@ -156,6 +156,9 @@ extern std::string g_SessionDirName;
 extern std::string g_RecordingId;
 std::string ParseSessionDir(LPSTR commandLine);
 std::string ParseRecordingId(LPSTR commandLine);
+// Handle to the controller's session A/V latency channel, inherited by a media child. nullptr
+// when absent or malformed; see common/av_sync_latency_channel.h.
+void* ParseInheritedLatencyChannelHandle();
 
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr);
 bool WaitForChildExit(HANDLE process, DWORD timeoutMs);

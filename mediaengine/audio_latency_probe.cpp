@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "../common/av_sync_latency_channel.h"
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // DLL_Log
 
@@ -45,6 +46,10 @@ constexpr double kProbeMaxSpreadMs = 8.0;  // ~half a 60 fps frame; well within 
 std::mutex g_LatencyCacheMutex;
 std::vector<LatencyCacheEntry> g_LatencyMemoryCache;
 bool g_LegacyDiskCacheCleanupAttempted = false;
+// Optional controller-owned session channel (common/av_sync_latency_channel.h). The media process
+// is disposable, so the process-memory cache above can never hit across recordings; this is what
+// makes the probe cost once per CE session instead of once per recording. Null = not attached.
+std::atomic<ce::av_sync::LatencyChannelBlock*> g_LatencyChannel{nullptr};
 
 template <typename T>
 void SafeRelease(T*& p) {
@@ -141,14 +146,43 @@ void CleanupLegacyDiskCacheOnce(const std::string& cacheDir) {
     }
 }
 
-bool LookupMemoryCache(const std::string& key, double* outMs) {
-    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
-    return LookupLatencyCache(g_LatencyMemoryCache, key, outMs);
+// Returns "session" for a value carried over from an earlier media process through the inherited
+// channel, "memory" for this process's own cache, or nullptr on a miss. The session channel is
+// consulted second and folded into the process cache so repeated lookups stay local.
+const char* LookupCache(const std::string& key, double* outMs) {
+    {
+        std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+        if (LookupLatencyCache(g_LatencyMemoryCache, key, outMs)) {
+            return "memory";
+        }
+    }
+    ce::av_sync::LatencyChannelBlock* channel = g_LatencyChannel.load(std::memory_order_acquire);
+    double channelMs = 0.0;
+    if (!channel || !ce::av_sync::LookupLatencyChannel(*channel, key, &channelMs)) {
+        return nullptr;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+        UpsertLatencyCache(g_LatencyMemoryCache, key, channelMs);
+    }
+    if (outMs) {
+        *outMs = channelMs;
+    }
+    return "session";
 }
 
 void StoreMemoryCache(const std::string& key, double latencyMs) {
-    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
-    UpsertLatencyCache(g_LatencyMemoryCache, key, latencyMs);
+    {
+        std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+        UpsertLatencyCache(g_LatencyMemoryCache, key, latencyMs);
+    }
+    // Publish to the session channel so the NEXT disposable media process starts warm. Best
+    // effort: a failure only costs that process a re-probe.
+    if (ce::av_sync::LatencyChannelBlock* channel = g_LatencyChannel.load(std::memory_order_acquire)) {
+        if (!ce::av_sync::UpsertLatencyChannel(*channel, key, latencyMs)) {
+            DLL_Log("[AVSyncProbe] sessionChannel=store_refused key=%s (the next recording re-probes)", key.c_str());
+        }
+    }
 }
 
 size_t MemoryCacheEntryCount() {
@@ -164,6 +198,9 @@ void ClearMemoryCacheForForceRemeasure(const std::string& key) {
     g_LatencyMemoryCache.erase(std::remove_if(g_LatencyMemoryCache.begin(), g_LatencyMemoryCache.end(),
                                               [&](const LatencyCacheEntry& e) { return e.key == key; }),
                                g_LatencyMemoryCache.end());
+    // The session channel entry is deliberately left alone: the fresh measurement overwrites it
+    // through StoreMemoryCache, and clearing it first would strand the next process on a miss if
+    // this forced measurement finds no consensus.
 }
 
 // Downmix one interleaved float frame block to mono channel 0 (sufficient for narrowband
@@ -530,20 +567,23 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
                                    defaultPeriod100ns, minPeriod100ns);
     result.deviceKey = deviceKey;
 
+    const bool sessionChannelAttached = g_LatencyChannel.load(std::memory_order_acquire) != nullptr;
     DLL_Log(
         "[AVSyncProbe] endpoint: key=%s rate=%d channels=%d bits=%d blockAlign=%d channelMask=0x%x "
-        "devicePeriod=%lluus minPeriod=%lluus force=%d cacheMode=memory cacheDir=deprecated",
+        "devicePeriod=%lluus minPeriod=%lluus force=%d cacheMode=%s cacheDir=deprecated",
         deviceKey.c_str(), sampleRate, channels, bitsPerSample, blockAlign, channelMask,
         static_cast<unsigned long long>(defaultPeriod100ns / 10), static_cast<unsigned long long>(minPeriod100ns / 10),
-        forceRemeasure ? 1 : 0);
+        forceRemeasure ? 1 : 0, sessionChannelAttached ? "memory+session" : "memory");
 
     CleanupLegacyDiskCacheOnce(cacheDir);
 
-    // Process-memory cache lookup (unless forced). No persistent endpoint latency file is used.
+    // Cache lookup (unless forced): this process's memory first, then the controller-owned session
+    // channel. No persistent endpoint latency file is used.
     if (!forceRemeasure) {
         double cached = 0.0;
-        if (LookupMemoryCache(deviceKey, &cached) && IsPlausibleLatencyMs(cached)) {
-            DLL_Log("[AVSyncProbe] cache=memory_hit key=%s latency=%.3f ms entries=%zu (no marker rendered)",
+        const char* source = LookupCache(deviceKey, &cached);
+        if (source && IsPlausibleLatencyMs(cached)) {
+            DLL_Log("[AVSyncProbe] cache=%s_hit key=%s latency=%.3f ms entries=%zu (no marker rendered)", source,
                     deviceKey.c_str(), cached, MemoryCacheEntryCount());
             result.ok = true;
             result.fromCache = true;
@@ -551,7 +591,8 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
             cleanup();
             return result;
         }
-        DLL_Log("[AVSyncProbe] cache=memory_miss key=%s entries=%zu", deviceKey.c_str(), MemoryCacheEntryCount());
+        DLL_Log("[AVSyncProbe] cache=miss key=%s entries=%zu sessionChannel=%d", deviceKey.c_str(),
+                MemoryCacheEntryCount(), sessionChannelAttached ? 1 : 0);
     } else {
         ClearMemoryCacheForForceRemeasure(deviceKey);
         DLL_Log("[AVSyncProbe] cache=memory_bypass key=%s entries=%zu", deviceKey.c_str(), MemoryCacheEntryCount());
@@ -613,12 +654,23 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
 
     StoreMemoryCache(deviceKey, agg.latencyMs);
     DLL_Log(
-        "[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=memory entries=%zu "
+        "[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=%s entries=%zu "
         "confidence=high",
-        agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs, MemoryCacheEntryCount());
+        agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs,
+        sessionChannelAttached ? "memory+session" : "memory", MemoryCacheEntryCount());
 
     cleanup();
     return result;
+}
+
+void SetRenderLatencyChannel(void* channelBlock) {
+    auto* block = static_cast<ce::av_sync::LatencyChannelBlock*>(channelBlock);
+    if (block && !ce::av_sync::IsLatencyChannelCompatible(*block)) {
+        DLL_Log("[AVSyncProbe] sessionChannel=rejected (incompatible block); this process will probe");
+        block = nullptr;
+    }
+    g_LatencyChannel.store(block, std::memory_order_release);
+    DLL_Log("[AVSyncProbe] sessionChannel=%s", block ? "attached" : "detached");
 }
 
 }  // namespace ce::audio

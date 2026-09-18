@@ -4,6 +4,7 @@
 
 #include "process_ipc_internal.h"
 
+#include "av_sync_latency_channel.h"
 #include "logging.h"
 #include "restricted_child_process.h"
 
@@ -234,6 +235,23 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
         inheritedHandles.push_back(childEndpoint);
     }
 
+    // The disposable media child inherits the controller-lifetime A/V latency channel so the
+    // ~3.2 s render->loopback probe runs once per CE session instead of once per recording. The
+    // handle belongs to the controller and must outlive this spawn, so unlike childEndpoint it is
+    // neither un-inherited nor closed below. A null handle is not an error: the child then probes.
+    HANDLE latencyChannel = nullptr;
+    std::wstring latencyChannelArgument;
+    if (mode == ProcessMode::Media) {
+        latencyChannel = static_cast<HANDLE>(ce::av_sync::GetSessionLatencyChannelChildHandle());
+        if (latencyChannel) {
+            inheritedHandles.push_back(latencyChannel);
+            wchar_t argument[64]{};
+            _snwprintf_s(argument, std::size(argument), _TRUNCATE, L"--avsync-latency-handle=0x%llX",
+                         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(latencyChannel)));
+            latencyChannelArgument = argument;
+        }
+    }
+
     std::wstring commandLine = QuoteCommandLineArgument(executablePath) + L" --mode=" + ModeNameWide(mode);
     if (configPath && *configPath) {
         const std::wstring wideConfig = Utf8ToWide(configPath);
@@ -254,6 +272,8 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
         commandLine += L" --recording-id=" + QuoteCommandLineArgument(Utf8ToWide(g_RecordingId.c_str()));
     if (!ipcArguments.empty())
         commandLine += L" " + ipcArguments;
+    if (!latencyChannelArgument.empty())
+        commandLine += L" " + latencyChannelArgument;
 
     ce::process::RestrictedChildProcess child;
     DWORD error = ERROR_SUCCESS;

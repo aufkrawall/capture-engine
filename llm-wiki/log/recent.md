@@ -1,5 +1,59 @@
 # llm-wiki Log
 
+### 2026-09-19 - Two short recordings produced nothing, and the overlay said "Finalizing"
+
+Session `20260918_235601`, recordings r0003/r0004. The user asked whether finalization had hung or
+only the desktop overlay. Only the overlay - and the real finding was worse: neither recording
+captured anything and neither saved a file.
+
+**Recording start is asynchronous and slow.** The media process is spawned on the hotkey and must
+load mediaengine, run the render->loopback A/V probe, init the engine and route capture before it
+polls its first command. Measured that session: r0003 hotkey 01:09:30.613, first command poll
+01:09:34.223 (+3.61 s); r0004 +3.59 s. Both were stopped after ~2.8 s, i.e. inside the startup
+window. The media `StopRecording` handler deliberately consumes the queued `cmdStartRecording` and
+exits, so `StartRecording` never ran - no `[RECORDING FINALIZATION]` line, no `status=` in either
+manifest, no output. r0001 (WGC) took 6.66 s from hotkey to `isRecording=1`.
+
+**Why the overlay stuck.** `CompleteRecordingFinalization` is the only publisher of a terminal
+overlay notification and it is only reachable from a live recording's stop. The controller's
+`Finalizing` carries a 60 s expiry, so nothing superseded it; it was still being drawn 5 s after the
+media process had exited cleanly.
+
+**Why the probe is on the start path at all.** `[AVSyncProbe] cache=memory_miss ... entries=0` on
+every single spawn. The disk cache was deliberately removed on 2026-06-18 in favour of a
+process-memory cache documented as "one probe per fresh CE process" - but the media process is
+disposable and exits after every recording, so the cache could never hit. Four probes across 70
+minutes measured 28.6 / 29.0 / 28.6 / 30.4 ms on the same endpoint key: stable enough that
+re-measuring per recording bought nothing and cost 3.2 s of the 3.6 s startup.
+
+**Fixed (three changes, all in one commit):**
+
+- `common/av_sync_latency_channel.{h,cpp}`: a controller-lifetime anonymous file mapping holding a
+  small (key -> latency) table, inherited by each media child via `--avsync-latency-handle=`. The
+  child reads it before probing and writes a fresh measurement back, so the probe now costs once per
+  CE session. No disk file - the `audio_latency_cache.ini` ban is unchanged, and the endpoint key
+  (which contains the device id) never reaches a command line. A seqlock makes a torn read a miss;
+  every failure mode degrades to "probe again", never to a wrong latency.
+- `CompleteAbortedRecordingStart` (media): `media_main_g_RecordingEverStarted` latches in
+  `StartRecording`; both stop routes finalize an unlatched stop as `recording_canceled`, which
+  publishes `RecordingCanceled` to both overlays and writes the manifest's terminal state. The
+  shared-memory route clears the hook-facing state first or
+  `CompleteRecordingFinalization`'s newer-recording guard would swallow it.
+- Honest controller reporting: `[Controller] Recording started` on the inject ack is gone (that ack
+  only proves inject set `cmdStartRecording`). The controller now logs the delivery, and
+  `CheckChildProcessHealth` logs `Recording is live` with the elapsed startup time when it observes
+  media's published `isRecording`. A stop while the start is still pending is logged with how long
+  it had been pending. `main_g_RecordingStartRequestTick` is disarmed by every idle transition.
+
+**Tests:** `tests/test_av_sync_latency_channel.cpp` (11 cases: reuse across processes, per-endpoint
+keying, overflow, oversized/empty key refusal, incompatible block, torn read, unterminated entry)
+plus five source-inspection cases in `tests/test_recording_start_feedback.cpp`.
+
+**Unvalidated on hardware.** No run yet confirms the warm second recording, the canceled
+notification, or the `Recording is live` timing. The obvious check is a session with two short
+recordings: the second should log `cache=session_hit` and no `[AVSyncProbe] probing:` line, and a
+sub-second recording should end on "Recording canceled", not "Finalizing recording...".
+
 ### 2026-09-18 - The NGX OTA store was quietly beating the configured DLSS runtime
 
 The user asked whether CE had collided with NVIDIA's NGX updater after seeing a pile of

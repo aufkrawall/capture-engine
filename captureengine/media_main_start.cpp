@@ -39,6 +39,11 @@ int MediaProcessSession::Init() {
     // capture-dark events so they can never bind to a foreign process.
     ce::status_overlay::SetControllerPid(ipc.ControllerPid());
 
+    // Map the inherited session A/V latency channel before the media engine loads: the
+    // render->loopback probe runs inside ensureMediaEngineReady() below, and this process is
+    // disposable, so without the channel it would re-measure for ~3.2 s on every recording start.
+    latencyChannel = ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle());
+
     if (!ensureMediaEngineReady()) {
         return 1;
     }
@@ -212,6 +217,11 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     }
 
     MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
+    // Hand the session latency channel over before the probe below can run. Re-applied on every
+    // engine (re)load because MediaEngine_Unload drops the DLL's copy of the pointer.
+    if (MediaEngine_SetRenderLatencyChannel) {
+        MediaEngine_SetRenderLatencyChannel(latencyChannel);
+    }
     // Propagate audio-only flag to MediaEngine before Init
     if (media_main_g_AudioOnly && MediaEngine_SetAudioOnly) {
         MediaEngine_SetAudioOnly(true);
@@ -476,6 +486,7 @@ bool StartRecording(const AppConfig& config) {
     }
 
     media_main_g_Recording = true;
+    media_main_g_RecordingEverStarted.store(true, std::memory_order_release);
     media_main_g_LiveStreamRecording.store(
         ce::live_stream::IsLiveStreamTarget(config.video.outputDir), std::memory_order_release);
     media_main_g_EncoderRunning = true;

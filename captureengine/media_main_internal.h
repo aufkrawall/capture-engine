@@ -56,6 +56,8 @@ class ScopedMmcssTask;
 
 #include "../common/atomic_shared_owner.h"
 
+#include "../common/av_sync_latency_channel.h"
+
 #include "../common/capture_handoff_state.h"
 
 #include "../common/capture_pipeline_policy.h"
@@ -180,6 +182,9 @@ void ResetRecordingHealthPublication();
 void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& health);
 
 void CompleteRecordingFinalization(bool canceled, bool outputSaved);
+// No-op once a recording went live; otherwise finalizes the aborted start as a cancellation so
+// the overlays and the recording manifest both get a terminal state.
+void CompleteAbortedRecordingStart(const char* reason);
 
 bool IsActiveScreenGrab();
 
@@ -332,6 +337,10 @@ inline constexpr double media_main_kBottleneckExitRatio = 0.75;   // smoothedEnc
 extern std::atomic<bool> media_main_g_Running;
 
 extern std::atomic<bool> media_main_g_Recording;
+// Latched by StartRecording. The media process is disposable - one per recording - so "this
+// process is stopping and never reached a live recording" is exactly the aborted-start case that
+// used to exit silently and leave the overlay on "Finalizing recording...".
+extern std::atomic<bool> media_main_g_RecordingEverStarted;
 extern std::atomic<bool> media_main_g_LiveStreamRecording;
 
 extern std::atomic<bool> media_main_g_EncoderRunning;
@@ -609,6 +618,9 @@ private:
     std::string exeDir;
     std::string configPath;
     std::string mediaCacheDir;
+    // Controller-owned session A/V latency channel, inherited at spawn. Null when the controller
+    // could not provide one; this process then pays the full render->loopback probe.
+    ce::av_sync::LatencyChannelBlock* latencyChannel = nullptr;
     ID3D11Device* d3dDevice = nullptr;
     ID3D11DeviceContext* d3dContext = nullptr;
     LARGE_INTEGER qpcFreq{};

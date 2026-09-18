@@ -141,6 +141,12 @@ MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
         mediaengine_g_Engine->ReleaseEncoderTextures();
 }
 
+MEDIAENGINE_API void MediaEngine_SetRenderLatencyChannel(void* channelBlock) {
+    // Standalone like the probe itself: this runs before MediaEngine_Init so the very first
+    // measurement of a disposable media process can already be served from the session channel.
+    ce::audio::SetRenderLatencyChannel(channelBlock);
+}
+
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
                                                               double* outLatencyMs) {
     // Standalone WASAPI probe; intentionally NOT guarded by the engine instance (it can run before

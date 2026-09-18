@@ -307,4 +307,11 @@ struct RenderLatencyProbeResult {
 // DLL_Log.
 RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDir, bool forceRemeasure);
 
+// Attach (or detach with nullptr) the controller-owned session latency channel from
+// common/av_sync_latency_channel.h. Without it the cache above is process-local, and because the
+// media process is disposable that means every recording pays the full ~3.2 s measurement on the
+// recording-start path. Pass an incompatible block and it is refused, never trusted. Call before
+// MeasureRenderEndpointLatency; a void* keeps the mediaengine ABI free of the block type.
+void SetRenderLatencyChannel(void* channelBlock);
+
 }  // namespace ce::audio

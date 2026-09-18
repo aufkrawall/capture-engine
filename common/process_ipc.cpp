@@ -388,6 +388,35 @@ std::string ParseRecordingId(LPSTR commandLine) {
     return std::string(value, end);
 }
 
+// The A/V latency channel handle the controller inherited to this child (see
+// av_sync_latency_channel.h). Parsed from the wide command line like the IPC endpoint handle, so
+// the value round-trips exactly. Returns nullptr when the argument is absent or malformed; the
+// caller then falls back to probing, which is always correct, only slower.
+void* ParseInheritedLatencyChannelHandle() {
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments)
+        return nullptr;
+    constexpr wchar_t prefix[] = L"--avsync-latency-handle=";
+    uint64_t handleValue = 0;
+    bool found = false;
+    bool invalid = false;
+    for (int index = 1; index < argumentCount; ++index) {
+        if (wcsncmp(arguments[index], prefix, std::size(prefix) - 1) != 0)
+            continue;
+        if (found || !ParseUnsigned(arguments[index] + std::size(prefix) - 1, 0,
+                                    std::numeric_limits<uintptr_t>::max(), handleValue)) {
+            invalid = true;
+        } else {
+            found = true;
+        }
+    }
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
+    if (invalid || !found || handleValue == 0 || handleValue == reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE))
+        return nullptr;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(handleValue));
+}
+
 const char* GetLogFileName(ProcessMode mode) {
     switch (mode) {
         case ProcessMode::Inject:

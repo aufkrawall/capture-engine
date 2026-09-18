@@ -424,6 +424,23 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
                                    std::memory_order_release);
 }
 
+// A stop that arrives before StartRecording ever ran. The media process is spawned on the
+// recording hotkey and needs several seconds to become live (render->loopback probe, MediaEngine
+// init, capture routing), so a recording stopped inside that window produces no file at all.
+//
+// The silent-exit version of this path was the bug: CompleteRecordingFinalization is the only
+// publisher of a terminal overlay notification, so the controller's "Finalizing recording..."
+// (60 s expiry) was never superseded, and the recording manifest kept no finalization record
+// either. Both overlays now learn the recording was canceled, and the manifest says so.
+void CompleteAbortedRecordingStart(const char* reason) {
+    if (media_main_g_RecordingEverStarted.load(std::memory_order_acquire)) {
+        return;
+    }
+    LogWarn("[RecordingLifecycle] Stop accepted before the recording ever started (%s); nothing was captured",
+            reason ? reason : "unspecified");
+    CompleteRecordingFinalization(true /*canceled*/, false /*outputSaved*/);
+}
+
 bool IsActiveScreenGrab() {
     return media_main_g_UseScreenGrab.load(std::memory_order_acquire);
 }

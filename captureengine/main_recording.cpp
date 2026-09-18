@@ -71,6 +71,7 @@ void ToggleRecording() {
                                                      std::memory_order_release);
         });
         PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
+        main_g_RecordingStartRequestTick.store(GetTickCount64(), std::memory_order_release);
         LogInfo("[Controller] Starting recording...");
 
         // Inject recording uses the sensor child even when no sensor overlay
@@ -109,13 +110,18 @@ void ToggleRecording() {
         // Notify inject process - it sets shared memory flags and media polls them
         if (main_g_InjectClient && main_g_InjectClient->IsConnected()) {
             ProcessResponse resp;
+            // This ack only proves inject accepted the command and set cmdStartRecording. The
+            // media process is still starting up and needs seconds to reach a live recording, so
+            // reporting "started" here would be a claim the controller cannot make. The truthful
+            // transition is logged by CheckChildProcessHealth when isRecording goes live.
             if (main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                LogInfo("[Controller] Recording started");
+                LogInfo("[Controller] Recording start request delivered to inject; waiting for media to go live");
             } else {
                 LogError("[Controller] Failed to notify inject process - retrying once");
                 // Retry once on failure
                 if (main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                    LogInfo("[Controller] Recording started (retry)");
+                    LogInfo("[Controller] Recording start request delivered to inject on retry; waiting for media "
+                            "to go live");
                 } else {
                     LogError("[Controller] Recording start failed");
                     main_g_Recording = false;
@@ -131,6 +137,14 @@ void ToggleRecording() {
             PublishRecordingFailureOverlayNotification("inject unavailable", IsControllerLiveStreamOutput());
         }
     } else {
+        // Non-zero means CheckChildProcessHealth never saw the recording go live, so this stop
+        // lands inside the media process's startup window and nothing was captured.
+        const uint64_t pendingStartTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
+        if (pendingStartTick) {
+            LogWarn("[Controller] Stop requested %llu ms after the start, before the recording went live; media "
+                    "will finalize it as canceled and no file is produced",
+                    static_cast<unsigned long long>(GetTickCount64() - pendingStartTick));
+        }
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
         WithInjectSharedMem([&](SharedMemoryLayout* shm) {
             shm->runtimeState.notificationType.store(
@@ -168,6 +182,7 @@ void ToggleAudioOnlyRecording() {
         });
         const bool audioOnlySet =
             PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only hotkey");
+        main_g_RecordingStartRequestTick.store(GetTickCount64(), std::memory_order_release);
         LogInfo("[Controller] Starting audio-only recording...");
 
         if (!EnsureMediaProcessReady(10000)) {
@@ -216,6 +231,13 @@ void ToggleAudioOnlyRecording() {
             PublishRecordingFailureOverlayNotification("audio-only start command failure");
         }
     } else {
+        // See ToggleRecording: a stop inside the media startup window captures nothing.
+        const uint64_t pendingStartTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
+        if (pendingStartTick) {
+            LogWarn("[Controller] Audio-only stop requested %llu ms after the start, before the recording went "
+                    "live; media will finalize it as canceled and no file is produced",
+                    static_cast<unsigned long long>(GetTickCount64() - pendingStartTick));
+        }
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
         WithInjectSharedMem([&](SharedMemoryLayout* shm) {
             shm->runtimeState.notificationType.store(
@@ -403,6 +425,10 @@ void ShutdownChildProcesses() {
     main_g_hInjectProcess = NULL;
     main_g_hLoggerProcess = NULL;
     main_g_hSensorProcess = NULL;
+
+    // Every child that could have inherited it is gone; the session A/V latency channel has no
+    // further readers.
+    ce::av_sync::ReleaseSessionLatencyChannel();
 }
 
 // Monitor authenticated children and replace a process only after its broken
@@ -419,6 +445,14 @@ void CheckChildProcessHealth() {
     if (main_g_Recording && recordingStartIntent != RecordingStartIntent::Idle) {
         WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
             if (sharedMemory->runtimeState.isRecording.load(std::memory_order_acquire)) {
+                // The media process published a live recording. This, not the inject command
+                // ack, is the moment a recording actually exists; anything stopped before it
+                // produces no output at all, so the elapsed time is reported to make that
+                // startup window visible in the log.
+                const uint64_t requestTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
+                LogInfo("[Controller] Recording is live (%s, %llu ms after the start request)",
+                        recordingStartIntent == RecordingStartIntent::AudioOnly ? "audio-only" : "video",
+                        requestTick ? static_cast<unsigned long long>(GetTickCount64() - requestTick) : 0ULL);
                 recordingStartIntent = RecordingStartIntent::Idle;
                 main_g_RecordingStartIntent.store(RecordingStartIntent::Idle, std::memory_order_release);
             }

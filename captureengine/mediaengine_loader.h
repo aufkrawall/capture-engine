@@ -52,6 +52,7 @@ typedef void (*MediaEngine_SetSourcePrefers10Bit_t)(bool prefer10Bit);
 typedef void (*MediaEngine_SetCursorCompositionSuppressed_t)(bool suppressed);
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            double* outLatencyMs);
+typedef void (*MediaEngine_SetRenderLatencyChannel_t)(void* channelBlock);
 
 // Function pointers (set by MediaEngine_Load)
 extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;
@@ -84,6 +85,7 @@ extern MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly;
 extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
 extern MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed;
 extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
+extern MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel;
 
 // Load mediaengine.dll from exeDir with dependencies restricted to the
 // application, its private ffmpeg directory, and System32.

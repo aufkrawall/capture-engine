@@ -124,6 +124,12 @@ MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred();
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
                                                               double* outLatencyMs);
 
+// Attach the controller-owned session A/V latency channel (a ce::av_sync::LatencyChannelBlock
+// view, passed as void* to keep the ABI free of the type) so the probe above costs one
+// measurement per CE session rather than one per disposable media process. nullptr detaches.
+// Must be called before MeasureRenderEndpointLatency to have any effect on the first probe.
+MEDIAENGINE_API void MediaEngine_SetRenderLatencyChannel(void* channelBlock);
+
 // Shutdown and cleanup
 MEDIAENGINE_API void MediaEngine_Shutdown();
 

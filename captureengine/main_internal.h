@@ -26,6 +26,8 @@
 
 #include <vector>
 
+#include "../common/av_sync_latency_channel.h"
+
 #include "../common/config.h"
 
 #include "../common/crash_handler.h"
@@ -127,6 +129,12 @@ inline bool main_g_LiveStreamRecording = false;
 inline uint32_t main_g_RecordingSerial = 0;
 
 inline std::atomic<RecordingStartIntent> main_g_RecordingStartIntent{RecordingStartIntent::Idle};
+
+// Tick of the hotkey/request that published the pending start intent. A recording is not live
+// when the child accepts the command: the disposable media process still has to load its engine,
+// resolve the A/V delay and route capture. This anchors the truthful "recording is live" report
+// in CheckChildProcessHealth so the log cannot claim a start the media process has not made.
+inline std::atomic<uint64_t> main_g_RecordingStartRequestTick{0};
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 inline AppConfig main_g_Config;
@@ -672,6 +680,12 @@ inline bool WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& 
 
 inline bool PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
     main_g_RecordingStartIntent.store(intent, std::memory_order_release);
+    if (intent == RecordingStartIntent::Idle) {
+        // Every abort/stop path funnels through here, so a pending start tick cannot survive into
+        // a later recording and mis-report its startup window. Callers that want to report on the
+        // pending start read the tick before clearing the intent.
+        main_g_RecordingStartRequestTick.store(0, std::memory_order_release);
+    }
     const bool published = WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
         sharedMemory->runtimeState.SetRecordingStartIntent(intent);
         if (intent != RecordingStartIntent::AudioOnly) {

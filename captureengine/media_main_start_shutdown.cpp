@@ -16,6 +16,12 @@ void MediaProcessSession::Shutdown() {
     }
     MediaEngine_Unload();
 
+    // Only safe once the engine is unloaded: the probe inside mediaengine.dll holds this view.
+    if (latencyChannel) {
+        ce::av_sync::UnmapInheritedLatencyChannel(latencyChannel);
+        latencyChannel = nullptr;
+    }
+
     // Release every remaining metadata/resource lease while the cross-process
     // mapping is still valid. Normal recording stop already does this, but the
     // process-exit path also covers partial startup failures and shutdowns that

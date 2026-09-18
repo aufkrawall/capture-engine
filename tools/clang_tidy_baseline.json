@@ -45,7 +45,7 @@
   },
   "total": 1916,
   "scope": {
-    "entries": 773,
+    "entries": 775,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -135,6 +135,7 @@
       "captureengine/wgc_capture_state.cpp",
       "captureengine/wgc_capture_stats.cpp",
       "captureengine/windows_gpu_scheduling.cpp",
+      "common/av_sync_latency_channel.cpp",
       "common/build_identity.cpp",
       "common/config.cpp",
       "common/config_load.cpp",
@@ -601,6 +602,7 @@
       "tests/test_audio_sync_utils.cpp",
       "tests/test_audio_sync_utils_part2.cpp",
       "tests/test_audio_time_utils.cpp",
+      "tests/test_av_sync_latency_channel.cpp",
       "tests/test_av_sync_stimulus.cpp",
       "tests/test_benchmark_manager.cpp",
       "tests/test_build_identity.cpp",
