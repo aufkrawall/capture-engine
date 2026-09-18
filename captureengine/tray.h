@@ -34,20 +34,6 @@ public:
     // Remove the icon completely (call after shutdown is complete)
     void Remove();
 
-    // Shows a notification balloon on the tray icon. Used for conditions the
-    // user configured for and would otherwise never learn about - a refused
-    // DLSS/Streamline override being the first - so they are not left believing
-    // a setting applied when it did not.
-    void ShowNotification(const std::string& title, const std::string& text);
-
-    // Name of the window message any CE process may post to the controller's
-    // tray window to raise such a balloon. wParam carries a
-    // kRuntimeOverrideRefusal* reason. Registered rather than a WM_USER offset
-    // because the sender is a different process.
-    static const char* RuntimeOverrideRefusedMessageName() {
-        return "CaptureEngine.RuntimeOverrideRefused";
-    }
-
     bool IsShuttingDown() const {
         return shuttingDown;
     }
@@ -57,7 +43,6 @@ private:
     HWND hWnd = nullptr;
     NOTIFYICONDATAA nid{};
     UINT taskbarCreatedMessage = 0;
-    UINT runtimeOverrideRefusedMessage = 0;
     Callbacks callbacks;
 
     HICON hIconIdle = nullptr;

@@ -18,7 +18,6 @@
 #include "inject_config_publication.h"
 #include "injection.h"
 #include "inject_lifecycle.h"
-#include "tray.h"
 
 namespace fs = std::filesystem;
 
@@ -523,14 +522,23 @@ int InjectProcessMain(const AppConfig& config) {
             break;
         }
 
-        // Surface a runtime-override refusal the hook published.
+        // Record which runtime-override mechanism the hook refused.
         //
-        // The hook refuses a configured dlss_*_dll_path / streamline_dll_path
-        // correctly, but until this ran the only evidence was one line in
-        // hook_debug.log, so a user who had configured an override could run an
-        // entire session believing it applied. Reported once per publication:
-        // the hook already collapses the echoes into one first-refusal-wins
-        // value, so a change here is a genuinely new decision.
+        // Every reason CE publishes concerns ONE mechanism: the `sl.*` plugin
+        // set behind `streamline_dll_path`. The NGX runtimes behind
+        // `dlss_sr_dll_path` / `dlss_fg_dll_path` / `dlss_rr_dll_path` are a
+        // separate, generation-independent override that is unaffected by any
+        // of it, and in session 20260918_221342 all three loaded from the
+        // configured folder while the sl.* set was refused. Saying "the
+        // configured override did not apply" there was simply wrong, and it is
+        // the reason this is worded per mechanism now.
+        //
+        // INFO, not WARN: refusing to build a version-mixed Streamline stack is
+        // CE behaving correctly. It is worth recording because the user cannot
+        // otherwise tell which plugin set the game ended up with, but it is not
+        // a fault and must not read like one. Reported once per publication -
+        // the hook collapses the echoes into one first-refusal-wins value, so a
+        // change here is a genuinely new decision.
         {
             static uint64_t lastReportedRefusal = 0;
             const uint32_t refusalSourcePid = pSharedMem->GetSourcePid();
@@ -539,22 +547,12 @@ int InjectProcessMain(const AppConfig& config) {
                 (static_cast<uint64_t>(refusalSourcePid) << 32) | static_cast<uint64_t>(reason);
             if (reason != kRuntimeOverrideRefusalNone && refusalKey != lastReportedRefusal) {
                 lastReportedRefusal = refusalKey;
-                LogWarn(
-                    "[Inject] Configured DLSS/Streamline override did NOT apply in %s (PID: %lu): %s. The game is "
-                    "running its own runtime, not the configured one",
+                LogInfo(
+                    "[Inject] streamline_dll_path sl.* plugin set not substituted in %s (PID: %lu): %s. The game "
+                    "keeps its own coherent sl.* set; the dlss_*_dll_path NGX runtimes are a separate override and "
+                    "are unaffected",
                     GetProcessNameFromPID(refusalSourcePid).c_str(), static_cast<unsigned long>(refusalSourcePid),
                     RuntimeOverrideRefusalText(reason));
-                // The tray lives in the controller, so the balloon is raised by
-                // posting to its window. A registered message keeps this from
-                // colliding with any WM_USER offset the window already uses, and
-                // no string crosses the boundary - the controller resolves the
-                // text from the same shared reason table.
-                if (const UINT notifyMessage =
-                        RegisterWindowMessageA(TrayIcon::RuntimeOverrideRefusedMessageName())) {
-                    if (const HWND trayWindow = FindWindowA("CaptureEngineTray", nullptr)) {
-                        PostMessageA(trayWindow, notifyMessage, static_cast<WPARAM>(reason), 0);
-                    }
-                }
             }
         }
 

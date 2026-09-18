@@ -1,6 +1,5 @@
 #include "tray.h"
 #include "../common/logging.h"
-#include "../common/shared_defs.h"
 #include <shellapi.h>
 
 static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
@@ -31,10 +30,6 @@ void TrayIcon::InitWindow() {
     taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
     if (taskbarCreatedMessage == 0)
         LogWarn("[Tray] Failed to register Explorer taskbar recreation message (error=%lu)", GetLastError());
-
-    runtimeOverrideRefusedMessage = RegisterWindowMessageA(RuntimeOverrideRefusedMessageName());
-    if (runtimeOverrideRefusedMessage == 0)
-        LogWarn("[Tray] Failed to register the runtime-override notification message (error=%lu)", GetLastError());
 
     WNDCLASSEXA wc = {0};
     wc.cbSize = sizeof(WNDCLASSEX);
@@ -265,18 +260,6 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARA
     if (pThis && pThis->taskbarCreatedMessage != 0 && message == pThis->taskbarCreatedMessage) {
         pThis->RestoreAfterTaskbarCreated();
         return 0;
-    } else if (pThis && pThis->runtimeOverrideRefusedMessage != 0 &&
-               message == pThis->runtimeOverrideRefusedMessage) {
-        // Posted by the inject process when the hook reported that a configured
-        // DLSS/Streamline override did not take effect. The reason text is
-        // resolved here rather than sent, so the two processes cannot disagree
-        // about the wording and no string crosses a window message.
-        const uint32_t reason = static_cast<uint32_t>(wParam);
-        const char* detail = RuntimeOverrideRefusalText(reason);
-        if (detail && detail[0] && !pThis->shuttingDown) {
-            pThis->ShowNotification("CaptureEngine: DLSS/Streamline override not applied", detail);
-        }
-        return 0;
     } else if (message == WM_INITMENUPOPUP) {
         HWND hMenuWnd = FindWindowW(L"#32768", nullptr);
         if (hMenuWnd) {
@@ -339,31 +322,6 @@ void TrayIcon::StartShutdownAnimation() {
     // Start timer for blinking (every 500ms)
     if (hWnd) {
         blinkTimerId = SetTimer(hWnd, BLINK_TIMER_ID, BLINK_INTERVAL_MS, NULL);
-    }
-}
-
-void TrayIcon::ShowNotification(const std::string& title, const std::string& text) {
-    if (!iconInitialized || iconRemovalRequested || shuttingDown) {
-        return;
-    }
-
-    // NIM_MODIFY with NIF_INFO shows the balloon and leaves the icon itself
-    // alone. The info fields are only read for this one call, so they are
-    // cleared afterwards to keep a later NIM_MODIFY (recording state, blink)
-    // from re-raising the same balloon.
-    nid.uFlags |= NIF_INFO;
-    strncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
-    strncpy_s(nid.szInfo, text.c_str(), _TRUNCATE);
-    nid.dwInfoFlags = NIIF_WARNING | NIIF_NOSOUND;
-    const BOOL shown = Shell_NotifyIconA(NIM_MODIFY, &nid);
-
-    nid.uFlags &= ~NIF_INFO;
-    nid.szInfoTitle[0] = '\0';
-    nid.szInfo[0] = '\0';
-    nid.dwInfoFlags = 0;
-
-    if (!shown) {
-        LogWarn("[Tray] Notification balloon rejected (error=%lu): %s", GetLastError(), text.c_str());
     }
 }
 

@@ -39,8 +39,22 @@ fallback's real cost is machine-wide load, not lateness.
 - The kernel32 loader/CreateProcess hooks now install in `DllMain` before the graphics IAT work,
   closing the 330 ms window in which mapped modules were unredirectable.
 - A refused runtime override is published hook -> host (`SharedMemoryLayout::runtimeOverrideStatus`,
-  PID-tagged, first-refusal-wins) and surfaces as a tray balloon plus a host warning naming the
-  reason, instead of living in `hook_debug.log`.
+  PID-tagged, first-refusal-wins) and is reported by the inject process, instead of living only in
+  `hook_debug.log`.
+  - **Corrected the same evening (session `20260918_221342`).** The first version raised a Windows
+    tray balloon and logged `Configured DLSS/Streamline override did NOT apply`. Both were wrong.
+    The refusal concerns exactly one mechanism - the `sl.*` plugin set behind `streamline_dll_path`
+    - while the NGX runtimes behind `dlss_sr_dll_path` / `dlss_fg_dll_path` / `dlss_rr_dll_path` are
+    a separate, generation-independent override that is unaffected. In that session all three loaded
+    from the configured `npi\sl` folder (`Loader: runtime module loaded: nvngx_dlss.dll -> ...\npi\sl\...`,
+    and `nvngx_debug.log` confirms `Detected Version ... v310.9.1`) while only the `sl.*` set was
+    refused, so the message told the user their whole configuration had failed when the part they
+    cared about had worked.
+  - The balloon is gone entirely (`TrayIcon::ShowNotification`, the registered window message and
+    the inject-side `PostMessage` are all removed). Interrupting a running game with a desktop
+    notification is the wrong surface for something that is not actionable mid-session, and CE
+    refusing to build a version-mixed Streamline stack is correct behaviour rather than a fault -
+    so the remaining report is one `LogInfo`, not a `LogWarn`, and it names the mechanism.
 - The unelevated process-start fallback is `ce::process_start::Poller`, one
   `NtQuerySystemInformation` sweep every 250 ms, replacing the WMI `__InstanceCreationEvent WITHIN
   0.5` query that made WmiPrvSE materialise every process instance twice a second.
