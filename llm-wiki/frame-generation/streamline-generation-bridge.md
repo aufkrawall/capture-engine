@@ -65,6 +65,14 @@ between. Session
 `20260821_151924` shows the losing end: `d3d12=1` on the very first poll, i.e. `slInit` had
 already run before CE was even notified the process existed.
 
+**Update (0.1.6654):** the unelevated notification path is no longer that WMI query. It is
+`ce::process_start::Poller`, a native `NtQuerySystemInformation` sweep every 250 ms, so the
+notification component of that stack halves. This page is the counter-example worth remembering
+when reading the claim in `dx12-injection-bootstrap.md` that detection latency has margin to
+spare: it does for a title that takes seconds to reach its first swapchain (Alan Wake 2,
+`20260918_162809`), and it does **not** for a 1.x Streamline title that reaches `slInit` inside
+the notification window. Neither figure generalises to the other case.
+
 Two things follow, and both were fixed:
 
 1. **CE's own startup latency was the part it owned.** In session `20260821_151738` CE

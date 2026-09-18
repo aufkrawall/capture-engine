@@ -126,6 +126,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     strncpy(graphics.dlssDebugOverlay, config.graphics.dlssDebugOverlay.c_str(),
             sizeof(graphics.dlssDebugOverlay) - 1);
     graphics.dlssDebugOverlay[sizeof(graphics.dlssDebugOverlay) - 1] = '\0';
+    graphics.ngxOtaMode = ParseNgxOtaMode(config.graphics.ngxOta);
+    graphics.ngxLogLevel = ParseNgxLogLevel(config.graphics.ngxLog);
     sharedMemory->configVersion.fetch_add(1, std::memory_order_release);
 
     sharedMemory->BeginWriteOverlayConfig();
@@ -197,6 +199,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         std::hash<std::string>{}(graphics.streamlineDllPath) ^
         std::hash<std::string>{}(graphics.dlssDebugOverlay) ^
         (static_cast<uint64_t>(graphics.dlssFGPreset) << 31) ^
+        (static_cast<uint64_t>(graphics.ngxOtaMode) << 32) ^
+        (static_cast<uint64_t>(graphics.ngxLogLevel) << 34) ^
         graphics.ue5CustomCVarOverrideMask;
 
     uint64_t completeSummaryHash = summaryHash;
@@ -213,7 +217,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s systemLatency=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
-            "runtimePaths=%d%d%d%d forceRR=%d ue5RROptimal=%d "
+            "runtimePaths=%d%d%d%d ngxOta=%u ngxLog=%u forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
             "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
             "ue5DlssScreenPercentage=%.2f ue5HdrOutput=%d ue5HdrPeak=%d ue5HdrPaperWhite=%.1f "
@@ -236,6 +240,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.dlssFGPreset, graphics.dlssDebugOverlay,
             graphics.dlssSrDllPath[0] ? 1 : 0, graphics.dlssRrDllPath[0] ? 1 : 0,
             graphics.dlssFgDllPath[0] ? 1 : 0, graphics.streamlineDllPath[0] ? 1 : 0,
+            static_cast<unsigned>(graphics.ngxOtaMode), static_cast<unsigned>(graphics.ngxLogLevel),
             graphics.forceRayReconstruction ? 1 : 0,
             static_cast<int>(graphics.rayReconstructionOptimalSettings),
             graphics.disablePostProcessingEffects ? 1 : 0, graphics.tonemapperSharpen,

@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include "../common/config.h"
+#include "process_start_poll.h"
 #include <wbemidl.h>
 #include <atomic>
 #include <comdef.h>
@@ -144,12 +145,17 @@ private:
   std::atomic<WmiSubscriptionState> wmiSubscriptionState{
       WmiSubscriptionState::kInactive};
   std::atomic<HRESULT> wmiFallbackReason{S_OK};
+  // Unelevated fallback for process-start notification. Owns its own thread, so
+  // it is declared after the state it reports into and stopped before that state
+  // is destroyed.
+  ce::process_start::Poller processStartPoller;
   std::mutex monitoringMutex;
   bool monitoringStarted = false;
   bool monitoringInitialized = false;
 
   void ScanExistingProcesses();
   HRESULT StartPolledWmiFallback(HRESULT reason, const char *failurePhase);
+  void HandlePolledProcessStart(DWORD pid, const std::string &imageName);
   bool RequestWmiFallback(HRESULT reason);
   void ServiceWmiFallbackRequest();
   void EjectWithDeadline(DWORD pid, ULONGLONG deadline);

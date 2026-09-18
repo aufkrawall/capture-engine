@@ -477,6 +477,45 @@ public:
         }
     } dlssState;
 
+    // Runtime-override outcome (Hook -> Host)
+    //
+    // A configured `dlss_*_dll_path` / `streamline_dll_path` can be refused at
+    // runtime for reasons the user cannot see from the host side: the game's
+    // Streamline runtime may already have resolved its core from the driver's
+    // OTA model repository, the configured runtime may speak the other
+    // Streamline generation, or the module may already be mapped from another
+    // file. The hook refuses correctly in all three cases, but until this
+    // publication existed the only evidence was one line in hook_debug.log, so
+    // a user who had configured an override silently ran without it.
+    //
+    // PID-tagged like the FG publication: a split renderer or a stale peer must
+    // never have its refusal attributed to this process's profile.
+    struct RuntimeOverrideStatus {
+        std::atomic<uint64_t> refusal{0};
+
+        void PublishRefusal(uint32_t publisherPid, uint32_t reason) {
+            // First refusal wins. Later ones are consequences of the same
+            // decision (every subsequent sl.* plugin is refused for the core
+            // that was already observed), so overwriting would replace the
+            // cause with its own echo.
+            uint64_t expected = 0;
+            refusal.compare_exchange_strong(expected, ce::owned_publication::Make(publisherPid, reason),
+                                            std::memory_order_release, std::memory_order_relaxed);
+        }
+
+        void Clear() {
+            refusal.store(0, std::memory_order_release);
+        }
+
+        uint32_t ReadReasonForProcess(uint32_t processPid) const {
+            const uint64_t published = refusal.load(std::memory_order_acquire);
+            if (published == 0 || processPid == 0 || ce::owned_publication::OwnerPid(published) != processPid) {
+                return kRuntimeOverrideRefusalNone;
+            }
+            return ce::owned_publication::Payload(published);
+        }
+    } runtimeOverrideStatus;
+
     // Encoder queue monitoring (Host -> Hook)
     // Hook skips frames when throttleCapture is true to let encoder catch up
     std::atomic<bool> throttleCapture{false};    // True = encoder falling behind, skip frames

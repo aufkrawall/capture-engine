@@ -110,6 +110,38 @@ float ParseDlssSharpening(const std::string& val) {
     return f;
 }
 
+// `ngx_ota`: default / off / on. Anything unrecognized falls back to default,
+// because a typo must never silently force an NGX policy the user did not ask
+// for in either direction.
+uint8_t ParseNgxOtaMode(const std::string& val) {
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
+        return kNgxOtaModeDefault;
+    if (_stricmp(normalized.c_str(), "off") == 0 || _stricmp(normalized.c_str(), "0") == 0 ||
+        _stricmp(normalized.c_str(), "false") == 0)
+        return kNgxOtaModeOff;
+    if (_stricmp(normalized.c_str(), "on") == 0 || _stricmp(normalized.c_str(), "1") == 0 ||
+        _stricmp(normalized.c_str(), "true") == 0)
+        return kNgxOtaModeOn;
+    return kNgxOtaModeDefault;
+}
+
+// `ngx_log`: default / off / on / verbose.
+uint8_t ParseNgxLogLevel(const std::string& val) {
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
+        return kNgxLogLevelDefault;
+    if (_stricmp(normalized.c_str(), "off") == 0 || _stricmp(normalized.c_str(), "0") == 0 ||
+        _stricmp(normalized.c_str(), "false") == 0)
+        return kNgxLogLevelOff;
+    if (_stricmp(normalized.c_str(), "on") == 0 || _stricmp(normalized.c_str(), "1") == 0 ||
+        _stricmp(normalized.c_str(), "true") == 0)
+        return kNgxLogLevelOn;
+    if (_stricmp(normalized.c_str(), "verbose") == 0 || _stricmp(normalized.c_str(), "2") == 0)
+        return kNgxLogLevelVerbose;
+    return kNgxLogLevelDefault;
+}
+
 int ParseDlssFGFactor(const std::string& val) {
     if (val.empty() || _stricmp(val.c_str(), "default") == 0)
         return 0;

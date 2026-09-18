@@ -183,6 +183,14 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     }
 
     if (main_g_ProcessCategory != ProcessCategory::InternalTool) {
+      // Loader and process-creation hooks FIRST, ahead of the graphics IAT work
+      // below. Both are the same class of operation (resolve an export in an
+      // already-loaded module, write import slots), but they differ in how fast
+      // their value decays: a module that maps before the loader hook exists can
+      // never be redirected, while the graphics hooks retry and self-heal. The
+      // hook thread repeats this pass for modules that map later.
+      InstallKernel32LoaderHooks("DllMain");
+
       // CRITICAL: IAT patching in DllMain is SAFE because:
       // 1. It only modifies memory in already-loaded modules (no LoadLibrary)
       // 2. It doesn't acquire additional locks beyond the loader lock

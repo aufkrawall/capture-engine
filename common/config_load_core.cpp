@@ -310,6 +310,9 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     config.graphics.streamlineUpgrade =
         reader.GetBoolCompat("DLSS", "streamline_upgrade", "Graphics", "streamline_upgrade", false);
 
+    config.graphics.ngxOta = reader.GetStrCompat("DLSS", "ngx_ota", "Graphics", "ngx_ota", "default");
+    config.graphics.ngxLog = reader.GetStrCompat("DLSS", "ngx_log", "Graphics", "ngx_log", "default");
+
     config.graphics.dlssDebugOverlay =
         reader.GetStrCompat("DLSS", "dlss_debug_overlay", "Graphics", "dlss_debug_overlay", "default");
 

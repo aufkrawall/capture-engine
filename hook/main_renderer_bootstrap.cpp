@@ -1,6 +1,22 @@
 #include "main_internal.h"
 
+#include "common/ngx_ota_policy.h"
+#include "common/ngx_ota_runtime.h"
+
 std::atomic<bool> g_InheritedRendererProcess{false};
+
+// Tells the host that a configured runtime override did not take effect, and
+// why. Best-effort by construction: this is reachable from inside the LdrLoadDll
+// redirect under the loader lock and before IPC exists, so it must never block,
+// allocate or wait. Losing a publication is acceptable - the refusal is also
+// logged - but stalling the loader is not.
+void PublishRuntimeOverrideRefusal(uint32_t reason) {
+  SharedMemoryLayout* sharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+  if (!sharedMemory) {
+    return;
+  }
+  sharedMemory->runtimeOverrideStatus.PublishRefusal(GetCurrentProcessId(), reason);
+}
 
 namespace {
 
@@ -70,6 +86,21 @@ uint64_t PublishedInheritedRendererClaim() {
 }
 
 bool CurrentProcessOwnsProcessLocalRuntimeOverrides() {
+  // ngx_ota=on means the driver's OTA files are the ones that should load, so
+  // CE's own nvngx_*/sl.* path overrides stand down. This is the single gate
+  // both the loader redirect and the runtime preload consult, so answering it
+  // here covers every path by which an override could otherwise still apply.
+  if (ce::ngx_ota::ShouldSuppressConfiguredRuntimeOverrides(ce::ngx_ota::CurrentMode())) {
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true, std::memory_order_acq_rel)) {
+      PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalNgxOtaForcedOn);
+      HookLogImportant(
+          "NGX OTA: ngx_ota=on - standing the configured nvngx_*/sl.* path overrides down so the driver's OTA "
+          "files under %%ProgramData%%\\NVIDIA\\NGX\\models are what actually loads");
+    }
+    return false;
+  }
+
   // One load: this also runs inside the LdrLoadDll redirect hook under the
   // loader lock, so the claim has to answer "whose tree is this?" by itself.
   // No process enumeration is permitted here.

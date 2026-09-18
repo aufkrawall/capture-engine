@@ -1,5 +1,64 @@
 #include "main_internal.h"
 
+#include "common/ngx_ota_runtime.h"
+
+// Installs (or re-installs) CE's kernel32 loader and process-creation hooks
+// across every module currently mapped.
+//
+// This runs twice on purpose. The first pass is in DllMain, before the graphics
+// IAT work, because the loader hook is both the cheapest hook CE installs and
+// the one whose value decays fastest: anything that maps before it exists can
+// never be redirected, and a Streamline/NGX title resolves a large part of its
+// runtime within the first few hundred milliseconds. Measured on session
+// 20260918_162809, CE's DLL was live at 19:53:39.190 but this ran at 19:53:39.520
+// - 330 ms of DXGI/D3D10/D3D11/D3D12 patching stood in between, and every module
+// mapped in that window was unreachable.
+//
+// The second pass is on the hook thread, and it is not redundant: IAT patching
+// only reaches import tables that exist when it runs, so modules mapped since
+// DllMain need the pass repeated. PatchIATAllModules is idempotent per slot, so
+// the overlap costs a re-scan and nothing else.
+//
+// DllMain safety is the same argument the graphics IAT hooks already rely on:
+// this resolves addresses in an already-loaded kernel32 and writes import
+// slots. It loads nothing, so it cannot re-enter the loader.
+void InstallKernel32LoaderHooks(const char *phase) {
+  HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (%s)...",
+          phase ? phase : "unspecified");
+
+  // Temporary plain pointers for IAT hook init, then stored atomically so other
+  // threads never observe a half-written set.
+  LoadLibraryA_t tmpLoadLibraryA = nullptr;
+  LoadLibraryW_t tmpLoadLibraryW = nullptr;
+  LoadLibraryExA_t tmpLoadLibraryExA = nullptr;
+  LoadLibraryExW_t tmpLoadLibraryExW = nullptr;
+  CreateProcessA_t tmpCreateProcessA = nullptr;
+  CreateProcessW_t tmpCreateProcessW = nullptr;
+
+  IATHook::InitializeKernel32Hooks(
+      (void *)&HookedLoadLibraryA, (void **)&tmpLoadLibraryA,
+      (void *)&HookedLoadLibraryW, (void **)&tmpLoadLibraryW,
+      (void *)&HookedLoadLibraryExA, (void **)&tmpLoadLibraryExA,
+      (void *)&HookedLoadLibraryExW, (void **)&tmpLoadLibraryExW,
+      (void *)&HookedCreateProcessA, (void **)&tmpCreateProcessA,
+      (void *)&HookedCreateProcessW, (void **)&tmpCreateProcessW);
+
+  // A repeat pass resolves the same kernel32 exports, so storing them again is
+  // harmless; a failed resolution must not overwrite a good pointer with null.
+  if (tmpLoadLibraryA)
+    OriginalLoadLibraryA.store(tmpLoadLibraryA, std::memory_order_release);
+  if (tmpLoadLibraryW)
+    OriginalLoadLibraryW.store(tmpLoadLibraryW, std::memory_order_release);
+  if (tmpLoadLibraryExA)
+    OriginalLoadLibraryExA.store(tmpLoadLibraryExA, std::memory_order_release);
+  if (tmpLoadLibraryExW)
+    OriginalLoadLibraryExW.store(tmpLoadLibraryExW, std::memory_order_release);
+  if (tmpCreateProcessA)
+    OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
+  if (tmpCreateProcessW)
+    OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
+}
+
 static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   auto p = std::unique_ptr<ChildInjectParams>(
       static_cast<ChildInjectParams *>(param));
@@ -210,6 +269,20 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   }
 
   const char *exePath = lpApp ? lpApp : lpCmd;
+
+  // ngx_ota=off: refuse the NGX updater before it is created. `_nvngx.dll`
+  // treats a failed launch as "use the cache", so this is a supported outcome
+  // rather than a broken call. Reported as ACCESS_DENIED because that is what
+  // it is - CE denied it.
+  if (ce::ngx_ota::ShouldRefuseProcessLaunch(exePath)) {
+    ce::ngx_ota::NoteUpdaterLaunchRefused(exePath);
+    if (lpPI) {
+      *lpPI = PROCESS_INFORMATION{};
+    }
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+  }
+
   bool shouldInject = ShouldInjectChild(exePath);
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
@@ -244,6 +317,17 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
     WideCharToMultiByte(CP_UTF8, 0, lpApp, -1, exePath, MAX_PATH, NULL, NULL);
   else if (lpCmd)
     WideCharToMultiByte(CP_UTF8, 0, lpCmd, -1, exePath, MAX_PATH, NULL, NULL);
+
+  // See HookedCreateProcessA for why a refused NGX updater launch is a
+  // supported outcome rather than a broken call.
+  if (ce::ngx_ota::ShouldRefuseProcessLaunch(exePath)) {
+    ce::ngx_ota::NoteUpdaterLaunchRefused(exePath);
+    if (lpPI) {
+      *lpPI = PROCESS_INFORMATION{};
+    }
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+  }
 
   bool shouldInject = ShouldInjectChild(exePath);
 

@@ -106,6 +106,24 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - `[UE5] internal_anisotropic_filtering=default|off|1x|2x|4x|8x|16x` sets UE5's internal `r.MaxAnisotropy` and
   `r.VT.MaxAnisotropy` CVars to one shared level, independent of the general `[Graphics] anisotropic_filtering`
   sampler override. `off`/`1x` disables anisotropic filtering.
+- `[DLSS] ngx_ota=default|off|on` governs NVIDIA's NGX over-the-air updates for the injected process, and it exists
+  because the driver's OTA store can silently beat the configured `dlss_*_dll_path` / `streamline_dll_path` set.
+  Session `20260918_162809` is the case: Alan Wake 2's Streamline resolved its `sl.common` core to
+  `C:\ProgramData\NVIDIA\NGX\models\sl_common_0\versions\134656\files\1B0_E658703.dll`, so CE correctly refused all
+  six `sl.*` redirects rather than build a version-mixed stack, and the user's `npi\sl` runtime never loaded.
+  - `off` refuses the `nvngx_update.exe` launch **and** clears `eAllowOTA | eLoadDownloadedPlugins` from the game's
+    own `slInit` preferences. Both halves are needed: the refusal stops new downloads, the preference strip stops
+    already-downloaded plugins from being loaded.
+  - `on` is the opposite forced mode: the launch is never refused, an inherited `__NGX_DISABLE_UPDATER` is cleared,
+    and `CurrentProcessOwnsProcessLocalRuntimeOverrides()` returns false so CE's own `nvngx_*`/`sl.*` path overrides
+    stand down and the driver's OTA files are what actually loads.
+  - `default` is completely inert - no refusal, no environment write, no override suppression, no preference edit -
+    and an unrecognized value falls back to it rather than to either forced mode.
+  - Nothing is written to the registry, `nvngx_config.txt`, `nvngx_ota_updates_config.txt` or the model store, and
+    the updater is never invoked with its own (undocumented) CLI flags. All of it is process-local.
+- `[DLSS] ngx_log=default|off|on|verbose` sets NGX's own `__NGX_LOG_LEVEL` and, for anything but `default`, routes
+  NGX's log into the CE session directory via `__NGX_LOG_PATH_OVERRIDE` / `__NGX_ENABLE_OVERRIDE_LOG_PATH`. It is
+  honoured at any CE log level including `none`, because it is an explicit user request rather than CE diagnostics.
 - `[ThirdParty] reshade_dll_path` / `optiscaler_dll_path` / `specialk_dll_path` configure the injected hook's early
   loads of user-supplied ReShade / OptiScaler / Special K DLLs. Each value is a file (loaded verbatim) or a folder
   (the per-bitness default name is appended). They are consumed by the hook directly from `config.ini`, not

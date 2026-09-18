@@ -1,5 +1,64 @@
 # llm-wiki Log
 
+### 2026-09-18 - The NGX OTA store was quietly beating the configured DLSS runtime
+
+The user asked whether CE had collided with NVIDIA's NGX updater after seeing a pile of
+`nvngx_update.exe` processes hang. It had not, and establishing that turned up the more interesting
+problem.
+
+**Not CE's doing.** `nvngx_update.exe` imports only KERNEL32, SHLWAPI, ADVAPI32, SHELL32, ole32,
+bcrypt, Normaliz, CRYPT32 and WS2_32 - no USER32, no vulkan-1, no d3d/dxgi - so none of CE's
+machine-wide surfaces can reach it. CE injected exactly once that session (AlanWake2.exe, PID 17468),
+and its `CreateProcessA/W` hook passes non-whitelisted children through with unmodified flags. The
+pile-up mechanism is NVIDIA's own: `_nvngx.dll` coordinates updater runs through the global named
+object `Global\NGX_Updater_update_0`, so one instance wedged on its network fetch queues the rest.
+
+**What the session did reveal.** Alan Wake 2's Streamline resolved its `sl.common` core to
+`C:\ProgramData\NVIDIA\NGX\models\sl_common_0\versions\134656\files\1B0_E658703.dll` - the driver's
+OTA store - so CE correctly refused all six `sl.*` redirects rather than build a version-mixed stack,
+and the user's configured `npi\sl` runtime never loaded. The only evidence was one line in
+`hook_debug.log`.
+
+**A correction worth keeping.** The first analysis framed the unelevated WMI process-start fallback as
+an injection-latency problem (`age=419.522 ms`). It is not: CE's hooks were fully installed at
+19:53:39.98 and the game did not create its real D3D12 swapchain until 19:53:44.273, ~4.95 s later.
+The `sl.interposer` that did beat CE is a **static import of the game exe**, resolved during process
+initialization - no attach-to-running-process injection can beat that at any detection speed. The WMI
+fallback's real cost is machine-wide load, not lateness.
+
+**Shipped in 0.1.6654 (ABI 59):**
+
+- `[DLSS] ngx_ota=default|off|on`. `off` refuses the `nvngx_update.exe` launch *and* clears
+  `eAllowOTA|eLoadDownloadedPlugins` from the game's own `slInit` preferences (the refusal stops new
+  downloads; the preference strip stops already-downloaded plugins loading). `on` forces the
+  opposite and stands CE's own `nvngx_*`/`sl.*` overrides down so the driver's OTA files are what
+  loads. `default` is inert, and an unrecognized value falls back to it rather than to either forced
+  mode. Nothing touches the registry, NVIDIA's config files, or the model store.
+- `[DLSS] ngx_log=default|off|on|verbose`, routing NGX's own log into the CE session directory via
+  `__NGX_LOG_LEVEL` / `__NGX_LOG_PATH_OVERRIDE`. Honoured at any CE log level, `none` included.
+- The kernel32 loader/CreateProcess hooks now install in `DllMain` before the graphics IAT work,
+  closing the 330 ms window in which mapped modules were unredirectable.
+- A refused runtime override is published hook -> host (`SharedMemoryLayout::runtimeOverrideStatus`,
+  PID-tagged, first-refusal-wins) and surfaces as a tray balloon plus a host warning naming the
+  reason, instead of living in `hook_debug.log`.
+- The unelevated process-start fallback is `ce::process_start::Poller`, one
+  `NtQuerySystemInformation` sweep every 250 ms, replacing the WMI `__InstanceCreationEvent WITHIN
+  0.5` query that made WmiPrvSE materialise every process instance twice a second.
+
+**Safety of the `slInit` route.** Three guards, because reaching into a game's argument struct is
+the risky part: 2.x only (1.x has a different signature and Preferences layout), `BaseStructure`
+GUID + version identity checked against the SDK header CE compiled with, and a modified **copy** is
+forwarded - the game's own memory is never written. Any guard failing means the call is forwarded
+exactly as it arrived.
+
+**Explicitly rejected:** writing NVIDIA's registry, `nvngx_config.txt` or
+`nvngx_ota_updates_config.txt`, and driving `nvngx_update.exe` with its undocumented CLI flags
+(`-forced_update`, `-force_add_update`, `-bootstrap`, ...). Machine-wide, persistent, affects other
+applications - and the in-process CreateProcess route gets the same outcome deterministically.
+
+**Unvalidated on hardware:** all of it. No game run since the change.
+
+
 ### 2026-09-16 - One capture, two files: combined HDR + SDR screenshots, concurrently
 
 The user asked for a screenshot option that saves an HDR *and* an SDR variant at once, in both the

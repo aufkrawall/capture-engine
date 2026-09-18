@@ -11,6 +11,7 @@
 #include <string>
 
 #include "../captureengine/injection_policy.h"
+#include "../captureengine/process_start_poll.h"
 #include "../hook/common/dx12_overlay_policy.h"
 #include "../hook/common/dxgi_factory_policy.h"
 #include "../hook/common/dxgi_shared.h"

@@ -101,17 +101,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             `full` 3 -> 4. An older hook would read 3 (high) as full and a
 //             newer hook would read a pre-58 host's 3 (full) as high, hence the
 //             bump.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 58;
+// Version 59: SharedGraphicsConfig gained the NGX OTA policy byte and the NGX
+//             log level byte, and SharedMemoryLayout gained the hook -> host
+//             runtime-override refusal publication. Both are appended, so an
+//             older peer would read neither field and a newer peer would read
+//             an older host's absent bytes as garbage past the mapping.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 59;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_58_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_59_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_58";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_59";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -593,6 +598,18 @@ struct SharedGraphicsConfig {
     // are resolved after all named presets, so they have final precedence.
     uint64_t ue5CustomCVarOverrideMask;
     uint32_t ue5CustomCVarOverrideValues[UE5_CVAR_OVERRIDE_CAPACITY];
+
+    // NVIDIA NGX over-the-air update policy for this process. `_nvngx.dll`
+    // launches `nvngx_update.exe` itself, through the very kernel32
+    // CreateProcess imports CE already patches, and it also arbitrates its
+    // Streamline plugin set against the driver's OTA model repository under
+    // %ProgramData%\NVIDIA\NGX\models. Both behaviours are what this byte
+    // governs; the values live in ngx_policy_and_override_status.h and the
+    // policy that acts on them in hook/common/ngx_ota_policy.h.
+    uint8_t ngxOtaMode;
+    // NGX's own diagnostic log level, routed into the CE session directory.
+    // See kNgxLog* in ngx_policy_and_override_status.h.
+    uint8_t ngxLogLevel;
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -670,7 +687,16 @@ static_assert(offsetof(SharedGraphicsConfig, hdrColorGamut) ==
 static_assert(offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideValues) ==
                   offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideMask) + sizeof(uint64_t),
               "UE5 custom CVar values must immediately follow their selection mask");
-static_assert(sizeof(SharedGraphicsConfig) == 1744,
+static_assert(offsetof(SharedGraphicsConfig, ngxOtaMode) ==
+                  offsetof(SharedGraphicsConfig, ue5CustomCVarOverrideValues) +
+                      sizeof(uint32_t) * UE5_CVAR_OVERRIDE_CAPACITY,
+              "the NGX policy bytes must remain appended to SharedGraphicsConfig");
+static_assert(offsetof(SharedGraphicsConfig, ngxLogLevel) == offsetof(SharedGraphicsConfig, ngxOtaMode) + 1,
+              "the NGX log level must share the NGX policy byte pair");
+// 1744 + the two policy bytes, rounded back up to the struct's 8-byte
+// alignment. The six bytes of tail padding are where the next appended policy
+// byte goes without growing the mapping again.
+static_assert(sizeof(SharedGraphicsConfig) == 1752,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 
 enum CaptureRuntimeFlags : uint32_t {

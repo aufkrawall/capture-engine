@@ -247,27 +247,44 @@ void InjectionManager::Update() {
     }
 }
 
-// WMI Implementation
-HRESULT InjectionManager::StartPolledWmiFallback(HRESULT reason, const char* failurePhase) {
-    if (!pSvc || !pStubSink) {
-        return E_POINTER;
+void InjectionManager::HandlePolledProcessStart(DWORD pid, const std::string& imageName) {
+    if (!IsWhitelisted(imageName)) {
+        return;
     }
-    const BstrGuard queryLanguage(L"WQL");
-    const BstrGuard fallbackQuery(ce::injection_policy::kPolledProcessStartFallbackQuery);
-    if (!queryLanguage.valid() || !fallbackQuery.valid()) {
-        return E_OUTOFMEMORY;
-    }
+    LogInfo("[ProcessPoll] Process start received for %s (PID: %lu)", imageName.c_str(),
+            static_cast<unsigned long>(pid));
+    LaunchDelayedInjectionThread(pid, imageName, "ProcessPoll");
+}
 
+// The unelevated fallback.
+//
+// `Win32_ProcessStartTrace` needs Administrators membership, so an ordinary run
+// gets WBEM_E_ACCESS_DENIED and lands here. The fallback used to be a WMI
+// intrinsic-event query (`__InstanceCreationEvent WITHIN 0.5` over
+// Win32_Process), which is not a poll inside CE at all: it makes the WMI service
+// enumerate and fully materialise every process instance twice a second for the
+// life of the session. Session 20260918_162809 ran four hours that way.
+//
+// CE now does the same job against the native call the WMI provider is built on,
+// reading only the two fields it needs. The notification path beyond this point
+// is unchanged - the same whitelist test and the same delayed-injection thread.
+HRESULT InjectionManager::StartPolledWmiFallback(HRESULT reason, const char* failurePhase) {
     LogWarn(
         "[Inject] Event-driven Win32_ProcessStartTrace subscription failed %s (hr=0x%08lX); falling back to the "
-        "0.5-second intrinsic process poll",
+        "native process-start poll (CE is not elevated, which is the usual cause)",
         failurePhase ? failurePhase : "", static_cast<unsigned long>(reason));
-    const HRESULT fallbackHr =
-        pSvc->ExecNotificationQueryAsync(queryLanguage, fallbackQuery, WBEM_FLAG_SEND_STATUS, NULL, pStubSink);
-    if (SUCCEEDED(fallbackHr)) {
-        LogInfo("[Inject] WMI intrinsic process-poll fallback is active");
+
+    if (processStartPoller.IsRunning()) {
+        return S_OK;
     }
-    return fallbackHr;
+    const bool started = processStartPoller.Start(
+        [this](DWORD pid, const std::string& imageName) { HandlePolledProcessStart(pid, imageName); },
+        ce::process_start::kDefaultPollIntervalMs);
+    if (!started) {
+        LogError("[Inject] Native process-start poll could not start; no process-start notifications are active");
+        return E_FAIL;
+    }
+    return S_OK;
 }
 
 bool InjectionManager::RequestWmiFallback(HRESULT reason) {
@@ -529,6 +546,11 @@ bool InjectionManager::InitializeWMI() {
 }
 
 void InjectionManager::ShutdownWMI() {
+    // Stop the native poller before the WMI teardown. Its callback reaches back
+    // into this manager, so it has to be joined while the manager is still whole
+    // - the same reason the WMI sink is drained rather than merely cancelled.
+    processStartPoller.Stop();
+
     // Close the callback lifetime gate first. This rejects callbacks that have
     // not entered yet and synchronously drains callbacks already using the raw
     // manager pointer; CancelAsyncCall itself does not wait for client callback

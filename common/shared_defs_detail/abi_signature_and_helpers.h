@@ -53,6 +53,9 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, dlssState));
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::DLSSState));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::DLSSState, fgPublication));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, runtimeOverrideStatus));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, ngxOtaMode));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, ngxLogLevel));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));

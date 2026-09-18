@@ -341,6 +341,7 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread);
 
 bool ShouldInjectChild(const char *exePath);
 
+void InstallKernel32LoaderHooks(const char *phase);
 BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd, LPSECURITY_ATTRIBUTES lpPA, LPSECURITY_ATTRIBUTES lpTA, BOOL bInherit, DWORD dwFlags, LPVOID lpEnv, LPCSTR lpDir, LPSTARTUPINFOA lpSI, LPPROCESS_INFORMATION lpPI);
 
 BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd, LPSECURITY_ATTRIBUTES lpPA, LPSECURITY_ATTRIBUTES lpTA, BOOL bInherit, DWORD dwFlags, LPVOID lpEnv, LPCWSTR lpDir, LPSTARTUPINFOW lpSI, LPPROCESS_INFORMATION lpPI);
@@ -520,6 +521,12 @@ void InitializeInheritedRendererBootstrapSignal();
 void CompleteInheritedRendererBootstrap(bool success);
 void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory);
 bool CurrentProcessOwnsProcessLocalRuntimeOverrides();
+
+// Publishes why a configured runtime override was refused, so the host can tell
+// the user their configuration did not apply instead of leaving the evidence in
+// hook_debug.log. Reasons are the kRuntimeOverrideRefusal* constants. First
+// refusal wins; later ones are echoes of the same decision.
+void PublishRuntimeOverrideRefusal(uint32_t reason);
 
 // The packed renderer/client claim behind that answer. Diagnostics only: a
 // suppressed runtime override is invisible in a session log unless the claim

@@ -61,6 +61,8 @@ uint32_t ParseDlssRRPreset(const std::string& val);
 uint32_t ParseDlssFGPreset(const std::string& val);
 
 float ParseDlssSharpening(const std::string& val);
+uint8_t ParseNgxOtaMode(const std::string& val);
+uint8_t ParseNgxLogLevel(const std::string& val);
 
 int ParseDlssFGFactor(const std::string& val);
 

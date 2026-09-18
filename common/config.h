@@ -320,6 +320,18 @@ struct GraphicsConfig {
     // anti-cheat warning. See hook/apis/streamline_bridge_policy.h.
     bool streamlineUpgrade = false;
 
+    // NVIDIA NGX over-the-air updates. "default" leaves every OTA decision to
+    // the driver. "off" refuses the nvngx_update.exe launch, publishes
+    // __NGX_DISABLE_UPDATER, and clears Streamline's own OTA preference bits.
+    // "on" forces the opposite: the launch is never refused, an inherited
+    // __NGX_DISABLE_UPDATER is cleared, and CE's own nvngx_*/sl.* path
+    // overrides stand down so the driver's OTA files are what loads.
+    std::string ngxOta;
+    // NGX's own diagnostic log: "default" (untouched), "off", "on", "verbose".
+    // Anything but "default" also routes NGX's log into the CE session
+    // directory through __NGX_LOG_PATH_OVERRIDE.
+    std::string ngxLog;
+
     // Debug
     std::string dlssDebugOverlay;  // "default", "on", "off"
 };
@@ -746,5 +758,7 @@ uint32_t ParseDlssPreset(const std::string& val);
 uint32_t ParseDlssRRPreset(const std::string& val);
 uint32_t ParseDlssFGPreset(const std::string& val);
 float ParseDlssSharpening(const std::string& val);
+uint8_t ParseNgxOtaMode(const std::string& val);
+uint8_t ParseNgxLogLevel(const std::string& val);
 int ParseDlssFGFactor(const std::string& val);
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"

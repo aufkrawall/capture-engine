@@ -3,8 +3,31 @@
 #include "common/pacing_trace.h"
 #include "common/custom_overlay_dx12.h"
 #include "common/hook_thread_stage_cost.h"
+#include "common/ngx_ota_runtime.h"
 
 namespace {
+
+// Resolves the session log directory the inject host published, falling back to
+// the hook DLL's own logs folder. Kept separate from the trace-logging block
+// below because `ngx_log` is an explicit user request: it must be honoured at
+// any CE log level, including none.
+std::string ResolveSessionLogDirectory(const std::string& dllDirectory) {
+  std::string sessionLogsDir;
+  HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+  if (hDisc) {
+    DiscoveryInfo* pDisc =
+        (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {
+      sessionLogsDir = pDisc->logsPath;
+    }
+    if (pDisc) UnmapViewOfFile(pDisc);
+    CloseHandle(hDisc);
+  }
+  if (sessionLogsDir.empty() && !dllDirectory.empty()) {
+    sessionLogsDir = dllDirectory + "\\logs";
+  }
+  return sessionLogsDir;
+}
 
 void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
   OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
@@ -61,6 +84,23 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     LoadConfig(configPath, *g_pLocalConfig);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
+    // Apply the NGX OTA / NGX log policy before anything can pull in the NGX
+    // core. `_nvngx.dll` reads its environment once, so the only useful moment
+    // for those variables is the first one after a config exists. The
+    // CreateProcess refusal behind the same policy has no such ordering
+    // requirement, which is why it - not this - is the deterministic half.
+    {
+      const uint8_t otaMode = ParseNgxOtaMode(g_pLocalConfig->graphics.ngxOta);
+      const uint8_t logLevel = ParseNgxLogLevel(g_pLocalConfig->graphics.ngxLog);
+      std::string ngxLogDir;
+      if (logLevel != kNgxLogLevelDefault && logLevel != kNgxLogLevelOff) {
+        ngxLogDir = ResolveSessionLogDirectory(dir);
+        if (!ngxLogDir.empty()) {
+          CreateDirectoryA(ngxLogDir.c_str(), nullptr);
+        }
+      }
+      ce::ngx_ota::PublishPolicy(otaMode, logLevel, ngxLogDir.c_str());
+    }
     // NVIDIA's Vulkan WSI can end at an internal DXGI flip swapchain. For the
     // explicit FIFO mode, register a narrow real-factory path that changes only
     // final Present synchronization arguments. This must happen after config is
@@ -304,35 +344,15 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     return 0;
   }
 
-  // Use IAT patching for kernel32/advapi32 hooks
+  // Use IAT patching for kernel32/advapi32 hooks.
+  //
+  // DllMain already ran this once (see InstallKernel32LoaderHooks). Repeating it
+  // here is the point rather than waste: PatchIATAllModules is idempotent per
+  // import slot, and everything the process mapped between DllMain and now -
+  // which for a Streamline/NGX title is most of the interesting set - has an
+  // import table that did not exist during the first pass.
   EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
-
-  // Install LoadLibrary and CreateProcess hooks via IAT patching
-  // Use temporary plain pointers for IAT hook init, then store atomically
-  HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching...");
-
-  LoadLibraryA_t tmpLoadLibraryA = nullptr;
-  LoadLibraryW_t tmpLoadLibraryW = nullptr;
-  LoadLibraryExA_t tmpLoadLibraryExA = nullptr;
-  LoadLibraryExW_t tmpLoadLibraryExW = nullptr;
-  CreateProcessA_t tmpCreateProcessA = nullptr;
-  CreateProcessW_t tmpCreateProcessW = nullptr;
-
-  IATHook::InitializeKernel32Hooks(
-      (void *)&HookedLoadLibraryA, (void **)&tmpLoadLibraryA,
-      (void *)&HookedLoadLibraryW, (void **)&tmpLoadLibraryW,
-      (void *)&HookedLoadLibraryExA, (void **)&tmpLoadLibraryExA,
-      (void *)&HookedLoadLibraryExW, (void **)&tmpLoadLibraryExW,
-      (void *)&HookedCreateProcessA, (void **)&tmpCreateProcessA,
-      (void *)&HookedCreateProcessW, (void **)&tmpCreateProcessW);
-
-  // Store atomically so other threads see consistent values
-  OriginalLoadLibraryA.store(tmpLoadLibraryA, std::memory_order_release);
-  OriginalLoadLibraryW.store(tmpLoadLibraryW, std::memory_order_release);
-  OriginalLoadLibraryExA.store(tmpLoadLibraryExA, std::memory_order_release);
-  OriginalLoadLibraryExW.store(tmpLoadLibraryExW, std::memory_order_release);
-  OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
-  OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
+  InstallKernel32LoaderHooks("hook thread");
 
   FFXHook::RegisterDynamicHooks();
   RemixHook::RegisterDynamicHooks();

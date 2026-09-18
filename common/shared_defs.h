@@ -7,6 +7,7 @@
 // declaration order exactly. Do not reorder the includes.
 
 #include "shared_defs_detail/abi_constants_and_config.h"
+#include "shared_defs_detail/ngx_policy_and_override_status.h"
 #include "shared_defs_detail/capture_state.h"
 #include "shared_defs_detail/frame_ring.h"
 #include "shared_defs_detail/shared_memory_layout.h"

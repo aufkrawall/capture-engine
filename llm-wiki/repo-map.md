@@ -79,8 +79,10 @@ anchors that predate the split are approximate.
   - Injection: `injection.cpp`, `injection_manager.cpp`, `injection_wmi_events.cpp`,
     `injection_inject.cpp`,
     `injection_security.cpp`, `inject_main.cpp`, `inject_config.cpp`,
-    `inject_config_publication.cpp`, `inject_lifecycle.cpp`; the WMI unit owns both event-driven
-    ProcessStartTrace and intrinsic-poll event parsing/callback lifetime.
+    `inject_config_publication.cpp`, `inject_lifecycle.cpp`, `process_start_poll.{h,cpp}`; the WMI
+    unit owns the event-driven ProcessStartTrace subscription and callback lifetime, while
+    `process_start_poll` is the unelevated fallback (one `NtQuerySystemInformation` sweep per
+    250 ms, feeding the same whitelist/delayed-injection path). There is no WMI polling query.
   - Recording/media orchestration: `media_main_encoder_0*.cpp` (session, loop start,
     WGC target, select, startup, emit, encode, health),
     `media_main_start*.cpp` (MediaProcessSession: Run/Init entry, loop, WGC target

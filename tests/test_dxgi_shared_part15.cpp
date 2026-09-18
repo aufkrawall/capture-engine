@@ -1,12 +1,30 @@
 #include "test_dxgi_shared_shared.h"
 
-TEST(DXGISharedTest, ProcessDiscoveryPrefersEventDrivenStartTraceAndRetainsPolledFallback) {
+TEST(DXGISharedTest, ProcessDiscoveryUsesEventDrivenStartTraceAndNoWmiPollingQuery) {
     const std::wstring realtimeQuery = ce::injection_policy::kRealtimeProcessStartQuery;
-    const std::wstring fallbackQuery = ce::injection_policy::kPolledProcessStartFallbackQuery;
 
     EXPECT_NE(realtimeQuery.find(L"Win32_ProcessStartTrace"), std::wstring::npos);
+    // A `WITHIN` clause is what turns a WMI subscription into a service-side
+    // poll over every Win32_Process instance. CE's only query must never carry
+    // one; the unelevated path is the native poller instead.
     EXPECT_EQ(realtimeQuery.find(L"WITHIN"), std::wstring::npos);
-    EXPECT_NE(fallbackQuery.find(L"__InstanceCreationEvent WITHIN 0.5"), std::wstring::npos);
+    EXPECT_EQ(realtimeQuery.find(L"__InstanceCreationEvent"), std::wstring::npos);
+}
+
+// The poll interval is a system-wide sweep, so its bounds are policy rather than
+// a tuning detail: too fast is a permanent background cost for no gain (a real
+// title leaves seconds of margin before its first swapchain), and too slow would
+// eventually matter.
+TEST(DXGISharedTest, NativeProcessStartPollIntervalStaysWithinItsBounds) {
+    using namespace ce::process_start;
+    EXPECT_GE(kDefaultPollIntervalMs, kMinPollIntervalMs);
+    EXPECT_LE(kDefaultPollIntervalMs, kMaxPollIntervalMs);
+    EXPECT_EQ(ClampPollIntervalMs(0u), kMinPollIntervalMs);
+    EXPECT_EQ(ClampPollIntervalMs(kMaxPollIntervalMs + 1u), kMaxPollIntervalMs);
+    EXPECT_EQ(ClampPollIntervalMs(kDefaultPollIntervalMs), kDefaultPollIntervalMs);
+    // Faster than the WMI fallback it replaces, which is free here because the
+    // sweep no longer materialises a Win32_Process instance per process.
+    EXPECT_LT(kDefaultPollIntervalMs, 500u);
 }
 
 // The app-callback deep draw and no-callback final-batch draw key renderer state by the presented FFX

@@ -53,14 +53,45 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   then calls `StartMonitoring`; a discovery callback can therefore never race ahead of target
   publication. The direct suspended-launch helper intentionally constructs a manager without
   monitoring because it invokes `InjectEarly` for one already-known PID.
-- **Process-start tracing is opportunistic, while discovery correctness retains a polling
-  fallback.** WMI first requests `Win32_ProcessStartTrace`, which has no intrinsic `WITHIN` sampling
-  interval. This account receives `WBEM_E_ACCESS_DENIED` (`0x80041003`), so the same sink then uses
-  `__InstanceCreationEvent WITHIN 0.5` and immediately scans to cover the handoff interval. An
-  asynchronous trace failure only queues that transition; `Update` performs the WMI call because
-  a sink callback must not call back into WMI. One atomic subscription state makes synchronous
-  failure, late completion, shutdown, and fallback activation mutually exclusive. Duplicate
-  scan/event notifications are coalesced per PID, and event logs include source plus process age.
+- **Process-start tracing is opportunistic; the unelevated fallback is native, not WMI.** WMI first
+  requests `Win32_ProcessStartTrace`, which is event-driven and has no intrinsic `WITHIN` sampling
+  interval, but subscribing requires Administrators membership. An ordinary CE run receives
+  `WBEM_E_ACCESS_DENIED` (`0x80041003`) and falls back. An asynchronous trace failure only queues
+  that transition; `Update` performs the handoff because a sink callback must not call back into
+  WMI. One atomic subscription state makes synchronous failure, late completion, shutdown, and
+  fallback activation mutually exclusive. Duplicate scan/event notifications are coalesced per PID.
+  - Until 0.1.6654 the fallback was `__InstanceCreationEvent WITHIN 0.5 WHERE TargetInstance ISA
+    'Win32_Process'`. That is **not** a poll inside CE: it asks the WMI service to enumerate and
+    fully materialise every `Win32_Process` instance twice a second, with all the per-instance
+    properties (command line, owner, paths) CE never reads, and diff them. Session
+    `20260918_162809` ran that way for about four hours.
+  - It is now `ce::process_start::Poller` (`captureengine/process_start_poll.{h,cpp}`): one
+    `NtQuerySystemInformation(SystemProcessInformation)` sweep every 250 ms inside CE's own process,
+    taking only PID and image name, feeding the same `IsWhitelisted` + `LaunchDelayedInjectionThread`
+    path under the `ProcessPoll` source tag. The first sweep only establishes the baseline; the
+    existing-process scan owns everything alive at startup. The known-PID set is replaced rather
+    than merged each sweep, which bounds it and correctly re-reports a recycled PID.
+  - **This was never an injection-latency fix, and the wiki should not claim it was.** In
+    `20260918_162809` the WMI fallback notified CE 419 ms after Alan Wake 2 started, and it cost
+    nothing: CE's hooks were fully installed by 19:53:39.98 and the game did not create its real
+    D3D12 swapchain until 19:53:44.273, ~4.95 s later. The reason to stop asking WMI is the
+    machine-wide load, not lateness. **That margin does not generalise:**
+    `frame-generation/streamline-generation-bridge.md` documents the opposite case, a 1.x
+    Streamline title that reached `slInit` inside the notification window
+    (`20260821_151924`, `d3d12=1` on the very first poll). Detection latency is slack for a
+    game that takes seconds to reach its first swapchain and decisive for one that does not. `kMinPollIntervalMs`/`kMaxPollIntervalMs` bound the cadence and
+    `tests/test_dxgi_shared_part15.cpp` pins both that and the absence of any `WITHIN` query.
+- **The kernel32 loader/process-creation hooks are installed in `DllMain`, before the graphics IAT
+  work.** `InstallKernel32LoaderHooks` (`hook/main_injection.cpp`) runs twice: once from `DllMain`
+  ahead of `InitializeWrapperHooks`, and once on the hook thread. The second pass is not redundant -
+  IAT patching only reaches import tables that exist when it runs, so modules mapped in between need
+  it repeated, and `PatchIATAllModules` is idempotent per slot. The first pass is the one that
+  matters for coverage: the loader hook is the cheapest hook CE installs and the one whose value
+  decays fastest, because anything mapped before it exists can never be redirected. In
+  `20260918_162809` CE's DLL was live at 19:53:39.190 but the loader hooks did not go in until
+  19:53:39.520 - 330 ms of DXGI/D3D10/D3D11/D3D12 patching stood in between. DllMain safety is the
+  same argument the graphics IAT hooks already rely on: it resolves addresses in an already-loaded
+  kernel32 and writes import slots, loading nothing, so it cannot re-enter the loader.
 - **Vulkan late injection depends entirely on the implicit-layer registration being resident, because it cannot be repaired in-process.** The Vulkan loader composes a process's layer chain exactly once, inside `vkCreateInstance`, from `SOFTWARE\Khronos\Vulkan\ImplicitLayers` as it reads at that moment. CE's whole Vulkan present/overlay path lives in `VK_LAYER_CE_overlay.dll`, not in the injected hook DLL, so a title that started without the layer in its chain can never gain an overlay later no matter how the hook is injected. `captureengine/main_vulkan_residency.h` therefore registers at controller startup and **never unregisters**; there is deliberately no destructor, no `Unregister()`, and no `ApplyRegistrationPlan(plan, false)` on any controller teardown path (`tests/test_vulkan_layer_registration.cpp` asserts all of that). Until 0.1.6156 this was an `ScopedVulkanRegistration` RAII that unregistered on exit, which made Vulkan late injection structurally impossible: session `logs/20260818_224257` (Strange Brigade Vulkan started before CE) contains no `vulkan_layer*.log` at all because the layer DLL was never loaded, `vulkanLayerActive` never got set, and the hook fell through to the D3D path with no overlay.
 - **Discovery compatibility is judged on the compiled layout, never on build identity.** Residency makes the Vulkan layer the one CE component that is routinely a *different build* from the host that later wakes it, so `ValidateDiscoveryInfo` checks `DiscoveryInfo::abiSignature == SHARED_MEMORY_ABI_SIGNATURE`; `buildNumber` is diagnostics only. Until 0.1.6162 it required exact build equality, which stranded every resident layer as soon as CaptureEngine was rebuilt or updated while a Vulkan title was running: the layer could not read the whitelist, could not reach the host, and could not even resolve `logsPath` to say why, so the session contained no `vulkan_layer*.log` at all and looked identical to "the layer was never loaded" (session `logs/20260818_231619`, reproduced deliberately with host 6157 against a resident 6156 layer). The first 16 bytes of `DiscoveryInfo` (`injectPid`/`magic`/`buildNumber`/`abiSignature`) are a cross-build contract and their offsets are asserted; nothing past them may be parsed until the signature matches. `ComputeSharedMemoryAbiSignature` therefore also covers `sizeof(DiscoveryInfo)` and the `processWhitelist`/`logsPath` offsets. **Any semantic change to what these shared fields mean must bump `SHARED_MEMORY_VERSION`** — which renames every mapping and event — because the build number no longer keeps incompatible builds apart.
 - **The selected profile target is published before injection.** `DiscoveryInfo::profileTargetPid` is distinct from hook-owned `sourcePid`: the former identifies the exact PID whose profile the host selected in the pre-injection callback, while the latter proves remote `LoadLibrary` completed and the hook connected. A non-whitelisted direct child Vulkan renderer may inherit only when its parent PID equals one of those published identities and the parent executable still exactly matches the discovery whitelist. This closes split-renderer startup without a polling delay or executable-specific bridge rule. The field was added with shared-memory version 46 because the discovery layout is part of the compiled ABI.

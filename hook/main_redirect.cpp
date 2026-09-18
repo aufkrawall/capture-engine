@@ -44,6 +44,7 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
     *loadedPathForReuse = loadedPath[0] ? loadedPath : baseName;
   }
 
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalDuplicateModule);
   static std::atomic<uint32_t> refusalLogs{0};
   const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
   if (logIndex < 8 || (logIndex % 1000) == 0) {
@@ -159,6 +160,7 @@ bool StreamlineOverrideRedirectAllowed(const char *targetDllName) {
           true, g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire))) {
     return true;
   }
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalForeignStreamlineCore);
   static std::atomic<uint32_t> refusalLogs{0};
   const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
   if (logIndex < 8 || (logIndex % 1000) == 0) {
@@ -191,6 +193,7 @@ bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const cha
   if (ce::streamline_api::MayRedirectStreamlineModuleAcrossGenerations(process, replacement)) {
     return true;
   }
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalGenerationMismatch);
   static std::atomic<uint32_t> mismatchLogs{0};
   const uint32_t logIndex = mismatchLogs.fetch_add(1, std::memory_order_relaxed);
   if (logIndex < 8 || (logIndex % 1000) == 0) {
@@ -257,6 +260,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
     return;  // CE's own override copy is the core: the override owns the stack.
   }
   if (!g_ForeignStreamlineCoreObserved.exchange(true, std::memory_order_acq_rel)) {
+    PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalForeignStreamlineCore);
     HookLogImportant(
         "Streamline override disabled: the runtime resolved its core (%s) to %s, not to the configured override "
         "%s. Redirecting only the remaining plugins would build a version-mixed Streamline stack, so every sl.* "
