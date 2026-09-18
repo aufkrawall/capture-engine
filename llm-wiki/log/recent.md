@@ -131,7 +131,49 @@ exited within a minute. The user's original "running and partially hanging" desc
 burst at game start that lingers visibly and then clears, so the earlier worry that CE's
 CreateProcess refusal might deadlock NGX teardown has no evidence behind it.
 
-**Unvalidated on hardware:** `ngx_ota=on`, the early-mode resolve, and the slInit diagnostics.
+**Third hardware run (`20260918_224737`, 0.1.6667).**
+
+- **The early-mode resolve works.** `NGX OTA: resolved ngx_ota=off from the injector's published
+  config before the hook thread's own config load` at 22:47:47.272, first refusal at 22:47:47.380 -
+  290 ms *before* the policy publishes at 22:47:47.670. The window that let nine updaters through
+  is closed.
+- **`ngx_log` works**, again: NGX's own logs land in the session directory.
+- **The slInit diagnostic paid for itself immediately**, reporting in one line what had taken a
+  session to guess at:
+
+```
+NGX OTA: the OTA core won with ngx_ota=off - slInit route installed=1, slInit seen through CE=0.
+The route was installed but the call never came through it
+```
+
+**And that verdict was then misread - worth recording, because the wrong conclusion was
+"unfixable".** The first reading was that the game reaches `slInit` before CE exists in the process,
+reasoning from `sl.interposer.dll` being a static import of the exe. That reasoning conflates two
+different events: the static import decides when the **module** is mapped (during process
+initialisation), while `slInit` is a function the game calls from its **own startup code**, well
+after the entry point. The timestamps settle it:
+
+| Time | Event |
+|---|---|
+| 22:47:47.137 | CE's `DllMain` - CE is in the process |
+| 22:47:47.138 | loader/CreateProcess hooks installed |
+| 22:47:47.688 | slInit route installed, from the hook thread's config load |
+| 22:47:47.909 | foreign `sl.common` core observed |
+
+CE was present 551 ms before the route went in, and the game's `slInit` landed in that gap - the
+same class of mistake as the `CurrentMode` one directly above it, one layer up. The route now
+installs from `DllMain` beside the kernel32 loader hooks, which it can do because it needs nothing
+else: the generation comes from the mapped interposer's file version and the mode from the
+injector's published shared memory, both reads, nothing loaded.
+
+`tests/test_ngx_ota_policy.cpp` pins the call site (DllMain, after the loader hooks, before the
+graphics IAT work). The position has been wrong twice for two different reasons and the symptom was
+silence both times, so it is asserted rather than trusted.
+
+**Unvalidated on hardware:** `ngx_ota=on`, and the DllMain-time slInit install. The next run's
+verdict line decides the latter: `seen through CE=1` means it works, and an unchanged
+`installed=1, seen=0` would finally make "unreachable in-process" an earned conclusion rather than
+an assumed one.
 
 
 ### 2026-09-16 - One capture, two files: combined HDR + SDR screenshots, concurrently

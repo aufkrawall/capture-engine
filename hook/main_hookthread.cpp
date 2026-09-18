@@ -101,12 +101,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         }
       }
       ce::ngx_ota::PublishPolicy(otaMode, logLevel, ngxLogDir.c_str());
-      // Route the game's slInit as early as the policy exists. The window is
-      // narrow and one-shot: in session 20260918_221342 the policy published at
-      // 22:13:53.803 and the runtime had already resolved sl.common - which
-      // loads from INSIDE slInit - by 22:13:53.952. The previous position, off
-      // CE's hook-time generation classification, ran at 22:13:54.785 and never
-      // once got to act. Missing it is inert, not harmful.
+      // Retry only. DllMain is where this actually installs; reaching it here
+      // means the interposer was not mapped that early, which is the case for a
+      // title that loads Streamline on demand rather than importing it.
+      //
+      // Installing it HERE was measurably too late: session 20260918_224737 has
+      // CE's DllMain at 22:47:47.137 and this line at 22:47:47.688, with the
+      // game's slInit landing in between - "installed=1, seen through CE=0".
       ce::streamline_ota::InstallSlInitRouteIfConfigured();
     }
     // NVIDIA's Vulkan WSI can end at an internal DXGI flip swapchain. For the

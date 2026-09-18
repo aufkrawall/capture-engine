@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include "apis/streamline_ota_preferences.h"
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
   if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
@@ -190,6 +192,26 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // never be redirected, while the graphics hooks retry and self-heal. The
       // hook thread repeats this pass for modules that map later.
       InstallKernel32LoaderHooks("DllMain");
+
+      // The ngx_ota=off slInit route belongs here for the same reason, and it
+      // was measurably too late anywhere else. Session 20260918_224737: CE's
+      // DllMain ran at 22:47:47.137, the route went in from the hook thread's
+      // config load at 22:47:47.688, and the verdict read
+      // "slInit route installed=1, slInit seen through CE=0" - the game's call
+      // landed in that 551 ms gap.
+      //
+      // Note that `sl.interposer.dll` being a static import of the exe does NOT
+      // put slInit out of reach: the static import governs when the MODULE is
+      // mapped, which is during process initialisation, while `slInit` is a
+      // function the game calls from its own startup code well after the entry
+      // point. Those are different events, and conflating them is what made this
+      // look unfixable.
+      //
+      // Nothing here needs the hook thread: the interposer is already mapped
+      // (its file version answers the generation) and the OTA mode resolves from
+      // the injector's published shared memory. Both are reads; neither loads
+      // anything, so this is as loader-lock-safe as the IAT work above.
+      ce::streamline_ota::InstallSlInitRouteIfConfigured();
 
       // CRITICAL: IAT patching in DllMain is SAFE because:
       // 1. It only modifies memory in already-loaded modules (no LoadLibrary)

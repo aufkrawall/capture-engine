@@ -326,4 +326,42 @@ TEST(NgxOtaSlInitRoute, ForeignCoreObservationReportsWhyTheStripDidNotPrevent) {
         << "and with whether the call actually came through CE";
 }
 
+
+// Where this is installed has now been wrong twice, each time for a different
+// reason, and each time the symptom was silence rather than a failure:
+//
+//   1. Off the hook-time generation classification (22:13:54.785), which runs
+//      after slInit entirely.
+//   2. Off the hook thread's config load (22:47:47.688), 551 ms after CE's own
+//      DllMain at 22:47:47.137 - and the game's slInit landed in that gap,
+//      giving "installed=1, seen through CE=0".
+//
+// DllMain is the earliest point CE exists in the process, and the route needs
+// nothing beyond that: the generation comes from the mapped interposer's file
+// version, the mode from the injector's published shared memory. Both reads.
+TEST(NgxOtaSlInitRoute, InstalledFromDllMainBesideTheLoaderHooks) {
+    namespace fs = std::filesystem;
+    const std::string dllMain =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+    ASSERT_FALSE(dllMain.empty());
+
+    const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
+    ASSERT_NE(loaderHooks, std::string::npos) << "the DllMain loader-hook install must exist";
+    const size_t route = dllMain.find("ce::streamline_ota::InstallSlInitRouteIfConfigured()", loaderHooks);
+    EXPECT_NE(route, std::string::npos)
+        << "the slInit route must be installed from DllMain, not left to the hook thread";
+
+    // It must come after the loader hooks: those are what let CE observe and
+    // redirect module loads at all, and they are the cheaper of the two.
+    EXPECT_GT(route, loaderHooks);
+
+    // The graphics IAT work must not stand between them - that is the 330 ms of
+    // patching that already cost the loader hooks their early window once.
+    const size_t wrapperHooks = dllMain.find("InitializeWrapperHooks()");
+    if (wrapperHooks != std::string::npos) {
+        EXPECT_LT(route, wrapperHooks)
+            << "the slInit route must precede the graphics IAT work, like the loader hooks do";
+    }
+}
+
 }  // namespace

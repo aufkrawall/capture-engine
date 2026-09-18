@@ -13,13 +13,21 @@ namespace ce::streamline_ota {
 // resolved profile asks for `ngx_ota=off`. A no-op in every other case,
 // including an unknown or 1.x generation.
 //
-// Call this as early as a config exists. It resolves the generation itself from
-// the loaded interposer's file version rather than waiting to be told, because
-// the only useful moment is before the game's first `slInit` and CE's own
-// hook-time classification lands after it.
+// Call this from DllMain, beside the kernel32 loader hooks. It needs nothing
+// the hook thread provides: the generation comes from the mapped interposer's
+// own file version and the mode from the injector's published shared memory,
+// both reads. Installing it from the hook thread's config load instead was
+// measurably 551 ms too late (session 20260918_224737 - DllMain at 22:47:47.137,
+// route at 22:47:47.688, and the game's slInit fell in between).
+//
+// `sl.interposer.dll` being a static import of the exe does NOT put slInit out
+// of reach. The static import decides when the MODULE is mapped, during process
+// initialisation; `slInit` is a function the game calls from its own startup
+// code, well after the entry point. Conflating the two is what made this look
+// unfixable.
 //
 // Safe to call repeatedly: it installs once, and retries while the interposer
-// has not been mapped yet.
+// has not been mapped yet, which is what the hook thread's later call covers.
 void InstallSlInitRouteIfConfigured();
 
 // Whether the game's `slInit` has actually come through CE's route, and whether
