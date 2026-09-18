@@ -4,6 +4,7 @@
 #include "common/custom_overlay_dx12.h"
 #include "common/hook_thread_stage_cost.h"
 #include "common/ngx_ota_runtime.h"
+#include "apis/streamline_ota_preferences.h"
 
 namespace {
 
@@ -100,6 +101,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         }
       }
       ce::ngx_ota::PublishPolicy(otaMode, logLevel, ngxLogDir.c_str());
+      // Route the game's slInit as early as the policy exists. The window is
+      // narrow and one-shot: in session 20260918_221342 the policy published at
+      // 22:13:53.803 and the runtime had already resolved sl.common - which
+      // loads from INSIDE slInit - by 22:13:53.952. The previous position, off
+      // CE's hook-time generation classification, ran at 22:13:54.785 and never
+      // once got to act. Missing it is inert, not harmful.
+      ce::streamline_ota::InstallSlInitRouteIfConfigured();
     }
     // NVIDIA's Vulkan WSI can end at an internal DXGI flip swapchain. For the
     // explicit FIFO mode, register a narrow real-factory path that changes only
@@ -457,6 +465,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // The sl.* override copies are placed off the loader-lock path, right
     // behind the first Streamline request the redirect served.
     PlaceConfiguredStreamlinePluginSetIfObserved();
+    // Retry for a title that maps sl.interposer after CE's config load. It
+    // installs once and returns immediately thereafter, and a game that reaches
+    // slInit before the interposer is mapped does not exist.
+    ce::streamline_ota::InstallSlInitRouteIfConfigured();
 
     // Attribute the service pass by stage. Total-only measurements hid whether
     // a collision came from the periodic module scan, UE5 reads, retirement, or

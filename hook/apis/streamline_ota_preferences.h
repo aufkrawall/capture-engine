@@ -7,13 +7,19 @@
  * arguments safe.
  */
 
-#include "../common/streamline_api_generation.h"
-
 namespace ce::streamline_ota {
 
-// Registers CE's `slInit` route, once, when the process runs Streamline 2.x and
-// the resolved profile asks for `ngx_ota=off`. A no-op in every other case,
+// Installs CE's `slInit` route, when the process runs Streamline 2.x and the
+// resolved profile asks for `ngx_ota=off`. A no-op in every other case,
 // including an unknown or 1.x generation.
-void RegisterDynamicHookOnce(ce::streamline_api::Generation generation);
+//
+// Call this as early as a config exists. It resolves the generation itself from
+// the loaded interposer's file version rather than waiting to be told, because
+// the only useful moment is before the game's first `slInit` and CE's own
+// hook-time classification lands after it.
+//
+// Safe to call repeatedly: it installs once, and retries while the interposer
+// has not been mapped yet.
+void InstallSlInitRouteIfConfigured();
 
 }  // namespace ce::streamline_ota

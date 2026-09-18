@@ -109,25 +109,10 @@ std::string BuildOverridePath(const std::string &overridePath, const std::string
 
 // Streamline generation of the interposer this process is actually running, taken from the
 // loaded module's own file so it is available before CE has hooked anything.
+// The implementation is shared: the ngx_ota slInit route needs the same answer
+// at the same point, and two copies of it would be two things to keep true.
 ce::streamline_api::Generation LiveStreamlineGeneration() {
-  static std::atomic<int> cached{-1};
-  const int seen = cached.load(std::memory_order_acquire);
-  if (seen >= 0) {
-    return static_cast<ce::streamline_api::Generation>(seen);
-  }
-  ce::streamline_api::Generation generation = ce::streamline_api::Generation::Unknown;
-  if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
-    char path[MAX_PATH] = {};
-    if (GetModuleFileNameA(interposer, path, MAX_PATH) != 0) {
-      generation = ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(path));
-    }
-  }
-  if (generation == ce::streamline_api::Generation::Unknown) {
-    // Not resolvable yet. Do not cache "unknown" - the interposer may simply not be loaded.
-    return generation;
-  }
-  cached.store(static_cast<int>(generation), std::memory_order_release);
-  return generation;
+  return ce::streamline_api::LiveGenerationFromLoadedInterposer();
 }
 
 // Gate for every sl.* redirect: CE may only place override plugins while it owns

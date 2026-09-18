@@ -81,6 +81,14 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
     (`20260821_151924`, `d3d12=1` on the very first poll). Detection latency is slack for a
     game that takes seconds to reach its first swapchain and decisive for one that does not. `kMinPollIntervalMs`/`kMaxPollIntervalMs` bound the cadence and
     `tests/test_dxgi_shared_part15.cpp` pins both that and the absence of any `WITHIN` query.
+  - **One side effect of the faster source, recorded so it is not rediscovered as a bug:** CE now
+    enumerates a target's modules early enough to hit `ERROR_PARTIAL_COPY` (299), the result of
+    reading a 64-bit process's module list while its PEB is still being built. The 0.5 s WMI latency
+    had always hidden it (`20260918_162809` reads `d3d12=1` on its first probe; `20260918_221342`
+    reads error=299 and `d3d12=0`). It changes no behaviour - `ShouldInjectAfterGraphicsProbe`
+    ignores `d3d12Loaded` and injects immediately regardless - so what it cost was the diagnostic,
+    plus a log line promising "conservative non-D3D12 injection timing" for a timing path that does
+    not exist. The probe retries the transient error now and the message says what happened.
 - **The kernel32 loader/process-creation hooks are installed in `DllMain`, before the graphics IAT
   work.** `InstallKernel32LoaderHooks` (`hook/main_injection.cpp`) runs twice: once from `DllMain`
   ahead of `InitializeWrapperHooks`, and once on the hook thread. The second pass is not redundant -

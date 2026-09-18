@@ -1,5 +1,11 @@
 #pragma once
 
+#include <windows.h>
+
+#include <atomic>
+
+#include "dll_utils.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -179,6 +185,42 @@ inline bool LooksLikeV1UiResource(uint32_t type, const void* native, uint32_t st
         return false;
     }
     return IsPlausibleV1ResourceState(state);
+}
+
+
+// The Streamline generation this process is ACTUALLY running, read from the
+// loaded `sl.interposer.dll`'s own file version.
+//
+// This is deliberately independent of CE's hook-time classification, which
+// cannot answer the question early enough for everything that needs it: the
+// classification runs off GetProcAddress observation and lands well after
+// `slInit` in a title that reaches Streamline during startup (session
+// 20260918_221342: classification at 22:13:54.785, `slInit` already in
+// progress at 22:13:53.952). Reading the module's file version needs nothing
+// but the module being mapped, which is true from process start for a game
+// that imports it statically.
+//
+// Returns Unknown while the interposer is not loaded, and never caches that -
+// "not loaded yet" and "not a Streamline process" are the same observation
+// here and only time tells them apart.
+inline Generation LiveGenerationFromLoadedInterposer() {
+    static std::atomic<int> cached{-1};
+    const int seen = cached.load(std::memory_order_acquire);
+    if (seen >= 0) {
+        return static_cast<Generation>(seen);
+    }
+    Generation generation = Generation::Unknown;
+    if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
+        char path[MAX_PATH] = {};
+        if (GetModuleFileNameA(interposer, path, MAX_PATH) != 0) {
+            generation = GenerationFromMajorVersion(DllFileMajorVersion(path));
+        }
+    }
+    if (generation == Generation::Unknown) {
+        return generation;
+    }
+    cached.store(static_cast<int>(generation), std::memory_order_release);
+    return generation;
 }
 
 }  // namespace ce::streamline_api

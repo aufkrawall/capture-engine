@@ -41,6 +41,7 @@
 #include "../common/hook_common.h"
 #include "../common/ngx_ota_policy.h"
 #include "../common/ngx_ota_runtime.h"
+#include "../common/streamline_api_generation.h"
 #include "streamline_hook_internal.h"
 
 // Streamline ships x64 only, and so does its SDK header set. The x86 hook DLL
@@ -110,32 +111,58 @@ sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion
 
 }  // namespace
 
-void RegisterDynamicHookOnce(ce::streamline_api::Generation generation) {
-    // 1.x `slInit` takes an `int` where 2.x takes a `uint64_t`, and its
-    // Preferences layout predates the struct-identity header this relies on.
-    // There is no safe way to reach into it, so it is left alone.
-    if (generation != ce::streamline_api::Generation::V2) {
+void InstallSlInitRouteIfConfigured() {
+    // Nothing to install when no profile asks for it.
+    if (!ce::ngx_ota::ShouldClearStreamlineOtaPreferences(ce::ngx_ota::CurrentMode())) {
         return;
     }
-    // Nothing to install when no profile asks for it. The mode is resolved by
-    // the time any Streamline module loads, because the hook thread publishes it
-    // immediately after LoadConfig.
-    if (!ce::ngx_ota::ShouldClearStreamlineOtaPreferences(ce::ngx_ota::CurrentMode())) {
+    if (g_Registered.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // 1.x `slInit` takes an `int` where 2.x takes a `uint64_t`, and its
+    // Preferences layout predates the struct-identity check this relies on.
+    // There is no safe way to reach into it, so it is left alone. Unknown means
+    // the interposer is not mapped yet - a later call retries.
+    if (ce::streamline_api::LiveGenerationFromLoadedInterposer() != ce::streamline_api::Generation::V2) {
         return;
     }
     if (g_Registered.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
+    // Resolve the original BEFORE any slot is repointed, so a call that reaches
+    // a patched slot always finds something to forward to.
+    if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
+        if (void* original = reinterpret_cast<void*>(GetProcAddress(interposer, "slInit"))) {
+            g_OriginalSlInit.store(original, std::memory_order_release);
+        }
+    }
+
+    // Two routes, because a game can reach `slInit` either way and this one has
+    // no second chance. A title that links sl.interposer statically - Alan Wake 2
+    // does - calls through its own import table, which only PatchIATAllModules
+    // reaches; the dynamic route covers a GetProcAddress lookup, including from
+    // modules that load later.
+    void* originalFromIat = nullptr;
+    const bool patchedIat = IATHook::PatchIATAllModules("sl.interposer.dll", "slInit",
+                                                        reinterpret_cast<void*>(&Hooked_slInit), &originalFromIat);
+    if (patchedIat && originalFromIat) {
+        g_OriginalSlInit.store(originalFromIat, std::memory_order_release);
+    }
     IATHook::RegisterDynamicHookFiltered("slInit", reinterpret_cast<void*>(&Hooked_slInit),
                                          reinterpret_cast<void**>(&g_OriginalSlInit),
                                          IsStreamlineCoreDynamicHookModule);
-    HookLogImportant("NGX OTA: registered the 2.x slInit route so ngx_ota=off can clear Streamline's OTA preferences");
+
+    HookLogImportant(
+        "NGX OTA: installed the 2.x slInit route for ngx_ota=off (IAT patched=%d, original=%p) so Streamline's OTA "
+        "preference bits can be cleared before the runtime picks its plugin set",
+        patchedIat ? 1 : 0, g_OriginalSlInit.load(std::memory_order_acquire));
 }
 
 #else
 
-void RegisterDynamicHookOnce(ce::streamline_api::Generation) {
+void InstallSlInitRouteIfConfigured() {
     // No Streamline on x86, so there is no slInit to route.
 }
 

@@ -65,6 +65,35 @@ GUID + version identity checked against the SDK header CE compiled with, and a m
 forwarded - the game's own memory is never written. Any guard failing means the call is forwarded
 exactly as it arrived.
 
+**The `slInit` route shipped dead, and the first hardware run proved it (`20260918_221342`).** Two
+independent bugs, neither of which a build or a unit test could catch:
+
+- **Registered 833 ms too late.** It hung off `RegisterAbiSensitiveDynamicHooksOnce`, which waits for
+  CE's hook-time generation classification. That ran at 22:13:54.785; the runtime had already
+  resolved `sl.common` - which loads from *inside* `slInit` - at 22:13:53.952.
+- **Wrong hooking mechanism.** Only a `RegisterDynamicHookFiltered` (GetProcAddress-time) route was
+  installed. Alan Wake 2 links `sl.interposer` statically and calls `slInit` through its own import
+  table, which only `PatchIATAllModules` reaches.
+
+Fixed by installing from the config-load path immediately after `ce::ngx_ota::PublishPolicy`
+(22:13:53.803 in that session, ~150 ms ahead of the `sl.common` load), resolving the generation from
+the mapped interposer's own file version via `ce::streamline_api::LiveGenerationFromLoadedInterposer`
+- moved out of `main_redirect.cpp`'s anonymous namespace so there is one copy - and patching the IAT
+as well as the dynamic route. The monitor loop retries for a late-mapping interposer. Missing the
+window remains inert. `tests/test_ngx_ota_policy.cpp` pins both properties at source level, because
+that is the only level at which either mistake was visible.
+
+**A correction worth keeping about the module probe.** The same session logs
+`EnumProcessModules failed (error=299 ERROR_PARTIAL_COPY)` followed by `d3d12=0`, which the faster
+native poller made reachable: CE now enumerates while the target's PEB module list is still being
+built, where the old 0.5 s WMI latency had always let the process finish initialising first
+(`20260918_162809` reads `d3d12=1` on its first probe). This is **not** an injection regression -
+`ce::injection_policy::ShouldInjectAfterGraphicsProbe` deliberately ignores `d3d12Loaded` and injects
+immediately either way, so a failed probe never delayed or changed an injection. What it cost was the
+diagnostic, plus a log line promising "conservative non-D3D12 injection timing" that describes a
+timing path which does not exist. The probe now retries the transient error and the message states
+what actually happened.
+
 **Explicitly rejected:** writing NVIDIA's registry, `nvngx_config.txt` or
 `nvngx_ota_updates_config.txt`, and driving `nvngx_update.exe` with its undocumented CLI flags
 (`-forced_update`, `-force_add_update`, `-bootstrap`, ...). Machine-wide, persistent, affects other

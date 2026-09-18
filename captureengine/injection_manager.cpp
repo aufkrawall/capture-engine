@@ -685,19 +685,41 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                             }
                         } else {
                             DWORD err = GetLastError();
+                            // ERROR_PARTIAL_COPY (299) is what a 64-bit process
+                            // returns while its PEB module list is still being
+                            // built - i.e. CE looked too early, not too late.
+                            // It became reachable when the process-start source
+                            // stopped being a 0.5 s WMI poll: the old latency
+                            // meant the process had always finished initialising
+                            // by the time CE enumerated it (session
+                            // 20260918_162809 reads d3d12=1 on the first probe;
+                            // 20260918_221342, on the native poller, reads
+                            // error=299 and d3d12=0).
+                            //
+                            // Retrying is for the DIAGNOSTIC, not for timing.
+                            // ShouldInjectAfterGraphicsProbe deliberately ignores
+                            // d3d12Loaded and injects immediately either way, so
+                            // a failed probe never delayed or changed an
+                            // injection - but it did leave the log claiming
+                            // "conservative non-D3D12 injection timing", which
+                            // describes timing that does not exist, and it lost
+                            // the only record of whether the graphics API was up
+                            // when CE went in.
+                            const bool transient = (err == ERROR_PARTIAL_COPY || err == ERROR_ACCESS_DENIED);
+                            if (transient && i < 3) {
+                                CloseHandle(hProcess);
+                                Sleep(20);
+                                waitMs += 20;
+                                continue;
+                            }
                             if (!loggedModuleEnumFailure) {
                                 LogInfo(
-                                    "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX); "
-                                    "continuing with conservative non-D3D12 injection timing",
+                                    "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX) after "
+                                    "%d attempt(s); injecting anyway, with no D3D12 evidence recorded",
                                     source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)err,
-                                    (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE));
+                                    (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE),
+                                    i + 1);
                                 loggedModuleEnumFailure = true;
-                            }
-                            if (err == ERROR_ACCESS_DENIED && i < 2) {
-                                CloseHandle(hProcess);
-                                Sleep(100);
-                                waitMs += 100;
-                                continue;
                             }
                         }
                     }

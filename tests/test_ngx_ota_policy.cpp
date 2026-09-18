@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <string>
+
+#include "source_fragment_reader.h"
 
 #include "../common/config.h"
 #include "../hook/common/ngx_ota_policy.h"
@@ -150,7 +153,7 @@ TEST(NgxOtaPolicy, ModeAndRefusalTablesCoverEveryDefinedValue) {
 }
 
 // Every refusal reason the hook can publish must have user-facing text, or the
-// tray balloon and the host warning would surface an empty explanation.
+// injector would report an empty explanation.
 TEST(RuntimeOverrideRefusal, EveryReasonExceptNoneHasExplanatoryText) {
     EXPECT_STREQ(RuntimeOverrideRefusalText(kRuntimeOverrideRefusalNone), "");
     for (uint32_t reason : {kRuntimeOverrideRefusalForeignStreamlineCore, kRuntimeOverrideRefusalGenerationMismatch,
@@ -162,6 +165,82 @@ TEST(RuntimeOverrideRefusal, EveryReasonExceptNoneHasExplanatoryText) {
     // An unknown reason must read as "nothing to report" rather than fabricate
     // an explanation.
     EXPECT_STREQ(RuntimeOverrideRefusalText(9999u), "");
+}
+
+
+// The slInit route is a source-level contract as much as a behavioural one: it
+// shipped once as dead code because it was wired to the wrong place and used
+// the wrong hooking mechanism, and neither mistake could fail a unit test or a
+// build. Session 20260918_221342 is the evidence - the route registered at
+// 22:13:54.785 while the runtime had already resolved sl.common, which loads
+// from inside slInit, at 22:13:53.952. These pin the two properties that make
+// the difference so a refactor cannot quietly undo them.
+TEST(NgxOtaSlInitRoute, InstallsFromTheConfigLoadPathRatherThanGenerationClassification) {
+    namespace fs = std::filesystem;
+    const std::string hookThread =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_hookthread.cpp");
+    ASSERT_FALSE(hookThread.empty());
+
+    const size_t publish = hookThread.find("ce::ngx_ota::PublishPolicy(");
+    ASSERT_NE(publish, std::string::npos) << "the NGX policy publication must exist";
+    const size_t install = hookThread.find("ce::streamline_ota::InstallSlInitRouteIfConfigured()", publish);
+    EXPECT_NE(install, std::string::npos)
+        << "the slInit route must be installed from the config-load path, immediately after the policy exists";
+
+    // The old wiring hung off the ABI-sensitive generation classification, which
+    // runs off GetProcAddress observation and lands after slInit.
+    const std::string install_unit =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp");
+    ASSERT_FALSE(install_unit.empty());
+    EXPECT_EQ(install_unit.find("streamline_ota::"), std::string::npos)
+        << "the slInit route must not be tied to the hook-time generation classification again";
+}
+
+TEST(NgxOtaSlInitRoute, PatchesTheImportTableAndNotOnlyTheDynamicRoute) {
+    namespace fs = std::filesystem;
+    const std::string route =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_ota_preferences.cpp");
+    ASSERT_FALSE(route.empty());
+
+    // A title that links sl.interposer statically - Alan Wake 2 does - calls
+    // slInit through its own import table. A GetProcAddress-time route alone
+    // never sees that call.
+    EXPECT_NE(route.find("PatchIATAllModules(\"sl.interposer.dll\", \"slInit\""), std::string::npos)
+        << "the static-import path must be covered by an IAT patch";
+    EXPECT_NE(route.find("RegisterDynamicHookFiltered(\"slInit\""), std::string::npos)
+        << "the GetProcAddress path must stay covered too";
+
+    // The original has to be resolved before any slot is repointed, or a call
+    // arriving mid-install finds nothing to forward to.
+    const size_t resolveOriginal = route.find("GetProcAddress(interposer, \"slInit\")");
+    const size_t patch = route.find("PatchIATAllModules(\"sl.interposer.dll\"");
+    ASSERT_NE(resolveOriginal, std::string::npos);
+    ASSERT_NE(patch, std::string::npos);
+    EXPECT_LT(resolveOriginal, patch) << "the original must be resolved before the first slot is repointed";
+
+    // Generation is resolved from the loaded module, not passed in.
+    EXPECT_NE(route.find("LiveGenerationFromLoadedInterposer()"), std::string::npos)
+        << "the route must resolve the generation from the mapped interposer itself";
+}
+
+// ERROR_PARTIAL_COPY became reachable when the process-start source stopped
+// being a 0.5 s WMI poll, because CE now looks while the target's PEB module
+// list is still being built. It must be retried like ACCESS_DENIED.
+TEST(NgxOtaSlInitRoute, ModuleProbeRetriesThePartialCopyRace) {
+    namespace fs = std::filesystem;
+    const std::string manager =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_manager.cpp");
+    ASSERT_FALSE(manager.empty());
+    EXPECT_NE(manager.find("ERROR_PARTIAL_COPY"), std::string::npos)
+        << "the early-enumeration race must be recognized, not just ACCESS_DENIED";
+    // The old message promised timing behaviour that does not exist:
+    // ShouldInjectAfterGraphicsProbe ignores d3d12Loaded and injects either way.
+    // Matched on the format-string fragment rather than the bare phrase: the
+    // fix quotes the old wording in a comment to explain what changed, and a
+    // test that cannot tell code from commentary is a test that fails for the
+    // wrong reason.
+    EXPECT_EQ(manager.find("\"continuing with conservative non-D3D12 injection timing\""), std::string::npos)
+        << "the log must not claim a timing path that ShouldInjectAfterGraphicsProbe does not implement";
 }
 
 }  // namespace

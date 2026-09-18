@@ -7,7 +7,6 @@
 #include "streamline_bridge_policy.h"
 #include "streamline_inline_hook_batch.h"
 #include "streamline_hook_v1.h"
-#include "streamline_ota_preferences.h"
 #include "streamline_v1_feature_probe.h"
 
 #include <vulkan/vulkan.h>
@@ -160,11 +159,6 @@ void RegisterAbiSensitiveDynamicHooksOnce(Generation generation) {
                                          IsStreamlineCoreDynamicHookModule);
     HookLogImportant("Streamline Hook: registered the %s slSetTag/slEvaluateFeature dynamic routes",
                      ce::streamline_api::Describe(generation));
-
-    // The same moment is when `slInit` becomes safe to route: its signature and
-    // its Preferences layout are both generation-specific, so the ngx_ota=off
-    // preference strip cannot be registered before the generation is known.
-    ce::streamline_ota::RegisterDynamicHookOnce(generation);
 }
 
 }  // namespace
