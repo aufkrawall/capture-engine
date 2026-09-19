@@ -1,5 +1,49 @@
 # llm-wiki Log
 
+### 2026-09-19 - pre-release review: three things worth changing, none of them broken
+
+A review of the ~2 weeks since `v0.1.6261` against a near-term release. The tree was green
+(`--incremental --skip-package --run-tests`, build 0.1.6713). Findings were about cost and honesty,
+not correctness, and all three fixes are one-file.
+
+- **The process-start poll cadence was increased 5x in a commit titled "poll cadence reduction"**
+  (`6ce0adfb`: 250 -> 50 ms default, 50 -> 10 ms floor). That reverted a decision `ce26dafa` had made hours
+  earlier with a written rationale, and it contradicts `process_start_poll.h`'s own header, which still says
+  detection speed has seconds of margin before a real game's first swapchain. The motive was letting
+  `TerminateNgxUpdaterIfDisabled` race the NGX updater's start - but `ngx_ota=off` works by **refusal**
+  (`__NGX_DISABLE_UPDATER` in DllMain plus the slInit route), validated at 15/15 refused with no updater
+  process created at all, so the sweep is a kill-on-sight backstop and not a race. Restored to 250/50.
+- **The poller named every process on every sweep.** `SnapshotProcesses` ran `Utf8FromUnicodeString` plus a
+  `std::string` allocation for all ~300 processes, while only pids absent from the previous sweep can be a
+  start. It now takes the known-pid set and names only the misses; the baseline sweep passes `nullptr` and
+  names nothing. Lesson: **a cheap syscall does not make the loop around it cheap** - the sweep's cost was
+  never the `NtQuerySystemInformation` call the header sized it by.
+- **`WerSetFlags(0x3)` was commented `NO_UI | QUEUE` but is `NOHEAP | QUEUE`; `NO_UI` is `0x20`.** This only
+  became load-bearing in `52e3adf1`, which dropped `SEM_NOGPFAULTERRORBOX` from `SetErrorMode` (correctly -
+  it makes the default unhandled filter terminate without invoking WER, losing the `__fastfail` dump) and
+  justified that by saying the UI was suppressed via WerSetFlags instead. It was not. `crash_handler.cpp`
+  runs in the injected hook DLL, so the gap was a fault dialog on the player's screen. Now `0x23` with named
+  constants mirrored from `werapi.h`. Lesson: **when a removal is justified by a flag elsewhere, read the
+  flag's value, not its comment.**
+- **CHANGELOG was stale by ~10k lines of production code** - `v0.1.6652` (tagged, shipped) was the newest
+  section while everything from 09-18/19 had landed since. Added an `Unreleased` section. `config.ini.template`
+  was already current, so this was changelog-only. Note `dlss_fg_preset` (`0c2a299e`, 2026-08-08) predates
+  `v0.1.6652` and is documented in no release section at all - a pre-existing gap, not this release's.
+
+Reviewed and found sound, recorded so the next review does not re-derive it: the DRS override channel
+(`017c040a`) wraps `nvapi_QueryInterface` rather than patching NvAPI prologues (required - DLSS FG validates
+them during Reflex setup), mirrors `NVDRS_SETTING` with static asserts, and short-circuits on
+`HasAnyOverride` so an unconfigured build changes no call path. The DX11 transient-RTV route and its scope
+guard in `52e3adf1` are correct, and the batch quiescence fallback in `80bbf802` correctly leaves unclaimed
+entries to the independent retry.
+
+Open, not fixed (deliberately out of scope for a release): `wer_dump_adoption::TryAdoptLocalDump` matches
+purely on `<image>.<pid>.dmp` with no freshness check, so a dump left by an earlier non-CE crash of the same
+exe at the same pid would be moved out of the user's `%LOCALAPPDATA%\CrashDumps`; and
+`published_graphics_config.cpp` says "a later call retries" when DllMain is its only call site (harmless -
+the hook thread's config takes over - but the comment is wrong).
+
+
 ### 2026-09-19 - the FG health gate looked at the wrong mode and did nothing
 
 Session `20260919_231939` still logged four `[DLSSG HEALTH] ON but NOT interpolating` warnings after the

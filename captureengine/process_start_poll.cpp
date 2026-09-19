@@ -52,7 +52,16 @@ std::string Utf8FromUnicodeString(const UNICODE_STRING& value) {
 // Fills `out` with (pid, image name) for every live process. Returns false when
 // the snapshot could not be taken at all, which must leave the caller's previous
 // baseline untouched rather than be read as "every process exited".
-bool SnapshotProcesses(PfnNtQuerySystemInformation query, std::vector<std::pair<DWORD, std::string>>& out) {
+//
+// `knownPids` is the previous sweep's pid set, and it decides which entries get
+// a name. The syscall returns the whole table in one buffer, so the pid half of
+// a sweep is nearly free - but the name half is one UTF-8 conversion plus one
+// heap allocation per process, and only a pid ABSENT from `knownPids` can be a
+// start. Naming the whole table every sweep was ~300 conversions per sweep to
+// use a handful, for the life of the session. A null set means "no names at
+// all", which is exactly what the baseline sweep needs.
+bool SnapshotProcesses(PfnNtQuerySystemInformation query, const std::unordered_set<DWORD>* knownPids,
+                       std::vector<std::pair<DWORD, std::string>>& out) {
     if (!query) {
         return false;
     }
@@ -85,7 +94,8 @@ bool SnapshotProcesses(PfnNtQuerySystemInformation query, std::vector<std::pair<
         const auto* entry = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(buffer.data() + offset);
         const auto pid = static_cast<DWORD>(reinterpret_cast<uintptr_t>(entry->UniqueProcessId));
         if (pid != 0) {
-            out.emplace_back(pid, Utf8FromUnicodeString(entry->ImageName));
+            const bool isCandidateStart = knownPids != nullptr && knownPids->find(pid) == knownPids->end();
+            out.emplace_back(pid, isCandidateStart ? Utf8FromUnicodeString(entry->ImageName) : std::string());
         }
         if (entry->NextEntryOffset == 0) {
             break;
@@ -172,7 +182,9 @@ void Poller::Run() {
     bool baselineEstablished = false;
 
     for (;;) {
-        if (SnapshotProcesses(query, snapshot)) {
+        // The baseline sweep needs no names at all; every later sweep names only
+        // the pids `known` does not already carry.
+        if (SnapshotProcesses(query, baselineEstablished ? &known : nullptr, snapshot)) {
             if (!baselineEstablished) {
                 // Everything alive right now predates CE's interest in it.
                 // Reporting this sweep would hand the injector the whole process
@@ -187,6 +199,9 @@ void Poller::Run() {
                 current.reserve(snapshot.size());
                 for (const auto& [pid, name] : snapshot) {
                     current.insert(pid);
+                    // The membership test is what decides a start; the name test
+                    // also rejects the entries the snapshot left unnamed on
+                    // purpose, and a process whose image name did not convert.
                     if (known.find(pid) == known.end() && !name.empty()) {
                         callback_(pid, name);
                     }

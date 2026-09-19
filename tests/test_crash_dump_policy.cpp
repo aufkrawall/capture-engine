@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
+#include <string>
+
+#include "source_fragment_reader.h"
 
 #include "../common/crash_dump_policy.h"
 #include "../common/cpp_exception_message.h"
@@ -504,4 +508,43 @@ TEST(CrashDumpPolicyTest, OnlyCeWrittenLocalDumpsSubkeysAreRecognised) {
     EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey("", logsRoot));
     EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(nullptr, logsRoot));
     EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(R"(C:\anything)", ""));
+}
+
+// WER is the only mechanism that records a __fastfail termination, so this
+// process must stay visible to it - SEM_NOGPFAULTERRORBOX makes the default
+// unhandled filter terminate without invoking WER at all. Staying visible is
+// only acceptable because the fault-report UI is suppressed instead, and that
+// suppression is WER_FAULT_REPORTING_NO_UI (0x20).
+//
+// This regression exists because the call passed 0x3 while its comment claimed
+// NO_UI. 0x3 is NOHEAP | QUEUE: QUEUE keeps the report out of the interactive
+// submit flow but does not suppress the dialog, so from the moment
+// SEM_NOGPFAULTERRORBOX was dropped a crashing game could show a fault dialog CE
+// used to suppress. This hook DLL is loaded into the game, so that is the
+// player's screen.
+TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
+    namespace fs = std::filesystem;
+    const std::string handler =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_handler.cpp");
+    ASSERT_FALSE(handler.empty());
+
+    const size_t setErrorMode = handler.find("SetErrorMode(");
+    ASSERT_NE(setErrorMode, std::string::npos);
+    const std::string errorModeCall = handler.substr(setErrorMode, 120);
+    EXPECT_EQ(errorModeCall.find("SEM_NOGPFAULTERRORBOX"), std::string::npos)
+        << "it makes UnhandledExceptionFilter terminate without invoking WER, which loses the __fastfail dump";
+
+    const size_t werSetFlags = handler.find("pfnWerSetFlags(");
+    ASSERT_NE(werSetFlags, std::string::npos);
+    const std::string flagsCall = handler.substr(werSetFlags, 200);
+    EXPECT_NE(flagsCall.find("kWerFaultReportingNoUi"), std::string::npos)
+        << "dropping SEM_NOGPFAULTERRORBOX is only safe while the WER fault-report UI is suppressed here";
+    EXPECT_EQ(flagsCall.find("0x00000003"), std::string::npos)
+        << "0x3 is NOHEAP | QUEUE, which does not suppress the dialog";
+
+    // The named constants must match werapi.h, since CE mirrors rather than
+    // includes them.
+    EXPECT_NE(handler.find("kWerFaultReportingFlagNoHeap = 0x00000001"), std::string::npos);
+    EXPECT_NE(handler.find("kWerFaultReportingFlagQueue = 0x00000002"), std::string::npos);
+    EXPECT_NE(handler.find("kWerFaultReportingNoUi = 0x00000020"), std::string::npos);
 }

@@ -64,11 +64,22 @@ private:
     HANDLE stopEvent_ = nullptr;
 };
 
-// The cadence CE polls at when it has to. 50 ms provides rapid early-process
-// detection to intercept static imports and early loader events (such as NGX
-// updates) while NtQuerySystemInformation costs only ~1-2 ms per sweep.
-inline constexpr unsigned kDefaultPollIntervalMs = 50;
-inline constexpr unsigned kMinPollIntervalMs = 10;
+// The cadence CE polls at when it has to. Chosen against what the interval
+// actually buys: the previous WMI fallback cost a full 500 ms of detection lag
+// and still left seconds of margin before a real game's first swapchain, so
+// there is nothing to win by polling aggressively - and a system-wide sweep is
+// exactly the kind of work that should stay rare.
+//
+// This was briefly 50 ms to make the NGX updater watchdog
+// (InjectionManager::TerminateNgxUpdaterIfDisabled) race the updater's start.
+// It does not need to. `ngx_ota=off` works by refusal - __NGX_DISABLE_UPDATER
+// is published in DllMain and the slInit route answers the query, measured at
+// 15/15 launches refused with no updater process created at all - so the
+// watchdog is a kill-on-sight backstop for a case the mechanism already
+// prevents, not a race CE has to win. Paying 20 system-wide sweeps per second
+// for the whole session to shorten that backstop is the wrong trade.
+inline constexpr unsigned kDefaultPollIntervalMs = 250;
+inline constexpr unsigned kMinPollIntervalMs = 50;
 inline constexpr unsigned kMaxPollIntervalMs = 2000;
 
 inline constexpr unsigned ClampPollIntervalMs(unsigned requested) {

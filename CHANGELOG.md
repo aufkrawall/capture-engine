@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6652).
+
+### New
+
+- **DLSS frame generation can be driven through the driver settings**, which is the channel NVIDIA Profile
+  Inspector writes and the only one that reaches 5x and 6x. Four new `[DLSS]` keys mirror its fields:
+  `dlss_fg_mode` (`off`/`fixed`/`auto`/`dynamic`), `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and
+  `dlss_fg_target_fps`. `dynamic` lets multi-frame generation vary its cadence to hold a target frame rate -
+  `dlss_fg_target_fps=max_refresh` aims at the display's maximum refresh. CaptureEngine answers the runtime's
+  read inside the game process only: nothing is written to your driver profiles and no other application is
+  affected. Dynamic mode needs a recent driver and frame generation runtime; on an older one the keys are never
+  read and nothing changes.
+- **`vsync_mode` now reaches DLSS frame generation.** The DLSS-G runtime consults the driver's own V-Sync
+  setting before the application's request, and CaptureEngine's rewrite lands below Streamline's swapchain
+  proxy, so the runtime never saw it. That key is answered too now. `vsync_mode=default` claims nothing and
+  leaves the driver's answer alone.
+- **`ngx_ota` controls NVIDIA's over-the-air NGX updates for the injected process.** `off` refuses the
+  `nvngx_update.exe` launch and clears Streamline's OTA preferences at the game's `slInit`, which stops the
+  driver's downloaded plugin set from winning over the DLLs you configured; `on` forces the opposite and stands
+  the DLL overrides down. Nothing is written to the registry, the driver's configuration or the model store.
+  Read the key's notes in `config.ini` for what `off` does not reliably cover.
+- **`ngx_log` routes NVIDIA NGX's own diagnostic log into the session directory** and sets its level (`off`,
+  `on`, `verbose`). Useful when a DLSS or Streamline override does not apply and NGX's account of which files it
+  chose is the missing half.
+
+### Improved
+
+- **CaptureEngine no longer asks WMI to enumerate every process twice a second.** When it is not elevated it
+  falls back to watching for process starts, and that fallback used to make the WMI service materialise the
+  whole process table on a timer for the entire session. It now reads the two fields it needs from the native
+  call the WMI provider is built on.
+- **A recording stopped seconds after starting no longer disappears.** The media process needs a moment to go
+  live, and a stop inside that window left the overlay on "Finalizing recording..." forever with no file
+  written. Such a stop is now reported as a cancelled recording on both overlays and in the manifest, and the
+  audio latency probe that dominated that startup delay is measured once per session instead of once per
+  recording - so only the first recording of a session has the window at all.
+- **The controller reports when a recording is actually live**, with the measured startup time, instead of
+  claiming it started the moment the request was delivered.
+
+### Fixed
+
+- **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed the game dying a few seconds in. CaptureEngine was
+  compositing on the interposer's own private output chain and holding a reference to a buffer the interposer
+  recreates on its own schedule. Also fixed the overlay flickering on that chain - roughly a third of displayed
+  frames were reaching the screen without it - and fixed the overlay reporting the interposer's output rate as
+  the game's frame rate.
+- **A crash that bypasses every in-process handler is now recorded.** `__fastfail` terminations (exit code
+  `0xC0000409`) reach no vectored handler, no SEH frame and no unhandled-exception filter, so CaptureEngine
+  wrote nothing at all for them. It now claims the dump Windows Error Reporting really writes into the session
+  directory. The registry values earlier builds wrote for this were in a location Windows never reads; they are
+  removed once on startup.
+- **DLSS DLL and Streamline overrides no longer get lost in the first half-second.** The loader redirect was
+  installed at injection but had no configuration to answer with until the hook thread read `config.ini` about
+  400 ms later, so anything loaded in that window - `sl.common` is loaded exactly once, early - passed through
+  unredirected and stood the whole `sl.*` override set down. It is now armed immediately from the configuration
+  the injector already published.
+- **The overlay stays below other overlays' present chains more reliably.** The hook that keeps CaptureEngine
+  beneath the Steam overlay could fail to land when the game was still creating threads, and is retried.
+- **Reflex and PCL hook resolution no longer stalls the render thread.** Late retries were unbounded and could
+  re-scan every 2.5 seconds for a function some Streamline builds simply do not export.
+- **Frame generation health warnings no longer fire under `auto` and `dynamic`.** Choosing not to generate a
+  frame is a legitimate operating point there, not a failed activation.
+- **CaptureEngine no longer reads a frame generation state field the game's own structure does not carry**,
+  which previously reported "dynamic MFG not supported" while the runtime was demonstrably varying its cadence.
+
 ## v0.1.6652
 
 Changes since [v0.1.6261](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6261).

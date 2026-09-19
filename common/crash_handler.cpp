@@ -386,7 +386,7 @@ void RegisterWithWER() {
     // SEM_NOGPFAULTERRORBOX is deliberately NOT set. It makes the default
     // UnhandledExceptionFilter terminate the process without invoking WER at
     // all, which is the opposite of what this function exists for; the report
-    // UI is suppressed through WerSetFlags' queueing flag below instead. This
+    // UI is suppressed through WER_FAULT_REPORTING_NO_UI below instead. This
     // is the same rule the build itself follows (tools/build/build_common.py:
     // "crash reporting must keep producing the dumps this project debugs
     // from"), applied to the runtime.
@@ -401,7 +401,22 @@ void RegisterWithWER() {
         typedef HRESULT(WINAPI * PFN_WerSetFlags)(DWORD);
         auto pfnWerSetFlags = (PFN_WerSetFlags)GetProcAddress(hWer, "WerSetFlags");
         if (pfnWerSetFlags) {
-            pfnWerSetFlags(0x00000003);  // WER_FAULT_REPORTING_NO_UI | WER_FAULT_REPORTING_QUEUE
+            // WER_FAULT_REPORTING_NO_UI (0x20) is what actually keeps WerFault
+            // from putting a dialog on screen, and it has to be set explicitly:
+            // this call used to pass 0x3 while claiming to pass NO_UI, but 0x3
+            // is NOHEAP | QUEUE. That mattered from the moment
+            // SEM_NOGPFAULTERRORBOX came out of SetErrorMode above - this hook
+            // DLL is loaded into the game, so the gap meant a crashing game
+            // could show a fault dialog CE used to suppress.
+            //
+            // QUEUE keeps the report out of the interactive submit flow; NO_UI
+            // suppresses the dialog. Neither suppresses the dump - that is
+            // WerFault's LocalDumps work, which is the whole point of staying
+            // visible to WER (see ce::wer_dump_adoption).
+            constexpr DWORD kWerFaultReportingFlagNoHeap = 0x00000001;
+            constexpr DWORD kWerFaultReportingFlagQueue = 0x00000002;
+            constexpr DWORD kWerFaultReportingNoUi = 0x00000020;
+            pfnWerSetFlags(kWerFaultReportingFlagNoHeap | kWerFaultReportingFlagQueue | kWerFaultReportingNoUi);
         }
     }
 

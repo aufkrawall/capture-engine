@@ -737,9 +737,10 @@ void InstallCrashHandler() {
         }
     }
 
-    // Disable Windows error dialogs and register with WER
-    // This prevents Windows from showing crash dialogs and ensures our
-    // crash handler has priority.
+    // Stay visible to WER, with its fault-report UI suppressed. WER is the only
+    // thing that records a __fastfail termination (0xC0000409), which reaches
+    // none of the handlers installed below - so this process must NOT opt out of
+    // it via SEM_NOGPFAULTERRORBOX; see RegisterWithWER for why.
     RegisterWithWER();
 
     // Install Vectored Exception Handler (catches exceptions before SEH)

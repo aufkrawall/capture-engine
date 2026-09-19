@@ -714,7 +714,52 @@ TEST(NgxOtaSupervisorWatchdog, SupervisorIntegratesOtaWatchdogAndConfigPrewarmin
     EXPECT_NE(publication.find("baseConfig.gameWhitelist"), std::string::npos);
     EXPECT_NE(publication.find("ResolveTargetConfig("), std::string::npos);
 
-    EXPECT_LE(ce::process_start::kDefaultPollIntervalMs, 50u);
+}
+
+// The watchdog above is a backstop, NOT a race CE has to win, and the poll
+// cadence must not be tuned as though it were. `ngx_ota=off` works by refusal -
+// __NGX_DISABLE_UPDATER is published in DllMain and the slInit route answers the
+// query - so the updater is normally never created at all and the sweep exists
+// only for the case that mechanism misses.
+//
+// This regression exists because the cadence was once dropped to 50 ms to
+// shorten that backstop, in a commit titled "poll cadence reduction". A
+// system-wide NtQuerySystemInformation sweep 20 times a second, for the life of
+// the session, is not what a backstop is worth.
+TEST(NgxOtaSupervisorWatchdog, TheProcessPollCadenceStaysCoarseEnoughForABackstop) {
+    EXPECT_GE(ce::process_start::kDefaultPollIntervalMs, 250u);
+    EXPECT_LE(ce::process_start::kDefaultPollIntervalMs, ce::process_start::kMaxPollIntervalMs);
+    // Even an explicitly requested interval may not turn this into a spin.
+    EXPECT_GE(ce::process_start::kMinPollIntervalMs, 50u);
+    EXPECT_EQ(ce::process_start::ClampPollIntervalMs(1), ce::process_start::kMinPollIntervalMs);
+    EXPECT_EQ(ce::process_start::ClampPollIntervalMs(1000000), ce::process_start::kMaxPollIntervalMs);
+    EXPECT_EQ(ce::process_start::ClampPollIntervalMs(ce::process_start::kDefaultPollIntervalMs),
+              ce::process_start::kDefaultPollIntervalMs);
+}
+
+// A sweep returns every process on the machine, but only a pid the previous
+// sweep did not carry can be a start. The pid half of an entry is nearly free;
+// the image name is a UTF-8 conversion plus a heap allocation, so naming the
+// whole table every sweep was ~300 conversions to use a handful. Pin that the
+// snapshot is told which pids are already known and names only the rest.
+TEST(NgxOtaSupervisorWatchdog, TheProcessPollNamesOnlyPidsItHasNotSeen) {
+    namespace fs = std::filesystem;
+    const std::string poll =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "process_start_poll.cpp");
+    ASSERT_FALSE(poll.empty());
+
+    EXPECT_NE(poll.find("const std::unordered_set<DWORD>* knownPids"), std::string::npos)
+        << "the snapshot must be told which pids are already known";
+    EXPECT_NE(poll.find("knownPids != nullptr && knownPids->find(pid) == knownPids->end()"), std::string::npos)
+        << "the image name must be converted only for a pid that can be a start";
+    EXPECT_NE(poll.find("baselineEstablished ? &known : nullptr"), std::string::npos)
+        << "the baseline sweep establishes pids only and needs no names at all";
+
+    const size_t emplace = poll.find("out.emplace_back(pid,");
+    ASSERT_NE(emplace, std::string::npos);
+    const std::string entryConstruction = poll.substr(emplace, 160);
+    EXPECT_NE(entryConstruction.find("isCandidateStart ?"), std::string::npos)
+        << "an unconditional Utf8FromUnicodeString here names the whole process table every sweep";
 }
 
 }  // namespace
