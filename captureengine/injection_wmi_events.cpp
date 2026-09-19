@@ -196,8 +196,13 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG obje
         }
         for (LONG index = 0; index < objectCount; ++index) {
             ProcessStartNotification notification;
-            if (!TryReadProcessStartNotification(eventObjects[index], &notification) ||
-                !pManager->IsWhitelisted(notification.name)) {
+            if (!TryReadProcessStartNotification(eventObjects[index], &notification)) {
+                continue;
+            }
+            if (pManager->TerminateNgxUpdaterIfDisabled(notification.pid, notification.name, notification.sourceTag)) {
+                continue;
+            }
+            if (!pManager->IsWhitelisted(notification.name)) {
                 continue;
             }
             const double processAgeMs = QueryProcessAgeMs(notification.pid);

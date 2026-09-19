@@ -193,6 +193,9 @@ void InjectionManager::ScanExistingProcesses() {
         do {
             ++scannedProcesses;
             std::string name = pe32.szExeFile;
+            if (TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, name, "StartupScan")) {
+                continue;
+            }
             std::lock_guard<std::mutex> injectLock(injectMutex);
             if (IsWhitelisted(name)) {
                 ++whitelistedProcesses;

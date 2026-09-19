@@ -114,6 +114,25 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
     publication.baseConfig = baseConfig;
     publication.overlayVisibility = {};
     publication.resolvedTargetConfigs.clear();
+
+    if (!configPath.empty()) {
+        auto warmTarget = [&](const std::string& pattern) {
+            if (pattern.empty()) {
+                return;
+            }
+            const std::string cacheKey = NormalizeTargetProcessName(pattern);
+            if (publication.resolvedTargetConfigs.find(cacheKey) == publication.resolvedTargetConfigs.end()) {
+                AppConfig resolved = ResolveTargetConfig(publication.configPath, publication.baseConfig, pattern);
+                publication.resolvedTargetConfigs.emplace(cacheKey, resolved);
+            }
+        };
+        for (const auto& entry : baseConfig.gameWhitelist) {
+            warmTarget(entry.pattern);
+        }
+        for (const auto& entry : baseConfig.overlayWhitelist) {
+            warmTarget(entry.pattern);
+        }
+    }
 }
 
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {

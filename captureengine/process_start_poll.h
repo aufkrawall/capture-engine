@@ -64,13 +64,11 @@ private:
     HANDLE stopEvent_ = nullptr;
 };
 
-// The cadence CE polls at when it has to. Chosen against what the interval
-// actually buys: the previous WMI fallback cost a full 500 ms of detection lag
-// and still left seconds of margin before a real game's first swapchain, so
-// there is nothing to win by polling aggressively - and a system-wide sweep is
-// exactly the kind of work that should stay rare.
-inline constexpr unsigned kDefaultPollIntervalMs = 250;
-inline constexpr unsigned kMinPollIntervalMs = 50;
+// The cadence CE polls at when it has to. 50 ms provides rapid early-process
+// detection to intercept static imports and early loader events (such as NGX
+// updates) while NtQuerySystemInformation costs only ~1-2 ms per sweep.
+inline constexpr unsigned kDefaultPollIntervalMs = 50;
+inline constexpr unsigned kMinPollIntervalMs = 10;
 inline constexpr unsigned kMaxPollIntervalMs = 2000;
 
 inline constexpr unsigned ClampPollIntervalMs(unsigned requested) {

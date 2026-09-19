@@ -5,6 +5,7 @@
 
 #include "source_fragment_reader.h"
 
+#include "../captureengine/process_start_poll.h"
 #include "../common/config.h"
 #include "../hook/common/ngx_ota_policy.h"
 
@@ -674,6 +675,46 @@ TEST(RuntimeOverrideEarlyPaths, ModelStoreRedirectUsesTheSameEarlyCapableSource)
         << "the model-store branch must not read the hook thread's config directly";
     EXPECT_NE(around.find("ConfiguredStreamlineDllPath()"), std::string::npos)
         << "it must use the early-capable accessor";
+}
+
+// When a game like Alan Wake 2 imports sl.interposer statically, nvngx_update.exe
+// can be spawned during initial loader initialization before CE's hook DLL is mapped.
+// The supervisor acts as a watchdog: process polling and existing-process scans
+// terminate spawned updaters immediately when ngx_ota=off, launch sweeps clean up
+// any updater spawned during injection delay, and config publication prewarms
+// target profiles to eliminate discovery latency.
+TEST(NgxOtaSupervisorWatchdog, SupervisorIntegratesOtaWatchdogAndConfigPrewarming) {
+    namespace fs = std::filesystem;
+    const std::string watchdog =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_ota_watchdog.cpp");
+    ASSERT_FALSE(watchdog.empty());
+    EXPECT_NE(watchdog.find("TerminateNgxUpdaterIfDisabled"), std::string::npos);
+    EXPECT_NE(watchdog.find("SweepRunningNgxUpdatersIfDisabled"), std::string::npos);
+    EXPECT_NE(watchdog.find("OpenProcess(PROCESS_TERMINATE"), std::string::npos);
+
+    const std::string manager =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_manager.cpp");
+    ASSERT_FALSE(manager.empty());
+    EXPECT_NE(manager.find("TerminateNgxUpdaterIfDisabled(pid, imageName, \"ProcessPoll\")"), std::string::npos);
+    EXPECT_NE(manager.find("SweepRunningNgxUpdatersIfDisabled(\"TargetLaunchSweep\")"), std::string::npos);
+
+    const std::string security =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_security.cpp");
+    ASSERT_FALSE(security.empty());
+    EXPECT_NE(security.find("TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, name, \"StartupScan\")"), std::string::npos);
+
+    const std::string injectMain =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "inject_main.cpp");
+    ASSERT_FALSE(injectMain.empty());
+    EXPECT_NE(injectMain.find("manager->SetNgxOtaModeQuery("), std::string::npos);
+
+    const std::string publication =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
+    ASSERT_FALSE(publication.empty());
+    EXPECT_NE(publication.find("baseConfig.gameWhitelist"), std::string::npos);
+    EXPECT_NE(publication.find("ResolveTargetConfig("), std::string::npos);
+
+    EXPECT_LE(ce::process_start::kDefaultPollIntervalMs, 50u);
 }
 
 }  // namespace

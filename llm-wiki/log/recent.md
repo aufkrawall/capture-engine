@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-19 - NGX OTA supervisor watchdog and target profile prewarming for regular hooking
+
+When a title like Alan Wake 2 imports `sl.interposer` statically, `_nvngx.dll` can spawn `nvngx_update.exe`
+during initial process loader initialization before CE's hook DLL is mapped. While `--launch` avoids this by
+spawning the target suspended, regular hooking (CE background supervisor running) needed a generic,
+robust solution:
+
+1. **Multi-layer Supervisor Watchdog (`injection_ota_watchdog.cpp`):**
+   - In `injection_manager.cpp` (`HandlePolledProcessStart`) and `injection_wmi_events.cpp` (`Indicate`), newly
+     started processes are checked via `ce::ngx_ota::IsNgxUpdaterImage`. If `ngx_ota=off`, the spawned updater is
+     terminated immediately via `OpenProcess(PROCESS_TERMINATE)` + `TerminateProcess(hProcess, 0)`.
+   - In `injection_security.cpp` (`ScanExistingProcesses`), any existing updater running before CE started is
+     terminated during the initial scan.
+   - When a whitelisted target is discovered, `SweepRunningNgxUpdatersIfDisabled("TargetLaunchSweep")` runs
+     immediately in `LaunchDelayedInjectionThread`, catching updaters launched during injection worker setup.
+   - Injected `CreateProcessW` hook continues refusing subsequent spawns (`refusal #1..#15`).
+2. **Target Profile Prewarming (`inject_config_publication.cpp`):**
+   - Synchronous disk I/O and INI re-parsing previously took ~195 ms during `onInjectCallback`.
+   - `SetPublicationBaseConfig` now prewarms `resolvedTargetConfigs` for all entries in `gameWhitelist` and
+     `overlayWhitelist` during startup, dropping target config publication latency to ~0 ms.
+3. **Reduced Discovery Polling Interval (`process_start_poll.h`):**
+   - Dropped `kDefaultPollIntervalMs` from 250 ms to 50 ms (`kMinPollIntervalMs = 10 ms`). Because
+     `NtQuerySystemInformation` takes <2 ms per sweep, this cuts discovery latency from 250 ms to ~25-50 ms.
+
 ### 2026-09-19 - The sl.* override lost to a 400 ms policy gap, not to injection timing
 
 Asked to think hard about whether the `sl.common` loss is really unfixable with existing hook

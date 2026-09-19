@@ -58,6 +58,13 @@ public:
   // Callback to execute before injection (e.g. to reload config)
   void SetOnInjectCallback(std::function<void(DWORD, const std::string &)> callback);
 
+  using NgxOtaModeQuery = std::function<uint8_t()>;
+  void SetNgxOtaModeQuery(NgxOtaModeQuery query);
+  bool IsNgxOtaDisabled();
+  bool TerminateNgxUpdaterIfDisabled(DWORD pid, const std::string &imageName,
+                                    const char *sourceTag);
+  void SweepRunningNgxUpdatersIfDisabled(const char *reason);
+
   // Security Validation
   bool ValidateDllSecurity(const std::string &dllPath);
   bool VerifyDLLSignature(
@@ -196,6 +203,7 @@ private:
   // Inject moved to public
   std::mutex injectCallbackMutex;
   std::function<void(DWORD, const std::string &)> onInjectCallback;
+  NgxOtaModeQuery ngxOtaModeQuery;
 
 public:
   // CRITICAL FIX: Make mutex and shutdown methods accessible to delayed

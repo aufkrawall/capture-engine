@@ -246,6 +246,9 @@ void InjectionManager::Update() {
 }
 
 void InjectionManager::HandlePolledProcessStart(DWORD pid, const std::string& imageName) {
+    if (TerminateNgxUpdaterIfDisabled(pid, imageName, "ProcessPoll")) {
+        return;
+    }
     if (!IsWhitelisted(imageName)) {
         return;
     }
@@ -627,6 +630,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                 source.c_str(), name.c_str(), static_cast<unsigned long>(pid));
         return;
     }
+    SweepRunningNgxUpdatersIfDisabled("TargetLaunchSweep");
 
     try {
         // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below

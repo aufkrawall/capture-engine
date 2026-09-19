@@ -340,6 +340,10 @@ int InjectProcessMain(const AppConfig& config) {
             return;
         }
 
+        manager->SetNgxOtaModeQuery([pSharedMem]() -> uint8_t {
+            return pSharedMem ? pSharedMem->graphicsConfig.ngxOtaMode : kNgxOtaModeDefault;
+        });
+
         manager->SetOnInjectCallback([&](DWORD targetPid, const std::string& processName) {
             LogInfo("[Inject] Reloading config for target: %s", processName.c_str());
 
