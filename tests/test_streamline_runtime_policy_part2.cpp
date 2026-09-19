@@ -455,10 +455,34 @@ TEST(StreamlineRuntimePolicyTest, StreamlineFeatureQueryPinsByAddressNotByPath) 
 // never extends or misattributes a streak.
 // ---------------------------------------------------------------------------
 TEST(StreamlineRuntimePolicyTest, DLSSGHealthTracksOnlySuccessfulOnRequestSamples) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(true, true));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(true, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(false, true));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(false, false));
+    using ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample;
+    constexpr uint32_t kModeOn = 1;
+
+    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, kModeOn));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, false, kModeOn));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, true, kModeOn));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, false, kModeOn));
+}
+
+// The monitor asks "the game requested frame generation, so why is nothing being generated?". Under
+// eAuto/eDynamic that question has a legitimate answer - the runtime chose 1x because the rendered rate
+// already meets the target - so the streak must not be tracked at all. Session `20260919_230915` fired
+// this warning five times while dynamic MFG was holding ~138 fps by varying between 2x and 4x.
+TEST(StreamlineRuntimePolicyTest, DLSSGHealthIgnoresModesWhereTheRuntimeChoosesTheCadence) {
+    using ce::streamline_runtime_policy::IsDLSSGCadenceChosenByRuntime;
+    using ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample;
+
+    // sl::DLSSGMode: 0 eOff, 1 eOn, 2 eAuto, 3 eDynamic.
+    EXPECT_FALSE(IsDLSSGCadenceChosenByRuntime(0));
+    EXPECT_FALSE(IsDLSSGCadenceChosenByRuntime(1));
+    EXPECT_TRUE(IsDLSSGCadenceChosenByRuntime(2));
+    EXPECT_TRUE(IsDLSSGCadenceChosenByRuntime(3));
+
+    // A fixed request still gets the full GTA-style monitoring it was written for.
+    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, 1));
+    // Auto and dynamic do not.
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 2));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 3));
 }
 
 TEST(StreamlineRuntimePolicyTest, DLSSGInterpolationEvidenceRequiresGeneratedFramePresented) {

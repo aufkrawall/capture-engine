@@ -135,3 +135,24 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   DLSS-G plugin that reads them (2.14 does) and, for dynamic mode's full behaviour, NVIDIA documents driver 595.97 or
   newer. On anything older the keys are simply never read and nothing changes - the same outcome Profile Inspector
   produces.
+
+## Validated on hardware
+
+Session `20260919_230915` (Talos Principle 2, sl 2.14.1 + nvngx_dlssg 310.9.1, driver 616.92, 144 Hz):
+`mode=dynamic dynamicMax=6x targetRate=max refresh driverVSync=force on`, all five keys answered - VSYNCMODE
+`0x47814940` to `sl.common`, then mode 4, target `0x01000000`, dynamic max 5, in exactly `readDRSKeys` order.
+The runtime then held ~138 fps by varying the cadence between 2x and 4x (`base_fps` 30-71 against
+`output_fps` 123-143), with `displayJagUs` 287-575 and `screenTimeShare=1000permille` - no VRR or pacing
+regression from the forced driver VSync. `stateVersion=3` confirmed the DLSSGState gap, so `dynMFG` reports
+-1 rather than a false 0.
+
+It never reaches 5x/6x despite `dlss_fg_dynamic_max=6x`, and that is correct: at a 30-70 fps rendered rate
+3x-4x already meets the ~144 target, and "up to" means the runtime stops there.
+
+## The activation-health monitor does not apply to auto/dynamic
+
+`ShouldTrackDLSSGActivationHealthSample` refuses `sl::DLSSGMode::eAuto` and `eDynamic`. The monitor exists to
+catch the GTA case - the game asked for frame generation and nothing was ever generated - and that question
+only has a fault answer for a FIXED request. Under a runtime-chosen cadence, choosing 1x because the rendered
+rate already meets the target is a legitimate operating point, so a run of `numFramesActuallyPresented == 1`
+proves nothing. The same session fired the warning five times while dynamic MFG was plainly working.

@@ -754,8 +754,20 @@ inline bool ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(bool observe
 // updateActive=1, but presents stayed at base rate all session and the user saw no fps gain) -------------
 // Track health only for successful GetState queries where the game actually REQUESTS frame generation
 // (options mode != off). OFF-mode samples must not extend a not-interpolating streak.
-inline bool ShouldTrackDLSSGActivationHealthSample(bool getStateSucceeded, bool optionsRequestFrameGenerationOn) {
-    return getStateSucceeded && optionsRequestFrameGenerationOn;
+//
+// `sl::DLSSGMode::eAuto` (2) and `eDynamic` (3) hand the cadence to the runtime, and **choosing not to
+// generate a frame is a legitimate operating point there**, not a failed activation: `dlss_fg_dynamic_max`
+// is an "up to", and when the rendered rate already meets the target the correct choice is 1x. The
+// monitor's whole premise - the game asked for frame generation, so frames must be appearing - only holds
+// for a fixed request. Session `20260919_230915` fired this warning five times while dynamic MFG was
+// demonstrably holding ~138 fps by varying between 2x and 4x.
+inline bool IsDLSSGCadenceChosenByRuntime(uint32_t mode) {
+    return mode == 2 || mode == 3;
+}
+
+inline bool ShouldTrackDLSSGActivationHealthSample(bool getStateSucceeded, bool optionsRequestFrameGenerationOn,
+                                                   uint32_t optionsMode) {
+    return getStateSucceeded && optionsRequestFrameGenerationOn && !IsDLSSGCadenceChosenByRuntime(optionsMode);
 }
 
 // DLSSGState.numFramesActuallyPresented >= 2 proves generated frames reached presentation. ==1 means only

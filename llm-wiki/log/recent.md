@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-19 - `vsync_mode` over DRS validated; the FG health monitor stops accusing dynamic mode
+
+Session `20260919_230915`. All five DLSS driver-settings keys answered including VSYNCMODE
+(`0x47814940` force-on to `sl.common`), and the previous session's two reporting bugs are gone:
+`stateVersion=3` so `dynMFG` reads -1 rather than a false 0, and the metered multiplier log is 22 lines of
+5299 (was 2743 of 10631) while still reporting `change 7168, observed 2x..4x`.
+
+- **No VRR/pacing regression from forcing driver VSync**, which was the risk worth watching:
+  `fps=138.5 stddev=415us displayJagUs=316 screenTimeShare=1000permille`, and `output_fps` varies 123-143
+  rather than clamping - VRR behaving, not hard vsync.
+- **`[DLSSG HEALTH] ON but NOT interpolating` was a false alarm** (5 occurrences) and is now suppressed for
+  `eAuto`/`eDynamic`. The monitor's premise - the game requested frame generation, so frames must be
+  appearing - only holds for a FIXED request. Under a runtime-chosen cadence, 1x is a legitimate choice when
+  the rendered rate already meets the target, so a run of `numFramesActuallyPresented == 1` is not evidence
+  of anything. The GTA case it was written for is a fixed request and keeps full monitoring.
+- Deliberately *not* fixed by finding a better evidence source: `GetFGMultiplier()` is fed from the NGX/
+  Streamline request and `GetBaseFPS()` derives from `outputFps / multiplier` for DLSS FG, so neither is
+  independent of the thing being judged. The premise was the bug, not the signal.
+
 ### 2026-09-19 - `vsync_mode` now reaches DLSS-G, because only the driver key does
 
 Follow-up to the dynamic MFG run. With `vsync=fifo` live the indicator still read `144 Hz F`; forcing VSync in a

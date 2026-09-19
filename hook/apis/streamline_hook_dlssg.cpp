@@ -126,8 +126,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
     }
 
     const bool optionsRequestOn = streamline_hook_options != nullptr && streamline_hook_options->mode != 0;
+    const uint32_t optionsMode = streamline_hook_options ? streamline_hook_options->mode : 0u;
     if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(result == streamline_hook_kSlResultOk,
-                                                                              optionsRequestOn)) {
+                                                                              optionsRequestOn, optionsMode)) {
         const bool interpolationEvidence =
             ce::streamline_runtime_policy::IsDLSSGInterpolationPresentEvidence(state.numFramesActuallyPresented);
         uint64_t streak = 0;
