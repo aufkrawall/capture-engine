@@ -1,3 +1,31 @@
+<!--
+SPDX-License-Identifier: MIT
+Copyright (c) 2026 aufkrawall
+-->
+
+# Debug and Binary Analysis Tools
+
+This file is a project-local tool inventory and diagnostic guide. Treat documented paths as hints until verified on the current machine.
+
+## Tool/path resolution precedence
+
+On Windows, `tools/discover-debug-tools.ps1` is the shared non-mutating discovery helper. Its machine-local output is `debug-tool-manifest.json` (under `%LOCALAPPDATA%\LLMDebugTools` by default).
+
+Use the first reliable source available:
+
+1. generated `debug-tool-manifest.json`
+2. local, uncommitted `tool-paths.env` (see `tool-paths.example.env`)
+3. repository-local or pinned tool locations
+4. shell discovery such as `Get-Command`, `where.exe`, or `command -v`
+5. documented project-specific known-good paths below
+6. safe system defaults/fallbacks
+
+The discovery helper must not install packages, download tools, edit PATH, or mutate debugger/system state.
+
+## Windows SDK debugger architecture matrix
+
+Windows SDK Debugging Tools commonly live in architecture-specific subdirectories under `Windows Kits\10\Debuggers`, including `x64`, `x86`, `arm`, and `arm64`. The shared discovery helper generates candidates from `ProgramFiles(x86)` and `ProgramFiles`, preferring any matching `WINDOWS_SDK_DEBUGGERS_*` override first and falling back to PATH. Discover the variants relevant to the host and target instead of assuming x64, and record the resolved debugger architecture when it can affect live or dump debugging behavior (particularly 32-bit WoW64 vs native x64).
+
 ## Windows debugging and binary analysis tools
 
 - When analyzing crash dumps, use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:

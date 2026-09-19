@@ -87,20 +87,23 @@ Copyright (c) 2026 aufkrawall
 ## Build, diagnostics, and tests
 
 - Fix newly introduced LSP errors/warnings, plus pre-existing issues in touched files or issues that directly block the task; do not expand into unrelated repository-wide cleanup!
-- We are paranoid about having sufficient regression tests, better too many than too few!
-- Add focused regression tests where possible, especially tests that would have failed before the fix!
+- We are paranoid about having sufficient regression tests, better too many than too few! Regression coverage and diagnosability are first-class deliverables, not optional polish!
+- For every bug fix or behavioral correction, explicitly assess both regression coverage and diagnostics even when existing tests pass. Strongly prefer a focused automated regression test that fails before the fix and passes after it!
+- For features, cover the new contract and important edge cases when suitable test infrastructure exists!
 - If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest!
-- Do not add sleeps or timing assumptions to tests!
-- Check whether touched/new code has sufficient unit coverage, and add new test units accordingly!
+- Do not add low-value tests merely to satisfy a blanket rule. If focused automation is genuinely impractical or adds little value, preserve a reproducible verification method and state why automated coverage was omitted!
+- If additional regression coverage or diagnostics are deliberately not added for a non-trivial behavioral change, state the reason!
+- Do not add sleeps or timing assumptions to tests! Check whether touched/new code has sufficient unit coverage, and add new test units accordingly!
 
 ## Debugging and logging
 
 - We are paranoid about having sufficient debug logging!
-- Add high-signal, rate-limited debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
+- Add high-signal, rate-limited debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions, especially around relevant state transitions, inputs, boundaries, recovery paths, and failures! Keep diagnostics non-secret and low-overhead.
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
 
 ## Windows debugging and binary analysis tools
 
+- When `tools/discover-debug-tools.ps1` and `debug-tool-manifest.json` exist on Windows, use the manifest as machine-specific path evidence instead of duplicating SDK/MSVC discovery logic!
 - For crash/debugging work, always analyze relevant available `.dmp` crash dumps; do not inspect unrelated historical dumps during ordinary feature work!
 Use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
 ```

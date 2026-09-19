@@ -82,3 +82,12 @@ common/config.h.tmp0
 hook/common/hook_common.h.tmp0
 # Audit artifacts (reports and plans) are working documents, not tracked files.
 /audit/
+
+# Local debug tool discovery and overrides
+tool-paths.env
+debug-tool-manifest.json
+debug-tool-warnings.txt
+debug-tool-availability.md
+
+# PowerShell helper and test scripts
+*.ps1
