@@ -177,7 +177,8 @@ static bool TryFindVerifiedExternalHookResumeOffset(const char* context, const u
 }
 
 static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublisher publisher,
-                                 void* publisherContext, int minimumExternalPatchSize) {
+                                 void* publisherContext, int minimumExternalPatchSize,
+                                 ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
 #ifndef _WIN64
     (void)publisher;
     (void)publisherContext;
@@ -504,9 +505,11 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     DWORD patchError = ERROR_SUCCESS;
     auto quiesceFailure = ce::hook_patch::QuiesceFailure::kNone;
     bool ownershipChanged = false;
+    bool acceptedUnstableSnapshot = false;
     {
-        ce::hook_patch::ThreadQuiescence quiescence(resumeCode, static_cast<size_t>(displaceSize));
+        ce::hook_patch::ThreadQuiescence quiescence(resumeCode, static_cast<size_t>(displaceSize), unstablePolicy);
         quiesceFailure = quiescence.FailureReason();
+        acceptedUnstableSnapshot = quiescence.AcceptedUnstableSnapshot();
         if (quiescence.IsReady() && memcmp(resumeCode, entry.origBytes, displaceSize) != 0) {
             ownershipChanged = true;
         }
@@ -527,18 +530,11 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
             }
         }
     }
+    LogDeepHookPatchOutcome(resumeCode, patchInstalled, acceptedUnstableSnapshot, quiesceFailure, ownershipChanged,
+                            patchError);
     if (!patchInstalled) {
         if (publisher)
             publisher(nullptr, publisherContext);
-        // Name the condition. All three used to be folded into one sentence, so a
-        // refusal could not be told apart from a transient thread-creation race
-        // (Witcher 3 + Smooth Motion, session 20260919_182155).
-        HookLogImportant(
-            "DeepHook: Refusing live patch at %p — quiesce=%s ownershipChanged=%d VirtualProtectError=%lu retryable=%d",
-            resumeCode, ce::hook_patch::GetQuiesceFailureName(quiesceFailure), ownershipChanged ? 1 : 0,
-            static_cast<unsigned long>(patchError),
-            ce::hook_patch::IsRetryableQuiesceFailure(quiesceFailure) ? 1 : 0);
-        SetLastDeepHookQuiesceFailure(quiesceFailure);
         // The publisher made this trampoline callable before the live patch
         // attempt. Retain its RX allocation for an in-flight caller that
         // acquired the pointer before rollback.
@@ -559,14 +555,17 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 }
 
 void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSize) {
-    return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr, minimumExternalPatchSize);
+    return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr, minimumExternalPatchSize,
+                               ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
 }
 
 void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
-                               int minimumExternalPatchSize) {
+                               int minimumExternalPatchSize,
+                               ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
     if (!publisher)
         return nullptr;
-    return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize);
+    return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
+                               unstablePolicy);
 }
 
 // ============================================================================

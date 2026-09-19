@@ -15,20 +15,21 @@ constexpr DWORD kQuiesceThreadAccess =
 }  // namespace
 
 ThreadQuiescence::ThreadQuiescence() {
-    Quiesce();
+    Quiesce(UnstableSnapshotPolicy::kRefuse);
 }
 
-ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
+ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize,
+                                   UnstableSnapshotPolicy unstablePolicy) {
     if (!patchAddress || patchSize == 0)
         return;
-    Quiesce();
+    Quiesce(unstablePolicy);
     if (ready_ && !IsRangeSafe(patchAddress, patchSize)) {
         ready_ = false;
         failure_ = QuiesceFailure::kRangeUnsafe;
     }
 }
 
-void ThreadQuiescence::Quiesce() {
+void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
     const DWORD currentThreadId = GetCurrentThreadId();
     const ULONGLONG enterMs = GetTickCount64();
     try {
@@ -98,8 +99,15 @@ void ThreadQuiescence::Quiesce() {
         // pacer/interpolation/capture workers exactly while CE is installing the
         // Present body hook, which is what made this the observed failure under
         // Smooth Motion.
-        failure_ = QuiesceFailure::kUnstableSnapshot;
-        return;
+        if (unstablePolicy != UnstableSnapshotPolicy::kAcceptSuspendedSet) {
+            failure_ = QuiesceFailure::kUnstableSnapshot;
+            return;
+        }
+        // Proceed on the set actually suspended. IsRangeSafe() below still has to
+        // prove none of them is executing the bytes about to change; what is given
+        // up is only the guarantee that no FURTHER thread exists, which a thread
+        // created after the final walk breaks in the stable case too.
+        acceptedUnstableSnapshot_ = true;
     }
 
     // A grouped transaction keeps every tracked thread suspended throughout,

@@ -97,8 +97,17 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
     bool haveBodyView = false;
     void* deepPresentBody = nullptr;
     for (int attempt = 1; attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
-        deepPresentBody = InlineHook::InstallDeepHookPublished(
-            presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr, observedPresentEntryPatchSize);
+        // The last attempt drops the no-new-threads requirement, which is simply
+        // unreachable while NvPresent64 is spawning its workers, and keeps the
+        // check that actually makes the patch safe: no suspended thread is in the
+        // range. Losing this hook costs CE its view below the foreign Present
+        // chain for the whole session, and with Steam that costs Steam's overlay.
+        const auto unstablePolicy = (attempt == kDeepPresentBodyInstallAttempts)
+                                        ? ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet
+                                        : ce::hook_patch::UnstableSnapshotPolicy::kRefuse;
+        deepPresentBody = InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent,
+                                                              PublishDeepPresentBody, nullptr,
+                                                              observedPresentEntryPatchSize, unstablePolicy);
         if (deepPresentBody) {
             if (attempt > 1) {
                 HookLogImportant(

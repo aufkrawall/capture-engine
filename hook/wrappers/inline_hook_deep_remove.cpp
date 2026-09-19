@@ -24,6 +24,29 @@ ce::hook_patch::QuiesceFailure GetLastDeepHookQuiesceFailure() {
     return g_lastDeepHookQuiesceFailure.load(std::memory_order_acquire);
 }
 
+// Why a deep-hook patch landed or was refused. All of it used to be one sentence
+// that folded three unrelated conditions together, so a transient
+// thread-creation race could not be told apart from a permanent refusal
+// (Witcher 3 + Smooth Motion, sessions 20260919_182155 / _183858).
+void LogDeepHookPatchOutcome(const void* resumeCode, bool patchInstalled, bool acceptedUnstableSnapshot,
+                             ce::hook_patch::QuiesceFailure quiesceFailure, bool ownershipChanged, DWORD patchError) {
+    if (patchInstalled) {
+        if (acceptedUnstableSnapshot) {
+            HookLogImportant(
+                "DeepHook: Patched %p on the suspended thread set while peers were still being created — the range "
+                "was proven free of every suspended thread; only the unreachable no-new-threads guarantee was "
+                "given up",
+                resumeCode);
+        }
+        return;
+    }
+    HookLogImportant(
+        "DeepHook: Refusing live patch at %p — quiesce=%s ownershipChanged=%d VirtualProtectError=%lu retryable=%d",
+        resumeCode, ce::hook_patch::GetQuiesceFailureName(quiesceFailure), ownershipChanged ? 1 : 0,
+        static_cast<unsigned long>(patchError), ce::hook_patch::IsRetryableQuiesceFailure(quiesceFailure) ? 1 : 0);
+    SetLastDeepHookQuiesceFailure(quiesceFailure);
+}
+
 namespace {
 
 enum class DeepHookRestoreResult {

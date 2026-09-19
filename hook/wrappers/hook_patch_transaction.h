@@ -58,6 +58,26 @@ inline bool IsRetryableQuiesceFailure(QuiesceFailure failure) {
     return failure == QuiesceFailure::kUnstableSnapshot || failure == QuiesceFailure::kRangeUnsafe;
 }
 
+// What to do when peers keep appearing while the thread set is being walked.
+//
+// The property the patch actually needs is IsRangeSafe(): no suspended thread is
+// executing the bytes about to change. Requiring the walk to also reach a pass
+// that discovers NO new threads is strictly stronger, and it is not what makes
+// the patch safe - a thread created after the final walk is unsuspended either
+// way, so that residual race exists in both modes. Under NVIDIA Smooth Motion the
+// stronger condition is simply unreachable during D3D init: NvPresent64 spawns its
+// pacer/interpolation/capture workers exactly then, and Witcher 3 session
+// 20260919_183858 refused 4 attempts across 2 ms, every one on
+// `unstable-thread-snapshot`.
+//
+// kAcceptSuspendedSet therefore keeps the real check and drops the unreachable
+// one. It is opt-in per transaction, for the callers whose only alternative is
+// losing the hook entirely.
+enum class UnstableSnapshotPolicy : uint8_t {
+    kRefuse = 0,
+    kAcceptSuspendedSet,
+};
+
 // Suspends every existing peer thread and proves none is executing the bytes
 // about to change. Construction can fail closed; destruction always resumes
 // every thread successfully suspended by this transaction.
@@ -66,7 +86,8 @@ public:
     // Quiesce every peer thread for a group of patches. Each patch range must
     // still be checked with IsRangeSafe() before its bytes are changed.
     ThreadQuiescence();
-    ThreadQuiescence(const void* patchAddress, size_t patchSize);
+    ThreadQuiescence(const void* patchAddress, size_t patchSize,
+                     UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse);
     ~ThreadQuiescence();
 
     ThreadQuiescence(const ThreadQuiescence&) = delete;
@@ -81,10 +102,16 @@ public:
         return failure_;
     }
 
+    // True when this transaction is ready despite peers still being created
+    // during the walk. Diagnostic: the patch is still IsRangeSafe()-gated.
+    bool AcceptedUnstableSnapshot() const {
+        return acceptedUnstableSnapshot_;
+    }
+
     bool IsRangeSafe(const void* patchAddress, size_t patchSize) const;
 
 private:
-    void Quiesce();
+    void Quiesce(UnstableSnapshotPolicy unstablePolicy);
 
     struct SuspendedThread {
         HANDLE handle = nullptr;
@@ -96,6 +123,7 @@ private:
 
     std::vector<SuspendedThread> threads_;
     bool ready_ = false;
+    bool acceptedUnstableSnapshot_ = false;
     QuiesceFailure failure_ = QuiesceFailure::kNone;
 
     // Reported by the destructor, after every peer has resumed. Logging inside

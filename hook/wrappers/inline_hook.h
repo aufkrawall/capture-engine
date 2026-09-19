@@ -105,8 +105,10 @@ void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSiz
 ce::hook_patch::QuiesceFailure GetLastDeepHookQuiesceFailure();
 void SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure failure);
 
-void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
-                               void* publisherContext, int minimumExternalPatchSize = 0);
+void* InstallDeepHookPublished(
+    void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
+    int minimumExternalPatchSize = 0,
+    ce::hook_patch::UnstableSnapshotPolicy unstablePolicy = ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
 
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);

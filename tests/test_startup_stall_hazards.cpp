@@ -212,7 +212,7 @@ TEST(ProcessThreadWalkSourceTest, QuiescencePrefersTheProcessScopedWalkAndKeepsT
 
     // Nothing may log from inside Quiesce() itself: every call between its body
     // and the destructor would run with peers suspended.
-    const size_t quiesceBody = source.find("void ThreadQuiescence::Quiesce()");
+    const size_t quiesceBody = source.find("void ThreadQuiescence::Quiesce(");
     ASSERT_NE(quiesceBody, std::string::npos);
     ASSERT_LT(quiesceBody, destructor);
     EXPECT_GT(source.find("HookLog(", quiesceBody), destructor)

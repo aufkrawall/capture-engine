@@ -322,6 +322,13 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // (session 20260919_182155).
     EXPECT_NE(install.find("kDeepPresentBodyInstallAttempts", helper), std::string::npos);
     EXPECT_NE(install.find("IsRetryableQuiesceFailure(", helper), std::string::npos);
+    // Retrying alone is not enough: session 20260919_183858 refused all four attempts inside the
+    // same 2 ms, every one on `unstable-thread-snapshot`, because NvPresent64 spawns its workers
+    // exactly then. The last attempt keeps the check that makes the patch safe (no SUSPENDED
+    // thread is in the range) and drops the no-new-threads guarantee, which a thread created
+    // after the final walk breaks in the stable case too.
+    EXPECT_NE(install.find("UnstableSnapshotPolicy::kAcceptSuspendedSet", helper), std::string::npos);
+    EXPECT_NE(install.find("attempt == kDeepPresentBodyInstallAttempts", helper), std::string::npos);
     // A Present1 entry a foreign overlay owns gets the same deep treatment; an unclaimed one
     // has no chain to damage, so the ordinary prepend is correct there.
     EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),

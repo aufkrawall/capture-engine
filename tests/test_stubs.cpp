@@ -84,7 +84,8 @@ bool InlineHook::Remove(void*) {
 void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;
 }
-void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, void*, int) {
+void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, void*, int,
+                                           ce::hook_patch::UnstableSnapshotPolicy) {
     return nullptr;
 }
 ce::hook_patch::QuiesceFailure InlineHook::GetLastDeepHookQuiesceFailure() {

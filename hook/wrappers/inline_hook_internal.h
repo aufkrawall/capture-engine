@@ -15,6 +15,8 @@
 #include <mutex>
 #include <vector>
 
+#include "hook_patch_transaction.h"
+
 namespace InlineHook {
 
 struct PublishedHookSpec;
@@ -113,5 +115,11 @@ enum class ShortControlRelocationResult {
 ShortControlRelocationResult TryRelocateExternalShortControlTransfer(
     const uint8_t* instrBytes, uintptr_t instrAddr, int instrLen, uintptr_t copiedBlockBase, size_t copiedBlockSize,
     uint8_t* trampoline, int* trampolineOffset, bool is64bit, const char* ownerTag);
+
+
+// Reports the outcome of a deep-hook live patch. Defined in inline_hook_deep_remove.cpp
+// so the installer unit stays inside the file-size ceiling.
+void LogDeepHookPatchOutcome(const void* resumeCode, bool patchInstalled, bool acceptedUnstableSnapshot,
+                             ce::hook_patch::QuiesceFailure quiesceFailure, bool ownershipChanged, DWORD patchError);
 
 }  // namespace InlineHook

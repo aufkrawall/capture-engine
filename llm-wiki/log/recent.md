@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-09-19 - The Steam-overlay break was one unreachable precondition, not a race worth retrying
+
+Session `20260919_183858`, with the named quiesce reason from the previous entry in place. It paid
+for itself immediately:
+
+```
+DeepHook: Refusing live patch at 00007FFCA0E4953E — quiesce=unstable-thread-snapshot
+  ownershipChanged=0 VirtualProtectError=0 retryable=1
+Present body hook attempt 1/4 ... 2/4 ... 3/4 ... 4/4 refused (unstable-thread-snapshot)
+```
+
+All four attempts, same reason, and all of them between 18:39:24.863 and .865 — **2 milliseconds**,
+entirely inside NvPresent64's worker-creation burst. The retry was the right idea with the wrong
+shape: retrying harder inside the burst cannot help.
+
+**What the stability requirement is actually worth.** `ThreadQuiescence` required the thread walk to
+reach a pass that discovers NO new threads. The property the patch needs is narrower and is checked
+separately: `IsRangeSafe()` — no SUSPENDED thread's instruction pointer is inside the bytes about to
+change. The stronger requirement does not close the residual hole either: a thread created after the
+final walk is unsuspended in both modes. Under Smooth Motion at D3D init it is simply unreachable.
+
+**Fixed.** `UnstableSnapshotPolicy::kAcceptSuspendedSet` keeps `IsRangeSafe()` and drops the
+unreachable no-new-threads guarantee. It is opt-in per transaction; every existing caller keeps
+`kRefuse`. Only the LAST of the four Present-body attempts uses it, so the strict path is still
+preferred and the relaxation is a last resort before losing the below-the-chain view for the session.
+A patch that lands this way says so in the log.
+
+**Still conditional.** If the range genuinely is not safe the patch is still refused, CE stays above
+Steam, and the bypass still drops Steam's overlay. That remaining case needs CE's detour to survive
+Steam calling back through `vtable[8]` — the crash the bypass was added for.
+
+Gate: `--verify` 0.1.6692. Hardware run pending.
+
+
 ### 2026-09-19 - CE broke Steam's DX11 overlay under Smooth Motion, one refusal upstream
 
 Session `20260919_182155`. Steam's overlay never draws with CE + Smooth Motion; it works without CE.
