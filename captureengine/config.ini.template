@@ -546,6 +546,15 @@ general_limiter_mode=basic
 ; vsync_mode: default, off, fifo, adaptive, or mailbox. fifo is normal V-Sync.
 ; Native borderless DirectDraw Blt uses fixed-refresh vertical-blank pacing for
 ; fifo; it is not a DXGI flip-model/VRR promotion.
+;
+; With DLSS frame generation active this setting is also answered to the DLSS-G
+; runtime through the driver's own VSync setting, inside the game process only.
+; That is necessary because the runtime decides its pacing from the driver
+; setting before it looks at the application's request, and CaptureEngine's own
+; rewrite happens below Streamline's swapchain - so without this the runtime
+; would never see the setting at all. off and fifo/adaptive are reported as the
+; driver's force-off and force-on; mailbox and default are not reported (they
+; are not a vertical-blank contract) and leave the driver's answer alone.
 vsync_mode=default
 ; anisotropic_filtering: default, off, 2x, 4x, 8x, or 16x.
 anisotropic_filtering=default

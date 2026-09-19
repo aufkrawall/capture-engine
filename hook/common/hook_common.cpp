@@ -717,6 +717,16 @@ GraphicsConfig GetActiveGraphicsConfig() {
     drsOverrides.fixedCountMultiplier = mergedConfig.parsed.fgFixedCount;
     drsOverrides.dynamicMaxMultiplier = mergedConfig.parsed.fgDynamicMax;
     drsOverrides.dynamicTargetFps = mergedConfig.parsed.fgTargetFps;
+    // `vsync_mode` reaches the DLSS-G runtime only through this key. CE's own
+    // rewrite lands on the real dxgi Present, below Streamline's swapchain
+    // proxy, so `shouldEnableVSync` never sees it as an application request -
+    // and it consults the driver key first anyway. Resolved from the same
+    // VSyncOverride the present path uses so one string has one meaning;
+    // GetVSyncOverride() is not called here because it would re-enter this
+    // function through GetActiveGraphicsConfig().
+    const VSyncOverride mergedVSync = ResolveVSyncOverrideForMode(mergedConfig.vsyncMode);
+    drsOverrides.vsyncMode = ce::ngx_drs::DrsVSyncModeForPresentOverride(
+        mergedVSync.shouldOverride, mergedVSync.useMailbox, mergedVSync.presentInterval);
     ce::ngx_drs::SetConfiguredOverrides(drsOverrides);
 
     return mergedConfig;
@@ -763,24 +773,25 @@ float GetActivePrerenderLimit() {
 
 // Helper to get VSync override settings
 // Reduces code duplication across DX9/DX11/DX12 hooks
-VSyncOverride GetVSyncOverride() {
+// Split from GetVSyncOverride so the resolved config can also be published to
+// the DLSS-G driver-settings answer without re-entering GetActiveGraphicsConfig.
+VSyncOverride ResolveVSyncOverrideForMode(const std::string& vsyncMode) {
     VSyncOverride result;
-    const auto& cfg = GetActiveGraphicsConfig();
 
-    if (cfg.vsyncMode == "default" || cfg.vsyncMode.empty()) {
+    if (vsyncMode == "default" || vsyncMode.empty()) {
         result.shouldOverride = false;
         return result;
     }
 
     result.shouldOverride = true;
 
-    if (cfg.vsyncMode == "off") {
+    if (vsyncMode == "off") {
         result.presentInterval = 0;  // DX9: D3DPRESENT_INTERVAL_IMMEDIATE, DX11/12: sync interval 0
         result.useMailbox = false;
-    } else if (cfg.vsyncMode == "fifo" || cfg.vsyncMode == "adaptive") {
+    } else if (vsyncMode == "fifo" || vsyncMode == "adaptive") {
         result.presentInterval = 1;  // DX9: D3DPRESENT_INTERVAL_ONE, DX11/12: sync interval 1
         result.useMailbox = false;
-    } else if (cfg.vsyncMode == "mailbox") {
+    } else if (vsyncMode == "mailbox") {
         result.presentInterval = 0;  // DX9: immediate (no true mailbox), DX11/12: sync 0 + flip_discard
         result.useMailbox = true;
     } else {
@@ -789,6 +800,10 @@ VSyncOverride GetVSyncOverride() {
     }
 
     return result;
+}
+
+VSyncOverride GetVSyncOverride() {
+    return ResolveVSyncOverrideForMode(GetActiveGraphicsConfig().vsyncMode);
 }
 
 // Process VSync override on Present parameters

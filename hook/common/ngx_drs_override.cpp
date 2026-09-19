@@ -99,12 +99,15 @@ void LogConfiguredOverrides(const DlssDrsOverrides& overrides) {
     else
         snprintf(targetText, sizeof(targetText), "%u fps", static_cast<unsigned>(overrides.dynamicTargetFps));
 
+    const char* vsyncText = overrides.vsyncMode == kDrsVSyncModeForceOn    ? "force on"
+                            : overrides.vsyncMode == kDrsVSyncModeForceOff ? "force off"
+                                                                           : "untouched";
     HookLogImportant(
         "NGX DRS: configured DLSS driver-settings answers: preset='%c' mode=%s fixed=%ux dynamicMax=%ux "
-        "targetRate=%s",
+        "targetRate=%s driverVSync=%s",
         PresetIdToLetter(overrides.renderPreset), DlssFGModeName(overrides.frameGenerationMode),
         static_cast<unsigned>(overrides.fixedCountMultiplier), static_cast<unsigned>(overrides.dynamicMaxMultiplier),
-        targetText);
+        targetText, vsyncText);
 }
 
 }  // namespace

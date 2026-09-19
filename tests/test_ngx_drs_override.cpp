@@ -23,6 +23,11 @@ using ce::ngx_drs::kDrsDynamicTargetFrameRateAuto;
 using ce::ngx_drs::kDrsFrameGenerationModeAuto;
 using ce::ngx_drs::kDrsFrameGenerationModeDynamic;
 using ce::ngx_drs::kDrsFrameGenerationModeOff;
+using ce::ngx_drs::DrsVSyncModeForPresentOverride;
+using ce::ngx_drs::kDrsVSyncModeForceOff;
+using ce::ngx_drs::kDrsVSyncModeForceOn;
+using ce::ngx_drs::kDrsVSyncModePassive;
+using ce::ngx_drs::kVSyncModeDrsSettingId;
 using ce::ngx_drs::kDrsFrameGenerationModeOn;
 using ce::ngx_drs::kDynamicMultiFrameCountMaxDrsSettingId;
 using ce::ngx_drs::kDynamicTargetFrameRateDrsSettingId;
@@ -320,6 +325,54 @@ TEST_F(NgxDrsOverrideTest, DynamicHookExceptionIsScopedToDrsConsumersAndOneExpor
     EXPECT_FALSE(ShouldAllowNgxFrameGenerationPresetDynamicHook(true, true, "nvapi_Direct_GetMethod"));
     EXPECT_FALSE(ShouldAllowNgxFrameGenerationPresetDynamicHook(true, true, "CreateDXGIFactory2"));
     EXPECT_FALSE(ShouldAllowNgxFrameGenerationPresetDynamicHook(true, true, nullptr));
+}
+
+// `vsync_mode` cannot reach the DLSS-G runtime any other way: CE's rewrite lands
+// on the real dxgi Present, below Streamline's swapchain proxy, and
+// `vsyncState.cpp::shouldEnableVSync` consults the driver key before the
+// application's request anyway.
+TEST_F(NgxDrsOverrideTest, DriverVSyncModeIsAnsweredFromTheResolvedVsyncMode) {
+    // fifo / adaptive resolve to presentInterval 1 -> the driver's Force ON.
+    EXPECT_EQ(DrsVSyncModeForPresentOverride(true, false, 1), kDrsVSyncModeForceOn);
+    // off resolves to interval 0 -> Force OFF.
+    EXPECT_EQ(DrsVSyncModeForPresentOverride(true, false, 0), kDrsVSyncModeForceOff);
+    // mailbox is not a vertical-blank contract, and default claims nothing;
+    // both leave the key to the driver.
+    EXPECT_EQ(DrsVSyncModeForPresentOverride(true, true, 0), 0u);
+    EXPECT_EQ(DrsVSyncModeForPresentOverride(false, false, 1), 0u);
+
+    DlssDrsOverrides overrides;
+    overrides.vsyncMode = kDrsVSyncModeForceOn;
+    EXPECT_TRUE(HasAnyOverride(overrides));
+    EXPECT_EQ(Resolved(overrides, kVSyncModeDrsSettingId), kDrsVSyncModeForceOn);
+    EXPECT_TRUE(ShouldSubstituteSetting(overrides, kVSyncModeDrsSettingId, kNvDrsSettingVer1));
+
+    // The VSync key alone must not answer any DLSS key.
+    uint32_t unused = 0;
+    EXPECT_FALSE(ResolveSubstitutedValue(overrides, kFrameGenerationModeDrsSettingId, unused));
+    EXPECT_FALSE(ResolveSubstitutedValue(overrides, kRenderPresetDrsSettingId, unused));
+}
+
+TEST_F(NgxDrsOverrideTest, OnlyTheTwoVSyncValuesTheRuntimeActsOnAreClaimed) {
+    // shouldEnableVSync compares against exactly Force ON and Force OFF;
+    // PASSIVE is what "no override" already looks like, so claiming it would be
+    // a substitution that changes nothing, and anything else is not a value the
+    // driver defines.
+    DlssDrsOverrides passive;
+    passive.vsyncMode = kDrsVSyncModePassive;
+    EXPECT_EQ(Normalize(passive).vsyncMode, 0u);
+    EXPECT_FALSE(HasAnyOverride(passive));
+
+    DlssDrsOverrides bogus;
+    bogus.vsyncMode = 0x12345678u;
+    EXPECT_EQ(Normalize(bogus).vsyncMode, 0u);
+    EXPECT_FALSE(HasAnyOverride(bogus));
+
+    for (uint32_t value : {kDrsVSyncModeForceOn, kDrsVSyncModeForceOff}) {
+        DlssDrsOverrides accepted;
+        accepted.vsyncMode = value;
+        EXPECT_EQ(Normalize(accepted).vsyncMode, value);
+    }
 }
 
 }  // namespace

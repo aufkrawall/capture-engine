@@ -236,6 +236,7 @@ struct VSyncOverride {
     int presentInterval = 0;  // DX9: D3DPRESENT_INTERVAL_*, DX11/12: sync interval (0 or 1)
     bool useMailbox = false;  // DX11/12: use DXGI_SWAP_EFFECT_FLIP_DISCARD for mailbox
 };
+VSyncOverride ResolveVSyncOverrideForMode(const std::string& vsyncMode);
 VSyncOverride GetVSyncOverride();
 void ProcessVSyncOverride(UINT& SyncInterval, UINT& Flags);
 

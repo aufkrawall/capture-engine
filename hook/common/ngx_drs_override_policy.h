@@ -72,6 +72,13 @@ inline constexpr uint32_t kDynamicMultiFrameCountMaxDrsSettingId = 0x10562D0Fu;
 // NGX_DLSSG_DYNAMIC_TARGET_FRAME_RATE_ID. 0 = no override, the auto sentinel
 // below = the display's maximum refresh rate, else a plain frame rate.
 inline constexpr uint32_t kDynamicTargetFrameRateDrsSettingId = 0x10CF4125u;
+// VSYNCMODE_ID. Not a DLSS key at all - it is the driver's own vertical sync
+// setting - but `sl.dlss_g` reads it in the same `readDRSKeys` loop, and
+// `vsyncState.cpp::shouldEnableVSync` consults it BEFORE the application's own
+// SyncInterval request. That ordering is the whole reason CE has to answer it:
+// CE's `vsync_mode` rewrite lands on the real dxgi Present, below Streamline's
+// swapchain proxy, so the runtime never observes it as an application request.
+inline constexpr uint32_t kVSyncModeDrsSettingId = 0x00A879CFu;
 
 // EValues_NGX_DLSSG_MODE. CE's own kDlssFGMode* values are deliberately a
 // different numbering (they are a configuration enum, not a driver ABI), so
@@ -85,6 +92,13 @@ inline constexpr uint32_t kDrsFrameGenerationModeDynamic = 4u;
 // runtime still accepts (NGX_DLSSG_DYNAMIC_TARGET_FRAME_RATE_MAX).
 inline constexpr uint32_t kDrsDynamicTargetFrameRateAuto = 0x01000000u;
 inline constexpr uint32_t kDrsDynamicTargetFrameRateMax = 0x00FFFFFFu;
+
+// EValues_VSYNCMODE. `shouldEnableVSync` compares the key against exactly these
+// two magic values and treats everything else - PASSIVE included - as "the
+// application decides".
+inline constexpr uint32_t kDrsVSyncModeForceOff = 0x08416747u;
+inline constexpr uint32_t kDrsVSyncModeForceOn = 0x47814940u;
+inline constexpr uint32_t kDrsVSyncModePassive = 0x60925292u;
 
 // NVAPI_OK / NVAPI_ERROR. NvAPI status is a signed enum; only these two matter here.
 inline constexpr int32_t kNvApiOk = 0;
@@ -150,11 +164,15 @@ struct DlssDrsOverrides {
     uint8_t fixedCountMultiplier = 0;    // 2..6, 0 = untouched
     uint8_t dynamicMaxMultiplier = 0;    // 2..6, 0 = untouched
     uint16_t dynamicTargetFps = kDlssFGTargetFpsDefault;
+    // A raw EValues_VSYNCMODE value, or 0 for "leave the driver's own answer
+    // alone". Stored raw because this one key is not CE's own vocabulary.
+    uint32_t vsyncMode = 0;
 
     bool operator==(const DlssDrsOverrides& other) const {
         return renderPreset == other.renderPreset && frameGenerationMode == other.frameGenerationMode &&
                fixedCountMultiplier == other.fixedCountMultiplier &&
-               dynamicMaxMultiplier == other.dynamicMaxMultiplier && dynamicTargetFps == other.dynamicTargetFps;
+               dynamicMaxMultiplier == other.dynamicMaxMultiplier &&
+               dynamicTargetFps == other.dynamicTargetFps && vsyncMode == other.vsyncMode;
     }
     bool operator!=(const DlssDrsOverrides& other) const { return !(*this == other); }
 };
@@ -179,12 +197,18 @@ inline constexpr DlssDrsOverrides Normalize(DlssDrsOverrides overrides) {
     overrides.fixedCountMultiplier = NormalizeDlssFGCount(overrides.fixedCountMultiplier);
     overrides.dynamicMaxMultiplier = NormalizeDlssFGCount(overrides.dynamicMaxMultiplier);
     overrides.dynamicTargetFps = NormalizeDlssFGTargetFps(overrides.dynamicTargetFps);
+    if (overrides.vsyncMode != kDrsVSyncModeForceOn && overrides.vsyncMode != kDrsVSyncModeForceOff) {
+        // Only the two values `shouldEnableVSync` actually acts on are worth
+        // claiming. PASSIVE is what "no override" already looks like, so
+        // answering it would add a substitution that changes nothing.
+        overrides.vsyncMode = 0;
+    }
     return overrides;
 }
 
 inline constexpr bool HasAnyOverride(const DlssDrsOverrides& overrides) {
     const DlssDrsOverrides normalized = Normalize(overrides);
-    return normalized.renderPreset != 0 ||
+    return normalized.renderPreset != 0 || normalized.vsyncMode != 0 ||
            HasDlssFGDriverOverride(normalized.frameGenerationMode, normalized.fixedCountMultiplier,
                                    normalized.dynamicMaxMultiplier, normalized.dynamicTargetFps);
 }
@@ -236,6 +260,9 @@ inline constexpr bool ResolveSubstitutedValue(const DlssDrsOverrides& rawOverrid
         case kDynamicTargetFrameRateDrsSettingId:
             value = TargetFpsToDrsValue(overrides.dynamicTargetFps);
             break;
+        case kVSyncModeDrsSettingId:
+            value = overrides.vsyncMode;
+            break;
         default:
             return false;
     }
@@ -252,6 +279,7 @@ inline constexpr const char* DrsSettingIdName(uint32_t settingId) {
            : settingId == kMultiFrameCountDrsSettingId            ? "DLSS-MFG fixed count"
            : settingId == kDynamicMultiFrameCountMaxDrsSettingId  ? "DLSS-MFG dynamic maximum"
            : settingId == kDynamicTargetFrameRateDrsSettingId     ? "DLSS-MFG target frame rate"
+           : settingId == kVSyncModeDrsSettingId                  ? "driver VSync mode"
                                                                   : "other";
 }
 
@@ -272,6 +300,18 @@ bool IsDlssDrsConsumerModuleName(const char* modulePath);
 
 inline bool IsDlssDrsConsumerModule(const char* modulePath, bool exportsStreamlinePluginEntry) {
     return IsDlssDrsConsumerModuleName(modulePath) || exportsStreamlinePluginEntry;
+}
+
+// `vsync_mode` to EValues_VSYNCMODE, expressed in terms of CE's already-resolved
+// VSyncOverride rather than the configuration string, so there is exactly one
+// place that decides what `vsync_mode` means. `mailbox` is not a vertical-blank
+// contract and `default` claims nothing, so both return 0 and leave the key to
+// the driver.
+inline constexpr uint32_t DrsVSyncModeForPresentOverride(bool shouldOverride, bool useMailbox,
+                                                         int presentInterval) {
+    return !shouldOverride || useMailbox    ? 0u
+           : presentInterval >= 1           ? kDrsVSyncModeForceOn
+                                            : kDrsVSyncModeForceOff;
 }
 
 // Retained under its original name: the frame generation snippet is still the

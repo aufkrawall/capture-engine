@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-09-19 - `vsync_mode` now reaches DLSS-G, because only the driver key does
+
+Follow-up to the dynamic MFG run. With `vsync=fifo` live the indicator still read `144 Hz F`; forcing VSync in a
+driver profile instead reads `144 Hz VF`.
+
+- **Why.** `sl.dlss_g`'s `vsyncState.cpp::shouldEnableVSync` resolves `DLSSG.VSyncOn` as: internal "unsupported"
+  flag wins, then the **driver** VSYNCMODE key (`0x08416747` FORCEOFF / `0x47814940` FORCEON), and only if neither
+  force value is present does the **application's** SyncInterval decide. CE's `vsync_mode` rewrite lands in
+  `DXGIShared::ProcessPresentVSyncOverride`, on the real dxgi Present - below Streamline's swapchain proxy, per
+  the hook-below rule - so the runtime never saw it as an application request either.
+- **Fix.** CE answers `0x00A879CF` alongside the DLSS keys: `off` -> FORCEOFF, `fifo`/`adaptive` -> FORCEON,
+  `mailbox`/`default` -> not claimed. Scoped by the existing caller filter, so only DLSS-G consumers see it.
+- **The runtime's own consistency check is only a log.** `bCplVsyncOn` from NvAPI is compared against the DRS
+  value and `RSYNC: Inconsistency detected!` is emitted when they disagree - which they now will. Verified by
+  disassembly that the mismatch branch falls through to the same place as the consistent one, so answering the
+  key alone is sufficient and no second NvAPI interception is needed.
+- **Not cosmetic:** `checkGsyncAndVsync` and the Silk/RSYNC path consult the same value. Watch for a VRR
+  regression, given [[fifo-vsync-present-metering-capability]] history. Hardware run pending.
+- **Indicator decode corrected** (all named NGX parameters, so this is exact): the `%.0fHz` number is
+  `DLSSG.TargetFrameRate`, *not* the panel refresh - `DLSSG.RefreshRate` is separate and is not printed. `Dyn DRV`
+  is `DLSSG.Dynamic.ReflexDriven` non-zero (Reflex-**dr**i**v**en), not "driver-requested". `F`/`C` is
+  `DLSSG.FlipMetering == 2` (hardware flip metering) or not, and `V` is `DLSSG.VSyncOn`. My earlier reading of the
+  last two was wrong.
+- The topic outgrew `graphics-overrides-and-frame-pacing.md` (785 lines); split to
+  `frame-generation/dlss-driver-settings.md`.
+
 ### 2026-09-19 - Dynamic MFG confirmed working on hardware; two CE reporting bugs it exposed
 
 First hardware run of the new `dlss_fg_mode=dynamic` keys (Talos Principle 2, session `20260919_223111`,
