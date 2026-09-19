@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-09-19 - Streamline regular development build instructions (eliminate verify/package overkill)
+
+- **Problem:** Regular development instructions in `AGENTS.md` and `llm-wiki/build.py.md` mandated the full
+  `--verify` gate for changes across capture, CFR, FG, and audio paths, and omitted `--skip-package` from
+  the ordinary incremental gate. On warm caches, `--verify` took ~201 s (~3.35 minutes) with ~67 s spent
+  compressing release 7z archives (`captureengine.7z`, `testapps.7z`, `ffmpeg-corresponding-source.7z`),
+  ~42 s on ASan/UBSan child validation, ~28 s on static analysis preflight, and ~31 s on clang-tidy/tool self-tests.
+  Routine dev builds were severely bottlenecked by pre-release checks.
+- **Correction:**
+  - Standard per-change gate for regular development across ALL code areas (including capture, CFR, FG, and audio):
+    `python build.py --incremental --skip-package --run-tests --skip-updates --concise` (~25–45 s).
+  - `--skip-package` is made standard for ordinary development commits to eliminate redundant 7z archive creation.
+  - Linting (`--no-build --lint`), sanitizers (`--sanitize`), and complete verification (`--verify`) are reserved
+    for pre-release validation, release candidates, or explicit on-demand checks.
+
 ### 2026-09-19 - The Steam-overlay break was one unreachable precondition, not a race worth retrying
 
 Session `20260919_183858`, with the named quiesce reason from the previous entry in place. It paid

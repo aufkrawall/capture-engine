@@ -113,18 +113,18 @@ keyring listing, never from matching the key file.
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
-For ordinary source changes, the required final product gate is a validated incremental compile followed by the unchanged link, package, shader, PE/import/PDB, and other product-verification stages:
+For ordinary source changes across all code areas (including capture, CFR, FG, and audio), the standard final product gate is a validated incremental compile with unit tests, omitting release archive packaging:
 
 ```powershell
-python build.py --incremental --skip-updates --concise
+python build.py --incremental --skip-package --run-tests --skip-updates --concise
 ```
 
-Both this and the clean gate below are **build** gates: they run no unit tests, lint, or sanitizers. Any explicit action flag, `--skip-updates` included, takes the invocation out of default quality mode, so those stages run only when requested (see the test and complete-gate commands below).
+This compiles only changed translation units, reuses content-validated objects, verifies PE/binaries, and runs unit tests in ~25–45 s. `--skip-package` is standard during development; it avoids spending ~67 s compressing release 7z archives (`captureengine.7z`, `testapps.7z`, `ffmpeg-corresponding-source.7z`) that are only needed for releases. Pass `--gtest-filter=<suite-or-test>` to focus on touched units during iteration.
 
 Use the clean compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
 
 ```powershell
-python build.py --skip-updates --concise
+python build.py --skip-package --skip-updates --concise
 ```
 
 If a product build fails after starting, correct the failure and resume the immediately preceding failed top-level identity without recompiling proven-unchanged units:
@@ -135,7 +135,7 @@ python build.py --resume --skip-updates --concise
 
 `--resume` refuses a successful/no-build/non-top-level predecessor, a header/manifest identity mismatch, any `build.py` content change since the failed attempt, `--no-build`, `--force-rebuild`, or a run without `--skip-updates`. A refused or cache-suspect resume falls back to the applicable normal incremental or clean gate. It restores verification mode from the failed manifest, including when the predecessor was itself a plain resumed verification run whose argument list no longer contains `--verify`; tests, lint, and sanitizer coverage therefore cannot silently collapse into a build-only success. A clean attempt followed by a successful guarded resume constitutes one complete clean build transaction: every object was either compiled by the clean attempt or revalidated/recompiled after the fix, and all final link/package/verification stages completed on the resumed run.
 
-Then run relevant tests against the freshly built binaries. The canonical full test-only command is:
+For test-only runs without recompilation, the canonical full test-only command is:
 
 ```powershell
 python build.py --no-build --run-tests --skip-updates --concise
@@ -145,15 +145,15 @@ No-build verification reuses `common/build_version.h`; it does not mint an ident
 
 The default development loop is `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` (about 5-7 s). Stay in it while writing code and reach for a product build or a heavier gate only when closing out the change; do not repeat a clean build after every small edit.
 
-`--verify` is the complete **static** gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run. It never launches anything: a passing run records `coverage.integration_tests=not_run`, `coverage.test_apps=compiled_not_executed` and `coverage.fuzz=not_run`, so it proves nothing about a real D3D/Vulkan present path or a parser corpus. `python build.py --verify-runtime --skip-updates --concise` is that gate plus the smoke integration matrix and the fuzz targets; it is the release-candidate gate, not a per-change one, because it launches test apps:
+`--verify` is the complete **static** pre-release gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run. It never launches anything: a passing run records `coverage.integration_tests=not_run`, `coverage.test_apps=compiled_not_executed` and `coverage.fuzz=not_run`, so it proves nothing about a real D3D/Vulkan present path or a parser corpus. `python build.py --verify-runtime --skip-updates --concise` is that gate plus the smoke integration matrix and the fuzz targets; it is the release-candidate gate, not a per-change one, because it launches test apps:
 
 ```powershell
 python build.py --verify --skip-updates --concise
 ```
 
-`python build.py --verify --verify-clean --skip-updates --concise` is the same gate with the strict clean product rebuild (every object recompiled) and is the required invocation for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes; the plain `--verify` gate covers the capture/CFR/FG/audio path categories. `--verify-clean` without `--verify` exits 2.
+`python build.py --verify --verify-clean --skip-updates --concise` is the same gate with the strict clean product rebuild (every object recompiled) and is the required invocation for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes. Plain `--verify` is the pre-release / release-candidate static gate; it is never the routine per-change gate. `--verify-clean` without `--verify` exits 2.
 
-Timing reference (2026-08-06, warm caches, 529 translation units): plain `--verify --skip-package` completed in 89 s (only the build-version identity TU recompiled; product relinks for the new identity; sanitizer child incremental and concurrent; lint warm). `--verify --verify-clean` completed in 347 s with every object recompiled (the sanitizer stage still reused its exact-input manifest from the preceding run). Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings.
+Timing reference (2026-08-06, warm caches, 529 translation units): plain `--verify --skip-package` completed in 89 s (only the build-version identity TU recompiled; product relinks for the new identity; sanitizer child incremental and concurrent; lint warm). `--verify --verify-clean` completed in 347 s with every object recompiled (the sanitizer stage still reused its exact-input manifest from the preceding run). Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings. Without `--skip-package`, archive creation adds ~67 s.
 
 ### Ratchets: what each one actually measures
 
@@ -224,7 +224,7 @@ Default quality mode currently:
 | --- | --- | --- | --- |
 | `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Reuses content-validated objects by default (same signature discipline as `--incremental`); use `--verify-clean` for the strict clean product rebuild. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate. |
 | `--verify-clean` | user-facing | Force the strict clean product rebuild inside `--verify` | Every object is recompiled and every link redone; still runs the full test/lint/sanitizer gate. Required for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes. Exits 2 when used without `--verify`. |
-| `--skip-package` | user-facing | Skip only the automatic 7z archive creation | Keeps every other build/finalize stage (licenses, PE hardening, tests, lint, sanitizer); the `package_archives` step is recorded as skipped. Intended for dev iteration; the commit gates should run without it so archive validation still happens. |
+| `--skip-package` | user-facing | Skip only the automatic 7z archive creation | Keeps every other build/finalize stage (licenses, PE hardening, tests); the `package_archives` step is recorded as skipped. Standard for dev iteration and ordinary commit gates to avoid spending ~67 s compressing release archives; production release flows omit it. |
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build so compile failures and `compile_commands.json` stay current. The non-LTO validation link is content-cached; this flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
