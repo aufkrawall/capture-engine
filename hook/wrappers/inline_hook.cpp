@@ -130,48 +130,63 @@ bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patc
     return true;
 }
 
+template <typename F>
+static bool ExecuteWithQuiescenceFallback(const void* target, size_t patchSize,
+                                          ce::hook_patch::QuiesceFailure* outFailure, F&& action) {
+    if (outFailure)
+        *outFailure = ce::hook_patch::QuiesceFailure::kNone;
+    {
+        ce::hook_patch::ThreadQuiescence quiescence(target, patchSize);
+        if (quiescence.IsReady())
+            return action();
+        if (outFailure)
+            *outFailure = quiescence.FailureReason();
+        if (quiescence.FailureReason() != ce::hook_patch::QuiesceFailure::kUnstableSnapshot)
+            return false;
+    }
+    ce::hook_patch::ThreadQuiescence fallback(target, patchSize,
+                                              ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet);
+    if (fallback.IsReady()) {
+        if (outFailure)
+            *outFailure = ce::hook_patch::QuiesceFailure::kNone;
+        return action();
+    }
+    if (outFailure)
+        *outFailure = fallback.FailureReason();
+    return false;
+}
+
 bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
                           const uint8_t* expectedBytes, uint8_t* installedBytes) {
     ce::hook_patch::QuiesceFailure quiesceFailure = ce::hook_patch::QuiesceFailure::kNone;
-    bool quiesceReady = false;
-    bool patchWritten = false;
-    {
-        ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
-        quiesceReady = quiescence.IsReady();
-        if (!quiesceReady) {
-            quiesceFailure = quiescence.FailureReason();
-        } else {
-            patchWritten =
-                WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
-        }
-    }
-    if (!quiesceReady) {
+    const bool success = ExecuteWithQuiescenceFallback(
+        target, static_cast<size_t>(patchSize), &quiesceFailure, [&]() {
+            return WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
+        });
+    if (!success && quiesceFailure != ce::hook_patch::QuiesceFailure::kNone) {
         static std::atomic<uint32_t> s_quiesceFailLogs{0};
         const uint32_t count = s_quiesceFailLogs.fetch_add(1, std::memory_order_relaxed);
         if (count < 8 || (count % 64) == 0) {
             HookLogImportant("InlineHook: WriteOwnedEntryPatch quiescence failed at %p (reason=%d count=%u)", target,
                              static_cast<int>(quiesceFailure), count + 1);
         }
-        return false;
     }
-    return patchWritten;
+    return success;
 }
 
-
 static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
-    ce::hook_patch::ThreadQuiescence quiescence(hook.target, static_cast<size_t>(hook.patchSize));
-    if (!quiescence.IsReady())
-        return false;
-    if (memcmp(hook.target, hook.installedBytes, hook.patchSize) != 0)
-        return false;
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(hook.target, hook.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
-        return false;
-    memcpy(hook.target, hook.origBytes, hook.patchSize);
-    DWORD ignoredProtect = 0;
-    VirtualProtect(hook.target, hook.patchSize, oldProtect, &ignoredProtect);
-    FlushInstructionCache(GetCurrentProcess(), hook.target, hook.patchSize);
-    return true;
+    return ExecuteWithQuiescenceFallback(hook.target, static_cast<size_t>(hook.patchSize), nullptr, [&]() {
+        if (memcmp(hook.target, hook.installedBytes, hook.patchSize) != 0)
+            return false;
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(hook.target, hook.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+            return false;
+        memcpy(hook.target, hook.origBytes, hook.patchSize);
+        DWORD ignoredProtect = 0;
+        VirtualProtect(hook.target, hook.patchSize, oldProtect, &ignoredProtect);
+        FlushInstructionCache(GetCurrentProcess(), hook.target, hook.patchSize);
+        return true;
+    });
 }
 
 static bool InstalledEntryBytesMatch(const HookEntry& hook) {
@@ -201,7 +216,6 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
             HookLog(fmt, args...);
         }
     };
-
 
     // Metered diagnostic: trace-level per-instruction byte dumps are valuable
     // for the first few hook installs but pure noise afterwards - one 90-second
@@ -614,7 +628,6 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         *outTrampoline = nullptr;
         g_hooks.pop_back();
         return false;
-
     }
 
     g_hooks.back().installed = true;

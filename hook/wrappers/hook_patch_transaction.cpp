@@ -14,8 +14,8 @@ constexpr DWORD kQuiesceThreadAccess =
     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE;
 }  // namespace
 
-ThreadQuiescence::ThreadQuiescence() {
-    Quiesce(UnstableSnapshotPolicy::kRefuse);
+ThreadQuiescence::ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy) {
+    Quiesce(unstablePolicy);
 }
 
 ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize,

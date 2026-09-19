@@ -85,7 +85,7 @@ class ThreadQuiescence {
 public:
     // Quiesce every peer thread for a group of patches. Each patch range must
     // still be checked with IsRangeSafe() before its bytes are changed.
-    ThreadQuiescence();
+    explicit ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse);
     ThreadQuiescence(const void* patchAddress, size_t patchSize,
                      UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse);
     ~ThreadQuiescence();

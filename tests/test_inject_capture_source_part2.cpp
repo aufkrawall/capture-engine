@@ -84,6 +84,7 @@ TEST(InjectLifecycleSourceTest, LateDeepHookPatchingUsesQuiescedExactByteOwnersh
     EXPECT_NE(deepHook.find("ThreadQuiescence quiescence"), std::string::npos);
     EXPECT_NE(deepHook.find("g_deepHooks.back().installedBytes"), std::string::npos);
     EXPECT_NE(deepRemove.find("Preserving foreign replacement"), std::string::npos);
+    EXPECT_NE(deepRemove.find("UnstableSnapshotPolicy::kAcceptSuspendedSet"), std::string::npos);
     EXPECT_EQ(deepHook.find("pPatch[0] = 0xCC"), std::string::npos);
 }
 
@@ -130,6 +131,13 @@ TEST(InjectLifecycleSourceTest, RelatedInlineHooksShareOnePeerThreadQuiescenceTr
     EXPECT_NE(nvngx.find("InterlockedExchangePointer", nvngx.find("const auto publishTrampoline")),
               std::string::npos);
     EXPECT_EQ(inlineHookBatch.find("InstallBatchScope"), std::string::npos);
+    EXPECT_NE(inlineHookBatch.find("ThreadQuiescence fallbackQuiescence"), std::string::npos);
+    EXPECT_NE(inlineHookBatch.find("UnstableSnapshotPolicy::kAcceptSuspendedSet"), std::string::npos);
+    EXPECT_NE(inlineHook.find("ExecuteWithQuiescenceFallback"), std::string::npos);
+    EXPECT_NE(inlineHook.find("UnstableSnapshotPolicy::kAcceptSuspendedSet"), std::string::npos);
+
+    const std::string hookTx = ReadSource("hook/wrappers/hook_patch_transaction.h");
+    EXPECT_NE(hookTx.find("explicit ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy"), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoingLive) {

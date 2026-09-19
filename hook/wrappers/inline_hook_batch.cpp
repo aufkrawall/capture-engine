@@ -123,6 +123,7 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
     size_t independentCommitCount = 0;
     bool groupReady = false;
     if (preparedCount > 0) {
+        bool groupQuiesceUnstable = false;
         {
             // Trampoline allocation, instruction decoding, publication and all
             // logging are complete before any peer is suspended. While this
@@ -136,6 +137,42 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
                     }
                     const HookEntry& hook = g_hooks[hookIndices[i]];
                     if (!groupQuiescence.IsRangeSafe(hook.target, static_cast<size_t>(hook.patchSize))) {
+                        continue;
+                    }
+                    if (!CanCommitPreparedEntryPatchLocked(hookIndices[i])) {
+                        states[i] = BatchEntryState::kFailed;
+                        continue;
+                    }
+                    states[i] = BatchEntryState::kGroupEligible;
+                }
+                for (size_t i = 0; i < count; ++i) {
+                    if (states[i] != BatchEntryState::kGroupEligible) {
+                        continue;
+                    }
+                    if (CommitPreparedEntryPatchQuiescedLocked(hookIndices[i])) {
+                        states[i] = BatchEntryState::kInstalled;
+                        ++groupedCommitCount;
+                    } else {
+                        states[i] = BatchEntryState::kFailed;
+                    }
+                }
+            } else {
+                groupQuiesceUnstable =
+                    (groupQuiescence.FailureReason() == ce::hook_patch::QuiesceFailure::kUnstableSnapshot);
+            }
+        }
+
+        if (!groupReady && groupQuiesceUnstable) {
+            ce::hook_patch::ThreadQuiescence fallbackQuiescence(
+                ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet);
+            if (fallbackQuiescence.IsReady()) {
+                groupReady = true;
+                for (size_t i = 0; i < count; ++i) {
+                    if (states[i] != BatchEntryState::kPrepared) {
+                        continue;
+                    }
+                    const HookEntry& hook = g_hooks[hookIndices[i]];
+                    if (!fallbackQuiescence.IsRangeSafe(hook.target, static_cast<size_t>(hook.patchSize))) {
                         continue;
                     }
                     if (!CanCommitPreparedEntryPatchLocked(hookIndices[i])) {

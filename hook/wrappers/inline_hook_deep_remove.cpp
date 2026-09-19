@@ -63,10 +63,7 @@ DeepHookRestoreResult RestoreOwnedDeepHookPatch(DeepHookEntry& entry) {
     if (!readable || memcmp(entry.hookAddr, entry.installedBytes, entry.patchSize) != 0)
         return DeepHookRestoreResult::ForeignPreserved;
 
-    {
-        ce::hook_patch::ThreadQuiescence quiescence(entry.hookAddr, static_cast<size_t>(entry.patchSize));
-        if (!quiescence.IsReady())
-            return DeepHookRestoreResult::QuiescenceFailed;
+    auto restoreBytes = [&]() -> DeepHookRestoreResult {
         if (memcmp(entry.hookAddr, entry.installedBytes, entry.patchSize) != 0)
             return DeepHookRestoreResult::ForeignPreserved;
 
@@ -77,10 +74,32 @@ DeepHookRestoreResult RestoreOwnedDeepHookPatch(DeepHookEntry& entry) {
         DWORD ignoredProtect = 0;
         VirtualProtect(entry.hookAddr, entry.patchSize, oldProtect, &ignoredProtect);
         FlushInstructionCache(GetCurrentProcess(), entry.hookAddr, entry.patchSize);
+        return DeepHookRestoreResult::Restored;
+    };
+
+    {
+        ce::hook_patch::ThreadQuiescence quiescence(entry.hookAddr, static_cast<size_t>(entry.patchSize));
+        if (quiescence.IsReady()) {
+            const auto result = restoreBytes();
+            if (result == DeepHookRestoreResult::Restored)
+                entry.installed = false;
+            return result;
+        }
+        if (quiescence.FailureReason() != ce::hook_patch::QuiesceFailure::kUnstableSnapshot)
+            return DeepHookRestoreResult::QuiescenceFailed;
     }
 
-    entry.installed = false;
-    return DeepHookRestoreResult::Restored;
+    {
+        ce::hook_patch::ThreadQuiescence fallback(entry.hookAddr, static_cast<size_t>(entry.patchSize),
+                                                  ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet);
+        if (fallback.IsReady()) {
+            const auto result = restoreBytes();
+            if (result == DeepHookRestoreResult::Restored)
+                entry.installed = false;
+            return result;
+        }
+        return DeepHookRestoreResult::QuiescenceFailed;
+    }
 }
 
 }  // namespace
