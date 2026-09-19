@@ -274,16 +274,25 @@ namespace {
 // The NGX core retries per feature, so a refusal repeats. Log the first few and
 // then only every thousandth, the same rate-limiting shape the loader redirect
 // refusals use.
+// Measured: NGX's startup burst is exactly nine processes in session
+// 20260919_194456 - one `dlss`, five `dlssg`, three `dlssd`, all launched
+// inside 19:45:13.383-19:45:14. The previous threshold of 8 clipped the last
+// one and made "did CE see all of them?" unanswerable from the log, which is
+// the one question this diagnostic exists to settle. 32 clears the observed
+// burst with room for the extra per-feature retries a refusal can provoke,
+// and is still bounded.
+constexpr uint32_t kFullyLoggedLaunches = 32;
+
 bool ShouldLogRefusal(uint32_t& index) {
     index = g_RefusedLaunches.fetch_add(1, std::memory_order_relaxed);
-    return index < 8 || (index % 1000) == 0;
+    return index < kFullyLoggedLaunches || (index % 1000) == 0;
 }
 
 std::atomic<uint32_t> g_AllowedLaunches{0};
 
 bool ShouldLogAllowedLaunch(uint32_t& index) {
     index = g_AllowedLaunches.fetch_add(1, std::memory_order_relaxed);
-    return index < 8 || (index % 1000) == 0;
+    return index < kFullyLoggedLaunches || (index % 1000) == 0;
 }
 
 }  // namespace

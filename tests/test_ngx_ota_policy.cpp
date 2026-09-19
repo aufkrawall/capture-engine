@@ -570,6 +570,15 @@ TEST(NgxOtaLateModules, AnUpdaterLaunchCeAllowsIsReportedAsWellAsOneItRefuses) {
         << "the report must be a no-op for any image that is not the updater";
     EXPECT_NE(runtime.find("ModeName(CurrentMode())", allowedFn), std::string::npos)
         << "the report is only useful if it names the mode responsible";
+
+    // The rate limit must clear NGX's whole startup burst. It was 8 against a
+    // measured burst of 9 (session 20260919_194456), so the log showed eight
+    // launches for nine processes and could not answer whether CE had seen the
+    // ninth - the exact question the diagnostic was added for.
+    const size_t threshold = runtime.find("constexpr uint32_t kFullyLoggedLaunches = ");
+    ASSERT_NE(threshold, std::string::npos) << "the burst threshold must be a named constant, not a literal";
+    EXPECT_EQ(runtime.find("index < 8 ||"), std::string::npos)
+        << "a threshold of 8 clips the observed nine-process burst";
 }
 
 // The refusal decision must not pass through a fixed-size narrow conversion.

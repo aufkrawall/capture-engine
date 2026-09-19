@@ -68,7 +68,24 @@ mode permits it" and "CE refused it" were indistinguishable in the log - the sam
 installed-vs-effective mistake as the slInit route, one subsystem over. `NoteUpdaterLaunchAllowed`
 now reports every observed updater launch with the mode responsible.
 
-**Still unvalidated: `ngx_ota=off` itself.** The line to look for is
+**Second run (`20260919_194456`), also `ngx_ota=on`, and the new diagnostic settled the open
+question anyway.** CE reported eight `saw an NGX updater launch ... and let it through - ngx_ota=on`
+lines between 19:45:13.383 and .686. NVIDIA's own side wrote **nine** `nvngx_update*.log` files, all
+with `Log begin` at 19:45:13-14: one `-feature dlss`, five `dlssg`, three `dlssd` - per-feature
+retries, not nine distinct decisions.
+
+So the burst is nine and CE's CreateProcess hook is on the path for it. **That is the answer to "can
+`off` actually stop these": yes, every one of them is reachable in-process**, because `_nvngx.dll`
+maps before CE's DllMain pass in this title and its `CreateProcessW` slot is CE's 0.4 s before the
+first launch.
+
+The eight-of-nine gap was **CE's own rate limit**, `index < 8`, against a burst of exactly 9 - the
+threshold clipped the last one and made "did CE see all of them?" unanswerable from the log, which is
+the single question the diagnostic was added for. Now `kFullyLoggedLaunches = 32`, which clears the
+observed burst with room for the extra retries a refusal can provoke. Picking a rate limit below a
+known burst size is the failure mode to remember here.
+
+**Still unvalidated: `ngx_ota=off` itself** - three runs, all `default` or `on`. The line to look for is
 `NGX OTA: ngx_ota=off - published __NGX_DISABLE_UPDATER (DllMain)` early in `hook_debug.log`, followed by **no**
 `refused the NGX updater launch` lines at all - refusals now mean the environment lost the race and the backstop
 took over, which is a weaker outcome than the previous "refusals are working" reading.
