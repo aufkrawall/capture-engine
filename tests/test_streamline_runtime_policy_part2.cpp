@@ -458,10 +458,10 @@ TEST(StreamlineRuntimePolicyTest, DLSSGHealthTracksOnlySuccessfulOnRequestSample
     using ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample;
     constexpr uint32_t kModeOn = 1;
 
-    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, kModeOn));
-    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, false, kModeOn));
-    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, true, kModeOn));
-    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, false, kModeOn));
+    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, kModeOn, false));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, false, kModeOn, false));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, true, kModeOn, false));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(false, false, kModeOn, false));
 }
 
 // The monitor asks "the game requested frame generation, so why is nothing being generated?". Under
@@ -479,10 +479,31 @@ TEST(StreamlineRuntimePolicyTest, DLSSGHealthIgnoresModesWhereTheRuntimeChoosesT
     EXPECT_TRUE(IsDLSSGCadenceChosenByRuntime(3));
 
     // A fixed request still gets the full GTA-style monitoring it was written for.
-    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, 1));
-    // Auto and dynamic do not.
-    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 2));
-    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 3));
+    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, 1, false));
+    // Auto and dynamic requested by the game itself do not.
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 2, false));
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, 3, false));
+}
+
+// The first attempt at this gate looked only at the game's options and therefore did nothing:
+// `dlss_fg_mode=dynamic` is delivered over the driver settings and applied inside sl.dlss_g, so the
+// options CE sees keep reporting the game's own fixed request. Session `20260919_231939` still warned
+// four times with optionsMode=on(1) while the cadence varied 2x..4x.
+TEST(StreamlineRuntimePolicyTest, DLSSGHealthIgnoresACadenceCEItselfHandedToTheRuntime) {
+    using ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample;
+    constexpr uint32_t kGameRequestedFixedOn = 1;
+
+    EXPECT_FALSE(ShouldTrackDLSSGActivationHealthSample(true, true, kGameRequestedFixedOn,
+                                                        /*configuredCadenceChosenByRuntime=*/true));
+    EXPECT_TRUE(ShouldTrackDLSSGActivationHealthSample(true, true, kGameRequestedFixedOn,
+                                                       /*configuredCadenceChosenByRuntime=*/false));
+
+    // The config-side predicate that feeds it.
+    EXPECT_FALSE(IsDlssFGModeCadenceChosenByRuntime(kDlssFGModeDefault));
+    EXPECT_FALSE(IsDlssFGModeCadenceChosenByRuntime(kDlssFGModeOff));
+    EXPECT_FALSE(IsDlssFGModeCadenceChosenByRuntime(kDlssFGModeFixed));
+    EXPECT_TRUE(IsDlssFGModeCadenceChosenByRuntime(kDlssFGModeAuto));
+    EXPECT_TRUE(IsDlssFGModeCadenceChosenByRuntime(kDlssFGModeDynamic));
 }
 
 TEST(StreamlineRuntimePolicyTest, DLSSGInterpolationEvidenceRequiresGeneratedFramePresented) {

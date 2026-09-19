@@ -107,7 +107,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
     // byte belongs to the game, not to the runtime, and the honest answer is
     // "unknown": watch the realized multiplier instead.
     if (result == streamline_hook_kSlResultOk &&
-        ce::ngx_drs::GetConfiguredOverrides().frameGenerationMode == kDlssFGModeDynamic) {
+        ce::ngx_drs::GetConfiguredFrameGenerationMode() == kDlssFGModeDynamic) {
         const int support = ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
             state.structVersion, ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion,
             state.bIsDynamicMFGSupported, streamline_hook_kSLBooleanInvalid);
@@ -127,8 +127,11 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
 
     const bool optionsRequestOn = streamline_hook_options != nullptr && streamline_hook_options->mode != 0;
     const uint32_t optionsMode = streamline_hook_options ? streamline_hook_options->mode : 0u;
-    if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(result == streamline_hook_kSlResultOk,
-                                                                              optionsRequestOn, optionsMode)) {
+    const bool configuredCadenceChosenByRuntime =
+        IsDlssFGModeCadenceChosenByRuntime(ce::ngx_drs::GetConfiguredFrameGenerationMode());
+    if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(
+            result == streamline_hook_kSlResultOk, optionsRequestOn, optionsMode,
+            configuredCadenceChosenByRuntime)) {
         const bool interpolationEvidence =
             ce::streamline_runtime_policy::IsDLSSGInterpolationPresentEvidence(state.numFramesActuallyPresented);
         uint64_t streak = 0;

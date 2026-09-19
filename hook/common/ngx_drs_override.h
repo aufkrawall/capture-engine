@@ -20,6 +20,10 @@ void SetConfiguredOverrides(const DlssDrsOverrides& overrides);
 DlssDrsOverrides GetConfiguredOverrides();
 bool IsArmed();
 
+// The configured forced mode alone, read without taking the overrides lock:
+// the DLSS-G state path consults it per GetState.
+uint8_t GetConfiguredFrameGenerationMode();
+
 // Kept as a distinct accessor because the render preset is the one key whose
 // consumer (nvngx_dlssg) is not a Streamline module, so the arming path logs it
 // separately.

@@ -155,4 +155,14 @@ It never reaches 5x/6x despite `dlss_fg_dynamic_max=6x`, and that is correct: at
 catch the GTA case - the game asked for frame generation and nothing was ever generated - and that question
 only has a fault answer for a FIXED request. Under a runtime-chosen cadence, choosing 1x because the rendered
 rate already meets the target is a legitimate operating point, so a run of `numFramesActuallyPresented == 1`
-proves nothing. The same session fired the warning five times while dynamic MFG was plainly working.
+proves nothing.
+
+**The application's options are not the whole answer.** `dlss_fg_mode=dynamic` is delivered over the driver
+settings and applied *inside* sl.dlss_g, so the `slDLSSGOptions` CE sees keep reporting the game's own fixed
+request - Talos asks for `eOn(1)` throughout. A first attempt at this gate looked only at `optionsMode` and
+therefore did nothing: session `20260919_231939` still warned four times with `optionsMode=on(1)` while the
+cadence varied 2x..4x. The gate also consults CE's own configured mode, via a lock-free
+`ce::ngx_drs::GetConfiguredFrameGenerationMode()` because this is read per GetState. It is keyed on the
+configured *intent*, not on evidence that the runtime accepted it, because that evidence is exactly what CE
+cannot observe here - and having asked for a runtime-chosen cadence is already enough to make "nothing was
+generated" unusable as a fault signal.

@@ -18,6 +18,9 @@ namespace {
 std::mutex g_OverridesMutex;
 DlssDrsOverrides g_ConfiguredOverrides;
 std::atomic<bool> g_AnyOverrideConfigured{false};
+// Mirrors g_ConfiguredOverrides.frameGenerationMode so the per-GetState read
+// never takes the lock.
+std::atomic<uint8_t> g_ConfiguredFrameGenerationMode{kDlssFGModeDefault};
 std::atomic<PfnNvApiDrsGetSetting> g_OriginalGetSetting{nullptr};
 
 DlssDrsOverrides LoadConfiguredOverrides() {
@@ -133,6 +136,7 @@ void SetConfiguredOverrides(const DlssDrsOverrides& rawOverrides) {
         changed = g_ConfiguredOverrides != normalized;
         g_ConfiguredOverrides = normalized;
     }
+    g_ConfiguredFrameGenerationMode.store(normalized.frameGenerationMode, std::memory_order_release);
     g_AnyOverrideConfigured.store(HasAnyOverride(normalized), std::memory_order_release);
     if (changed) {
         LogConfiguredOverrides(normalized);
@@ -141,6 +145,10 @@ void SetConfiguredOverrides(const DlssDrsOverrides& rawOverrides) {
 
 DlssDrsOverrides GetConfiguredOverrides() {
     return LoadConfiguredOverrides();
+}
+
+uint8_t GetConfiguredFrameGenerationMode() {
+    return g_ConfiguredFrameGenerationMode.load(std::memory_order_acquire);
 }
 
 uint32_t GetConfiguredPreset() {

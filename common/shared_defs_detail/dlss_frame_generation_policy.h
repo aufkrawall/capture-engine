@@ -63,6 +63,13 @@ inline constexpr bool IsDlssFGMode(uint8_t mode) {
     return mode <= kDlssFGModeDynamic;
 }
 
+// `auto` and `dynamic` hand the cadence to the runtime. Anything that judges
+// frame generation by "is a generated frame appearing" has to stand down for
+// these, because not generating one is a legitimate choice there.
+inline constexpr bool IsDlssFGModeCadenceChosenByRuntime(uint8_t mode) {
+    return mode == kDlssFGModeAuto || mode == kDlssFGModeDynamic;
+}
+
 inline constexpr const char* DlssFGModeName(uint8_t mode) {
     return mode == kDlssFGModeOff       ? "off"
            : mode == kDlssFGModeFixed   ? "fixed"

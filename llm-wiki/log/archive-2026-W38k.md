@@ -1,0 +1,222 @@
+# llm-wiki Log Archive (2026-09-19)
+
+### 2026-09-19 - CE broke Steam's DX11 overlay under Smooth Motion, one refusal upstream
+
+Session `20260919_182155`. Steam's overlay never draws with CE + Smooth Motion; it works without CE.
+
+The chain, read backwards from the symptom:
+
+```
+DeepHook: Refusing live patch at 00007FFCA0E4953E because peer threads could not be quiesced...
+InstallPresentInlineHooks: deep body hook on the foreign-owned Present entry FAILED
+  -> falling back to the entry prepend
+[OVERLAY LAYER] CE composites ABOVE the foreign Present chain (foreignOverlays=1)
+CallOriginalPresent: Steam overlay without Streamline - using bypass trampoline ...
+```
+
+CE failed to get its view BELOW Steam's Present chain, so it took the entry prepend and ended up
+ABOVE Steam. From there, calling the original re-enters Steam's handler, which calls back through
+`vtable[8]` - now CE's `DetourPresent` - and crashes. CE's existing mitigation is to skip Steam's
+handler entirely via the bypass trampoline. That avoids the crash and costs Steam's overlay.
+
+**Why the refusal happens here.** `ThreadQuiescence` fails closed at five distinct points, and they
+were all folded into one log sentence, so the log could not say which. The likely one under Smooth
+Motion is the unstable-snapshot path: the walk requires two consecutive passes that discover no new
+threads, and NvPresent64 spawns its pacer/interpolation/capture workers exactly while CE is
+installing this hook. `error=0` already ruled out VirtualProtect.
+
+**Fixed:**
+- `ce::hook_patch::QuiesceFailure` names the condition, and the refusal line now reports
+  `quiesce=<reason> ownershipChanged=<0|1> VirtualProtectError=<n> retryable=<0|1>`.
+- The Present body hook is retried (bounded, 4 attempts) while the reason is transient, BEFORE the
+  entry prepend latches for the session. No wait: each attempt re-walks and re-suspends the live
+  thread set, and only `unstable-thread-snapshot` / `peer-executing-in-patch-range` are retried.
+- The Steam bypass line now names its consequence ("ITS OVERLAY WILL NOT DRAW") and points at the
+  deep-hook failure as the real defect, so this does not need another round trip to diagnose.
+
+**Not fixed, deliberately:** if the deep hook still fails for a non-transient reason, CE is above
+Steam and the bypass still drops Steam's overlay. Removing the bypass needs CE's detour to survive
+Steam calling back through `vtable[8]`, which is a real crash this mitigation was added for - worth
+doing, but not on a guess. The next run's named quiesce reason decides whether it is needed.
+
+Gate: `--verify` 0.1.6686. Hardware run pending.
+
+
+### 2026-09-19 - Measuring the right rate was not the same as showing it
+
+Session `20260919_180154`, driver vsync forced to 144. The classifier from the entry below was
+already correct - the cadence window read `application=144.0 fps output=288.0 fps generating=1
+multiplier=2`, exactly the game's rate and exactly twice it - and the overlay still displayed 288.
+
+The overlay's frame rate comes from `dxgi_shared_g_DXGIPerfMetrics`, which `UpdateDXGIPresentMetrics
+AndPublish` advances once per Present. On a present interposer's private output chain that is once
+per OUTPUT frame. DX12 never had the problem because its metric is fed by the app-facing swapchain
+wrapper, which is 1x by construction; DX11 has no app-facing view at all under an interposer, so the
+metric was counting the interposer's submissions.
+
+Ruled out first: that the 2x was CE summing the interposer's TWO private output chains. Only one of
+them (`000001F15890C8E0`) is ever presented - 1814 overlay draws on it, zero on the other - so the
+2x is real generation, not double counting.
+
+**Fixed.** The source is resolved at the top of both present entries
+(`ClassifyPresentInterposerPresentSource`), before anything measures a rate from the present, and
+exactly once - reading it consumes the submission counter, so `HandleDX11ProcessFrame` now consults
+the stored verdict instead of classifying again. The metric skips generated presents; the output
+stream is still counted in full by `NotePresentInterposerOutputPresent`, so the FG row keeps both
+rates.
+
+Gate: `--verify` 0.1.6681. Hardware run pending.
+
+
+### 2026-09-19 - The overlay's DX11 Smooth Motion fps was the interposer's output rate
+
+Follow-up to the crash entry below: with Witcher 3 surviving, two things were visible for the first
+time. Both were the same bug wearing two hats - CE was treating the interposer's OUTPUT presents as
+the game's frames.
+
+**The flicker.** `DrawDX11Overlay` had a 500 us "exact duplicate" suppressor that returned early for
+any present within that window on the same swapchain and buffer, on the guess that "Smooth Motion can
+trigger paired Present callbacks for the same frame". On the interposer's private output chain that
+sub-millisecond partner is the generated frame, not a duplicate callback. Session `20260919_160555`:
+2453 of 6962 presents (35%) skipped, every one reaching the screen with no overlay. The chain is
+presented once per displayed frame, real and generated alike, so the suppressor no longer runs there.
+
+**The fps.** Measured from that session: 6962 presents over 40.8 s, in **3231 groups of exactly two**,
+median 432 us within a group and 6590 us between them. ~85 application fps, ~171 output. The overlay
+showed ~171, and the FG row doubled it again (`base_fps=377 output_fps=754` at the startup transient).
+
+`RecordPresentForNvidiaSmoothMotion` recorded a constant `1` for every present, with the comment "DX11
+and Vulkan do not have the DX12 command-list classifier". So `realFrames` was the whole population and
+`cachedBaseFPS` was the output rate. The two-stream `CadenceTracker` could not help either: its
+application stream is fed by the app-facing swapchain wrapper, and under Smooth Motion in DX11 CE has
+no app-facing view at all - NvPresent64 intercepts the create above CE, so both chains CE sees are its
+private ones.
+
+**The second stream was available all along, on the game's own context.** CE wraps the game's
+`ID3D11DeviceContext`. A generated frame is produced entirely inside the interposer, so the
+application's context is idle across it; one or more submissions since the previous present means this
+present carries an application frame. Zero-versus-nonzero - no threshold, no gap window, no timing, so
+a light application frame still counts and driver metering changes cannot move it. Counting is off
+until an interposer chain is registered, so the ordinary draw path pays one relaxed atomic load.
+CE's overlay and the interpolation both run on the interposer's device under Smooth Motion, so
+neither can inflate the count.
+
+Classified presents now feed the same `CadenceTracker` DX12 uses: every private-chain present is an
+output present, the application-sourced subset is an application present, and the ratio is the
+generation factor. `UpdateMetrics` compares against zero instead of a work threshold when the caller
+already resolved the source. `DetourPresent: Present interposer output cadence window` now appears in
+DX11 sessions and is the line to read.
+
+**Hardware run pending** for the fps and flicker fixes. Gate: `--verify` 0.1.6680.
+
+
+### 2026-09-19 - Witcher 3 + Smooth Motion: the crash CE could not dump, and why CE caused it
+
+Session `20260919_154534`, DX11, RTX 5070. The game died ~7 s in, twice, with CE inject + overlay and
+Smooth Motion on; without CE it does not. No `.dmp` in the session directory.
+
+**Why there was no dump.** Exit code `0xC0000409`. That is `__fastfail`, dispatched by the kernel with
+`FirstChance = FALSE`, so the VEH, the SEH chain and the unhandled filter CE installs are all skipped -
+CE's crash handler is structurally unable to run, and `crash.log` was never even created. CE's "last
+resort" for exactly this case wrote WER LocalDumps values under **HKCU**, which WER never reads; the
+key for `witcher3.exe` named the session directory and WER wrote to `%LOCALAPPDATA%\CrashDumps`
+anyway. The dump existed the whole time, 110 MB, in the one place CE never looked. ~50 stale HKCU
+subkeys had accumulated there since June, each carrying the user's own paths.
+
+**What the dump said.** `NvPresent64.dll+0x1b6fd1` is `int 29h` preceded by `mov ecx, 7` -
+`__fastfail(FAST_FAIL_FATAL_APP_EXIT)` out of the UCRT's `abort()`, called from NvPresent64's own
+`std::terminate`. An unhandled C++ exception inside the interposer, on the game's render thread, three
+frames below the game's call into it. No CE frames on that stack; CE's threads were idle. Both runs
+identical to the byte.
+
+**What CE did wrong.** `NotePresentInterposerPrivateSwapchainCreate` correctly classified NvPresent64's
+two private output chains and logged "no queue observed, so the overlay stays on the application-facing
+chain" - but the code that enforces that lived inside `if (ctx.api == APIType::D3D12)` in
+`ExecutePresentCore`. The DX11 branch never saw it. So CE composited onto NvPresent64's private output
+chain, with NvPresent64's own D3D11 device (`0000022DD76731C0`, not the game's `0000022DB68BF0D0`), and
+kept a retained RTV on its back buffer across Presents. That chain is hooked `presentOnly`, so the
+interposer's own `ResizeBuffers` is invisible to CE and nothing ever dropped the pin. There was also a
+path that adopted whatever RTV was bound at Present entry whenever NvPresent64 was loaded - on that
+chain, one of the interpolator's intermediates.
+
+Under Smooth Motion in DX11 CE has **no application-facing view at all**: NvPresent64 intercepts the
+create above CE and both creates CE sees are its own. The wiki listed that as "not observed, not ruled
+out"; it is now observed. So passing the private chain through untouched would mean no overlay, which is
+not acceptable - the route had to stay a composite, just a safe one.
+
+**Fixed:**
+- `ce::overlay_compat::ResolvePresentInterposerCompositeRoute` answers the route for **every** API, in
+  `ExecutePresentCore` before the D3D12 branch. D3D12 keeps the queue rule unchanged; DX11/DX10 get
+  `kOutputChainTransientBackbuffer`, because there is no queue and the constraint is retention, not
+  submission.
+- DX11 on an interposer's private chain: the back-buffer RTV is created and released inside the one
+  Present, any retained RTV from a previous chain is dropped on entry, and the bound render target is
+  never adopted as the overlay target.
+- Dump capture: the inert HKCU LocalDumps writes are gone and the leftovers are purged once from the
+  controller; `ce::wer_dump_adoption` claims WerFault's dump into the session directory on the
+  injector's normal poll ticks; the tracked-exit log now names the exit-code class; and
+  `SEM_NOGPFAULTERRORBOX` is no longer set in CE processes or injected games, because it makes the
+  default unhandled filter terminate without invoking WER at all.
+
+Tests: `CrashDumpPolicyTest.*` (fail-fast classification, WER file naming, adoption gating and window,
+CE-written-subkey recognition) and `PresentInterposerCompositeRouteTest.*` (route per API, bound-RTV
+refusal). The call-site wiring itself is not unit-testable without a real D3D11 present.
+
+**Hardware run pending.** Not validated: whether the transient route actually stops NvPresent64
+terminating. Known remaining gap: the DX11 overlay device/context are cached from the first chain CE
+draws on, while Smooth Motion creates two private chains on two different devices.
+
+
+### 2026-09-19 - Two short recordings produced nothing, and the overlay said "Finalizing"
+
+Session `20260918_235601`, recordings r0003/r0004. The user asked whether finalization had hung or
+only the desktop overlay. Only the overlay - and the real finding was worse: neither recording
+captured anything and neither saved a file.
+
+**Recording start is asynchronous and slow.** The media process is spawned on the hotkey and must
+load mediaengine, run the render->loopback A/V probe, init the engine and route capture before it
+polls its first command. Measured that session: r0003 hotkey 01:09:30.613, first command poll
+01:09:34.223 (+3.61 s); r0004 +3.59 s. Both were stopped after ~2.8 s, i.e. inside the startup
+window. The media `StopRecording` handler deliberately consumes the queued `cmdStartRecording` and
+exits, so `StartRecording` never ran - no `[RECORDING FINALIZATION]` line, no `status=` in either
+manifest, no output. r0001 (WGC) took 6.66 s from hotkey to `isRecording=1`.
+
+**Why the overlay stuck.** `CompleteRecordingFinalization` is the only publisher of a terminal
+overlay notification and it is only reachable from a live recording's stop. The controller's
+`Finalizing` carries a 60 s expiry, so nothing superseded it; it was still being drawn 5 s after the
+media process had exited cleanly.
+
+**Why the probe is on the start path at all.** `[AVSyncProbe] cache=memory_miss ... entries=0` on
+every single spawn. The disk cache was deliberately removed on 2026-06-18 in favour of a
+process-memory cache documented as "one probe per fresh CE process" - but the media process is
+disposable and exits after every recording, so the cache could never hit. Four probes across 70
+minutes measured 28.6 / 29.0 / 28.6 / 30.4 ms on the same endpoint key: stable enough that
+re-measuring per recording bought nothing and cost 3.2 s of the 3.6 s startup.
+
+**Fixed (three changes, all in one commit):**
+
+- `common/av_sync_latency_channel.{h,cpp}`: a controller-lifetime anonymous file mapping holding a
+  small (key -> latency) table, inherited by each media child via `--avsync-latency-handle=`. The
+  child reads it before probing and writes a fresh measurement back, so the probe now costs once per
+  CE session. No disk file - the `audio_latency_cache.ini` ban is unchanged, and the endpoint key
+  (which contains the device id) never reaches a command line. A seqlock makes a torn read a miss;
+  every failure mode degrades to "probe again", never to a wrong latency.
+- `CompleteAbortedRecordingStart` (media): `media_main_g_RecordingEverStarted` latches in
+  `StartRecording`; both stop routes finalize an unlatched stop as `recording_canceled`, which
+  publishes `RecordingCanceled` to both overlays and writes the manifest's terminal state. The
+  shared-memory route clears the hook-facing state first or
+  `CompleteRecordingFinalization`'s newer-recording guard would swallow it.
+- Honest controller reporting: `[Controller] Recording started` on the inject ack is gone (that ack
+  only proves inject set `cmdStartRecording`). The controller now logs the delivery, and
+  `CheckChildProcessHealth` logs `Recording is live` with the elapsed startup time when it observes
+  media's published `isRecording`. A stop while the start is still pending is logged with how long
+  it had been pending. `main_g_RecordingStartRequestTick` is disarmed by every idle transition.
+
+**Tests:** `tests/test_av_sync_latency_channel.cpp` (11 cases: reuse across processes, per-endpoint
+keying, overflow, oversized/empty key refusal, incompatible block, torn read, unterminated entry)
+plus five source-inspection cases in `tests/test_recording_start_feedback.cpp`.
+
+**Unvalidated on hardware.** No run yet confirms the warm second recording, the canceled
+notification, or the `Recording is live` timing. The obvious check is a session with two short
+recordings: the second should log `cache=session_hit` and no `[AVSyncProbe] probing:` line, and a
+sub-second recording should end on "Recording canceled", not "Finalizing recording...".

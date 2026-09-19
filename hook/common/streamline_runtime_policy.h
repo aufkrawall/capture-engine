@@ -5,6 +5,7 @@
 
 #include "../../common/shared_defs.h"
 #include "fg_runtime_state.h"
+#include "dlssg_health_policy.h"
 #include "streamline_feature_retry_policy.h"
 
 namespace ce::streamline_runtime_policy {
@@ -50,37 +51,6 @@ struct ObserverOnlyHeuristicCleanup {
 
 inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
-}
-
-// `slDLSSGState` grows by struct version and the APPLICATION owns the
-// allocation: CE only ever sees a pointer to whatever the game declared. A
-// field introduced above the game's `structVersion` is therefore memory the
-// game never reserved for it, and reading it yields whatever happened to be
-// next on the game's stack - not a runtime answer.
-//
-// This is not hypothetical. `bIsDynamicMFGSupported` arrived in version 4;
-// Talos Principle 2 publishes version 3 (its fence fields read back correctly,
-// the byte after them does not). Session `20260919_223111` read that byte as 0
-// and reported "dynamic MFG NOT supported" while the runtime was demonstrably
-// varying the cadence between 2x and 4x to hold ~139.6 fps. Unknown has to be
-// spelled unknown.
-inline constexpr size_t kDLSSGStateVsyncSupportMinVersion = 2;
-inline constexpr size_t kDLSSGStateFenceMinVersion = 3;
-inline constexpr size_t kDLSSGStateDynamicMFGMinVersion = 4;
-
-inline constexpr bool DLSSGStateCarriesDynamicMFGSupport(size_t structVersion) {
-    return structVersion >= kDLSSGStateDynamicMFGMinVersion;
-}
-
-inline constexpr bool DLSSGStateCarriesVsyncSupport(size_t structVersion) {
-    return structVersion >= kDLSSGStateVsyncSupportMinVersion;
-}
-
-// Tri-state for a `char` boolean the runtime may not have written: -1 unknown
-// (the game's struct is too old to carry it), otherwise 0/1.
-inline constexpr int ResolveDLSSGStateOptionalBool(size_t structVersion, size_t minVersion, char value,
-                                                   char invalidSentinel) {
-    return structVersion < minVersion || value == invalidSentinel ? -1 : (value != 0 ? 1 : 0);
 }
 
 inline bool IsStreamlineReflexLowLatencyModeEnabled(int32_t mode) {
@@ -748,48 +718,6 @@ inline bool ShouldKeepPureObserverOnlyStreamlineBehavior(bool observerOnlyEnable
 inline bool ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(bool observerOnlyEnabled,
                                                                     bool observerPolicyOnlyEnabled) {
     return observerOnlyEnabled && observerPolicyOnlyEnabled;
-}
-
-// --- DLSSG activation-health monitor (session 20260702_094955: GTA cold-start DLSS FG reported ON with
-// updateActive=1, but presents stayed at base rate all session and the user saw no fps gain) -------------
-// Track health only for successful GetState queries where the game actually REQUESTS frame generation
-// (options mode != off). OFF-mode samples must not extend a not-interpolating streak.
-//
-// `sl::DLSSGMode::eAuto` (2) and `eDynamic` (3) hand the cadence to the runtime, and **choosing not to
-// generate a frame is a legitimate operating point there**, not a failed activation: `dlss_fg_dynamic_max`
-// is an "up to", and when the rendered rate already meets the target the correct choice is 1x. The
-// monitor's whole premise - the game asked for frame generation, so frames must be appearing - only holds
-// for a fixed request. Session `20260919_230915` fired this warning five times while dynamic MFG was
-// demonstrably holding ~138 fps by varying between 2x and 4x.
-inline bool IsDLSSGCadenceChosenByRuntime(uint32_t mode) {
-    return mode == 2 || mode == 3;
-}
-
-inline bool ShouldTrackDLSSGActivationHealthSample(bool getStateSucceeded, bool optionsRequestFrameGenerationOn,
-                                                   uint32_t optionsMode) {
-    return getStateSucceeded && optionsRequestFrameGenerationOn && !IsDLSSGCadenceChosenByRuntime(optionsMode);
-}
-
-// DLSSGState.numFramesActuallyPresented >= 2 proves generated frames reached presentation. ==1 means only
-// the real frame was presented (no interpolation) — though on hardware flip-metering MFG paths the API-side
-// value can stay 1 while the display shows generated frames, so this is EVIDENCE for a log-side monitor,
-// never an enforcement signal.
-inline bool IsDLSSGInterpolationPresentEvidence(uint32_t numFramesActuallyPresented) {
-    return numFramesActuallyPresented >= 2;
-}
-
-// Deterministic streak warning: first warn after warnAtStreak consecutive non-interpolating ON samples
-// (GTA polls GetState ~per frame, so this lands within a handful of frames of a failed activation), then
-// repeat every repeatEvery samples so a long session stays readable.
-inline bool ShouldWarnDLSSGActiveButNotInterpolating(uint64_t consecutiveNonInterpolatingSamples, uint64_t warnAtStreak,
-                                                     uint64_t repeatEvery) {
-    if (warnAtStreak == 0 || consecutiveNonInterpolatingSamples < warnAtStreak) {
-        return false;
-    }
-    if (consecutiveNonInterpolatingSamples == warnAtStreak) {
-        return true;
-    }
-    return repeatEvery != 0 && ((consecutiveNonInterpolatingSamples - warnAtStreak) % repeatEvery) == 0;
 }
 
 }  // namespace ce::streamline_runtime_policy
