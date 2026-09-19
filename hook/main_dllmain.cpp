@@ -2,6 +2,7 @@
 
 #include "apis/streamline_ota_preferences.h"
 #include "common/ngx_ota_runtime.h"
+#include "common/published_graphics_config.h"
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
@@ -204,6 +205,16 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // instead of seeing none. Shared-memory read plus SetEnvironmentVariable,
       // so it loads nothing.
       ce::ngx_ota::ApplyEarlyPolicyFromPublishedConfig();
+
+      // Arm the loader redirect here too, from the same published config, and
+      // for the same reason one layer over: the LoadLibrary hooks above go in
+      // now, but `g_pLocalConfig` does not exist until the hook thread has read
+      // config.ini ~400 ms later, so every load in between reached CE's hook
+      // and was answered "no override" because the policy was missing rather
+      // than because it said no. `sl.common` is loaded dynamically by
+      // `sl.interposer`, exactly once, and losing it disables the whole sl.*
+      // redirect family - so one load in that window costs the feature.
+      ce::published_config::ResolveEarlyRuntimeOverridePaths();
 
       // The ngx_ota=off slInit route belongs here for the same reason, and it
       // was measurably too late anywhere else. Session 20260918_224737: CE's

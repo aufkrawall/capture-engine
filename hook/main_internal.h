@@ -337,6 +337,13 @@ bool IsDXVKD3D11WrapperLoaded();
 
 void EnsureLocalConfigAllocated();
 
+// True once the hook thread has actually READ config.ini into g_pLocalConfig.
+// EnsureLocalConfigAllocated runs in DllMain and leaves a default-constructed
+// AppConfig behind, so a non-null g_pLocalConfig proves allocation, not
+// content - and code that needs the configured values has to tell those apart.
+// Until this is set, the injector's published config is the better answer.
+extern std::atomic<bool> g_LocalConfigLoaded;
+
 void InjectIntoChild(HANDLE hProcess, HANDLE hThread);
 
 bool ShouldInjectChild(const char *exePath);

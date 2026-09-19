@@ -45,6 +45,8 @@ void EnsureLocalConfigAllocated() {
   }
 }
 
+std::atomic<bool> g_LocalConfigLoaded{false};
+
 std::atomic<CreateProcessA_t> OriginalCreateProcessA{nullptr};
 
 std::atomic<CreateProcessW_t> OriginalCreateProcessW{nullptr};

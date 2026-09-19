@@ -5,6 +5,7 @@
 #include "apis/streamline_ota_preferences.h"
 #include "common/ngx_ota_policy.h"
 #include "common/ngx_ota_runtime.h"
+#include "common/published_graphics_config.h"
 #include "common/dll_utils.h"
 #include "common/streamline_api_generation.h"
 
@@ -198,6 +199,43 @@ bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const cha
   return false;
 }
 
+// The configured override paths, preferring the hook thread's own config and
+// falling back to what the injector published before the game started.
+//
+// The fallback is the whole point. CE's loader hook goes in during DllMain, but
+// `g_pLocalConfig` does not exist until the hook thread has read config.ini -
+// 19:48:28.860 vs ~19:48:29.25 in session 20260919_194818. Every load in that
+// ~400 ms window reached CE's hook and was answered "no override", because the
+// policy was missing rather than because it said no. `sl.common` is loaded
+// dynamically by `sl.interposer` (which imports nothing but kernel32), exactly
+// once, and losing it disables the entire sl.* redirect family - so a one-shot
+// load landing in that window costs the whole feature. CE's own note on the
+// Cyberpunk case measured the core arriving "463 ms before CE's loader redirect
+// was armed", which is this window, not CE's absence.
+const char *ConfiguredDlssSrDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssSrDllPath.c_str()
+             : ce::published_config::EarlyDlssSrDllPath();
+}
+
+const char *ConfiguredDlssRrDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssRrDllPath.c_str()
+             : ce::published_config::EarlyDlssRrDllPath();
+}
+
+const char *ConfiguredDlssFgDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssFgDllPath.c_str()
+             : ce::published_config::EarlyDlssFgDllPath();
+}
+
+const char *ConfiguredStreamlineDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.streamlineDllPath.c_str()
+             : ce::published_config::EarlyStreamlineDllPath();
+}
+
 }  // namespace
 
 // Records which physical image provides a Streamline plugin, from the loader
@@ -216,7 +254,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
   if (!resolvedPath || !resolvedPath[0] || !g_pLocalConfig) {
     return;
   }
-  const std::string &overridePath = g_pLocalConfig->graphics.streamlineDllPath;
+  const std::string overridePath = ConfiguredStreamlineDllPath();
   if (overridePath.empty()) {
     return;
   }
@@ -274,7 +312,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
 // Startup answer for the same question when CE injected after the core was
 // already mapped: the loader notification never saw that load.
 void ScanLoadedModulesForForeignStreamlineCore() {
-  if (!g_pLocalConfig || g_pLocalConfig->graphics.streamlineDllPath.empty()) {
+  if (!ConfiguredStreamlineDllPath()[0]) {
     return;
   }
   std::vector<HMODULE> modules;
@@ -319,8 +357,8 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
     // carries no sl.* token, so the base-name matching below cannot see it.
     // Map the model folder to the real Streamline DLL and redirect it to the
     // configured override directory when one is set.
-    if (overridePath.empty() && g_pLocalConfig &&
-        !g_pLocalConfig->graphics.streamlineDllPath.empty() &&
+    const char *streamlineOverride = ConfiguredStreamlineDllPath();
+    if (overridePath.empty() && streamlineOverride[0] &&
         ce::graphics_runtime::IsNgxModelRepositoryPath(requestedPath.c_str())) {
       char modelDllName[MAX_PATH] = {};
       char segmentBuf[MAX_PATH] = {};
@@ -329,7 +367,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
         if (!StreamlineOverrideRedirectAllowed(modelDllName)) {
           return "";
         }
-        std::string modelFinal = BuildOverridePath(g_pLocalConfig->graphics.streamlineDllPath, modelDllName);
+        std::string modelFinal = BuildOverridePath(streamlineOverride, modelDllName);
         if (!modelFinal.empty() &&
             GetFileAttributesA(modelFinal.c_str()) != INVALID_FILE_ATTRIBUTES) {
           std::string loadedPath;
@@ -350,23 +388,23 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
     }
 
     // 1. DLSS/Streamline Logic - Only if no custom detour set
-    if (overridePath.empty() && g_pLocalConfig) {
+    if (overridePath.empty()) {
       if (filenameLower == "nvngx_dlss.dll") {
-        overridePath = g_pLocalConfig->graphics.dlssSrDllPath;
+        overridePath = ConfiguredDlssSrDllPath();
       }
       // 2. DLSS Frame Generation
       else if (filenameLower == "nvngx_dlssg.dll") {
-        overridePath = g_pLocalConfig->graphics.dlssFgDllPath;
+        overridePath = ConfiguredDlssFgDllPath();
       }
       // 3. DLSS Ray Reconstruction (Denoiser)
       else if (filenameLower == "nvngx_dlssd.dll") {
-        overridePath = g_pLocalConfig->graphics.dlssRrDllPath;
+        overridePath = ConfiguredDlssRrDllPath();
       }
       // 4. Streamline and related components
       else if (filenameLower.find("sl.") == 0 ||
                filenameLower == "nvngx_deepdvc.dll" ||
                filenameLower == "nvlowlatencyvk.dll") {
-        overridePath = g_pLocalConfig->graphics.streamlineDllPath;
+        overridePath = streamlineOverride;
         isStreamlineMatch = true;
         // The request itself is the earliest proof that this process runs
         // Streamline, and it arrives before the module maps.
@@ -423,13 +461,15 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
 }
 
 bool NeedsLoaderRedirectionHook() {
-  if (!g_pLocalConfig || !CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
     return false;
   }
 
-  const auto &gfx = g_pLocalConfig->graphics;
-  return !gfx.dlssSrDllPath.empty() || !gfx.dlssFgDllPath.empty() ||
-         !gfx.dlssRrDllPath.empty() || !gfx.streamlineDllPath.empty();
+  // Deliberately not gated on g_pLocalConfig. Before the hook thread's config
+  // load the injector's published paths are the answer, and they are exactly
+  // what the early window needs - see ConfiguredStreamlineDllPath above.
+  return ConfiguredDlssSrDllPath()[0] || ConfiguredDlssFgDllPath()[0] ||
+         ConfiguredDlssRrDllPath()[0] || ConfiguredStreamlineDllPath()[0];
 }
 
 bool NeedsLowLevelModuleLoadObservationHook() {

@@ -83,6 +83,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
+    // From here the local config carries real values, so the loader redirect
+    // stops falling back to the injector's published copy.
+    g_LocalConfigLoaded.store(true, std::memory_order_release);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
     // Apply the NGX OTA / NGX log policy before anything can pull in the NGX

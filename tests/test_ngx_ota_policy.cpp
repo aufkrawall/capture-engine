@@ -597,4 +597,83 @@ TEST(NgxOtaLateModules, CreateProcessWDecidesOnTheWideStringBeforeConverting) {
     EXPECT_LT(refuse, convert) << "the NGX decision must precede any narrowing of the caller's string";
 }
 
+// The loader redirect had the same shape of bug as ngx_ota, one layer over:
+// the LoadLibrary hooks go in at DllMain, but the paths they redirect to only
+// existed after the hook thread read config.ini - ~400 ms later in session
+// 20260919_194818 (DllMain 19:48:28.860, config ~19:48:29.25). Every load in
+// that window reached CE's hook and was answered "no override" because the
+// policy was missing, not because it said no.
+//
+// That window is not survivable for sl.common: sl.interposer.dll imports
+// nothing but KERNEL32, so it loads the core with a single dynamic LoadLibrary,
+// and losing the core disables the whole sl.* redirect family. CE's own note on
+// the Cyberpunk case measured it arriving "463 ms before CE's loader redirect
+// was armed" - the arming, not CE's presence, was late.
+TEST(RuntimeOverrideEarlyPaths, RedirectIsArmedFromDllMainNotTheHookThreadConfig) {
+    namespace fs = std::filesystem;
+    const std::string dllMain =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+    ASSERT_FALSE(dllMain.empty());
+
+    const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
+    ASSERT_NE(loaderHooks, std::string::npos);
+    const size_t arm = dllMain.find("ce::published_config::ResolveEarlyRuntimeOverridePaths()", loaderHooks);
+    EXPECT_NE(arm, std::string::npos)
+        << "the redirect paths must be resolved in DllMain, where they can still precede sl.common's load";
+}
+
+// g_pLocalConfig is allocated in DllMain (EnsureLocalConfigAllocated) and left
+// default-constructed, so a non-null check proves allocation, not content. An
+// accessor testing only the pointer would ALWAYS take the local branch, read
+// empty strings, and make the early path dead code - the same silent-inertness
+// failure the slInit route shipped with twice.
+TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedConfig) {
+    namespace fs = std::filesystem;
+    const std::string redirect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+
+    for (const char* accessor : {"ConfiguredDlssSrDllPath", "ConfiguredDlssRrDllPath",
+                                 "ConfiguredDlssFgDllPath", "ConfiguredStreamlineDllPath"}) {
+        const size_t fn = redirect.find(std::string("const char *") + accessor + "()");
+        ASSERT_NE(fn, std::string::npos) << accessor;
+        const size_t end = redirect.find("\n}\n", fn);
+        ASSERT_NE(end, std::string::npos) << accessor;
+        const std::string body = redirect.substr(fn, end - fn);
+        EXPECT_NE(body.find("g_LocalConfigLoaded"), std::string::npos)
+            << accessor << " must test whether config was LOADED, not merely allocated";
+        EXPECT_NE(body.find("ce::published_config::Early"), std::string::npos)
+            << accessor << " must fall back to the injector's published path";
+    }
+
+    // And the flag has to actually be set where config is read, or every
+    // accessor stays permanently on the early branch.
+    const std::string hookThread =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_hookthread.cpp");
+    ASSERT_FALSE(hookThread.empty());
+    const size_t load = hookThread.find("LoadConfig(configPath, *g_pLocalConfig)");
+    ASSERT_NE(load, std::string::npos);
+    const size_t set = hookThread.find("g_LocalConfigLoaded.store(true", load);
+    EXPECT_NE(set, std::string::npos) << "the loaded flag must be set right after the config is read";
+}
+
+// The model-store redirect is the only thing that can catch an OTA plugin load:
+// the store names its files by hash (1B0_E658703.dll), so the sl.* base-name
+// matching never sees them. It must not be gated on g_pLocalConfig either.
+TEST(RuntimeOverrideEarlyPaths, ModelStoreRedirectUsesTheSameEarlyCapableSource) {
+    namespace fs = std::filesystem;
+    const std::string redirect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+
+    const size_t branch = redirect.find("IsNgxModelRepositoryPath(requestedPath.c_str())");
+    ASSERT_NE(branch, std::string::npos);
+    const size_t window = branch > 400 ? branch - 400 : 0;
+    const std::string around = redirect.substr(window, 800);
+    EXPECT_EQ(around.find("g_pLocalConfig->graphics.streamlineDllPath"), std::string::npos)
+        << "the model-store branch must not read the hook thread's config directly";
+    EXPECT_NE(around.find("ConfiguredStreamlineDllPath()"), std::string::npos)
+        << "it must use the early-capable accessor";
+}
+
 }  // namespace

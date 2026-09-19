@@ -1,5 +1,56 @@
 # llm-wiki Log
 
+### 2026-09-19 - The sl.* override lost to a 400 ms policy gap, not to injection timing
+
+Asked to think hard about whether the `sl.common` loss is really unfixable with existing hook
+infrastructure. It is not, and the reasoning that called it unfixable was wrong in the same way
+twice before in this file.
+
+**What was claimed:** Alan Wake 2 statically imports `sl.interposer`, so `slInit` runs before CE
+exists and nothing injected afterwards can reach it.
+
+**What the binaries actually say:** `sl.interposer.dll` imports **only KERNEL32** - no `sl.common`,
+no NGX. So `sl.common` is loaded with a single dynamic `LoadLibrary` from the interposer, which is
+precisely what CE's loader hook covers. Same for `_nvngx.dll`: nothing in the chain is a static
+import, so "statically imports sl.interposer" says when the *interposer* maps, and nothing about
+when the core loads.
+
+**Where it actually loses.** CE's LoadLibrary hooks install in `DllMain`, but every branch of
+`GetRedirectedPath` read `g_pLocalConfig`, which the **hook thread** fills from config.ini ~400 ms
+later (19:48:28.860 vs ~19:48:29.25 in `20260919_194818`). A load in that window reaches CE's hook
+and is answered "no override" **because the policy is missing, not because it says no** - identical
+to the `ngx_ota` mode bug fixed earlier the same day, one layer over. CE's own Cyberpunk note
+already recorded the shape without naming it: the core arrived "463 ms before CE's loader redirect
+**was armed**".
+
+Losing the core is not one plugin: `g_ForeignStreamlineCoreObserved` latches and every later `sl.*`
+redirect is refused, which is why `20260919_194818` shows five OTA-store plugins loading at
+19:48:30.11-.15 - **observed by CE, 1.25 s after DllMain** - and refused anyway.
+
+**The fix, with the infrastructure already present.** `streamlineDllPath` and the three
+`dlss*DllPath`s have always been in `SharedGraphicsConfig`, published by the injector before the
+game starts - the same channel `ngxOtaMode` uses. New `hook/common/published_graphics_config.*`
+reads them once in `DllMain`; `main_redirect.cpp` gained `Configured*DllPath()` accessors that
+prefer the hook thread's config and fall back to the published copy. `NeedsLoaderRedirectionHook`
+and the model-store branch stop being gated on `g_pLocalConfig` too.
+
+**One trap worth recording.** `EnsureLocalConfigAllocated()` runs in `DllMain` and leaves a
+default-constructed `AppConfig`, so `g_pLocalConfig != nullptr` proves allocation, not content. An
+accessor testing only the pointer takes the local branch **always**, reads empty strings, and makes
+the early path dead code - the exact silent-inertness the slInit route shipped with twice. Hence a
+new explicit `g_LocalConfigLoaded`, set immediately after `LoadConfig`, and a test that pins it.
+
+**Worth knowing:** the substitution is real, not cosmetic. The OTA store serves sl.common
+**2.14.0-rc2** (`OriginalFilename: SHA: 614ea534a v2.14.0-rc2`) while the configured `npi\sl` set is
+**2.14.1**. The driver was quietly swapping a release candidate in.
+
+**Unvalidated.** Whether Alan Wake 2's `sl.common` load falls inside that 400 ms window or before
+CE's `DllMain` is still unmeasured - the load was never observed, only found by the already-loaded
+scan. The next run decides it: `Loader redirect: armed from the injector's published config in
+DllMain` should appear, and then either a `Redirecting ... (NGX model sl_common_0)` line (fixed) or
+the same foreign-core verdict (the load genuinely precedes CE, and only launching through CE is
+left).
+
 ### 2026-09-19 - ngx_ota=off had the weaker mechanism as its primary one
 
 Asked to make `ngx_ota=off` reliably stop the driver spawning NGX updaters. Four gaps, found by reading
