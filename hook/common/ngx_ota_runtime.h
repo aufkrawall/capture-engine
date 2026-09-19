@@ -72,4 +72,14 @@ bool ShouldRefuseProcessLaunch(const wchar_t* imagePath);
 void NoteUpdaterLaunchRefused(const char* imagePath);
 void NoteUpdaterLaunchRefused(const wchar_t* imagePath);
 
+// Reports an `nvngx_update.exe` launch CE observed and did NOT refuse, naming
+// the mode that let it through. A no-op for every other image, so the hook can
+// call it unconditionally.
+//
+// Without this, "I saw updater processes spawn" cannot be diagnosed: CE never
+// seeing the launch, CE seeing it under a mode that permits it, and CE refusing
+// it are three different problems and only the last one wrote a log line.
+void NoteUpdaterLaunchAllowed(const char* imagePath);
+void NoteUpdaterLaunchAllowed(const wchar_t* imagePath);
+
 }  // namespace ce::ngx_ota

@@ -47,7 +47,28 @@ That session has `ngx_ota=default` in `config.ini` and no `NGX OTA: ngx_ota=` li
 feature was simply off. Checking the configured mode before reading updater activity as a failure is the cheap
 step that was missing.
 
-**Unvalidated on hardware.** Nothing here has had a run. The line to look for is
+**First run (`20260919_193954`) was `ngx_ota=on`, and settled three things anyway.**
+`config.ini` read `ngx_ota=on` (written 19:38:49, before the 19:39:54 session), CE logged
+`ngx_ota=on - cleared __NGX_DISABLE_UPDATER (DllMain)` at 19:40:42.647, and nine updaters ran from
+19:40:43. That is `on` behaving exactly as defined, not a failure of `off`.
+
+- **The DllMain environment write works**, in the `on` direction, with the new `(DllMain)` phase tag -
+  and `ngx_ota=on` was previously unvalidated on hardware.
+- **The late-module CreateProcess patch found real modules that were escaping CE entirely**:
+  `nvgpucomp64.dll`, `nvngx_dlssg.dll`, `nvapi64.dll`, `nvcuda64.dll`, `nvdxgdmal64.dll`,
+  `nvdiagclt64.dll` and five OTA-store `sl_*` plugins, all importing `CreateProcessW`, none of them
+  covered by the DllMain or hook-thread snapshot.
+- **`_nvngx.dll` was NOT late here.** It mapped at `00007FFC37560000` before CE's DllMain pass and had
+  its `CreateProcessW` slot patched at 19:40:42.645 - 0.4 s before the first updater launch. In this
+  title the snapshot already reached it; the late-load repair is for titles that initialise DLSS later.
+
+**And it exposed a diagnostics hole worth more than the run.** CE logged *nothing* about those nine
+launches, because only the refusal path wrote a line. "CE never saw the launch", "CE saw it and the
+mode permits it" and "CE refused it" were indistinguishable in the log - the same
+installed-vs-effective mistake as the slInit route, one subsystem over. `NoteUpdaterLaunchAllowed`
+now reports every observed updater launch with the mode responsible.
+
+**Still unvalidated: `ngx_ota=off` itself.** The line to look for is
 `NGX OTA: ngx_ota=off - published __NGX_DISABLE_UPDATER (DllMain)` early in `hook_debug.log`, followed by **no**
 `refused the NGX updater launch` lines at all - refusals now mean the environment lost the race and the backstop
 took over, which is a weaker outcome than the previous "refusals are working" reading.

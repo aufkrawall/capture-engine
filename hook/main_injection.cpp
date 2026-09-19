@@ -282,6 +282,9 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
     SetLastError(ERROR_ACCESS_DENIED);
     return FALSE;
   }
+  // Not refused - but if it was the updater, say so and say why, or the log
+  // cannot distinguish "CE never saw it" from "the mode allows it".
+  ce::ngx_ota::NoteUpdaterLaunchAllowed(exePath);
 
   bool shouldInject = ShouldInjectChild(exePath);
 
@@ -326,6 +329,9 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
     SetLastError(ERROR_ACCESS_DENIED);
     return FALSE;
   }
+  // See HookedCreateProcessA: an updater launch CE let through has to be
+  // distinguishable from one CE never saw.
+  ce::ngx_ota::NoteUpdaterLaunchAllowed(ngxTarget);
 
   // Convert wide to narrow for the whitelist check. The buffer is deliberately
   // larger than MAX_PATH: when lpApplicationName is null the argument is a full

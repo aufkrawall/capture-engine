@@ -529,6 +529,49 @@ TEST(NgxOtaLateModules, CreateProcessImportsArePatchedOnEveryLateLoadedModule) {
     EXPECT_LT(guard, firstPatch);
 }
 
+// Session 20260919_193954: nine nvngx_update.exe at 19:40:43, and hook_debug.log
+// said nothing at all about them, because CE only logged the refusal case. That
+// left three very different situations indistinguishable - CE never saw the
+// launch, CE saw it under a mode that permits it, or CE refused it - and cost a
+// test run to tell apart. Every observed updater launch must now be reported.
+TEST(NgxOtaLateModules, AnUpdaterLaunchCeAllowsIsReportedAsWellAsOneItRefuses) {
+    namespace fs = std::filesystem;
+    const std::string injection =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_injection.cpp");
+    ASSERT_FALSE(injection.empty());
+
+    for (const char* hookName : {"BOOL WINAPI HookedCreateProcessA(", "BOOL WINAPI HookedCreateProcessW("}) {
+        const size_t hook = injection.find(hookName);
+        ASSERT_NE(hook, std::string::npos) << hookName;
+        const size_t allowed = injection.find("ce::ngx_ota::NoteUpdaterLaunchAllowed(", hook);
+        ASSERT_NE(allowed, std::string::npos) << hookName << " must report an updater launch it lets through";
+
+        // It has to sit after the refusal branch, or a refused launch would be
+        // counted as allowed as well.
+        const size_t refused = injection.find("ce::ngx_ota::NoteUpdaterLaunchRefused(", hook);
+        ASSERT_NE(refused, std::string::npos) << hookName;
+        EXPECT_LT(refused, allowed) << hookName;
+
+        // And before the real CreateProcess call, so the report exists even if
+        // the launch itself fails.
+        const size_t forward = injection.find("original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags", hook);
+        ASSERT_NE(forward, std::string::npos) << hookName;
+        EXPECT_LT(allowed, forward) << hookName;
+    }
+
+    const std::string runtime =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+    ASSERT_FALSE(runtime.empty());
+    const size_t allowedFn = runtime.find("void NoteUpdaterLaunchAllowed(const char* imagePath)");
+    ASSERT_NE(allowedFn, std::string::npos);
+    // It is called for every process creation, so it must filter itself rather
+    // than rely on the caller, and it must name the mode that let it through.
+    EXPECT_NE(runtime.find("IsNgxUpdaterImage(imagePath)", allowedFn), std::string::npos)
+        << "the report must be a no-op for any image that is not the updater";
+    EXPECT_NE(runtime.find("ModeName(CurrentMode())", allowedFn), std::string::npos)
+        << "the report is only useful if it names the mode responsible";
+}
+
 // The refusal decision must not pass through a fixed-size narrow conversion.
 TEST(NgxOtaLateModules, CreateProcessWDecidesOnTheWideStringBeforeConverting) {
     namespace fs = std::filesystem;

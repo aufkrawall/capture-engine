@@ -279,6 +279,13 @@ bool ShouldLogRefusal(uint32_t& index) {
     return index < 8 || (index % 1000) == 0;
 }
 
+std::atomic<uint32_t> g_AllowedLaunches{0};
+
+bool ShouldLogAllowedLaunch(uint32_t& index) {
+    index = g_AllowedLaunches.fetch_add(1, std::memory_order_relaxed);
+    return index < 8 || (index % 1000) == 0;
+}
+
 }  // namespace
 
 void NoteUpdaterLaunchRefused(const char* imagePath) {
@@ -298,6 +305,39 @@ void NoteUpdaterLaunchRefused(const wchar_t* imagePath) {
             "NGX OTA: refused the NGX updater launch (%ls) because ngx_ota=off; NVIDIA's runtime falls back to "
             "the files already in its cache (refusal #%u)",
             imagePath ? imagePath : L"unnamed", index + 1);
+    }
+}
+
+// Reported even though CE did nothing about it, because "I saw updaters
+// spawning" is otherwise unanswerable from the log. Three situations look
+// identical from outside the process - CE never saw the launch (the calling
+// module's import slots were not CE's, or the launch predates injection), CE
+// saw it and the mode does not refuse, or CE refused it - and only the third
+// used to leave a trace. Session 20260919_193954 is the case: nine updaters at
+// 19:40:43 with ngx_ota=on, and nothing in hook_debug.log either way.
+void NoteUpdaterLaunchAllowed(const char* imagePath) {
+    if (!imagePath || !imagePath[0] || !IsNgxUpdaterImage(imagePath)) {
+        return;
+    }
+    uint32_t index = 0;
+    if (ShouldLogAllowedLaunch(index)) {
+        HookLogImportant(
+            "NGX OTA: saw an NGX updater launch (%s) and let it through - ngx_ota=%s, only `off` refuses "
+            "(launch #%u)",
+            imagePath, ModeName(CurrentMode()), index + 1);
+    }
+}
+
+void NoteUpdaterLaunchAllowed(const wchar_t* imagePath) {
+    if (!imagePath || !imagePath[0] || !IsNgxUpdaterImage(imagePath)) {
+        return;
+    }
+    uint32_t index = 0;
+    if (ShouldLogAllowedLaunch(index)) {
+        HookLogImportant(
+            "NGX OTA: saw an NGX updater launch (%ls) and let it through - ngx_ota=%s, only `off` refuses "
+            "(launch #%u)",
+            imagePath, ModeName(CurrentMode()), index + 1);
     }
 }
 
