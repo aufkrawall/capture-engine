@@ -1,5 +1,46 @@
 # llm-wiki Log
 
+### 2026-09-20 - the FPS limiter tests measured the host scheduler, not the limiter
+
+Seven `FpsLimiterTest` cases failed intermittently with a DIFFERENT set each run, on clean HEAD as well
+(1 of 6 runs on an idle machine). None of them had a bug under them; they asserted on wall-clock.
+
+- **Mode-resolution tests** (`AutoMode_FallsBackToBasic`, `AutoMode_UsesFGFallbackWhenFGActive`,
+  `FGFallback_CaptureSync_DoublesInterval`, `FGFallback_UsesExplicitDLSSMultiplier`) called `Apply()` twice
+  and timed the second. `RunLocalCadence` waits `localTargetTime_ - now`, so **every microsecond the host
+  spends between arming the deadline and reaching it is subtracted from the measured wait**. Under load the
+  residual collapses toward zero - and past it, at which point the deadline is re-based and nothing is
+  waited for at all - so the LOWER bounds failed, not just the upper ones. Both bounds were load-sensitive
+  for the same reason. They now assert `FpsLimiter::GetResolvedCadence()`, which publishes the target rate,
+  the cadence scale and the group interval that `RunLocalCadence` resolved. Exact equality, no margins,
+  0.1 s instead of seconds of real sleeping.
+- **`GpuWorkRunningPastTheDeadlineGrowsTheReservation`** failed as `grown.budgetUs == engaged.budgetUs`
+  (4166 vs 4166 - the whole 240 fps interval). `NoteFrameWorkForFrontLoadedRelease` derives CPU frame work
+  from the span since the last release, which in a test is just however the host scheduled the loop, so a
+  loaded machine reports the game working for a full interval and the budget **saturates at the back edge
+  during the phase that is supposed to leave room to grow**. New `SetObservedFrameWorkOverrideUs` states it
+  instead, the way `ObservePresentToDisplay` already states the GPU half; 0 (always, outside tests) keeps
+  the measured path. The test now also ASSERTs the first phase left headroom, so a future saturation
+  cannot make the growth assertion vacuous again.
+- **`SmartWait_Accuracy` / `SubTickWaitsLandWithoutTheKernelTimer`** measure the wait primitive, so they
+  cannot be made deterministic by moving the assertion - but their real claim is **structural**: a wait
+  shorter than the scheduler tick must not arm the kernel timer (it cannot land inside a tick, so it sleeps
+  past the deadline). New `GetSmartWaitCount()` / `GetKernelTimerWaitCount()` make the path observable, and
+  the tests assert the path plus never-early per sample. The overshoot is now a `RecordProperty` diagnostic.
+  Added `SupraTickWaitsStillUseTheKernelTimer` so the sub-tick assertion cannot be satisfied by SmartWait
+  abandoning the timer altogether.
+
+Result: 8 of 8 passes under 16-way CPU saturation, where the previous form failed on an idle host.
+Coverage went UP, not down - the mode tests now pin exact rates rather than a duration band, never-early is
+asserted per sample rather than on the minimum of seven, and the wait path is pinned in both directions.
+
+Lesson: **if an assertion's value is produced by the scheduler, the test measures the scheduler.** Ask what
+the code under test actually decides, and expose that instead. AGENTS.md already says not to put timing
+assumptions in tests; a duration bound on a real sleep is one, no matter how wide the margin - widening it
+only makes the test slower to fail, and the previous round of widening (medians over 7 and 15 samples) is
+visible in the history of exactly these cases.
+
+
 ### 2026-09-19 - pre-release review: three things worth changing, none of them broken
 
 A review of the ~2 weeks since `v0.1.6261` against a near-term release. The tree was green

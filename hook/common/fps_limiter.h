@@ -102,6 +102,61 @@ public:
     int64_t GetLastWaitUs() const {
         return lastActualWaitUs_;
     }
+
+    // The cadence Apply() last resolved: the effective target rate, the group
+    // scale, and one group interval at that pair. This is the limiter's
+    // DECISION - a pure function of the configured mode, the frame generation
+    // state and capture sync - as opposed to GetLastWaitUs(), which reports
+    // what the scheduler actually delivered.
+    //
+    // The distinction is the whole point. A test that means to pin mode
+    // resolution ("auto with FG active resolves to fg_fallback, so 60 becomes
+    // 30") must assert on this, never on measured elapsed time: the wait
+    // RunLocalCadence performs is `localTargetTime_ - now`, so any wall-clock
+    // the host spends between arming the deadline and reaching it is
+    // subtracted from it. Under load that residual shrinks toward zero and a
+    // measured-duration assertion fails for a reason that has nothing to do
+    // with the behaviour under test.
+    //
+    // `generation` counts RunLocalCadence entries, so a test can prove a second
+    // Apply() really re-resolved rather than returning early.
+    struct ResolvedCadence {
+        int targetFps = 0;
+        int cadenceScale = 0;
+        int64_t intervalUs = 0;
+        uint32_t generation = 0;
+    };
+    // Field-wise relaxed loads: a diagnostic snapshot, in the same spirit as the
+    // admission counters below, not a consistent multi-field transaction.
+    ResolvedCadence GetResolvedCadence() const {
+        ResolvedCadence resolved;
+        resolved.targetFps = resolvedCadenceTargetFps_.load(std::memory_order_relaxed);
+        resolved.cadenceScale = resolvedCadenceScale_.load(std::memory_order_relaxed);
+        resolved.intervalUs = resolvedCadenceIntervalUs_.load(std::memory_order_relaxed);
+        resolved.generation = resolvedCadenceGeneration_.load(std::memory_order_relaxed);
+        return resolved;
+    }
+
+    // How SmartWait served its waits: how many it performed at all, and how
+    // many of those armed the kernel's waitable timer. A wait shorter than the
+    // scheduler tick must not arm it - the timer cannot land inside a tick, so
+    // it sleeps past the deadline - and takes the yield/spin path instead.
+    //
+    // That is a structural property of the wait, not a temporal one, so it is
+    // the honest thing for a test to assert: how LONG a wait actually took is
+    // the host scheduler's answer and moves with system load, while which path
+    // SmartWait chose is entirely SmartWait's own.
+    uint32_t GetSmartWaitCount() const {
+        return smartWaitCount_.load(std::memory_order_relaxed);
+    }
+    uint32_t GetKernelTimerWaitCount() const {
+        return kernelTimerWaitCount_.load(std::memory_order_relaxed);
+    }
+    void ResetSmartWaitCounters() {
+        smartWaitCount_.store(0, std::memory_order_relaxed);
+        kernelTimerWaitCount_.store(0, std::memory_order_relaxed);
+    }
+
     // Output-group admission diagnostics for tests and rate-limited stats.
     uint32_t GetBoundaryCallbackCount() const {
         return boundaryCallbackCount_.load(std::memory_order_relaxed);
@@ -202,6 +257,23 @@ public:
             presentToDisplayFloorUs_ = presentToDisplayUs;
             presentToDisplayFloorSeeded_ = true;
         }
+    }
+
+    // State the CPU half of the frame directly, the way ObservePresentToDisplay
+    // states the GPU half.
+    //
+    // NoteFrameWorkForFrontLoadedRelease normally derives frame work from the
+    // wall-clock span since the limiter last released the game, which is
+    // correct in a real game and useless in a test: there the span is whatever
+    // the host scheduler did between two Apply() calls, so a loaded machine
+    // reports the game "working" for a whole interval and the learned budget
+    // saturates at the back edge before the test has begun. Overriding it makes
+    // the budget a function of the frame work the test states.
+    //
+    // Zero, the default, keeps the measured path, so nothing in a shipping run
+    // reaches the override at all.
+    void SetObservedFrameWorkOverrideUs(int64_t workUs) {
+        frameWorkOverrideUs_.store(workUs > 0 ? workUs : 0, std::memory_order_relaxed);
     }
 
     void SetInjectFinalOutputCaptureAvailable(bool available) {
@@ -397,6 +469,17 @@ private:
     int64_t localStatsLateUsSum_ = 0;              // Sum of late frame time in current interval
     int64_t localStatsMaxLateUs_ = 0;              // Worst late frame time in current interval
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs
+    // The cadence RunLocalCadence last resolved - see GetResolvedCadence().
+    std::atomic<int> resolvedCadenceTargetFps_{0};
+    std::atomic<int> resolvedCadenceScale_{0};
+    std::atomic<int64_t> resolvedCadenceIntervalUs_{0};
+    std::atomic<uint32_t> resolvedCadenceGeneration_{0};
+    // See SetObservedFrameWorkOverrideUs; 0 means "measure", which is always
+    // the case outside the tests.
+    std::atomic<int64_t> frameWorkOverrideUs_{0};
+    // See GetSmartWaitCount / GetKernelTimerWaitCount.
+    std::atomic<uint32_t> smartWaitCount_{0};
+    std::atomic<uint32_t> kernelTimerWaitCount_{0};
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
     std::atomic<int> displayVblankCeilingFps_{0};

@@ -283,6 +283,14 @@ TEST_F(FpsLimiterTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
     mockShm->fpsLimiter.SetGeneralFps(240);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
+    // State the CPU half rather than letting it be whatever wall-clock elapsed
+    // between two Apply() calls. Strange Brigade's 1.8 ms CPU frame is the
+    // point of the scenario, and on a loaded host the measured span is instead
+    // a whole 4.17 ms interval - which saturates the budget at the back edge
+    // during the "engaged" phase and leaves nothing for the second phase to
+    // grow, the exact shape this test used to fail in.
+    limiter.SetObservedFrameWorkOverrideUs(1800);
+
     // Seed the floor and engage the placement while the frame is finishing
     // early enough that the grid still decides the screen time.
     for (int i = 0; i < 96; ++i) {
@@ -293,6 +301,8 @@ TEST_F(FpsLimiterTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
     const auto engaged = limiter.GetFrontLoadedPacingState();
     ASSERT_GT(engaged.releases, 0u);
     EXPECT_EQ(engaged.gpuHeadroomUs, 0);
+    ASSERT_LT(engaged.budgetUs, engaged.intervalUs)
+        << "the budget must still have room to grow, or the assertion below proves nothing";
 
     // Now the presents start waiting on GPU work that no longer fits.
     for (int i = 0; i < 192; ++i) {
@@ -312,9 +322,16 @@ TEST_F(FpsLimiterTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
 // made the pre-present wait hundreds of microseconds, where the measured
 // overshoot went from a 37 us median on ~9 ms coarse waits to an 88 us median
 // (561 us worst) on ~500 us ones. SmartWait must land those by yielding.
+// Asserted structurally rather than by measuring how long the waits took. The
+// claim is that SmartWait does not hand a sub-tick wait to the kernel timer,
+// and which path it takes is SmartWait's own decision; how long the wait then
+// lasts is the host scheduler's answer and moves with system load. The measured
+// form of this test failed on an otherwise healthy tree whenever the machine
+// was busy - see the sibling test below for the supra-tick half of the same
+// contract.
 TEST_F(FpsLimiterTest, SubTickWaitsLandWithoutTheKernelTimer) {
-    std::vector<double> overshootUs;
-    overshootUs.reserve(15);
+    limiter.ResetSmartWaitCounters();
+
     for (int i = 0; i < 15; ++i) {
         LARGE_INTEGER start;
         QueryPerformanceCounter(&start);
@@ -323,15 +340,36 @@ TEST_F(FpsLimiterTest, SubTickWaitsLandWithoutTheKernelTimer) {
 
         ASSERT_TRUE(limiter.SmartWait(targetTicks));
 
+        // Never early: the deadline is the contract, and it holds under any
+        // load. An overshoot bound would not.
         LARGE_INTEGER end;
         QueryPerformanceCounter(&end);
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        overshootUs.push_back((double)(end.QuadPart - targetTicks) * 1000000.0 / freq.QuadPart);
+        EXPECT_GE(end.QuadPart, targetTicks);
     }
 
-    std::sort(overshootUs.begin(), overshootUs.end());
-    // Never early: the deadline is the contract.
-    EXPECT_GE(overshootUs.front(), 0.0);
-    // The median must stay far below the tick the kernel timer would have cost.
-    EXPECT_LT(overshootUs[overshootUs.size() / 2], 250.0);
+    EXPECT_EQ(limiter.GetSmartWaitCount(), 15u);
+    EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 0u)
+        << "a wait shorter than the scheduler tick cannot land inside it; the timer sleeps past the deadline";
+}
+
+// The other half of the same contract: a wait with room for the timer does use
+// it, rather than burning the whole interval in the yield/spin loop. Without
+// this, the test above would still pass if SmartWait stopped using the kernel
+// timer altogether.
+TEST_F(FpsLimiterTest, SupraTickWaitsStillUseTheKernelTimer) {
+    limiter.ResetSmartWaitCounters();
+
+    LARGE_INTEGER start;
+    QueryPerformanceCounter(&start);
+    const int64_t targetUs = 9000;
+    const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
+
+    ASSERT_TRUE(limiter.SmartWait(targetTicks));
+
+    LARGE_INTEGER end;
+    QueryPerformanceCounter(&end);
+    EXPECT_GE(end.QuadPart, targetTicks);
+
+    EXPECT_EQ(limiter.GetSmartWaitCount(), 1u);
+    EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 1u);
 }

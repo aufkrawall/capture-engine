@@ -4,13 +4,22 @@
 #include <vector>
 
 // Test the high-precision wait logic
+// SmartWait's contract is the deadline: it must block until the target tick and
+// must not return before it. That holds under any load, so it is asserted
+// exactly, per sample, with no margin.
+//
+// What is deliberately NOT asserted is how far past the deadline each wait
+// landed. That number is the host scheduler's answer, not CE's - the previous
+// form of this test bounded the median at 20 ms and the worst sample at 60 ms
+// over a 16.666 ms wait, and failed on a healthy tree whenever the machine was
+// busy. The overshoot is still computed and reported on failure, as a
+// diagnostic; the path SmartWait chose to get there is pinned structurally by
+// SubTickWaitsLandWithoutTheKernelTimer and its supra-tick sibling.
 TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
-    // Target 16ms from now (approx 60 FPS). A single sample can be delayed by
-    // scheduler contention on a fully loaded machine, so assert on the median
-    // of several waits while still rejecting early returns and pathological
-    // starvation.
-    std::vector<double> samples;
-    samples.reserve(7);
+    limiter.ResetSmartWaitCounters();
+
+    std::vector<double> overshootMs;
+    overshootMs.reserve(7);
     for (int i = 0; i < 7; ++i) {
         LARGE_INTEGER start, end;
         QueryPerformanceCounter(&start);
@@ -18,25 +27,22 @@ TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
         const int64_t targetUs = 16666;  // 16.666 ms
         const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
 
-        // This should block until targetTicks
         ASSERT_TRUE(limiter.SmartWait(targetTicks));
 
         QueryPerformanceCounter(&end);
-        const int64_t elapsedTicks = end.QuadPart - start.QuadPart;
+        // The deadline, exactly. Never early, at any load.
+        EXPECT_GE(end.QuadPart, targetTicks) << "SmartWait returned before its deadline on sample " << i;
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        samples.push_back(static_cast<double>(elapsedTicks) * 1000.0 / freq.QuadPart);
+        overshootMs.push_back(static_cast<double>(end.QuadPart - targetTicks) * 1000.0 / freq.QuadPart);
     }
 
-    std::sort(samples.begin(), samples.end());
-    const double medianMs = samples[samples.size() / 2];
+    // Each one had room for the kernel timer and must have used it.
+    EXPECT_EQ(limiter.GetSmartWaitCount(), 7u);
+    EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 7u);
 
-    // Should never return early.
-    EXPECT_GE(samples.front(), 16.0);
-    // Median should stay near 16.66ms; allow scheduler jitter on loaded hosts.
-    EXPECT_GE(medianMs, 16.0);
-    EXPECT_LT(medianMs, 20.0);
-    // Even the worst sample must not indicate a broken wait path.
-    EXPECT_LT(samples.back(), 60.0);
+    std::sort(overshootMs.begin(), overshootMs.end());
+    RecordProperty("medianOvershootMs", std::to_string(overshootMs[overshootMs.size() / 2]));
+    RecordProperty("worstOvershootMs", std::to_string(overshootMs.back()));
 }
 
 // Test what happens if we are already late
@@ -305,9 +311,23 @@ TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
     EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 3u);
 }
 
-// Test that FG fallback mode doubles interval via capture sync local limiter
+// These four tests pin MODE RESOLUTION: which effective rate the limiter
+// derives from the configured mode, the frame generation state and capture
+// sync. They used to assert on the wall-clock duration of the second Apply(),
+// which made them fail under host load for a reason unrelated to what they
+// test - RunLocalCadence waits `localTargetTime_ - now`, so every microsecond
+// the host spends between arming the deadline and reaching it is subtracted
+// from the measured wait. Under load that residual collapses toward zero (and
+// past it, at which point the deadline is re-based and nothing is waited for
+// at all), so both the lower and the upper bound were load-sensitive.
+//
+// GetResolvedCadence() reports the decision itself, which is a pure function
+// of the configuration. Asserting on it is exact rather than approximate, needs
+// no margins, and cannot be perturbed by anything else running on the machine.
+
+// FG fallback halves the effective rate: capture sync at 60 with 2x DLSS FG
+// paces the game at 30.
 TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
-    // Setup capture sync at 60fps with FG fallback mode
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
@@ -315,33 +335,24 @@ TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
     mockShm->fpsLimiter.SetCaptureFps(60);
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
 
-    // Simulate FG active (DLSS FG)
     g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
-    // Call Apply twice: first sets up cadence, second actually waits
-    limiter.Apply();  // First call: sets up localTargetTime_
+    limiter.Apply();
 
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply();  // Second call: should wait ~33ms (60/2 = 30fps = 33.3ms)
-    QueryPerformanceCounter(&end);
+    const auto resolved = limiter.GetResolvedCadence();
+    EXPECT_GT(resolved.generation, 0u) << "Apply() did not reach the local cadence at all";
+    // 60 fps of capture sync, halved by 2x frame generation.
+    EXPECT_EQ(resolved.targetFps, 30);
+    EXPECT_EQ(resolved.cadenceScale, 1);
+    EXPECT_NEAR(resolved.intervalUs, 33333, 100);
 
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    // With FG active and 60fps target, effective is 30fps → ~33ms interval
-    // Allow wide margin for scheduling
-    EXPECT_GE(elapsedMs, 25.0);  // At least ~25ms (33ms - jitter)
-    EXPECT_LT(elapsedMs, 100.0);  // Loaded-host sanity bound
-
-    // Cleanup
     g_FGCompat.SetDLSSFGActive(false);
 }
 
-// Test auto mode falls back to basic when no FG and no Reflex
+// Auto with neither FG nor Reflex resolves to basic, which paces at the
+// configured rate itself.
 TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
@@ -350,26 +361,20 @@ TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
     mockShm->fpsLimiter.SetCaptureFps(60);
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
 
-    // No FG, no Reflex → auto should resolve to basic
     g_FGCompat.SetDLSSFGActive(false);
 
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    limiter.Apply();  // First call: cadence setup
-
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
     limiter.Apply();
-    QueryPerformanceCounter(&end);
 
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    // Auto → basic: 60fps → ~16.6ms
-    EXPECT_GE(elapsedMs, 13.0);
-    EXPECT_LT(elapsedMs, 100.0);
+    const auto resolved = limiter.GetResolvedCadence();
+    EXPECT_GT(resolved.generation, 0u) << "Apply() did not reach the local cadence at all";
+    EXPECT_EQ(resolved.targetFps, 60);
+    EXPECT_EQ(resolved.cadenceScale, 1);
+    EXPECT_NEAR(resolved.intervalUs, 16666, 100);
 }
 
-// Test auto mode uses FG fallback when FG is active but no Reflex
+// Auto with FG active resolves to fg_fallback, so the same 60 becomes 30.
+// Paired with the test above, this is the discriminator: same configuration,
+// FG state alone decides.
 TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
@@ -378,23 +383,15 @@ TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
     mockShm->fpsLimiter.SetCaptureFps(60);
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kAuto));
 
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    // FG active, no Reflex → auto should resolve to fg_fallback
     g_FGCompat.SetFSRFGActive(true);
 
-    limiter.Apply();  // First call: cadence setup
-
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
     limiter.Apply();
-    QueryPerformanceCounter(&end);
 
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    // Auto → fg_fallback: 60fps / 2 = 30fps → ~33ms
-    EXPECT_GE(elapsedMs, 25.0);
-    EXPECT_LT(elapsedMs, 100.0);
+    const auto resolved = limiter.GetResolvedCadence();
+    EXPECT_GT(resolved.generation, 0u) << "Apply() did not reach the local cadence at all";
+    EXPECT_EQ(resolved.targetFps, 30);
+    EXPECT_EQ(resolved.cadenceScale, 1);
+    EXPECT_NEAR(resolved.intervalUs, 33333, 100);
 
     g_FGCompat.SetFSRFGActive(false);
 }
@@ -502,6 +499,8 @@ TEST(ReflexFpsLimiterPolicyTest, ManualReflexConfigCanArmQueryHookBeforeNvApiLoa
         ce::fps_limiter_policy::IsManualReflexLimiterConfigured(true, 60, kBasicMode, false, kBasicMode, kNativeMode));
 }
 
+// The divisor is the runtime's reported multiplier, not a fixed 2: at 3x DLSS
+// FG, 60 fps of capture sync paces the game at 20.
 TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
@@ -510,23 +509,17 @@ TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
     mockShm->fpsLimiter.SetCaptureFps(60);
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
 
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
 
     limiter.Apply();
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply();
-    QueryPerformanceCounter(&end);
-
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    EXPECT_GE(elapsedMs, 40.0);
-    EXPECT_LT(elapsedMs, 100.0);
+    const auto resolved = limiter.GetResolvedCadence();
+    EXPECT_GT(resolved.generation, 0u) << "Apply() did not reach the local cadence at all";
+    EXPECT_EQ(resolved.targetFps, 20);
+    EXPECT_EQ(resolved.cadenceScale, 1);
+    EXPECT_NEAR(resolved.intervalUs, 50000, 100);
 
     g_FGCompat.SetDLSSFGActive(false);
 }

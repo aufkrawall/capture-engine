@@ -57,7 +57,13 @@ inline void FpsLimiter::NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, 
     // released it. Under the back-edge placement that release is the previous
     // Apply() return, under the front-loaded one it is the post-present
     // release; either way it is the span the budget has to cover.
-    if (lastApplyReturnQpc != 0 && cadenceIntervalUs_ > 0 && !cadenceFirstFrame && qpcFrequency > 0) {
+    const int64_t frameWorkOverrideUs = frameWorkOverrideUs_.load(std::memory_order_relaxed);
+    if (frameWorkOverrideUs > 0 && cadenceIntervalUs_ > 0 && !cadenceFirstFrame) {
+        // A stated frame work, which only a test sets - see
+        // SetObservedFrameWorkOverrideUs. It deliberately does not require
+        // lastApplyReturnQpc, because the point is not to consult the clock.
+        RecordFrameWork(frameWorkOverrideUs, cadenceIntervalUs_);
+    } else if (lastApplyReturnQpc != 0 && cadenceIntervalUs_ > 0 && !cadenceFirstFrame && qpcFrequency > 0) {
         RecordFrameWork(((nowQpcTicks - lastApplyReturnQpc) * 1000000) / qpcFrequency, cadenceIntervalUs_);
     }
     // An armed release the call site never ran belongs to the present that just

@@ -23,6 +23,16 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         localIntervalScale_ = cadenceScale;
         localIntervalRemainder_ = 0;
     }
+
+    // Publish the resolved cadence before any waiting, so it reflects the
+    // decision even when the deadline has already passed and nothing is
+    // waited for. GetResolvedCadence() is how a test pins mode resolution
+    // without measuring wall-clock time.
+    resolvedCadenceTargetFps_.store(targetFps, std::memory_order_relaxed);
+    resolvedCadenceScale_.store(cadenceScale > 0 ? cadenceScale : 1, std::memory_order_relaxed);
+    resolvedCadenceIntervalUs_.store(CadenceIntervalTicks(targetFps, cadenceScale) * 1000000 / qpcFrequency,
+                                     std::memory_order_relaxed);
+    resolvedCadenceGeneration_.fetch_add(1, std::memory_order_relaxed);
     const auto NextIntervalTicks = [&]() {
         return ce::fps_limiter_policy::NextRationalGroupIntervalTicks(qpcFrequency, targetFps, cadenceScale,
                                                                       localIntervalRemainder_);
@@ -171,6 +181,8 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     if (diff <= 0)
         return false;
 
+    smartWaitCount_.fetch_add(1, std::memory_order_relaxed);
+
     // Convert to microseconds for better precision
     int64_t diffUs = (diff * 1000000) / qpcFrequency;
 
@@ -207,6 +219,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
             dueTime.QuadPart = -coarseUs * 10;
 
             if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
+                kernelTimerWaitCount_.fetch_add(1, std::memory_order_relaxed);
                 WaitForSingleObject(highResTimer, static_cast<DWORD>((coarseUs + 999) / 1000 + 2));
                 QueryPerformanceCounter(&now);
                 const int64_t coarseOvershootUs =
