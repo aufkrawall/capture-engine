@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -30,6 +31,7 @@
 #include "../common/module_pin.h"
 
 namespace InlineHook {
+
 
 // ============================================================================
 // Deep Hook Implementation
@@ -500,8 +502,14 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 
     bool patchInstalled = false;
     DWORD patchError = ERROR_SUCCESS;
+    auto quiesceFailure = ce::hook_patch::QuiesceFailure::kNone;
+    bool ownershipChanged = false;
     {
         ce::hook_patch::ThreadQuiescence quiescence(resumeCode, static_cast<size_t>(displaceSize));
+        quiesceFailure = quiescence.FailureReason();
+        if (quiescence.IsReady() && memcmp(resumeCode, entry.origBytes, displaceSize) != 0) {
+            ownershipChanged = true;
+        }
         if (quiescence.IsReady() && memcmp(resumeCode, entry.origBytes, displaceSize) == 0) {
             DWORD oldProtect = 0;
             if (VirtualProtect((void*)resumeCode, displaceSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
@@ -522,10 +530,15 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     if (!patchInstalled) {
         if (publisher)
             publisher(nullptr, publisherContext);
+        // Name the condition. All three used to be folded into one sentence, so a
+        // refusal could not be told apart from a transient thread-creation race
+        // (Witcher 3 + Smooth Motion, session 20260919_182155).
         HookLogImportant(
-            "DeepHook: Refusing live patch at %p because peer threads could not be quiesced, ownership changed, "
-            "or VirtualProtect failed (error=%lu)",
-            resumeCode, static_cast<unsigned long>(patchError));
+            "DeepHook: Refusing live patch at %p — quiesce=%s ownershipChanged=%d VirtualProtectError=%lu retryable=%d",
+            resumeCode, ce::hook_patch::GetQuiesceFailureName(quiesceFailure), ownershipChanged ? 1 : 0,
+            static_cast<unsigned long>(patchError),
+            ce::hook_patch::IsRetryableQuiesceFailure(quiesceFailure) ? 1 : 0);
+        SetLastDeepHookQuiesceFailure(quiesceFailure);
         // The publisher made this trampoline callable before the live patch
         // attempt. Retain its RX allocation for an in-flight caller that
         // acquired the pointer before rollback.

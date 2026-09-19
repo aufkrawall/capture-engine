@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-09-19 - CE broke Steam's DX11 overlay under Smooth Motion, one refusal upstream
+
+Session `20260919_182155`. Steam's overlay never draws with CE + Smooth Motion; it works without CE.
+
+The chain, read backwards from the symptom:
+
+```
+DeepHook: Refusing live patch at 00007FFCA0E4953E because peer threads could not be quiesced...
+InstallPresentInlineHooks: deep body hook on the foreign-owned Present entry FAILED
+  -> falling back to the entry prepend
+[OVERLAY LAYER] CE composites ABOVE the foreign Present chain (foreignOverlays=1)
+CallOriginalPresent: Steam overlay without Streamline - using bypass trampoline ...
+```
+
+CE failed to get its view BELOW Steam's Present chain, so it took the entry prepend and ended up
+ABOVE Steam. From there, calling the original re-enters Steam's handler, which calls back through
+`vtable[8]` - now CE's `DetourPresent` - and crashes. CE's existing mitigation is to skip Steam's
+handler entirely via the bypass trampoline. That avoids the crash and costs Steam's overlay.
+
+**Why the refusal happens here.** `ThreadQuiescence` fails closed at five distinct points, and they
+were all folded into one log sentence, so the log could not say which. The likely one under Smooth
+Motion is the unstable-snapshot path: the walk requires two consecutive passes that discover no new
+threads, and NvPresent64 spawns its pacer/interpolation/capture workers exactly while CE is
+installing this hook. `error=0` already ruled out VirtualProtect.
+
+**Fixed:**
+- `ce::hook_patch::QuiesceFailure` names the condition, and the refusal line now reports
+  `quiesce=<reason> ownershipChanged=<0|1> VirtualProtectError=<n> retryable=<0|1>`.
+- The Present body hook is retried (bounded, 4 attempts) while the reason is transient, BEFORE the
+  entry prepend latches for the session. No wait: each attempt re-walks and re-suspends the live
+  thread set, and only `unstable-thread-snapshot` / `peer-executing-in-patch-range` are retried.
+- The Steam bypass line now names its consequence ("ITS OVERLAY WILL NOT DRAW") and points at the
+  deep-hook failure as the real defect, so this does not need another round trip to diagnose.
+
+**Not fixed, deliberately:** if the deep hook still fails for a non-transient reason, CE is above
+Steam and the bypass still drops Steam's overlay. Removing the bypass needs CE's detour to survive
+Steam calling back through `vtable[8]`, which is a real crash this mitigation was added for - worth
+doing, but not on a guess. The next run's named quiesce reason decides whether it is needed.
+
+Gate: `--verify` 0.1.6686. Hardware run pending.
+
+
 ### 2026-09-19 - Measuring the right rate was not the same as showing it
 
 Session `20260919_180154`, driver vsync forced to 144. The classifier from the entry below was

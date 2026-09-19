@@ -72,14 +72,57 @@ void PublishDeepPresent1Body(void* trampoline, void*) {
 // attempted: a lone Present1 deep trampoline would make IsPresentInterceptedBelowForeignChain()
 // true while CE also owns the Present entry bytes, and the two modes contradict each other
 // (below the chain CE must never invoke a foreign handler; prepended it must).
+// Bounded: the retry is for a thread-creation burst, which is over in a handful
+// of attempts or is not the cause at all.
+constexpr int kDeepPresentBodyInstallAttempts = 4;
+
 bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1Addr,
                                               int observedPresentEntryPatchSize,
                                               bool prependFallbackAvailable) {
     using namespace DXGIShared;
 
+    // A refusal is not necessarily permanent. The quiescence transaction fails
+    // closed when peers are still being created while it walks them, and that is
+    // exactly what NvPresent64 does to this process: it spawns its pacer,
+    // interpolation and capture workers while CE is installing this hook.
+    // Witcher 3 + Smooth Motion, session 20260919_182155 - the body hook was
+    // refused once, CE latched the entry prepend for the whole session, ended up
+    // ABOVE Steam's chain, and then had to bypass Steam's handler to avoid
+    // re-entering it, so Steam's overlay never drew again.
+    //
+    // Retrying costs another suspend/enumerate cycle and nothing else: there is
+    // no wait here, and each attempt re-reads the live thread set. Only the
+    // transient reasons are retried; an enumeration or suspend failure says
+    // something about the process that another pass will not change.
     bool haveBodyView = false;
-    if (InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr,
-                                             observedPresentEntryPatchSize)) {
+    void* deepPresentBody = nullptr;
+    for (int attempt = 1; attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
+        deepPresentBody = InlineHook::InstallDeepHookPublished(
+            presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr, observedPresentEntryPatchSize);
+        if (deepPresentBody) {
+            if (attempt > 1) {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: Present body hook installed on attempt %d — the earlier refusal was a "
+                    "transient thread-creation race, not a permanent one",
+                    attempt);
+            }
+            break;
+        }
+        const auto failure = InlineHook::GetLastDeepHookQuiesceFailure();
+        if (!ce::hook_patch::IsRetryableQuiesceFailure(failure)) {
+            HookLogImportant(
+                "InstallPresentInlineHooks: Present body hook refused for a non-transient reason (%s) — not retrying",
+                ce::hook_patch::GetQuiesceFailureName(failure));
+            break;
+        }
+        if (attempt < kDeepPresentBodyInstallAttempts) {
+            HookLogImportant(
+                "InstallPresentInlineHooks: Present body hook attempt %d/%d refused (%s) — retrying before falling "
+                "back to the entry prepend",
+                attempt, kDeepPresentBodyInstallAttempts, ce::hook_patch::GetQuiesceFailureName(failure));
+        }
+    }
+    if (deepPresentBody) {
         // The DXGI bypass built above resumes at exactly the offset the deep hook now owns, so
         // every "skip the foreign entry hook" consumer would land back in CE's own detour. The
         // deep trampoline is the correct clean path: it skips the foreign entry AND CE's patch

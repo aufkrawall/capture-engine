@@ -4,10 +4,25 @@
 
 #include <windows.h>
 #include <cstring>
+#include <atomic>
 #include <mutex>
 #include "../common/hook_common.h"
 
 namespace InlineHook {
+
+namespace {
+// Why the last deep-hook install refused. Kept next to the deep-hook ownership
+// records rather than in the installer, which is at its size ceiling.
+std::atomic<ce::hook_patch::QuiesceFailure> g_lastDeepHookQuiesceFailure{ce::hook_patch::QuiesceFailure::kNone};
+}  // namespace
+
+void SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure failure) {
+    g_lastDeepHookQuiesceFailure.store(failure, std::memory_order_release);
+}
+
+ce::hook_patch::QuiesceFailure GetLastDeepHookQuiesceFailure() {
+    return g_lastDeepHookQuiesceFailure.load(std::memory_order_acquire);
+}
 
 namespace {
 

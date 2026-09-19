@@ -686,7 +686,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (s_steamNonSLBypassCount++ < 10) {
                     HookLogImportant(
                         "CallOriginalPresent: Steam overlay without Streamline — using bypass trampoline %p instead of "
-                        "oPresent %p to avoid Steam NULL-callback crash",
+                        "oPresent %p to avoid Steam NULL-callback crash. CONSEQUENCE: Steam's overlay handler is "
+                        "skipped for this present, so ITS OVERLAY WILL NOT DRAW. This path is only reached when CE "
+                        "failed to get a view BELOW the foreign Present chain — look for the preceding "
+                        "'deep body hook ... FAILED' line and its quiesce reason, which is the real defect",
                         presentBypass, presentOriginal);
                 }
                 return presentBypass(pSwapChain, SyncInterval, Flags);

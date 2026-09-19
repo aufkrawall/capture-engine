@@ -87,6 +87,9 @@ void* InlineHook::CreateBypassTrampoline(void*) {
 void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, void*, int) {
     return nullptr;
 }
+ce::hook_patch::QuiesceFailure InlineHook::GetLastDeepHookQuiesceFailure() {
+    return ce::hook_patch::QuiesceFailure::kNone;
+}
 bool InlineHook::IsInstalledEntryPatchIntact(void*, void** currentJumpTargetOut) {
     if (currentJumpTargetOut) {
         *currentJumpTargetOut = nullptr;

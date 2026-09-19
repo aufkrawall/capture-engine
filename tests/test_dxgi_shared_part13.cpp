@@ -313,8 +313,15 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // The Present view below the chain is a deep body hook, never an entry patch.
     const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
     ASSERT_NE(helper, std::string::npos);
-    EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent", helper),
-              std::string::npos);
+    const size_t presentDeepInstall = install.find("InlineHook::InstallDeepHookPublished(", helper);
+    ASSERT_NE(presentDeepInstall, std::string::npos);
+    EXPECT_NE(install.find("presentAddr, (void*)DetourPresent", presentDeepInstall), std::string::npos);
+    // A refusal that was only a transient thread-creation race must not latch the entry-prepend
+    // fallback for the whole session: NvPresent64 spawns its workers exactly while CE installs
+    // this hook, and losing the below-the-chain view cost Steam's overlay entirely
+    // (session 20260919_182155).
+    EXPECT_NE(install.find("kDeepPresentBodyInstallAttempts", helper), std::string::npos);
+    EXPECT_NE(install.find("IsRetryableQuiesceFailure(", helper), std::string::npos);
     // A Present1 entry a foreign overlay owns gets the same deep treatment; an unclaimed one
     // has no chain to damage, so the ordinary prepend is correct there.
     EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),

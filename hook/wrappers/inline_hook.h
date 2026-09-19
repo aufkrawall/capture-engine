@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "hook_patch_transaction.h"
+
 #include <windows.h>
 #include <cstddef>
 #include <cstdint>
@@ -98,6 +100,11 @@ void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSiz
 // Deep-hook variant that publishes its callable trampoline before the live
 // body patch becomes observable. The publisher receives nullptr if the patch
 // fails after publication.
+// Why the last deep-hook install refused. Lets a caller retry a transient
+// thread-creation race instead of latching a fallback for the whole session.
+ce::hook_patch::QuiesceFailure GetLastDeepHookQuiesceFailure();
+void SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure failure);
+
 void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher,
                                void* publisherContext, int minimumExternalPatchSize = 0);
 

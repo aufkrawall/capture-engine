@@ -22,8 +22,10 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize) {
     if (!patchAddress || patchSize == 0)
         return;
     Quiesce();
-    if (ready_ && !IsRangeSafe(patchAddress, patchSize))
+    if (ready_ && !IsRangeSafe(patchAddress, patchSize)) {
         ready_ = false;
+        failure_ = QuiesceFailure::kRangeUnsafe;
+    }
 }
 
 void ThreadQuiescence::Quiesce() {
@@ -32,6 +34,7 @@ void ThreadQuiescence::Quiesce() {
     try {
         threads_.reserve(1024);
     } catch (...) {
+        failure_ = QuiesceFailure::kAllocation;
         return;
     }
 
@@ -67,8 +70,10 @@ void ThreadQuiescence::Quiesce() {
             walk = ce::process_threads::WalkCurrentProcessThreadsViaSystemSnapshot(currentThreadId,
                                                                                    kQuiesceThreadAccess, adopt);
         }
-        if (walk != ce::process_threads::WalkResult::kCompleted)
+        if (walk != ce::process_threads::WalkResult::kCompleted) {
+            failure_ = QuiesceFailure::kEnumeration;
             return;
+        }
 
         for (size_t i = previousCount; i < threads_.size(); ++i) {
             auto& thread = threads_[i];
@@ -78,6 +83,7 @@ void ThreadQuiescence::Quiesce() {
                     thread.handle = nullptr;
                     continue;
                 }
+                failure_ = QuiesceFailure::kSuspend;
                 return;
             }
             thread.suspended = true;
@@ -87,8 +93,14 @@ void ThreadQuiescence::Quiesce() {
             break;
         }
     }
-    if (!stableSnapshot)
+    if (!stableSnapshot) {
+        // Peers were still being created on every pass. NvPresent64 spawns its
+        // pacer/interpolation/capture workers exactly while CE is installing the
+        // Present body hook, which is what made this the observed failure under
+        // Smooth Motion.
+        failure_ = QuiesceFailure::kUnstableSnapshot;
         return;
+    }
 
     // A grouped transaction keeps every tracked thread suspended throughout,
     // so its control context cannot change between related entry patches.
@@ -102,6 +114,7 @@ void ThreadQuiescence::Quiesce() {
         if (!GetThreadContext(thread.handle, &context)) {
             if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0)
                 continue;
+            failure_ = QuiesceFailure::kContext;
             return;
         }
 #ifdef _WIN64
@@ -112,6 +125,7 @@ void ThreadQuiescence::Quiesce() {
         thread.contextCaptured = true;
     }
     ready_ = true;
+    failure_ = QuiesceFailure::kNone;
 
     // Measure here, report from the destructor. Nothing on this path may log:
     // the logger takes a lock and can allocate, and a suspended peer thread may
