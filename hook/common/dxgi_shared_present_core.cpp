@@ -8,6 +8,50 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         if (isFirstHook)
             g_SharedState.inPresentHook.store(false);
     });
+
+    // A present interposer's output chain is where CE's overlay belongs: this
+    // Present is below every overlay that patched the dxgi entry, so CE draws
+    // last and is topmost, and the driver has already generated the frame, so
+    // the overlay is not interpolated. HOW CE may draw there is not a per-API
+    // detail, though - the chain's resources belong to the interposer whatever
+    // API created them, so the route is resolved for every API here.
+    //
+    // This used to live inside the D3D12 branch below, which left DX11 and DX10
+    // compositing on an interposer's private chain with no policy at all
+    // (Witcher 3 + Smooth Motion, session 20260919_154534 - see
+    // ce::overlay_compat::ResolvePresentInterposerCompositeRoute).
+    const bool presentInterposerPrivateOutputChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
+    if (presentInterposerPrivateOutputChain) {
+        const auto route = ce::overlay_compat::ResolvePresentInterposerCompositeRoute(
+            ctx.api == APIType::D3D12, DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain) != nullptr);
+        if (route == ce::overlay_compat::PresentInterposerCompositeRoute::kPassThroughUntouched) {
+            static std::atomic<int> s_interposerPresentBypassLogCount{0};
+            const int logCount = s_interposerPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 2048) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
+                    "through untouched; the overlay stays on the application-facing chain",
+                    pSwapChain, logCount + 1);
+            }
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
+        if (route == ce::overlay_compat::PresentInterposerCompositeRoute::kOutputChainTransientBackbuffer) {
+            static std::atomic<int> s_interposerTransientRouteLogCount{0};
+            const int logCount = s_interposerTransientRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 2048) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Present interposer output swapchain %p composites through the transient "
+                    "back-buffer route (#%d) — nothing CE creates here outlives this Present, because the "
+                    "interposer recreates this chain through a ResizeBuffers CE never sees",
+                    pSwapChain, logCount + 1);
+            }
+        }
+    }
+    // Consumed by the DX11/DX10 overlay path for this Present only.
+    DXGIShared::SetPresentInterposerPrivateOutputChainScope(presentInterposerPrivateOutputChain);
+    auto interposerScopeGuard =
+        ::ce::make_scope_guard([] { DXGIShared::SetPresentInterposerPrivateOutputChainScope(false); });
+
     if (ctx.api == APIType::D3D12) {
         const char* overlayModule = nullptr;
         int startupPass = 0;
@@ -32,24 +76,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
-        // A present interposer's output chain is where CE's overlay belongs: this Present is below
-        // every overlay that patched the dxgi entry, so CE draws last and is topmost, and the
-        // driver has already generated the frame, so the overlay is not interpolated. The one
-        // thing CE must not do is submit that overlay on the application's queue — the overlay
-        // queue comes from the chain's own creating queue (ProcessFrame's routing). Without an
-        // observed queue there is no safe way to draw here at all.
-        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&
-            !DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)) {
-            static std::atomic<int> s_interposerPresentBypassLogCount{0};
-            const int logCount = s_interposerPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 10 || (logCount % 2048) == 0) {
-                HookLogImportant(
-                    "DetourPresent: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
-                    "through untouched; the overlay stays on the application-facing chain",
-                    pSwapChain, logCount + 1);
-            }
-            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        }
+        // The present-interposer route (including the D3D12 "no observed queue
+        // means no safe way to draw here at all" bypass) was resolved for every
+        // API above, before this branch.
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(

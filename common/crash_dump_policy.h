@@ -528,4 +528,114 @@ inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPrese
     return !forceDump && debuggerPresent;
 }
 
+// ---------------------------------------------------------------------------
+// Terminations no in-process handler can ever see, and the Windows Error
+// Reporting dump that is the only remaining record of them.
+// ---------------------------------------------------------------------------
+//
+// `__fastfail(code)` compiles to `int 29h`. The kernel builds the exception
+// record with FirstChance = FALSE, so user-mode dispatch is skipped entirely:
+// no vectored handler, no SEH frame and no unhandled-exception filter runs. CE
+// installs all three and none of them can fire. The process is simply gone with
+// STATUS_STACK_BUFFER_OVERRUN (0xC0000409) as its exit code, whatever subcode
+// raised it - a /GS cookie check, a CFG indirect-call check, or the UCRT's
+// abort() on an unhandled C++ exception (`FAST_FAIL_FATAL_APP_EXIT`).
+//
+// Witcher 3 + NVIDIA Smooth Motion, session 20260919_154534: NvPresent64's
+// std::terminate -> abort() ended the game and CE's session directory held no
+// dump at all, while WER had written a complete one elsewhere.
+inline bool IsInProcessHandlerBypassingExitCode(DWORD exitCode) {
+    return exitCode == kFailFastExceptionExitCode;
+}
+
+// One short phrase naming the exit-code class, so the injector's exit line says
+// why no CE dump exists instead of leaving the reader to look up the code.
+inline const char* DescribeProcessExitCodeClass(DWORD exitCode) {
+    if (IsInProcessHandlerBypassingExitCode(exitCode)) {
+        return "__fastfail/STATUS_STACK_BUFFER_OVERRUN - bypasses VEH, SEH and the unhandled filter, so no "
+               "in-process CE handler can run";
+    }
+    if (exitCode == kBreakpointExceptionExitCode) {
+        return "STATUS_BREAKPOINT";
+    }
+    if (exitCode == EXCEPTION_ACCESS_VIOLATION) {
+        return "STATUS_ACCESS_VIOLATION";
+    }
+    if (exitCode == EXCEPTION_STACK_OVERFLOW) {
+        return "STATUS_STACK_OVERFLOW";
+    }
+    if (exitCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        return "STATUS_ILLEGAL_INSTRUCTION";
+    }
+    if (IsCrashLikeProcessExitCode(exitCode)) {
+        return "NTSTATUS error-severity exit";
+    }
+    return "normal exit";
+}
+
+// Default WER local-dump store, relative to %LOCALAPPDATA%. WER names the file
+// after the image and the pid, and that pair is what lets CE claim exactly the
+// dump belonging to the process it was tracking.
+inline constexpr const char* kWerLocalDumpsDefaultRelativeDir = "CrashDumps";
+inline constexpr const char* kAdoptedWerCrashDumpPrefix = "crash_wer_";
+// WerFault is started after the target is already gone and writes a full dump
+// of a multi-gigabyte game, which takes seconds. The injector polls, so the
+// window is a deadline rather than a wait: CE re-checks on later poll ticks and
+// gives up once it expires.
+inline constexpr uint64_t kWerDumpAdoptionWindowMs = 60'000;
+
+inline std::string BuildWerLocalDumpFileName(const char* imageFileName, DWORD processId) {
+    const char* baseName = GetPathFileName(imageFileName);
+    if (!baseName || baseName[0] == '\0') {
+        return {};
+    }
+    char buffer[MAX_PATH] = {};
+    snprintf(buffer, sizeof(buffer), "%s.%lu.dmp", baseName, processId);
+    return buffer;
+}
+
+inline std::string BuildAdoptedWerCrashDumpFileName(const char* imageFileName, DWORD processId) {
+    const char* baseName = GetPathFileName(imageFileName);
+    if (!baseName || baseName[0] == '\0') {
+        baseName = "process";
+    }
+    char buffer[MAX_PATH] = {};
+    snprintf(buffer, sizeof(buffer), "%s%s_pid%lu.dmp", kAdoptedWerCrashDumpPrefix, baseName, processId);
+    return buffer;
+}
+
+// CE only claims a WER dump for an exit it would have wanted a dump for and did
+// not produce one itself. A clean exit leaves WER's store alone, and a session
+// that already holds CE's own dump keeps that one as the authoritative record.
+inline bool ShouldAdoptWerDumpForTrackedProcessExit(DWORD exitCode, bool sessionDumpAlreadyPresent) {
+    return IsCrashLikeProcessExitCode(exitCode) && !sessionDumpAlreadyPresent;
+}
+
+inline bool HasWerDumpAdoptionWindowExpired(uint64_t firstAttemptMs, uint64_t nowMs) {
+    return nowMs >= firstAttemptMs && (nowMs - firstAttemptMs) > kWerDumpAdoptionWindowMs;
+}
+
+// ---------------------------------------------------------------------------
+// WER LocalDumps registration
+// ---------------------------------------------------------------------------
+//
+// LocalDumps is read from HKEY_LOCAL_MACHINE only. CE used to write the same
+// values under HKEY_CURRENT_USER as a "last resort" for exactly the fail-fast
+// case above; WER never read them. Session 20260919_154534 proves it directly:
+// the HKCU key for witcher3.exe named the session directory and WER still wrote
+// to %LOCALAPPDATA%\CrashDumps. The writes were inert and left one stale subkey
+// per game, each embedding the user's own paths.
+inline constexpr const wchar_t* kWerLocalDumpsKeyPath =
+    L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps";
+
+// A subkey CE wrote is recognizable by its DumpFolder naming a CE session
+// directory. Anything else under LocalDumps belongs to another product and must
+// be left untouched.
+inline bool IsCaptureEngineWrittenLocalDumpsSubkey(const char* dumpFolderValue, const char* captureEngineLogsRoot) {
+    if (!dumpFolderValue || dumpFolderValue[0] == '\0' || !captureEngineLogsRoot || captureEngineLogsRoot[0] == '\0') {
+        return false;
+    }
+    return ContainsAsciiInsensitive(dumpFolderValue, captureEngineLogsRoot);
+}
+
 }  // namespace ce::crash_dump_policy

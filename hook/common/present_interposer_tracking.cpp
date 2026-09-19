@@ -50,7 +50,20 @@ ce::present_interposer::CadenceTracker& InterposerCadence() {
     static ce::present_interposer::CadenceTracker tracker;
     return tracker;
 }
+
+// The interposer presents its private chain on its own thread while the
+// application presents the proxy on the render thread, so this classification
+// is per-Present and per-thread, never a process-wide latch.
+thread_local bool t_presentInterposerPrivateOutputChainScope = false;
 }  // namespace
+
+void SetPresentInterposerPrivateOutputChainScope(bool active) {
+    t_presentInterposerPrivateOutputChainScope = active;
+}
+
+bool IsPresentOnPresentInterposerPrivateOutputChain() {
+    return t_presentInterposerPrivateOutputChainScope;
+}
 
 void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pOutputQueue) {
     if (!pSwapChain) {

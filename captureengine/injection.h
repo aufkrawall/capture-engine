@@ -123,8 +123,21 @@ private:
     uint64_t injectTime; // When to inject (now + delay)
   };
 
+  // A tracked process that died where no CE in-process handler could run (a
+  // __fastfail termination reaches neither VEH, SEH nor the unhandled filter).
+  // WER writes the only dump in that case, and WerFault is still producing it
+  // when the exit is observed, so the claim is retried on later poll ticks
+  // until it succeeds or the window expires - never waited for.
+  struct PendingWerDumpAdoption {
+    DWORD pid = 0;
+    std::string name;
+    DWORD exitCode = 0;
+    uint64_t firstAttemptMs = 0;
+  };
+
   std::vector<FailedInjection> failedInjections;
   std::vector<PendingInjection> pendingInjections;
+  std::vector<PendingWerDumpAdoption> pendingWerDumpAdoptions;
 
   // WMI Members
   enum class WmiSubscriptionState : uint8_t {
@@ -168,6 +181,9 @@ private:
   bool IsAlreadyPendingLocked(DWORD pid);
   bool IsRecentlyFailed(DWORD pid);
   bool IsRecentlyFailedLocked(DWORD pid);   // Assumes injectMutex is held
+  void NoteTrackedProcessExitLocked(DWORD pid, const std::string &name,
+                                    DWORD exitCode);
+  void ServicePendingWerDumpAdoptionsLocked(uint64_t nowMs);
 
   // CRITICAL FIX: Shutdown flag for thread safety
   std::atomic<bool> shuttingDown{false};

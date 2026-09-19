@@ -374,12 +374,23 @@ void ActivateCrashTrace() {
     g_CrashTraceActive.store(true, std::memory_order_release);
 }
 
-// Register this process with WER (Windows Error Reporting) so crash dumps are
-// generated even for __fastfail() which bypasses VEH and UEF handlers.
-// This is critical for catching /GS stack buffer overrun (0xC0000409) crashes.
+// Keep this process visible to WER (Windows Error Reporting). WER is the only
+// mechanism that still records a __fastfail termination (0xC0000409), because
+// that path is dispatched with FirstChance = FALSE and therefore reaches no
+// vectored handler, no SEH frame and no unhandled-exception filter - see
+// ce::crash_dump_policy::IsInProcessHandlerBypassingExitCode.
 void RegisterWithWER() {
-    // Prevent Windows Error Reporting dialog from appearing
-    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
+    // Hard errors (an unloadable image, a missing removable volume) must fail
+    // rather than park a modal box on a game's render thread.
+    //
+    // SEM_NOGPFAULTERRORBOX is deliberately NOT set. It makes the default
+    // UnhandledExceptionFilter terminate the process without invoking WER at
+    // all, which is the opposite of what this function exists for; the report
+    // UI is suppressed through WerSetFlags' queueing flag below instead. This
+    // is the same rule the build itself follows (tools/build/build_common.py:
+    // "crash reporting must keep producing the dumps this project debugs
+    // from"), applied to the runtime.
+    SetErrorMode(SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
 
     // Enable WER crash dumps - this catches __fastfail and other exceptions
     // that bypass our VEH handler
@@ -419,45 +430,16 @@ void RegisterWithWER() {
         }
     }
 
-    // Also set WER registry keys for local dump generation as last resort
-    // This catches __fastfail crashes that bypass VEH and UEF
-    HKEY hKey = NULL;
-    wchar_t procPath[MAX_PATH];
-    GetModuleFileNameW(NULL, procPath, MAX_PATH);
-    std::wstring procName(procPath);
-    size_t lastSlash = procName.find_last_of(L'\\');
-    if (lastSlash != std::wstring::npos)
-        procName = procName.substr(lastSlash + 1);
-
-    // Per-application WER dump settings
-    std::wstring regPath = L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\" + procName;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, regPath.c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) ==
-        ERROR_SUCCESS) {
-        DWORD dumpType = 2;  // MiniDumpWithFullMemory
-        DWORD dumpCount = 10;
-        wchar_t dumpDirW[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
-        RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
-        RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
-        RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW,
-                       (DWORD)((wcslen(dumpDirW) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-    }
-
-    // Also set global WER settings for ALL apps (covers subprocesses, thread pool crashes)
-    regPath = L"SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps";
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, regPath.c_str(), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) ==
-        ERROR_SUCCESS) {
-        DWORD dumpType = 2;
-        DWORD dumpCount = 10;
-        wchar_t dumpDirW2[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW2, MAX_PATH);
-        RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
-        RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
-        RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW2,
-                       (DWORD)((wcslen(dumpDirW2) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
-    }
+    // CE used to also write the LocalDumps values under HKEY_CURRENT_USER here,
+    // described as the "last resort" for exactly the __fastfail case. WER reads
+    // LocalDumps from HKEY_LOCAL_MACHINE only, so those writes never had any
+    // effect; session 20260919_154534 shows the HKCU key for witcher3.exe
+    // naming the CE session directory while WER wrote to the default store
+    // instead. All they produced was one stale subkey per game, each carrying
+    // the user's own paths. CE now claims the dump WER really wrote
+    // (ce::wer_dump_adoption) and purges the leftovers once from the
+    // controller, and this process makes no machine-wide registry change at
+    // all.
 }
 
 void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols) {

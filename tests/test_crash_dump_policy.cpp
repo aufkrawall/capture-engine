@@ -430,3 +430,78 @@ TEST(CrashDumpPolicyTest, TheStackOnlyDumpKeepsThreadsAndModulesWithoutProcessMe
     EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithDataSegs));
     EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithHandleData));
 }
+
+// Witcher 3 + NVIDIA Smooth Motion, session 20260919_154534. The game ended
+// with 0xC0000409 and CE's session directory held no dump at all: __fastfail is
+// dispatched with FirstChance = FALSE, so the VEH, the SEH chain and the
+// unhandled-exception filter CE installs are all skipped. The only record is
+// the one WER wrote, and CE has to say so rather than report "no session dump
+// exists" and leave the reader to work out why.
+TEST(CrashDumpPolicyTest, FailFastIsTheExitClassNoInProcessHandlerCanSee) {
+    EXPECT_TRUE(policy::IsInProcessHandlerBypassingExitCode(policy::kFailFastExceptionExitCode));
+    EXPECT_FALSE(policy::IsInProcessHandlerBypassingExitCode(EXCEPTION_ACCESS_VIOLATION));
+    EXPECT_FALSE(policy::IsInProcessHandlerBypassingExitCode(EXCEPTION_STACK_OVERFLOW));
+    EXPECT_FALSE(policy::IsInProcessHandlerBypassingExitCode(0));
+
+    const std::string failFast = policy::DescribeProcessExitCodeClass(policy::kFailFastExceptionExitCode);
+    EXPECT_NE(failFast.find("__fastfail"), std::string::npos);
+    EXPECT_NE(failFast.find("VEH"), std::string::npos);
+
+    EXPECT_STREQ(policy::DescribeProcessExitCodeClass(EXCEPTION_ACCESS_VIOLATION), "STATUS_ACCESS_VIOLATION");
+    EXPECT_STREQ(policy::DescribeProcessExitCodeClass(0), "normal exit");
+    EXPECT_STREQ(policy::DescribeProcessExitCodeClass(1), "normal exit");
+}
+
+TEST(CrashDumpPolicyTest, WerLocalDumpNamesMatchWhatWerFaultWritesAndWhatCeKeeps) {
+    EXPECT_EQ(policy::BuildWerLocalDumpFileName("witcher3.exe", 9512), "witcher3.exe.9512.dmp");
+    // WER names the file after the image alone, so a full path must be reduced
+    // to its file name before the lookup or the dump is never found.
+    EXPECT_EQ(policy::BuildWerLocalDumpFileName(R"(H:\SteamLibrary\common\bin\x64\witcher3.exe)", 9512),
+              "witcher3.exe.9512.dmp");
+    EXPECT_TRUE(policy::BuildWerLocalDumpFileName("", 9512).empty());
+    EXPECT_TRUE(policy::BuildWerLocalDumpFileName(nullptr, 9512).empty());
+
+    EXPECT_EQ(policy::BuildAdoptedWerCrashDumpFileName("witcher3.exe", 9512), "crash_wer_witcher3.exe_pid9512.dmp");
+    // The pid token is what SessionDirectoryHasDumpForProcess matches on, so it
+    // has to survive a missing image name.
+    EXPECT_EQ(policy::BuildAdoptedWerCrashDumpFileName(nullptr, 9512), "crash_wer_process_pid9512.dmp");
+}
+
+TEST(CrashDumpPolicyTest, WerDumpIsClaimedOnlyForACrashCeDidNotRecordItself) {
+    EXPECT_TRUE(policy::ShouldAdoptWerDumpForTrackedProcessExit(policy::kFailFastExceptionExitCode, false));
+    EXPECT_TRUE(policy::ShouldAdoptWerDumpForTrackedProcessExit(EXCEPTION_ACCESS_VIOLATION, false));
+
+    // CE's own dump is the authoritative record when it exists.
+    EXPECT_FALSE(policy::ShouldAdoptWerDumpForTrackedProcessExit(policy::kFailFastExceptionExitCode, true));
+    // A clean quit leaves the WER store alone.
+    EXPECT_FALSE(policy::ShouldAdoptWerDumpForTrackedProcessExit(0, false));
+    EXPECT_FALSE(policy::ShouldAdoptWerDumpForTrackedProcessExit(1, false));
+    // A live FG runtime at exit is normal, not a crash (fg-exit-dump policy).
+    EXPECT_FALSE(policy::ShouldAdoptWerDumpForTrackedProcessExit(policy::kProcessIsTerminatingExitCode, false));
+}
+
+TEST(CrashDumpPolicyTest, TheAdoptionWindowExpiresRatherThanWaitingOnWerFault) {
+    EXPECT_FALSE(policy::HasWerDumpAdoptionWindowExpired(1000, 1000));
+    EXPECT_FALSE(policy::HasWerDumpAdoptionWindowExpired(1000, 1000 + policy::kWerDumpAdoptionWindowMs));
+    EXPECT_TRUE(policy::HasWerDumpAdoptionWindowExpired(1000, 1000 + policy::kWerDumpAdoptionWindowMs + 1));
+    // A clock that went backwards must not be read as "expired long ago".
+    EXPECT_FALSE(policy::HasWerDumpAdoptionWindowExpired(1000, 999));
+}
+
+// The HKCU LocalDumps values CE used to write were never read by WER and left
+// one subkey per game behind, each naming a CE session directory. Purging them
+// must recognise CE's own entries by that path and touch nothing else.
+TEST(CrashDumpPolicyTest, OnlyCeWrittenLocalDumpsSubkeysAreRecognised) {
+    const char* logsRoot = R"(C:\Users\TestUser\Programme\build\captureproject\installed\captureengine\logs)";
+
+    EXPECT_TRUE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(
+        R"(C:\Users\TestUser\Programme\build\captureproject\installed\captureengine\logs\20260919_154534)", logsRoot));
+    // The same path with the separators CE wrote in some builds.
+    EXPECT_TRUE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(
+        R"(C:\Users\TestUser\PROGRAMME\build\captureproject\installed\CAPTUREENGINE\logs\20260916_011148)", logsRoot));
+
+    EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(R"(%APPDATA%\SystemInformer\CrashDumps)", logsRoot));
+    EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey("", logsRoot));
+    EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(nullptr, logsRoot));
+    EXPECT_FALSE(policy::IsCaptureEngineWrittenLocalDumpsSubkey(R"(C:\anything)", ""));
+}

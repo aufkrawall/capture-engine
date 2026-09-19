@@ -20,6 +20,10 @@
 
 #include <vector>
 
+#include "../common/crash_dump_policy.h"
+
+#include "../common/crash_handler.h"
+
 #include "../common/logging.h"
 
 #include "../common/module_enumeration.h"
@@ -27,6 +31,8 @@
 #include "../common/raii_helpers.h"
 
 #include "../common/thread_wait.h"
+
+#include "../common/wer_dump_adoption.h"
 
 #include "injection_policy.h"
 

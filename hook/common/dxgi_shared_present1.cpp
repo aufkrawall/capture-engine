@@ -32,6 +32,27 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+
+    // The interposer's private output chain is not the application's, whatever API created it, so
+    // how CE may draw there is resolved for every API here — see ExecutePresentCore.
+    const bool presentInterposerPrivateOutputChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
+    if (presentInterposerPrivateOutputChain &&
+        ce::overlay_compat::ResolvePresentInterposerCompositeRoute(
+            api == APIType::D3D12, DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain) != nullptr) ==
+            ce::overlay_compat::PresentInterposerCompositeRoute::kPassThroughUntouched) {
+        static std::atomic<int> s_interposerPresent1BypassLogCount{0};
+        const int logCount = s_interposerPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 2048) == 0) {
+            HookLogImportant(
+                "DetourPresent1: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
+                "through untouched; the overlay stays on the application-facing chain",
+                pSwapChain, logCount + 1);
+        }
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
+    DXGIShared::SetPresentInterposerPrivateOutputChainScope(presentInterposerPrivateOutputChain);
+    auto interposerScopeGuard =
+        ce::make_scope_guard([] { DXGIShared::SetPresentInterposerPrivateOutputChainScope(false); });
     if (api == APIType::D3D12) {
         DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(pSwapChain,
                                                            "DXGIShared::DetourPresent1 pre-routing");
@@ -577,20 +598,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
-        // Same rule as DetourPresent: CE composites on the interposer's output chain, but only when
-        // it observed the queue that owns it.
-        if (DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&
-            !DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)) {
-            static std::atomic<int> s_interposerPresent1BypassLogCount{0};
-            const int logCount = s_interposerPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 10 || (logCount % 2048) == 0) {
-                HookLogImportant(
-                    "DetourPresent1: Present interposer output swapchain %p has no observed queue (#%d) — passing it "
-                    "through untouched; the overlay stays on the application-facing chain",
-                    pSwapChain, logCount + 1);
-            }
-            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
+        // The present-interposer route was resolved for every API above, before
+        // this branch — same rule and same reason as DetourPresent.
         const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
         const bool startupBlockingOverlaySwapchainStillOwnsPresent =
             ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(

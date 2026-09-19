@@ -411,4 +411,47 @@ TEST_F(OverlayModuleDetectionTest, StreamlineInterposerTrackedButNotOverlay) {
     EXPECT_FALSE(IsStreamlineInterposerModuleLoaded());
 }
 
+// Witcher 3 DX11 + NVIDIA Smooth Motion, session 20260919_154534.
+//
+// NvPresent64 hands the game a proxy swapchain and keeps its own private output
+// chain; CE's only Present view in that configuration WAS that private chain.
+// The rule for drawing on it existed, but only inside the D3D12 branch of the
+// present path, so the DX11 branch composited there with the ordinary retained
+// swapchain RTV - pinning a back buffer the interposer recreates through a
+// ResizeBuffers CE never sees, because the private chain is hooked presentOnly.
+// NvPresent64 ended the process from its own std::terminate -> abort() about
+// 1.4 s later (0xC0000409, faulting module NvPresent64.dll +0x1b6fd1, both runs
+// of that session at the identical offset). The route is a property of the
+// chain's ownership, not of the API, so it must be answered for every API.
+TEST(PresentInterposerCompositeRouteTest, TheRouteIsResolvedForEveryApiNotOnlyD3D12) {
+    // D3D12: the back buffers belong to the queue that created the chain.
+    EXPECT_EQ(ResolvePresentInterposerCompositeRoute(/*apiHasCommandQueues=*/true,
+                                                     /*hasObservedOutputQueue=*/true),
+              PresentInterposerCompositeRoute::kOutputChainOwnQueue);
+    // Never observed the create, so there is no safe queue and no safe draw.
+    EXPECT_EQ(ResolvePresentInterposerCompositeRoute(/*apiHasCommandQueues=*/true,
+                                                     /*hasObservedOutputQueue=*/false),
+              PresentInterposerCompositeRoute::kPassThroughUntouched);
+
+    // DX11/DX10 have no queue at all, so a null queue must NOT be read as "no
+    // safe route": the chain's own device is reachable through GetDevice. What
+    // changes is retention - nothing CE creates there may outlive the Present.
+    EXPECT_EQ(ResolvePresentInterposerCompositeRoute(/*apiHasCommandQueues=*/false,
+                                                     /*hasObservedOutputQueue=*/false),
+              PresentInterposerCompositeRoute::kOutputChainTransientBackbuffer);
+    EXPECT_EQ(ResolvePresentInterposerCompositeRoute(/*apiHasCommandQueues=*/false,
+                                                     /*hasObservedOutputQueue=*/true),
+              PresentInterposerCompositeRoute::kOutputChainTransientBackbuffer);
+}
+
+// The DX11 overlay used to take whatever render target was bound when Present
+// was entered whenever NvPresent64 was loaded, described as "prefer the RTV
+// currently bound by the game". On an interposer's private chain the bound
+// target is one of the interpolator's own intermediates, so that writes the
+// overlay into driver-internal state instead of onto the frame.
+TEST(PresentInterposerCompositeRouteTest, TheBoundRenderTargetIsNeverBorrowedOnAnInterposerChain) {
+    EXPECT_FALSE(MayAdoptBoundRenderTargetAsOverlayTarget(/*presentInterposerPrivateOutputChain=*/true));
+    EXPECT_TRUE(MayAdoptBoundRenderTargetAsOverlayTarget(/*presentInterposerPrivateOutputChain=*/false));
+}
+
 }  // namespace

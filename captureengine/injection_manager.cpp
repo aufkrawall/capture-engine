@@ -195,13 +195,10 @@ void InjectionManager::Update() {
     // Cleanup dead processes
     injectedProcesses.erase(
         std::remove_if(injectedProcesses.begin(), injectedProcesses.end(),
-                       [](const InjectedProcess& p) {
+                       [this](const InjectedProcess& p) {
                            DWORD exitCode;
                            if (GetExitCodeProcess(p.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
-                               LogInfo(
-                                   "[Inject] Tracked injected process exited: %s (PID: %lu, exit=0x%08lX). If no "
-                                   "session dump exists, the process ended outside CE's in-process crash/dump path.",
-                                   p.name.c_str(), (unsigned long)p.pid, (unsigned long)exitCode);
+                               NoteTrackedProcessExitLocked(p.pid, p.name, exitCode);
                                if (p.injectionThread)
                                    CloseHandle(p.injectionThread);
                                if (p.reactivateEvent)
@@ -217,6 +214,7 @@ void InjectionManager::Update() {
 
     // Cleanup old failed injections (expire after 30 seconds)
     uint64_t now = GetTickCount64();
+    ServicePendingWerDumpAdoptionsLocked(now);
     failedInjections.erase(std::remove_if(failedInjections.begin(), failedInjections.end(),
                                           [now](const FailedInjection& f) { return (now - f.timestamp) > 30000; }),
                            failedInjections.end());

@@ -71,6 +71,27 @@ measurement.
 application-facing swapchain and composites there instead. That overlay IS interpolated and draws below Steam/RTSS.
 It is the safe state, not the intended one.
 
+### DX11/DX10: the same chain, a different constraint
+
+There is no command queue in D3D11, so the queue rule above has nothing to say and a null queue must **not** be read
+as "no safe route". The chain's own device is reachable through `IDXGISwapChain::GetDevice`, and drawing with it onto
+its own back buffer is exactly what an overlay is supposed to do. What changes is **retention**:
+
+- CE hooks an interposer's private chain `presentOnly` (slot 8/22), so slot 13 is not CE's and the interposer's own
+  `ResizeBuffers` is invisible to CE. A retained RTV therefore pins a back buffer the interposer recreates on its own
+  schedule, with nothing to tell CE to drop it first — unlike the application's chain, where `DetourResizeBuffers`
+  runs `CleanupDX11Resources` before the resize.
+- So on an interposer's private chain the back-buffer RTV is built and released **inside the one Present**
+  (`PresentInterposerCompositeRoute::kOutputChainTransientBackbuffer`). Nothing CE creates there outlives the call.
+- And the render target the interposer left bound at Present entry is never adopted as the overlay target. On the
+  application's chain that bound target is the frame the game just finished; on the interposer's chain it is one of
+  the interpolator's own intermediates, so drawing there writes the overlay into driver-internal state instead of
+  onto the frame.
+
+`ce::overlay_compat::ResolvePresentInterposerCompositeRoute` answers this for every API, in
+`ExecutePresentCore` **before** the D3D12 branch, and `DXGIShared::IsPresentOnPresentInterposerPrivateOutputChain`
+carries the per-Present, per-thread answer down to the DX11/DX10 overlay.
+
 ## Smooth Motion status
 The generation factor is the ratio between the two present streams: the interposer's private-chain presents
 (counted at the top of `DetourPresent`/`DetourPresent1`, before every early return) against the application's
@@ -97,11 +118,22 @@ See `overlay-fg-status.md` for why they cannot work in DX12.
 - `DX12: ProcessFrame — present interposer output chain <ptr>, using its own queue <ptr>` — invariant 2 holding.
   A `path=primaryQ`/`origGame` line for an interposer chain instead means the queue was lost: that is the crash.
 - `DetourPresent: Present interposer output swapchain <ptr> has no observed queue` — the fallback engaged.
+- `DetourPresent: Present interposer output swapchain <ptr> composites through the transient back-buffer route` —
+  the DX11/DX10 route above. Its absence in a DX11 Smooth Motion session means the classification missed.
+- `DX11: Creating transient RTV for SwapChain <ptr>` / `DX11: Releasing the retained swapchain RTV — this Present is
+  on a present interposer's private chain` — retention actually dropped. A `Creating retained RTV` line for a chain
+  the create log called the interposer's is the regression.
 - `DetourPresent: Present interposer output cadence window #N — application=... output=... generating=... multiplier=...`
 - **Device removed with `DXGI_ERROR_ACCESS_DENIED` (`0x887A002B`) out of `GetDeviceRemovedReason()` right after CE's
   first overlay `ExecuteCommandLists`, with no TDR in the Windows System log** — CE is drawing into one queue's
   backbuffers while submitting on another. That is this page's founding bug (session `20260914_102700`): the game
   then crashed on a null dereference 1.1 s later, after CE started swallowing its command lists.
+- **The game exits with `0xC0000409` and NvPresent64.dll as the faulting module, with no CE dump and no CE frames on
+  the faulting stack** — CE composited on the interposer's private chain with no route policy. Witcher 3 DX11,
+  session `20260919_154534` (both runs, identical offset `NvPresent64+0x1b6fd1`): that address is `int 29h` preceded
+  by `mov ecx, 7`, i.e. `__fastfail(FAST_FAIL_FATAL_APP_EXIT)` from the UCRT's `abort()`, called by NvPresent64's own
+  `std::terminate` — an unhandled C++ exception inside the interposer, about 1.4 s after CE's first overlay frame.
+  The exit code is the giveaway that no CE handler could have run: see `regression-testing-and-logging.md`.
 
 ## Forced vsync
 **`vsync_mode=fifo` is stated on the interposer's own output flip**, and nowhere else. This is the Portal RTX result
@@ -127,6 +159,10 @@ are those. Nothing above the generator is touched, no timer is added and no driv
   interpolated and draws below Steam/RTSS; it is the fallback for a chain whose queue CE never saw.
 - Forcing the present MODE, or any interval, ABOVE the interposer. That is what unpaces a metered generator.
 - Restoring the old Smooth Motion heuristics by putting CE back on the driver's private chain.
+- Retaining ANY resource built from an interposer's private chain across Presents, in any API.
+- Adopting the render target bound at Present entry as the overlay target on an interposer's private chain.
+- Deciding the interposer route inside a per-API branch. It is a property of who owns the chain, not of the API; the
+  Witcher 3 crash below is what that mistake cost.
 
 ## Open questions / stale-risk
 - Stale-risk **medium**: the classification is keyed on the `nvpresent` module name. A driver that renames or
@@ -137,7 +173,15 @@ are those. Nothing above the generator is touched, no timer is added and no driv
   next suspects are the backbuffer resource state NvPresent64 leaves before Present, and whether it tracks
   submissions on its own queue.
 - The visible `NVIDIA SM` label from the cadence path has not been confirmed on hardware either.
-- DX11 and Vulkan Smooth Motion still rely on the older heuristics and the invisible-window guards
-  (`ShouldSkipWindowForNvPresent`); whether those paths have the same proxy topology is unverified.
+- DX11 Smooth Motion **does** have the same proxy topology — confirmed on hardware, Witcher 3, session
+  `20260919_154534`: NvPresent64 created two private output chains on the real factory and CE's only Present view
+  was those chains, never the application's. CE's overlay device there (`0000022DD76731C0`) is NvPresent64's own
+  D3D11 device, reached through `GetDevice` on the private chain, not the game's (`0000022DB68BF0D0`).
+  **Fix not yet hardware-validated.**
+- Still open in DX11: the overlay device/context are cached from the FIRST chain CE draws on, while Smooth Motion
+  creates TWO private chains on two different devices. A Present on the second chain would build its RTV with the
+  first chain's device. Not observed (only chain #1 ever presented that session), not ruled out.
+- Vulkan Smooth Motion still relies on the older heuristics and the invisible-window guards
+  (`ShouldSkipWindowForNvPresent`); whether that path has the same proxy topology is unverified.
 - CE's factory wrapper is what sees the application-facing create. A game that reaches the real DXGI factory without
   it would leave CE with no app-facing view at all under an interposer; not observed, but not ruled out.

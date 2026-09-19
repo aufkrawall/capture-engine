@@ -176,20 +176,48 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
               std::string::npos);
     EXPECT_NE(wrapPolicy.find("ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain("), std::string::npos);
 
-    // Both present entries pass the chain through only when no queue was observed for it.
+    // Both present entries resolve the route for EVERY api, before any per-api branch.
+    //
+    // This used to assert only that the D3D12 branch passed a queueless chain through. The
+    // decision sat inside `if (ctx.api == APIType::D3D12)`, so DX11 composited on an interposer's
+    // private chain with no policy at all and NvPresent64 terminated Witcher 3 from its own
+    // std::terminate (session 20260919_154534). The chain's ownership is not an api property, so
+    // the classification has to happen before the api is branched on.
     for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
         const std::string present =
             ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / presentUnit);
         ASSERT_FALSE(present.empty()) << presentUnit;
-        const size_t guard = present.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) &&");
+        const size_t guard = present.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
         ASSERT_NE(guard, std::string::npos) << presentUnit;
-        EXPECT_NE(present.find("!DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain)", guard),
+        // The route, not a hand-rolled queue test, decides.
+        const size_t route = present.find("ResolvePresentInterposerCompositeRoute(", guard);
+        ASSERT_NE(route, std::string::npos)
+            << presentUnit << ": the route policy must decide, so every api is covered by one rule";
+        EXPECT_NE(present.find("DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain) != nullptr", route),
                   std::string::npos)
-            << presentUnit << ": the pass-through must be conditional on having no queue";
+            << presentUnit << ": the D3D12 pass-through must still be conditional on having no queue";
+        // Before the api branch, so DX11/DX10 cannot miss it.
+        const size_t apiBranch = present.find("api == APIType::D3D12");
+        ASSERT_NE(apiBranch, std::string::npos) << presentUnit;
+        EXPECT_LT(guard, present.rfind("api == APIType::D3D12", present.find("DX12_IsThirdPartyOverlaySwapchain")))
+            << presentUnit << ": the interposer route must be resolved before the D3D12-only branch";
         const size_t overlayGuard = present.find("DX12_IsThirdPartyOverlaySwapchain(pSwapChain)");
         ASSERT_NE(overlayGuard, std::string::npos) << presentUnit;
         EXPECT_LT(guard, overlayGuard) << presentUnit;
+        // And the per-Present scope has to reach the DX11/DX10 overlay.
+        EXPECT_NE(present.find("SetPresentInterposerPrivateOutputChainScope("), std::string::npos) << presentUnit;
     }
+
+    // The DX11 overlay must consult that scope, and must neither retain nor borrow on such a chain.
+    const std::string dx11Overlay =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_overlay.cpp");
+    ASSERT_FALSE(dx11Overlay.empty());
+    EXPECT_NE(dx11Overlay.find("IsPresentOnPresentInterposerPrivateOutputChain()"), std::string::npos);
+    EXPECT_NE(dx11Overlay.find("MayAdoptBoundRenderTargetAsOverlayTarget("), std::string::npos)
+        << "the bound render target must not be adopted on an interposer's private chain";
+    EXPECT_NE(dx11Overlay.find("const bool retainRenderTargetView = !interposerPrivateOutputChain;"),
+              std::string::npos)
+        << "nothing CE creates on an interposer's private chain may outlive the Present";
 
     // The overlay queue for that chain is the chain's own queue, never the application's.
     const std::string phase2 = ce::test_source::ReadFile(

@@ -58,6 +58,8 @@ class DX11Capture;
 
 #include "../common/overlay_adapter.h"
 
+#include "../common/overlay_compat.h"
+
 #include "../common/overlay_metrics_publisher.h"
 
 #include "../common/perf_logger.h"

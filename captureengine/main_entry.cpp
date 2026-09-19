@@ -443,6 +443,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // there leaves a stray `logs\symbols` full of PDBs next to the per-session folders.
         SetCrashDumpDirectory(earlyLogsDir, /*archiveInstalledSymbols=*/!g_SessionDirName.empty());
         InstallCrashHandler();
+        // Earlier builds wrote WER LocalDumps values under HKCU as a "last
+        // resort" for fail-fast terminations. WER reads LocalDumps from HKLM
+        // only, so they never produced a dump and only accumulated one stale
+        // subkey per game, each carrying this user's own session paths.
+        ce::wer_dump_adoption::PurgeInertCaptureEngineLocalDumpsRegistration(logsRootDir);
     } else {
         OutputDebugStringA(
             "[CaptureEngine] log_level=none: skipping log directory creation, crash handler, and all debug "

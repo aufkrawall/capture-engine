@@ -45,7 +45,7 @@
   },
   "total": 1916,
   "scope": {
-    "entries": 775,
+    "entries": 777,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -63,6 +63,7 @@
       "captureengine/injection.cpp",
       "captureengine/injection_inject.cpp",
       "captureengine/injection_manager.cpp",
+      "captureengine/injection_process_exit.cpp",
       "captureengine/injection_security.cpp",
       "captureengine/injection_wmi_events.cpp",
       "captureengine/limiter_main.cpp",
@@ -168,6 +169,7 @@
       "common/secure_dll_loading.cpp",
       "common/utils/scanner.cpp",
       "common/vulkan_layer_registration.cpp",
+      "common/wer_dump_adoption.cpp",
       "hook/apis/ddraw_hook.cpp",
       "hook/apis/ddraw_hook_capture.cpp",
       "hook/apis/ddraw_hook_capture_frame.cpp",

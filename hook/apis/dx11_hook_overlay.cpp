@@ -194,6 +194,13 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     const UINT resolvedBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
 
     const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
+    // This Present's chain belongs to a present interposer (NVIDIA Smooth
+    // Motion's NvPresent64), not to the application. CE may draw on it - the
+    // frame is already generated and every dxgi-entry overlay has already
+    // composited - but it must not RETAIN anything the interposer owns, and it
+    // must not borrow state the interposer left behind. See
+    // ce::overlay_compat::PresentInterposerCompositeRoute.
+    const bool interposerPrivateOutputChain = DXGIShared::IsPresentOnPresentInterposerPrivateOutputChain();
     if (nvPresentLoaded && ShouldSkipWindowForNvPresent(currentHwnd)) {
         return;
     }
@@ -201,7 +208,18 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     // NVIDIA Smooth Motion can trigger paired Present callbacks for the same
     // frame in quick succession. Only suppress near-immediate duplicates for the
     // exact same backbuffer to avoid dropping legitimate output frames.
-    if (nvPresentLoaded) {
+    //
+    // NOT on a present interposer's private OUTPUT chain. That chain is
+    // presented once per frame the driver actually puts on screen, and the
+    // driver's metering deliberately places a generated frame close behind its
+    // real partner - so a sub-millisecond gap there is the second DISPLAYED
+    // frame, not a duplicate callback. Suppressing it drops the overlay from
+    // that frame entirely, which is the flicker: Witcher 3 session
+    // 20260919_160555 skipped 2453 of 6962 presents (35%) this way, every one of
+    // them reaching the screen without the overlay. The rule for this chain is
+    // already stated in present-interposers.md - "the overlay is drawn on every
+    // displayed frame, real and generated alike".
+    if (nvPresentLoaded && !interposerPrivateOutputChain) {
         static constexpr int64_t kNvPresentExactDuplicateUs = 500;
         int64_t nowUs = PerfLogger::GetQpcUs();
         bool hasPreviousSample = (s_lastNvPresentOverlayUs > 0 && nowUs > s_lastNvPresentOverlayUs);
@@ -354,12 +372,32 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetDroppedFrames(dx11_hook_g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D11 swapchain device");
 
+    if (interposerPrivateOutputChain && dx11_hook_g_mainRenderTargetView) {
+        // The retained view belongs to whichever chain CE drew on before the
+        // interposer took over presentation. Holding it keeps that chain's back
+        // buffer alive for as long as the interposer route lasts, which is
+        // exactly the pin this route exists to avoid.
+        EarlyLog("%s: Releasing the retained swapchain RTV — this Present is on a present interposer's private chain",
+                 dx11_hook_g_DetectedAPI);
+        dx11_hook_g_mainRenderTargetView->Release();
+        dx11_hook_g_mainRenderTargetView = nullptr;
+        lastSwapChain = nullptr;
+    }
+
     ID3D11RenderTargetView* overlayRTV = nullptr;
     bool usingBoundRTV = false;
+    // Set when the RTV below belongs to this Present alone and must be released
+    // before returning, instead of living in dx11_hook_g_mainRenderTargetView.
+    ID3D11RenderTargetView* transientOverlayRTV = nullptr;
 
-    // When Smooth Motion is active, prefer the RTV currently bound by the game.
-    // This better matches the actual frame target and reduces overlay flicker.
-    if (nvPresentLoaded && context) {
+    // Outside an interposer's private chain, a render target the game left
+    // bound at Present is the frame it just finished, which is a better overlay
+    // target than a guessed buffer index on a FLIP chain. On an interposer's
+    // private chain it is one of the interpolator's own intermediates, so
+    // drawing there writes the overlay into driver-internal state rather than
+    // onto the frame.
+    if (nvPresentLoaded && context &&
+        ce::overlay_compat::MayAdoptBoundRenderTargetAsOverlayTarget(interposerPrivateOutputChain)) {
         context->OMGetRenderTargets(1, &overlayRTV, NULL);
         if (overlayRTV) {
             usingBoundRTV = true;
@@ -372,15 +410,27 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         // otherwise the captured frame will not contain the overlay (flicker).
         static UINT lastBufferIndex = 0xFFFFFFFF;
 
-        // Create/recreate RTV if swapchain changed or FLIP buffer index rotated
-        if (!dx11_hook_g_mainRenderTargetView || pSwapChain != lastSwapChain || resolvedBufferIndex != lastBufferIndex) {
-            if (dx11_hook_g_mainRenderTargetView) {
+        // A retained RTV pins one of the swapchain's back buffers. That is fine
+        // on a chain whose ResizeBuffers CE hooks (CleanupDX11Resources drops
+        // everything first), and it is NOT fine on an interposer's private
+        // chain: that one is hooked presentOnly, so the interposer recreates it
+        // through a ResizeBuffers CE never observes while CE still holds a
+        // reference to the old back buffer. Build and drop the view inside this
+        // Present there instead.
+        const bool retainRenderTargetView = !interposerPrivateOutputChain;
+        const bool needNewView = retainRenderTargetView ? (!dx11_hook_g_mainRenderTargetView ||
+                                                           pSwapChain != lastSwapChain ||
+                                                           resolvedBufferIndex != lastBufferIndex)
+                                                        : true;
+        if (needNewView) {
+            if (retainRenderTargetView && dx11_hook_g_mainRenderTargetView) {
                 dx11_hook_g_mainRenderTargetView->Release();
                 dx11_hook_g_mainRenderTargetView = nullptr;
             }
 
-            EarlyLog("%s: Creating RTV for SwapChain %p (%ux%u) buffer=%u...", dx11_hook_g_DetectedAPI, pSwapChain,
-                     desc.BufferDesc.Width, desc.BufferDesc.Height, resolvedBufferIndex);
+            EarlyLog("%s: Creating %s RTV for SwapChain %p (%ux%u) buffer=%u...", dx11_hook_g_DetectedAPI,
+                     retainRenderTargetView ? "retained" : "transient", pSwapChain, desc.BufferDesc.Width,
+                     desc.BufferDesc.Height, resolvedBufferIndex);
 
             ID3D11Texture2D* backbuffer = nullptr;
             HRESULT hr = pSwapChain->GetBuffer(resolvedBufferIndex, IID_PPV_ARGS(&backbuffer));
@@ -388,19 +438,34 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
                 EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", dx11_hook_g_DetectedAPI, resolvedBufferIndex, hr);
                 return;
             }
-            hr = device->CreateRenderTargetView(backbuffer, NULL, &dx11_hook_g_mainRenderTargetView);
+            ID3D11RenderTargetView* createdRTV = nullptr;
+            hr = device->CreateRenderTargetView(backbuffer, NULL, &createdRTV);
             backbuffer->Release();
             if (FAILED(hr)) {
                 EarlyLog("%s: CreateRTV FAILED hr=0x%08X", dx11_hook_g_DetectedAPI, hr);
                 return;
             }
-            lastSwapChain = pSwapChain;
-            lastBufferIndex = resolvedBufferIndex;
+            if (retainRenderTargetView) {
+                dx11_hook_g_mainRenderTargetView = createdRTV;
+                lastSwapChain = pSwapChain;
+                lastBufferIndex = resolvedBufferIndex;
+            } else {
+                transientOverlayRTV = createdRTV;
+            }
             EarlyLog("%s: RTV created OK (buffer=%u)", dx11_hook_g_DetectedAPI, resolvedBufferIndex);
         }
 
-        overlayRTV = dx11_hook_g_mainRenderTargetView;
+        overlayRTV = retainRenderTargetView ? dx11_hook_g_mainRenderTargetView : transientOverlayRTV;
     }
+
+    // Every early return from here on must drop the transient view; nothing CE
+    // creates on an interposer's chain may outlive this Present.
+    auto transientRTVGuard = ce::make_scope_guard([&transientOverlayRTV]() {
+        if (transientOverlayRTV) {
+            transientOverlayRTV->Release();
+            transientOverlayRTV = nullptr;
+        }
+    });
 
     EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p", frameCount, device, context, overlayRTV);
 

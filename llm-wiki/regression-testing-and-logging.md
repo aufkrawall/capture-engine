@@ -420,6 +420,37 @@ For a multi-recording session, select the immutable recording ID or exact media 
 - The injected hook now also mirrors successful in-process external `MiniDumpWriteDump` calls into the active CE session folder when the original dump path lives elsewhere. This is intended for fast-crash families that are handled by the game/runtime rather than CE's own unhandled-exception path.
 - Legacy standalone `.dbg` files are not produced; `.pdb` is now the intended Windows symbol format in this repo.
 
+### The one crash class no CE handler can ever record
+
+`__fastfail(code)` compiles to `int 29h`. The kernel builds the exception record with `FirstChance = FALSE`, so
+**user-mode dispatch is skipped entirely**: no vectored handler, no SEH frame and no unhandled-exception filter
+runs. CE installs all three and none of them can fire. The process is simply gone with exit code `0xC0000409`
+(`STATUS_STACK_BUFFER_OVERRUN`), whatever subcode raised it — a `/GS` cookie check, a CFG indirect-call check, or
+the UCRT's `abort()` (`FAST_FAIL_FATAL_APP_EXIT`, the subcode an unhandled C++ exception reaching `std::terminate`
+produces).
+
+Consequences, and what CE does about them:
+
+- **CE's session directory will contain no dump.** Do not read that as "CE was not involved" — read the exit code.
+  `ce::crash_dump_policy::DescribeProcessExitCodeClass` names the class, and the injector's exit line carries it.
+- **WER is the only recorder.** `ce::wer_dump_adoption` claims WerFault's dump for the tracked pid and moves it into
+  the session directory as `crash_wer_<image>_pid<pid>.dmp`, looking in the per-image `DumpFolder`, the global
+  `DumpFolder`, then `%LOCALAPPDATA%\CrashDumps`. WerFault runs after the target is gone and takes seconds for a
+  large game, so the claim is retried on the injector's normal poll ticks (never a sleep) until it lands or the
+  60 s window expires, and "WerFault has finished" is proven by an exclusive open, not by elapsed time.
+- **LocalDumps is an `HKEY_LOCAL_MACHINE` key.** CE used to write the same values under HKCU as a "last resort" for
+  exactly this case; WER never read them. Session `20260919_154534` proves it directly — the HKCU key for
+  `witcher3.exe` named the CE session directory and WER still wrote to `%LOCALAPPDATA%\CrashDumps`. Those writes
+  are gone, and the controller purges the per-game leftovers (they embedded the user's own paths) on startup.
+- **`SEM_NOGPFAULTERRORBOX` is no longer set.** It makes the default `UnhandledExceptionFilter` terminate without
+  invoking WER at all, which is the opposite of what the WER registration exists for. The report UI stays suppressed
+  through `WerSetFlags`' queueing flag. This matches the rule the build itself already followed
+  (`tools/build/build_common.py`).
+- If no dump turns up anywhere, the injector logs the exact elevated one-liner that enables LocalDumps machine-wide.
+
+Reading such a dump: `.ecxr` reports `Subcode: 0x7 FAST_FAIL_FATAL_APP_EXIT`, and the frame below the `int 29h` is
+the CRT `abort()`/`std::terminate` pair, so the interesting frame is the third one down.
+
 ## Logging Guidance
 - **A log sink inside an injected DLL must be one CE owns.** Never write to the host process's `stdout`/`stderr`:
   they belong to the game, and an inherited pipe with no live reader blocks `WriteFile` forever, freezing whichever

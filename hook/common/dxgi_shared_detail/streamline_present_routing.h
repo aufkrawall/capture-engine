@@ -359,6 +359,13 @@ ID3D12CommandQueue* DX12_GetPresentInterposerOutputQueue(IDXGISwapChain* pSwapCh
 bool HasPresentInterposerPrivateSwapchains();
 bool HasCompositablePresentInterposerOutputChain();
 
+// Is the Present currently executing on THIS thread a present interposer's private output chain?
+// Set once per Present by the shared present path and consumed by the DX11/DX10 overlay, which is
+// reached through several call layers that do not carry the swapchain classification with them.
+// Thread-local, because the interposer and the application can present on different threads.
+void SetPresentInterposerPrivateOutputChainScope(bool active);
+bool IsPresentOnPresentInterposerPrivateOutputChain();
+
 // Smooth Motion status comes from the ratio between the interposer's private output chain and the
 // application's own present stream — the only evidence there is in DX12 (present_interposer_cadence.h).
 void NotePresentInterposerOutputPresent(IDXGISwapChain* pSwapChain);

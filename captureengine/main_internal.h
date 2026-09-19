@@ -46,6 +46,8 @@
 
 #include "../common/vulkan_layer_registration.h"
 
+#include "../common/wer_dump_adoption.h"
+
 #include "dump_helper.h"
 
 #include "display_timing_policy.h"

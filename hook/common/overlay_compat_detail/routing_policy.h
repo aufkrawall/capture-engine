@@ -257,6 +257,55 @@ inline bool ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(bool call
     return callerFromPresentInterposerModule || presentInterposerInStack;
 }
 
+// How CE may composite on a present interposer's PRIVATE output chain. The
+// chain belongs to the interposer, not to the application, so the route is not
+// a preference - it is the only shape of access that does not corrupt state the
+// interposer owns.
+enum class PresentInterposerCompositeRoute : uint8_t {
+    // No safe access exists. Forward the Present untouched and leave the
+    // overlay on the application-facing chain.
+    kPassThroughUntouched = 0,
+    // D3D12: submit on the queue that created the chain, because the back
+    // buffers belong to that queue. Submitting on the application's queue
+    // removes the device with DXGI_ERROR_ACCESS_DENIED (session
+    // 20260914_102700).
+    kOutputChainOwnQueue,
+    // D3D11/D3D10: there is no queue, and the chain's own device is reachable
+    // through GetDevice, so CE can draw. What it must not do is RETAIN
+    // anything: an RTV held across Presents pins a back buffer the interposer
+    // recreates on its own schedule, through a ResizeBuffers CE never sees
+    // (the private chain is hooked presentOnly, so slot 13 is not CE's).
+    // Everything CE creates here is built and released inside the one Present.
+    kOutputChainTransientBackbuffer,
+};
+
+// Pure: the route for one Present on a chain already known to be an
+// interposer's private output chain.
+//
+// Witcher 3 DX11 + NVIDIA Smooth Motion, session 20260919_154534: this decision
+// existed only inside the D3D12 branch of the present path, so the DX11 branch
+// composited on NvPresent64's private output chain with the ordinary retained
+// swapchain RTV. NvPresent64 ended the process from its own std::terminate ->
+// abort() about 1.4 s later (exit 0xC0000409, faulting module NvPresent64.dll
+// +0x1b6fd1, both runs of that session identical).
+inline PresentInterposerCompositeRoute ResolvePresentInterposerCompositeRoute(bool apiHasCommandQueues,
+                                                                             bool hasObservedOutputQueue) {
+    if (!apiHasCommandQueues) {
+        return PresentInterposerCompositeRoute::kOutputChainTransientBackbuffer;
+    }
+    return hasObservedOutputQueue ? PresentInterposerCompositeRoute::kOutputChainOwnQueue
+                                  : PresentInterposerCompositeRoute::kPassThroughUntouched;
+}
+
+// The overlay target on an interposer's private output chain is that chain's
+// own back buffer, never whatever render target happens to be bound when
+// Present is entered. On a chain the interposer owns, the bound target is one
+// of its interpolation intermediates, so drawing into it writes CE's overlay
+// into driver-internal state and not onto the frame.
+inline bool MayAdoptBoundRenderTargetAsOverlayTarget(bool presentInterposerPrivateOutputChain) {
+    return !presentInterposerPrivateOutputChain;
+}
+
 // A hidden-window DX12 create deliberately skips Present-hook refresh and all authoritative
 // swapchain side effects because it may be an auxiliary chain. A retaining CE proxy is itself a
 // side effect, though, and can leave a foreign overlay holding the hidden chain after the app
