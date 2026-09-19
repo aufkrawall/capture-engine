@@ -433,24 +433,30 @@ return cursorState;
 }
 
 MediaEncoderSession::ScreenGrabPrivacyContext MediaEncoderSession::sampleScreenGrabPrivacyContext() {
-
-ScreenGrabPrivacyContext context;
-HWND confirmedWindow = nullptr;
-HMONITOR confirmedMonitor = nullptr;
-const auto captureBefore = media_main_g_WgcCap.Read();
-if (captureBefore) {
-    captureBefore->GetTargetIdentity(&context.targetWindow, &context.targetMonitor);
-}
-context.focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
-const auto captureAfter = media_main_g_WgcCap.Read();
-if (captureAfter) {
-    captureAfter->GetTargetIdentity(&confirmedWindow, &confirmedMonitor);
-}
-context.stableCaptureTarget = captureBefore && captureAfter && captureBefore.get() == captureAfter.get() &&
-                              context.targetWindow == confirmedWindow &&
-                              context.targetMonitor == confirmedMonitor;
-return context;
-
+    ScreenGrabPrivacyContext context;
+    HWND confirmedWindow = nullptr;
+    HMONITOR confirmedMonitor = nullptr;
+    std::shared_ptr<WGCCapture> captureBefore;
+    {
+        const auto cap = media_main_g_WgcCap.Read();
+        if (cap) {
+            cap->GetTargetIdentity(&context.targetWindow, &context.targetMonitor);
+            captureBefore = cap.Shared();
+        }
+    }
+    context.focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
+    std::shared_ptr<WGCCapture> captureAfter;
+    {
+        const auto cap = media_main_g_WgcCap.Read();
+        if (cap) {
+            cap->GetTargetIdentity(&confirmedWindow, &confirmedMonitor);
+            captureAfter = cap.Shared();
+        }
+    }
+    context.stableCaptureTarget = captureBefore && captureAfter && captureBefore == captureAfter &&
+                                  context.targetWindow == confirmedWindow &&
+                                  context.targetMonitor == confirmedMonitor;
+    return context;
 }
 
 void MediaEncoderSession::observeScreenGrabPrivacyWarmup() {

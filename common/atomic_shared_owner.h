@@ -8,6 +8,57 @@
 
 namespace ce {
 
+namespace detail {
+
+constexpr size_t kMaxTrackedSharedOwners = 8;
+
+struct SharedOwnerThreadEntry {
+    const void* owner = nullptr;
+    uint32_t depth = 0;
+};
+
+inline SharedOwnerThreadEntry* GetSharedOwnerThreadEntries() {
+    thread_local SharedOwnerThreadEntry entries[kMaxTrackedSharedOwners] = {};
+    return entries;
+}
+
+inline uint32_t AcquireSharedReadDepth(const void* owner) {
+    auto* entries = GetSharedOwnerThreadEntries();
+    for (size_t i = 0; i < kMaxTrackedSharedOwners; ++i) {
+        if (entries[i].owner == owner) {
+            return entries[i].depth++;
+        }
+    }
+    for (size_t i = 0; i < kMaxTrackedSharedOwners; ++i) {
+        if (entries[i].owner == nullptr) {
+            entries[i].owner = owner;
+            entries[i].depth = 1;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+inline uint32_t ReleaseSharedReadDepth(const void* owner) {
+    auto* entries = GetSharedOwnerThreadEntries();
+    for (size_t i = 0; i < kMaxTrackedSharedOwners; ++i) {
+        if (entries[i].owner == owner) {
+            if (entries[i].depth > 0) {
+                --entries[i].depth;
+                const uint32_t remaining = entries[i].depth;
+                if (remaining == 0) {
+                    entries[i].owner = nullptr;
+                }
+                return remaining;
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+
+}  // namespace detail
+
 // Atomically publishes shared ownership while preserving a pointee for the
 // complete duration of each `owner->Method()` expression. This is useful for
 // hot-swappable runtime services whose readers must never observe a freed
@@ -17,10 +68,32 @@ class AtomicSharedOwner {
 public:
     class Access {
     public:
-        Access(Access&&) noexcept = default;
-        Access& operator=(Access&&) noexcept = default;
+        Access(Access&& other) noexcept
+            : owner_(other.owner_),
+              lockedMutex_(other.lockedMutex_),
+              value_(std::move(other.value_)) {
+            other.owner_ = nullptr;
+            other.lockedMutex_ = false;
+        }
+
+        Access& operator=(Access&& other) noexcept {
+            if (this != &other) {
+                cleanup();
+                owner_ = other.owner_;
+                lockedMutex_ = other.lockedMutex_;
+                value_ = std::move(other.value_);
+                other.owner_ = nullptr;
+                other.lockedMutex_ = false;
+            }
+            return *this;
+        }
+
         Access(const Access&) = delete;
         Access& operator=(const Access&) = delete;
+
+        ~Access() {
+            cleanup();
+        }
 
         T* operator->() const {
             return value_.get();
@@ -28,6 +101,10 @@ public:
 
         T* get() const {
             return value_.get();
+        }
+
+        const std::shared_ptr<T>& Shared() const {
+            return value_;
         }
 
         explicit operator bool() const {
@@ -38,10 +115,27 @@ public:
         friend class AtomicSharedOwner<T>;
 
         explicit Access(const AtomicSharedOwner<T>* owner)
-            : lock_(owner->accessMutex_),
-              value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {}
+            : owner_(owner),
+              value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {
+            if (owner_ && detail::AcquireSharedReadDepth(owner_) == 0) {
+                owner_->accessMutex_.lock_shared();
+                lockedMutex_ = true;
+            }
+        }
 
-        std::shared_lock<std::shared_mutex> lock_;
+        void cleanup() noexcept {
+            if (owner_) {
+                detail::ReleaseSharedReadDepth(owner_);
+                if (lockedMutex_) {
+                    owner_->accessMutex_.unlock_shared();
+                }
+                owner_ = nullptr;
+                lockedMutex_ = false;
+            }
+        }
+
+        const AtomicSharedOwner<T>* owner_ = nullptr;
+        bool lockedMutex_ = false;
         std::shared_ptr<T> value_;
     };
 
@@ -58,6 +152,10 @@ public:
 
         T* get() const {
             return value_.get();
+        }
+
+        const std::shared_ptr<T>& Shared() const {
+            return value_;
         }
 
         explicit operator bool() const {

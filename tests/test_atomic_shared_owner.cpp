@@ -78,3 +78,84 @@ TEST(AtomicSharedOwnerTest, ArrowAccessPinsPointeeAcrossConcurrentExchange) {
     EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 1);
     EXPECT_EQ(owner->Read(), 9);
 }
+
+TEST(AtomicSharedOwnerTest, AccessSharedAccessorPreservesPointee) {
+    std::atomic<int> destroyed{0};
+    std::shared_ptr<TrackedOwnerValue> preserved;
+    {
+        ce::AtomicSharedOwner<TrackedOwnerValue> owner(std::make_shared<TrackedOwnerValue>(42, &destroyed));
+        {
+            const auto access = owner.Read();
+            ASSERT_TRUE(access);
+            preserved = access.Shared();
+            EXPECT_EQ(preserved->Read(), 42);
+        }
+        // access is destroyed; owner is replaced
+        owner.Store(nullptr);
+        EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 0);
+        EXPECT_EQ(preserved->Read(), 42);
+    }
+    // owner destroyed; preserved still holds the pointee
+    EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 0);
+    preserved.reset();
+    EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 1);
+}
+
+TEST(AtomicSharedOwnerTest, RecursiveReadOnSameThreadDoesNotDeadlockWithConcurrentWriter) {
+    std::atomic<int> destroyed{0};
+    ce::AtomicSharedOwner<TrackedOwnerValue> owner(std::make_shared<TrackedOwnerValue>(100, &destroyed));
+    std::atomic<bool> outerHeld{false};
+    std::atomic<bool> writerStarted{false};
+    std::atomic<bool> allowWriterToFinish{false};
+    std::atomic<bool> innerFinished{false};
+    std::atomic<bool> writerFinished{false};
+    int innerObserved = 0;
+
+    std::thread reader([&]() {
+        const auto outer = owner.Read();
+        ASSERT_TRUE(outer);
+        EXPECT_EQ(outer->Read(), 100);
+        outerHeld.store(true, std::memory_order_release);
+
+        // Wait until writer thread has called LockExclusive() and is actively waiting
+        while (!writerStarted.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        // On a non-recursive shared mutex with writer priority, calling Read() here
+        // would block waiting for the writer to finish, while the writer waits for
+        // outer to finish — causing mutual deadlock.
+        // With recursive shared read tracking, the inner read succeeds immediately.
+        {
+            const auto inner = owner.Read();
+            ASSERT_TRUE(inner);
+            innerObserved = inner->Read();
+            EXPECT_EQ(inner.Shared(), outer.Shared());
+        }
+        innerFinished.store(true, std::memory_order_release);
+        allowWriterToFinish.store(true, std::memory_order_release);
+        // outer is released when reader thread exits this scope
+    });
+
+    while (!outerHeld.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    std::thread writer([&]() {
+        writerStarted.store(true, std::memory_order_release);
+        // Exclusive access waits until all reader shared access is released
+        auto exclusive = owner.LockExclusive();
+        EXPECT_TRUE(allowWriterToFinish.load(std::memory_order_acquire));
+        ASSERT_TRUE(exclusive);
+        EXPECT_EQ(exclusive->Read(), 100);
+        writerFinished.store(true, std::memory_order_release);
+    });
+
+    reader.join();
+    writer.join();
+
+    EXPECT_TRUE(innerFinished.load(std::memory_order_acquire));
+    EXPECT_TRUE(writerFinished.load(std::memory_order_acquire));
+    EXPECT_EQ(innerObserved, 100);
+    EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 0);
+}
