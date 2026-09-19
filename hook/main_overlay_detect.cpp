@@ -242,6 +242,13 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // configured.
   PatchLoadLibraryIatForLateLoadedModule(module, moduleNameOrPath);
 
+  // The CreateProcess half of the same snapshot problem, and unconditional:
+  // `_nvngx.dll`/`nvngx.dll` import CreateProcessA/W and map when the game
+  // initialises DLSS, which can be long after both IAT passes. Without this the
+  // `ngx_ota=off` refusal and child-process injection both miss such a module
+  // entirely.
+  PatchProcessCreationIatForLateLoadedModule(module, moduleNameOrPath);
+
   // A DLL just loaded. Update third-party-overlay detection ONLY if this module is itself a
   // known overlay module — a cheap base-name compare, no loader walk. Unrelated loads (e.g.
   // d3d11.dll churn during the Alt+Tab mode switch) must NOT touch the detection state, so the

@@ -406,6 +406,13 @@ HMODULE LoadRuntimeDllViaOriginal(const wchar_t *fullPath, const char *utf8Path)
 // overlay modules.
 void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath);
 
+// Same idea for the kernel32 CreateProcess* imports, but unconditional: the
+// hook they install serves child-process injection and the `ngx_ota=off`
+// updater refusal, neither of which depends on a configured path override.
+// `_nvngx.dll` and `nvngx.dll` import both entry points and map on demand, so
+// without this a title that turns DLSS on mid-session escapes the snapshot.
+void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath);
+
 void InitializeThirdPartyOverlayDetection();
 
 void RefreshThirdPartyOverlayIdentityCache();

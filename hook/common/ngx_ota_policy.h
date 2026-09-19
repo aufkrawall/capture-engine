@@ -19,10 +19,14 @@
  * already handles: it falls back to the cache.
  *
  * The same module reads `__NGX_DISABLE_UPDATER` from the environment ("OTA
- * disabled by environment. Using embedded snippet only"). CE publishes that as
- * well, but it is the softer of the two mechanisms: the variable has to be in
- * place before the core reads it, while the CreateProcess refusal is decided at
- * the moment of the launch and therefore cannot be too late.
+ * disabled by environment. Using embedded snippet only"). That is the better of
+ * the two mechanisms when CE can win the race, because NGX then never attempts
+ * a launch at all: no process is created, no `Global\NGX_Updater_update_0`
+ * contention, no per-feature retry. CE therefore publishes it from `DllMain`
+ * using the mode the injector already put in shared memory, rather than waiting
+ * for the hook thread's own config load. The CreateProcess refusal stays as the
+ * backstop that cannot be too late, because it is decided at the moment of the
+ * launch.
  *
  * Everything here is pure policy so the unit tests can pin it without a
  * process, a driver, or a game.
@@ -45,26 +49,35 @@ inline constexpr const char* kEnableLogPathOverrideVariable = "__NGX_ENABLE_OVER
 // versioned DriverStore directory, so the full path is never stable.
 inline constexpr const char* kUpdaterImageName = "nvngx_update.exe";
 
-inline constexpr bool IsAsciiPathSeparator(char c) {
-    return c == '\\' || c == '/';
+namespace detail {
+
+template <typename Char>
+inline constexpr bool IsAsciiPathSeparator(Char c) {
+    return c == static_cast<Char>('\\') || c == static_cast<Char>('/');
 }
 
-inline constexpr char ToLowerAscii(char c) {
-    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+template <typename Char>
+inline constexpr Char ToLowerAscii(Char c) {
+    return (c >= static_cast<Char>('A') && c <= static_cast<Char>('Z'))
+               ? static_cast<Char>(c - static_cast<Char>('A') + static_cast<Char>('a'))
+               : c;
 }
 
 // Returns the base name of `path`, skipping a leading quote so a raw command
-// line ("\"C:\\...\\nvngx_update.exe\" -bootstrap") resolves the same as an
-// application name. Never returns null for a non-null argument.
-inline const char* ImageBaseName(const char* path) {
+// line (a quoted DriverStore path followed by `-api update -bootstrap ...`)
+// resolves the same as an application name. Never returns null for a non-null
+// argument.
+template <typename Char>
+inline const Char* ImageBaseName(const Char* path) {
+    static constexpr Char kEmpty[] = {static_cast<Char>(0)};
     if (!path) {
-        return "";
+        return kEmpty;
     }
-    if (*path == '"') {
+    if (*path == static_cast<Char>('"')) {
         ++path;
     }
-    const char* base = path;
-    for (const char* cursor = path; *cursor; ++cursor) {
+    const Char* base = path;
+    for (const Char* cursor = path; *cursor; ++cursor) {
         if (IsAsciiPathSeparator(*cursor)) {
             base = cursor + 1;
         }
@@ -75,17 +88,44 @@ inline const char* ImageBaseName(const char* path) {
 // True when `path` names the NGX updater. Matches the base name and accepts the
 // trailing quote, whitespace or argument separator a command line leaves behind,
 // so `lpCommandLine` works as well as `lpApplicationName`.
-inline bool IsNgxUpdaterImage(const char* path) {
-    const char* base = ImageBaseName(path);
+//
+// The expected name is ASCII, so one comparison body serves both character
+// widths. That matters: `HookedCreateProcessW` used to convert its argument into
+// a MAX_PATH narrow buffer before deciding, and WideCharToMultiByte writes
+// nothing at all when the buffer is too small - a command line longer than 260
+// characters therefore resolved to the empty string and silently escaped the
+// refusal. Deciding on the caller's own string removes that failure mode.
+template <typename Char>
+inline bool IsNgxUpdaterImage(const Char* path) {
+    const Char* base = ImageBaseName(path);
     for (const char* expected = kUpdaterImageName;; ++expected, ++base) {
         if (*expected == '\0') {
             // The name matched; what follows must end it rather than extend it.
-            return *base == '\0' || *base == '"' || *base == ' ' || *base == '\t';
+            return *base == static_cast<Char>('\0') || *base == static_cast<Char>('"') ||
+                   *base == static_cast<Char>(' ') || *base == static_cast<Char>('\t');
         }
-        if (ToLowerAscii(*base) != *expected) {
+        if (ToLowerAscii(*base) != static_cast<Char>(*expected)) {
             return false;
         }
     }
+}
+
+}  // namespace detail
+
+inline const char* ImageBaseName(const char* path) {
+    return detail::ImageBaseName(path);
+}
+
+inline const wchar_t* ImageBaseName(const wchar_t* path) {
+    return detail::ImageBaseName(path);
+}
+
+inline bool IsNgxUpdaterImage(const char* path) {
+    return detail::IsNgxUpdaterImage(path);
+}
+
+inline bool IsNgxUpdaterImage(const wchar_t* path) {
+    return detail::IsNgxUpdaterImage(path);
 }
 
 // Whether CE refuses an `nvngx_update.exe` launch under `mode`.

@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "apis/streamline_ota_preferences.h"
+#include "common/ngx_ota_runtime.h"
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
@@ -192,6 +193,17 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // never be redirected, while the graphics hooks retry and self-heal. The
       // hook thread repeats this pass for modules that map later.
       InstallKernel32LoaderHooks("DllMain");
+
+      // Publish `__NGX_DISABLE_UPDATER` now, from the mode the injector already
+      // put in shared memory, rather than waiting for the hook thread's config
+      // load. The refusal above is the backstop; this is the mechanism that
+      // stops the NGX core from ever attempting a launch, and it only works if
+      // the variable is in place before `_nvngx.dll` reads its environment.
+      // Session 20260918_224737 published it at 22:47:47.670 against a DllMain
+      // at 22:47:47.137, which is why that session refused nine launches
+      // instead of seeing none. Shared-memory read plus SetEnvironmentVariable,
+      // so it loads nothing.
+      ce::ngx_ota::ApplyEarlyPolicyFromPublishedConfig();
 
       // The ngx_ota=off slInit route belongs here for the same reason, and it
       // was measurably too late anywhere else. Session 20260918_224737: CE's

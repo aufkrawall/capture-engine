@@ -690,3 +690,50 @@ void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNa
   IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryExW",
                     reinterpret_cast<void*>(&HookedLoadLibraryExW), &dummy);
 }
+
+void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
+  if (!module || !moduleNameOrPath || !moduleNameOrPath[0]) {
+    return;
+  }
+
+  // Same exclusions as the loader half: CE's own modules already call CE, and a
+  // third-party overlay's import table is not ours to rewrite.
+  if (strstr(moduleNameOrPath, "capture_hook") != nullptr ||
+      strstr(moduleNameOrPath, "d3d12_wrappers") != nullptr) {
+    return;
+  }
+  if (ce::overlay_compat::IsThirdPartyOverlayModulePath(moduleNameOrPath)) {
+    return;
+  }
+
+  // Never repoint a slot before the original is resolvable, or a launch that
+  // lands on the patched slot finds nothing to forward to and fails outright.
+  if (!GetOriginalCreateProcessA() || !GetOriginalCreateProcessW()) {
+    return;
+  }
+
+  // Deliberately NOT behind the configured-override gate the loader half above
+  // uses. CE's CreateProcess hook is an IAT snapshot taken in DllMain and
+  // repeated once on the hook thread, so any module mapped after that keeps its
+  // real kernel32 imports. `_nvngx.dll` and `nvngx.dll` both import
+  // CreateProcessA and CreateProcessW by name and are exactly such modules: a
+  // title that initialises DLSS on demand maps them long after both passes, and
+  // `ngx_ota=off` would then never see the `nvngx_update.exe` launch at all.
+  // The same snapshot governs child-process injection, so a late-mapped module
+  // that spawns a whitelisted child was being missed for that reason too.
+  void* originalA = nullptr;
+  void* originalW = nullptr;
+  const bool patchedA = IATHook::PatchIAT(module, "kernel32.dll", "CreateProcessA",
+                                          reinterpret_cast<void*>(&HookedCreateProcessA), &originalA);
+  const bool patchedW = IATHook::PatchIAT(module, "kernel32.dll", "CreateProcessW",
+                                          reinterpret_cast<void*>(&HookedCreateProcessW), &originalW);
+  if (!patchedA && !patchedW) {
+    return;  // The overwhelmingly common case: the module creates no processes.
+  }
+
+  // Rare enough to report every time: only a module that actually imports
+  // CreateProcess reaches here, and knowing which ones did is what tells a
+  // later reader whether an updater launch could have been seen.
+  HookLogImportant("Late-loaded module %s imports CreateProcess - patched (A=%d W=%d) so its launches reach CE",
+                   moduleNameOrPath, patchedA ? 1 : 0, patchedW ? 1 : 0);
+}

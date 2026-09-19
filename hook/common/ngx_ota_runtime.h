@@ -23,6 +23,24 @@
 
 namespace ce::ngx_ota {
 
+// Applies as much of the policy as `DllMain` can know, from the mode the
+// injector published in shared memory. Two things happen here and both matter:
+//
+//  - `__NGX_DISABLE_UPDATER` is written. This is the only mechanism that stops
+//    the NGX core from *attempting* a launch, and it has to be in place before
+//    the core reads its environment. Publishing it from the hook thread's
+//    config load was ~550 ms late in session 20260918_224737, which is why nine
+//    updaters had to be refused one by one rather than never being started.
+//  - The mode is resolved into process state, so the very first CreateProcess
+//    call is answered without a lazy read on a hot path.
+//
+// Reads shared memory and writes an environment variable; loads nothing, so it
+// is safe beside the kernel32 loader hooks under the loader lock. Idempotent,
+// and a no-op once `PublishPolicy` has run - that value is the authoritative
+// one. Also runs in launcher processes, where the variable is then inherited by
+// the game CE launches, before CE's DLL is even in it.
+void ApplyEarlyPolicyFromPublishedConfig();
+
 // Publishes the resolved profile policy. Applies the environment variables as a
 // side effect, because their only useful moment is as early as possible and the
 // caller is the first code that knows the mode. Safe to call repeatedly; the
@@ -41,10 +59,17 @@ uint8_t CurrentMode();
 // True when CE should refuse this CreateProcess call outright. `imagePath` is
 // the application name when the caller supplied one, otherwise its command
 // line; both spellings resolve to the same answer.
+//
+// The wide overload exists so `HookedCreateProcessW` decides on the caller's
+// own string. It used to convert into a MAX_PATH narrow buffer first, and
+// WideCharToMultiByte writes nothing when the buffer is too small, so a command
+// line over 260 characters resolved to "" and was never recognized.
 bool ShouldRefuseProcessLaunch(const char* imagePath);
+bool ShouldRefuseProcessLaunch(const wchar_t* imagePath);
 
 // Records that a refusal happened, for the one-line summary the hook logs. Kept
 // separate from the decision so the decision stays a pure query.
 void NoteUpdaterLaunchRefused(const char* imagePath);
+void NoteUpdaterLaunchRefused(const wchar_t* imagePath);
 
 }  // namespace ce::ngx_ota

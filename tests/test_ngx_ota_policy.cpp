@@ -63,7 +63,7 @@ TEST(NgxOtaPolicy, ImageBaseNameHandlesBothSeparatorsAndALeadingQuote) {
     EXPECT_STREQ(ImageBaseName("C:/drivers/nvngx_update.exe"), "nvngx_update.exe");
     EXPECT_STREQ(ImageBaseName("\"C:\\a b\\nvngx_update.exe\" -bootstrap"), "nvngx_update.exe\" -bootstrap");
     EXPECT_STREQ(ImageBaseName("nvngx_update.exe"), "nvngx_update.exe");
-    EXPECT_STREQ(ImageBaseName(nullptr), "");
+    EXPECT_STREQ(ImageBaseName(static_cast<const char*>(nullptr)), "");
 }
 
 // `_nvngx.dll` may pass the updater as lpApplicationName or only inside
@@ -77,6 +77,36 @@ TEST(NgxOtaPolicy, RecognizesTheUpdaterAsPathOrCommandLine) {
     EXPECT_TRUE(IsNgxUpdaterImage("C:\\drivers\\nvngx_update.exe -forced_update"));
 }
 
+// `HookedCreateProcessW` used to convert its argument into a MAX_PATH narrow
+// buffer and decide on that. WideCharToMultiByte writes NOTHING when the
+// destination is too small, so a command line longer than 260 characters left
+// the buffer empty and the updater went unrecognized - a silent escape, not an
+// error. The decision is now made on the caller's own wide string, so the same
+// input must resolve identically at both widths and at any length.
+TEST(NgxOtaPolicy, WideAndNarrowSpellingsAgreeIncludingBeyondMaxPath) {
+    EXPECT_TRUE(IsNgxUpdaterImage(L"nvngx_update.exe"));
+    EXPECT_TRUE(IsNgxUpdaterImage(L"NVNGX_UPDATE.EXE"));
+    EXPECT_TRUE(IsNgxUpdaterImage(L"C:/drivers/nvngx_update.exe -forced_update"));
+    EXPECT_FALSE(IsNgxUpdaterImage(L"nvngx_updater.exe"));
+    EXPECT_FALSE(IsNgxUpdaterImage(L""));
+    EXPECT_FALSE(IsNgxUpdaterImage(static_cast<const wchar_t*>(nullptr)));
+    EXPECT_STREQ(ImageBaseName(L"C:\\a\\nvngx_update.exe"), L"nvngx_update.exe");
+
+    // The real shape: a quoted DriverStore path plus the arguments the driver
+    // passes (`-api update -cmsid ... -feature ... -bootstrap -gpuarch ...`),
+    // padded past MAX_PATH. The old narrow path saw "" for this.
+    const std::wstring longCommandLine =
+        L"\"C:\\Windows\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_" +
+        std::wstring(300, L'b') + L"\\nvngx_update.exe\" -api update -cmsid 101654711 -feature deepdvc -bootstrap";
+    ASSERT_GT(longCommandLine.size(), 260u);
+    EXPECT_TRUE(IsNgxUpdaterImage(longCommandLine.c_str()));
+
+    // And the narrow spelling of the same string still agrees, so the two
+    // overloads cannot drift apart.
+    const std::string narrowEquivalent(longCommandLine.begin(), longCommandLine.end());
+    EXPECT_TRUE(IsNgxUpdaterImage(narrowEquivalent.c_str()));
+}
+
 // The refusal must never reach a different NVIDIA binary, least of all one whose
 // name merely starts or ends the same way.
 TEST(NgxOtaPolicy, DoesNotMatchAnyNeighbouringImage) {
@@ -87,7 +117,7 @@ TEST(NgxOtaPolicy, DoesNotMatchAnyNeighbouringImage) {
     EXPECT_FALSE(IsNgxUpdaterImage("nvcontainer.exe"));
     EXPECT_FALSE(IsNgxUpdaterImage("update.exe"));
     EXPECT_FALSE(IsNgxUpdaterImage(""));
-    EXPECT_FALSE(IsNgxUpdaterImage(nullptr));
+    EXPECT_FALSE(IsNgxUpdaterImage(static_cast<const char*>(nullptr)));
 }
 
 TEST(NgxOtaPolicy, OnlyOffRefusesTheUpdaterLaunch) {
@@ -261,9 +291,16 @@ TEST(NgxOtaEarlyMode, ModeResolvesFromSharedMemoryBeforeTheHookThreadPublishes) 
 
     const size_t current = runtime.find("uint8_t CurrentMode()");
     ASSERT_NE(current, std::string::npos);
-    const size_t fallback = runtime.find("ReadModeFromSharedMemory()", current);
-    EXPECT_NE(fallback, std::string::npos)
+    // CurrentMode delegates to the shared early resolve, which is also what
+    // DllMain calls; follow that one hop rather than requiring the read to be
+    // inlined here, but still require it to be reached.
+    const size_t delegate = runtime.find("ResolveEarlyModeFromPublishedConfig()", current);
+    EXPECT_NE(delegate, std::string::npos)
         << "CurrentMode must resolve the injector's published mode rather than answering default until told";
+    const size_t resolver = runtime.find("uint8_t ResolveEarlyModeFromPublishedConfig()");
+    ASSERT_NE(resolver, std::string::npos);
+    EXPECT_NE(runtime.find("ReadModeFromSharedMemory(", resolver), std::string::npos)
+        << "and that resolve must be the shared-memory read, not a second source of truth";
 
     // It must read the published mode, which is the resolved profile's value,
     // not re-parse config.ini from a path.
@@ -362,6 +399,150 @@ TEST(NgxOtaSlInitRoute, InstalledFromDllMainBesideTheLoaderHooks) {
         EXPECT_LT(route, wrapperHooks)
             << "the slInit route must precede the graphics IAT work, like the loader hooks do";
     }
+}
+
+// Refusing a launch is the backstop, not the goal. `__NGX_DISABLE_UPDATER` is
+// the only mechanism that stops the NGX core from *attempting* one, and it is
+// only read once - so publishing it from the hook thread's config load was
+// always too late by construction. Session 20260918_224737: DllMain at
+// 22:47:47.137, the variable published at 22:47:47.670.
+TEST(NgxOtaEarlyMode, DisableUpdaterEnvironmentIsPublishedFromDllMainNotTheHookThread) {
+    namespace fs = std::filesystem;
+    const std::string dllMain =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+    ASSERT_FALSE(dllMain.empty());
+
+    const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
+    ASSERT_NE(loaderHooks, std::string::npos);
+    const size_t early = dllMain.find("ce::ngx_ota::ApplyEarlyPolicyFromPublishedConfig()", loaderHooks);
+    EXPECT_NE(early, std::string::npos)
+        << "the OTA environment must be applied from DllMain, where it can still precede the NGX core's read";
+
+    // Behind the CreateProcess hook, so a launch arriving between the two is
+    // still refused, and ahead of the graphics IAT work, which cost the loader
+    // hooks 330 ms once already.
+    EXPECT_GT(early, loaderHooks);
+    const size_t wrapperHooks = dllMain.find("InitializeWrapperHooks()");
+    if (wrapperHooks != std::string::npos) {
+        EXPECT_LT(early, wrapperHooks);
+    }
+
+    const std::string runtime =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+    ASSERT_FALSE(runtime.empty());
+    const size_t apply = runtime.find("void ApplyEarlyPolicyFromPublishedConfig()");
+    ASSERT_NE(apply, std::string::npos);
+    EXPECT_NE(runtime.find("ApplyUpdaterEnvironment(", apply), std::string::npos)
+        << "the early path must write the environment, not merely resolve the mode";
+}
+
+// Applying the injector's mode in DllMain creates a case that did not exist
+// when only the hook thread wrote the variable: the injector publishes the
+// resolved profile, the hook thread parses the local config.ini, and those can
+// disagree. If the authoritative answer turns out to be `default`, CE's earlier
+// write has to be undone - `default` is pinned inert everywhere else, and a
+// leftover suppression would make it quietly mean `off`.
+TEST(NgxOtaEarlyMode, DefaultUndoesAnEarlierWriteInsteadOfLeavingSuppressionBehind) {
+    namespace fs = std::filesystem;
+    const std::string runtime =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+    ASSERT_FALSE(runtime.empty());
+
+    const size_t apply = runtime.find("void ApplyUpdaterEnvironment(");
+    ASSERT_NE(apply, std::string::npos);
+
+    // The inherited value must be captured before CE's first write can replace
+    // it, or "restore" would restore CE's own suppression.
+    const size_t capture = runtime.find("CaptureInheritedDisableUpdaterOnce()", apply);
+    const size_t write = runtime.find("WriteEnvironmentVariable(kDisableUpdaterVariable", apply);
+    ASSERT_NE(capture, std::string::npos) << "the inherited value must be captured";
+    ASSERT_NE(write, std::string::npos);
+    EXPECT_LT(capture, write) << "the capture must precede any write CE makes";
+
+    EXPECT_NE(runtime.find("g_InheritedPresent ? g_InheritedValue : nullptr"), std::string::npos)
+        << "restoring must reproduce absence as absence, not as an empty-but-present variable";
+
+    // And the hook thread's publication must still reach the writer for
+    // `default`, or there is nothing to undo it with.
+    const size_t publish = runtime.find("void PublishPolicy(");
+    ASSERT_NE(publish, std::string::npos);
+    EXPECT_NE(runtime.find("firstApplication || previousOta != resolvedOta", publish), std::string::npos)
+        << "a first publication must call the environment writer even when it resolves to default";
+}
+
+// The old lazy resolve latched a one-shot flag BEFORE reading, so a second
+// thread arriving during the read was told "default" - and "default" on an
+// nvngx_update.exe launch is precisely the answer this path exists to avoid.
+// It also cached that answer when no CE host had published yet.
+TEST(NgxOtaEarlyMode, EarlyResolveNeitherRacesNorCachesAnUnansweredRead) {
+    namespace fs = std::filesystem;
+    const std::string runtime =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+    ASSERT_FALSE(runtime.empty());
+
+    EXPECT_EQ(runtime.find("g_EarlyModeResolved.exchange("), std::string::npos)
+        << "latching the flag before the read hands a concurrent caller the default answer";
+
+    const size_t resolve = runtime.find("uint8_t ResolveEarlyModeFromPublishedConfig()");
+    ASSERT_NE(resolve, std::string::npos);
+    const size_t answered = runtime.find("if (!answered) {", resolve);
+    const size_t store = runtime.find("g_EarlyModeResolved.store(true", resolve);
+    ASSERT_NE(answered, std::string::npos) << "an unanswered read must be distinguishable from a published default";
+    ASSERT_NE(store, std::string::npos);
+    EXPECT_LT(answered, store) << "only a host that actually answered may be cached";
+}
+
+// CE's CreateProcess hook is an IAT snapshot: DllMain, then once more on the
+// hook thread. `_nvngx.dll` and `nvngx.dll` both import CreateProcessA/W and
+// map when the game initialises DLSS, which a title with an in-game toggle does
+// long after both passes. The loader half of this is gated on configured path
+// overrides; the process-creation half must not be, because ngx_ota=off and
+// child injection are independent of those.
+TEST(NgxOtaLateModules, CreateProcessImportsArePatchedOnEveryLateLoadedModule) {
+    namespace fs = std::filesystem;
+    const std::string detect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_overlay_detect.cpp");
+    ASSERT_FALSE(detect.empty());
+    EXPECT_NE(detect.find("PatchProcessCreationIatForLateLoadedModule(module, moduleNameOrPath)"), std::string::npos)
+        << "the module-load notification must repair the CreateProcess snapshot, not only the loader one";
+
+    const std::string redirect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+    const size_t fn = redirect.find("void PatchProcessCreationIatForLateLoadedModule(");
+    ASSERT_NE(fn, std::string::npos);
+    const size_t end = redirect.find("\n}\n", fn);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = redirect.substr(fn, end - fn);
+
+    EXPECT_EQ(body.find("NeedsLoaderRedirectionHook()"), std::string::npos)
+        << "gating this on configured DLL overrides would leave a plain ngx_ota=off profile uncovered";
+    EXPECT_NE(body.find("\"CreateProcessA\""), std::string::npos);
+    EXPECT_NE(body.find("\"CreateProcessW\""), std::string::npos);
+
+    // A repointed slot with no resolvable original fails every launch from that
+    // module, so the guard has to precede the first patch.
+    const size_t guard = body.find("GetOriginalCreateProcessA()");
+    const size_t firstPatch = body.find("IATHook::PatchIAT(");
+    ASSERT_NE(guard, std::string::npos) << "the original must be resolvable before any slot is repointed";
+    ASSERT_NE(firstPatch, std::string::npos);
+    EXPECT_LT(guard, firstPatch);
+}
+
+// The refusal decision must not pass through a fixed-size narrow conversion.
+TEST(NgxOtaLateModules, CreateProcessWDecidesOnTheWideStringBeforeConverting) {
+    namespace fs = std::filesystem;
+    const std::string injection =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_injection.cpp");
+    ASSERT_FALSE(injection.empty());
+
+    const size_t hook = injection.find("BOOL WINAPI HookedCreateProcessW(");
+    ASSERT_NE(hook, std::string::npos);
+    const size_t refuse = injection.find("ce::ngx_ota::ShouldRefuseProcessLaunch(ngxTarget)", hook);
+    const size_t convert = injection.find("WideCharToMultiByte(", hook);
+    ASSERT_NE(refuse, std::string::npos) << "the wide overload must be the one the W hook calls";
+    ASSERT_NE(convert, std::string::npos);
+    EXPECT_LT(refuse, convert) << "the NGX decision must precede any narrowing of the caller's string";
 }
 
 }  // namespace

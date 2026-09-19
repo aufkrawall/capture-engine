@@ -1,5 +1,57 @@
 # llm-wiki Log
 
+### 2026-09-19 - ngx_ota=off had the weaker mechanism as its primary one
+
+Asked to make `ngx_ota=off` reliably stop the driver spawning NGX updaters. Four gaps, found by reading
+`_nvngx.dll` rather than by another session.
+
+**What the module actually does** (driver r616.92, `nv_dispi.inf_amd64_b20cc8aeaed64fc2\_nvngx.dll`): it imports
+exactly `CreateProcessA`, `CreateProcessW` and `GetEnvironmentStringsW` from kernel32 - no `ShellExecute*`, no
+`CreateProcessAsUser*`, no `WinExec` - so the two hooks CE already has are a complete set for the in-process
+launch path. `nvngx.dll` imports the same two. Its OTA decision points are the environment
+(`__NGX_DISABLE_UPDATER`), `SOFTWARE\NVIDIA Corporation\Global\NGXCore` in the registry (which on this machine
+carries no `EnableOTA` value at all), and an `.EnableOTA` key in `nvngx_config.txt` /
+`nvngx_ota_updates_config.txt`. The last two remain **rejected**, unchanged: machine-wide and persistent.
+
+**1. The primary mechanism was being applied ~550 ms too late.** The environment variable is the only thing that
+stops NGX *attempting* a launch ("OTA disabled by environment. Using embedded snippet only"); refusing the
+`CreateProcess` call is a backstop that happens after the core has already decided to run the updater. It was
+published from the hook thread's config load. In `20260918_224737` that was 22:47:47.670 against a DllMain at
+22:47:47.137 - the same class of mistake as the two before it in this file, one layer further out.
+`ce::ngx_ota::ApplyEarlyPolicyFromPublishedConfig()` now runs in DllMain beside the loader hooks, using the mode
+the injector published in shared memory. It also runs in **launcher** processes, which never call `PublishPolicy`
+at all, so a game CE launches inherits the variable before CE's DLL is in it.
+
+**2. `HookedCreateProcessW` decided on a truncated string.** It converted into `char[MAX_PATH]` and matched on
+that. `WideCharToMultiByte` writes *nothing* when the destination is too small, so a command line over 260
+characters left the buffer empty, `IsNgxUpdaterImage("")` answered false, and the updater went through
+unrecognized - silence, not an error. The policy is now templated over the character type and the W hook decides
+on the caller's own wide string before any conversion. The narrow buffer for the injection whitelist grew to 2048
+for the same reason.
+
+**3. A late-loaded `_nvngx.dll` kept its real CreateProcess imports.** CE's hook is an IAT *snapshot*: DllMain,
+then once more on the hook thread. `PatchLoadLibraryIatForLateLoadedModule` repaired only the four loader imports,
+and only when `NeedsLoaderRedirectionHook()` - i.e. when a `dlss_*_dll_path`/`streamline_dll_path` is configured.
+A plain `ngx_ota=off` profile with no path overrides therefore had **no** late-module coverage, and a title that
+initialises DLSS from an in-game toggle maps `_nvngx.dll` long after both passes. New
+`PatchProcessCreationIatForLateLoadedModule`, ungated, called from `NotifyHookModuleLoaded`. It also repairs
+child-process injection for late-mapped modules, which had the same hole.
+
+**4. The early resolve had a one-shot race.** `g_EarlyModeResolved.exchange(true)` latched *before* the read, so a
+second thread arriving during it was told "default" - the one answer that lets an updater through. It also cached
+that answer when no CE host had published yet. The read now reports whether a host actually answered, only that
+is cached, and a caller finding the read in flight repeats it rather than settling.
+
+**Not evidence of a bug:** nine `nvngx_update.exe` ran today at 19:12:58 (Talos, session `20260919_190127`).
+That session has `ngx_ota=default` in `config.ini` and no `NGX OTA: ngx_ota=` line in `hook_debug.log` - the
+feature was simply off. Checking the configured mode before reading updater activity as a failure is the cheap
+step that was missing.
+
+**Unvalidated on hardware.** Nothing here has had a run. The line to look for is
+`NGX OTA: ngx_ota=off - published __NGX_DISABLE_UPDATER (DllMain)` early in `hook_debug.log`, followed by **no**
+`refused the NGX updater launch` lines at all - refusals now mean the environment lost the race and the backstop
+took over, which is a weaker outcome than the previous "refusals are working" reading.
+
 ### 2026-09-19 - Streamline regular development build instructions (eliminate verify/package overkill)
 
 - **Problem:** Regular development instructions in `AGENTS.md` and `llm-wiki/build.py.md` mandated the full

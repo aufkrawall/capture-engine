@@ -111,7 +111,23 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   Session `20260918_162809` is the case: Alan Wake 2's Streamline resolved its `sl.common` core to
   `C:\ProgramData\NVIDIA\NGX\models\sl_common_0\versions\134656\files\1B0_E658703.dll`, so CE correctly refused all
   six `sl.*` redirects rather than build a version-mixed stack, and the user's `npi\sl` runtime never loaded.
-  - `off` refuses the `nvngx_update.exe` launch. It also *attempts* to clear
+  - `off` acts through two independent mechanisms, and the order matters. **`__NGX_DISABLE_UPDATER=1` is the
+    primary one**: it makes the NGX core skip the launch entirely ("OTA disabled by environment. Using embedded
+    snippet only"), so no process is created, no `Global\NGX_Updater_update_0` contention arises and there is no
+    per-feature retry. `_nvngx.dll` reads it once, through `GetEnvironmentStringsW`, so it only works if CE wins
+    that race - which is why CE publishes it from `DllMain` using the mode the injector already put in shared
+    memory, rather than from the hook thread's config load (~550 ms later in `20260918_224737`). It is applied in
+    launcher processes too, where the game CE launches then inherits it before CE's DLL is in that process at all.
+  - Refusing the `nvngx_update.exe` launch is the **backstop**, for a core that read its environment before CE
+    arrived. It is decided at the moment of the launch, so it cannot be too late - but it only fires if the calling
+    module's `kernel32!CreateProcessA/W` import slots are CE's. Both `_nvngx.dll` and `nvngx.dll` import those two
+    by name, and both can map long after CE's DllMain and hook-thread IAT passes, so late-loaded modules get their
+    process-creation imports patched from the module-load notification as well
+    (`PatchProcessCreationIatForLateLoadedModule`). Unlike the loader half, that is not gated on a configured path
+    override. The `CreateProcessW` decision is made on the caller's wide string: it used to go through a `MAX_PATH`
+    narrow conversion, and `WideCharToMultiByte` writes nothing when the buffer is too small, so a long command
+    line silently escaped.
+  - `off` also *attempts* to clear
     `eAllowOTA | eLoadDownloadedPlugins` from the game's own `slInit` preferences - the refusal only stops new
     downloads, so the preference strip is what would stop already-downloaded plugins loading - but **that half is
     opportunistic and does not work for a title that initialises Streamline during startup.** CE injects after
@@ -122,10 +138,12 @@ An existing `config.ini` is never merged or replaced automatically. Active value
     any of CE's install positions merely being late. Launching the game from CE is the only thing that would
     change it and is out of scope. The per-run verdict is in `hook_debug.log`:
     `slInit route installed=1, slInit seen through CE=0`.
-  - The launch refusal carries the same boundary in miniature: it covers launches made after CE is injected. The
+  - Both mechanisms share one hard boundary: they cover what happens after CE is injected. The
     process-creation-to-`DllMain` gap measured 243-498 ms across three sessions, and NGX is demonstrably active in
     it, so a first burst of updaters can predate CE. Session `20260918_223542` observed nine, all parented to the
-    game, created in that window. How many escape after the early-mode fix is **unmeasured**.
+    game, created in that window. How many escape after the DllMain-time environment publish is **unmeasured**.
+    Updaters spawned by a process CE is not in at all (an NVIDIA service, the NVIDIA app) are out of reach by
+    construction - but the nine in that session were all children of the game, which is the case this covers.
   - `on` is the opposite forced mode: the launch is never refused, an inherited `__NGX_DISABLE_UPDATER` is cleared,
     and `CurrentProcessOwnsProcessLocalRuntimeOverrides()` returns false so CE's own `nvngx_*`/`sl.*` path overrides
     stand down and the driver's OTA files are what actually loads.

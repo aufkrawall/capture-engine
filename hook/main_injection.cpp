@@ -311,23 +311,32 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
     return original(lpApp, lpCmd, lpPA, lpTA, bInherit, dwFlags, lpEnv, lpDir, lpSI, lpPI);
   }
 
-  // Convert wide to narrow for whitelist check
-  char exePath[MAX_PATH] = {0};
-  if (lpApp)
-    WideCharToMultiByte(CP_UTF8, 0, lpApp, -1, exePath, MAX_PATH, NULL, NULL);
-  else if (lpCmd)
-    WideCharToMultiByte(CP_UTF8, 0, lpCmd, -1, exePath, MAX_PATH, NULL, NULL);
-
-  // See HookedCreateProcessA for why a refused NGX updater launch is a
+  // Decide the NGX question on the caller's own wide string, BEFORE the narrow
+  // conversion below. WideCharToMultiByte writes nothing when the destination
+  // is too small, so a command line longer than the buffer used to leave
+  // exePath empty and let the updater through unrecognized - the failure mode
+  // was silence, not an error. See HookedCreateProcessA for why refusing is a
   // supported outcome rather than a broken call.
-  if (ce::ngx_ota::ShouldRefuseProcessLaunch(exePath)) {
-    ce::ngx_ota::NoteUpdaterLaunchRefused(exePath);
+  const wchar_t *ngxTarget = lpApp ? lpApp : lpCmd;
+  if (ce::ngx_ota::ShouldRefuseProcessLaunch(ngxTarget)) {
+    ce::ngx_ota::NoteUpdaterLaunchRefused(ngxTarget);
     if (lpPI) {
       *lpPI = PROCESS_INFORMATION{};
     }
     SetLastError(ERROR_ACCESS_DENIED);
     return FALSE;
   }
+
+  // Convert wide to narrow for the whitelist check. The buffer is deliberately
+  // larger than MAX_PATH: when lpApplicationName is null the argument is a full
+  // command line, which routinely exceeds 260 characters, and a conversion that
+  // does not fit silently yields an empty name - which reads as "not
+  // whitelisted" rather than as a failure.
+  char exePath[2048] = {0};
+  if (lpApp)
+    WideCharToMultiByte(CP_UTF8, 0, lpApp, -1, exePath, sizeof(exePath), NULL, NULL);
+  else if (lpCmd)
+    WideCharToMultiByte(CP_UTF8, 0, lpCmd, -1, exePath, sizeof(exePath), NULL, NULL);
 
   bool shouldInject = ShouldInjectChild(exePath);
 

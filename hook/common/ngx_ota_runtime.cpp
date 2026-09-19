@@ -20,9 +20,25 @@ std::atomic<uint8_t> g_Mode{kNgxOtaModeDefault};
 std::atomic<uint8_t> g_LogLevel{kNgxLogLevelDefault};
 std::atomic<bool> g_PolicyApplied{false};
 std::atomic<uint32_t> g_RefusedLaunches{0};
-// Set once the shared-memory fallback below has answered, so the mapping is
-// opened at most once per process even when the answer is "no host".
+// Set once a CE host has actually answered the shared-memory read below, so the
+// steady state costs nothing. Deliberately NOT set when no host answered: there
+// is then nothing to cache, the retry is one failed OpenFileMappingW on a path
+// that runs per process creation, and a host that starts later still resolves.
 std::atomic<bool> g_EarlyModeResolved{false};
+// The last value CE wrote to `__NGX_DISABLE_UPDATER`, or -1 for "never wrote
+// it". Both the DllMain-time early application and the hook thread's
+// PublishPolicy go through the same writer, and neither may restate a value the
+// environment already carries - that would duplicate the log line and fight a
+// game that set the variable itself between the two.
+std::atomic<int32_t> g_EnvironmentOtaMode{-1};
+// What `__NGX_DISABLE_UPDATER` held before CE first touched it, so a later
+// authoritative `default` can restore exactly what the process received. The
+// two writers - DllMain and the hook thread's config load - are ordered by
+// construction (the hook thread does not exist yet during DllMain), so the
+// capture needs no more than a one-shot.
+std::atomic<bool> g_InheritedCaptured{false};
+bool g_InheritedPresent = false;
+char g_InheritedValue[64] = {};
 
 // Reads the resolved profile's ngx_ota mode straight out of the injector's
 // shared memory.
@@ -40,8 +56,13 @@ std::atomic<bool> g_EarlyModeResolved{false};
 // time. Only OpenFileMapping/MapViewOfFile are used here: neither takes the
 // loader lock, so this is safe on the DllMain-time path the CreateProcess hook
 // can be entered from.
-uint8_t ReadModeFromSharedMemory() {
+//
+// `answered` distinguishes "a CE host published kNgxOtaModeDefault" from "no
+// host could be reached", which the returned mode alone cannot express. Only
+// the former is worth caching.
+uint8_t ReadModeFromSharedMemory(bool& answered) {
     uint8_t mode = kNgxOtaModeDefault;
+    answered = false;
 
     HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (!discovery) {
@@ -76,6 +97,7 @@ uint8_t ReadModeFromSharedMemory() {
             const uint8_t published = shared->graphicsConfig.ngxOtaMode;
             if (IsNgxOtaMode(published)) {
                 mode = published;
+                answered = true;
             }
         }
         UnmapViewOfFile(shared);
@@ -99,14 +121,86 @@ void WriteEnvironmentVariable(const char* name, const char* value) {
     }
 }
 
-void ApplyUpdaterEnvironment(uint8_t mode) {
-    const char* value = DisableUpdaterEnvironmentValue(mode);
-    if (!value) {
-        return;  // `default`: the environment stays exactly as inherited.
+// Records the inherited value, once, before CE's first write can replace it.
+void CaptureInheritedDisableUpdaterOnce() {
+    if (g_InheritedCaptured.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
+    const DWORD length =
+        GetEnvironmentVariableA(kDisableUpdaterVariable, g_InheritedValue, sizeof(g_InheritedValue));
+    // Zero means absent (or unreadable); a length at or beyond the buffer means
+    // a value CE cannot reproduce, and inventing a truncation would be worse
+    // than admitting it, so both are recorded as "nothing to restore".
+    g_InheritedPresent = length > 0 && length < sizeof(g_InheritedValue);
+    if (!g_InheritedPresent) {
+        g_InheritedValue[0] = '\0';
+    }
+}
+
+void ApplyUpdaterEnvironment(uint8_t mode, const char* phase) {
+    CaptureInheritedDisableUpdaterOnce();
+
+    const char* value = DisableUpdaterEnvironmentValue(mode);
+    const int32_t previous =
+        g_EnvironmentOtaMode.exchange(static_cast<int32_t>(mode), std::memory_order_acq_rel);
+    if (previous == static_cast<int32_t>(mode)) {
+        return;  // The environment already states this; restating it says nothing.
+    }
+
+    if (!value) {
+        // `default` is inert by contract - no environment write. That is only
+        // true if CE also undoes a write it made earlier, which it can now
+        // have: DllMain applies the injector's resolved mode, and the hook
+        // thread's own config can still resolve to `default` (base config vs
+        // an active profile). Leaving the suppression behind would make
+        // `default` quietly mean `off`.
+        if (previous < 0) {
+            return;  // CE never wrote it; the environment is already as inherited.
+        }
+        WriteEnvironmentVariable(kDisableUpdaterVariable, g_InheritedPresent ? g_InheritedValue : nullptr);
+        HookLogImportant("NGX OTA: ngx_ota=default - restored %s to what the process inherited (%s) (%s)",
+                         kDisableUpdaterVariable, g_InheritedPresent ? g_InheritedValue : "absent",
+                         phase ? phase : "unspecified");
+        return;
+    }
+
     WriteEnvironmentVariable(kDisableUpdaterVariable, value);
-    HookLogImportant("NGX OTA: ngx_ota=%s - %s %s", ModeName(mode),
-                     value[0] ? "published" : "cleared", kDisableUpdaterVariable);
+    HookLogImportant("NGX OTA: ngx_ota=%s - %s %s (%s)", ModeName(mode),
+                     value[0] ? "published" : "cleared", kDisableUpdaterVariable,
+                     phase ? phase : "unspecified");
+}
+
+// Resolves the injector's published mode into `g_Mode` if nothing better is
+// known yet. Returns the mode in force afterwards.
+//
+// A caller that finds the read already in flight on another thread repeats it
+// rather than settling for "default": duplicating one shared-memory read is
+// cheap, and answering "default" to a CreateProcess call that is the NGX
+// updater is the exact failure this whole path exists to prevent. The previous
+// one-shot exchange had that hole.
+uint8_t ResolveEarlyModeFromPublishedConfig() {
+    if (g_EarlyModeResolved.load(std::memory_order_acquire)) {
+        return g_Mode.load(std::memory_order_acquire);
+    }
+
+    bool answered = false;
+    const uint8_t early = ReadModeFromSharedMemory(answered);
+    if (!answered) {
+        return g_Mode.load(std::memory_order_acquire);
+    }
+    g_EarlyModeResolved.store(true, std::memory_order_release);
+
+    if (early != kNgxOtaModeDefault) {
+        uint8_t expected = kNgxOtaModeDefault;
+        if (g_Mode.compare_exchange_strong(expected, early, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
+            HookLogImportant(
+                "NGX OTA: resolved ngx_ota=%s from the injector's published config before the hook thread's "
+                "own config load, so an updater launched this early is still answered",
+                ModeName(early));
+        }
+    }
+    return g_Mode.load(std::memory_order_acquire);
 }
 
 void ApplyLogEnvironment(uint8_t level, const char* sessionLogDirectory) {
@@ -126,6 +220,13 @@ void ApplyLogEnvironment(uint8_t level, const char* sessionLogDirectory) {
 
 }  // namespace
 
+void ApplyEarlyPolicyFromPublishedConfig() {
+    if (g_PolicyApplied.load(std::memory_order_acquire)) {
+        return;  // The hook thread's own config already decided; it wins.
+    }
+    ApplyUpdaterEnvironment(ResolveEarlyModeFromPublishedConfig(), "DllMain");
+}
+
 void PublishPolicy(uint8_t otaMode, uint8_t logLevel, const char* sessionLogDirectory) {
     const uint8_t resolvedOta = IsNgxOtaMode(otaMode) ? otaMode : kNgxOtaModeDefault;
     const uint8_t resolvedLog = IsNgxLogLevel(logLevel) ? logLevel : kNgxLogLevelDefault;
@@ -137,7 +238,7 @@ void PublishPolicy(uint8_t otaMode, uint8_t logLevel, const char* sessionLogDire
     // Rewriting the environment on every config republication would fight a
     // game that sets these itself, so only an actual policy change acts.
     if (firstApplication || previousOta != resolvedOta) {
-        ApplyUpdaterEnvironment(resolvedOta);
+        ApplyUpdaterEnvironment(resolvedOta, "hook thread config load");
     }
     if (firstApplication || previousLog != resolvedLog) {
         ApplyLogEnvironment(resolvedLog, sessionLogDirectory);
@@ -148,23 +249,10 @@ uint8_t CurrentMode() {
     if (g_PolicyApplied.load(std::memory_order_acquire)) {
         return g_Mode.load(std::memory_order_acquire);
     }
-    // No policy yet: fall back to what the injector published, once. A process
-    // with no CE host, or one whose host predates this field, resolves to
-    // default and stops asking.
-    if (!g_EarlyModeResolved.exchange(true, std::memory_order_acq_rel)) {
-        const uint8_t early = ReadModeFromSharedMemory();
-        if (early != kNgxOtaModeDefault) {
-            uint8_t expected = kNgxOtaModeDefault;
-            if (g_Mode.compare_exchange_strong(expected, early, std::memory_order_acq_rel,
-                                               std::memory_order_acquire)) {
-                HookLogImportant(
-                    "NGX OTA: resolved ngx_ota=%s from the injector's published config before the hook thread's "
-                    "own config load, so an updater launched this early is still answered",
-                    ModeName(early));
-            }
-        }
-    }
-    return g_Mode.load(std::memory_order_acquire);
+    // No policy yet: fall back to what the injector published. DllMain normally
+    // does this already (ApplyEarlyPolicyFromPublishedConfig), so this is the
+    // path for a process that never reached it.
+    return ResolveEarlyModeFromPublishedConfig();
 }
 
 bool ShouldRefuseProcessLaunch(const char* imagePath) {
@@ -174,16 +262,42 @@ bool ShouldRefuseProcessLaunch(const char* imagePath) {
     return ShouldRefuseUpdaterLaunch(CurrentMode(), IsNgxUpdaterImage(imagePath));
 }
 
+bool ShouldRefuseProcessLaunch(const wchar_t* imagePath) {
+    if (!imagePath || !imagePath[0]) {
+        return false;
+    }
+    return ShouldRefuseUpdaterLaunch(CurrentMode(), IsNgxUpdaterImage(imagePath));
+}
+
+namespace {
+
+// The NGX core retries per feature, so a refusal repeats. Log the first few and
+// then only every thousandth, the same rate-limiting shape the loader redirect
+// refusals use.
+bool ShouldLogRefusal(uint32_t& index) {
+    index = g_RefusedLaunches.fetch_add(1, std::memory_order_relaxed);
+    return index < 8 || (index % 1000) == 0;
+}
+
+}  // namespace
+
 void NoteUpdaterLaunchRefused(const char* imagePath) {
-    const uint32_t index = g_RefusedLaunches.fetch_add(1, std::memory_order_relaxed);
-    // The NGX core retries per feature, so this can repeat. Log the first few
-    // and then only every thousandth, the same rate-limiting shape the loader
-    // redirect refusals use.
-    if (index < 8 || (index % 1000) == 0) {
+    uint32_t index = 0;
+    if (ShouldLogRefusal(index)) {
         HookLogImportant(
-            "NGX OTA: refused the NGX updater launch (%s) because ngx_ota=off; NVIDIA's runtime falls back to the "
-            "files already in its cache (refusal #%u)",
+            "NGX OTA: refused the NGX updater launch (%s) because ngx_ota=off; NVIDIA's runtime falls back to "
+            "the files already in its cache (refusal #%u)",
             imagePath ? imagePath : "unnamed", index + 1);
+    }
+}
+
+void NoteUpdaterLaunchRefused(const wchar_t* imagePath) {
+    uint32_t index = 0;
+    if (ShouldLogRefusal(index)) {
+        HookLogImportant(
+            "NGX OTA: refused the NGX updater launch (%ls) because ngx_ota=off; NVIDIA's runtime falls back to "
+            "the files already in its cache (refusal #%u)",
+            imagePath ? imagePath : L"unnamed", index + 1);
     }
 }
 
