@@ -53,6 +53,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     DXGIShared::SetPresentInterposerPrivateOutputChainScope(presentInterposerPrivateOutputChain);
     auto interposerScopeGuard =
         ce::make_scope_guard([] { DXGIShared::SetPresentInterposerPrivateOutputChainScope(false); });
+    if (api != APIType::D3D12) {
+        DXGIShared::ClassifyPresentInterposerPresentSource();
+    }
     if (api == APIType::D3D12) {
         DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(pSwapChain,
                                                            "DXGIShared::DetourPresent1 pre-routing");

@@ -237,9 +237,10 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
     // the shared CadenceTracker measures the generation factor and the base rate
     // exactly as it does for DX12, instead of reporting the output rate as the
     // game's frame rate.
-    if (g_FGCompat.RecordPresentForNvidiaSmoothMotion() &&
-        DXGIShared::IsPresentOnPresentInterposerPrivateOutputChain()) {
-        DXGIShared::NoteApplicationPresentUnderPresentInterposer();
+    // The present path already resolved and consumed this present's source when it runs through
+    // the shared entries; the submission counter must not be consumed twice.
+    if (!DXGIShared::HasPresentInterposerPresentSourceClassification()) {
+        g_FGCompat.RecordPresentForNvidiaSmoothMotion();
     }
     ce::overlay_metrics::PublishDetectedOverlayFGMetrics(DXGIShared::GetPerformanceMetrics(),
                                                          "DX11::HandleProcessFrame");

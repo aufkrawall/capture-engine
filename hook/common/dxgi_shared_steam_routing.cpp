@@ -146,7 +146,20 @@ void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicatio
 
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, publicationSource);
 
-    dxgi_shared_g_DXGIPerfMetrics.Update(PerfLogger::GetQpcUs());
+    // The overlay's frame rate is the APPLICATION's, not the interposer's submission rate. On a
+    // present interposer's private output chain this hook fires once per output frame, so
+    // advancing the metric here unconditionally reports the generated rate as the game's - Witcher
+    // 3 session 20260919_180154 showed 288 with the driver holding the game at 144. DX12 never had
+    // this problem because its metric is fed by the app-facing swapchain wrapper, which is 1x by
+    // construction; gating the generated presents out gives DX11 the same view. The output stream
+    // is still measured in full by NotePresentInterposerOutputPresent, so the FG row keeps both
+    // rates.
+    const bool suppressGeneratedPresentForMetrics =
+        DXGIShared::HasPresentInterposerPresentSourceClassification() &&
+        !DXGIShared::IsPresentInterposerPresentApplicationSourced();
+    if (!suppressGeneratedPresentForMetrics) {
+        dxgi_shared_g_DXGIPerfMetrics.Update(PerfLogger::GetQpcUs());
+    }
     const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
     ce::overlay_metrics::PublishOverlayFGMetrics(&dxgi_shared_g_DXGIPerfMetrics, plan, g_FGCompat.GetOutputFPS(),
                                                  g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),

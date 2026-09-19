@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-09-19 - Measuring the right rate was not the same as showing it
+
+Session `20260919_180154`, driver vsync forced to 144. The classifier from the entry below was
+already correct - the cadence window read `application=144.0 fps output=288.0 fps generating=1
+multiplier=2`, exactly the game's rate and exactly twice it - and the overlay still displayed 288.
+
+The overlay's frame rate comes from `dxgi_shared_g_DXGIPerfMetrics`, which `UpdateDXGIPresentMetrics
+AndPublish` advances once per Present. On a present interposer's private output chain that is once
+per OUTPUT frame. DX12 never had the problem because its metric is fed by the app-facing swapchain
+wrapper, which is 1x by construction; DX11 has no app-facing view at all under an interposer, so the
+metric was counting the interposer's submissions.
+
+Ruled out first: that the 2x was CE summing the interposer's TWO private output chains. Only one of
+them (`000001F15890C8E0`) is ever presented - 1814 overlay draws on it, zero on the other - so the
+2x is real generation, not double counting.
+
+**Fixed.** The source is resolved at the top of both present entries
+(`ClassifyPresentInterposerPresentSource`), before anything measures a rate from the present, and
+exactly once - reading it consumes the submission counter, so `HandleDX11ProcessFrame` now consults
+the stored verdict instead of classifying again. The metric skips generated presents; the output
+stream is still counted in full by `NotePresentInterposerOutputPresent`, so the FG row keeps both
+rates.
+
+Gate: `--verify` 0.1.6681. Hardware run pending.
+
+
 ### 2026-09-19 - The overlay's DX11 Smooth Motion fps was the interposer's output rate
 
 Follow-up to the crash entry below: with Witcher 3 surviving, two things were visible for the first

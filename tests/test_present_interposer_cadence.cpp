@@ -343,12 +343,15 @@ TEST(PresentInterposerSourceClassificationTest, TheMeasuredRatioIsTheGenerationF
 // closes a window and the getters silently fall back to the unclassified rate.
 TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
     namespace fs = std::filesystem;
-    const std::string dx11Device =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_device.cpp");
-    ASSERT_FALSE(dx11Device.empty());
-    EXPECT_NE(dx11Device.find("NoteApplicationPresentUnderPresentInterposer()"), std::string::npos)
+    // Classifying a present feeds the application stream as a side effect, so both streams reach
+    // the tracker from the one place that resolves the source.
+    const std::string tracking0 =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "present_interposer_tracking.cpp");
+    ASSERT_FALSE(tracking0.empty());
+    const size_t classify = tracking0.find("void ClassifyPresentInterposerPresentSource()");
+    ASSERT_NE(classify, std::string::npos);
+    EXPECT_NE(tracking0.find("NoteApplicationPresentUnderPresentInterposer()", classify), std::string::npos)
         << "the application stream has to be fed, not just the output stream";
-    EXPECT_NE(dx11Device.find("IsPresentOnPresentInterposerPrivateOutputChain()"), std::string::npos);
 
     // The classifier's evidence comes from the game's own context, and counting must stay off
     // until an interposer exists so the ordinary draw path is untouched.
@@ -370,6 +373,45 @@ TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
         ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "present_interposer_tracking.cpp");
     ASSERT_FALSE(tracking.empty());
     EXPECT_NE(tracking.find("SetApplicationSubmissionCountingEnabled(true)"), std::string::npos);
+}
+
+
+// Witcher 3, session 20260919_180154, driver vsync forced to 144. The classifier was already
+// right - the cadence window read `application=144.0 fps output=288.0 fps` - but the overlay still
+// showed 288, because the application frame-rate metric is advanced once per Present and on an
+// interposer's private output chain that is once per OUTPUT frame. DX12 never had this problem:
+// its metric is fed by the app-facing swapchain wrapper, which is 1x by construction.
+TEST(PresentInterposerSourceTest, TheFrameRateMetricSkipsGeneratedPresents) {
+    namespace fs = std::filesystem;
+    const std::string routing =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp");
+    ASSERT_FALSE(routing.empty());
+    const size_t guard = routing.find("HasPresentInterposerPresentSourceClassification()");
+    ASSERT_NE(guard, std::string::npos)
+        << "the application frame-rate metric must know whether this present carries a game frame";
+    const size_t update = routing.find("dxgi_shared_g_DXGIPerfMetrics.Update(", guard);
+    ASSERT_NE(update, std::string::npos);
+    EXPECT_NE(routing.find("IsPresentInterposerPresentApplicationSourced()", guard), std::string::npos);
+
+    // The source must be resolved BEFORE anything measures a rate from the present, in both entries.
+    for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
+        const std::string present =
+            ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / presentUnit);
+        ASSERT_FALSE(present.empty()) << presentUnit;
+        const size_t classify = present.find("ClassifyPresentInterposerPresentSource()");
+        ASSERT_NE(classify, std::string::npos) << presentUnit;
+        const size_t publish = present.find("UpdateDXGIPresentMetricsAndPublish(");
+        if (publish != std::string::npos) {
+            EXPECT_LT(classify, publish) << presentUnit << ": classified after the metric already advanced";
+        }
+    }
+
+    // And it must be resolved exactly once: the submission counter is consumed by the read.
+    const std::string dx11Device =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_device.cpp");
+    ASSERT_FALSE(dx11Device.empty());
+    EXPECT_NE(dx11Device.find("!DXGIShared::HasPresentInterposerPresentSourceClassification()"), std::string::npos)
+        << "a second classification would consume the submission counter twice";
 }
 
 }  // namespace

@@ -51,6 +51,11 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     DXGIShared::SetPresentInterposerPrivateOutputChainScope(presentInterposerPrivateOutputChain);
     auto interposerScopeGuard =
         ::ce::make_scope_guard([] { DXGIShared::SetPresentInterposerPrivateOutputChainScope(false); });
+    // Resolve the stream before UpdateDXGIPresentMetricsAndPublish measures a frame rate from
+    // this present. D3D12 keeps its own app-facing view through the swapchain wrapper.
+    if (ctx.api != APIType::D3D12) {
+        DXGIShared::ClassifyPresentInterposerPresentSource();
+    }
 
     if (ctx.api == APIType::D3D12) {
         const char* overlayModule = nullptr;

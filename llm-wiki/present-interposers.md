@@ -120,6 +120,15 @@ The classified presents feed the same `CadenceTracker` DX12 uses: every present 
 present, and the application-sourced subset is an application present. The ratio is the generation factor, and
 `cachedBaseFPS`/`cachedOutputFPS` become the application and output rates rather than two views of one stream.
 
+**The overlay's frame rate is the application's.** The application frame-rate metric
+(`dxgi_shared_g_DXGIPerfMetrics`) is advanced once per Present, and on this chain that is once per OUTPUT frame, so
+it has to skip the generated ones. DX12 never needed this: its metric is fed by the app-facing swapchain wrapper,
+which is 1x by construction. Session `20260919_180154`, driver vsync forced to 144, shows why measuring correctly is
+not enough on its own - the cadence window already read `application=144.0 fps output=288.0 fps` while the overlay
+still displayed 288. The source is therefore resolved at the top of both present entries
+(`ClassifyPresentInterposerPresentSource`), before anything measures a rate from the present, and exactly once -
+reading it consumes the submission counter.
+
 Without this the overlay reported the interposer's OUTPUT rate as the game's frame rate. Witcher 3, session
 `20260919_160555`: `RecordPresentForNvidiaSmoothMotion` recorded a constant `1` for every present, so
 `realFrames` was the whole population — 6962 presents in 40.8 s, in 3231 groups of exactly two, i.e. ~85 application

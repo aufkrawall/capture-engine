@@ -55,14 +55,49 @@ ce::present_interposer::CadenceTracker& InterposerCadence() {
 // application presents the proxy on the render thread, so this classification
 // is per-Present and per-thread, never a process-wide latch.
 thread_local bool t_presentInterposerPrivateOutputChainScope = false;
+// The per-present source verdict, resolved once at the top of the present path.
+// Both the application frame-rate metric and the DX11 overlay path read it, and
+// resolving it twice would consume the submission counter twice.
+thread_local bool t_presentInterposerSourceClassified = false;
+thread_local bool t_presentInterposerApplicationSourced = false;
 }  // namespace
 
 void SetPresentInterposerPrivateOutputChainScope(bool active) {
     t_presentInterposerPrivateOutputChainScope = active;
+    t_presentInterposerSourceClassified = false;
+    t_presentInterposerApplicationSourced = false;
 }
 
 bool IsPresentOnPresentInterposerPrivateOutputChain() {
     return t_presentInterposerPrivateOutputChainScope;
+}
+
+// Resolve this present's stream before anything measures a frame rate from it.
+//
+// The application frame-rate metric is advanced once per Present, and on an
+// interposer's private output chain that is once per OUTPUT frame, not once per
+// game frame - the overlay then reads the interposer's submission rate as the
+// game's. DX12 does not have this problem: its metric is fed by the app-facing
+// swapchain wrapper, which is 1x by construction. Witcher 3 session
+// 20260919_180154, driver vsync forced to 144: `application=144.0 fps
+// output=288.0 fps`, and the overlay showed 288.
+void ClassifyPresentInterposerPresentSource() {
+    if (!t_presentInterposerPrivateOutputChainScope || t_presentInterposerSourceClassified) {
+        return;
+    }
+    t_presentInterposerApplicationSourced = g_FGCompat.RecordPresentForNvidiaSmoothMotion();
+    t_presentInterposerSourceClassified = true;
+    if (t_presentInterposerApplicationSourced) {
+        NoteApplicationPresentUnderPresentInterposer();
+    }
+}
+
+bool HasPresentInterposerPresentSourceClassification() {
+    return t_presentInterposerSourceClassified;
+}
+
+bool IsPresentInterposerPresentApplicationSourced() {
+    return t_presentInterposerApplicationSourced;
 }
 
 void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* pOutputQueue) {
