@@ -102,7 +102,30 @@ is Smooth Motion loaded and NOT engaged, and publishes as no frame generation ra
 Base and output FPS come from those same two measured streams: the FG frame history only holds the application's
 presents, so `cachedOutputFPS` is the BASE rate there and dividing it by the multiplier would halve it.
 
-The 2026-07-29 command-work and paired-gap heuristics remain for DX11 and Vulkan, where CE has no second stream.
+### DX11/DX10: the second stream comes from the application's own context
+
+CE has no application-facing Present view under an interposer in DX11 — NvPresent64 intercepts the create above CE,
+so both chains CE sees are the interposer's. The second stream is recovered from the game's own submissions instead:
+
+- CE wraps the game's `ID3D11DeviceContext`, so it can count draws and dispatches on it.
+- A **generated** frame is produced entirely inside the interposer, so the application's context is idle across it.
+  One or more application submissions since the previous present therefore means this present carries an application
+  frame, and none means the interposer generated it (`ce::fg_runtime::IsApplicationSourcedInterposerPresent`).
+- Zero-versus-nonzero. No threshold, no gap window, no timing — a very light application frame is still an
+  application frame, and the rule does not care how the driver spaces its output.
+- Counting is enabled only once an interposer's private output chain is registered, so the ordinary draw path pays a
+  single relaxed atomic load.
+
+The classified presents feed the same `CadenceTracker` DX12 uses: every present on the private chain is an output
+present, and the application-sourced subset is an application present. The ratio is the generation factor, and
+`cachedBaseFPS`/`cachedOutputFPS` become the application and output rates rather than two views of one stream.
+
+Without this the overlay reported the interposer's OUTPUT rate as the game's frame rate. Witcher 3, session
+`20260919_160555`: `RecordPresentForNvidiaSmoothMotion` recorded a constant `1` for every present, so
+`realFrames` was the whole population — 6962 presents in 40.8 s, in 3231 groups of exactly two, i.e. ~85 application
+fps shown as ~171, with the FG row then doubling it again.
+
+Vulkan still has no second stream and keeps the 2026-07-29 command-work and paired-gap heuristics.
 See `overlay-fg-status.md` for why they cannot work in DX12.
 
 ## Diagnostics / failure modes
@@ -124,6 +147,8 @@ See `overlay-fg-status.md` for why they cannot work in DX12.
   on a present interposer's private chain` — retention actually dropped. A `Creating retained RTV` line for a chain
   the create log called the interposer's is the regression.
 - `DetourPresent: Present interposer output cadence window #N — application=... output=... generating=... multiplier=...`
+  This line now appears for DX11 too. `application` far above the game's real rate means the source classifier is
+  not separating the streams — check that the game's immediate context is CE-wrapped.
 - **Device removed with `DXGI_ERROR_ACCESS_DENIED` (`0x887A002B`) out of `GetDeviceRemovedReason()` right after CE's
   first overlay `ExecuteCommandLists`, with no TDR in the Windows System log** — CE is drawing into one queue's
   backbuffers while submitting on another. That is this page's founding bug (session `20260914_102700`): the game
@@ -160,6 +185,8 @@ are those. Nothing above the generator is touched, no timer is added and no driv
 - Forcing the present MODE, or any interval, ABOVE the interposer. That is what unpaces a metered generator.
 - Restoring the old Smooth Motion heuristics by putting CE back on the driver's private chain.
 - Retaining ANY resource built from an interposer's private chain across Presents, in any API.
+- Separating the two present streams by a gap threshold. The pairing is driver metering, not a contract;
+  the application's own submissions answer the same question structurally.
 - Adopting the render target bound at Present entry as the overlay target on an interposer's private chain.
 - Deciding the interposer route inside a per-API branch. It is a property of who owns the chain, not of the API; the
   Witcher 3 crash below is what that mistake cost.

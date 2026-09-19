@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-09-19 - The overlay's DX11 Smooth Motion fps was the interposer's output rate
+
+Follow-up to the crash entry below: with Witcher 3 surviving, two things were visible for the first
+time. Both were the same bug wearing two hats - CE was treating the interposer's OUTPUT presents as
+the game's frames.
+
+**The flicker.** `DrawDX11Overlay` had a 500 us "exact duplicate" suppressor that returned early for
+any present within that window on the same swapchain and buffer, on the guess that "Smooth Motion can
+trigger paired Present callbacks for the same frame". On the interposer's private output chain that
+sub-millisecond partner is the generated frame, not a duplicate callback. Session `20260919_160555`:
+2453 of 6962 presents (35%) skipped, every one reaching the screen with no overlay. The chain is
+presented once per displayed frame, real and generated alike, so the suppressor no longer runs there.
+
+**The fps.** Measured from that session: 6962 presents over 40.8 s, in **3231 groups of exactly two**,
+median 432 us within a group and 6590 us between them. ~85 application fps, ~171 output. The overlay
+showed ~171, and the FG row doubled it again (`base_fps=377 output_fps=754` at the startup transient).
+
+`RecordPresentForNvidiaSmoothMotion` recorded a constant `1` for every present, with the comment "DX11
+and Vulkan do not have the DX12 command-list classifier". So `realFrames` was the whole population and
+`cachedBaseFPS` was the output rate. The two-stream `CadenceTracker` could not help either: its
+application stream is fed by the app-facing swapchain wrapper, and under Smooth Motion in DX11 CE has
+no app-facing view at all - NvPresent64 intercepts the create above CE, so both chains CE sees are its
+private ones.
+
+**The second stream was available all along, on the game's own context.** CE wraps the game's
+`ID3D11DeviceContext`. A generated frame is produced entirely inside the interposer, so the
+application's context is idle across it; one or more submissions since the previous present means this
+present carries an application frame. Zero-versus-nonzero - no threshold, no gap window, no timing, so
+a light application frame still counts and driver metering changes cannot move it. Counting is off
+until an interposer chain is registered, so the ordinary draw path pays one relaxed atomic load.
+CE's overlay and the interpolation both run on the interposer's device under Smooth Motion, so
+neither can inflate the count.
+
+Classified presents now feed the same `CadenceTracker` DX12 uses: every private-chain present is an
+output present, the application-sourced subset is an application present, and the ratio is the
+generation factor. `UpdateMetrics` compares against zero instead of a work threshold when the caller
+already resolved the source. `DetourPresent: Present interposer output cadence window` now appears in
+DX11 sessions and is the line to read.
+
+**Hardware run pending** for the fps and flicker fixes. Gate: `--verify` 0.1.6680.
+
+
 ### 2026-09-19 - Witcher 3 + Smooth Motion: the crash CE could not dump, and why CE caused it
 
 Session `20260919_154534`, DX11, RTX 5070. The game died ~7 s in, twice, with CE inject + overlay and

@@ -72,6 +72,10 @@ void DX12_RegisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain, 
     std::lock_guard<std::mutex> lock(InterposerMutex());
     InterposerChains()[pSwapChain].queue = pOutputQueue;
     PublishInterposerCounts();
+    // From here the DX11/DX10 present path needs to tell an application frame
+    // from an interposer-generated one, and the application's own submissions
+    // are the evidence. Nothing counts them until an interposer actually exists.
+    g_FGCompat.SetApplicationSubmissionCountingEnabled(true);
 }
 
 void DX12_UnregisterPresentInterposerPrivateSwapchain(IDXGISwapChain* pSwapChain) {

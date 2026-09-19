@@ -512,6 +512,12 @@ void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot,
 }
 
 void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
+    // Every draw entry point on the GAME's immediate context passes through
+    // here, which makes it the one place that can answer "did the application
+    // render anything since the previous present?" - the evidence the DX11
+    // present-interposer classifier needs. Off unless an interposer chain is
+    // registered, so the ordinary path pays a single relaxed atomic load.
+    g_FGCompat.NoteApplicationSubmission();
     RefreshForcedAFConfig();
     if (!m_AFEnabled) {
         if (m_PixelForcedSamplerMask == 0) {

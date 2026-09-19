@@ -349,11 +349,15 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DrawInstancedIndirect(ID3D11Buff
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY,
                                                          UINT ThreadGroupCountZ) {
+    // Compute-only application work still makes the present an application
+    // frame; the draw path counts through PreparePixelSamplersForDraw.
+    g_FGCompat.NoteApplicationSubmission();
     m_pReal->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::DispatchIndirect(ID3D11Buffer* pBufferForArgs,
                                                                  UINT AlignedByteOffsetForArgs) {
+    g_FGCompat.NoteApplicationSubmission();
     m_pReal->DispatchIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
 }
 

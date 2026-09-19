@@ -51,6 +51,26 @@ inline bool CanEvaluateNvidiaSmoothMotionPattern(const DetectionSnapshot& snapsh
            !snapshot.fsrFGApiActive && !snapshot.heuristicFSRFGActive;
 }
 
+// Which stream a present on a present interposer's private OUTPUT chain belongs to.
+//
+// DX12 answers this from the command-list population the frame submitted. DX11 had no
+// classifier at all - `RecordPresentForNvidiaSmoothMotion` recorded a constant 1 for every
+// present - so every output present counted as an application frame and the overlay reported
+// the interposer's OUTPUT rate as the game's frame rate (Witcher 3, session 20260919_160555:
+// 6962 presents in 40.8 s, 3231 groups of exactly two, i.e. ~85 application fps shown as ~171).
+//
+// The discriminator is not timing and not a threshold. A generated frame is produced entirely
+// inside the interposer, so the APPLICATION's own immediate context is idle across it: it
+// submits no draw, dispatch or clear between the real present and its generated partner. One
+// or more application submissions since the previous present therefore means this present
+// carries an application frame, and none means the interposer generated it.
+//
+// Counting is on the game's device only. CE's overlay and the interposer's interpolation both
+// run on the interposer's own device under Smooth Motion, so neither can inflate this.
+inline bool IsApplicationSourcedInterposerPresent(uint64_t applicationSubmissionsSincePreviousPresent) {
+    return applicationSubmissionsSincePreviousPresent > 0;
+}
+
 inline bool HasNvidiaSmoothMotion2xPopulation(bool nvPresentLoaded, int totalFrames, int highWorkFrames) {
     const int lowWorkFrames = totalFrames - highWorkFrames;
     if (!nvPresentLoaded || totalFrames < 30 || highWorkFrames < 10 || lowWorkFrames < 10) {

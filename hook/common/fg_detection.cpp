@@ -314,15 +314,34 @@ void FGCompatibility::RecordFrame(int commandListsExecuted) {
     }
 }
 
-void FGCompatibility::RecordPresentForNvidiaSmoothMotion() {
+bool FGCompatibility::RecordPresentForNvidiaSmoothMotion() {
     if (!IsNvPresentLoaded()) {
-        return;
+        return true;
     }
 
-    // DX11 and Vulkan do not have the DX12 command-list classifier. A constant
-    // non-zero sample keeps work classification neutral while still feeding the
-    // API-independent Present timestamp cadence detector.
-    RecordFrame(1);
+    // DX11 and D3D10 have no command-list population to classify a present by,
+    // so this used to record a constant 1 and every present on the interposer's
+    // output chain counted as an application frame. The overlay then reported
+    // the interposer's OUTPUT rate as the game's frame rate - the ~2x reading in
+    // Witcher 3 session 20260919_160555.
+    //
+    // The application's own immediate context supplies the missing half. A
+    // generated frame is produced entirely inside the interposer, so the game
+    // submits nothing across it; one or more submissions since the previous
+    // present means this present carries an application frame. Zero-vs-nonzero,
+    // no threshold and no timing. When counting is off (no interposer chain
+    // registered) the old neutral sample is kept.
+    if (!IsApplicationSubmissionCountingEnabled()) {
+        explicitSourceClassification.store(false, std::memory_order_release);
+        RecordFrame(1);
+        return true;
+    }
+
+    const uint64_t submissions = applicationSubmissions.exchange(0, std::memory_order_acq_rel);
+    const bool applicationSourced = ce::fg_runtime::IsApplicationSourcedInterposerPresent(submissions);
+    explicitSourceClassification.store(true, std::memory_order_release);
+    RecordFrame(applicationSourced ? 1 : 0);
+    return applicationSourced;
 }
 
 void FGCompatibility::UpdateMetrics() {
@@ -353,7 +372,11 @@ void FGCompatibility::UpdateMetrics() {
         }
     }
 
-    int workThreshold = (maxCmdLists > 4) ? (maxCmdLists / 2) : 2;
+    // With an explicit source classification the stored value is already the
+    // verdict (1 = application-sourced, 0 = interposer-generated), so deriving a
+    // threshold from the busiest frame in the window would reject every entry.
+    const bool explicitSource = explicitSourceClassification.load(std::memory_order_acquire);
+    int workThreshold = explicitSource ? 0 : ((maxCmdLists > 4) ? (maxCmdLists / 2) : 2);
 
     int lastRealLogicalIdx = -1;
     int intervalCounts[16] = {0};

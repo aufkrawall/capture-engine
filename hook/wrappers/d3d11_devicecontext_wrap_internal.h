@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstdint>
 #include "../apis/dx11_hook.h"
+#include "../common/fg_detection.h"
 #include "../common/sampler_override_utils.h"
 
 // Shader metadata is immutable and owned by the shader COM object. Private data

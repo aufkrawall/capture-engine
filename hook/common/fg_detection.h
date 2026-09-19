@@ -30,7 +30,26 @@ public:
     // Per-frame tracking - call from DetourPresent with command list count
     // NOTE: In dormant mode, this only tracks basic stats, no pattern detection
     void RecordFrame(int commandListsExecuted);
-    void RecordPresentForNvidiaSmoothMotion();
+    // Returns true when this present carries an application frame. Without an
+    // interposer there is nothing to separate, so every present is application-sourced.
+    bool RecordPresentForNvidiaSmoothMotion();
+
+    // Application submission accounting for the DX11/DX10 present-interposer
+    // classifier. Counting stays off until an interposer's private output chain
+    // is registered, so the ordinary draw path pays one relaxed atomic load.
+    void SetApplicationSubmissionCountingEnabled(bool enabled) {
+        applicationSubmissionCounting.store(enabled, std::memory_order_release);
+    }
+    bool IsApplicationSubmissionCountingEnabled() const {
+        return applicationSubmissionCounting.load(std::memory_order_relaxed);
+    }
+    // Called from the game's wrapped immediate context on every draw/dispatch.
+    void NoteApplicationSubmission() {
+        if (!applicationSubmissionCounting.load(std::memory_order_relaxed)) {
+            return;
+        }
+        applicationSubmissions.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // State queries
     bool IsFGActive() const;
@@ -72,9 +91,9 @@ public:
 
     // FPS metrics
     float GetOutputFPS() const {
-        // Under a present interposer the frame history only holds the application's presents, so
-        // the cached rate is the BASE rate. The output rate is the one measured on the
-        // interposer's private chain.
+        // Prefer the measured two-stream cadence whenever it exists. In DX12 it is the only
+        // evidence there is; in DX11 the frame history now carries a per-present source verdict
+        // too, so cachedOutputFPS is already the output rate and the two agree.
         const float interposerOutput = nvidiaSMMeasuredOutputFps.load(std::memory_order_acquire);
         if (interposerOutput > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
             return interposerOutput;
@@ -82,8 +101,9 @@ public:
         return cachedOutputFPS.load();
     }
     float GetBaseFPS() const {
-        // When FG multiplier is known (from Streamline API or pattern analysis),
-        // derive base FPS directly from output FPS.  This is more reliable than
+        // The application rate measured against the interposer's output stream wins when it
+        // exists. Otherwise: when the FG multiplier is known (from Streamline API or pattern
+        // analysis), derive base FPS directly from output FPS.  This is more reliable than
         // ECL-count-based cachedBaseFPS for DLSS FG (where our ECL hook counts
         // ALL queues including Streamline's internal FG queue).  For heuristic
         // FSR FG, cachedMultiplier from pattern analysis provides the multiplier.
@@ -232,6 +252,14 @@ private:
     std::array<FrameRecord, WINDOW_SIZE> frameHistory;
     std::atomic<int> historyIndex{0};
     std::atomic<int> totalFramesRecorded{0};
+
+    // DX11/DX10 present-interposer classification. `commandLists` then carries a
+    // 1/0 verdict the caller already resolved rather than a work population, so
+    // UpdateMetrics must compare against zero instead of deriving a threshold
+    // from the busiest frame in the window.
+    std::atomic<bool> explicitSourceClassification{false};
+    std::atomic<bool> applicationSubmissionCounting{false};
+    std::atomic<uint64_t> applicationSubmissions{0};
 
     // Cached metrics (updated periodically)
     std::atomic<float> cachedOutputFPS{0.0f};

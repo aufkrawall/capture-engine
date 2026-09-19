@@ -20,6 +20,7 @@
 #include <string>
 
 #include "../hook/common/dx12_overlay_policy.h"
+#include "../hook/common/fg_runtime_state.h"
 #include "../hook/common/present_interposer_cadence.h"
 #include "source_fragment_reader.h"
 
@@ -299,6 +300,76 @@ TEST(PresentInterposerSourceTest, ForcedFifoIsStatedOnTheInterposersOwnFlip) {
     ASSERT_FALSE(header.empty());
     EXPECT_NE(header.find("ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain"),
               std::string::npos);
+}
+
+
+// Witcher 3 DX11 + Smooth Motion, session 20260919_160555: 6962 presents in 40.8 s, in 3231 groups
+// of exactly two. Every one of them counted as an application frame, because
+// RecordPresentForNvidiaSmoothMotion recorded a constant 1 - DX11 has no command-list population
+// to classify by - so the overlay reported the interposer's OUTPUT rate (~171) as the game's frame
+// rate (~85). The application's own immediate context supplies the missing half.
+TEST(PresentInterposerSourceClassificationTest, ApplicationWorkSeparatesTheTwoStreams) {
+    using ce::fg_runtime::IsApplicationSourcedInterposerPresent;
+
+    // A generated frame is produced entirely inside the interposer: the game submitted nothing
+    // across it.
+    EXPECT_FALSE(IsApplicationSourcedInterposerPresent(0));
+    // One submission is enough. There is no threshold to tune and no timing involved, so a very
+    // light application frame is still an application frame.
+    EXPECT_TRUE(IsApplicationSourcedInterposerPresent(1));
+    EXPECT_TRUE(IsApplicationSourcedInterposerPresent(4231));
+}
+
+// The two streams must produce the same ratio DX12 measures: the interposer's output chain carries
+// BOTH the forwarded real frame and the generated one, so output/application is the factor.
+TEST(PresentInterposerSourceClassificationTest, TheMeasuredRatioIsTheGenerationFactor) {
+    namespace pi = ce::present_interposer;
+
+    // One second of the measured session: ~85 application presents, ~171 output presents.
+    const pi::CadenceVerdict verdict = pi::ClassifyInterposerCadence(85, 171, 1000000);
+    EXPECT_TRUE(verdict.generating);
+    EXPECT_EQ(verdict.multiplier, 2);
+    EXPECT_NEAR(verdict.applicationFps, 85.0f, 0.5f);
+    EXPECT_NEAR(verdict.outputFps, 171.0f, 0.5f);
+
+    // Smooth Motion loaded but not engaged: one output per application frame is NOT a 1x
+    // generator, and the base rate must not be halved.
+    const pi::CadenceVerdict idle = pi::ClassifyInterposerCadence(85, 85, 1000000);
+    EXPECT_FALSE(idle.generating);
+    EXPECT_EQ(idle.multiplier, 1);
+}
+
+// Source-policy: the DX11 present path must actually feed both streams, or the tracker never
+// closes a window and the getters silently fall back to the unclassified rate.
+TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
+    namespace fs = std::filesystem;
+    const std::string dx11Device =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_device.cpp");
+    ASSERT_FALSE(dx11Device.empty());
+    EXPECT_NE(dx11Device.find("NoteApplicationPresentUnderPresentInterposer()"), std::string::npos)
+        << "the application stream has to be fed, not just the output stream";
+    EXPECT_NE(dx11Device.find("IsPresentOnPresentInterposerPrivateOutputChain()"), std::string::npos);
+
+    // The classifier's evidence comes from the game's own context, and counting must stay off
+    // until an interposer exists so the ordinary draw path is untouched.
+    const std::string fgDetection =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "fg_detection.cpp");
+    ASSERT_FALSE(fgDetection.empty());
+    EXPECT_NE(fgDetection.find("IsApplicationSourcedInterposerPresent("), std::string::npos);
+    // The classifier must gate the constant-1 record, not sit beside it: an unconditional
+    // RecordFrame(1) is exactly what reported the interposer's output rate as the game's fps.
+    const size_t classifier = fgDetection.find("IsApplicationSourcedInterposerPresent(");
+    const size_t neutralRecord = fgDetection.find("RecordFrame(1);");
+    ASSERT_NE(neutralRecord, std::string::npos);
+    EXPECT_NE(fgDetection.find("IsApplicationSubmissionCountingEnabled()"), std::string::npos)
+        << "the neutral constant-1 sample must be reachable only while no interposer is registered";
+    EXPECT_LT(neutralRecord, classifier)
+        << "the neutral sample is the early-out; the classified record is what follows it";
+
+    const std::string tracking =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "present_interposer_tracking.cpp");
+    ASSERT_FALSE(tracking.empty());
+    EXPECT_NE(tracking.find("SetApplicationSubmissionCountingEnabled(true)"), std::string::npos);
 }
 
 }  // namespace
