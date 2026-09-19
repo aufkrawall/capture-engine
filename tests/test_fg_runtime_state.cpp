@@ -3,6 +3,11 @@
 #include "../hook/common/fg_detection.h"
 #include "../hook/common/fg_runtime_state.h"
 
+#include <filesystem>
+
+#include "../common/log_meter.h"
+#include "source_fragment_reader.h"
+
 namespace {
 
 using ce::fg_runtime::DetectionSnapshot;
@@ -233,6 +238,53 @@ TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
     EXPECT_FALSE(ce::fg_runtime::RuntimeModeUsesStreamline(RuntimeMode::kFSRFG));
     EXPECT_TRUE(ce::fg_runtime::RuntimeModeUsesFSR(RuntimeMode::kFSRFG));
     EXPECT_STREQ("NVIDIA_SM", ce::fg_runtime::GetRuntimeModeName(RuntimeMode::kNvidiaSmoothMotion));
+}
+
+// Dynamic multi-frame generation changes the DLSS-G cadence per frame, so the
+// multiplier transition log stopped being a rare event: session
+// `20260919_223111` recorded 2743 of those lines in five minutes, 26% of the
+// whole hook log. The transition still has to be visible - an activation, or a
+// factor stuck at the wrong value, shows up in the first few - so the meter is
+// burst-then-heartbeat rather than a blanket suppression.
+TEST(FGRuntimeStateTest, DlssFGMultiplierTransitionLogIsMetered) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "common" / "fg_detection.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty());
+
+    const size_t setter = text.find("void FGCompatibility::SetDLSSFGMultiplier");
+    ASSERT_NE(setter, std::string::npos);
+    const size_t nextFn = text.find("void FGCompatibility::SetFSRFGMultiplier", setter);
+    ASSERT_NE(nextFn, std::string::npos);
+    const std::string body = text.substr(setter, nextFn - setter);
+
+    EXPECT_NE(body.find("ce::log_meter::ShouldLogCadence"), std::string::npos)
+        << "the DLSS FG multiplier transition must stay metered under dynamic MFG";
+    // The heartbeat is only useful if it carries the range it stands for.
+    EXPECT_NE(body.find("observed %dx..%dx"), std::string::npos);
+}
+
+TEST(FGRuntimeStateTest, DlssFGMultiplierMeterKeepsTheActivationBurstVisible) {
+    // Mirrors kDLSSFGMultiplierLogBurst / kDLSSFGMultiplierLogStride.
+    constexpr uint32_t kBurst = 8;
+    constexpr uint32_t kStride = 512;
+
+    for (uint32_t i = 1; i <= kBurst; ++i) {
+        EXPECT_TRUE(ce::log_meter::ShouldLogCadence(i, kBurst, kStride)) << "burst entry " << i;
+    }
+    EXPECT_FALSE(ce::log_meter::ShouldLogCadence(kBurst + 1, kBurst, kStride));
+    EXPECT_TRUE(ce::log_meter::ShouldLogCadence(kStride, kBurst, kStride));
+    EXPECT_FALSE(ce::log_meter::ShouldLogCadence(kStride + 1, kBurst, kStride));
+
+    // The session that motivated the meter: 2743 changes would have become 8
+    // burst lines plus 5 heartbeats instead of 2743.
+    uint32_t logged = 0;
+    for (uint32_t i = 1; i <= 2743; ++i) {
+        if (ce::log_meter::ShouldLogCadence(i, kBurst, kStride))
+            ++logged;
+    }
+    EXPECT_EQ(logged, kBurst + 5);
 }
 
 }  // namespace

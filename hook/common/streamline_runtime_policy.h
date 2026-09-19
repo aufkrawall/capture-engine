@@ -52,6 +52,37 @@ inline bool IsDLSSGModeEnabled(uint32_t mode) {
     return mode != 0;
 }
 
+// `slDLSSGState` grows by struct version and the APPLICATION owns the
+// allocation: CE only ever sees a pointer to whatever the game declared. A
+// field introduced above the game's `structVersion` is therefore memory the
+// game never reserved for it, and reading it yields whatever happened to be
+// next on the game's stack - not a runtime answer.
+//
+// This is not hypothetical. `bIsDynamicMFGSupported` arrived in version 4;
+// Talos Principle 2 publishes version 3 (its fence fields read back correctly,
+// the byte after them does not). Session `20260919_223111` read that byte as 0
+// and reported "dynamic MFG NOT supported" while the runtime was demonstrably
+// varying the cadence between 2x and 4x to hold ~139.6 fps. Unknown has to be
+// spelled unknown.
+inline constexpr size_t kDLSSGStateVsyncSupportMinVersion = 2;
+inline constexpr size_t kDLSSGStateFenceMinVersion = 3;
+inline constexpr size_t kDLSSGStateDynamicMFGMinVersion = 4;
+
+inline constexpr bool DLSSGStateCarriesDynamicMFGSupport(size_t structVersion) {
+    return structVersion >= kDLSSGStateDynamicMFGMinVersion;
+}
+
+inline constexpr bool DLSSGStateCarriesVsyncSupport(size_t structVersion) {
+    return structVersion >= kDLSSGStateVsyncSupportMinVersion;
+}
+
+// Tri-state for a `char` boolean the runtime may not have written: -1 unknown
+// (the game's struct is too old to carry it), otherwise 0/1.
+inline constexpr int ResolveDLSSGStateOptionalBool(size_t structVersion, size_t minVersion, char value,
+                                                   char invalidSentinel) {
+    return structVersion < minVersion || value == invalidSentinel ? -1 : (value != 0 ? 1 : 0);
+}
+
 inline bool IsStreamlineReflexLowLatencyModeEnabled(int32_t mode) {
     return mode > 0;
 }

@@ -238,6 +238,13 @@ public:
     }
 
 private:
+    // Metering for the DLSS FG multiplier transition log. The burst keeps the
+    // activation and any early instability fully visible; the stride is what
+    // stops dynamic multi-frame generation from turning a per-change line into
+    // a quarter of the session log.
+    static constexpr uint32_t kDLSSFGMultiplierLogBurst = 8;
+    static constexpr uint32_t kDLSSFGMultiplierLogStride = 512;
+
     // Dormant mode flag - when true, skip all pattern-based detection
     std::atomic<bool> dormantMode{kDefaultDormantMode};
 
@@ -291,6 +298,12 @@ private:
     std::atomic<bool> directFFXApiConfirmed{false};
     std::atomic<bool> fsrFGAuthoritativeApiOff{false};
     std::atomic<int> dlssFGMultiplier{0};
+    // Dynamic multi-frame generation varies the cadence per frame, so the
+    // transition log is metered rather than per-change; these carry the
+    // heartbeat's counter and the range it reports. See SetDLSSFGMultiplier.
+    std::atomic<uint32_t> dlssFGMultiplierChanges{0};
+    std::atomic<int> dlssFGMultiplierObservedLow{0};
+    std::atomic<int> dlssFGMultiplierObservedHigh{0};
     std::atomic<int> fsrFGMultiplier{0};
     std::atomic<bool> streamlineSupportPresent{false};
     std::atomic<bool> fsrSupportPresent{false};

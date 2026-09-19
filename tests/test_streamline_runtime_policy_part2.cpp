@@ -656,4 +656,44 @@ TEST(StreamlineRuntimePolicyTest, RuntimeReflexRetryEnforcesBoundedAttemptsAndQu
     EXPECT_NE(install.find("streamline_hook_g_InstalledModuleMask.fetch_or(moduleBit"), std::string::npos);
 }
 
+// slDLSSGState is allocated by the GAME, so a field above its structVersion is
+// memory the game never reserved. Session `20260919_223111` read the version-4
+// bIsDynamicMFGSupported byte out of Talos Principle 2's version-3 struct, got
+// 0, and reported "dynamic MFG NOT supported" while DLSS-G was demonstrably
+// alternating 2x/3x/4x to hold ~139.6 fps.
+TEST(StreamlineRuntimePolicyTest, DLSSGStateOptionalFieldsAreGatedOnTheGamesStructVersion) {
+    using ce::streamline_runtime_policy::DLSSGStateCarriesDynamicMFGSupport;
+    using ce::streamline_runtime_policy::DLSSGStateCarriesVsyncSupport;
+
+    EXPECT_FALSE(DLSSGStateCarriesDynamicMFGSupport(1));
+    EXPECT_FALSE(DLSSGStateCarriesDynamicMFGSupport(2));
+    // The exact version that produced the false report.
+    EXPECT_FALSE(DLSSGStateCarriesDynamicMFGSupport(3));
+    EXPECT_TRUE(DLSSGStateCarriesDynamicMFGSupport(4));
+    // A newer game struct still carries every older field.
+    EXPECT_TRUE(DLSSGStateCarriesDynamicMFGSupport(5));
+
+    EXPECT_FALSE(DLSSGStateCarriesVsyncSupport(1));
+    EXPECT_TRUE(DLSSGStateCarriesVsyncSupport(2));
+    EXPECT_TRUE(DLSSGStateCarriesVsyncSupport(4));
+}
+
+TEST(StreamlineRuntimePolicyTest, DLSSGStateOptionalBoolReportsUnknownRatherThanFalse) {
+    using ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion;
+    using ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool;
+    constexpr char kInvalid = 2;
+
+    // Too old to carry the field: unknown, never "false". A zero here is the
+    // game's own memory, not the runtime's answer.
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(3, kDLSSGStateDynamicMFGMinVersion, 0, kInvalid), -1);
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(3, kDLSSGStateDynamicMFGMinVersion, 1, kInvalid), -1);
+
+    // New enough: the runtime's own value, including its "not written" sentinel.
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(4, kDLSSGStateDynamicMFGMinVersion, 0, kInvalid), 0);
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(4, kDLSSGStateDynamicMFGMinVersion, 1, kInvalid), 1);
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(4, kDLSSGStateDynamicMFGMinVersion, kInvalid, kInvalid), -1);
+    // Any non-zero that is not the sentinel is still true.
+    EXPECT_EQ(ResolveDLSSGStateOptionalBool(5, kDLSSGStateDynamicMFGMinVersion, 7, kInvalid), 1);
+}
+
 }  // namespace

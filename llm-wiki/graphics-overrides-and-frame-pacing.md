@@ -603,10 +603,29 @@ Reflex handoff rules.
   consumer of the configured factor goes through it: the NGX parameter writes, the Streamline options override, the
   published overlay multiplier, and the Remix scheduler. Without it the runtime would be told "vary the cadence" by
   the driver and "it is exactly N" on every evaluation, and the outcome would depend on call ordering.
+- **Reading the on-screen indicator.** `nvngx_dlssg` 310.9.1 builds it from
+  `- %ux` (fixed) or `- %ux/%ux` (dynamic: current/max, only when mode is dynamic and max > current > 1), an
+  optional mode token `Auto` / `Dyn` / `Dyn DRV` (`Dyn DRV` means the *driver settings* asked for dynamic, which is
+  what CE's override produces), and `- %.0fHz %s`. That trailing token is **not** a frame generation field: it is
+  `V` when VSync is on plus `F` for an independent flip or `C` for a composited present, so `VF`/`VC`/`F`/`C`.
+  `144 Hz F` therefore reads "144 Hz, independent flip, no VSync" and says nothing about MFG - and it cannot change
+  under dynamic mode anyway, because sl.dlss_g logs `VSync disabled: DLSSGMode::eAuto/eDynamic uses its own frame
+  pacing`. Look at the mode token and the `Nx/Mx` form instead.
 - **Whether dynamic MFG was actually accepted is observable.** `slDLSSGState::bIsDynamicMFGSupported` is the
   runtime's own verdict; sl.dlss_g otherwise logs its refusal ("Dynamic MFG is not supported on this system,
   ignoring request from DRS") only into NGX's log. `Hooked_slDLSSGGetState` reports each transition of that flag once
   while `dlss_fg_mode=dynamic` is configured.
+  **But only when the game's struct carries it.** `slDLSSGState` is allocated by the application, so a field above
+  its `structVersion` is memory the game never reserved; `bIsDynamicMFGSupported` arrived in version 4 and Talos
+  Principle 2 publishes version 3. Session `20260919_223111` read that byte as 0 and reported "NOT supported" while
+  DLSS-G was demonstrably alternating 2x/3x/4x. `ResolveDLSSGStateOptionalBool` now reports -1 (unknown) below the
+  field's minimum version, and every DLSS-G state log carries `stateVer=`.
+- **The realized cadence is the reliable evidence, and it is CE's own present accounting.** Under dynamic MFG
+  `DXGIShared::DetourPresent` sees the multiplier move while `output_fps` stays pinned: session `20260919_223111`
+  recorded `published_multiplier` 2/3/4 with `base_fps` 46.52/34.89/27.85/20.89 against a constant 139.57 output on
+  a 144 Hz panel. That is `dlss_fg_target_fps=max_refresh` doing its job. The Streamline options keep reporting the
+  game's own request (`optionsMode=on generated=3`), because the runtime varies the cadence below that API.
+  `FGCompatibility::SetDLSSFGMultiplier` is metered for the same reason - unmetered it was 26% of that session's log.
 - The FG preset is **not** an NGX parameter. `nvngx_dlssg.dll` exposes no `*.Hint.Render.Preset.*` name at all; the
   create-time parameters it parses are `DLSSG.UserInterfaceRecompositionEnabled`, `MenuDetectionEnabled`,
   `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel`. The preset comes from the driver settings

@@ -1,6 +1,7 @@
 #include "fg_detection.h"
 #include <cmath>
 #include <cstring>
+#include "../../common/log_meter.h"
 #include "hook_common.h"
 
 // Use HookLog from hook_common - forward declared in header
@@ -152,9 +153,35 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
 void FGCompatibility::SetDLSSFGMultiplier(int multiplier) {
     const int normalizedMultiplier = NormalizeDLSSFGFactor(multiplier);
     const int previousMultiplier = dlssFGMultiplier.exchange(normalizedMultiplier, std::memory_order_acq_rel);
-    if (previousMultiplier != normalizedMultiplier) {
-        HookLog("FG: DLSS FG multiplier %d -> %d", previousMultiplier, normalizedMultiplier);
+    if (previousMultiplier == normalizedMultiplier) {
+        return;
     }
+
+    // A multiplier change used to be a rare event worth one line each. Dynamic
+    // multi-frame generation makes it a per-frame event: session
+    // `20260919_223111` recorded 2743 of these in five minutes, 26% of the whole
+    // hook log, while DLSS-G alternated 2x/3x/4x to hold ~139.6 fps. Keep the
+    // first few - that is where an activation, or a factor stuck at the wrong
+    // value, actually shows - then a heartbeat carrying the observed range
+    // instead of every step.
+    const uint32_t changeIndex = dlssFGMultiplierChanges.fetch_add(1, std::memory_order_relaxed) + 1;
+    int observedLow = dlssFGMultiplierObservedLow.load(std::memory_order_relaxed);
+    while (normalizedMultiplier > 0 && (observedLow == 0 || normalizedMultiplier < observedLow) &&
+           !dlssFGMultiplierObservedLow.compare_exchange_weak(observedLow, normalizedMultiplier,
+                                                              std::memory_order_relaxed)) {
+    }
+    int observedHigh = dlssFGMultiplierObservedHigh.load(std::memory_order_relaxed);
+    while (normalizedMultiplier > observedHigh &&
+           !dlssFGMultiplierObservedHigh.compare_exchange_weak(observedHigh, normalizedMultiplier,
+                                                               std::memory_order_relaxed)) {
+    }
+
+    if (!ce::log_meter::ShouldLogCadence(changeIndex, kDLSSFGMultiplierLogBurst, kDLSSFGMultiplierLogStride)) {
+        return;
+    }
+    HookLog("FG: DLSS FG multiplier %d -> %d (change %u, observed %dx..%dx)", previousMultiplier,
+            normalizedMultiplier, changeIndex, dlssFGMultiplierObservedLow.load(std::memory_order_relaxed),
+            dlssFGMultiplierObservedHigh.load(std::memory_order_relaxed));
 }
 
 void FGCompatibility::SetFSRFGMultiplier(int multiplier) {

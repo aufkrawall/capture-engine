@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-09-19 - Dynamic MFG confirmed working on hardware; two CE reporting bugs it exposed
+
+First hardware run of the new `dlss_fg_mode=dynamic` keys (Talos Principle 2, session `20260919_223111`,
+sl 2.14.1 + nvngx_dlssg 310.9.1, driver 616.92, 144 Hz panel). **The feature works.**
+
+- **Delivery confirmed end to end.** `NGX DRS: answered NvAPI_DRS_GetSetting` fired for 0x10308298 (mode -> 4),
+  0x10CF4125 (target -> 0x01000000 auto) and 0x10562D0F (dynamic max -> 5), from both `nvngx_dlssg.dll` and
+  `sl.common.dll`, in exactly the order `readDRSKeys` reads them. The broadened caller filter was necessary and
+  sufficient: the sl.common answer is the one the multi-frame keys actually travel through.
+- **The cadence really varies.** `DXGIShared::DetourPresent` published multiplier 2/3/4 with base_fps
+  46.52/34.89/27.85/20.89 against a constant output_fps of 139.57 - a target-rate hold on a 144 Hz panel, which is
+  `dlss_fg_target_fps=max_refresh`. The Streamline options keep saying `optionsMode=on generated=3`, because the
+  runtime varies the cadence *below* the API the game drives.
+- **Bug 1 (mine, fixed): `bIsDynamicMFGSupported` was read out of a struct that does not have it.** `slDLSSGState`
+  is allocated by the *game*; the field arrived in structVersion 4 and Talos publishes 3. CE read the neighbouring
+  byte as 0 and logged "dynamic MFG NOT supported, so the request is ignored" while it was plainly working.
+  `ResolveDLSSGStateOptionalBool` now returns -1 (unknown) below the field's minimum version, the same gate covers
+  `bIsVsyncSupportAvailable`, and every DLSS-G state line carries `stateVer=`. Never read a versioned field of a
+  caller-owned struct without checking the caller's version.
+- **Bug 2 (pre-existing, fixed): the multiplier transition log was 26% of the session.** 2743 of 10631 lines were
+  `FG: DLSS FG multiplier X -> Y`, because dynamic MFG makes that a per-frame event. Metered burst-then-heartbeat
+  (8 then every 512) and the heartbeat now carries the observed range.
+- **Indicator decode** (from nvngx_dlssg 310.9.1's builder, so we stop guessing): mode token `Auto` / `Dyn` /
+  `Dyn DRV`, factor `- 4x` or `- 3x/6x`, then `- %.0fHz %s` where the token is `V` (VSync on) plus `F` (independent
+  flip) or `C` (composited). `144 Hz F` is a present-mode report, not an MFG one, and eAuto/eDynamic disable VSync
+  anyway, so it cannot become `VC` while dynamic MFG runs.
+- **Dead end worth not repeating:** `checkDynamicMFGSupport` gates on `flipMetering.cpp` having negotiated
+  SetFlipConfig **V2** - `NvAPI_QueryInterface(0x6194B19D)` reporting feature `0x343DCF` with bit 0, which sets the
+  stored version to 0x20018. Chasing that as the failure cost an hour; the driver reports it unconditionally in
+  616.92, and the real problem was CE's own out-of-bounds read.
+
 ### 2026-09-19 - NVIDIA Profile Inspector dynamic MFG, implemented over the same DRS channel
 
 Added `dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and `dlss_fg_target_fps`: the four DLSS frame

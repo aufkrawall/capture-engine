@@ -48,13 +48,20 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
             FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
             HookLogImportant(
                 "Streamline Hook: slDLSSGGetState observed viewport=%u optionsMode=%s(%u) generated=%u "
-                "capabilityMax=%u presented=%u status=0x%X(%s) minWH=%u vsyncOk=%d dynMFG=%d vramMB=%llu "
+                "capabilityMax=%u presented=%u status=0x%X(%s) minWH=%u vsyncOk=%d dynMFG=%d stateVer=%zu "
+                "vramMB=%llu "
                 "fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
                 "updateActive=%d clearAll=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d "
                 "setOptionsOriginal=%p",
                 viewportKey, GetDLSSGModeName(streamline_hook_options->mode), streamline_hook_options->mode, streamline_hook_options->numFramesToGenerate,
                 capabilityMax, state.numFramesActuallyPresented, state.status, statusText, state.minWidthOrHeight,
-                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateVsyncSupportMinVersion,
+                    state.bIsVsyncSupportAvailable, streamline_hook_kSLBooleanInvalid),
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion,
+                    state.bIsDynamicMFGSupported, streamline_hook_kSLBooleanInvalid),
+                state.structVersion,
                 (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
                 state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, viewportWasActive ? 1 : 0,
@@ -80,29 +87,41 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
             FormatDLSSGStatusFlags(state.status, nowText, sizeof(nowText));
             HookLogImportant(
                 "Streamline Hook: [DLSSG HEALTH] status TRANSITION 0x%X(%s) -> 0x%X(%s) (viewport=%u "
-                "optionsMode=%s presented=%u minWH=%u vsyncOk=%d dynMFG=%d)",
+                "optionsMode=%s presented=%u minWH=%u vsyncOk=%d dynMFG=%d stateVer=%zu)",
                 previousStatus, prevText, state.status, nowText, viewportKey,
                 streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "n/a", state.numFramesActuallyPresented,
-                state.minWidthOrHeight, static_cast<int>(state.bIsVsyncSupportAvailable),
-                static_cast<int>(state.bIsDynamicMFGSupported));
+                state.minWidthOrHeight,
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateVsyncSupportMinVersion,
+                    state.bIsVsyncSupportAvailable, streamline_hook_kSLBooleanInvalid),
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion,
+                    state.bIsDynamicMFGSupported, streamline_hook_kSLBooleanInvalid),
+                state.structVersion);
         }
     }
     // `dlss_fg_mode=dynamic` is answered through the driver settings, so the
-    // only place CE can observe whether the runtime actually took it is here:
-    // sl.dlss_g refuses dynamic MFG on an unsupported system and says so only
-    // in NGX's own log. Report the refusal, and the acceptance, exactly once.
+    // only in-process signal of whether the runtime took it is this state
+    // struct. It is only a signal when the GAME's struct is new enough to carry
+    // the field - see DLSSGStateCarriesDynamicMFGSupport. On an older struct the
+    // byte belongs to the game, not to the runtime, and the honest answer is
+    // "unknown": watch the realized multiplier instead.
     if (result == streamline_hook_kSlResultOk &&
-        ce::ngx_drs::GetConfiguredOverrides().frameGenerationMode == kDlssFGModeDynamic &&
-        state.bIsDynamicMFGSupported != streamline_hook_kSLBooleanInvalid) {
-        const bool supported = state.bIsDynamicMFGSupported != 0;
-        static std::atomic<int> s_lastReportedDynamicSupport{-1};
-        const int previous = s_lastReportedDynamicSupport.exchange(supported ? 1 : 0, std::memory_order_acq_rel);
-        if (previous != (supported ? 1 : 0)) {
+        ce::ngx_drs::GetConfiguredOverrides().frameGenerationMode == kDlssFGModeDynamic) {
+        const int support = ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+            state.structVersion, ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion,
+            state.bIsDynamicMFGSupported, streamline_hook_kSLBooleanInvalid);
+        static std::atomic<int> s_lastReportedDynamicSupport{-2};
+        const int previous = s_lastReportedDynamicSupport.exchange(support, std::memory_order_acq_rel);
+        if (previous != support) {
             HookLogImportant(
-                "Streamline Hook: dlss_fg_mode=dynamic - the runtime reports dynamic MFG %s (viewport=%u "
-                "optionsMode=%s capabilityMax=%u)",
-                supported ? "SUPPORTED" : "NOT supported, so the request is ignored", viewportKey,
-                streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "n/a", capabilityMax);
+                "Streamline Hook: dlss_fg_mode=dynamic - runtime dynamic MFG support is %s (viewport=%u "
+                "optionsMode=%s capabilityMax=%u stateVersion=%zu). The driver-settings request was delivered "
+                "either way; the realized cadence shows up as the published FG multiplier changing.",
+                support < 0 ? "UNKNOWN (the game's DLSSGState predates the field)"
+                            : (support ? "reported SUPPORTED" : "reported NOT supported"),
+                viewportKey, streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "n/a",
+                capabilityMax, state.structVersion);
         }
     }
 
@@ -132,14 +151,21 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
             HookLogImportant(
                 "Streamline Hook: [DLSSG HEALTH] ON but NOT interpolating for %llu consecutive GetState samples — "
                 "status=0x%X(%s) presented=%u generatedReq=%u capabilityMax=%u minWH=%u vsyncOk=%d dynMFG=%d "
-                "vramMB=%llu fence=%p fenceValue=%llu | Reflex evidence: sleepCalls=%llu (+%llu since last warn) "
+                "stateVer=%zu vramMB=%llu fence=%p fenceValue=%llu | Reflex evidence: sleepCalls=%llu "
+                "(+%llu since last warn) "
                 "sleepAge=%llums setOptionsCalls=%llu setOptionsAge=%llums lastMode=%d sleepHooked=%d | "
                 "REFLEX status bit %s (DLSSG hard-requires Reflex); CE-observed Reflex sleep calls: %llu%s; "
-                "status=ok with presented==1 and dynMFG=1 can be hardware flip metering — correlate with the "
-                "displayed fps",
+                "status=ok with presented==1 and dynMFG=1 (or -1, meaning the game's DLSSGState is too old to "
+                "carry the field) can be hardware flip metering — correlate with the displayed fps",
                 static_cast<unsigned long long>(streak), state.status, statusText, state.numFramesActuallyPresented,
                 streamline_hook_options->numFramesToGenerate, capabilityMax, state.minWidthOrHeight,
-                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateVsyncSupportMinVersion,
+                    state.bIsVsyncSupportAvailable, streamline_hook_kSLBooleanInvalid),
+                ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
+                    state.structVersion, ce::streamline_runtime_policy::kDLSSGStateDynamicMFGMinVersion,
+                    state.bIsDynamicMFGSupported, streamline_hook_kSLBooleanInvalid),
+                state.structVersion,
                 (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
                 state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
