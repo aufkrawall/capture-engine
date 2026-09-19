@@ -19,14 +19,26 @@
  * already handles: it falls back to the cache.
  *
  * The same module reads `__NGX_DISABLE_UPDATER` from the environment ("OTA
- * disabled by environment. Using embedded snippet only"). That is the better of
- * the two mechanisms when CE can win the race, because NGX then never attempts
- * a launch at all: no process is created, no `Global\NGX_Updater_update_0`
- * contention, no per-feature retry. CE therefore publishes it from `DllMain`
- * using the mode the injector already put in shared memory, rather than waiting
- * for the hook thread's own config load. The CreateProcess refusal stays as the
- * backstop that cannot be too late, because it is decided at the moment of the
- * launch.
+ * disabled by environment. Using embedded snippet only"). When CE can win that
+ * race it is the cheaper outcome, because NGX then never attempts a launch at
+ * all. CE therefore publishes it from `DllMain` using the mode the injector
+ * already put in shared memory, rather than waiting for the hook thread's own
+ * config load.
+ *
+ * But CE often CANNOT win it, and the refusal - not the variable - is what does
+ * the work. Session 20260919_194818 measured it: `_nvngx.dll` was already
+ * mapped when CE's `DllMain` ran (it appears in that pass's IAT patch list, not
+ * in the late-load path), so its initialization, and whatever reads its
+ * environment, had happened before CE existed in the process. CE published the
+ * variable at 19:48:28.974 and NGX still attempted 15 launches from
+ * 19:48:29.270 - every one refused, zero processes created. Any title that
+ * pulls NGX in through a static import chain is in that position, and no
+ * injection speed changes it.
+ *
+ * So the two are not "primary and backstop". The refusal is the mechanism that
+ * always applies; the environment variable is the optimization that also stops
+ * the attempt, and it pays off for a title that loads NGX on demand after
+ * injection, and in launcher processes whose child inherits it.
  *
  * Everything here is pure policy so the unit tests can pin it without a
  * process, a driver, or a game.

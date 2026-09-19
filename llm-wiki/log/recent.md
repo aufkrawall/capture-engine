@@ -85,10 +85,36 @@ the single question the diagnostic was added for. Now `kFullyLoggedLaunches = 32
 observed burst with room for the extra retries a refusal can provoke. Picking a rate limit below a
 known burst size is the failure mode to remember here.
 
-**Still unvalidated: `ngx_ota=off` itself** - three runs, all `default` or `on`. The line to look for is
-`NGX OTA: ngx_ota=off - published __NGX_DISABLE_UPDATER (DllMain)` early in `hook_debug.log`, followed by **no**
-`refused the NGX updater launch` lines at all - refusals now mean the environment lost the race and the backstop
-took over, which is a weaker outcome than the previous "refusals are working" reading.
+**`ngx_ota=off` VALIDATED (`20260919_194818`, 0.1.6697): 15 attempts, 15 refused, zero updater
+processes created.** No `nvngx_update*.log` was written after 19:47, nothing was left running, the game
+ran normally, and `nvngx_dlss`/`dlssd`/`dlssg` all loaded from the configured `npi\sl` folder instead of
+the OTA store - which was the point of the setting.
+
+**And it inverted the model this entry was built on.** The prediction above was that a good `off` run
+shows the environment variable winning and therefore *no* refusal lines, with refusals meaning a
+degraded fallback. The opposite is true for this class of title:
+
+| Time | Event |
+|---|---|
+| 19:48:28.956 / .973 | `_nvngx.dll` at `00007FFC36330000` gets its `CreateProcessA`/`W` slots patched **in the DllMain pass** |
+| 19:48:28.974 | CE publishes `__NGX_DISABLE_UPDATER` |
+| 19:48:29.270 | first launch attempt, refused |
+
+`_nvngx.dll` appearing in the *DllMain* IAT pass rather than the late-load path means it was already
+mapped when CE arrived - so it had initialised, and read its environment, before CE existed in the
+process. **No injection speed fixes that**, exactly like the `slInit` case one layer up, and for the
+same structural reason (Alan Wake 2 statically imports `sl.interposer`). The environment variable is
+the optimization; the CreateProcess refusal is the mechanism. Refusal lines are the healthy signal,
+not a warning.
+
+The new threshold earned itself here too: 15 refusals, all logged, where the old `index < 8` would
+have shown 8 and hidden the rest.
+
+**Still unfixed, and unchanged:** `sl.common` again resolved to
+`C:\ProgramData\NVIDIA\NGX\models\sl_common_0\...\1B0_E658703.dll`, so every `sl.*` redirect was
+refused and the verdict still reads `slInit route installed=1, slInit seen through CE=0`. Refusing the
+updater stops *new* downloads; it does nothing about plugins already in the store. Launching the game
+through CE remains the only lever for that half.
 
 ### 2026-09-19 - Streamline regular development build instructions (eliminate verify/package overkill)
 

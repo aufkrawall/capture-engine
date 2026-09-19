@@ -111,22 +111,28 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   Session `20260918_162809` is the case: Alan Wake 2's Streamline resolved its `sl.common` core to
   `C:\ProgramData\NVIDIA\NGX\models\sl_common_0\versions\134656\files\1B0_E658703.dll`, so CE correctly refused all
   six `sl.*` redirects rather than build a version-mixed stack, and the user's `npi\sl` runtime never loaded.
-  - `off` acts through two independent mechanisms, and the order matters. **`__NGX_DISABLE_UPDATER=1` is the
-    primary one**: it makes the NGX core skip the launch entirely ("OTA disabled by environment. Using embedded
-    snippet only"), so no process is created, no `Global\NGX_Updater_update_0` contention arises and there is no
-    per-feature retry. `_nvngx.dll` reads it once, through `GetEnvironmentStringsW`, so it only works if CE wins
-    that race - which is why CE publishes it from `DllMain` using the mode the injector already put in shared
-    memory, rather than from the hook thread's config load (~550 ms later in `20260918_224737`). It is applied in
-    launcher processes too, where the game CE launches then inherits it before CE's DLL is in that process at all.
-  - Refusing the `nvngx_update.exe` launch is the **backstop**, for a core that read its environment before CE
-    arrived. It is decided at the moment of the launch, so it cannot be too late - but it only fires if the calling
-    module's `kernel32!CreateProcessA/W` import slots are CE's. Both `_nvngx.dll` and `nvngx.dll` import those two
-    by name, and both can map long after CE's DllMain and hook-thread IAT passes, so late-loaded modules get their
-    process-creation imports patched from the module-load notification as well
-    (`PatchProcessCreationIatForLateLoadedModule`). Unlike the loader half, that is not gated on a configured path
+  - `off` acts through two mechanisms. **Refusing the `nvngx_update.exe` launch is the one that always applies**,
+    because it is decided at the moment of the launch and therefore cannot be too late. **Hardware-validated in
+    session `20260919_194818`: 15 attempts, 15 refused, zero updater processes created**, and the configured
+    `npi\sl` NGX runtimes (`nvngx_dlss`/`dlssd`/`dlssg`) loaded instead of the OTA store's. It fires only if the
+    calling module's `kernel32!CreateProcessA/W` import slots are CE's. Both `_nvngx.dll` and `nvngx.dll` import
+    those two by name and can map long after CE's DllMain and hook-thread IAT passes, so late-loaded modules get
+    their process-creation imports patched from the module-load notification as well
+    (`PatchProcessCreationIatForLateLoadedModule`); unlike the loader half, that is not gated on a configured path
     override. The `CreateProcessW` decision is made on the caller's wide string: it used to go through a `MAX_PATH`
     narrow conversion, and `WideCharToMultiByte` writes nothing when the buffer is too small, so a long command
     line silently escaped.
+  - `__NGX_DISABLE_UPDATER=1` is the **optimization on top**: where CE wins the race, NGX skips the launch entirely
+    ("OTA disabled by environment. Using embedded snippet only") and no process, `Global\NGX_Updater_update_0`
+    contention or per-feature retry happens at all. `_nvngx.dll` reads it once via `GetEnvironmentStringsW`, so CE
+    publishes it from `DllMain` using the injector's already-published mode rather than from the hook thread's
+    config load (~550 ms later in `20260918_224737`), and in launcher processes too, where the launched game
+    inherits it before CE's DLL is in that process.
+    - **It does not win in a title that pulls NGX in through a static import chain, and cannot.** In
+      `20260919_194818` `_nvngx.dll` was already mapped when CE's `DllMain` ran - it appears in that pass's IAT
+      patch list, not the late-load path - so it had initialised, and read its environment, before CE existed in
+      the process. CE published the variable at 19:48:28.974 and NGX attempted its first launch at 19:48:29.270.
+      Refusal lines in the log are therefore **normal and expected**, not a sign the feature is degraded.
   - `off` also *attempts* to clear
     `eAllowOTA | eLoadDownloadedPlugins` from the game's own `slInit` preferences - the refusal only stops new
     downloads, so the preference strip is what would stop already-downloaded plugins loading - but **that half is

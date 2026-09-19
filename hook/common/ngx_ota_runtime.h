@@ -29,8 +29,14 @@ namespace ce::ngx_ota {
 //  - `__NGX_DISABLE_UPDATER` is written. This is the only mechanism that stops
 //    the NGX core from *attempting* a launch, and it has to be in place before
 //    the core reads its environment. Publishing it from the hook thread's
-//    config load was ~550 ms late in session 20260918_224737, which is why nine
-//    updaters had to be refused one by one rather than never being started.
+//    config load was ~550 ms late in session 20260918_224737.
+//
+//    DllMain is as early as CE can be, and for a title that pulls NGX in
+//    through a static import chain that is still not early enough: in session
+//    20260919_194818 `_nvngx.dll` was already mapped when this ran, and NGX
+//    attempted 15 launches anyway (all refused, none created). Treat this as
+//    the optimization, not the guarantee - the CreateProcess refusal is what
+//    always applies.
 //  - The mode is resolved into process state, so the very first CreateProcess
 //    call is answered without a lazy read on a hot path.
 //
