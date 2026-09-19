@@ -828,11 +828,21 @@ dlss_debug_overlay=default
 ;
 ;   default  Leave every OTA decision to the driver. Shipped behaviour.
 ;   off      Refuse the nvngx_update.exe launch (NVIDIA's runtime falls back to
-;            the files already in its cache, which it handles by design) and
-;            clear Streamline's own OTA preference bits so downloaded plugins
-;            are not loaded either.
+;            the files already in its cache, which it handles by design).
 ;   on       Force the opposite: never refuse the launch, and stand the DLL
 ;            overrides above down so the driver's own OTA files are what loads.
+;
+; What off does NOT reliably do: stop plugins the driver downloaded EARLIER from
+; being loaded. That needs Streamline's own OTA preference bits cleared at the
+; game's slInit call, and CaptureEngine injects after the process has started -
+; measured at roughly half a second, during which a game that initialises
+; Streamline in its startup path has already called slInit. Alan Wake 2 does.
+; CaptureEngine still installs that route and reports the outcome per run in
+; hook_debug.log ("slInit seen through CE=0" means the call happened before
+; CaptureEngine was in the process), but treat it as opportunistic.
+;
+; The launch refusal has the same boundary in miniature: it covers launches made
+; after CaptureEngine is injected, not any the game made before.
 ;
 ; Nothing is written to the registry, the driver's configuration files or the
 ; model store; all of it applies inside the game process only.

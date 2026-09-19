@@ -573,7 +573,8 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
             return true;
         }
         LogPublication("hook", published);
-        LogError("[Screenshot] Hook capture encoding failed; no partial output was published");
+        LogError("[Screenshot] Hook capture encoding failed%s",
+                 (!published.hdrPath.empty() || !published.sdrPath.empty()) ? "" : "; no partial output was published");
         return false;
     }
 
@@ -592,7 +593,8 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
     if (!TakeGdiScreenshot(screenshot) ||
         !SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
         LogPublication("GDI", published);
-        LogError("[Screenshot] GDI capture failed; no partial output was published");
+        LogError("[Screenshot] GDI capture failed%s",
+                 (!published.hdrPath.empty() || !published.sdrPath.empty()) ? "" : "; no partial output was published");
         return false;
     }
     LogPublication("GDI", published);

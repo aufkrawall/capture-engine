@@ -14,7 +14,14 @@
  * user's configured runtime never loaded and nothing failed loudly.
  *
  * Clearing those two bits in the Preferences the game passes to `slInit` is the
- * only point where that decision can still be influenced from outside the game.
+ * only point where that decision can still be influenced from outside the game -
+ * and for a title that initialises Streamline during its own startup, CE is not
+ * there yet when it happens. Session 20260918_230525: CE's DllMain at
+ * 23:05:31.388, this route installed at 23:05:31.549, and `sl.common` - which
+ * loads from inside slInit - never observed loading at all, only found by the
+ * already-loaded module scan. The route is kept because it costs nothing when it
+ * misses and a game that initialises Streamline on demand later would still be
+ * caught, but it must not be described as something ngx_ota=off delivers.
  *
  * Three guards make this safe rather than merely effective:
  *
@@ -60,6 +67,7 @@ namespace {
 using PFN_slInit2x = sl::Result (*)(const sl::Preferences&, uint64_t);
 
 std::atomic<void*> g_OriginalSlInit{nullptr};
+void* s_DynamicOriginalSlInit = nullptr;
 std::atomic<bool> g_Registered{false};
 std::atomic<uint32_t> g_AppliedCount{0};
 std::atomic<uint32_t> g_EntryCount{0};
@@ -80,6 +88,12 @@ sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion
     const uint32_t entry = g_EntryCount.fetch_add(1, std::memory_order_relaxed);
 
     auto original = reinterpret_cast<PFN_slInit2x>(g_OriginalSlInit.load(std::memory_order_acquire));
+    if (!original) {
+        if (void* dynamicOriginal = s_DynamicOriginalSlInit) {
+            g_OriginalSlInit.store(dynamicOriginal, std::memory_order_release);
+            original = reinterpret_cast<PFN_slInit2x>(dynamicOriginal);
+        }
+    }
     if (!original) {
         // No original means CE has nothing to forward to; failing the call would
         // take the game's Streamline down with it.
@@ -172,8 +186,9 @@ void InstallSlInitRouteIfConfigured() {
     if (patchedIat && originalFromIat) {
         g_OriginalSlInit.store(originalFromIat, std::memory_order_release);
     }
+    s_DynamicOriginalSlInit = g_OriginalSlInit.load(std::memory_order_acquire);
     IATHook::RegisterDynamicHookFiltered("slInit", reinterpret_cast<void*>(&Hooked_slInit),
-                                         reinterpret_cast<void**>(&g_OriginalSlInit),
+                                         &s_DynamicOriginalSlInit,
                                          IsStreamlineCoreDynamicHookModule);
 
     HookLogImportant(

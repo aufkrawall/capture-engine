@@ -124,6 +124,10 @@ inline bool UpsertLatencyChannel(LatencyChannelBlock& block, const std::string& 
 
     uint32_t slot = kLatencyChannelMaxEntries;
     for (uint32_t i = 0; i < block.entryCount && i < kLatencyChannelMaxEntries; ++i) {
+        // The writer always NUL-terminates; guard anyway so a corrupt block cannot run off the end.
+        if (block.entries[i].key[kLatencyChannelKeyCapacity - 1] != '\0') {
+            continue;
+        }
         if (key == block.entries[i].key) {
             slot = i;
             break;

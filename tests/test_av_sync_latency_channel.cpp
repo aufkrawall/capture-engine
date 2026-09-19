@@ -197,4 +197,11 @@ TEST(AvSyncLatencyChannelTest, UnterminatedEntryKeyIsSkipped) {
     ASSERT_TRUE(UpsertLatencyChannel(*block, RealisticKey(), 28.597));
     block->entries[0].key[kLatencyChannelKeyCapacity - 1] = 'x';
     EXPECT_FALSE(LookupLatencyChannel(*block, RealisticKey(), nullptr));
+
+    // Upserting must also safely skip the corrupted entry rather than comparing past the buffer.
+    ASSERT_TRUE(UpsertLatencyChannel(*block, RealisticKey(), 31.0));
+    EXPECT_EQ(block->entryCount, 2u);
+    double latencyMs = 0.0;
+    ASSERT_TRUE(LookupLatencyChannel(*block, RealisticKey(), &latencyMs));
+    EXPECT_DOUBLE_EQ(latencyMs, 31.0);
 }

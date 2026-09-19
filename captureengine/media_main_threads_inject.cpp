@@ -290,7 +290,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         // would skip the rest of the iteration, not just this frame.
                         dropFrame = true;
                     }
-                    qf.sourcePid = slot.sourcePid;
+                    qf.sourcePid = (slot.sourcePid != 0) ? slot.sourcePid : sessionSourcePid;
                     qf.width = media_main_g_pSharedMem->GetWidth();
                     qf.height = media_main_g_pSharedMem->GetHeight();
                     qf.format = media_main_g_pSharedMem->GetFormat();
