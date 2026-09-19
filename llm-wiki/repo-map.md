@@ -295,9 +295,11 @@ anchors that predate the split are approximate.
 - `hook/wrappers/inline_hook*.cpp` + `hook_patch_transaction.*` + `vtable_hook.cpp` +
   `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, callable-original
   publication, and exact-byte single/group thread-quiesced inline patching.
-- `hook/common/ngx_fg_preset_override.{h,cpp}` - `dlss_fg_preset`: the DLSS FG render
-  preset is a driver-settings (DRS) key, not an NGX parameter, so this wraps the
-  `NvAPI_DRS_GetSetting` pointer `nvngx_dlssg.dll` resolves.
+- `hook/common/ngx_drs_override{,_policy}.{h,cpp}` - `dlss_fg_preset`, `dlss_fg_mode`,
+  `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps`: all five are
+  driver-settings (DRS) keys, not NGX parameters, so this wraps the
+  `NvAPI_DRS_GetSetting` pointer `nvngx_dlssg.dll` and `sl.common.dll` resolve and
+  answers those reads process-locally. `_policy.h` is the pure, testable half.
 - `mediaengine/mediaengine_*.cpp` + `mediaengine_internal.h` - capture/CFR/audio
   pipeline; the audio loop and pull phases live in the `mediaengine_audio_loop_*`
   and `mediaengine_audio_pull*` units.

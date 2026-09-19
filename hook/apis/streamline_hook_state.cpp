@@ -542,8 +542,11 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
     bool anyActive = false;
     int combinedMultiplier = 0;
     size_t clearedActiveViewportCount = 0;
+    // Under `dlss_fg_mode=dynamic` there is no configured multiplier to prefer
+    // over the observed one: the runtime is the thing choosing the cadence.
+    const GraphicsConfig& activeConfig = GetActiveGraphicsConfig();
     const int configuredMultiplier =
-        NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
+        ResolveEffectiveDLSSFGFactor(activeConfig.parsed.dlssFGFactor, activeConfig.parsed.fgMode);
     const int publishedMultiplier =
         ce::streamline_runtime_policy::ResolvePublishedDLSSFGMultiplier(
             active, multiplier, configuredMultiplier, capabilityMax);

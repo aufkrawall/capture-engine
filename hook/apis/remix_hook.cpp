@@ -137,7 +137,9 @@ bool CaptureSetterThroughPublicInterface(HMODULE provider, RemixInitializeLibrar
 }
 
 uint32_t ConfiguredGeneratedFrames() {
-    return DLSSFGMultiplierToGeneratedFrames(GetActiveGraphicsConfig().parsed.dlssFGFactor);
+    const GraphicsConfig& config = GetActiveGraphicsConfig();
+    return DLSSFGMultiplierToGeneratedFrames(
+        ResolveEffectiveDLSSFGFactor(config.parsed.dlssFGFactor, config.parsed.fgMode));
 }
 
 bool IsRemixApiModule(const char* moduleBaseName, HMODULE module) {

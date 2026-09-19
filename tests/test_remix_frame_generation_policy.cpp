@@ -78,10 +78,10 @@ TEST(RemixFrameGenerationPolicyTest, RegistersBeforeTheGetProcAddressRouterIsArm
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
     const size_t registerHook = text.find("RemixHook::RegisterDynamicHooks();");
-    const size_t armPreset = text.find("ArmNgxFgPresetOverrideIfConfigured(\"config.ini\")");
+    const size_t armDrsOverrides = text.find("ArmNgxDrsOverridesIfConfigured(\"config.ini\")");
     ASSERT_NE(registerHook, std::string::npos);
-    ASSERT_NE(armPreset, std::string::npos);
-    EXPECT_LT(registerHook, armPreset);
+    ASSERT_NE(armDrsOverrides, std::string::npos);
+    EXPECT_LT(registerHook, armDrsOverrides);
 }
 
 TEST(RemixFrameGenerationPolicyTest, TracksLateModuleLoadAndUnloadWithoutAProcessNameRule) {

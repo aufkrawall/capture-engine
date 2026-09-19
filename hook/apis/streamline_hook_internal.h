@@ -34,6 +34,7 @@ struct ReflexSignalLogState;
 #include "../common/fg_session_state.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/hook_common.h"
+#include "../common/ngx_drs_override.h"
 #include "../common/reflex_limiter.h"
 #include "../common/streamline_runtime_policy.h"
 #include "../wrappers/iat_hook.h"

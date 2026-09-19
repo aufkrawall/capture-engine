@@ -286,25 +286,27 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
-      ArmNgxFgPresetOverrideIfConfigured(baseName);
+      ArmNgxDrsOverridesIfConfigured(baseName);
     }
-    // The DLSS-G snippet reads the frame generation render preset out of the
-    // driver settings through nvapi_QueryInterface, which it resolves with
-    // GetProcAddress after its own load completes. Patch that import here so the
-    // first resolution already reaches CE's dispatcher.
-    if (ce::ngx_fg_preset::IsFrameGenerationSnippetModulePath(moduleNameOrPath)) {
-      ArmNgxFgPresetOverrideIfConfigured(baseName);
-      if (ce::ngx_fg_preset::IsArmed()) {
+    // The DLSS frame generation runtimes read their driver settings through
+    // nvapi_QueryInterface, which they resolve with GetProcAddress after their
+    // own load completes. Patch that import here so the first resolution
+    // already reaches CE's dispatcher. `IsDlssDrsConsumerModuleLoaded` also
+    // recognizes a Streamline plugin the driver downloaded over the air, whose
+    // file name is content-addressed and says nothing.
+    if (ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(moduleNameOrPath, module)) {
+      ArmNgxDrsOverridesIfConfigured(baseName);
+      if (ce::ngx_drs::IsArmed()) {
         void *originalGetProcAddress = nullptr;
         const bool patched =
             IATHook::PatchIAT(module, "kernel32.dll", "GetProcAddress",
                               reinterpret_cast<void *>(&IATHook::DetourGetProcAddress),
                               &originalGetProcAddress);
-        static std::atomic<uint32_t> fgPresetPatchLogs{0};
-        const uint32_t logIndex = fgPresetPatchLogs.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<uint32_t> dlssDrsPatchLogs{0};
+        const uint32_t logIndex = dlssDrsPatchLogs.fetch_add(1, std::memory_order_relaxed);
         if (logIndex < 4 || (logIndex % 500) == 0 || !patched) {
           HookLogImportant(
-              "NGX FG preset: GetProcAddress import patch on %s %s (module=%p orig=%p)",
+              "NGX DRS: GetProcAddress import patch on %s %s (module=%p orig=%p)",
               baseName, patched ? "installed" : "FAILED", (void *)module,
               originalGetProcAddress);
         }
@@ -375,23 +377,29 @@ void ArmManualReflexQueryHookIfConfigured(const char *source) {
   }
 }
 
-void ArmNgxFgPresetOverrideIfConfigured(const char *source) {
-  // GetActiveGraphicsConfig() publishes the resolved preset to the override unit.
+void ArmNgxDrsOverridesIfConfigured(const char *source) {
+  // GetActiveGraphicsConfig() publishes the resolved values to the override unit.
   GetActiveGraphicsConfig();
-  const uint32_t preset = ce::ngx_fg_preset::GetConfiguredPreset();
-  if (preset == 0)
+  if (!ce::ngx_drs::IsArmed())
     return;
 
-  // nvngx_dlssg resolves NvAPI_DRS_GetSetting lazily and caches the pointer for
-  // the rest of the process, so the filtered nvapi_QueryInterface path has to
-  // exist before the first frame generation feature is created.
+  // The DLSS frame generation runtimes resolve NvAPI_DRS_GetSetting lazily and
+  // cache the pointer for the rest of the process, so the filtered
+  // nvapi_QueryInterface path has to exist before the first frame generation
+  // feature is created.
   g_ReflexLimiter.EnsureNvApiQueryInterfaceInterception();
 
   static std::atomic<bool> s_loggedArm{false};
   if (!s_loggedArm.exchange(true, std::memory_order_acq_rel)) {
+    const ce::ngx_drs::DlssDrsOverrides overrides = ce::ngx_drs::GetConfiguredOverrides();
     HookLogImportant(
-        "NGX FG preset: armed the DRS render-preset override for preset '%c' from %s",
-        ce::ngx_fg_preset::PresetIdToLetter(preset),
-        source && source[0] ? source : "current");
+        "NGX DRS: armed the DLSS driver-settings overrides from %s (preset='%c' mode=%s fixed=%ux "
+        "dynamicMax=%ux targetFps=%u)",
+        source && source[0] ? source : "current",
+        ce::ngx_drs::PresetIdToLetter(overrides.renderPreset),
+        DlssFGModeName(overrides.frameGenerationMode),
+        static_cast<unsigned>(overrides.fixedCountMultiplier),
+        static_cast<unsigned>(overrides.dynamicMaxMultiplier),
+        static_cast<unsigned>(overrides.dynamicTargetFps));
   }
 }

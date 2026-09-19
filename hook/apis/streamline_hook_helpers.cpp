@@ -56,6 +56,10 @@ const char* GetDLSSGModeName(uint32_t mode) {
             return "on";
         case 2:
             return "auto";
+        // sl::DLSSGMode::eDynamic. Reachable through the game's own options and
+        // through `dlss_fg_mode=dynamic`, so it must not read as "unknown".
+        case 3:
+            return "dynamic";
         default:
             return "unknown";
     }

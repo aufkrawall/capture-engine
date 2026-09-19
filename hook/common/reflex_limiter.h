@@ -31,7 +31,7 @@
 #include "fg_detection.h"
 #include "fps_limiter_policy.h"
 #include "hook_common.h"
-#include "ngx_fg_preset_override.h"
+#include "ngx_drs_override.h"
 #include "overlay_compat.h"
 #include "perf_logger.h"
 #include "reflex_defs.h"
@@ -552,12 +552,13 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t functio
     s_insideQueryInterface = false;
 
     // This detour is the process-wide nvapi_QueryInterface resolution point, so
-    // the DLSS FG render-preset override plugs in here rather than installing a
-    // second hook on the same export. It only claims the DRS getter resolved by
-    // nvngx_dlssg and only while `dlss_fg_preset` is configured.
-    if (void* fgPresetWrapper = ce::ngx_fg_preset::MaybeWrapQueryInterface(functionId, result,
-                                                                           __builtin_return_address(0))) {
-        return fgPresetWrapper;
+    // the DLSS driver-settings overrides plug in here rather than installing a
+    // second hook on the same export. They only claim the DRS getter resolved
+    // by a DLSS frame generation consumer, and only while at least one of
+    // `dlss_fg_preset` / `dlss_fg_mode` / the multi-frame keys is configured.
+    if (void* dlssDrsWrapper = ce::ngx_drs::MaybeWrapQueryInterface(functionId, result,
+                                                                    __builtin_return_address(0))) {
+        return dlssDrsWrapper;
     }
 
     if (functionId != NVAPI_ID_D3D_SetSleepMode && functionId != NVAPI_ID_D3D_Sleep) {

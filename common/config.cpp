@@ -154,6 +154,55 @@ int ParseDlssFGFactor(const std::string& val) {
     return 0;
 }
 
+// `dlss_fg_mode`: the forced-mode key NVIDIA Profile Inspector labels
+// "DLSS-FG - Forced Mode". `on` is accepted as a synonym for `fixed` because
+// that is what the runtime's own mode enum calls the value.
+uint8_t ParseDlssFGMode(const std::string& val) {
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
+        return kDlssFGModeDefault;
+    if (_stricmp(normalized.c_str(), "off") == 0)
+        return kDlssFGModeOff;
+    if (_stricmp(normalized.c_str(), "fixed") == 0 || _stricmp(normalized.c_str(), "on") == 0)
+        return kDlssFGModeFixed;
+    if (_stricmp(normalized.c_str(), "auto") == 0)
+        return kDlssFGModeAuto;
+    if (_stricmp(normalized.c_str(), "dynamic") == 0)
+        return kDlssFGModeDynamic;
+    return kDlssFGModeDefault;
+}
+
+// `dlss_fg_fixed_count` / `dlss_fg_dynamic_max`: 2x..6x, stored as the
+// multiplier. Both the bare number and the `Nx` spelling are accepted, the
+// same way dlss_fg_factor accepts both.
+uint8_t ParseDlssFGCount(const std::string& val) {
+    std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
+        return 0;
+    if (normalized.size() == 2 && (normalized[1] == 'x' || normalized[1] == 'X'))
+        normalized.resize(1);
+    if (normalized.size() != 1 || normalized[0] < '0' || normalized[0] > '9')
+        return 0;
+    return NormalizeDlssFGCount(static_cast<uint8_t>(normalized[0] - '0'));
+}
+
+// `dlss_fg_target_fps`: `max_refresh` asks the runtime to target the display's
+// maximum refresh rate, which is the driver key's own dedicated value rather
+// than a number CE would have to measure.
+uint16_t ParseDlssFGTargetFps(const std::string& val) {
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
+        return kDlssFGTargetFpsDefault;
+    if (_stricmp(normalized.c_str(), "max_refresh") == 0 || _stricmp(normalized.c_str(), "max") == 0 ||
+        _stricmp(normalized.c_str(), "max_refresh_rate") == 0 || _stricmp(normalized.c_str(), "auto") == 0)
+        return kDlssFGTargetFpsMaxRefresh;
+    if (normalized.size() > 4 || normalized.find_first_not_of("0123456789") != std::string::npos)
+        return kDlssFGTargetFpsDefault;
+    const unsigned long parsed = std::strtoul(normalized.c_str(), nullptr, 10);
+    return NormalizeDlssFGTargetFps(parsed <= kDlssFGTargetFpsMax ? static_cast<uint16_t>(parsed)
+                                                                 : kDlssFGTargetFpsDefault);
+}
+
 // Helper to create default config if missing
 static bool LoadDefaultConfigResource(std::string& out) {
     out.clear();

@@ -114,6 +114,11 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     graphics.dlssFGFactor = config.graphics.parsed.dlssFGFactor;
     graphics.dlssFGPreset = NormalizeDLSSFGPreset(config.graphics.parsed.fgPreset);
+    graphics.dlssFGMode = IsDlssFGMode(config.graphics.parsed.fgMode) ? config.graphics.parsed.fgMode
+                                                                      : kDlssFGModeDefault;
+    graphics.dlssFGFixedCount = NormalizeDlssFGCount(config.graphics.parsed.fgFixedCount);
+    graphics.dlssFGDynamicMax = NormalizeDlssFGCount(config.graphics.parsed.fgDynamicMax);
+    graphics.dlssFGTargetFps = NormalizeDlssFGTargetFps(config.graphics.parsed.fgTargetFps);
     strncpy(graphics.dlssSrDllPath, config.graphics.dlssSrDllPath.c_str(), sizeof(graphics.dlssSrDllPath) - 1);
     graphics.dlssSrDllPath[sizeof(graphics.dlssSrDllPath) - 1] = '\0';
     strncpy(graphics.dlssRrDllPath, config.graphics.dlssRrDllPath.c_str(), sizeof(graphics.dlssRrDllPath) - 1);
@@ -201,6 +206,10 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(graphics.dlssFGPreset) << 31) ^
         (static_cast<uint64_t>(graphics.ngxOtaMode) << 32) ^
         (static_cast<uint64_t>(graphics.ngxLogLevel) << 34) ^
+        (static_cast<uint64_t>(graphics.dlssFGMode) << 35) ^
+        (static_cast<uint64_t>(graphics.dlssFGFixedCount) << 38) ^
+        (static_cast<uint64_t>(graphics.dlssFGDynamicMax) << 41) ^
+        (static_cast<uint64_t>(graphics.dlssFGTargetFps) << 44) ^
         graphics.ue5CustomCVarOverrideMask;
 
     uint64_t completeSummaryHash = summaryHash;
@@ -217,6 +226,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s systemLatency=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
+            "fgMode=%s fgFixed=%u fgDynMax=%u fgTargetFps=%u "
             "runtimePaths=%d%d%d%d ngxOta=%u ngxLog=%u forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
             "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
@@ -238,6 +248,8 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.dlssAutoExposure,
             graphics.dlssSharpening, graphics.dlssSRPreset, graphics.dlssRRPreset,
             graphics.dlssFGPreset, graphics.dlssDebugOverlay,
+            DlssFGModeName(graphics.dlssFGMode), static_cast<unsigned>(graphics.dlssFGFixedCount),
+            static_cast<unsigned>(graphics.dlssFGDynamicMax), static_cast<unsigned>(graphics.dlssFGTargetFps),
             graphics.dlssSrDllPath[0] ? 1 : 0, graphics.dlssRrDllPath[0] ? 1 : 0,
             graphics.dlssFgDllPath[0] ? 1 : 0, graphics.streamlineDllPath[0] ? 1 : 0,
             static_cast<unsigned>(graphics.ngxOtaMode), static_cast<unsigned>(graphics.ngxLogLevel),

@@ -383,7 +383,9 @@ inline bool IsSafeString(const char* s) {
 }
 
 inline int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
-    return NormalizeDLSSFGFactor(cfg.parsed.dlssFGFactor);
+    // `dlss_fg_mode=dynamic` asks the runtime to vary the cadence, so CE's own
+    // fixed-factor forcing has to stand down - see ResolveEffectiveDLSSFGFactor.
+    return ResolveEffectiveDLSSFGFactor(cfg.parsed.dlssFGFactor, cfg.parsed.fgMode);
 }
 
 inline void LogOncePerParam(const char* param, const char* msg, ...) {

@@ -208,6 +208,45 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
 
 }
 
+namespace {
+
+// The DLSS-G driver-settings overrides are the one graphics group a user can
+// configure two ways at once, so the summary is unconditional rather than
+// debug-gated: it is the only place that says which channel actually won.
+void LogDlssFrameGenerationDriverOverrides(const AppConfig& config) {
+    const auto& parsed = config.graphics.parsed;
+    if (!HasDlssFGDriverOverride(parsed.fgMode, parsed.fgFixedCount, parsed.fgDynamicMax, parsed.fgTargetFps))
+        return;
+
+    char targetText[32];
+    if (parsed.fgTargetFps == kDlssFGTargetFpsMaxRefresh)
+        snprintf(targetText, sizeof(targetText), "max refresh");
+    else if (parsed.fgTargetFps == kDlssFGTargetFpsDefault)
+        snprintf(targetText, sizeof(targetText), "default");
+    else
+        snprintf(targetText, sizeof(targetText), "%u fps", static_cast<unsigned>(parsed.fgTargetFps));
+
+    LogInfo("Config: DLSS FG driver-settings override: mode=%s fixed=%ux dynamicMax=%ux targetRate=%s",
+            DlssFGModeName(parsed.fgMode), static_cast<unsigned>(parsed.fgFixedCount),
+            static_cast<unsigned>(parsed.fgDynamicMax), targetText);
+
+    if (parsed.fgMode == kDlssFGModeDynamic && NormalizeDLSSFGFactor(parsed.dlssFGFactor) > 0) {
+        LogInfo(
+            "Config: dlss_fg_mode=dynamic stands dlss_fg_factor=%dx down - the runtime picks the cadence per "
+            "frame and a forced factor would pin it",
+            parsed.dlssFGFactor);
+    }
+    if (parsed.fgFixedCount > 0 && NormalizeDLSSFGFactor(parsed.dlssFGFactor) > 0 &&
+        static_cast<int>(parsed.fgFixedCount) != NormalizeDLSSFGFactor(parsed.dlssFGFactor)) {
+        LogInfo(
+            "Config: dlss_fg_fixed_count=%ux and dlss_fg_factor=%dx disagree; they travel different channels "
+            "(driver settings vs NGX parameters) and the runtime sees both",
+            static_cast<unsigned>(parsed.fgFixedCount), parsed.dlssFGFactor);
+    }
+}
+
+}  // namespace
+
 void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     // Graphics Overrides
     config.graphics.vsyncMode = reader.GetStr("Graphics", "vsync_mode", "default");
@@ -301,6 +340,13 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         reader.GetStrCompat("DLSS", "dlss_fg_factor", "Graphics", "dlss_fg_factor", "default");
     config.graphics.dlssFgPreset =
         reader.GetStrCompat("DLSS", "dlss_fg_preset", "Graphics", "dlss_fg_preset", "default");
+    config.graphics.dlssFgMode = reader.GetStrCompat("DLSS", "dlss_fg_mode", "Graphics", "dlss_fg_mode", "default");
+    config.graphics.dlssFgFixedCount =
+        reader.GetStrCompat("DLSS", "dlss_fg_fixed_count", "Graphics", "dlss_fg_fixed_count", "default");
+    config.graphics.dlssFgDynamicMax =
+        reader.GetStrCompat("DLSS", "dlss_fg_dynamic_max", "Graphics", "dlss_fg_dynamic_max", "default");
+    config.graphics.dlssFgTargetFps =
+        reader.GetStrCompat("DLSS", "dlss_fg_target_fps", "Graphics", "dlss_fg_target_fps", "default");
     // DLL Overrides
     config.graphics.dlssSrDllPath = reader.GetStrCompat("DLSS", "dlss_sr_dll_path", "Graphics", "dlss_sr_dll_path", "");
     config.graphics.dlssRrDllPath = reader.GetStrCompat("DLSS", "dlss_rr_dll_path", "Graphics", "dlss_rr_dll_path", "");
@@ -336,6 +382,10 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     config.graphics.parsed.dlssFGFactor = ParseDlssFGFactor(config.graphics.dlssFgFactor);
     config.graphics.parsed.fgPreset = ParseDlssFGPreset(config.graphics.dlssFgPreset);
+    config.graphics.parsed.fgMode = ParseDlssFGMode(config.graphics.dlssFgMode);
+    config.graphics.parsed.fgFixedCount = ParseDlssFGCount(config.graphics.dlssFgFixedCount);
+    config.graphics.parsed.fgDynamicMax = ParseDlssFGCount(config.graphics.dlssFgDynamicMax);
+    config.graphics.parsed.fgTargetFps = ParseDlssFGTargetFps(config.graphics.dlssFgTargetFps);
 
     // Log parsed presets for debugging
     if (IsDebugLoggingEnabled(config.logLevel)) {
@@ -351,6 +401,8 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
                     config.graphics.parsed.fgPreset);
         }
     }
+
+    LogDlssFrameGenerationDriverOverrides(config);
 
 }
 

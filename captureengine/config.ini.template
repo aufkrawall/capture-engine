@@ -802,8 +802,41 @@ dlss_rr_preset_ultra_quality=default
 dlss_rr_preset=default
 ; Sharpening accepts default, off, or a value from 0 to 1.
 dlss_sharpening=default
-; Frame-generation multiplier: default, 2x, 3x, or 4x.
+; Frame-generation multiplier: default, 2x, 3x, or 4x. This travels the NGX /
+; Streamline parameter channel: CaptureEngine rewrites the multiplier the game
+; asks for on each evaluation. For the driver-level equivalent - the one NVIDIA
+; Profile Inspector writes, which also reaches 5x and 6x - use
+; dlss_fg_fixed_count below.
 dlss_fg_factor=default
+; DLSS Frame Generation driver settings. These are the four keys NVIDIA Profile
+; Inspector exposes as "DLSS-FG - Forced Mode", "DLSS-MFG - Fixed Frame
+; Generation Count", "DLSS-MFG - Dynamic Frame Generation Count" and
+; "DLSS-MFG - Target Dynamic Frame Rate". The DLSS frame generation runtime
+; reads them out of the NVIDIA driver settings itself; CaptureEngine answers
+; that read inside the game process only, so nothing is written to your driver
+; profiles and no other application is affected.
+;
+; Dynamic mode needs a recent driver and DLSS frame generation runtime (NVIDIA
+; documents driver 595.97 or newer for the full feature). On an older runtime
+; the keys are simply never read and nothing changes.
+;
+; dlss_fg_mode: default leaves the game's own choice alone.
+;   off     - frame generation is forced off
+;   fixed   - frame generation is forced on with a fixed cadence
+;   auto    - the runtime decides whether to generate frames
+;   dynamic - multi-frame generation varies its cadence to hold a target rate
+dlss_fg_mode=default
+; Fixed cadence used in fixed mode: default, or 2x to 6x.
+dlss_fg_fixed_count=default
+; Ceiling for dynamic mode ("up to Nx"): default, or 2x to 6x.
+dlss_fg_dynamic_max=default
+; Frame rate dynamic mode aims for: default, max_refresh (the display's maximum
+; refresh rate), or a number from 1 to 1000.
+dlss_fg_target_fps=default
+;
+; dlss_fg_mode=dynamic and dlss_fg_factor are mutually exclusive: the runtime
+; cannot both pick a cadence per frame and be told a fixed one on every
+; evaluation, so a configured dlss_fg_factor stands down and the log says so.
 ; Frame-generation render preset letter: default, or A-Z. NVIDIA ships A and B
 ; so far (A disables and B enables the runtime's UI recomposition); later letters
 ; are accepted here and take effect once a runtime defines them. Unlike the SR/RR
@@ -1082,6 +1115,9 @@ dx12_focus_analysis=false
 ;DLSS.dlss_preset_quality=K
 ;DLSS.dlss_fg_factor=3x
 ;DLSS.dlss_fg_preset=B
+;DLSS.dlss_fg_mode=dynamic
+;DLSS.dlss_fg_dynamic_max=6x
+;DLSS.dlss_fg_target_fps=max_refresh
 ;DLSS.dlss_debug_overlay=on
 ;UE5.force_ray_reconstruction=on
 ;UE5.ray_reconstruction_optimal_settings=full

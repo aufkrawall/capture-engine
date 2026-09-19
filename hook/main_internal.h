@@ -441,7 +441,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
 
 void ArmManualReflexQueryHookIfConfigured(const char *source);
 
-void ArmNgxFgPresetOverrideIfConfigured(const char *source);
+void ArmNgxDrsOverridesIfConfigured(const char *source);
 
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 

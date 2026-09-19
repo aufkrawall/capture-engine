@@ -94,7 +94,7 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
     }
     UE5::RefreshOverrides(activeGraphicsConfig);
     ArmManualReflexQueryHookIfConfigured("reconnected shared memory");
-    ArmNgxFgPresetOverrideIfConfigured("reconnected shared memory");
+    ArmNgxDrsOverridesIfConfigured("reconnected shared memory");
     ce::SyncWithLegacyGlobals();
     CheckAndInstallHooks();
   }
@@ -136,7 +136,7 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
   if (!launcherOnly) {
     g_GraphicsOverridesActive.store(false, std::memory_order_release);
     ce::dlss_indicator::Install(ce::dlss_indicator::Mode::kPassthrough);
-    ce::ngx_fg_preset::SetConfiguredPreset(0);
+    ce::ngx_drs::SetConfiguredOverrides(ce::ngx_drs::DlssDrsOverrides{});
     UE5::ShutdownOverrides();
     FFXHook::EnterDormant();
     CaptureManager::Get().SetCaptureEnabled(false);

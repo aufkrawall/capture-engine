@@ -10,6 +10,7 @@
 
 #include "../build_identity.h"
 #include "../display_timing_shared.h"
+#include "dlss_frame_generation_policy.h"
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -106,17 +107,24 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             runtime-override refusal publication. Both are appended, so an
 //             older peer would read neither field and a newer peer would read
 //             an older host's absent bytes as garbage past the mapping.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 59;
+// Version 60: SharedGraphicsConfig gained the four DLSS Frame Generation
+//             driver-settings override fields (`dlss_fg_mode`,
+//             `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`,
+//             `dlss_fg_target_fps`). They consume the struct's existing tail
+//             padding, so `sizeof` is unchanged - which is exactly why the
+//             version has to move: an older host leaves those bytes as
+//             whatever the mapping held rather than as a documented zero.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 60;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_59_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_60_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_59";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_60";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -127,25 +135,6 @@ static constexpr std::size_t UE5_CVAR_OVERRIDE_CAPACITY = 64;
 
 inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
     return backbufferCount >= 2 && backbufferCount <= 6;
-}
-
-inline int NormalizeDLSSFGFactor(int32_t dlssFGFactor) {
-    return (dlssFGFactor >= 2 && dlssFGFactor <= 4) ? dlssFGFactor : 0;
-}
-
-// Frame Generation render preset letters map to 1-based driver selection values
-// (A=1, B=2, ...). Anything outside A-Z means "leave the driver alone".
-inline uint32_t NormalizeDLSSFGPreset(uint32_t dlssFGPreset) {
-    return (dlssFGPreset >= 1 && dlssFGPreset <= 26) ? dlssFGPreset : 0u;
-}
-
-inline uint32_t DLSSFGMultiplierToGeneratedFrames(int32_t dlssFGFactor) {
-    const int normalized = NormalizeDLSSFGFactor(dlssFGFactor);
-    return normalized > 0 ? static_cast<uint32_t>(normalized - 1) : 0u;
-}
-
-inline int StreamlineGeneratedFramesToDLSSFGMultiplier(uint32_t generatedFrames) {
-    return (generatedFrames >= 1 && generatedFrames <= 3) ? static_cast<int>(generatedFrames + 1) : 0;
 }
 
 // Discovery structure - small shared memory to help hook find inject process.
@@ -610,6 +599,18 @@ struct SharedGraphicsConfig {
     // NGX's own diagnostic log level, routed into the CE session directory.
     // See kNgxLog* in ngx_policy_and_override_status.h.
     uint8_t ngxLogLevel;
+
+    // DLSS Frame Generation driver-settings overrides - the four keys NVIDIA
+    // Profile Inspector writes into a driver profile. CE never writes a
+    // profile: the hook answers the DLSS-G runtime's own read of them inside
+    // the game process. Encodings live in dlss_frame_generation_policy.h
+    // (kDlssFGMode*, NormalizeDlssFGCount, kDlssFGTargetFps*); zero always
+    // means "no override". These consume the struct's existing tail padding,
+    // which is why SHARED_MEMORY_VERSION had to move even though sizeof did not.
+    uint8_t dlssFGMode;         // kDlssFGMode* (default/off/fixed/auto/dynamic)
+    uint8_t dlssFGFixedCount;   // 0 = untouched, 2..6 = fixed cadence multiplier
+    uint8_t dlssFGDynamicMax;   // 0 = untouched, 2..6 = "up to Nx" in dynamic mode
+    uint16_t dlssFGTargetFps;   // 0, kDlssFGTargetFpsMaxRefresh, or 1..1000
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -693,11 +694,24 @@ static_assert(offsetof(SharedGraphicsConfig, ngxOtaMode) ==
               "the NGX policy bytes must remain appended to SharedGraphicsConfig");
 static_assert(offsetof(SharedGraphicsConfig, ngxLogLevel) == offsetof(SharedGraphicsConfig, ngxOtaMode) + 1,
               "the NGX log level must share the NGX policy byte pair");
-// 1744 + the two policy bytes, rounded back up to the struct's 8-byte
-// alignment. The six bytes of tail padding are where the next appended policy
-// byte goes without growing the mapping again.
+static_assert(offsetof(SharedGraphicsConfig, dlssFGMode) == offsetof(SharedGraphicsConfig, ngxLogLevel) + 1,
+              "the DLSS FG driver-settings bytes must follow the NGX policy byte pair");
+static_assert(offsetof(SharedGraphicsConfig, dlssFGFixedCount) == offsetof(SharedGraphicsConfig, dlssFGMode) + 1,
+              "the DLSS FG fixed cadence must follow the forced mode byte");
+static_assert(offsetof(SharedGraphicsConfig, dlssFGDynamicMax) == offsetof(SharedGraphicsConfig, dlssFGFixedCount) + 1,
+              "the DLSS FG dynamic maximum must follow the fixed cadence byte");
+// One alignment byte separates the three policy bytes from the 16-bit target
+// rate; spelling the offset out is what proves the four fields still fit the
+// tail padding rather than having grown the mapping.
+static_assert(offsetof(SharedGraphicsConfig, dlssFGTargetFps) == offsetof(SharedGraphicsConfig, dlssFGDynamicMax) + 2,
+              "the DLSS FG target frame rate must keep its natural 16-bit alignment");
+// 1744 + the two NGX policy bytes + the four DLSS FG driver-settings fields,
+// which is exactly the six bytes of tail padding the struct's 8-byte alignment
+// already reserved. The mapping size is unchanged.
 static_assert(sizeof(SharedGraphicsConfig) == 1752,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
+static_assert(offsetof(SharedGraphicsConfig, dlssFGTargetFps) + sizeof(uint16_t) == sizeof(SharedGraphicsConfig),
+              "the DLSS FG target frame rate must consume the last of the tail padding");
 
 enum CaptureRuntimeFlags : uint32_t {
     kCaptureRuntimeFlagVulkanOverlayActive = 1u << 0,

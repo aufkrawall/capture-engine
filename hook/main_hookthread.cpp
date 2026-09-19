@@ -123,7 +123,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // the process-wide GetProcAddress router, so that first lookup is covered.
     RemixHook::RegisterDynamicHooks();
     ArmManualReflexQueryHookIfConfigured("config.ini");
-    ArmNgxFgPresetOverrideIfConfigured("config.ini");
+    ArmNgxDrsOverridesIfConfigured("config.ini");
 
     // A late 1.x runtime may still be inside slInit while CE is arriving. Give
     // both generations the configured NGX SR/FG images before taking its imports
@@ -332,7 +332,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
             g_pSharedMem->GetSourcePid());
       }
       ArmManualReflexQueryHookIfConfigured("shared memory");
-      ArmNgxFgPresetOverrideIfConfigured("shared memory");
+      ArmNgxDrsOverridesIfConfigured("shared memory");
     }
 
     // Initialize HookContext and sync with legacy globals

@@ -9,7 +9,7 @@
 #include "../../common/shared_defs.h"
 #include "fps_limiter.h"
 #include "hook_context.h"
-#include "ngx_fg_preset_override.h"
+#include "ngx_drs_override.h"
 #include "performance_metrics.h"
 #include "system_metrics.h"
 
@@ -541,6 +541,10 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.parsed.dlssSharpening = shmGfx.dlssSharpening;
         mergedConfig.parsed.dlssFGFactor = shmGfx.dlssFGFactor;
         mergedConfig.parsed.fgPreset = NormalizeDLSSFGPreset(shmGfx.dlssFGPreset);
+        mergedConfig.parsed.fgMode = IsDlssFGMode(shmGfx.dlssFGMode) ? shmGfx.dlssFGMode : kDlssFGModeDefault;
+        mergedConfig.parsed.fgFixedCount = NormalizeDlssFGCount(shmGfx.dlssFGFixedCount);
+        mergedConfig.parsed.fgDynamicMax = NormalizeDlssFGCount(shmGfx.dlssFGDynamicMax);
+        mergedConfig.parsed.fgTargetFps = NormalizeDlssFGTargetFps(shmGfx.dlssFGTargetFps);
 
         if (shmGfx.dlssFGPreset > 0) {
             static uint32_t lastLoggedFGPresetSHM = 0;
@@ -667,6 +671,19 @@ GraphicsConfig GetActiveGraphicsConfig() {
         if (g_pLocalConfig->graphics.parsed.fgPreset > 0) {
             mergedConfig.parsed.fgPreset = NormalizeDLSSFGPreset(g_pLocalConfig->graphics.parsed.fgPreset);
         }
+        const auto& localParsed = g_pLocalConfig->graphics.parsed;
+        if (localParsed.fgMode != kDlssFGModeDefault && IsDlssFGMode(localParsed.fgMode)) {
+            mergedConfig.parsed.fgMode = localParsed.fgMode;
+        }
+        if (NormalizeDlssFGCount(localParsed.fgFixedCount) > 0) {
+            mergedConfig.parsed.fgFixedCount = NormalizeDlssFGCount(localParsed.fgFixedCount);
+        }
+        if (NormalizeDlssFGCount(localParsed.fgDynamicMax) > 0) {
+            mergedConfig.parsed.fgDynamicMax = NormalizeDlssFGCount(localParsed.fgDynamicMax);
+        }
+        if (NormalizeDlssFGTargetFps(localParsed.fgTargetFps) != kDlssFGTargetFpsDefault) {
+            mergedConfig.parsed.fgTargetFps = NormalizeDlssFGTargetFps(localParsed.fgTargetFps);
+        }
     }
     // Add other fields as needed
 
@@ -685,14 +702,22 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.parsed.rrPresetDLAA > 0 || mergedConfig.parsed.rrPresetQuality > 0 ||
         mergedConfig.parsed.srPreset > 0 || mergedConfig.parsed.rrPreset > 0 ||
         mergedConfig.parsed.dlssSharpening > -1.5f || mergedConfig.parsed.dlssFGFactor > 0 ||
-        mergedConfig.parsed.fgPreset > 0;
+        mergedConfig.parsed.fgPreset > 0 ||
+        HasDlssFGDriverOverride(mergedConfig.parsed.fgMode, mergedConfig.parsed.fgFixedCount,
+                                mergedConfig.parsed.fgDynamicMax, mergedConfig.parsed.fgTargetFps);
 
     g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);
 
-    // Keep the DLSS FG render-preset override tracking the resolved config,
+    // Keep the DLSS driver-settings answers tracking the resolved config,
     // including hot reloads. Arming the NvAPI resolution hook stays separate;
-    // this only publishes the value the wrapper answers with.
-    ce::ngx_fg_preset::SetConfiguredPreset(mergedConfig.parsed.fgPreset);
+    // this only publishes the values the wrapper answers with.
+    ce::ngx_drs::DlssDrsOverrides drsOverrides;
+    drsOverrides.renderPreset = mergedConfig.parsed.fgPreset;
+    drsOverrides.frameGenerationMode = mergedConfig.parsed.fgMode;
+    drsOverrides.fixedCountMultiplier = mergedConfig.parsed.fgFixedCount;
+    drsOverrides.dynamicMaxMultiplier = mergedConfig.parsed.fgDynamicMax;
+    drsOverrides.dynamicTargetFps = mergedConfig.parsed.fgTargetFps;
+    ce::ngx_drs::SetConfiguredOverrides(drsOverrides);
 
     return mergedConfig;
 }

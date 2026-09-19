@@ -87,6 +87,25 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                 static_cast<int>(state.bIsDynamicMFGSupported));
         }
     }
+    // `dlss_fg_mode=dynamic` is answered through the driver settings, so the
+    // only place CE can observe whether the runtime actually took it is here:
+    // sl.dlss_g refuses dynamic MFG on an unsupported system and says so only
+    // in NGX's own log. Report the refusal, and the acceptance, exactly once.
+    if (result == streamline_hook_kSlResultOk &&
+        ce::ngx_drs::GetConfiguredOverrides().frameGenerationMode == kDlssFGModeDynamic &&
+        state.bIsDynamicMFGSupported != streamline_hook_kSLBooleanInvalid) {
+        const bool supported = state.bIsDynamicMFGSupported != 0;
+        static std::atomic<int> s_lastReportedDynamicSupport{-1};
+        const int previous = s_lastReportedDynamicSupport.exchange(supported ? 1 : 0, std::memory_order_acq_rel);
+        if (previous != (supported ? 1 : 0)) {
+            HookLogImportant(
+                "Streamline Hook: dlss_fg_mode=dynamic - the runtime reports dynamic MFG %s (viewport=%u "
+                "optionsMode=%s capabilityMax=%u)",
+                supported ? "SUPPORTED" : "NOT supported, so the request is ignored", viewportKey,
+                streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "n/a", capabilityMax);
+        }
+    }
+
     const bool optionsRequestOn = streamline_hook_options != nullptr && streamline_hook_options->mode != 0;
     if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(result == streamline_hook_kSlResultOk,
                                                                               optionsRequestOn)) {
@@ -264,7 +283,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
 
     slDLSSGOptions adjustedOptions = CloneDLSSGOptions(streamline_hook_options);
     const uint32_t viewportKey = GetViewportKey(viewport);
-    const int configuredFactor = NormalizeDLSSFGFactor(GetActiveGraphicsConfig().parsed.dlssFGFactor);
+    const GraphicsConfig& activeConfig = GetActiveGraphicsConfig();
+    const int configuredFactor =
+        ResolveEffectiveDLSSFGFactor(activeConfig.parsed.dlssFGFactor, activeConfig.parsed.fgMode);
     const uint32_t originalGeneratedFrames = streamline_hook_options.numFramesToGenerate;
     const bool requestedEnabled = ce::streamline_runtime_policy::IsDLSSGModeEnabled(streamline_hook_options.mode);
     const bool requestedDisabled = !requestedEnabled;

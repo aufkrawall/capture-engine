@@ -65,6 +65,13 @@ Primary sources:
   `EvaluateFeature` parameter check so old x64 helpers cannot bypass the synchronization by using a captured original
   setter. CE never calls `Direct3DCreate9Ex` or initializes a second Remix renderer. Without a configured override,
   the namespaced NGX value remains authoritative for telemetry and limiter scaling, and Remix config calls pass through.
+- `dlss_fg_mode=default|off|fixed|auto|dynamic`, `dlss_fg_fixed_count=default|2x..6x`,
+  `dlss_fg_dynamic_max=default|2x..6x` and `dlss_fg_target_fps=default|max_refresh|1..1000` are the NVIDIA Profile
+  Inspector frame generation keys. Like `dlss_fg_preset` they travel the driver-settings channel, not the NGX
+  parameter channel - see "DLSS Frame Generation driver settings" below - and CE writes no driver profile. They ride
+  in the four `SharedGraphicsConfig` fields that consume the struct's existing tail padding (ABI 60; `sizeof` is
+  unchanged, which is exactly why the version had to move). `dynamic` stands a configured `dlss_fg_factor` down,
+  because the parameter channel would otherwise pin the cadence the runtime is meant to vary.
 - `dlss_debug_overlay=default|on|off` controls NVIDIA's on-screen DLSS indicator. The NGX runtimes decide by reading
   `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore\ShowDlssIndicator` (`0x400` = shown); the value is absent on a stock
   driver install, so `on` must synthesize it. CE answers the probe in-process and never writes the registry - see
@@ -565,8 +572,41 @@ Reflex handoff rules.
   the DLSS indicator, NGX interception points, the DLL override loader, the FG render preset, and the NVIDIA
   LOD-spread fix.
 
-## DLSS Frame Generation render preset
+## DLSS Frame Generation driver settings (preset, forced mode, multi-frame)
 
+- **One unit, five keys.** `hook/common/ngx_drs_override_policy.h` (pure policy, unit-tested) and
+  `hook/common/ngx_drs_override.{h,cpp}` (state, detour, arming) answer five DLSS driver-settings reads
+  process-locally: the FG render preset plus the four keys NVIDIA Profile Inspector exposes as
+  "DLSS-FG - Forced Mode" (`0x10308298`), "DLSS-MFG - Fixed Frame Generation Count" (`0x104D6667`),
+  "DLSS-MFG - Dynamic Frame Generation Count" (`0x10562D0F`) and "DLSS-MFG - Target Dynamic Frame Rate"
+  (`0x10CF4125`). Ids and value ranges match NVIDIA's own `NvApiDriverSettings.h` (`NGX_DLSSG_*_ID`,
+  `EValues_NGX_DLSSG_*`).
+- **Two different readers, one NvAPI entry point.** `nvngx_dlssg.dll` reads the render preset itself. The four
+  multi-frame keys are read by **`sl.dlss_g.dll`** (`readDRSKeys` -> `readSingleDRSKey`), which does not call NvAPI:
+  it goes through the DRS context **`sl.common.dll`** owns, and that module resolves `0x73BF8338` through
+  `nvapi_QueryInterface` and calls `NvAPI_DRS_GetSetting(session, profile, settingId, setting)` with
+  `NVDRS_SETTING_VER1`, reading `currentValue.u32Value`. It tries the application profile first and falls back to the
+  base profile, so one key can produce two calls and both reach CE's answer. Measured on Streamline 2.14 from the
+  NGX model store.
+- **The caller filter cannot be a file name alone.** An OTA-downloaded Streamline plugin is mapped from the NGX model
+  store under a content-addressed name such as `160_E658703.dll`. Every Streamline plugin, `sl.common` included,
+  exports `slGetPluginFunction` and nothing else but `DllMain`, so that export is what identifies it;
+  `IsDlssDrsConsumerModuleLoaded` accepts either the known names or that export.
+- **Value encodings, cross-checked against sl.dlss_g's own acceptance checks.** Forced mode is
+  1 off / 2 fixed(on) / 3 auto / 4 dynamic, mapping onto `sl::DLSSGMode` 0..3; anything else is logged as
+  "Ignoring invalid DLSSG mode %d from DRS". Both cadence keys carry **generated frames**, so 1..5 means 2x..6x, and
+  0 means untouched. The target rate is `0x01000000` for "max refresh" (sl turns it into `0.0f`, its auto), else a
+  plain frame rate in 1..0x00FFFFFF; above that and non-zero it is logged as "Ignoring invalid dynamic target frame
+  rate". CE normalizes to those ranges, so it can never emit a value the runtime would reject.
+- **`dlss_fg_mode=dynamic` and `dlss_fg_factor` are mutually exclusive.** `ResolveEffectiveDLSSFGFactor`
+  (`common/shared_defs_detail/dlss_frame_generation_policy.h`) returns 0 for the factor under dynamic mode, and every
+  consumer of the configured factor goes through it: the NGX parameter writes, the Streamline options override, the
+  published overlay multiplier, and the Remix scheduler. Without it the runtime would be told "vary the cadence" by
+  the driver and "it is exactly N" on every evaluation, and the outcome would depend on call ordering.
+- **Whether dynamic MFG was actually accepted is observable.** `slDLSSGState::bIsDynamicMFGSupported` is the
+  runtime's own verdict; sl.dlss_g otherwise logs its refusal ("Dynamic MFG is not supported on this system,
+  ignoring request from DRS") only into NGX's log. `Hooked_slDLSSGGetState` reports each transition of that flag once
+  while `dlss_fg_mode=dynamic` is configured.
 - The FG preset is **not** an NGX parameter. `nvngx_dlssg.dll` exposes no `*.Hint.Render.Preset.*` name at all; the
   create-time parameters it parses are `DLSSG.UserInterfaceRecompositionEnabled`, `MenuDetectionEnabled`,
   `AsyncCreateEnabled`, the linearized-depth trio and `IndicatorLevel`. The preset comes from the driver settings
@@ -583,31 +623,38 @@ Reflex handoff rules.
   is simply inert.
 - `NvAPI_DRS_GetSetting` is function id **0x73BF8338**, resolved by the snippet through `nvapi_QueryInterface`
   (nvapi64.dll exports only `nvapi_QueryInterface` and `nvapi_Direct_GetMethod`) and cached for the process on first
-  use. CE therefore wraps that one resolution: `hook/common/ngx_fg_preset_override.cpp` returns a detour that forwards
-  every call and substitutes only setting `0x10E41DF1`.
+  use. CE therefore wraps that one resolution: `hook/common/ngx_drs_override.cpp` returns a detour that forwards
+  every call and substitutes only the configured keys. A key with nothing configured passes through even while
+  another one is armed, which matters because both readers pull several keys from the same loop.
 - Invariant: nvapi64.dll's code bytes are never patched. The interception is CE's existing filtered
   `nvapi_QueryInterface` GetProcAddress/IAT path (`ReflexLimiter::EnsureNvApiQueryInterfaceInterception`), for the same
   reason the Reflex limiter refuses to patch NvAPI prologues - DLSS FG integrations validate them during Reflex setup.
 - Invariant: nothing is written to the machine's driver profiles. The answer is process-local, so other applications
   and later sessions are unaffected.
-- `nvngx_dlssg` is classified as a Streamline/FG module, and those callers are deliberately bypassed in
-  `DetourGetProcAddress`. `ShouldAllowNgxFrameGenerationPresetDynamicHook` is the single narrow exception: only that
-  snippet, only `nvapi_QueryInterface`, and only while a preset is configured. `ShouldReturnWrapperToCaller` still
-  refuses to hand Reflex wrappers to FG modules, so the snippet's view of NvAPI changes for the DRS getter alone.
+- `nvngx_dlssg` and the `sl.*` modules are classified as Streamline/FG modules, and those callers are deliberately
+  bypassed in `DetourGetProcAddress`. `ShouldAllowNgxFrameGenerationPresetDynamicHook` is the single narrow
+  exception: only a DLSS driver-settings consumer, only `nvapi_QueryInterface`, and only while something is
+  configured. `ShouldReturnWrapperToCaller` still refuses to hand Reflex wrappers to FG modules, so their view of
+  NvAPI changes for the DRS getter alone.
 - The substituted `NVDRS_SETTING` must look like an explicitly set current-profile DWORD: `settingLocation = 0`
   (`NVDRS_CURRENT_PROFILE_LOCATION`) and `isCurrentPredefined = 0`, because `util::drsReadKey` rejects anything else.
   Only the fields the snippet reads are written; `version` and `settingName` are left alone, and an unrecognized
-  struct version is forwarded untouched. `ngx_fg_preset_override.h` mirrors the NvAPI ABI with `static_assert`s on
+  struct version is forwarded untouched. `ngx_drs_override_policy.h` mirrors the NvAPI ABI with `static_assert`s on
   `sizeof` (0x3020), `settingId`/`settingType`/`settingLocation`/`currentValue` offsets, and `NVDRS_SETTING_VER1`
   (0x13020) so a layout mistake fails the build instead of corrupting the caller's stack buffer.
-- `dlss_fg_preset=default` arms nothing: no dynamic hook registration, no IAT patch, no bypass exception, and the
-  wrapper is never returned. Arming happens from config load, shared-memory connect, and `nvapi64.dll` /
-  `nvngx_dlssg.dll` load; the snippet's own `kernel32!GetProcAddress` import is patched at its module-load
+- All five keys at their default arm nothing: no dynamic hook registration, no IAT patch, no bypass exception, and
+  the wrapper is never returned. Arming happens from config load, shared-memory connect, and `nvapi64.dll` / any
+  DRS-consumer module load; each consumer's own `kernel32!GetProcAddress` import is patched at its module-load
   notification because the process-wide `PatchIATAllModules` snapshots predate it.
-- Diagnostics: `NGX FG preset: armed ...`, `... GetProcAddress import patch on nvngx_dlssg.dll installed`,
-  `... wrapping NvAPI_DRS_GetSetting for ...`, then rate-limited `... answered NvAPI_DRS_GetSetting(0x10E41DF1) with
-  preset 'X'`. Without the wrapping line the resolution never reached CE. The snippet's own `INFO: Preset ID: %d` in
-  `nvngx` logging is the independent confirmation.
+- Diagnostics: `NGX DRS: configured ...`, `NGX DRS: armed ...`, `NGX DRS: GetProcAddress import patch on <module>
+  installed`, `NGX DRS: wrapping NvAPI_DRS_GetSetting for ...`, then rate-limited `NGX DRS: answered
+  NvAPI_DRS_GetSetting(0x..., <key name>) with <value>`. Without the wrapping line the resolution never reached CE.
+  The readers' own NGX logging (`INFO: Preset ID: %d`, `Read DRS key %d = 0x%x from app profile`) is the independent
+  confirmation.
+- **Version floor is per key.** The preset needs a DLSS-G runtime of 310.6+. The multi-frame keys need a Streamline
+  DLSS-G plugin that reads them (2.14 does) and, for dynamic mode's full behaviour, NVIDIA documents driver 595.97 or
+  newer. On anything older the keys are simply never read and nothing changes - the same outcome Profile Inspector
+  produces.
 
 ## NVIDIA LOD-spread quality fix (`nv_lod_spread_fix`)
 

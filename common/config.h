@@ -284,6 +284,14 @@ struct GraphicsConfig {
     std::string dlssFgFactor;  // "default", "2x", "3x", "4x"
     std::string dlssFgPreset;  // "default", "A"..."Z" (NVIDIA ships A and B so far)
 
+    // DLSS Frame Generation driver-settings overrides, the NVIDIA Profile
+    // Inspector equivalents. Delivered by answering the DLSS-G runtime's own
+    // driver-settings read inside the game process; no driver profile is written.
+    std::string dlssFgMode;         // "default", "off", "fixed", "auto", "dynamic"
+    std::string dlssFgFixedCount;   // "default", "2x".."6x"
+    std::string dlssFgDynamicMax;   // "default", "2x".."6x" (the dynamic ceiling)
+    std::string dlssFgTargetFps;    // "default", "max_refresh", or 1..1000
+
     // Internal parsed versions for efficiency
     struct {
         uint32_t presetDLAA = 0;
@@ -306,6 +314,13 @@ struct GraphicsConfig {
         float dlssSharpening = -2.0f;  // -2.0 = default, -1.0 = off, else value
         int dlssFGFactor = 0;          // 0 = default, 2/3/4 = Frame Generation multiplier override
         uint32_t fgPreset = 0;         // 0 = default, 1-26 = A-Z Frame Generation render preset
+
+        // Driver-settings channel. See dlss_frame_generation_policy.h for the
+        // encodings; 0 always means "no override configured".
+        uint8_t fgMode = 0;          // kDlssFGMode*
+        uint8_t fgFixedCount = 0;    // 0, or 2..6 multiplier
+        uint8_t fgDynamicMax = 0;    // 0, or 2..6 multiplier
+        uint16_t fgTargetFps = 0;    // 0, kDlssFGTargetFpsMaxRefresh, or 1..1000
 
     } parsed;
 
@@ -761,4 +776,7 @@ float ParseDlssSharpening(const std::string& val);
 uint8_t ParseNgxOtaMode(const std::string& val);
 uint8_t ParseNgxLogLevel(const std::string& val);
 int ParseDlssFGFactor(const std::string& val);
+uint8_t ParseDlssFGMode(const std::string& val);
+uint8_t ParseDlssFGCount(const std::string& val);
+uint16_t ParseDlssFGTargetFps(const std::string& val);
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"

@@ -21,7 +21,7 @@
 #include "../apis/lod_helper.h"
 #include "../common/module_enumeration.h"
 #include "../common/module_pin.h"
-#include "../common/ngx_fg_preset_override.h"
+#include "../common/ngx_drs_override.h"
 #include "../common/overlay_compat.h"
 #include "../common/sampler_override_utils.h"
 #include "hook_common.h"
@@ -592,10 +592,10 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                         ce::overlay_compat::IsStreamlineFrameGenerationModulePath(moduleName);
                     const bool targetIsFFXFrameGenerationModule =
                         ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleName);
-                    const bool allowNgxFgPresetResolution = ShouldAllowNgxFrameGenerationPresetDynamicHook(
-                        ce::ngx_fg_preset::IsArmed(),
-                        ce::ngx_fg_preset::IsFrameGenerationSnippetModulePath(callerPath), lpProcName);
-                    if (!allowNgxFgPresetResolution &&
+                    const bool allowDlssDrsResolution = ShouldAllowNgxFrameGenerationPresetDynamicHook(
+                        ce::ngx_drs::IsArmed(),
+                        ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(callerPath, callerMod), lpProcName);
+                    if (!allowDlssDrsResolution &&
                         ShouldBypassDynamicHookForCaller(
                             callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureHookModule,
                             callerIsWrapperModule, callerIsStreamlineFrameGenerationModule,

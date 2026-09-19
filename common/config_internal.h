@@ -66,6 +66,10 @@ uint8_t ParseNgxLogLevel(const std::string& val);
 
 int ParseDlssFGFactor(const std::string& val);
 
+uint8_t ParseDlssFGMode(const std::string& val);
+uint8_t ParseDlssFGCount(const std::string& val);
+uint16_t ParseDlssFGTargetFps(const std::string& val);
+
 void CreateDefaultConfig(const std::string& path);
 
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName);

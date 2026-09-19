@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-09-19 - NVIDIA Profile Inspector dynamic MFG, implemented over the same DRS channel
+
+Added `dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and `dlss_fg_target_fps`: the four DLSS frame
+generation keys NVIDIA Profile Inspector writes into a driver profile, answered process-locally instead.
+
+- **Where the ids and encodings came from.** NVIDIA Profile Inspector's `Native/NVAPI/NvApiDriverSettings.h`
+  (`NGX_DLSSG_MODE_ID 0x10308298`, `NGX_DLSSG_MULTI_FRAME_COUNT_ID 0x104D6667`,
+  `NGX_DLSSG_DYNAMIC_MULTI_FRAME_COUNT_MAX_ID 0x10562D0F`, `NGX_DLSSG_DYNAMIC_TARGET_FRAME_RATE_ID 0x10CF4125`) plus
+  its `CustomSettingNames.xml` value lists, cross-checked by disassembling this machine's Streamline 2.14
+  `sl.dlss_g.dll` and `sl.common.dll` from the NGX model store.
+- **The reader is NOT nvngx_dlssg.** `sl.dlss_g!readDRSKeys` reads all four through `readSingleDRSKey`, which uses the
+  DRS context `sl.common` owns; `sl.common` is the module that resolves `NvAPI_DRS_GetSetting` (0x73BF8338) through
+  `nvapi_QueryInterface` and performs the call with `NVDRS_SETTING_VER1`, reading `currentValue.u32Value`, app
+  profile first and base profile as fallback. The existing `dlss_fg_preset` caller filter only knew `nvngx_dlssg`, so
+  it had to be widened - and widened by *export*, not by name, because an OTA-downloaded Streamline plugin is mapped
+  under a content-addressed file name (`160_E658703.dll`); `slGetPluginFunction` is what identifies it.
+- **Two DRS ids that are read but deliberately not claimed:** `0x00A879CF` is `VSYNCMODE` (sl.dlss_g uses it for its
+  RSYNC decisions) and `0x10C7D835` gates the whole DLSS-G DRS override. CE answers only its five keys and forwards
+  everything else untouched, including while another key is armed, because both readers pull several keys per loop.
+- **Mutual exclusion is a real requirement, not tidiness.** `dlss_fg_factor` travels the NGX/Streamline parameter
+  channel and pins `numFramesToGenerate` on every evaluation. Under `dlss_fg_mode=dynamic` that directly contradicts
+  the driver-level request, so `ResolveEffectiveDLSSFGFactor` stands the factor down and every consumer (NGX params,
+  Streamline options, published multiplier, Remix scheduler) goes through it.
+- `hook/common/ngx_fg_preset_override.{h,cpp}` became `ngx_drs_override{,_policy}.{h,cpp}`; the policy half is pure
+  and carries the NVDRS_SETTING ABI mirror. Shared ABI 59 -> 60: four fields into the existing tail padding, so
+  `sizeof(SharedGraphicsConfig)` is unchanged at 1752 - which is precisely why the version had to move.
+- **Unvalidated on hardware.** Built and unit-tested only. This machine's DLSS-G is 310.2.1, which predates both the
+  preset key and the multi-frame keys, so nothing here has been observed answering a real read. What to look for:
+  `NGX DRS: wrapping NvAPI_DRS_GetSetting for ...` (the resolution reached CE at all), then
+  `NGX DRS: answered NvAPI_DRS_GetSetting(...)`, and the runtime's own
+  `Read DRS key %d = 0x%x from app profile` / `Dynamic MFG is supported` in the NGX log.
+
 ### 2026-09-19 - Streamline Reflex/PCL retry quiescence thrashing and 2.5s frametime spike fix
 
 Diagnosed regular 65-110 ms frame time spikes occurring every 2.50 seconds (~348 frames at ~138 FPS) in Talos

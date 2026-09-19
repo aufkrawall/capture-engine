@@ -202,3 +202,129 @@ TEST_F(ConfigOverrideTest, ProfileResolvesTheCompleteProcessLocalDlssRuntimeSet)
     EXPECT_EQ(config.graphics.parsed.fgPreset, 2u);
     EXPECT_EQ(config.graphics.dlssDebugOverlay, "on");
 }
+
+TEST_F(ConfigOverrideTest, DlssFrameGenerationDriverSettingsParseTheProfileInspectorVocabulary) {
+    WriteConfig(
+        "[DLSS]\n"
+        "dlss_fg_mode=dynamic\n"
+        "dlss_fg_fixed_count=4x\n"
+        "dlss_fg_dynamic_max=6x\n"
+        "dlss_fg_target_fps=max_refresh\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "any.exe");
+
+    EXPECT_EQ(config.graphics.parsed.fgMode, kDlssFGModeDynamic);
+    EXPECT_EQ(config.graphics.parsed.fgFixedCount, 4u);
+    EXPECT_EQ(config.graphics.parsed.fgDynamicMax, 6u);
+    EXPECT_EQ(config.graphics.parsed.fgTargetFps, kDlssFGTargetFpsMaxRefresh);
+}
+
+TEST_F(ConfigOverrideTest, DlssFrameGenerationDriverSettingsDefaultToNoOverride) {
+    WriteConfig("[DLSS]\ndlss_fg_preset=default\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "any.exe");
+
+    EXPECT_EQ(config.graphics.dlssFgMode, "default");
+    EXPECT_EQ(config.graphics.parsed.fgMode, kDlssFGModeDefault);
+    EXPECT_EQ(config.graphics.parsed.fgFixedCount, 0u);
+    EXPECT_EQ(config.graphics.parsed.fgDynamicMax, 0u);
+    EXPECT_EQ(config.graphics.parsed.fgTargetFps, kDlssFGTargetFpsDefault);
+    EXPECT_FALSE(HasDlssFGDriverOverride(config.graphics.parsed.fgMode, config.graphics.parsed.fgFixedCount,
+                                         config.graphics.parsed.fgDynamicMax, config.graphics.parsed.fgTargetFps));
+}
+
+TEST_F(ConfigOverrideTest, DlssFrameGenerationModeAcceptsEveryDocumentedDriverValue) {
+    const std::pair<const char*, uint8_t> cases[] = {
+        {"off", kDlssFGModeOff},   {"fixed", kDlssFGModeFixed},     {"on", kDlssFGModeFixed},
+        {"auto", kDlssFGModeAuto}, {"dynamic", kDlssFGModeDynamic}, {"DYNAMIC", kDlssFGModeDynamic},
+        // A typo must never silently force a frame generation mode the user
+        // did not ask for, in either direction.
+        {"turbo", kDlssFGModeDefault},
+        {"", kDlssFGModeDefault},
+    };
+    for (const auto& [text, expected] : cases) {
+        WriteConfig(std::string("[DLSS]\ndlss_fg_mode=") + text + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "any.exe");
+        EXPECT_EQ(config.graphics.parsed.fgMode, expected) << "dlss_fg_mode=" << text;
+    }
+}
+
+TEST_F(ConfigOverrideTest, DlssFrameGenerationCadenceRejectsValuesTheRuntimeWouldNotAccept) {
+    // Profile Inspector offers 2x..6x; 1x is not a cadence and 7x does not exist.
+    const std::pair<const char*, uint8_t> cases[] = {
+        {"2x", 2}, {"2", 2}, {"6x", 6}, {"6", 6}, {"1x", 0}, {"7x", 0}, {"0", 0}, {"4xx", 0}, {"four", 0},
+    };
+    for (const auto& [text, expected] : cases) {
+        WriteConfig(std::string("[DLSS]\ndlss_fg_fixed_count=") + text + "\ndlss_fg_dynamic_max=" + text + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "any.exe");
+        EXPECT_EQ(config.graphics.parsed.fgFixedCount, expected) << "dlss_fg_fixed_count=" << text;
+        EXPECT_EQ(config.graphics.parsed.fgDynamicMax, expected) << "dlss_fg_dynamic_max=" << text;
+    }
+}
+
+TEST_F(ConfigOverrideTest, DlssFrameGenerationTargetFrameRateBoundsAndSentinels) {
+    const std::pair<const char*, uint16_t> cases[] = {
+        {"max_refresh", kDlssFGTargetFpsMaxRefresh},
+        {"max", kDlssFGTargetFpsMaxRefresh},
+        {"auto", kDlssFGTargetFpsMaxRefresh},
+        {"60", 60},
+        {"1", 1},
+        {"1000", 1000},
+        {"1001", kDlssFGTargetFpsDefault},
+        {"0", kDlssFGTargetFpsDefault},
+        {"-60", kDlssFGTargetFpsDefault},
+        {"60fps", kDlssFGTargetFpsDefault},
+        {"99999", kDlssFGTargetFpsDefault},
+    };
+    for (const auto& [text, expected] : cases) {
+        WriteConfig(std::string("[DLSS]\ndlss_fg_target_fps=") + text + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "any.exe");
+        EXPECT_EQ(config.graphics.parsed.fgTargetFps, expected) << "dlss_fg_target_fps=" << text;
+    }
+}
+
+TEST_F(ConfigOverrideTest, PerAppDlssFrameGenerationDriverSettingsOverride) {
+    WriteConfig(
+        "[DLSS]\n"
+        "dlss_fg_mode=fixed\n"
+        "dlss_fg_fixed_count=2x\n"
+        "\n"
+        "[Profile.MFG]\n"
+        "process=game.exe\n"
+        "DLSS.dlss_fg_mode=dynamic\n"
+        "DLSS.dlss_fg_dynamic_max=6x\n"
+        "DLSS.dlss_fg_target_fps=240\n");
+
+    AppConfig matched;
+    LoadConfig(tempConfigFile, matched, "game.exe");
+    EXPECT_EQ(matched.graphics.parsed.fgMode, kDlssFGModeDynamic);
+    EXPECT_EQ(matched.graphics.parsed.fgDynamicMax, 6u);
+    EXPECT_EQ(matched.graphics.parsed.fgTargetFps, 240u);
+
+    AppConfig unmatched;
+    LoadConfig(tempConfigFile, unmatched, "other.exe");
+    EXPECT_EQ(unmatched.graphics.parsed.fgMode, kDlssFGModeFixed);
+    EXPECT_EQ(unmatched.graphics.parsed.fgFixedCount, 2u);
+    EXPECT_EQ(unmatched.graphics.parsed.fgTargetFps, kDlssFGTargetFpsDefault);
+}
+
+TEST_F(ConfigOverrideTest, DynamicFrameGenerationModeStandsTheConfiguredFixedFactorDown) {
+    WriteConfig(
+        "[DLSS]\n"
+        "dlss_fg_factor=3x\n"
+        "dlss_fg_mode=dynamic\n"
+        "dlss_fg_dynamic_max=6x\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "any.exe");
+
+    // The configured value is preserved verbatim - the standdown is a resolution
+    // rule, not a parse-time rewrite, so turning dynamic mode off restores it.
+    EXPECT_EQ(config.graphics.parsed.dlssFGFactor, 3);
+    EXPECT_EQ(ResolveEffectiveDLSSFGFactor(config.graphics.parsed.dlssFGFactor, config.graphics.parsed.fgMode), 0);
+}
