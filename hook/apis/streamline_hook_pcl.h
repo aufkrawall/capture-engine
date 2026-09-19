@@ -4,6 +4,7 @@
 
 bool MaybeHookPCLSetMarker(void*& function, bool fallbackToReturnedWrapper);
 bool IsPCLSetMarkerHookReady();
+bool IsPCLSetMarkerHookComplete();
 void LogPCLFeatureLookupOutcome(void* originalTarget, void* returnedTarget, bool hookReady);
 void LogPCLProactiveFeatureHookGap(void* target);
 bool InvalidatePCLFeatureHookForModule(const void* moduleBase, size_t moduleSizeBytes,

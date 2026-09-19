@@ -163,7 +163,7 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
     // The HookThread's Init scan pins the queried modules; the runtime-activity retry path must
     // not (it can run under the loader lock where LoadLibrary is forbidden).
     EXPECT_NE(hook.find("ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true)"), std::string::npos);
-    EXPECT_NE(install.find("const bool foundModule = ScanLoadedStreamlineModules();"), std::string::npos);
+    EXPECT_NE(resolve.find("foundModule = ScanLoadedStreamlineModules();"), std::string::npos);
 
     // The query guard pins EVERY loaded sl.* module (not only the feature plugin and the
     // interposer), fails closed while a teardown is in flight, and rejects the query when the
@@ -523,5 +523,137 @@ TEST(StreamlineRuntimePolicyTest, DLSSGHealthWarnsAtStreakThenRepeatsSparsely) {
     EXPECT_TRUE(ShouldWarnDLSSGActiveButNotInterpolating(8, 8, 0));
 }
 
+TEST(StreamlineRuntimePolicyTest, ShouldAttemptInlineHookOnTargetBailsAfterFailureLimit) {
+    using ce::streamline_runtime_policy::kMaxInlineHookAttemptsPerTarget;
+    using ce::streamline_runtime_policy::ShouldAttemptInlineHookOnTarget;
+
+    void* target1 = reinterpret_cast<void*>(0x12340000);
+    void* target2 = reinterpret_cast<void*>(0x56780000);
+
+    // Null target is rejected immediately.
+    EXPECT_FALSE(ShouldAttemptInlineHookOnTarget(nullptr, nullptr, 0));
+    EXPECT_FALSE(ShouldAttemptInlineHookOnTarget(nullptr, target1, 1));
+
+    // Fresh target with no previous failures is allowed.
+    EXPECT_TRUE(ShouldAttemptInlineHookOnTarget(target1, nullptr, 0));
+    EXPECT_TRUE(ShouldAttemptInlineHookOnTarget(target1, target2, 5));
+
+    // Same target below the failure limit is allowed.
+    EXPECT_TRUE(ShouldAttemptInlineHookOnTarget(target1, target1, 0));
+    EXPECT_TRUE(ShouldAttemptInlineHookOnTarget(target1, target1, 1));
+
+    // Same target at or above the failure limit is blocked to prevent quiescence thrashing.
+    EXPECT_FALSE(ShouldAttemptInlineHookOnTarget(target1, target1, kMaxInlineHookAttemptsPerTarget));
+    EXPECT_FALSE(ShouldAttemptInlineHookOnTarget(target1, target1, kMaxInlineHookAttemptsPerTarget + 1));
+}
+
+TEST(StreamlineRuntimePolicyTest, ReflexFeatureResolutionCompletionEvaluatesHookAndFailureStates) {
+    using ce::streamline_runtime_policy::kMaxInlineHookAttemptsPerTarget;
+    using ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit;
+    using ce::streamline_runtime_policy::IsReflexFeatureResolutionComplete;
+
+    // Nothing hooked, no failures -> not complete.
+    EXPECT_FALSE(IsReflexFeatureResolutionComplete(false, false, false, 0, 0, 0, 0, 0, 0));
+
+    // All hooked -> complete.
+    EXPECT_TRUE(IsReflexFeatureResolutionComplete(true, true, true, 0, 0, 0, 0, 0, 0));
+
+    // Sleep and setOptions hooked, setConstants unavailable -> complete.
+    EXPECT_TRUE(IsReflexFeatureResolutionComplete(true, true, false, 0, 0, 0, 0, 0,
+                                                   kReflexFeatureQueryUnavailableLimit));
+
+    // Sleep failed max attempts, setOptions failed max attempts, setConstants unavailable -> complete.
+    EXPECT_TRUE(IsReflexFeatureResolutionComplete(false, false, false,
+                                                   kMaxInlineHookAttemptsPerTarget,
+                                                   kMaxInlineHookAttemptsPerTarget, 0, 0, 0,
+                                                   kReflexFeatureQueryUnavailableLimit));
+
+    // One function still pending (sleep not hooked, below failure limit) -> not complete.
+    EXPECT_FALSE(IsReflexFeatureResolutionComplete(false, true, true, 1, 0, 0, 0, 0, 0));
+}
+
+TEST(StreamlineRuntimePolicyTest, PclFeatureResolutionCompletionEvaluatesHookAndFailureStates) {
+    using ce::streamline_runtime_policy::kMaxInlineHookAttemptsPerTarget;
+    using ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit;
+    using ce::streamline_runtime_policy::IsPclFeatureResolutionComplete;
+
+    // PCL module not loaded -> considered complete.
+    EXPECT_TRUE(IsPclFeatureResolutionComplete(false, false, 0, 0));
+
+    // PCL module loaded, not hooked, no failures -> not complete.
+    EXPECT_FALSE(IsPclFeatureResolutionComplete(true, false, 0, 0));
+
+    // Hooked -> complete.
+    EXPECT_TRUE(IsPclFeatureResolutionComplete(true, true, 0, 0));
+
+    // Failed inline hook attempts reached limit -> complete.
+    EXPECT_TRUE(IsPclFeatureResolutionComplete(true, false, kMaxInlineHookAttemptsPerTarget, 0));
+
+    // Unavailable queries reached limit -> complete.
+    EXPECT_TRUE(IsPclFeatureResolutionComplete(true, false, 0, kReflexFeatureQueryUnavailableLimit));
+
+    // Below limit -> not complete.
+    EXPECT_FALSE(IsPclFeatureResolutionComplete(true, false, 1, 1));
+}
+
+TEST(StreamlineRuntimePolicyTest, ShouldRetryRuntimeReflexResolutionBoundsAttemptsAndCooldown) {
+    using ce::streamline_runtime_policy::kMaxRuntimeReflexRetryAttempts;
+    using ce::streamline_runtime_policy::ShouldRetryRuntimeReflexResolution;
+
+    constexpr uint64_t kCooldownMs = 2500;
+    const uint64_t lastMs = 10000;
+
+    // If both reflex and PCL are complete -> no retry needed.
+    EXPECT_FALSE(ShouldRetryRuntimeReflexResolution(true, true, 0, 20000, lastMs, kCooldownMs));
+
+    // If max retry attempts reached -> stop retrying permanently.
+    EXPECT_FALSE(ShouldRetryRuntimeReflexResolution(false, false, kMaxRuntimeReflexRetryAttempts, 20000, lastMs,
+                                                    kCooldownMs));
+    EXPECT_FALSE(ShouldRetryRuntimeReflexResolution(false, true, kMaxRuntimeReflexRetryAttempts + 1, 20000, lastMs,
+                                                    kCooldownMs));
+
+    // Cooldown not elapsed -> no retry.
+    EXPECT_FALSE(ShouldRetryRuntimeReflexResolution(false, true, 0, lastMs + 500, lastMs, kCooldownMs));
+    EXPECT_FALSE(ShouldRetryRuntimeReflexResolution(false, true, 0, lastMs + 2499, lastMs, kCooldownMs));
+
+    // Cooldown elapsed and below attempt limit -> retry allowed.
+    EXPECT_TRUE(ShouldRetryRuntimeReflexResolution(false, true, 0, lastMs + 2500, lastMs, kCooldownMs));
+    EXPECT_TRUE(ShouldRetryRuntimeReflexResolution(true, false, 2, lastMs + 3000, lastMs, kCooldownMs));
+    EXPECT_TRUE(ShouldRetryRuntimeReflexResolution(false, false, kMaxRuntimeReflexRetryAttempts - 1,
+                                                   lastMs + 5000, lastMs, kCooldownMs));
+
+    // First attempt (lastMs == 0) -> immediately allowed.
+    EXPECT_TRUE(ShouldRetryRuntimeReflexResolution(false, false, 0, 1000, 0, kCooldownMs));
+}
+
+TEST(StreamlineRuntimePolicyTest, RuntimeReflexRetryEnforcesBoundedAttemptsAndQuiescenceGuardrails) {
+    namespace fs = std::filesystem;
+    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    ASSERT_TRUE(fs::exists(resolveSource));
+    ASSERT_TRUE(fs::exists(installSource));
+
+    const std::string resolve = ce::test_source::ReadLogicalSource(resolveSource);
+    const std::string install = ce::test_source::ReadLogicalSource(installSource);
+    ASSERT_FALSE(resolve.empty());
+    ASSERT_FALSE(install.empty());
+
+    // RetryResolveReflexFeatureHooksForRuntimeActivity checks ShouldRetryRuntimeReflexResolution.
+    EXPECT_NE(resolve.find("ShouldRetryRuntimeReflexResolution"), std::string::npos);
+
+    // If sl.reflex.dll is already loaded, avoids redundant module snapshot scan.
+    EXPECT_NE(resolve.find("const bool reflexModuleLoaded = GetModuleHandleA(\"sl.reflex.dll\") != nullptr;"),
+              std::string::npos);
+
+    // InstallInlineHookOnce passes failure tracking atomics for all feature hooks.
+    EXPECT_NE(resolve.find("&streamline_hook_g_DLSSGSetOptionsFailedTarget"), std::string::npos);
+    EXPECT_NE(resolve.find("&streamline_hook_g_DLSSGGetStateFailedTarget"), std::string::npos);
+    EXPECT_NE(resolve.find("&streamline_hook_g_ReflexSleepFailedTarget"), std::string::npos);
+    EXPECT_NE(resolve.find("&streamline_hook_g_ReflexSetOptionsFailedTarget"), std::string::npos);
+    EXPECT_NE(resolve.find("&streamline_hook_g_ReflexSetConstantsFailedTarget"), std::string::npos);
+
+    // InstallHooksForModule records moduleBit unconditionally for inspected modules.
+    EXPECT_NE(install.find("streamline_hook_g_InstalledModuleMask.fetch_or(moduleBit"), std::string::npos);
+}
 
 }  // namespace

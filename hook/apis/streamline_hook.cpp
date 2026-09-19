@@ -167,6 +167,27 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
         }
     }
 
+    struct FailedSlot {
+        std::atomic<void*>* target;
+        std::atomic<uint32_t>* attempts;
+    };
+    FailedSlot failedSlots[] = {
+        {&streamline_hook_g_DLSSGSetOptionsFailedTarget, &streamline_hook_g_DLSSGSetOptionsFailedAttempts},
+        {&streamline_hook_g_DLSSGGetStateFailedTarget, &streamline_hook_g_DLSSGGetStateFailedAttempts},
+        {&streamline_hook_g_ReflexSleepFailedTarget, &streamline_hook_g_ReflexSleepFailedAttempts},
+        {&streamline_hook_g_ReflexSetOptionsFailedTarget, &streamline_hook_g_ReflexSetOptionsFailedAttempts},
+        {&streamline_hook_g_ReflexSetConstantsFailedTarget, &streamline_hook_g_ReflexSetConstantsFailedAttempts},
+        {&streamline_hook_g_PCLSetMarkerFailedTarget, &streamline_hook_g_PCLSetMarkerFailedAttempts},
+    };
+    for (auto& slot : failedSlots) {
+        void* target = slot.target->load(std::memory_order_acquire);
+        if (ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(target, nullptr, moduleBase,
+                                                                                         moduleSizeBytes)) {
+            slot.target->store(nullptr, std::memory_order_release);
+            slot.attempts->store(0, std::memory_order_release);
+        }
+    }
+
     const uint32_t moduleBit = GetModuleMaskBit(moduleBaseName);
     if (moduleBit != 0) {
         streamline_hook_g_InstalledModuleMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
@@ -175,6 +196,7 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
 
     if (invalidatedSlots > 0 || moduleBit != 0) {
         streamline_hook_g_LastUpscalerEvaluation.store(0xFFFFFFFFu, std::memory_order_release);
+        streamline_hook_g_RuntimeReflexRetryAttempts.store(0, std::memory_order_release);
         HookLogImportant(
             "Streamline Hook: Module %s unloaded (base=%p size=0x%zX) — invalidated %d stale hook slot(s); the next "
             "load of this name re-installs hooks for the fresh instance",
@@ -192,6 +214,7 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
     // A fresh sl.* instance proves the previous teardown completed; re-arm feature resolution.
     streamline_hook_g_StreamlineTeardownInFlight.store(false, std::memory_order_release);
     streamline_hook_g_NoModulesLogged.store(false, std::memory_order_release);
+    streamline_hook_g_RuntimeReflexRetryAttempts.store(0, std::memory_order_release);
     const bool inspectedModule = InstallHooksForModule(module, moduleNameOrPath);
     bool resolvedDLSSG = false;
     bool resolvedReflex = false;

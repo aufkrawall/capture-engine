@@ -169,7 +169,9 @@ bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function,  bool fallbackToR
             streamline_hook_g_DLSSGSetOptionsTarget.load(std::memory_order_acquire) != streamline_hook_function) {
             InstallInlineHookOnce(reinterpret_cast<void*>(streamline_hook_function), reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                                   streamline_hook_g_Original_slDLSSGSetOptions, streamline_hook_g_DLSSGSetOptionsHooked, streamline_hook_g_DLSSGSetOptionsTarget,
-                                  "slDLSSGSetOptions");
+                                  "slDLSSGSetOptions",
+                                  &streamline_hook_g_DLSSGSetOptionsFailedTarget,
+                                  &streamline_hook_g_DLSSGSetOptionsFailedAttempts);
             if (!streamline_hook_g_DLSSGSetOptionsHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     streamline_hook_function, "slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
@@ -216,7 +218,9 @@ bool MaybeHookDLSSGGetState(void*& streamline_hook_function,  bool fallbackToRet
             streamline_hook_g_DLSSGGetStateTarget.load(std::memory_order_acquire) != streamline_hook_function) {
             InstallInlineHookOnce(reinterpret_cast<void*>(streamline_hook_function), reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                                   streamline_hook_g_Original_slDLSSGGetState, streamline_hook_g_DLSSGGetStateHooked, streamline_hook_g_DLSSGGetStateTarget,
-                                  "slDLSSGGetState");
+                                  "slDLSSGGetState",
+                                  &streamline_hook_g_DLSSGGetStateFailedTarget,
+                                  &streamline_hook_g_DLSSGGetStateFailedAttempts);
             if (!streamline_hook_g_DLSSGGetStateHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     streamline_hook_function, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
@@ -262,7 +266,9 @@ bool MaybeHookReflexSleep(void*& streamline_hook_function,  bool fallbackToRetur
         if (!streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ||
             streamline_hook_g_ReflexSleepTarget.load(std::memory_order_acquire) != streamline_hook_function) {
             InstallInlineHookOnce(reinterpret_cast<void*>(streamline_hook_function), reinterpret_cast<void*>(Hooked_slReflexSleep),
-                                  streamline_hook_g_Original_slReflexSleep, streamline_hook_g_ReflexSleepHooked, streamline_hook_g_ReflexSleepTarget, "slReflexSleep");
+                                  streamline_hook_g_Original_slReflexSleep, streamline_hook_g_ReflexSleepHooked, streamline_hook_g_ReflexSleepTarget, "slReflexSleep",
+                                  &streamline_hook_g_ReflexSleepFailedTarget,
+                                  &streamline_hook_g_ReflexSleepFailedAttempts);
             if (!streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     streamline_hook_function, "slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
@@ -306,7 +312,9 @@ bool MaybeHookReflexSetOptions(void*& streamline_hook_function,  bool fallbackTo
             streamline_hook_g_ReflexSetOptionsTarget.load(std::memory_order_acquire) != streamline_hook_function) {
             InstallInlineHookOnce(reinterpret_cast<void*>(streamline_hook_function), reinterpret_cast<void*>(Hooked_slReflexSetOptions),
                                   streamline_hook_g_Original_slReflexSetOptions, streamline_hook_g_ReflexSetOptionsHooked, streamline_hook_g_ReflexSetOptionsTarget,
-                                  "slReflexSetOptions");
+                                  "slReflexSetOptions",
+                                  &streamline_hook_g_ReflexSetOptionsFailedTarget,
+                                  &streamline_hook_g_ReflexSetOptionsFailedAttempts);
             if (!streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     streamline_hook_function, "slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
@@ -350,7 +358,9 @@ bool MaybeHookReflexSetConstants(void*& streamline_hook_function,  bool fallback
             streamline_hook_g_ReflexSetConstantsTarget.load(std::memory_order_acquire) != streamline_hook_function) {
             InstallInlineHookOnce(reinterpret_cast<void*>(streamline_hook_function),
                                   reinterpret_cast<void*>(Hooked_slReflexSetConstants), streamline_hook_g_Original_slReflexSetConstants,
-                                  streamline_hook_g_ReflexSetConstantsHooked, streamline_hook_g_ReflexSetConstantsTarget, "slReflexSetConstants");
+                                  streamline_hook_g_ReflexSetConstantsHooked, streamline_hook_g_ReflexSetConstantsTarget, "slReflexSetConstants",
+                                  &streamline_hook_g_ReflexSetConstantsFailedTarget,
+                                  &streamline_hook_g_ReflexSetConstantsFailedAttempts);
             if (!streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     streamline_hook_function, "slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
@@ -482,7 +492,9 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
     void* setOptionsFunction = nullptr;
     void* setConstantsFunction = nullptr;
 
-    if (!streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire)) {
+    if (!streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) &&
+        streamline_hook_g_ReflexSleepUnavailableQueries.load(std::memory_order_acquire) <
+            ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit) {
         queriedSleep = true;
         const uint64_t queryGenerationBefore =
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
@@ -491,15 +503,20 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
         if (sleepResult == streamline_hook_kSlResultOk && sleepFunction && !teardownObservedDuringQuery &&
             DoesAddressBelongToLoadedModule(sleepFunction, nullptr, nullptr, 0, nullptr)) {
+            streamline_hook_g_ReflexSleepUnavailableQueries.store(0, std::memory_order_release);
             const bool hooked = MaybeHookReflexSleep(sleepFunction, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire)) {
                 LogProactiveFeatureHookGapOnce(streamline_hook_g_ReflexSleepProactiveFallbackLogged, "slReflexSleep", sleepFunction);
             }
+        } else {
+            streamline_hook_g_ReflexSleepUnavailableQueries.fetch_add(1, std::memory_order_acq_rel);
         }
     }
 
-    if (!streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
+    if (!streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) &&
+        streamline_hook_g_ReflexSetOptionsUnavailableQueries.load(std::memory_order_acquire) <
+            ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit) {
         queriedSetOptions = true;
         const uint64_t queryGenerationBefore =
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
@@ -508,18 +525,21 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
         if (setOptionsResult == streamline_hook_kSlResultOk && setOptionsFunction && !teardownObservedDuringQuery &&
             DoesAddressBelongToLoadedModule(setOptionsFunction, nullptr, nullptr, 0, nullptr)) {
+            streamline_hook_g_ReflexSetOptionsUnavailableQueries.store(0, std::memory_order_release);
             const bool hooked = MaybeHookReflexSetOptions(setOptionsFunction, false);
             hookedAnything |= hooked;
             if (!hooked && !streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire)) {
                 LogProactiveFeatureHookGapOnce(streamline_hook_g_ReflexSetOptionsProactiveFallbackLogged, "slReflexSetOptions",
                                                setOptionsFunction);
             }
+        } else {
+            streamline_hook_g_ReflexSetOptionsUnavailableQueries.fetch_add(1, std::memory_order_acq_rel);
         }
     }
 
     if (!streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) &&
         streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire) <
-            kReflexSetConstantsUnavailableQueryLimit) {
+            ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit) {
         queriedSetConstants = true;
         const uint64_t queryGenerationBefore =
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
@@ -576,6 +596,10 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
 bool TryResolvePCLFeatureHook(bool proactiveScan) {
     if (IsPCLSetMarkerHookReady())
         return true;
+    if (streamline_hook_g_PCLUnavailableQueries.load(std::memory_order_acquire) >=
+        ce::streamline_runtime_policy::kReflexFeatureQueryUnavailableLimit) {
+        return false;
+    }
 
     auto originalGetFeatureFunction = GetCallableOriginalGetFeatureFunction();
     if (!originalGetFeatureFunction ||
@@ -602,9 +626,11 @@ bool TryResolvePCLFeatureHook(bool proactiveScan) {
         streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) != queryGenerationBefore;
     if (result != streamline_hook_kSlResultOk || !markerFunction || teardownObservedDuringQuery ||
         !DoesAddressBelongToLoadedModule(markerFunction, nullptr, nullptr, 0, nullptr)) {
+        streamline_hook_g_PCLUnavailableQueries.fetch_add(1, std::memory_order_acq_rel);
         return false;
     }
 
+    streamline_hook_g_PCLUnavailableQueries.store(0, std::memory_order_release);
     const bool hooked = MaybeHookPCLSetMarker(markerFunction, false);
     if (!hooked && !IsPCLSetMarkerHookReady())
         LogPCLProactiveFeatureHookGap(markerFunction);
@@ -632,5 +658,72 @@ uint32_t QueryCapabilityMax(const slViewportHandle& viewport,  const slDLSSGOpti
     const uint32_t viewportKey = GetViewportKey(viewport);
     CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
     return state.numFramesToGenerateMax;
+}
 
+bool AreReflexFeatureHooksComplete() {
+    return ce::streamline_runtime_policy::IsReflexFeatureResolutionComplete(
+        streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSleepFailedAttempts.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetOptionsFailedAttempts.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetConstantsFailedAttempts.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSleepUnavailableQueries.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetOptionsUnavailableQueries.load(std::memory_order_acquire),
+        streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire));
+}
+
+void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source) {
+    const bool reflexComplete = AreReflexFeatureHooksComplete();
+    const bool pclComplete = !GetModuleHandleA("sl.pcl.dll") || IsPCLSetMarkerHookComplete();
+    const uint64_t nowMs = GetTickCount64();
+    const uint64_t previousMs = streamline_hook_g_ReflexFeatureHookRetryLastMs.load(std::memory_order_acquire);
+    const uint32_t currentAttempts = streamline_hook_g_RuntimeReflexRetryAttempts.load(std::memory_order_acquire);
+
+    if (!ce::streamline_runtime_policy::ShouldRetryRuntimeReflexResolution(
+            reflexComplete, pclComplete, currentAttempts, nowMs, previousMs)) {
+        return;
+    }
+
+    ULONGLONG expectedMs = previousMs;
+    if (!streamline_hook_g_ReflexFeatureHookRetryLastMs.compare_exchange_strong(
+            expectedMs, nowMs, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        return;
+    }
+
+    const uint32_t attemptIndex =
+        streamline_hook_g_RuntimeReflexRetryAttempts.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    const bool reflexModuleLoaded = GetModuleHandleA("sl.reflex.dll") != nullptr;
+    bool foundModule = false;
+    bool resolved = false;
+    bool resolvedPCL = false;
+
+    if (!reflexModuleLoaded) {
+        foundModule = ScanLoadedStreamlineModules();
+        resolved = streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ||
+                   streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ||
+                   streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire);
+        resolvedPCL = IsPCLSetMarkerHookReady();
+    } else {
+        resolved = TryResolveReflexFeatureHooks();
+        resolvedPCL = TryResolvePCLFeatureHook();
+    }
+
+    static std::atomic<int> s_lateReflexRetryLogCount{0};
+    const int logCount = s_lateReflexRetryLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (resolved || resolvedPCL || logCount < 10 || (logCount % 24) == 0) {
+        HookLogImportant(
+            "Streamline Hook: Late Reflex feature hook retry during DLSSG runtime activity "
+            "(source=%s attempt=%u/%u foundModule=%d resolved=%d pclResolved=%d sleepHooked=%d setOptionsHooked=%d "
+            "setConstantsHooked=%d pclSetMarkerHooked=%d "
+            "manualLimiter=%d targetIntervalUs=%u)",
+            source ? source : "unknown", attemptIndex, ce::streamline_runtime_policy::kMaxRuntimeReflexRetryAttempts,
+            foundModule ? 1 : 0, resolved ? 1 : 0, resolvedPCL ? 1 : 0,
+            streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
+            IsPCLSetMarkerHookReady() ? 1 : 0,
+            g_ReflexLimiter.IsManualLimiterConfiguredOrActive() ? 1 : 0, g_ReflexLimiter.GetTargetIntervalUs());
+    }
 }

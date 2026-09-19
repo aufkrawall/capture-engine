@@ -1,79 +1,45 @@
 #pragma once
 
 struct SLReflexConstants;
-
 struct slStructType;
-
 struct slBaseStructure;
-
 struct slViewportHandle;
-
 struct slExtent;
-
 struct slResource;
-
 struct slResourceTag;
-
 struct slDLSSGOptions;
-
 struct slDLSSGState;
-
 struct slReflexOptions;
-
 struct ViewportFGState;
-
 struct DLSSGSetOptionsLogState;
-
 struct ReflexSignalLogState;
 
 #include "streamline_hook.h"
 
 #include <tlhelp32.h>
-
 #include <windows.h>
-
 #include <algorithm>
-
 #include <atomic>
-
 #include <cstdint>
-
 #include <cstdio>
-
 #include <cstring>
-
 #include <mutex>
-
 #include <string>
-
 #include <unordered_map>
 
 #include "../../common/log_meter.h"
-
 #include "../common/dx12_overlay_policy.h"
-
 #include "../common/dxgi_shared.h"
-
 #include "../common/fg_detection.h"
-
 #include "../common/fg_session_state.h"
-
 #include "../common/freeze_watchdog.h"
-
 #include "../common/hook_common.h"
-
 #include "../common/reflex_limiter.h"
-
 #include "../common/streamline_runtime_policy.h"
-
 #include "../wrappers/iat_hook.h"
-
 #include "../wrappers/inline_hook.h"
-
 #include "dx12_hook.h"
-
 #include "dx12_streamline_ui_overlay.h"
-
 #include "streamline_hook_pcl.h"
 
 using slResult = int;
@@ -394,74 +360,62 @@ inline std::atomic<void*> streamline_hook_g_SLEvaluateFeatureTarget{nullptr};
 inline std::atomic<void*> streamline_hook_g_VulkanCreateSwapchainTarget{nullptr};
 
 inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_DLSSGGetStateTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSleepTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsTarget{nullptr};
 
 inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsImportFallbackAttemptedTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_DLSSGGetStateImportFallbackAttemptedTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSleepImportFallbackAttemptedTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsImportFallbackAttemptedTarget{nullptr};
-
 inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
+inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_DLSSGSetOptionsFailedAttempts{0};
+inline std::atomic<void*> streamline_hook_g_DLSSGGetStateFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_DLSSGGetStateFailedAttempts{0};
+inline std::atomic<void*> streamline_hook_g_ReflexSleepFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_ReflexSleepFailedAttempts{0};
+inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_ReflexSetOptionsFailedAttempts{0};
+inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_ReflexSetConstantsFailedAttempts{0};
+inline std::atomic<void*> streamline_hook_g_PCLSetMarkerFailedTarget{nullptr};
+inline std::atomic<uint32_t> streamline_hook_g_PCLSetMarkerFailedAttempts{0};
+
+inline std::atomic<int> streamline_hook_g_ReflexSleepUnavailableQueries{0};
+inline std::atomic<int> streamline_hook_g_ReflexSetOptionsUnavailableQueries{0};
+inline constexpr int kReflexSetConstantsUnavailableQueryLimit = 3;
+inline std::atomic<int> streamline_hook_g_ReflexSetConstantsUnavailableQueries{0};
+inline std::atomic<int> streamline_hook_g_PCLUnavailableQueries{0};
+inline std::atomic<uint32_t> streamline_hook_g_RuntimeReflexRetryAttempts{0};
+
 inline std::atomic<bool> streamline_hook_g_SLGetFeatureFunctionHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_SLGetPluginFunctionHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_SLSetD3DDeviceHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_SLSetTagHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_SLSetTagForFrameHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_SLEvaluateFeatureHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_VulkanCreateSwapchainHooked{false};
-
 inline void* streamline_hook_g_Original_vkCreateSwapchainKHR = nullptr;
-
 inline std::atomic<uint32_t> streamline_hook_g_LastUpscalerEvaluation{0xFFFFFFFFu};
 
 inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_DLSSGGetStateHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSleepHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsHooked{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsHooked{false};
 
 inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsReturnedWrapperFallbackLogged{false};
-
 inline std::atomic<bool> streamline_hook_g_DLSSGGetStateReturnedWrapperFallbackLogged{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSleepReturnedWrapperFallbackLogged{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsReturnedWrapperFallbackLogged{false};
-
 inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsReturnedWrapperFallbackLogged{false};
 
-// Bounded failure latch: slReflexSetConstants is genuinely absent from some
-// sl.reflex builds (slGetFeatureFunction never returns it). After a few failed
-// queries the runtime retry loop stops re-scanning for it (session
-// 20260811_231851: endless 2.5s rescans with setConstantsHooked=0).
-inline constexpr int kReflexSetConstantsUnavailableQueryLimit = 3;
-
-inline std::atomic<int> streamline_hook_g_ReflexSetConstantsUnavailableQueries{0};
-
 inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsProactiveFallbackLogged{false};
-
 inline std::atomic<bool> streamline_hook_g_DLSSGGetStateProactiveFallbackLogged{false};
+
 
 inline std::atomic<bool> streamline_hook_g_ReflexSleepProactiveFallbackLogged{false};
 
@@ -697,7 +651,9 @@ void PublishStreamlineInlineHookTrampoline(void* trampoline, void* context) {
 
 template <typename T>
 bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
-                           std::atomic<void*>& targetSlot, const char* hookName) {
+                           std::atomic<void*>& targetSlot, const char* hookName,
+                           std::atomic<void*>* failedTargetSlot = nullptr,
+                           std::atomic<uint32_t>* failedAttemptsSlot = nullptr) {
     if (!target) {
         return false;
     }
@@ -712,6 +668,12 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     const void* installedTarget = targetSlot.load(std::memory_order_acquire);
     const bool slotInstalled = installedFlag.load(std::memory_order_acquire);
     if (slotInstalled && installedTarget == target) {
+        return false;
+    }
+
+    const void* failedTarget = failedTargetSlot ? failedTargetSlot->load(std::memory_order_acquire) : nullptr;
+    const uint32_t failedAttempts = failedAttemptsSlot ? failedAttemptsSlot->load(std::memory_order_acquire) : 0;
+    if (!ce::streamline_runtime_policy::ShouldAttemptInlineHookOnTarget(target, failedTarget, failedAttempts)) {
         return false;
     }
 
@@ -738,6 +700,10 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
         original = reinterpret_cast<T>(retainedTrampoline);
         targetSlot.store(target, std::memory_order_release);
         installedFlag.store(true, std::memory_order_release);
+        if (failedTargetSlot && failedAttemptsSlot) {
+            failedTargetSlot->store(nullptr, std::memory_order_release);
+            failedAttemptsSlot->store(0, std::memory_order_release);
+        }
         HookLogImportant(
             "Streamline Hook: Reconciled rediscovered %s at %p with CE's retained live hook (trampoline=%p)",
             hookName, target, retainedTrampoline);
@@ -748,15 +714,28 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
     void* trampoline = nullptr;
     if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishStreamlineInlineHookTrampoline<T>,
                                       &publication)) {
+        uint32_t currentFailures = 1;
+        if (failedTargetSlot && failedAttemptsSlot) {
+            if (failedTargetSlot->load(std::memory_order_acquire) != target) {
+                failedTargetSlot->store(target, std::memory_order_release);
+                failedAttemptsSlot->store(1, std::memory_order_release);
+            } else {
+                currentFailures = failedAttemptsSlot->fetch_add(1, std::memory_order_acq_rel) + 1;
+            }
+        }
         static std::atomic<uint32_t> s_installFailureCount{0};
         const uint32_t failureCount = s_installFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (ce::log_meter::ShouldLogCadence(failureCount, 10, 300)) {
-            HookLogImportant("Streamline Hook: Failed to inline hook %s at %p (attempt=%u)", hookName, target,
-                             failureCount);
+            HookLogImportant("Streamline Hook: Failed to inline hook %s at %p (attempt=%u targetFailures=%u)",
+                             hookName, target, failureCount, currentFailures);
         }
         return false;
     }
 
+    if (failedTargetSlot && failedAttemptsSlot) {
+        failedTargetSlot->store(nullptr, std::memory_order_release);
+        failedAttemptsSlot->store(0, std::memory_order_release);
+    }
     targetSlot.store(target, std::memory_order_release);
     installedFlag.store(true, std::memory_order_release);
     HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target,
@@ -769,7 +748,8 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
                                                     const char* hookName);void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper,
                                     bool hookReady);void LogProactiveFeatureHookGapOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target);void LogFeatureLookupOutcomeOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* originalTarget,
                                   void* returnedTarget, bool hookReady);bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookDLSSGGetState(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSleep(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetConstants(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool TryResolveDLSSGFeatureHooks(bool proactiveScan = false);bool TryResolveReflexFeatureHooks(bool proactiveScan = false);uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* streamline_hook_options);void RegisterDynamicHooksOnce();bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath);bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot, MODULEENTRY32& firstEntry, DWORD& error, int& attempts,
-                                       bool& failedOnFirstEntry);bool ScanLoadedStreamlineModules(bool pinFeatureResolution = false);bool AreReflexFeatureHooksComplete();void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source);slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* streamline_hook_options);slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& streamline_hook_options);
+                                       bool& failedOnFirstEntry);bool ScanLoadedStreamlineModules(bool pinFeatureResolution = false);bool AreReflexFeatureHooksComplete();bool IsPCLSetMarkerHookComplete();void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source);slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* streamline_hook_options);slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& streamline_hook_options);
+
 
 // Safe no-op stub for SL function pointers that SL returned as NULL during
 // re-entrant calls.  Steam's OverlayHookD3D3 may call slGetFeatureFunction

@@ -89,11 +89,26 @@ static bool WriteNearJumpWithoutLogging(uint8_t* destination, void* target) {
 
 bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patchSize,
                                   const uint8_t* expectedBytes, uint8_t* installedBytes) {
-    if (memcmp(target, expectedBytes, patchSize) != 0)
+    if (memcmp(target, expectedBytes, patchSize) != 0) {
+        static std::atomic<uint32_t> s_mismatchLogs{0};
+        const uint32_t count = s_mismatchLogs.fetch_add(1, std::memory_order_relaxed);
+        if (count < 8 || (count % 64) == 0) {
+            HookLogImportant("InlineHook: WriteOwnedEntryPatch bytes changed concurrently at %p (count=%u)", target,
+                             count + 1);
+        }
         return false;
+    }
     DWORD oldProtect = 0;
-    if (!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+    if (!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        const DWORD err = GetLastError();
+        static std::atomic<uint32_t> s_vpFailLogs{0};
+        const uint32_t count = s_vpFailLogs.fetch_add(1, std::memory_order_relaxed);
+        if (count < 8 || (count % 64) == 0) {
+            HookLogImportant("InlineHook: WriteOwnedEntryPatch VirtualProtect failed at %p (error=%lu count=%u)",
+                             target, static_cast<unsigned long>(err), count + 1);
+        }
         return false;
+    }
 #ifdef _WIN64
     if (patchSize == ce::inline_hook_policy::kExternalPrependPatchSize) {
         if (!WriteNearJumpWithoutLogging(static_cast<uint8_t*>(target), patchDestination)) {
@@ -117,10 +132,31 @@ bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patc
 
 bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
                           const uint8_t* expectedBytes, uint8_t* installedBytes) {
-    ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
-    return quiescence.IsReady() &&
-           WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
+    ce::hook_patch::QuiesceFailure quiesceFailure = ce::hook_patch::QuiesceFailure::kNone;
+    bool quiesceReady = false;
+    bool patchWritten = false;
+    {
+        ce::hook_patch::ThreadQuiescence quiescence(target, static_cast<size_t>(patchSize));
+        quiesceReady = quiescence.IsReady();
+        if (!quiesceReady) {
+            quiesceFailure = quiescence.FailureReason();
+        } else {
+            patchWritten =
+                WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
+        }
+    }
+    if (!quiesceReady) {
+        static std::atomic<uint32_t> s_quiesceFailLogs{0};
+        const uint32_t count = s_quiesceFailLogs.fetch_add(1, std::memory_order_relaxed);
+        if (count < 8 || (count % 64) == 0) {
+            HookLogImportant("InlineHook: WriteOwnedEntryPatch quiescence failed at %p (reason=%d count=%u)", target,
+                             static_cast<int>(quiesceFailure), count + 1);
+        }
+        return false;
+    }
+    return patchWritten;
 }
+
 
 static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
     ce::hook_patch::ThreadQuiescence quiescence(hook.target, static_cast<size_t>(hook.patchSize));
@@ -157,33 +193,15 @@ static bool InstalledEntryBytesMatch(const HookEntry& hook) {
 static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
                         void* publisherContext, bool hookMutexAlreadyHeld = false,
                         size_t* preparedHookIndex = nullptr) {
-    // Use existing optional hook logger; avoid absolute-path file writes from injected code.
-    auto LogDirect = [](const char* fmt, ...) {
-        va_list args;
-        va_start(args, fmt);
-        char buf[1024];
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-nonliteral"
-        vsnprintf(buf, sizeof(buf), fmt, args);
-#pragma GCC diagnostic pop
-        va_end(args);
-        HookLog("%s", buf);
+    auto LogDirect = [](const char* fmt, auto... args) {
+        HookLog(fmt, args...);
+    };
+    auto TraceDirect = [](const char* fmt, auto... args) {
+        if (HookTraceLoggingEnabled()) {
+            HookLog(fmt, args...);
+        }
     };
 
-    auto TraceDirect = [](const char* fmt, ...) {
-        if (!HookTraceLoggingEnabled()) {
-            return;
-        }
-        va_list args;
-        va_start(args, fmt);
-        char buf[1024];
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-nonliteral"
-        vsnprintf(buf, sizeof(buf), fmt, args);
-#pragma GCC diagnostic pop
-        va_end(args);
-        HookLog("%s", buf);
-    };
 
     // Metered diagnostic: trace-level per-instruction byte dumps are valuable
     // for the first few hook installs but pure noise afterwards - one 90-second
@@ -262,19 +280,8 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     // target. Never decode or patch inside the foreign detour body.
     const uint8_t* code = (const uint8_t*)target;
 
-    // Dump first bytes of target
-    // SECURITY FIX: Use safe string concatenation
-    char firstBytes[64] = {0};
-    size_t remaining = sizeof(firstBytes) - 1;
-    char* dest = firstBytes;
-    for (int i = 0; i < 8 && remaining > 3; i++) {
-        int written = snprintf(dest, remaining, "%02X ", code[i]);
-        if (written > 0 && (size_t)written < remaining) {
-            dest += written;
-            remaining -= written;
-        }
-    }
-    LogDirect("First bytes of target: %s", firstBytes);
+    LogDirect("First bytes of target: %02X %02X %02X %02X %02X %02X %02X %02X", code[0], code[1], code[2], code[3],
+              code[4], code[5], code[6], code[7]);
 
     if (IsAlreadyHooked(code, is64bit)) {
         void* chainedEntry = ResolveExternalEntryJump(code, is64bit);
@@ -341,19 +348,15 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
                                   g_hooks.back().installedBytes)) {
             if (publisher) {
                 publisher(nullptr, publisherContext);
+                HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
+            } else {
+                ReleaseSealedTrampoline(trampoline);
             }
             *outTrampoline = nullptr;
-            // Another established CE route can observe the published
-            // trampoline before this entry-point claim finishes. Roll back the
-            // pointer, but retain executable storage for any caller that
-            // already acquired it.
             g_hooks.pop_back();
-            if (publisher)
-                HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
-            else
-                ReleaseSealedTrampoline(trampoline);
             return false;
         }
+
         g_hooks.back().installed = true;
 
         char ownerPath[MAX_PATH] = {};
@@ -604,17 +607,14 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         LogDirect("FAILED: Could not safely patch target %p", target);
         if (publisher) {
             publisher(nullptr, publisherContext);
+            HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
+        } else {
+            ReleaseSealedTrampoline(trampoline);
         }
         *outTrampoline = nullptr;
-        // Publication precedes the live patch by design. A concurrent vtable
-        // detour may already be executing this safe bypass, so its RX page is
-        // retained even though new callers see the restored fallback.
         g_hooks.pop_back();
-        if (publisher)
-            HookLogImportant("InlineHook: Retaining rolled-back published trampoline %p", trampoline);
-        else
-            ReleaseSealedTrampoline(trampoline);
         return false;
+
     }
 
     g_hooks.back().installed = true;

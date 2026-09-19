@@ -576,10 +576,10 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
         }
     }
 
+    if (moduleBit != 0) {
+        streamline_hook_g_InstalledModuleMask.fetch_or(moduleBit, std::memory_order_acq_rel);
+    }
     if (hookedAnything) {
-        if (moduleBit != 0) {
-            streamline_hook_g_InstalledModuleMask.fetch_or(moduleBit, std::memory_order_acq_rel);
-        }
         HookLogImportant("Streamline Hook: Installed hooks for %s (%p)", moduleBaseName, module);
     }
     return true;
@@ -734,59 +734,4 @@ bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
             static_cast<unsigned long>(iterationError), streamlineModuleCount, hookedModuleCount);
     }
     return foundModule;
-
-}
-
-
-bool AreReflexFeatureHooksComplete() {
-
-
-    return streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) &&
-           streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) &&
-           (streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ||
-            streamline_hook_g_ReflexSetConstantsUnavailableQueries.load(std::memory_order_acquire) >=
-                kReflexSetConstantsUnavailableQueryLimit);
-
-}
-
-
-void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source) {
-
-
-    if (AreReflexFeatureHooksComplete() &&
-        (!GetModuleHandleA("sl.pcl.dll") || IsPCLSetMarkerHookReady())) {
-        return;
-    }
-
-    constexpr ULONGLONG kRetryIntervalMs = 2500;
-    const ULONGLONG nowMs = GetTickCount64();
-    ULONGLONG previousMs = streamline_hook_g_ReflexFeatureHookRetryLastMs.load(std::memory_order_acquire);
-    if (previousMs != 0 && nowMs >= previousMs && (nowMs - previousMs) < kRetryIntervalMs) {
-        return;
-    }
-
-    if (!streamline_hook_g_ReflexFeatureHookRetryLastMs.compare_exchange_strong(previousMs, nowMs, std::memory_order_acq_rel,
-                                                                std::memory_order_acquire)) {
-        return;
-    }
-
-    const bool foundModule = ScanLoadedStreamlineModules();
-    const bool resolved = TryResolveReflexFeatureHooks();
-    const bool resolvedPCL = TryResolvePCLFeatureHook();
-    static std::atomic<int> s_lateReflexRetryLogCount{0};
-    const int logCount = s_lateReflexRetryLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (resolved || resolvedPCL || logCount < 10 || (logCount % 24) == 0) {
-        HookLogImportant(
-            "Streamline Hook: Late Reflex feature hook retry during DLSSG runtime activity "
-            "(source=%s foundModule=%d resolved=%d pclResolved=%d sleepHooked=%d setOptionsHooked=%d "
-            "setConstantsHooked=%d pclSetMarkerHooked=%d "
-            "manualLimiter=%d targetIntervalUs=%u)",
-            source ? source : "unknown", foundModule ? 1 : 0, resolved ? 1 : 0, resolvedPCL ? 1 : 0,
-            streamline_hook_g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            streamline_hook_g_ReflexSetConstantsHooked.load(std::memory_order_acquire) ? 1 : 0,
-            IsPCLSetMarkerHookReady() ? 1 : 0,
-            g_ReflexLimiter.IsManualLimiterConfiguredOrActive() ? 1 : 0, g_ReflexLimiter.GetTargetIntervalUs());
-    }
-
 }

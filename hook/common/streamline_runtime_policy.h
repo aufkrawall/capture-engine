@@ -5,6 +5,7 @@
 
 #include "../../common/shared_defs.h"
 #include "fg_runtime_state.h"
+#include "streamline_feature_retry_policy.h"
 
 namespace ce::streamline_runtime_policy {
 

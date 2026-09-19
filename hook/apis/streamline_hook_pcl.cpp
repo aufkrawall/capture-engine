@@ -82,7 +82,9 @@ bool MaybeHookPCLSetMarker(void*& function, bool fallbackToReturnedWrapper) {
             g_pclSetMarkerTarget.load(std::memory_order_acquire) != function) {
             const void* previousTarget = g_pclSetMarkerTarget.load(std::memory_order_acquire);
             InstallInlineHookOnce(function, detour, g_originalPclSetMarker, g_pclSetMarkerHooked,
-                                  g_pclSetMarkerTarget, "slPCLSetMarker");
+                                  g_pclSetMarkerTarget, "slPCLSetMarker",
+                                  &streamline_hook_g_PCLSetMarkerFailedTarget,
+                                  &streamline_hook_g_PCLSetMarkerFailedAttempts);
             if (!g_pclSetMarkerHooked.load(std::memory_order_acquire)) {
                 TryInstallFeatureImportFallbackForOwningModule(
                     function, "slPCLSetMarker", detour, reinterpret_cast<void**>(&g_originalPclSetMarker),
@@ -114,6 +116,14 @@ bool IsPCLSetMarkerHookReady() {
     return g_pclSetMarkerHooked.load(std::memory_order_acquire);
 }
 
+bool IsPCLSetMarkerHookComplete() {
+    return ce::streamline_runtime_policy::IsPclFeatureResolutionComplete(
+        GetModuleHandleA("sl.pcl.dll") != nullptr,
+        g_pclSetMarkerHooked.load(std::memory_order_acquire),
+        streamline_hook_g_PCLSetMarkerFailedAttempts.load(std::memory_order_acquire),
+        streamline_hook_g_PCLUnavailableQueries.load(std::memory_order_acquire));
+}
+
 void LogPCLFeatureLookupOutcome(void* originalTarget, void* returnedTarget, bool hookReady) {
     LogFeatureLookupOutcomeOnce(g_pclLookupLogged, "slPCLSetMarker", originalTarget, returnedTarget, hookReady);
 }
@@ -133,6 +143,9 @@ bool InvalidatePCLFeatureHookForModule(const void* moduleBase, size_t moduleSize
     InterlockedExchangePointer(reinterpret_cast<void* volatile*>(&g_originalPclSetMarker), nullptr);
     g_pclSetMarkerTarget.store(nullptr, std::memory_order_release);
     g_pclImportFallbackAttemptedTarget.store(nullptr, std::memory_order_release);
+    streamline_hook_g_PCLSetMarkerFailedTarget.store(nullptr, std::memory_order_release);
+    streamline_hook_g_PCLSetMarkerFailedAttempts.store(0, std::memory_order_release);
+    streamline_hook_g_PCLUnavailableQueries.store(0, std::memory_order_release);
     g_pclSetMarkerHooked.store(false, std::memory_order_release);
     g_pclLookupLogged.store(false, std::memory_order_release);
     g_pclReturnedWrapperLogged.store(false, std::memory_order_release);
