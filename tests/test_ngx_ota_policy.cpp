@@ -708,12 +708,17 @@ TEST(NgxOtaSupervisorWatchdog, SupervisorIntegratesOtaWatchdogAndConfigPrewarmin
     ASSERT_FALSE(injectMain.empty());
     EXPECT_NE(injectMain.find("manager->SetNgxOtaModeQuery("), std::string::npos);
 
+    // The prewarm still covers every whitelisted target; it just no longer runs
+    // inline. See ConfigReloadReinitPolicyTest for why an inline sweep was
+    // unusable: SetPublicationBaseConfig is also the ReloadConfig handler's
+    // path, and that handler has a 1 s ack window.
     const std::string publication =
         ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
     ASSERT_FALSE(publication.empty());
     EXPECT_NE(publication.find("baseConfig.gameWhitelist"), std::string::npos);
+    EXPECT_NE(publication.find("baseConfig.overlayWhitelist"), std::string::npos);
     EXPECT_NE(publication.find("ResolveTargetConfig("), std::string::npos);
-
+    EXPECT_NE(publication.find("PublicationWarmupLoop"), std::string::npos);
 }
 
 // The watchdog above is a backstop, NOT a race CE has to win, and the poll

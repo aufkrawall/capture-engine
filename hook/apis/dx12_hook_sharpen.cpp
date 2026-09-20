@@ -26,10 +26,17 @@ ce::sharpen::D3D12Pass g_SharpenPass;
 bool g_SharpenEverRendered = false;
 std::mutex g_SharpenMutex;
 
-}  // namespace
-
-void ReleaseDX12SharpenResources(bool releaseObjects) {
-    std::lock_guard<std::mutex> lock(g_SharpenMutex);
+// The teardown body, for callers that already own g_SharpenMutex.
+//
+// g_SharpenMutex is a plain std::mutex, so the locking entry point below must
+// never be reached from a path that already holds it. In 0.1.6741 the
+// sharpen-off branch of SharpenDX12PresentedFrame did exactly that: it took the
+// lock, resolved `sharpen=off`, and then called the locking release. libc++ maps
+// std::mutex onto an SRWLOCK, so the second acquire parked the thread forever.
+// The thread it parked was the RHI/present thread inside DetourPresent, which
+// UE5 reported as "GameThread timed out waiting for RenderThread after 120.00
+// secs" before terminating the game (session 20260920_192913).
+void ReleaseSharpenResourcesLocked(bool releaseObjects) {
     if (releaseObjects) {
         g_SharpenPass.Shutdown();
     } else {
@@ -37,6 +44,14 @@ void ReleaseDX12SharpenResources(bool releaseObjects) {
         // fault, so the references are dropped instead.
         g_SharpenPass.Abandon();
     }
+    g_SharpenEverRendered = false;
+}
+
+}  // namespace
+
+void ReleaseDX12SharpenResources(bool releaseObjects) {
+    std::lock_guard<std::mutex> lock(g_SharpenMutex);
+    ReleaseSharpenResourcesLocked(releaseObjects);
 }
 
 void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue, bool hasBackBufferIndex,
@@ -51,10 +66,10 @@ void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* q
     const ce::sharpen::Request request = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
     if (request.mode == ce::sharpen::Mode::Off) {
         // A full-frame copy plus its heaps and allocators is not something to
-        // keep resident after the feature is switched off.
+        // keep resident after the feature is switched off. The lock is already
+        // held here, so this must be the unlocked body.
         if (g_SharpenEverRendered) {
-            ReleaseDX12SharpenResources();
-            g_SharpenEverRendered = false;
+            ReleaseSharpenResourcesLocked(true);
         }
         return;
     }

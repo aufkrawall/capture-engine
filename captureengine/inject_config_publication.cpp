@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
@@ -16,6 +21,14 @@
 
 namespace {
 
+// A resolved config plus the target name it was resolved for. The map is keyed
+// by the lowercased name; the original spelling is kept so a reload can redo the
+// resolve with exactly the string the first resolve used.
+struct ResolvedTargetConfig {
+    std::string targetProcess;
+    AppConfig config;
+};
+
 // Every shared config publication is serialized here. The overlay-config
 // seqlock permits one writer, while injection workers, IPC commands, and hook
 // source transitions can all publish from different threads.
@@ -25,7 +38,16 @@ struct PublicationState {
     AppConfig baseConfig;
     std::string targetProcess;
     OverlayVisibilityOverride overlayVisibility;
-    std::unordered_map<std::string, AppConfig> resolvedTargetConfigs;
+    std::unordered_map<std::string, ResolvedTargetConfig> resolvedTargetConfigs;
+
+    // Prewarming state. Bumped by every SetPublicationBaseConfig so a resolve
+    // that finishes after a newer base config arrived is discarded instead of
+    // seeding the cache with a stale profile.
+    uint64_t configGeneration = 0;
+    std::deque<std::string> warmQueue;
+    std::condition_variable warmSignal;
+    std::thread warmWorker;
+    bool warmStop = false;
 };
 
 PublicationState& Publication() {
@@ -57,11 +79,11 @@ AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::strin
     const auto cached = publication.resolvedTargetConfigs.find(cacheKey);
     if (cached != publication.resolvedTargetConfigs.end()) {
         LogDebug("[Inject] Reusing resolved target config: target=%s", targetProcessOut.c_str());
-        return cached->second;
+        return cached->second.config;
     }
 
     AppConfig resolved = ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
-    publication.resolvedTargetConfigs.emplace(cacheKey, resolved);
+    publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{targetProcessOut, resolved});
     LogDebug("[Inject] Cached resolved target config: target=%s", targetProcessOut.c_str());
     return resolved;
 }
@@ -85,6 +107,58 @@ void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* r
     AppConfig resolved = ResolveActiveConfigLocked(sharedMemory, targetProcess);
     ApplyOverlayVisibility(Publication().overlayVisibility, resolved);
     PublishConfigLocked(sharedMemory, resolved, targetProcess, reason);
+}
+
+// Prewarms the resolved-config cache for every whitelisted target, so the
+// injector's pre-LoadLibrary publish (which carries ngx_ota mode) is a cache hit
+// and adds no discovery latency.
+//
+// This runs on its own thread because each entry is a full ReadLiteralIniValue
+// pass over config.ini. Doing all of them inline used to cost ~4.9 s for 27
+// whitelisted games, and SetPublicationBaseConfig is called from the inject
+// child's ReloadConfig handler, which the controller waits on for at most 1 s
+// before declaring the channel broken and respawning this process. A sharpen-only
+// config save therefore tore the host out from under a running game's hook for
+// ~7 s (session 20260920_192913). The warm-up is an optimization, never a
+// correctness requirement: ResolveActiveConfigLocked still resolves and caches
+// any target the sweep has not reached yet.
+void PublicationWarmupLoop() {
+    PublicationState& publication = Publication();
+    std::unique_lock<std::mutex> lock(publication.mutex);
+    for (;;) {
+        publication.warmSignal.wait(lock,
+                                    [&] { return publication.warmStop || !publication.warmQueue.empty(); });
+        if (publication.warmStop)
+            return;
+
+        const uint64_t generation = publication.configGeneration;
+        const std::string target = std::move(publication.warmQueue.front());
+        publication.warmQueue.pop_front();
+        const std::string cacheKey = NormalizeTargetProcessName(target);
+        if (target.empty() || publication.resolvedTargetConfigs.find(cacheKey) != publication.resolvedTargetConfigs.end())
+            continue;
+
+        const std::string configPath = publication.configPath;
+        const AppConfig baseConfig = publication.baseConfig;
+
+        // Never hold the publication mutex across a resolve: an injection or
+        // hotkey publish would then queue behind the whole sweep.
+        lock.unlock();
+        AppConfig resolved = ResolveTargetConfig(configPath, baseConfig, target);
+        lock.lock();
+
+        // A newer base config queued its own sweep; this result describes the
+        // previous file.
+        if (publication.configGeneration != generation)
+            continue;
+        publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{target, std::move(resolved)});
+    }
+}
+
+void QueueWarmTargetLocked(PublicationState& publication, const std::string& target) {
+    if (target.empty())
+        return;
+    publication.warmQueue.push_back(target);
 }
 
 }  // namespace
@@ -113,26 +187,47 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
     publication.configPath = configPath;
     publication.baseConfig = baseConfig;
     publication.overlayVisibility = {};
-    publication.resolvedTargetConfigs.clear();
+    ++publication.configGeneration;
 
-    if (!configPath.empty()) {
-        auto warmTarget = [&](const std::string& pattern) {
-            if (pattern.empty()) {
-                return;
-            }
-            const std::string cacheKey = NormalizeTargetProcessName(pattern);
-            if (publication.resolvedTargetConfigs.find(cacheKey) == publication.resolvedTargetConfigs.end()) {
-                AppConfig resolved = ResolveTargetConfig(publication.configPath, publication.baseConfig, pattern);
-                publication.resolvedTargetConfigs.emplace(cacheKey, resolved);
-            }
-        };
-        for (const auto& entry : baseConfig.gameWhitelist) {
-            warmTarget(entry.pattern);
-        }
-        for (const auto& entry : baseConfig.overlayWhitelist) {
-            warmTarget(entry.pattern);
-        }
+    // Every cached resolve describes the previous file, so none of them survive.
+    // Requeueing them ahead of the rest of the whitelist puts the targets this
+    // process is actually publishing for at the front of the sweep.
+    std::deque<std::string> warmQueue;
+    for (auto& entry : publication.resolvedTargetConfigs) {
+        if (!entry.second.targetProcess.empty())
+            warmQueue.push_back(std::move(entry.second.targetProcess));
     }
+    publication.resolvedTargetConfigs.clear();
+    publication.warmQueue = std::move(warmQueue);
+
+    if (configPath.empty() || publication.warmStop) {
+        publication.warmQueue.clear();
+        return;
+    }
+
+    for (const auto& entry : baseConfig.gameWhitelist)
+        QueueWarmTargetLocked(publication, entry.pattern);
+    for (const auto& entry : baseConfig.overlayWhitelist)
+        QueueWarmTargetLocked(publication, entry.pattern);
+
+    if (!publication.warmWorker.joinable())
+        publication.warmWorker = std::thread(PublicationWarmupLoop);
+    publication.warmSignal.notify_all();
+}
+
+void StopPublicationWarmup() {
+    PublicationState& publication = Publication();
+    {
+        std::lock_guard<std::mutex> lock(publication.mutex);
+        if (!publication.warmWorker.joinable()) {
+            publication.warmStop = true;
+            return;
+        }
+        publication.warmStop = true;
+        publication.warmQueue.clear();
+    }
+    publication.warmSignal.notify_all();
+    publication.warmWorker.join();
 }
 
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {

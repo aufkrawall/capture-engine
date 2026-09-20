@@ -51,7 +51,7 @@ Primary sources:
 - `screenshots.md`
   - Shared ABI 38 screenshot requests, DirectDraw/Direct3D 7 presentation-boundary capture with independent overlay inclusion, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR versus default combined HDR-plus-SDR output policy with concurrent encodes and one shared name seed, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, explicit result notifications, the asynchronous D3D12 readback that keeps every wait off the present thread, actual-Present-aware PostSL ownership through DLSS suspension, and exact swapchain-resource/queue device validation. Last verified 2026-09-16.
 - `process-ipc.md`
-  - Restricted private child channels, accept-before-finalize disposable media stops with media-owned completion notification, recording-health publication, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI 38 publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-08-01.
+  - Restricted private child channels, accept-before-finalize disposable media stops with media-owned completion notification, recording-health publication, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI 38 publication/isolation, session log routing, shared-ring integrity, malformed/incompatible-message rejection, and the 1 s `ReloadConfig` ack budget (an overrun respawns the child and blacks out every injected hook). Last verified 2026-09-20.
 - `repo-map.md`
   - **Code map**: top-level layout, semantic-unit inventory per subsystem (hook/captureengine/mediaengine/common/testapp/tools), the Python build pipeline units, and important paths. Re-point stale monolithic-file anchors here after splits. Last verified 2026-09-16.
 - `d3d9-capture.md`
@@ -78,8 +78,9 @@ Primary sources:
     and the recording in agreement with the screen, uniform filtering of generated frames
     under FG and why filtering pre-FG was rejected, the refusal reasons, the linear-values
     question behind `sharpen_color_space`, per-backend submission mechanics, the Vulkan
-    `TRANSFER_SRC` negotiation, and the vendored MIT FidelityFX headers.
-    No hardware run yet. Last verified 2026-09-20.
+    `TRANSFER_SRC` negotiation, the rule that a `sharpen=off` teardown must use the
+    unlocked body (re-entering the pass mutex froze the RHI thread), and the vendored
+    MIT FidelityFX headers. No hardware run yet. Last verified 2026-09-20.
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics including normalized mip filtering, native DirectDraw
     Flip/full-surface-Blt overrides and the fixed-refresh-versus-DXGI-VRR boundary, dual NGX

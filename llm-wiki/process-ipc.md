@@ -11,7 +11,9 @@ Primary sources:
 - `captureengine/{ipc,logger_service,sensor_service}.cpp`
 - `captureengine/tray.{h,cpp}`
 - `hook/common/ipc_client.cpp`
+- `captureengine/inject_config_publication.{h,cpp}`
 - `tests/test_process_ipc.cpp`
+- `tests/test_config_reload_reinit_policy.cpp`
 - `tests/test_process_identity.cpp`
 - `tests/test_tray_source.cpp`
 - `tests/{test_shared_runtime_state,test_logger_service_policy}.cpp`
@@ -60,6 +62,45 @@ Protocol 2 has an exact 52-byte packed header and at most 256 payload bytes. Val
 `StopRecording` accepts `Ack` as an acceptance response as well as the legacy completion response. The disposable media child intentionally uses `Ack` before finalization; completion is proven by its finalization log, immutable manifest, media-owned shared notification, and process exit rather than by holding the controller command call open.
 
 The private pipe name is only a transient rendezvous used while the controller already holds the connected endpoint; it is not a stable production API. The child receives the endpoint handle, controller PID, and nonce on its command line and strictly parses their complete values before using the channel.
+
+## The `ReloadConfig` Ack Budget
+
+A child's reply window is a contract on the work its handler may do, not a detail.
+`ProcessIPCClient::SendCommand` waits 1000 ms; a timeout genuinely desynchronizes
+the pipe's message framing, so the client closes the channel and
+`CheckChildProcessHealth::recoverProcess` spawns a replacement. That reaction is
+correct. The failure mode is a handler that is merely *slow*, because the
+controller cannot tell it apart from a dead one.
+
+For the inject child this is expensive far beyond the child itself. Losing the
+host makes every injected hook run `DeactivateHookRuntimeAndWaitForHost`: graphics
+overrides off, `FFXHook::EnterDormant`, `UE5::ShutdownOverrides`, capture disabled,
+the shared FPS limiter shut down, and the `injectOverlayPending`/`Active` flags
+cleared - which un-suppresses the controller's pseudo overlay, so a game configured
+for the inject overlay visibly gets the desktop "NOT RECORDING" warning instead.
+Reactivation then pays the full UE5 console-registry sweep again (645 MB, ~100 s in
+session `20260920_192913`). A config edit that changed nothing but sharpen keys cost
+7.2 s of dormancy and ~100 s of re-scan that way.
+
+The cause was `SetPublicationBaseConfig` warming the resolved-config cache for every
+whitelist entry inline. Each warm is a full `ReadLiteralIniValue` pass over
+`config.ini` (~178 ms measured at trace level), so 28 configured targets meant ~4.9 s
+inside a 1 s window. The prewarm itself is wanted - it makes the injector's
+pre-`LoadLibrary` publish, which carries `ngx_ota` mode, a cache hit - so it was moved
+onto a worker thread rather than removed:
+
+- `SetPublicationBaseConfig` bumps `configGeneration`, drops every cached resolve
+  (they describe the replaced file), queues the previously-resolved targets ahead of
+  the whitelists, and signals the worker.
+- The worker never holds the publication mutex across a resolve, and discards any
+  result whose generation no longer matches.
+- `ResolveActiveConfigLocked` still resolves and caches on demand, so the sweep is
+  an optimization and never a correctness input.
+- `StopPublicationWarmup` joins the worker before inject unmaps its shared memory.
+- The handler logs its own duration and warns past 500 ms.
+
+Anything added to a command handler is subject to the same budget. Prefer publishing
+what the ack must prove and deferring the rest.
 
 ## Child Launcher Invariants
 

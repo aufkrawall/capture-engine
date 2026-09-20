@@ -1,6 +1,6 @@
 # Post-Processing Sharpen (FidelityFX CAS / RCAS)
 
-Last cross-checked: 2026-09-20 (initial implementation; no hardware run yet)
+Last cross-checked: 2026-09-20 (initial implementation, plus the DX12 teardown re-entrancy fix; no hardware run yet)
 
 Primary sources:
 - `common/sharpen_policy.h`
@@ -18,6 +18,7 @@ Primary sources:
 - `hook/shaders/sharpen_{fullscreen,cas,rcas}.hlsl`, `hook/shaders/sharpen_hlsl_common.hlsli`
 - `hook/vulkan_layer/shaders/sharpen_{fullscreen.vert,common.glsl,cas.frag,rcas.frag}`
 - `tools/compile_sharpen_shaders.py`
+- `tests/test_config_reload_reinit_policy.cpp`
 - `external/fidelityfx/` (vendored MIT headers, see its README)
 - `tests/test_sharpen_policy.cpp`, `tests/test_vulkan_swapchain_usage_policy.cpp`
 - `tests/test_config_part3.cpp` (the `[Graphics] sharpen*` cases)
@@ -175,6 +176,28 @@ floor for any post-present sharpener.
 
 Nothing waits on the present thread. When every slot is still in flight the
 frame is skipped with a rate-limited log rather than stalling the game.
+
+### Teardown must not re-enter the pass mutex
+
+D3D12 and Vulkan both hold a state mutex for the whole present-side call, and both
+have a `sharpen=off` branch that hands the pass's resources back. That branch has
+to use an **unlocked** teardown body. `g_SharpenMutex` is a plain `std::mutex`,
+which libc++ maps onto an SRWLOCK: a second acquire on the same thread does not
+throw, it parks forever.
+
+In 0.1.6741 `SharpenDX12PresentedFrame`'s off-branch called the *locking*
+`ReleaseDX12SharpenResources`, so the first present after sharpening switched off -
+by a config edit, or by the published config falling back to defaults while the
+inject host was being respawned - deadlocked the RHI thread inside `DetourPresent`.
+UE5 reported it as `GameThread timed out waiting for RenderThread after 120.00
+secs` and terminated the game (session `20260920_192913`). `layer_sharpen.cpp` was
+already correct: it calls `DestroySharpenState` directly. DX11 holds no mutex on
+this path.
+
+The shape to keep: a private unlocked body, one public entry point that is a lock
+plus a delegation, and the "nothing is allocated any more" flag owned by the
+unlocked body so no caller can release the pass and leave the flag disagreeing.
+`ConfigReloadReinitPolicyTest` locks this for both backends.
 
 ## Vulkan swapchain usage
 

@@ -270,7 +270,8 @@ anchors that predate the split are approximate.
   reactivation lifecycle across host generations.
 - `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory
   setup/config reload orchestration, serialized resolved-config/discovery publication, and inject-overlay runtime
-  handoff flags.
+  handoff flags. The per-target profile prewarm lives on its own worker thread here; it must stay off the
+  `ReloadConfig` handler's 1 s ack path (see `llm-wiki/process-ipc.md`).
 - `captureengine/display_timing_service.cpp` + `display_timing_etw.h` (provider identity and real-time
   session plumbing) + `display_timing_nvidia.h` (NVIDIA scheduled-flip announcements) +
   `display_timing_correlation.h` (Intel/AMD FrameType correlation) + `display_timing_policy.h`

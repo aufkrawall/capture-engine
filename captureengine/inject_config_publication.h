@@ -11,6 +11,9 @@ struct SharedMemoryLayout;
 std::string GetProcessNameFromPID(DWORD pid);
 void ClearPublicationTarget();
 void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig);
+// Joins the background profile-prewarm worker SetPublicationBaseConfig starts.
+// Safe to call without a prior SetPublicationBaseConfig, and idempotent.
+void StopPublicationWarmup();
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason);
 void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
                                     const char* reason);

@@ -472,6 +472,13 @@ int InjectProcessMain(const AppConfig& config) {
                         break;
                     }
                     case ProcessCommand::ReloadConfig: {
+                        // The controller waits for this ack on its main thread
+                        // with a 1 s window and treats an overrun as a dead
+                        // child, so the handler's cost is a contract, not a
+                        // detail: exceeding it respawns this process and drops
+                        // the injected hook's host out from under a running
+                        // game. Keep the duration visible.
+                        const int64_t reloadStartUs = Log_GetQpcUs();
                         AppConfig reloadedConfig;
                         LoadConfig(configPath, reloadedConfig);
 
@@ -511,6 +518,16 @@ int InjectProcessMain(const AppConfig& config) {
                                     static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
                         }
 
+                        const double reloadMs = static_cast<double>(Log_GetQpcUs() - reloadStartUs) / 1000.0;
+                        if (reloadMs >= 500.0) {
+                            LogWarn(
+                                "[Inject] Config reload took %.1f ms, close to the controller's 1000 ms ack "
+                                "window; an overrun makes the controller respawn this process and blacks out "
+                                "the injected overlay",
+                                reloadMs);
+                        } else {
+                            LogDebug("[Inject] Config reload handled in %.1f ms", reloadMs);
+                        }
                         ipc.SendResponse(ProcessResponse::Ack);
                         break;
                     }
@@ -639,6 +656,9 @@ int InjectProcessMain(const AppConfig& config) {
     // (CancelAsyncCall + drain) completes while COM is still initialized.
     LogInfo("[Inject] Cleaning up...");
     injector.reset();
+    // The prewarm worker reads config.ini and the publication state, so it has
+    // to be joined before either can go away.
+    StopPublicationWarmup();
     // Withdraw discovery before closing the main mapping so new consumers
     // cannot observe a valid advertisement for a disappearing session.
     if (pDiscovery) {
