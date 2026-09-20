@@ -69,9 +69,11 @@ bool IsWindowOnCurrentVirtualDesktop(HWND hwnd) {
     static thread_local bool attemptedCom = false;
     static thread_local Microsoft::WRL::ComPtr<IVirtualDesktopManager> vdm;
     if (!attemptedCom) {
-        attemptedCom = true;
-        CoCreateInstance(clsidVirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
-                         iidVirtualDesktopManager, reinterpret_cast<void**>(vdm.GetAddressOf()));
+        const HRESULT hr = CoCreateInstance(clsidVirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
+                                            iidVirtualDesktopManager, reinterpret_cast<void**>(vdm.GetAddressOf()));
+        if (SUCCEEDED(hr) || hr != CO_E_NOTINITIALIZED) {
+            attemptedCom = true;
+        }
     }
 
     if (vdm) {

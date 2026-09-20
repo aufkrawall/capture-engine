@@ -78,7 +78,7 @@ void ResolveEarlyRuntimeOverridePaths() {
     }
     SharedGraphicsConfig published{};
     if (!ReadPublishedGraphicsConfig(published)) {
-        return;  // No host answered. Nothing to cache; a later call retries.
+        return;  // No host answered; the hook thread's config load will take over.
     }
 
     CopyPath(g_DlssSrDllPath, published.dlssSrDllPath);

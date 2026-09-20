@@ -159,3 +159,63 @@ TEST(AtomicSharedOwnerTest, RecursiveReadOnSameThreadDoesNotDeadlockWithConcurre
     EXPECT_EQ(innerObserved, 100);
     EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 0);
 }
+
+TEST(AtomicSharedOwnerTest, RecursiveReadDestructionOrderDoesNotPrematurelyReleaseExclusiveLock) {
+    std::atomic<int> destroyed{0};
+    ce::AtomicSharedOwner<TrackedOwnerValue> owner(std::make_shared<TrackedOwnerValue>(200, &destroyed));
+    std::atomic<bool> innerHeld{false};
+    std::atomic<bool> outerReset{false};
+    std::atomic<bool> writerStarted{false};
+    std::atomic<bool> writerAcquired{false};
+    std::atomic<bool> innerReleased{false};
+
+    std::thread reader([&]() {
+        auto outer = std::make_unique<ce::AtomicSharedOwner<TrackedOwnerValue>::Access>(owner.Read());
+        ASSERT_TRUE(*outer);
+        {
+            auto inner = owner.Read();
+            ASSERT_TRUE(inner);
+            innerHeld.store(true, std::memory_order_release);
+
+            while (!writerStarted.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            // Destroy the outer access while inner is still alive.
+            // On recursive depth tracking, the underlying shared lock must remain
+            // held until the last access (inner) is released.
+            outer.reset();
+            outerReset.store(true, std::memory_order_release);
+
+            // Give the writer thread opportunities to run; it must NOT acquire the exclusive lock yet.
+            for (int i = 0; i < 20; ++i) {
+                EXPECT_FALSE(writerAcquired.load(std::memory_order_acquire));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            innerReleased.store(true, std::memory_order_release);
+        }
+    });
+
+    while (!innerHeld.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    std::thread writer([&]() {
+        writerStarted.store(true, std::memory_order_release);
+        while (!outerReset.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        // Exclusive access must wait until inner is also released
+        auto exclusive = owner.LockExclusive();
+        writerAcquired.store(true, std::memory_order_release);
+        EXPECT_TRUE(innerReleased.load(std::memory_order_acquire));
+        ASSERT_TRUE(exclusive);
+        EXPECT_EQ(exclusive->Read(), 200);
+    });
+
+    reader.join();
+    writer.join();
+
+    EXPECT_TRUE(writerAcquired.load(std::memory_order_acquire));
+    EXPECT_EQ(destroyed.load(std::memory_order_relaxed), 0);
+}

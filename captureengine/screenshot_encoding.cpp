@@ -642,7 +642,15 @@ bool SaveHdrAndSdrScreenshots(const std::filesystem::path& outputDirectory, cons
     }
 
     std::filesystem::path sdrPath;
-    const bool sdrSaved = SaveToneMappedPng(outputDirectory, screenshot, sdrWhiteNits, &nameSeed, sdrPath);
+    bool sdrSaved = false;
+    try {
+        sdrSaved = SaveToneMappedPng(outputDirectory, screenshot, sdrWhiteNits, &nameSeed, sdrPath);
+    } catch (...) {
+        if (hdrWorker.joinable()) {
+            hdrWorker.join();
+        }
+        throw;
+    }
     if (hdrWorker.joinable())
         hdrWorker.join();
     else

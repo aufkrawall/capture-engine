@@ -70,20 +70,16 @@ public:
     public:
         Access(Access&& other) noexcept
             : owner_(other.owner_),
-              lockedMutex_(other.lockedMutex_),
               value_(std::move(other.value_)) {
             other.owner_ = nullptr;
-            other.lockedMutex_ = false;
         }
 
         Access& operator=(Access&& other) noexcept {
             if (this != &other) {
                 cleanup();
                 owner_ = other.owner_;
-                lockedMutex_ = other.lockedMutex_;
                 value_ = std::move(other.value_);
                 other.owner_ = nullptr;
-                other.lockedMutex_ = false;
             }
             return *this;
         }
@@ -115,27 +111,25 @@ public:
         friend class AtomicSharedOwner<T>;
 
         explicit Access(const AtomicSharedOwner<T>* owner)
-            : owner_(owner),
-              value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {
-            if (owner_ && detail::AcquireSharedReadDepth(owner_) == 0) {
-                owner_->accessMutex_.lock_shared();
-                lockedMutex_ = true;
+            : owner_(owner) {
+            if (owner_) {
+                if (detail::AcquireSharedReadDepth(owner_) == 0) {
+                    owner_->accessMutex_.lock_shared();
+                }
+                value_ = std::atomic_load_explicit(&owner_->value_, std::memory_order_acquire);
             }
         }
 
         void cleanup() noexcept {
             if (owner_) {
-                detail::ReleaseSharedReadDepth(owner_);
-                if (lockedMutex_) {
+                if (detail::ReleaseSharedReadDepth(owner_) == 0) {
                     owner_->accessMutex_.unlock_shared();
                 }
                 owner_ = nullptr;
-                lockedMutex_ = false;
             }
         }
 
         const AtomicSharedOwner<T>* owner_ = nullptr;
-        bool lockedMutex_ = false;
         std::shared_ptr<T> value_;
     };
 

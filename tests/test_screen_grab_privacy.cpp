@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <wrl/client.h>
 #include "../common/screen_grab_privacy.h"
 
@@ -334,4 +335,30 @@ TEST(ScreenGrabPrivacyTest, BlackTextureCacheProducesOpaqueBlackForSupportedForm
     }
     cache.Reset();
     EXPECT_EQ(cache.Get(), nullptr);
+}
+
+TEST(ScreenGrabPrivacyTest, VirtualDesktopQueryRecoversAfterLateComInitialization) {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const HWND window =
+        CreateWindowExW(0, L"STATIC", L"LateComTest", WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(window, nullptr);
+
+    std::thread t([&]() {
+        // Query on uninitialized thread: must not crash, falls back safely to true
+        EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(window));
+
+        // Now initialize COM on this thread
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        EXPECT_TRUE(SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE);
+
+        // Query again: should succeed and not be blocked by a permanent failure latch
+        EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(window));
+
+        if (SUCCEEDED(hr)) {
+            CoUninitialize();
+        }
+    });
+    t.join();
+
+    DestroyWindow(window);
 }
