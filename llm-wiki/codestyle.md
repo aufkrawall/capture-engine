@@ -72,6 +72,13 @@ This page records the style rules that are either tool-backed or strongly reflec
   wrong-offset read, and a write through it corrupts the caller's structure. `hook/wrappers/d3dkmt_abi.h` and
   `hook/vulkan_layer/vulkan_present_metering_policy.h` are the two worked examples; `D3DKMT_HANDLE` typed as
   `UINT64` instead of `UINT32` is the regression they exist to prevent.
+- **A type declared in an unnamed namespace in a header and an `inline` variable of that type are mutually
+  exclusive.** The unnamed namespace gives the type internal linkage, the variable inherits it, and the `inline`
+  then merges nothing: every translation unit gets its own object. No diagnostic fires, not under `-Wall -Wextra`,
+  so the only symptom is a writer and a reader in different units disagreeing at runtime. `main_internal.h` held
+  `ControllerStartupTimingState` this way and `[StartupPerf]` reported zeros plus an absolute QPC reading as
+  `TotalToReady` for a 142 ms startup (2026-09-20, `fb2afb1d`). `tests/test_header_inline_variable_linkage.cpp`
+  sweeps every first-party header for the shape. Either the type is shared, or the variable is not.
 
 ## Existing Helper Patterns
 - Common RAII helpers already live in `common/raii_helpers.h`: `HandleGuard`, `MappingGuard`, `VirtualAllocGuard`, `ComGuard`, and `ScopeGuard`.

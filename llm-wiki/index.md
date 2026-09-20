@@ -45,7 +45,7 @@ Primary sources:
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages. Last verified 2026-09-15.
 - `codestyle.md`
-  - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, bounded C++/Python fragment rules, Python tooling config, and common tree conventions. Last verified 2026-07-28.
+  - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, bounded C++/Python fragment rules, Python tooling config, and common tree conventions. Last verified 2026-09-20.
 - `build.py.md`
   - Supported build/gate flags including failed-manifest verification-mode restoration on resume, clean binary packages plus FFmpeg/libiconv corresponding source, content-addressed lint/sanitizer reuse, Windows/Linux toolchain policy, dependency provenance, exact-commit strict-clean stable releases with pinned Actions and scoped tokens, public artifact attestations, privacy-sanitized assets and immediate self-hosted log deletion, operational notes, and MinGW pitfalls. Also what each ratchet actually measures: the clang-tidy baseline now covers compiler diagnostics (`-extra-arg=-w` is gone), the line-length baseline covers what the 800-line ceiling cannot see, and `--verify` is the static gate while `--verify-runtime` is the one that launches anything. Last verified 2026-09-15.
 - `screenshots.md`
