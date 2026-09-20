@@ -188,14 +188,17 @@ inline constexpr UINT main_kMsgCompleteControllerStartup = WM_APP + 1;
 // which delivery path served a press.
 inline constexpr UINT main_kMsgHotkeyFromInputHook = WM_APP + 2;
 
-namespace {
+// Deliberately not in an unnamed namespace: the type's linkage decides the
+// variable's. An internal-linkage type gives every translation unit its own
+// main_g_ControllerStartupTiming, so main_entry.cpp's measurements never reach
+// the [StartupPerf] line in main_recording.cpp and it reports zeros plus an
+// absolute QPC reading as TotalToReady.
 struct ControllerStartupTimingState {
     int64_t controllerStartUs = 0;
     int64_t vulkanRegUs = 0;
     int64_t trayCreateUs = 0;
     bool complete = false;
 };
-}
 
 inline ControllerStartupTimingState main_g_ControllerStartupTiming;
 
