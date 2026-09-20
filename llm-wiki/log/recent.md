@@ -35,12 +35,33 @@ FG changes state, which the 22:35:12 Talos session could not show because `scQue
 Overlay row updates stayed continuous across every FG transition; the per-transition counter resets to
 `#1` are the overlay state being rebuilt for the new route, not a gap.
 
-**Unattributed, carried forward:** Strange Brigade's CE per-frame cost is 104 us median / 205 us p99
-against Talos's 12 us / 55 us in the same session. `fps_limit_wait_us` is a separate column (9.4 ms
-median at the 90 fps cap) so it is not that, and every sub-phase column (`overlay_us`, `capture_us`,
-`render_us`, `execute_us`) is zero, so `total_us` is not broken down. ~0.9% of an 11 ms frame, so not
-urgent, but a 9x difference between two D3D12 titles in one session wants an explanation. Nothing in
-0.1.6754/0.1.6755 touched that path.
+**The 104 us vs 12 us `total_us` gap is an accounting artifact, not a cost difference.** `total_us` is
+the whole DX12 `ProcessFrame` span (`dx12_hook_process_session_phase1.cpp:13` to
+`FrameProcessSession::LogFrameMetrics`). Whether the overlay render is *inside* that span depends
+entirely on which route draws the overlay, so **`total_us` is not comparable across routes** — which is
+the durable trap here.
+
+Talos drew on the PostSL route (225 `Post-SL overlay SUBMIT`, `render%=100%`) and later the
+FFX present-callback bridge; both run from call sites outside `ProcessFrame`. Strange Brigade logged no
+`Post-SL overlay SUBMIT` at all — no Streamline or FFX frame generation was active in its run — so its
+overlay drew on the normal route, inside the span.
+
+Decisive, within Talos alone: `total_us` was 429 us median over frames 2-20 and 244 us over frames
+20-40 while the overlay was still on the **normal** route, then collapsed to 6.5 us at the
+`OVERLAY HANDOFF ... route=post-sl prevRoute=normal` at present ~46, and stayed at 6-11 us for the
+remaining ~4700 frames. Same game, same second, ~40x from routing alone.
+
+The complement confirms it: Talos's own route counter reports
+`[OVERLAY COST] FFX present-callback bridge: ceAvgUs=91 ceMaxUs=223`. 12 + 91 = 103 us against Strange
+Brigade's 104 us median, and 223 against its 204 us p99. Same total CE cost, split across two counters
+in one title and combined into one in the other.
+
+Ruled out along the way: GPU clocks are the same in both (2865-2940 MHz at 0.920 V), so no downclocking;
+`ECL timing/1s` reports `avgMs=0.051` for Strange Brigade against `0.048` for Talos, so CE's
+per-ExecuteCommandLists overhead is identical; and `fps_limit_wait_us` is a separate column (9.4 ms
+median at Strange Brigade's 90 fps cap), so the limiter is not in `total_us` either. The load difference
+is real but irrelevant — Strange Brigade sits at 3-6% CPU and 67% GPU because it is capped, Talos at
+10-21% and 11-93%.
 
 ### 2026-09-20 - Strange Brigade died in PatchIAT: page protection is process-wide state
 

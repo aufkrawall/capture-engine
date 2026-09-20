@@ -373,6 +373,21 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
 - If you touch A/V sync, CFR smoothness, WGC source-starvation, WGC encoder-overload cadence, app-audio source timing, or mux duration/probe logging, start with the deterministic fast zero-drift stimulus workflow: `tools/analysis/run_av_sync_matrix.py --fast-zero-drift` for synthetic quick evidence and `tools/analysis/analyze_capture_av.py --session-dir <logs> --json-out <report.json>` for real-session attribution. Add `--late-app-source-gate`, `--codec-finalization-pass`, `--short-stress`, `--full-matrix`, or `--long-soak` when the touched area warrants broader coverage. The triage report should separate source Present gaps / WGC source starvation / WGC encoder-limited judder / late app-source backlog from CE encoder/mux backpressure, probe/shutdown faults, process crashes, and audio/visual timeline faults. Use scenario-local `ce_logs` snapshots from the matrix runner for durable evidence; global `installed/captureengine/logs/<session>` folders can rotate away.
 - If a real-world report records the same app-audio source to multiple tracks, also inspect `multi_app_audio_track_stall`, per-track stop summaries, and `App source gap silence` evidence. The supported fix direction is source-local silence padding and per-track cursor preservation, not disabling duplicate routing.
 - If a real-world report says app audio sounds delayed despite exact final durations, inspect `Source primed ... lateStart`, `Late app source live join`, `qjoin/qjoinKeep`, started-source underruns, and crash/probe evidence. Exact final stream length is required but not sufficient for content sync.
+- **`total_us` in `perf_metrics_*.csv` is not comparable across overlay routes, and comparing it that way
+  invents performance problems that do not exist.** For D3D12 it is the whole `ProcessFrame` span
+  (`dx12_hook_process_session_phase1.cpp` sets `perfMetrics.qpcUs`, `FrameProcessSession::LogFrameMetrics`
+  closes it), so it includes the overlay render only when the overlay draws on the **normal** route. On
+  the PostSL and FFX present-callback routes the draw happens at a different call site and falls outside
+  the span entirely; its cost is reported by `[OVERLAY COST] ... ceAvgUs=` instead. Session
+  `20260920_225326` showed Strange Brigade at 104 us median against Talos at 12 us and looked like a 9x
+  regression; within Talos alone `total_us` was 429 us over frames 2-20 on the normal route and collapsed
+  to 6.5 us at the `OVERLAY HANDOFF ... route=post-sl prevRoute=normal` at present ~46. Adding Talos's
+  own route counter back (`ceAvgUs=91`) gives 103 us against Strange Brigade's 104 us - the same cost,
+  split across two counters in one title and combined into one in the other. Always check which route
+  drew the overlay before comparing `total_us` between titles or across an FG transition. Note also that
+  the sub-phase columns (`overlay_us`, `capture_us`, `render_us`, `execute_us`) are only populated when a
+  PerfLogger debug sample is active, so an all-zero breakdown is normal and does not mean the work was
+  free.
 - `perf_metrics_*.csv` now has an appended `qpc_delta_us` column. Existing readers should ignore unknown trailing columns; new stutter triage should prefer `qpc_delta_us` over recomputing gaps when present.
 - Post-mux audio deltas at or below one audio sample or one mux timebase tick are informational rounding evidence, not strict warnings. Larger `Post-mux audio duration mismatch` lines remain strict.
 
