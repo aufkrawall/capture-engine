@@ -289,12 +289,38 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
         return false;
     }
 
+    // From here to the restoring VirtualProtect below, `g_PatchLock` is held.
+    //
+    // It used to be taken only around the push_back, leaving the
+    // VirtualProtect/write/restore window unserialized, and two CE threads
+    // patching the same page then destroyed each other: A unprotects the page to
+    // PAGE_READWRITE, B finishes its own patch on that page and restores
+    // PAGE_READONLY, and A's InterlockedCompareExchangePointer writes into a
+    // read-only page. Strange Brigade, session 20260920_224536: the hook thread's
+    // PatchIATAllModulesFiltered sweep and the LoadLibrary hook's late-load pass
+    // (main_redirect.cpp, PatchLateLoadedCreateProcessImports) both reached
+    // steamclient64.dll's CreateProcessA/W thunks - adjacent slots in one page -
+    // inside the same millisecond, and the sweep died with 0xC0000005 writing to
+    // 0x7FF8B6F6B928, which !address reports as MEM_IMAGE PAGE_READONLY.
+    //
+    // A page's protection is process-wide state, so serializing CE's own writes
+    // to it is the only way the sequence can be correct. RestoreIAT and
+    // ShutdownIATHooks already hold the lock across the same three steps; this is
+    // the one place that did not. Patching happens at startup and on module
+    // loads, never on a hot path, so a process-wide mutex costs nothing.
+    //
+    // The lock starts here rather than earlier because
+    // TryGetTrackedOriginalForPatchedEntry above takes it too and g_PatchLock is
+    // a plain std::mutex: a second acquire on this thread would park it forever.
+    std::unique_lock<std::mutex> patchLock(g_PatchLock);
+
     PatchedEntry trackingEntry{targetModule, {}, {}, hookFunction, currentFunction,
                                reinterpret_cast<void**>(&iatEntry->u1.Function)};
     try {
         trackingEntry.sourceModule = sourceModule;
         trackingEntry.functionName = functionName;
     } catch (...) {
+        patchLock.unlock();
         WrapperLog("IAT: Could not allocate ownership record for %s!%s in module %p", sourceModule, functionName,
                    targetModule);
         return false;
@@ -309,13 +335,13 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
         *outOriginal = currentFunction;
     MemoryBarrier();
 
-    std::unique_lock<std::mutex> trackingLock(g_PatchLock);
     try {
         g_PatchedEntries.push_back(std::move(trackingEntry));
     } catch (...) {
         VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
         if (outOriginal)
             *outOriginal = previousOutOriginal;
+        patchLock.unlock();
         WrapperLog("IAT: Could not publish ownership record for %s!%s in module %p", sourceModule, functionName,
                    targetModule);
         return false;
@@ -329,12 +355,17 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
 
     if (replaced != currentFunction) {
         g_PatchedEntries.pop_back();
+        patchLock.unlock();
         WrapperLog("IAT: Preserving concurrent replacement %p for %s!%s in module %p", replaced, sourceModule,
                    functionName, targetModule);
         if (outOriginal)
             *outOriginal = previousOutOriginal;
         return false;
     }
+
+    // Nothing below touches the page or the registry, and logging while holding
+    // a lock a peer may be waiting on is worth avoiding on principle.
+    patchLock.unlock();
 
     if (lookup.usedResolvedAddress) {
         WrapperLog("IAT: Successfully patched name-less %s!%s in module %p by resolved address", sourceModule,

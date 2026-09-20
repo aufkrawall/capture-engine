@@ -1,5 +1,59 @@
 # llm-wiki Log
 
+### 2026-09-20 - Strange Brigade died in PatchIAT: page protection is process-wide state
+
+Session `20260920_224536`, build 0.1.6754, `StrangeBrigade_DX12.exe`. The game crashed ~50 ms after the
+hook thread connected IPC and started `InstallKernel32LoaderHooks`, before rendering a single frame.
+`0xC0000005` WRITE to `0x00007FF8B6F6B928`, RIP inside `capture_hook_x64.dll`.
+
+```
+capture_hook_x64!IATHook::PatchIAT+0x50d        <- _InterlockedCompareExchangePointer (inlined)
+capture_hook_x64!IATHook::PatchIATAllModulesFiltered+0x1a1
+capture_hook_x64!InstallKernel32LoaderHooks+0x1a1
+capture_hook_x64!HookThread+0x4551
+```
+
+`!address 0x7FF8B6F6B928` names it: `steamclient64.dll`, `MEM_IMAGE`, **`PAGE_READONLY`**. CE was doing a
+`lock cmpxchg` into a read-only image page.
+
+**Two CE threads were patching the same page.** The log shows them interleaved to the millisecond:
+
+```
+[22:46:15.437] [T:5E94] IAT: Patched kernel32.dll!CreateProcessA in module 00007FF8B5E00000
+[22:46:15.443] [T:5640] IAT: kernel32.dll!CreateProcessA in module 00007FF8B5E00000 already patched
+[22:46:15.449] [T:5640] IAT: Successfully patched kernel32.dll!CreateProcessW in module 00007FF8B5E00000
+[22:46:15.449] [T:5E94] <crash>
+```
+
+T:5E94 is the hook thread's `PatchIATAllModulesFiltered` sweep. T:5640 is the LoadLibrary hook's late-load
+pass — `main_redirect.cpp:PatchLateLoadedCreateProcessImports`, which runs on whichever game thread mapped
+the module, here Steam's loader thread mapping `steamclient64.dll`. `CreateProcessA` and `CreateProcessW`
+are adjacent thunks in one 4 KB page.
+
+**Root cause.** `PatchIAT` does `VirtualProtect(PAGE_READWRITE)` → CAS → `VirtualProtect(oldProtect)`, and
+`g_PatchLock` was taken *after* the unprotect, covering only the `g_PatchedEntries.push_back`. Page
+protection is process-wide state, so two of those sequences interleaving on one page destroy each other:
+A unprotects, B finishes its own patch and restores `PAGE_READONLY`, A's CAS then writes into a read-only
+page. `RestoreIAT` and `ShutdownIATHooks` already held the lock across all three steps — `PatchIAT` was
+the one place that did not. Fixed by moving the guard ahead of the first `VirtualProtect`.
+
+The guard starts *after* `TryGetTrackedOriginalForPatchedEntry`, which takes `g_PatchLock` itself.
+`g_PatchLock` is a plain `std::mutex` → SRWLOCK under libc++, so a second acquire on the same thread parks
+forever — the same trap `ReleaseDX12SharpenResources` hit in 0.1.6741. Making it recursive would hide the
+re-entry rather than respect it; `tests/test_iat_patch_serialization.cpp` pins both the ordering and that
+it stays non-recursive.
+
+**This is a regression from the unreleased set, not a long-standing bug.** `0ee31cae`
+(`fix(ngx): make ngx_ota=off suppress the updater instead of racing it`) introduced the late-load
+CreateProcess pass, which is what gave `PatchIAT` a second concurrent caller. Before it, the hook thread's
+sweep was effectively the only writer and the missing serialization never showed. It is also why the
+crash is timing-dependent and looks title-specific: it needs a module that imports CreateProcess to map
+during the sweep. Talos in session `20260920_223512` was fine for exactly that reason.
+
+**The pre-release review missed it.** It covered sharpen, the Vulkan layer, the inline-hook engine and the
+release tooling, but never asked what the new NGX-OTA late-load path races against. A new call site for an
+existing global-state mutator deserves that question by default.
+
 ### 2026-09-20 - Pre-release review of v0.1.6652..HEAD: the sharpen pass has two submit queues
 
 Release-readiness review of the whole unreleased set (264 files, ~33k insertions). `--verify` passed

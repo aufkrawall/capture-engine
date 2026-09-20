@@ -71,6 +71,12 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Games no longer crash at startup while CaptureEngine is installing its hooks.** Strange Brigade died within a
+  second of launching, every time the Steam client library happened to load at the same moment CaptureEngine was
+  walking the already-loaded modules. Two CaptureEngine threads were rewriting import entries that sit next to each
+  other in the same block of memory, and each one briefly made that memory writable and then put it back - so one
+  thread could revoke write access while the other was still writing, which Windows answers with an access
+  violation. Those rewrites are now serialized against each other.
 - **Saving `config.ini` no longer blacks out the overlay for seconds and can no longer freeze the game.** Changing a
   single setting - a sharpen key was enough - made CE re-read the whole configuration file once per profile entry
   before answering the injected runtime. The injected side took about five seconds to reply to a reload that is
