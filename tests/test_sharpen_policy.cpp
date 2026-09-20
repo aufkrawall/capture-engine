@@ -34,10 +34,11 @@ Target MakeUsableTarget() {
     return target;
 }
 
-Request MakeRequest(Mode mode, float strength = kDefaultStrength) {
+Request MakeRequest(Mode mode, float strength = kDefaultStrength, float intensity = kDefaultIntensity) {
     Request request;
     request.mode = mode;
     request.strength = strength;
+    request.intensity = intensity;
     return request;
 }
 
@@ -291,4 +292,56 @@ TEST(SharpenConstants, ZeroExtentsDoNotUnderflowTheClampCoordinates) {
     const ShaderConstants constants = BuildShaderConstants(Mode::Cas, decision, 0, 0);
     EXPECT_EQ(constants.maxCoord[0], 0);
     EXPECT_EQ(constants.maxCoord[1], 0);
+}
+
+TEST(SharpenPolicy, ClampIntensityBoundsAndRejectsNaN) {
+    EXPECT_FLOAT_EQ(ClampIntensity(0.25f), 0.25f);
+    EXPECT_FLOAT_EQ(ClampIntensity(-1.0f), kMinIntensity);
+    EXPECT_FLOAT_EQ(ClampIntensity(7.0f), kMaxIntensity);
+    EXPECT_FLOAT_EQ(ClampIntensity(std::numeric_limits<float>::quiet_NaN()), kMinIntensity);
+}
+
+TEST(SharpenPolicy, IntensityDefaultsToTheFullEffect) {
+    // An absent intensity must leave the effect at full weight, so adding the
+    // control cannot quietly weaken an existing configuration.
+    EXPECT_FLOAT_EQ(kDefaultIntensity, kMaxIntensity);
+    EXPECT_FLOAT_EQ(Request{}.intensity, kMaxIntensity);
+}
+
+TEST(SharpenPolicyDecide, IntensityIsIndependentOfTheEffectParameter) {
+    // Strength selects how the kernel reacts to contrast; intensity selects how
+    // much of that result reaches the frame. Neither may move the other.
+    const Decision quarter = Decide(MakeRequest(Mode::Cas, 0.75f, 0.25f), MakeUsableTarget());
+    ASSERT_TRUE(quarter.run);
+    EXPECT_FLOAT_EQ(quarter.effectParameter, 0.75f);
+    EXPECT_FLOAT_EQ(quarter.intensity, 0.25f);
+
+    const Decision full = Decide(MakeRequest(Mode::Cas, 0.75f, 1.0f), MakeUsableTarget());
+    ASSERT_TRUE(full.run);
+    EXPECT_FLOAT_EQ(full.effectParameter, quarter.effectParameter);
+    EXPECT_FLOAT_EQ(full.intensity, 1.0f);
+}
+
+TEST(SharpenPolicyDecide, ZeroIntensitySkipsThePassInsteadOfWritingTheFrameBackUnchanged) {
+    // At zero weight the shader would read every pixel and store it unchanged.
+    // Under 4x MFG that is four full-screen passes per rendered frame for a
+    // result identical to not running at all.
+    const Decision decision = Decide(MakeRequest(Mode::Rcas, 0.5f, 0.0f), MakeUsableTarget());
+    EXPECT_FALSE(decision.run);
+    EXPECT_STREQ(decision.reason, "zero_intensity");
+}
+
+TEST(SharpenPolicyDecide, ADisabledModeOutranksAZeroIntensity) {
+    // Both would refuse; the reason a session log shows has to be the one the
+    // user actually set.
+    const Decision decision = Decide(MakeRequest(Mode::Off, 0.5f, 0.0f), MakeUsableTarget());
+    EXPECT_FALSE(decision.run);
+    EXPECT_STREQ(decision.reason, "disabled");
+}
+
+TEST(SharpenConstants, IntensityReachesTheShaderBlock) {
+    const Decision decision = Decide(MakeRequest(Mode::Cas, 0.5f, 0.375f), MakeUsableTarget());
+    ASSERT_TRUE(decision.run);
+    const ShaderConstants constants = BuildShaderConstants(Mode::Cas, decision, 1920, 1080);
+    EXPECT_FLOAT_EQ(constants.intensity, 0.375f);
 }

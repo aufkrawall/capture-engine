@@ -377,6 +377,7 @@ public:
         request.mode = static_cast<ce::sharpen::Mode>(m_SharpenMode.load(std::memory_order_acquire));
         request.space = static_cast<ce::sharpen::ConfiguredSpace>(m_SharpenColorSpace.load(std::memory_order_acquire));
         request.strength = ce::sharpen::ClampStrength(m_SharpenStrength.load(std::memory_order_acquire));
+        request.intensity = ce::sharpen::ClampIntensity(m_SharpenIntensity.load(std::memory_order_acquire));
         return request;
     }
     float GetPrerenderLimit() const {
@@ -389,6 +390,7 @@ private:
     std::atomic<uint8_t> m_SharpenMode{0};
     std::atomic<uint8_t> m_SharpenColorSpace{0};
     std::atomic<float> m_SharpenStrength{ce::sharpen::kDefaultStrength};
+    std::atomic<float> m_SharpenIntensity{ce::sharpen::kDefaultIntensity};
 
     VulkanLayerState();
     DeviceDispatch* ResolveDispatchByKey(const void* dispatchableHandle);

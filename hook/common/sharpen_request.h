@@ -14,6 +14,7 @@ inline Request ResolveRequest(const GraphicsConfig& graphics) {
     Request request;
     request.mode = ParseMode(graphics.sharpenMode.c_str());
     request.strength = ClampStrength(graphics.sharpenStrength);
+    request.intensity = ClampIntensity(graphics.sharpenIntensity);
     request.space = ParseConfiguredSpace(graphics.sharpenColorSpace.c_str());
     return request;
 }

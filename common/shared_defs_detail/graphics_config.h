@@ -164,6 +164,9 @@ struct SharedGraphicsConfig {
     // 0..1 within each effect's own native range. Neither effect is off at 0;
     // sharpenMode is the only switch. See common/sharpen_policy.h.
     float sharpenStrength;
+    // 0..1 weight of the filtered result against the original pixels. This one
+    // IS off at 0, and it is what a viewer reads as "how much sharpening".
+    float sharpenIntensity;
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -264,10 +267,13 @@ static_assert(offsetof(SharedGraphicsConfig, sharpenColorSpace) == offsetof(Shar
               "the sharpen working space must share the sharpen byte pair");
 static_assert(offsetof(SharedGraphicsConfig, sharpenStrength) == offsetof(SharedGraphicsConfig, sharpenMode) + 4,
               "the sharpen strength must keep its natural 32-bit alignment behind the two policy bytes");
-// 1752 + the eight bytes of the sharpen block. The DLSS FG fields had already
+static_assert(offsetof(SharedGraphicsConfig, sharpenIntensity) ==
+                  offsetof(SharedGraphicsConfig, sharpenStrength) + sizeof(float),
+              "the sharpen intensity must follow the strength it is independent of");
+// 1752 + the twelve bytes of the sharpen block. The DLSS FG fields had already
 // consumed the tail padding, so unlike those this block grows the mapping -
-// which is what SHARED_MEMORY_VERSION 61 exists for.
-static_assert(sizeof(SharedGraphicsConfig) == 1760,
+// which is what SHARED_MEMORY_VERSION 62 exists for.
+static_assert(sizeof(SharedGraphicsConfig) == 1768,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
-static_assert(offsetof(SharedGraphicsConfig, sharpenStrength) + sizeof(float) == sizeof(SharedGraphicsConfig),
-              "the sharpen strength must be the last field in the mapping");
+static_assert(offsetof(SharedGraphicsConfig, sharpenIntensity) + sizeof(float) <= sizeof(SharedGraphicsConfig),
+              "the sharpen intensity must fit inside the mapping");

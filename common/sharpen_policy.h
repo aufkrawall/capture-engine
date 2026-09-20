@@ -80,6 +80,16 @@ inline constexpr float kMinStrength = 0.0f;
 inline constexpr float kMaxStrength = 1.0f;
 inline constexpr float kDefaultStrength = 0.5f;
 
+// How much of the filtered result is mixed back over the original pixels. This
+// is the knob that behaves the way "sharpening amount" is normally expected to:
+// 0 is genuinely no sharpening and 1 is the effect at full weight. It is
+// independent of `strength`, which selects how the kernel itself reacts to
+// contrast, and it is the same control ReShade's CAS port calls "Sharpening
+// Intensity" next to its "Contrast Adaptation".
+inline constexpr float kMinIntensity = 0.0f;
+inline constexpr float kMaxIntensity = 1.0f;
+inline constexpr float kDefaultIntensity = 1.0f;
+
 // Below this a target is a thumbnail, a probe chain, or a driver scratch
 // surface rather than a frame worth filtering.
 inline constexpr uint32_t kMinTargetExtent = 32;
@@ -90,6 +100,14 @@ inline constexpr float ClampStrength(float strength) {
     if (strength > kMaxStrength)
         return kMaxStrength;
     return strength;
+}
+
+inline constexpr float ClampIntensity(float intensity) {
+    if (!(intensity >= kMinIntensity))  // Also rejects NaN.
+        return kMinIntensity;
+    if (intensity > kMaxIntensity)
+        return kMaxIntensity;
+    return intensity;
 }
 
 // CAS takes sharpness directly: 0 is its default (lowest ringing), 1 its maximum.
@@ -206,7 +224,10 @@ inline bool RouteCarriesFrame(Route route) {
 
 struct Request {
     Mode mode = Mode::Off;
+    // The effect's own contrast-adaptation parameter.
     float strength = kDefaultStrength;
+    // How much of the filtered result reaches the frame.
+    float intensity = kDefaultIntensity;
     ConfiguredSpace space = ConfiguredSpace::Auto;
 };
 
@@ -229,6 +250,8 @@ struct Decision {
     FilterSpace filterSpace = FilterSpace::Direct;
     // CAS sharpness or RCAS attenuation, already in the effect's own units.
     float effectParameter = 0.0f;
+    // Weight of the filtered result against the original pixels.
+    float intensity = kDefaultIntensity;
     // Stable identifier for logs; never null.
     const char* reason = "";
 };
@@ -240,8 +263,17 @@ inline Decision Decide(const Request& request, const Target& target) {
     decision.filterSpace = ResolveFilterSpace(
         ValuesReachShaderAsLinear(target.encoding, target.viewAppliesSrgbConversion), request.space);
 
+    decision.intensity = ClampIntensity(request.intensity);
+
     if (request.mode == Mode::Off) {
         decision.reason = "disabled";
+        return decision;
+    }
+    // At zero weight the pass would read the frame and write it back unchanged.
+    // Refusing here is what keeps that from costing a full-screen pass per
+    // displayed frame, which under 4x MFG is four of them.
+    if (decision.intensity <= kMinIntensity) {
+        decision.reason = "zero_intensity";
         return decision;
     }
     if (target.route == Route::RuntimeUiResource) {

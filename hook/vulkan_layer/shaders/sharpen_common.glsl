@@ -7,7 +7,7 @@ layout(push_constant) uniform SharpenConstantsBlock {
     FfxUInt32x4 ceConst1;
     FfxInt32x2 ceMaxCoord;
     FfxUInt32 ceFilterSpace;
-    FfxUInt32 ceReserved;
+    FfxFloat32 ceIntensity;
 }
 ceConstants;
 
@@ -45,13 +45,17 @@ void ceToFilterSpace(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloa
     }
 }
 
-// Alpha is never filtered: a composition swapchain needs the exact value the
-// game wrote, and sharpening coverage produces halos of its own.
+// The mix against the original happens here, in the frame's own stored space,
+// rather than inside the kernel: that is what makes intensity mean "how much
+// sharpening is visible" independently of how the kernel reacted to local
+// contrast. Alpha is never filtered or mixed - a composition swapchain needs the
+// exact value the game wrote, and sharpening coverage produces halos of its own.
 FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxInt32x2 position) {
     if (ceConstants.ceFilterSpace == CE_FILTER_SPACE_LINEAR_TO_GAMMA) {
         filtered.r = ceDecodeGammaChannel(filtered.r);
         filtered.g = ceDecodeGammaChannel(filtered.g);
         filtered.b = ceDecodeGammaChannel(filtered.b);
     }
-    return FfxFloat32x4(filtered, ceLoadSource(position).a);
+    FfxFloat32x4 original = ceLoadSource(position);
+    return FfxFloat32x4(mix(original.rgb, filtered, ceConstants.ceIntensity), original.a);
 }

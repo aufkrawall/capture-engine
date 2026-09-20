@@ -38,8 +38,17 @@ with 0xC0000005 on every run and took the whole unit-test process down mid-suite
 
 ### 2026-09-20 - post-processing sharpen: FidelityFX CAS and RCAS on D3D11, D3D12 and Vulkan
 
-New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength` and
-`sharpen_color_space`. Full topic page: `post-processing-sharpen.md`.
+New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength`,
+`sharpen_intensity` and `sharpen_color_space`. Full topic page:
+`post-processing-sharpen.md`.
+
+- **Two independent controls, matching ReShade's CAS port.** `sharpen_strength`
+  is AMD's own contrast-adaptation parameter and is *not* off at 0;
+  `sharpen_intensity` mixes the filtered result back over the original pixels
+  and *is* off at 0. The mix happens in the frame's stored space after the
+  working-space round trip, not inside AMD's kernel, which is what keeps the two
+  orthogonal. Zero intensity refuses the pass outright rather than writing the
+  frame back unchanged. That second float moved SHARED_MEMORY_VERSION to 62.
 
 - **The ordering rule is the design.** The filter runs on the frame the Present will put on
   screen, *before* inject capture copies it and *before* the overlay draws. That is what

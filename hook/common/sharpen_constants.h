@@ -24,7 +24,10 @@ struct alignas(16) ShaderConstants {
     int32_t maxCoord[2] = {0, 0};
     // ce::sharpen::FilterSpace as a uint.
     uint32_t filterSpace = 0;
-    uint32_t reserved = 0;
+    // Weight of the filtered result against the original pixels, 0..1. This
+    // consumes the block's former padding DWORD, so the layout and the D3D12
+    // root-constant count are unchanged.
+    float intensity = 1.0f;
 };
 
 static_assert(sizeof(ShaderConstants) == 48, "Shader constant layout must match the HLSL/GLSL blocks");

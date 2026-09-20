@@ -571,6 +571,9 @@ TEST_F(ConfigTest, SharpenDefaultsToOffWithTheDocumentedStrength) {
     EXPECT_EQ(config.graphics.sharpenMode, "off");
     EXPECT_EQ(config.graphics.sharpenColorSpace, "auto");
     EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.5f);
+    // Absent means the effect at full weight, so adding this control cannot
+    // quietly weaken a configuration written before it existed.
+    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 1.0f);
 }
 
 TEST_F(ConfigTest, SharpenAcceptsBothEffectsAndTheirParameters) {
@@ -633,4 +636,36 @@ TEST_F(ConfigTest, SharpenStrengthOutsideItsRangeFallsBackToTheDefault) {
     LoadConfig(tempConfigFile, zero);
     EXPECT_FLOAT_EQ(zero.graphics.sharpenStrength, 0.0f);
     EXPECT_EQ(zero.graphics.sharpenMode, "cas");
+}
+
+TEST_F(ConfigTest, SharpenIntensityIsIndependentOfStrength) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=cas\n"
+        "sharpen_strength=0.2\n"
+        "sharpen_intensity=0.6\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.2f);
+    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 0.6f);
+}
+
+TEST_F(ConfigTest, SharpenIntensityOutsideItsRangeFallsBackToFullWeight) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=cas\n"
+        "sharpen_intensity=3.5\n");
+    AppConfig tooHigh;
+    LoadConfig(tempConfigFile, tooHigh);
+    EXPECT_FLOAT_EQ(tooHigh.graphics.sharpenIntensity, 1.0f);
+
+    // Unlike strength, 0 is a meaningful value here - it means "no sharpening"
+    // at all - so it has to survive rather than being replaced by the default.
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=cas\n"
+        "sharpen_intensity=0\n");
+    AppConfig zero;
+    LoadConfig(tempConfigFile, zero);
+    EXPECT_FLOAT_EQ(zero.graphics.sharpenIntensity, 0.0f);
 }

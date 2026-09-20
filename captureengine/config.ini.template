@@ -607,9 +607,22 @@ backbuffer_count=-1
 ; overlay texture rather than a frame - the pass is skipped and the reason is
 ; logged.
 sharpen=off
-; 0.0 to 1.0. This is the intensity inside each effect's own native range, and
-; 0.0 is the mildest setting rather than off - use sharpen=off to disable.
+; The two effects have two independent controls, the same pair ReShade's CAS
+; port exposes as "Contrast Adaptation" and "Sharpening Intensity".
+;
+; sharpen_strength, 0.0 to 1.0, is the effect's own contrast-adaptation
+; parameter: how strongly the kernel reacts to local contrast. This is AMD's
+; native control, and 0.0 is its mildest setting rather than off - it still
+; sharpens. Higher values sharpen flat, low-contrast texture detail harder and
+; ring more around edges.
 sharpen_strength=0.5
+; sharpen_intensity, 0.0 to 1.0, is how much of the filtered result is mixed
+; back over the original pixels. This is the control that behaves the way
+; "amount" is normally expected to: 0.0 is genuinely no sharpening and 1.0 is
+; the effect at full weight. Use it to dial the overall effect down without
+; changing how the kernel treats contrast. At 0.0 the pass is skipped entirely
+; rather than reading and rewriting the frame for nothing.
+sharpen_intensity=1.0
 ; sharpen_color_space: auto, direct, or gamma. auto is correct for every
 ; presentation path CaptureEngine recognizes: it filters stored sRGB, plain
 ; UNORM and HDR10/PQ values directly, and converts linear values (scRGB FP16,

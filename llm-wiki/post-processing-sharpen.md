@@ -80,6 +80,7 @@ string that reaches the session log. Refusals in precedence order:
 | Reason | Meaning |
 | --- | --- |
 | `disabled` | `sharpen=off`. Nothing is allocated and nothing is queried. |
+| `zero_intensity` | `sharpen_intensity=0`. The pass would write the frame back unchanged. |
 | `ui_resource_route_carries_no_frame` | The FG runtimes' UI-resource route. That texture is a transparent overlay, not a frame. |
 | `route_unclassified` | The backend could not name the route. Never guessed at. |
 | `unknown_presentation_encoding` | The target's presentation meaning is not one CE recognizes. |
@@ -106,14 +107,30 @@ for diagnosis.
 The gamma round trip uses a sign-preserving `pow(2.2)` pair, because scRGB is
 legally negative outside Rec.709 and a plain `pow` returns NaN there.
 
-## Strength
+## Two controls, not one
 
-One user-facing `sharpen_strength` in 0..1 maps to each effect's own native
-convention - CAS sharpness rises with the value, RCAS attenuation is in stops
-and falls with it. **Neither effect is off at 0**: 0 is the mildest setting each
-one supports, and `sharpen=off` is the only switch. The config parser and the
-unit tests both pin that, because treating 0 as "absent" would silently turn a
-deliberate mildest setting into the 0.5 default.
+The same pair ReShade's CAS port exposes as "Contrast Adaptation" and
+"Sharpening Intensity", and they are independent:
+
+- **`sharpen_strength`** (0..1) is the effect's own contrast-adaptation
+  parameter, mapped to each effect's native convention - CAS sharpness rises
+  with the value, RCAS attenuation is in stops and falls with it. **Neither
+  effect is off at 0**: 0 is the mildest setting each one supports. The config
+  parser and the unit tests pin that, because treating 0 as "absent" would
+  silently turn a deliberate mildest setting into the 0.5 default.
+- **`sharpen_intensity`** (0..1, default 1.0) is how much of the filtered result
+  is mixed back over the original pixels. This one *is* genuinely off at 0, and
+  it is what a viewer reads as "how much sharpening". It is the knob to reach for
+  when the effect is too strong overall; `sharpen_strength` changes how the
+  kernel treats flat texture detail versus edges.
+
+The mix happens in `ceResolveOutput`, in the frame's own stored space and after
+the working-space round trip - not inside AMD's kernel. That is what makes the
+two controls orthogonal. Alpha is never mixed.
+
+At `sharpen_intensity=0` `Decide` refuses with `zero_intensity` rather than
+running a pass that reads every pixel and stores it unchanged; under 4x MFG that
+would be four full-screen no-ops per rendered frame.
 
 ## Per-backend mechanics
 
@@ -177,7 +194,10 @@ are committed.
 
 - `sharpen` - `off` (default), `cas`, `rcas`. An unrecognized value is `off`,
   never a different effect.
-- `sharpen_strength` - `0.0`-`1.0`, default `0.5`.
+- `sharpen_strength` - `0.0`-`1.0`, default `0.5`. The effect's own
+  contrast-adaptation parameter; not off at 0.
+- `sharpen_intensity` - `0.0`-`1.0`, default `1.0`. Weight of the filtered
+  result against the original pixels; genuinely off at 0.
 - `sharpen_color_space` - `auto` (default), `direct`, `gamma`.
 
 The host parses them once and publishes the resolved enums in
@@ -196,4 +216,4 @@ moved `SHARED_MEMORY_VERSION` to 61.
   unverified.
 - `sharpen_strength` mapping is AMD's native range on both effects, but no
   side-by-side has been done to check that 0.5 looks comparable between CAS and
-  RCAS.
+  RCAS, nor which `sharpen_intensity` default reads as natural on real content.

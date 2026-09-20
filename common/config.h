@@ -203,6 +203,9 @@ struct GraphicsConfig {
     // 0..1 inside each effect's native range. 0 is the mildest setting, not off;
     // sharpenMode is the only switch. See common/sharpen_policy.h.
     float sharpenStrength = 0.5f;
+    // 0..1 weight of the filtered result against the original pixels. This one
+    // is genuinely off at 0.
+    float sharpenIntensity = 1.0f;
     float cpuPrerenderLimit = -1.0f;     // integer semantics: -1 = default, 0 = fully serialized, 1-6 = queued frames
     int backbufferCount = -1;            // -1 = app controlled, 2-6
     int frameLatency = 0;                // 0 = default, 1-6 (SetMaximumFrameLatency)

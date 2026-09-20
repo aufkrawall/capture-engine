@@ -440,6 +440,7 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.sharpenColorSpace = ce::sharpen::ConfiguredSpaceName(
             static_cast<ce::sharpen::ConfiguredSpace>(sharedMem->graphicsConfig.sharpenColorSpace));
         result.sharpenStrength = ce::sharpen::ClampStrength(sharedMem->graphicsConfig.sharpenStrength);
+        result.sharpenIntensity = ce::sharpen::ClampIntensity(sharedMem->graphicsConfig.sharpenIntensity);
         result.nvLodSpreadFix = sharedMem->graphicsConfig.nvLodSpreadFix;
         result.legacyD3DNativeOverlay = sharedMem->graphicsConfig.legacyD3DNativeOverlay;
         result.forceRayReconstruction = sharedMem->graphicsConfig.forceRayReconstruction;

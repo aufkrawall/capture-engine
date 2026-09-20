@@ -495,6 +495,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.sharpenColorSpace =
             ce::sharpen::ConfiguredSpaceName(static_cast<ce::sharpen::ConfiguredSpace>(shmGfx.sharpenColorSpace));
         mergedConfig.sharpenStrength = ce::sharpen::ClampStrength(shmGfx.sharpenStrength);
+        mergedConfig.sharpenIntensity = ce::sharpen::ClampIntensity(shmGfx.sharpenIntensity);
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
         mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
         mergedConfig.legacyD3DNativeOverlay = shmGfx.legacyD3DNativeOverlay;
@@ -638,6 +639,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
             mergedConfig.sharpenMode = g_pLocalConfig->graphics.sharpenMode;
             mergedConfig.sharpenColorSpace = g_pLocalConfig->graphics.sharpenColorSpace;
             mergedConfig.sharpenStrength = g_pLocalConfig->graphics.sharpenStrength;
+            mergedConfig.sharpenIntensity = g_pLocalConfig->graphics.sharpenIntensity;
         }
 
         // Apply Preset Overrides from g_pLocalConfig

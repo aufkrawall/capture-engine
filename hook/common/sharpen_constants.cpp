@@ -19,6 +19,7 @@ namespace ce::sharpen {
 ShaderConstants BuildShaderConstants(Mode mode, const Decision& decision, uint32_t width, uint32_t height) {
     ShaderConstants constants;
     constants.filterSpace = static_cast<uint32_t>(decision.filterSpace);
+    constants.intensity = decision.intensity;
     constants.maxCoord[0] = width > 0 ? static_cast<int32_t>(width - 1) : 0;
     constants.maxCoord[1] = height > 0 ? static_cast<int32_t>(height - 1) : 0;
 

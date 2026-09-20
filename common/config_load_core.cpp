@@ -298,6 +298,15 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
                                  std::to_string(ce::sharpen::kDefaultStrength));
         config.graphics.sharpenStrength = ce::sharpen::kDefaultStrength;
     }
+    config.graphics.sharpenIntensity =
+        reader.GetFloat("Graphics", "sharpen_intensity", ce::sharpen::kDefaultIntensity);
+    if (!std::isfinite(config.graphics.sharpenIntensity) ||
+        config.graphics.sharpenIntensity < ce::sharpen::kMinIntensity ||
+        config.graphics.sharpenIntensity > ce::sharpen::kMaxIntensity) {
+        LogInvalidConfigBoundary("Graphics", "sharpen_intensity", std::to_string(config.graphics.sharpenIntensity),
+                                 std::to_string(ce::sharpen::kDefaultIntensity));
+        config.graphics.sharpenIntensity = ce::sharpen::kDefaultIntensity;
+    }
     config.graphics.sharpenColorSpace = reader.GetStr("Graphics", "sharpen_color_space", "auto");
     if (ce::sharpen::ParseConfiguredSpace(config.graphics.sharpenColorSpace.c_str()) ==
             ce::sharpen::ConfiguredSpace::Auto &&

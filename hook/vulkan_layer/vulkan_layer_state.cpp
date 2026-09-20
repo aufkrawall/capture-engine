@@ -710,6 +710,7 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
     m_SharpenMode.store(cfg.sharpenMode, std::memory_order_release);
     m_SharpenColorSpace.store(cfg.sharpenColorSpace, std::memory_order_release);
     m_SharpenStrength.store(cfg.sharpenStrength, std::memory_order_release);
+    m_SharpenIntensity.store(cfg.sharpenIntensity, std::memory_order_release);
 
     // Parse anisotropic filtering
     if (strncmp(cfg.anisotropicFiltering, "default", 7) == 0 || cfg.anisotropicFiltering[0] == '\0') {
