@@ -290,20 +290,22 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         config.graphics.sharpenMode = "off";
     }
     config.graphics.sharpenStrength =
-        reader.GetFloat("Graphics", "sharpen_strength", ce::sharpen::kDefaultStrength);
+        reader.GetFloatCompat("Graphics", "sharpen_contrast", "Graphics", "sharpen_strength",
+                              ce::sharpen::kDefaultStrength);
     if (!std::isfinite(config.graphics.sharpenStrength) ||
         config.graphics.sharpenStrength < ce::sharpen::kMinStrength ||
         config.graphics.sharpenStrength > ce::sharpen::kMaxStrength) {
-        LogInvalidConfigBoundary("Graphics", "sharpen_strength", std::to_string(config.graphics.sharpenStrength),
+        LogInvalidConfigBoundary("Graphics", "sharpen_contrast", std::to_string(config.graphics.sharpenStrength),
                                  std::to_string(ce::sharpen::kDefaultStrength));
         config.graphics.sharpenStrength = ce::sharpen::kDefaultStrength;
     }
     config.graphics.sharpenIntensity =
-        reader.GetFloat("Graphics", "sharpen_intensity", ce::sharpen::kDefaultIntensity);
+        reader.GetFloatCompat("Graphics", "sharpen_amount", "Graphics", "sharpen_intensity",
+                              ce::sharpen::kDefaultIntensity);
     if (!std::isfinite(config.graphics.sharpenIntensity) ||
         config.graphics.sharpenIntensity < ce::sharpen::kMinIntensity ||
         config.graphics.sharpenIntensity > ce::sharpen::kMaxIntensity) {
-        LogInvalidConfigBoundary("Graphics", "sharpen_intensity", std::to_string(config.graphics.sharpenIntensity),
+        LogInvalidConfigBoundary("Graphics", "sharpen_amount", std::to_string(config.graphics.sharpenIntensity),
                                  std::to_string(ce::sharpen::kDefaultIntensity));
         config.graphics.sharpenIntensity = ce::sharpen::kDefaultIntensity;
     }

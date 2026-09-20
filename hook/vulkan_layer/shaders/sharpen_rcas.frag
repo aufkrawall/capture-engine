@@ -22,7 +22,8 @@ void FsrRcasInputF(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat3
 
 void main() {
     FfxUInt32x2 gxy = FfxUInt32x2(gl_FragCoord.xy);
+    FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0);
-    ceOutColor = ceResolveOutput(filtered, FfxInt32x2(gxy));
+    ceOutColor = ceResolveOutput(filtered, original);
 }

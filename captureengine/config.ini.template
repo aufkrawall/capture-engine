@@ -607,28 +607,28 @@ backbuffer_count=-1
 ; overlay texture rather than a frame - the pass is skipped and the reason is
 ; logged.
 sharpen=off
-; The two effects have two independent controls, the same pair ReShade's CAS
-; port exposes as "Contrast Adaptation" and "Sharpening Intensity".
+; The two effects have two independent controls, matching ReShade's CAS
+; parameters ("Contrast Adaptation" and "Sharpening intensity"):
 ;
-; sharpen_strength, 0.0 to 1.0, is the effect's own contrast-adaptation
-; parameter: how strongly the kernel reacts to local contrast. This is AMD's
-; native control, and 0.0 is its mildest setting rather than off - it still
-; sharpens. Higher values sharpen flat, low-contrast texture detail harder and
-; ring more around edges.
-sharpen_strength=0.5
-; sharpen_intensity, 0.0 to 1.0, is how much of the filtered result is mixed
-; back over the original pixels. This is the control that behaves the way
-; "amount" is normally expected to: 0.0 is genuinely no sharpening and 1.0 is
-; the effect at full weight. Use it to dial the overall effect down without
-; changing how the kernel treats contrast. At 0.0 the pass is skipped entirely
-; rather than reading and rewriting the frame for nothing.
-sharpen_intensity=1.0
+; sharpen_contrast, 0.0 to 1.0, default 0.5 (alias: sharpen_strength).
+; The effect's own contrast-adaptation parameter: how strongly the kernel
+; reacts to local contrast. This is AMD's native control, and 0.0 is its mildest
+; setting rather than off - it still sharpens. Higher values sharpen flat,
+; low-contrast texture detail harder and ring more around edges.
+sharpen_contrast=0.5
+; sharpen_amount, 0.0 to 1.0, default 1.0 (alias: sharpen_intensity).
+; Weight of the filtered result mixed back over the original pixels. This is the
+; control that behaves the way "sharpening amount" is normally expected to:
+; 0.0 is genuinely no sharpening and 1.0 is the effect at full weight. Use it to
+; dial the overall effect down without changing how the kernel treats contrast.
+; At 0.0 the pass is skipped entirely rather than reading and rewriting the frame.
+sharpen_amount=1.0
 ; sharpen_color_space: auto, direct, or gamma. auto is correct for every
 ; presentation path CaptureEngine recognizes: it filters stored sRGB, plain
-; UNORM and HDR10/PQ values directly, and converts linear values (scRGB FP16,
-; or any target whose views apply the sRGB transform) to a gamma space first,
-; because sharpening linear light rings around highlights. direct and gamma
-; force one of the two for diagnosis.
+; UNORM and HDR10/PQ values directly, and converts linear values (scRGB FP16
+; mapped via ST 2084 PQ, or any target whose views apply the sRGB transform)
+; to a perceptual space first, because sharpening linear light rings around
+; highlights. direct and gamma force one of the two for diagnosis.
 sharpen_color_space=auto
 
 [UE5]

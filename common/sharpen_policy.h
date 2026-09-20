@@ -52,6 +52,7 @@ enum class ConfiguredSpace : uint8_t {
 enum class FilterSpace : uint8_t {
     Direct = 0,
     LinearToGamma = 1,
+    ScrgbToPq = 2,
 };
 
 // Where the overlay route is about to draw. The sharpen pass rides exactly that
@@ -73,41 +74,58 @@ enum class Route : uint8_t {
 };
 
 // AMD's parameters have different native conventions - CAS sharpness rises with
-// the value, RCAS attenuation falls with it - so CE exposes one 0..1 strength
+// the value, RCAS attenuation falls with it - so CE exposes one 0..1 contrast/strength
 // and maps it per effect. Neither effect is "off" at 0: 0 is the mildest
 // setting each one supports. `Mode::Off` is the only way to disable the pass.
-inline constexpr float kMinStrength = 0.0f;
-inline constexpr float kMaxStrength = 1.0f;
-inline constexpr float kDefaultStrength = 0.5f;
+// `contrast` (or `strength`) controls the kernel reaction to local contrast.
+inline constexpr float kMinContrast = 0.0f;
+inline constexpr float kMaxContrast = 1.0f;
+inline constexpr float kDefaultContrast = 0.5f;
+
+inline constexpr float kMinStrength = kMinContrast;
+inline constexpr float kMaxStrength = kMaxContrast;
+inline constexpr float kDefaultStrength = kDefaultContrast;
 
 // How much of the filtered result is mixed back over the original pixels. This
 // is the knob that behaves the way "sharpening amount" is normally expected to:
 // 0 is genuinely no sharpening and 1 is the effect at full weight. It is
-// independent of `strength`, which selects how the kernel itself reacts to
+// independent of `contrast`, which selects how the kernel itself reacts to
 // contrast, and it is the same control ReShade's CAS port calls "Sharpening
 // Intensity" next to its "Contrast Adaptation".
-inline constexpr float kMinIntensity = 0.0f;
-inline constexpr float kMaxIntensity = 1.0f;
-inline constexpr float kDefaultIntensity = 1.0f;
+inline constexpr float kMinAmount = 0.0f;
+inline constexpr float kMaxAmount = 1.0f;
+inline constexpr float kDefaultAmount = 1.0f;
+
+inline constexpr float kMinIntensity = kMinAmount;
+inline constexpr float kMaxIntensity = kMaxAmount;
+inline constexpr float kDefaultIntensity = kDefaultAmount;
 
 // Below this a target is a thumbnail, a probe chain, or a driver scratch
 // surface rather than a frame worth filtering.
 inline constexpr uint32_t kMinTargetExtent = 32;
 
+inline constexpr float ClampContrast(float contrast) {
+    if (!(contrast >= kMinContrast))  // Also rejects NaN.
+        return kMinContrast;
+    if (contrast > kMaxContrast)
+        return kMaxContrast;
+    return contrast;
+}
+
 inline constexpr float ClampStrength(float strength) {
-    if (!(strength >= kMinStrength))  // Also rejects NaN.
-        return kMinStrength;
-    if (strength > kMaxStrength)
-        return kMaxStrength;
-    return strength;
+    return ClampContrast(strength);
+}
+
+inline constexpr float ClampAmount(float amount) {
+    if (!(amount >= kMinAmount))  // Also rejects NaN.
+        return kMinAmount;
+    if (amount > kMaxAmount)
+        return kMaxAmount;
+    return amount;
 }
 
 inline constexpr float ClampIntensity(float intensity) {
-    if (!(intensity >= kMinIntensity))  // Also rejects NaN.
-        return kMinIntensity;
-    if (intensity > kMaxIntensity)
-        return kMaxIntensity;
-    return intensity;
+    return ClampAmount(intensity);
 }
 
 // CAS takes sharpness directly: 0 is its default (lowest ringing), 1 its maximum.
@@ -191,8 +209,27 @@ inline bool ValuesReachShaderAsLinear(TargetEncoding encoding, bool viewAppliesS
     return encoding == TargetEncoding::ScrgbLinear || viewAppliesSrgbConversion;
 }
 
-// Only linear values need the gamma round trip; stored sRGB, plain UNORM and PQ
+// Only linear values need perceptual transformation; stored sRGB, plain UNORM and PQ
 // are already perceptual enough for a contrast-adaptive kernel to behave.
+// scRGB linear light is mapped via ST 2084 PQ to strictly fit in [0, 1] without
+// crushing HDR highlights, while SDR linear values use the standard gamma round trip.
+inline FilterSpace ResolveFilterSpace(TargetEncoding encoding, bool viewAppliesSrgbConversion,
+                                      ConfiguredSpace configured) {
+    switch (configured) {
+        case ConfiguredSpace::Direct:
+            return FilterSpace::Direct;
+        case ConfiguredSpace::Gamma:
+            return encoding == TargetEncoding::ScrgbLinear ? FilterSpace::ScrgbToPq
+                                                           : FilterSpace::LinearToGamma;
+        case ConfiguredSpace::Auto:
+        default:
+            break;
+    }
+    if (encoding == TargetEncoding::ScrgbLinear)
+        return FilterSpace::ScrgbToPq;
+    return viewAppliesSrgbConversion ? FilterSpace::LinearToGamma : FilterSpace::Direct;
+}
+
 inline FilterSpace ResolveFilterSpace(bool valuesAreLinear, ConfiguredSpace configured) {
     switch (configured) {
         case ConfiguredSpace::Direct:
@@ -224,9 +261,9 @@ inline bool RouteCarriesFrame(Route route) {
 
 struct Request {
     Mode mode = Mode::Off;
-    // The effect's own contrast-adaptation parameter.
+    // The effect's own contrast-adaptation parameter (sharpen_contrast / sharpen_strength).
     float strength = kDefaultStrength;
-    // How much of the filtered result reaches the frame.
+    // How much of the filtered result reaches the frame (sharpen_amount / sharpen_intensity).
     float intensity = kDefaultIntensity;
     ConfiguredSpace space = ConfiguredSpace::Auto;
 };
@@ -261,7 +298,7 @@ struct Decision {
 inline Decision Decide(const Request& request, const Target& target) {
     Decision decision;
     decision.filterSpace = ResolveFilterSpace(
-        ValuesReachShaderAsLinear(target.encoding, target.viewAppliesSrgbConversion), request.space);
+        target.encoding, target.viewAppliesSrgbConversion, request.space);
 
     decision.intensity = ClampIntensity(request.intensity);
 

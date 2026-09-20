@@ -213,7 +213,7 @@ TEST(SharpenPolicyDecide, RefusalStillReportsTheResolvedFilterSpace) {
     target.encoding = TargetEncoding::ScrgbLinear;
     const Decision decision = Decide(MakeRequest(Mode::Off), target);
     EXPECT_FALSE(decision.run);
-    EXPECT_EQ(decision.filterSpace, FilterSpace::LinearToGamma);
+    EXPECT_EQ(decision.filterSpace, FilterSpace::ScrgbToPq);
 }
 
 TEST(SharpenPolicyDecide, AnSrgbViewSelectsTheGammaRoundTripOnAnEightBitTarget) {
@@ -282,7 +282,16 @@ TEST(SharpenConstants, FilterSpaceReachesTheShaderBlock) {
     const Decision decision = Decide(MakeRequest(Mode::Rcas), target);
     ASSERT_TRUE(decision.run);
     const ShaderConstants constants = BuildShaderConstants(Mode::Rcas, decision, 3840, 2160);
-    EXPECT_EQ(constants.filterSpace, static_cast<uint32_t>(FilterSpace::LinearToGamma));
+    EXPECT_EQ(constants.filterSpace, static_cast<uint32_t>(FilterSpace::ScrgbToPq));
+}
+
+TEST(SharpenPolicy, ResolveFilterSpaceSelectsPqForScrgb) {
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::ScrgbLinear, false, ConfiguredSpace::Auto), FilterSpace::ScrgbToPq);
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::ScrgbLinear, false, ConfiguredSpace::Gamma), FilterSpace::ScrgbToPq);
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::ScrgbLinear, false, ConfiguredSpace::Direct), FilterSpace::Direct);
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::Srgb, true, ConfiguredSpace::Auto), FilterSpace::LinearToGamma);
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::Srgb, false, ConfiguredSpace::Auto), FilterSpace::Direct);
+    EXPECT_EQ(ResolveFilterSpace(TargetEncoding::Pq, false, ConfiguredSpace::Auto), FilterSpace::Direct);
 }
 
 TEST(SharpenConstants, ZeroExtentsDoNotUnderflowTheClampCoordinates) {

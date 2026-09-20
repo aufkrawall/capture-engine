@@ -62,11 +62,11 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     const bool screenshotUsePostSL =
         screenshotRequested && PostSLOwnsThisFramesOverlayDraw(screenshotOverlayCfg);
     if (screenshotRequested && !screenshotWantsOverlay && !screenshotUsePostSL) {
-        CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
+        // Overlay-free screenshot is captured inside ProcessFrame after SharpenDX12PresentedFrame
+        // and before overlay drawing, so the screenshot includes the applied sharpen filter.
     }
     ProcessFrame(sc3, processCapture, applicationSourcePresent, frameGenerationPresentationActive);
-    if (screenshotWantsOverlay && !screenshotUsePostSL &&
-        GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
+    if (!screenshotUsePostSL && GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     sc3->Release();
@@ -710,13 +710,12 @@ const bool screenshotWantsOverlay =
 // PostSL draws the overlay earlier in this same Present, so when it owns the
 // draw both screenshot variants are taken there - by the time this runs, the
 // overlay is already in the backbuffer and an overlay-free copy is impossible.
+// Overlay-free screenshots on the normal route are captured inside ProcessFrame
+// immediately after sharpen and before the overlay list is drawn.
 const bool screenshotUsePostSL = screenshotRequested && PostSLOwnsThisFramesOverlayDraw(screenshotOverlayCfg);
 if (screenshotRequested && !screenshotWantsOverlay && !screenshotUsePostSL) {
-    const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
-    CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
-    if (diagnostics) {
-        diagnostics->screenshotUs += PerfLogger::GetQpcUs() - screenshotStartUs;
-    }
+    // Overlay-free screenshot is captured inside ProcessFrame after SharpenDX12PresentedFrame
+    // and before overlay drawing, so the screenshot includes the applied sharpen filter.
 }
 
 // For interpolated frames, only render overlay (no capture processing) since
@@ -730,8 +729,7 @@ if (diagnostics) {
     diagnostics->innerUs = PerfLogger::GetQpcUs() - innerStartUs;
 }
 
-if (screenshotWantsOverlay && !screenshotUsePostSL &&
-    GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
+if (!screenshotUsePostSL && GetPendingScreenshotRequestId(screenshotShm) == screenshotRequestId) {
     const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
     CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     if (diagnostics) {

@@ -22,8 +22,9 @@ void casInput(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat32 blu
 
 void main() {
     FfxUInt32x2 gxy = FfxUInt32x2(gl_FragCoord.xy);
+    FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     // noScaling: the constants were built with identical input and output extents.
     ffxCasFilter(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0, ceConstants.ceConst1, true);
-    ceOutColor = ceResolveOutput(filtered, FfxInt32x2(gxy));
+    ceOutColor = ceResolveOutput(filtered, original);
 }

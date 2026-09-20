@@ -669,3 +669,28 @@ TEST_F(ConfigTest, SharpenIntensityOutsideItsRangeFallsBackToFullWeight) {
     LoadConfig(tempConfigFile, zero);
     EXPECT_FLOAT_EQ(zero.graphics.sharpenIntensity, 0.0f);
 }
+
+TEST_F(ConfigTest, SharpenContrastAndAmountPreferredOverStrengthAndIntensity) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=rcas\n"
+        "sharpen_contrast=0.75\n"
+        "sharpen_amount=0.85\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.75f);
+    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 0.85f);
+
+    // Legacy aliases are overridden when the new keys are present.
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=rcas\n"
+        "sharpen_contrast=0.3\n"
+        "sharpen_amount=0.4\n"
+        "sharpen_strength=0.9\n"
+        "sharpen_intensity=0.95\n");
+    AppConfig overrideConfig;
+    LoadConfig(tempConfigFile, overrideConfig);
+    EXPECT_FLOAT_EQ(overrideConfig.graphics.sharpenStrength, 0.3f);
+    EXPECT_FLOAT_EQ(overrideConfig.graphics.sharpenIntensity, 0.4f);
+}

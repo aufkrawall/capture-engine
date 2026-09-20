@@ -18,7 +18,8 @@ void FsrRcasInputF(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat3
 
 float4 main(float4 pos : SV_POSITION) : SV_Target {
     FfxUInt32x2 gxy = FfxUInt32x2(pos.xy);
+    FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConst0);
-    return ceResolveOutput(filtered, FfxInt32x2(gxy));
+    return ceResolveOutput(filtered, original);
 }

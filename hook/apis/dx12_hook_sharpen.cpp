@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include <mutex>
+
 #include "../common/sharpen_d3d11.h"
 #include "../common/sharpen_d3d12.h"
 #include "../common/sharpen_request.h"
@@ -22,10 +24,12 @@ ce::sharpen::D3D12Pass g_SharpenPass;
 // True once the pass has been asked to render, which is the only way it
 // allocates anything. Switching sharpening off then has something to hand back.
 bool g_SharpenEverRendered = false;
+std::mutex g_SharpenMutex;
 
 }  // namespace
 
 void ReleaseDX12SharpenResources(bool releaseObjects) {
+    std::lock_guard<std::mutex> lock(g_SharpenMutex);
     if (releaseObjects) {
         g_SharpenPass.Shutdown();
     } else {
@@ -38,6 +42,10 @@ void ReleaseDX12SharpenResources(bool releaseObjects) {
 void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue, bool hasBackBufferIndex,
                                UINT backBufferIndex) {
     if (HookIsShuttingDown() || !pSwapChain || !queue)
+        return;
+
+    std::unique_lock<std::mutex> lock(g_SharpenMutex, std::try_to_lock);
+    if (!lock.owns_lock())
         return;
 
     const ce::sharpen::Request request = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());

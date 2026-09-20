@@ -38,15 +38,16 @@ capture copies it and before the overlay draws into it.**
 Consequences, in the order they matter:
 
 - CE's overlay is never sharpened: its pixels are written after the filter ran.
-- The recording and the screen always agree, including with
-  `capture_include_overlay=false`, where the capture runs *before* the overlay.
+- The recording, screenshots, and the screen always agree, including with
+  `capture_include_overlay=false` and `screenshot_include_overlay=false`, where
+  capture and screenshots run *after* the sharpen pass and *before* the overlay.
 - It runs whether or not the overlay is enabled.
 
 That last point is why each backend resolves its own target instead of
 borrowing the overlay's. The target is the buffer the swapchain's current
 back-buffer index names - `IDXGISwapChain3::GetCurrentBackBufferIndex` on DXGI,
-the acquired image index on Vulkan - which is exactly what the capture path
-reads.
+the acquired image index on Vulkan - which is exactly what the capture and
+screenshot paths read.
 
 **The application's own HUD is part of that frame and is sharpened with it.**
 So is any third-party overlay that drew before CE. This is inherent to
@@ -80,7 +81,7 @@ string that reaches the session log. Refusals in precedence order:
 | Reason | Meaning |
 | --- | --- |
 | `disabled` | `sharpen=off`. Nothing is allocated and nothing is queried. |
-| `zero_intensity` | `sharpen_intensity=0`. The pass would write the frame back unchanged. |
+| `zero_intensity` | `sharpen_amount=0` (or legacy `sharpen_intensity=0`). The pass would write the frame back unchanged. |
 | `ui_resource_route_carries_no_frame` | The FG runtimes' UI-resource route. That texture is a transparent overlay, not a frame. |
 | `route_unclassified` | The backend could not name the route. Never guessed at. |
 | `unknown_presentation_encoding` | The target's presentation meaning is not one CE recognizes. |
@@ -99,36 +100,46 @@ target reaches the kernel as linear light exactly like scRGB FP16 does, and
 filtering linear light rings around highlights.
 
 `ValuesReachShaderAsLinear(encoding, viewAppliesSrgbConversion)` answers that,
-and `sharpen_color_space=auto` converts to a gamma space for the filter and back
+and `sharpen_color_space=auto` converts to a working space for the filter and back
 only when it is true. Stored sRGB, plain UNORM and HDR10/PQ are already
 perceptual and are filtered directly. `direct` and `gamma` force one of the two
 for diagnosis.
 
-The gamma round trip uses a sign-preserving `pow(2.2)` pair, because scRGB is
-legally negative outside Rec.709 and a plain `pow` returns NaN there.
+- **HDR scRGB (`TargetEncoding::ScrgbLinear`)**: in scRGB, 1.0 represents 80 nits
+  SDR white, with HDR highlights scaling up to 125.0 (10,000 nits). A plain
+  gamma round trip leaves values $> 1.0$, which AMD CAS's saturate clamp and
+  RCAS's peak limiter (`peakC.x = 1.0`) would severely crush to 80 nits!
+  Instead, linear light is normalized ($L_{norm} = \text{val} \times 0.008$) and
+  encoded into SMPTE ST 2084 (PQ) space, mapping the full $[0, 10000]$ nits range
+  strictly into $[0.0, 1.0]$. The kernel runs in perceptual PQ space, and
+  `ceResolveOutput` decodes back to linear light ($L_{norm} \times 125.0$), completely
+  preventing highlight clipping.
+- **SDR Linear (e.g. sRGB views on 8-bit targets)**: the gamma round trip uses a
+  sign-preserving `pow(2.2)` pair.
 
 ## Two controls, not one
 
 The same pair ReShade's CAS port exposes as "Contrast Adaptation" and
 "Sharpening Intensity", and they are independent:
 
-- **`sharpen_strength`** (0..1) is the effect's own contrast-adaptation
-  parameter, mapped to each effect's native convention - CAS sharpness rises
-  with the value, RCAS attenuation is in stops and falls with it. **Neither
-  effect is off at 0**: 0 is the mildest setting each one supports. The config
-  parser and the unit tests pin that, because treating 0 as "absent" would
-  silently turn a deliberate mildest setting into the 0.5 default.
-- **`sharpen_intensity`** (0..1, default 1.0) is how much of the filtered result
-  is mixed back over the original pixels. This one *is* genuinely off at 0, and
-  it is what a viewer reads as "how much sharpening". It is the knob to reach for
-  when the effect is too strong overall; `sharpen_strength` changes how the
-  kernel treats flat texture detail versus edges.
+- **`sharpen_contrast`** (0..1, default 0.5, alias `sharpen_strength`) is the
+  effect's own contrast-adaptation parameter, mapped to each effect's native
+  convention - CAS sharpness rises with the value, RCAS attenuation is in stops
+  and falls with it. **Neither effect is off at 0**: 0 is the mildest setting
+  each one supports. The config parser and the unit tests pin that, because
+  treating 0 as "absent" would silently turn a deliberate mildest setting into
+  the 0.5 default.
+- **`sharpen_amount`** (0..1, default 1.0, alias `sharpen_intensity`) is how much
+  of the filtered result is mixed back over the original pixels. This one *is*
+  genuinely off at 0, and it is what a viewer reads as "how much sharpening".
+  It is the knob to reach for when the effect is too strong overall;
+  `sharpen_contrast` changes how the kernel treats flat texture detail versus edges.
 
 The mix happens in `ceResolveOutput`, in the frame's own stored space and after
 the working-space round trip - not inside AMD's kernel. That is what makes the
 two controls orthogonal. Alpha is never mixed.
 
-At `sharpen_intensity=0` `Decide` refuses with `zero_intensity` rather than
+At `sharpen_amount=0` `Decide` refuses with `zero_intensity` rather than
 running a pass that reads every pixel and stores it unchanged; under 4x MFG that
 would be four full-screen no-ops per rendered frame.
 
@@ -142,16 +153,19 @@ floor for any post-present sharpener.
 - **D3D11** (`sharpen_d3d11.cpp`): `CopyResource` into a cached texture, then a
   fullscreen pixel-shader pass. Full pipeline state is saved and restored around
   the draw, including the geometry shader - a stray one bound by the game would
-  eat the generated vertices. The source view uses the render target view's
-  format, so both sides apply the same sRGB conversion or neither does.
+  eat the generated vertices. If the source view format reinterprets the resource
+  format (e.g. UNORM target with UNORM_SRGB view), the copy texture is created
+  with the typeless format to prevent `E_INVALIDARG` on `CreateShaderResourceView`.
 - **D3D12** (`sharpen_d3d12.cpp`): records its own command list and submits it
   on the queue that rendered the frame, the way `SharedCaptureD3D12::CaptureFrame`
   does. One queue executes in order, so that submission alone orders the filter
   after the game's rendering and before the present - no cross-queue fence, and
-  nothing added to CE's own overlay queue. The constants are root constants (12
-  DWORDs), so there is no constant buffer to keep alive. Allocators ring over 8
-  slots gated on a fence; the source copy does not ring, because the in-order
-  queue plus the per-frame barriers make one copy sufficient.
+  nothing added to CE's own overlay queue. An internal mutex with `std::try_to_lock`
+  prevents multi-threaded Present/PostSL collisions without stalling the present
+  thread. The constants are root constants (12 DWORDs), so there is no constant
+  buffer to keep alive. Allocators ring over 8 slots gated on a fence; the source
+  copy does not ring, because the in-order queue plus the per-frame barriers make
+  one copy sufficient.
 - **Vulkan** (`layer_sharpen.cpp`): copy, then a render pass into the acquired
   image, submitted on the present queue and chained into the present's own wait
   list exactly like the capture and overlay submissions. The signal semaphore is

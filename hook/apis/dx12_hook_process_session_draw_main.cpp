@@ -349,20 +349,38 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
     s_lastSceneBlockSuppressedRoute = runtimeOwnedOverlayRoute;
 }
 
-// Before capture and before the overlay: the recording and the screen both
-// show the filtered frame, and CE's own overlay pixels are written after the
-// filter has already run so they are never sharpened.
-SharpenDX12PresentedFrame(pSwapChain, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
-
-if (captureBeforeOverlay) {
-    int64_t captureStartUs = PerfLogger::GetQpcUs();
-    PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
-    const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
-    perfMetrics.captureUs = static_cast<int32_t>(captureUs);
-    if (diagnostics) {
-        diagnostics->captureUs += captureUs;
+    // Before capture and before the overlay: the recording and the screen both
+    // show the filtered frame, and CE's own overlay pixels are written after the
+    // filter has already run so they are never sharpened.
+    if (!skipOverlayDraw && !ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(nullptr)) {
+        SharpenDX12PresentedFrame(pSwapChain, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
     }
-}
+
+    if (captureBeforeOverlay) {
+        int64_t captureStartUs = PerfLogger::GetQpcUs();
+        PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
+        const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
+        perfMetrics.captureUs = static_cast<int32_t>(captureUs);
+        if (diagnostics) {
+            diagnostics->captureUs += captureUs;
+        }
+    }
+
+    SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm);
+    if (screenshotRequestId != 0) {
+        OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
+        const bool screenshotWantsOverlay =
+            screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
+        const bool screenshotUsePostSL = PostSLOwnsThisFramesOverlayDraw(screenshotOverlayCfg);
+        if (!screenshotWantsOverlay && !screenshotUsePostSL) {
+            const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+            CaptureRequestedDX12Screenshot(pSwapChain, screenshotShm, screenshotRequestId, gameQueue);
+            if (diagnostics) {
+                diagnostics->screenshotUs += PerfLogger::GetQpcUs() - screenshotStartUs;
+            }
+        }
+    }
     return ProcessFrameFlow::kContinue;
 }
 

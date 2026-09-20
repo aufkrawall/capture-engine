@@ -17,9 +17,10 @@ void casInput(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat32 blu
 
 float4 main(float4 pos : SV_POSITION) : SV_Target {
     FfxUInt32x2 gxy = FfxUInt32x2(pos.xy);
+    FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     // noScaling: the constants were built with identical input and output
     // extents, which is the only configuration this pass ever runs in.
     ffxCasFilter(filtered.r, filtered.g, filtered.b, gxy, ceConst0, ceConst1, true);
-    return ceResolveOutput(filtered, FfxInt32x2(gxy));
+    return ceResolveOutput(filtered, original);
 }

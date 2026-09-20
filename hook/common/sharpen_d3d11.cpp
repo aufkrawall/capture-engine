@@ -96,6 +96,26 @@ void RestorePipelineState(ID3D11DeviceContext* context, SavedPipelineState& save
         context->RSSetViewports(saved.viewportCount, saved.viewports);
 }
 
+DXGI_FORMAT MakeTypeless(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            return DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            return DXGI_FORMAT_B8G8R8A8_TYPELESS;
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+            return DXGI_FORMAT_B8G8R8X8_TYPELESS;
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            return DXGI_FORMAT_R10G10B10A2_TYPELESS;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return DXGI_FORMAT_R16G16B16A16_TYPELESS;
+        default:
+            return format;
+    }
+}
+
 }  // namespace
 
 bool FormatAppliesSrgbConversion(DXGI_FORMAT format) {
@@ -218,14 +238,15 @@ bool D3D11Pass::EnsureSourceCopy(ID3D11Device* device, const D3D11_TEXTURE2D_DES
     copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
 
     // CopyResource requires identical formats or two formats from the same
-    // typeless group, so the copy keeps the target's own storage format and
-    // only the view reinterprets it.
+    // typeless group. If the SRV reinterprets the format (e.g. UNORM to
+    // UNORM_SRGB), D3D11 requires the texture to be created with a TYPELESS
+    // format to prevent E_INVALIDARG on CreateShaderResourceView.
     D3D11_TEXTURE2D_DESC copyDesc = {};
     copyDesc.Width = targetDesc.Width;
     copyDesc.Height = targetDesc.Height;
     copyDesc.MipLevels = 1;
     copyDesc.ArraySize = 1;
-    copyDesc.Format = targetDesc.Format;
+    copyDesc.Format = (viewFormat != targetDesc.Format) ? MakeTypeless(targetDesc.Format) : targetDesc.Format;
     copyDesc.SampleDesc.Count = 1;
     copyDesc.Usage = D3D11_USAGE_DEFAULT;
     copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
