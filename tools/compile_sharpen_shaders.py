@@ -29,6 +29,7 @@ FFX_INCLUDE_DIR = ROOT / "external" / "fidelityfx" / "gpu"
 COMMON_DIR = ROOT / "hook" / "common"
 DXBC_PART_DIR = COMMON_DIR / "sharpen_shader_bytecode"
 DXBC_HEADER = COMMON_DIR / "sharpen_shader_bytecode.h"
+SPIRV_PART_DIR = COMMON_DIR / "sharpen_shader_spirv"
 SPIRV_HEADER = COMMON_DIR / "sharpen_shader_spirv.h"
 TOOL_DIR = ROOT / "build" / "msys64" / "clang64" / "bin"
 
@@ -112,14 +113,15 @@ def emit_spirv_array(symbol: str, payload: bytes) -> str:
     return "\n".join(lines)
 
 
-def build_spirv() -> None:
+def build_spirv() -> list[str]:
     compiler = TOOL_DIR / "glslangValidator.exe"
     optimizer = TOOL_DIR / "spirv-opt.exe"
     validator = TOOL_DIR / "spirv-val.exe"
     if not compiler.is_file() or not optimizer.is_file() or not validator.is_file():
         raise RuntimeError("Bundled glslangValidator.exe, spirv-opt.exe and spirv-val.exe are required")
 
-    arrays: list[str] = []
+    SPIRV_PART_DIR.mkdir(parents=True, exist_ok=True)
+    part_files: list[str] = []
     for source_name, stage, symbol in SPIRV_SHADERS:
         source = GLSL_DIR / source_name
         output = GLSL_DIR / f"{source_name}.spv"
@@ -147,13 +149,15 @@ def build_spirv() -> None:
         # creation. Validation runs on the module that actually ships.
         subprocess.run([str(optimizer), "-O", "--strip-debug", str(output), "-o", str(output)], check=True)
         subprocess.run([str(validator), "--target-env", "vulkan1.2", str(output)], check=True)
-        arrays.append(emit_spirv_array(symbol, output.read_bytes()))
+        part_file = symbol[2:].lower() + ".h"
+        part_files.append(part_file)
+        part = list(BANNER) + ["#pragma once", "#include <cstdint>", "", emit_spirv_array(symbol, output.read_bytes())]
+        (SPIRV_PART_DIR / part_file).write_text("\n".join(part).rstrip("\n") + "\n", encoding="utf-8", newline="\n")
 
-    SPIRV_HEADER.write_text(
-        "\n".join(BANNER) + "\n#pragma once\n\n#include <cstdint>\n\n" + "\n\n".join(arrays) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    umbrella = list(BANNER) + ["#pragma once", ""]
+    umbrella += [f'#include "sharpen_shader_spirv/{part_file}"' for part_file in part_files]
+    SPIRV_HEADER.write_text("\n".join(umbrella).rstrip("\n") + "\n", encoding="utf-8", newline="\n")
+    return part_files
 
 
 def main() -> None:
@@ -161,8 +165,8 @@ def main() -> None:
     parts = build_dxbc()
     print(f"Written {DXBC_HEADER} and {len(parts)} shader header(s)", file=sys.stderr)
     print("Compiling sharpen shaders (SPIR-V)...", file=sys.stderr)
-    build_spirv()
-    print(f"Written {SPIRV_HEADER}", file=sys.stderr)
+    spirv_parts = build_spirv()
+    print(f"Written {SPIRV_HEADER} and {len(spirv_parts)} shader header(s)", file=sys.stderr)
 
 
 if __name__ == "__main__":

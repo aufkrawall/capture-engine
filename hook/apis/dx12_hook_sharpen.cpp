@@ -80,16 +80,15 @@ void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* q
 
     UINT bufferIndex = backBufferIndex;
     if (!hasBackBufferIndex) {
-        IDXGISwapChain3* swapChain3 = nullptr;
+        Microsoft::WRL::ComPtr<IDXGISwapChain3> swapChain3;
         if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) && swapChain3) {
             bufferIndex = swapChain3->GetCurrentBackBufferIndex();
-            swapChain3->Release();
         } else {
             bufferIndex = 0;
         }
     }
 
-    ID3D12Resource* backBuffer = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> backBuffer;
     if (FAILED(pSwapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer))) || !backBuffer)
         return;
 
@@ -112,8 +111,6 @@ void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* q
     // perceptual space instead of paying for a decode/encode round trip.
     const D3D12_RESOURCE_DESC resourceDesc = backBuffer->GetDesc();
     g_SharpenEverRendered = true;
-    g_SharpenPass.Render(device, queue, backBuffer, resourceDesc.Format, D3D12_RESOURCE_STATE_PRESENT, request,
+    g_SharpenPass.Render(device, queue, backBuffer.Get(), resourceDesc.Format, D3D12_RESOURCE_STATE_PRESENT, request,
                          route, ce::sharpen::ResolveDxgiEncoding(resourceDesc.Format, isHDR));
-
-    backBuffer->Release();
 }

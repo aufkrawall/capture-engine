@@ -96,3 +96,5 @@ debug-tool-availability.md
 
 # PowerShell helper and test scripts
 *.ps1
+!tools/*.ps1
+!tools/**/*.ps1

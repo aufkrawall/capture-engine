@@ -45,7 +45,7 @@
   },
   "total": 1931,
   "scope": {
-    "entries": 789,
+    "entries": 790,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -637,6 +637,7 @@
       "tests/test_config_override_dlss.cpp",
       "tests/test_config_part2.cpp",
       "tests/test_config_part3.cpp",
+      "tests/test_config_reload_reinit_policy.cpp",
       "tests/test_config_third_party.cpp",
       "tests/test_config_ue5.cpp",
       "tests/test_crash_dump_policy.cpp",

@@ -48,6 +48,20 @@ struct PublicationState {
     std::condition_variable warmSignal;
     std::thread warmWorker;
     bool warmStop = false;
+
+    ~PublicationState() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!warmWorker.joinable()) {
+                warmStop = true;
+                return;
+            }
+            warmStop = true;
+            warmQueue.clear();
+        }
+        warmSignal.notify_all();
+        warmWorker.join();
+    }
 };
 
 PublicationState& Publication() {
@@ -144,8 +158,20 @@ void PublicationWarmupLoop() {
         // Never hold the publication mutex across a resolve: an injection or
         // hotkey publish would then queue behind the whole sweep.
         lock.unlock();
-        AppConfig resolved = ResolveTargetConfig(configPath, baseConfig, target);
+        AppConfig resolved;
+        bool resolveSucceeded = false;
+        try {
+            resolved = ResolveTargetConfig(configPath, baseConfig, target);
+            resolveSucceeded = true;
+        } catch (const std::exception& error) {
+            LogWarn("[Inject] Failed to prewarm config for target %s: %s", target.c_str(), error.what());
+        } catch (...) {
+            LogWarn("[Inject] Unknown exception while prewarming config for target %s", target.c_str());
+        }
         lock.lock();
+
+        if (!resolveSucceeded)
+            continue;
 
         // A newer base config queued its own sweep; this result describes the
         // previous file.

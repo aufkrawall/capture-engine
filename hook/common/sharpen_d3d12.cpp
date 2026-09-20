@@ -376,6 +376,18 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
 }
 
 void D3D12Pass::Shutdown() {
+    if (fence_ && fenceValue_ > 0) {
+        const UINT64 completed = fence_->GetCompletedValue();
+        if (completed != UINT64_MAX && completed < fenceValue_) {
+            HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (eventHandle) {
+                if (SUCCEEDED(fence_->SetEventOnCompletion(fenceValue_, eventHandle))) {
+                    WaitForSingleObject(eventHandle, 1000);
+                }
+                CloseHandle(eventHandle);
+            }
+        }
+    }
     sourceCopy_.Reset();
     rtvHeap_.Reset();
     srvHeap_.Reset();
