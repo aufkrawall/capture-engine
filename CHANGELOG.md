@@ -6,127 +6,40 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- **FidelityFX CAS and RCAS post-processing sharpening is available across D3D11, D3D12 and Vulkan.** Switch it on
-  with `sharpen=cas` or `sharpen=rcas`. Two separate controls, because they are not the same question:
-  `sharpen_contrast` (0..1) is how hard the kernel reacts to local contrast, and `sharpen_amount` (0..1) is how much
-  of the filtered result is mixed back over the frame - 0 is genuinely no sharpening, 1 is the effect at full weight.
-  The filter runs as one full-screen GPU pass on the presented frame, before the overlay is composited, so CE's own
-  overlay pixels are never sharpened. It works in SDR and in HDR without shifting color: BT.709 and plain UNORM are
-  filtered as stored, an sRGB view is filtered in gamma, and scRGB linear light goes through ST 2084 PQ so highlights
-  are not crushed (`sharpen_color_space` overrides that choice). Screenshots capture the filtered frame, and Unreal
-  Engine titles can drive it from the console.
-- **Release notes are generated from this changelog.** `tools/manage_changelog.py` validates the structure, extracts
-  a release's entries and fills the GitHub release notes during an automated stable release, so the notes on a tag
-  and the notes in this file can no longer drift apart. The generator refuses to publish a set of entries twice
-  under two different versions, and the release job writes the notes before it pushes the tag, so a failure there
-  can no longer leave a tag with no release behind it.
-- **DLSS frame generation can be driven through the driver settings**, which is the channel NVIDIA Profile
-  Inspector writes and the only one that reaches 5x and 6x. Four new `[DLSS]` keys mirror its fields:
-  `dlss_fg_mode` (`off`/`fixed`/`auto`/`dynamic`), `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and
-  `dlss_fg_target_fps`. `dynamic` lets multi-frame generation vary its cadence to hold a target frame rate -
-  `dlss_fg_target_fps=max_refresh` aims at the display's maximum refresh. CaptureEngine answers the runtime's
-  read inside the game process only: nothing is written to your driver profiles and no other application is
-  affected. Dynamic mode needs a recent driver and frame generation runtime; on an older one the keys are never
-  read and nothing changes.
-- **`vsync_mode` now reaches DLSS frame generation.** The DLSS-G runtime consults the driver's own V-Sync
-  setting before the application's request, and CaptureEngine's rewrite lands below Streamline's swapchain
-  proxy, so the runtime never saw it. That key is answered too now. `vsync_mode=default` claims nothing and
-  leaves the driver's answer alone.
-- **`ngx_ota` controls NVIDIA's over-the-air NGX updates for the injected process.** `off` refuses the
-  `nvngx_update.exe` launch and clears Streamline's OTA preferences at the game's `slInit`, which stops the
-  driver's downloaded plugin set from winning over the DLLs you configured; `on` forces the opposite and stands
-  the DLL overrides down. Nothing is written to the registry, the driver's configuration or the model store.
-  Read the key's notes in `config.ini` for what `off` does not reliably cover.
-- **`ngx_log` routes NVIDIA NGX's own diagnostic log into the session directory** and sets its level (`off`,
-  `on`, `verbose`). Useful when a DLSS or Streamline override does not apply and NGX's account of which files it
-  chose is the missing half.
+- **AMD FidelityFX CAS and RCAS post-processing sharpening (D3D11, D3D12, Vulkan):** added Contrast Adaptive Sharpening (`sharpen=cas`) and Robust Contrast Adaptive Sharpening (`sharpen=rcas`). Configurable via `sharpen_contrast` (adaptation sensitivity) and `sharpen_amount` (blend weight). Executes as a full-screen GPU pass prior to overlay composition, preserving clean overlay text. Supports SDR and HDR (using ST 2084 PQ for scRGB to protect specular highlights), includes sharpened output in screenshots, and supports live runtime tuning via Unreal Engine console variables.
+- **Driver-level DLSS Multi-Frame Generation controls (NVIDIA Profile Inspector parity):** added `[DLSS]` configuration keys (`dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps`) to override the driver-settings channel in-process. Enables fixed generation up to 5x/6x or dynamic cadence targeting display refresh rate (`dlss_fg_target_fps=max_refresh`) without modifying global driver profiles.
+- **DLSS Frame Generation V-Sync override:** extended `vsync_mode` to intercept and answer the driver-level V-Sync query read by the DLSS-G runtime, ensuring forced synchronization settings apply correctly above Streamline swapchain proxies.
+- **NVIDIA NGX over-the-air update control (`ngx_ota`):** added `[DLSS] ngx_ota=off|on` to intercept and suppress background `nvngx_update.exe` launches and clear Streamline OTA preferences during `slInit`, preventing remote OTA updates from overriding locally configured DLL versions.
+- **NVIDIA NGX diagnostic logging (`ngx_log`):** added `[DLSS] ngx_log=off|on|verbose` to route NGX runtime diagnostic logs directly into the session directory for diagnosing DLL override and Streamline plugin resolution.
+- **Automated GitHub release notes generation & changelog tooling:** added `tools/manage_changelog.py` to validate formatting, prevent tag/release note drift, and automate synchronized GitHub release note publication during stable release workflows.
 
 ### Improved
 
-- **Moving or rebuilding CaptureEngine no longer leaves a broken Vulkan layer behind.** The layer used to be
-  registered from wherever it happened to sit at build time, so a moved, renamed or rebuilt install left a registry
-  entry pointing at a file that was gone - which every Vulkan game on the machine then tried to load. The manifest is
-  now written into CE's own runtime staging directory and registered from there, stale `baseDir` entries from older
-  builds are neutralized on startup, and a leftover machine-wide (HKLM) registration that CE cannot remove without
-  elevation is reported instead of silently fighting the current one.
-- **CaptureEngine no longer asks WMI to enumerate every process twice a second.** When it is not elevated it
-  falls back to watching for process starts, and that fallback used to make the WMI service materialise the
-  whole process table on a timer for the entire session. It now reads the two fields it needs from the native
-  call the WMI provider is built on.
-- **A recording stopped seconds after starting no longer disappears.** The media process needs a moment to go
-  live, and a stop inside that window left the overlay on "Finalizing recording..." forever with no file
-  written. Such a stop is now reported as a cancelled recording on both overlays and in the manifest, and the
-  audio latency probe that dominated that startup delay is measured once per session instead of once per
-  recording - so only the first recording of a session has the window at all.
-- **The controller reports when a recording is actually live**, with the measured startup time, instead of
-  claiming it started the moment the request was delivered.
-- **The session log now says when a hook was installed or removed under a relaxed thread check.** CE suspends the
-  game's threads before patching, and under NVIDIA Smooth Motion the strict version of that check is unreachable
-  because the driver keeps spawning worker threads. The relaxed retry that makes those hooks land at all was
-  invisible in the log, so a session could not say which patches had taken it.
-- **The `[StartupPerf]` line in the log reports real numbers again.** Every part of CE had its own private copy of
-  the startup timing, so the part that measured and the part that printed were never the same object: a 142 ms
-  startup was logged as `VulkanRegistration=0.000 ms`, `TrayCreate=0.000 ms` and `TotalToReady=36055.158 ms` (the
-  time since the machine booted). Diagnostics only - nothing CE decides was driven by those numbers.
+- **Vulkan implicit layer registration decoupling:** the implicit layer manifest is now staged in CaptureEngine's runtime directory rather than build paths. Stale `baseDir` entries from prior builds are neutralized on startup, and orphaned machine-wide (HKLM) registrations are explicitly warned on when running unelevated.
+- **Unelevated process monitoring CPU reduction:** replaced periodic WMI process table queries (previously twice per second) with direct native Windows process queries, eliminating sustained background WMI service CPU overhead.
+- **Early recording cancellation handling:** stopping a recording during media pipeline startup now cleanly marks the session cancelled in the manifest and overlay rather than hanging indefinitely on "Finalizing recording...". Audio latency calibration is now cached per session to eliminate startup latency on subsequent recordings.
+- **Recording startup telemetry:** the controller now logs the confirmed live timestamp and measured pipeline startup latency rather than assuming immediate recording start upon request dispatch.
+- **Hook installation diagnostics under NVIDIA Smooth Motion:** logged hook installations and removals now report when fallback thread-suspension heuristics were used, clarifying hook status when driver background threads prevent strict thread quiescence.
+- **Startup performance diagnostics accuracy:** unified startup timing accumulation across controller subsystems so `[StartupPerf]` logs accurate elapsed durations rather than uninitialized or system uptime values.
 
 ### Fixed
 
-- **Games no longer crash at startup while CaptureEngine is installing its hooks.** Strange Brigade died within a
-  second of launching, every time the Steam client library happened to load at the same moment CaptureEngine was
-  walking the already-loaded modules. Two CaptureEngine threads were rewriting import entries that sit next to each
-  other in the same block of memory, and each one briefly made that memory writable and then put it back - so one
-  thread could revoke write access while the other was still writing, which Windows answers with an access
-  violation. Those rewrites are now serialized against each other.
-- **Saving `config.ini` no longer blacks out the overlay for seconds and can no longer freeze the game.** Changing a
-  single setting - a sharpen key was enough - made CE re-read the whole configuration file once per profile entry
-  before answering the injected runtime. The injected side took about five seconds to reply to a reload that is
-  allowed one, so CE concluded it had died and respawned it: every injected feature went dormant (overlay, graphics
-  overrides, frame-generation integration, the FPS limiter), the desktop "NOT RECORDING" warning flashed over a game
-  that had the in-game overlay enabled, and in one case the game's render thread then deadlocked and Unreal Engine
-  killed the title after two minutes. Reload now answers immediately and warms its cache in the background.
-- **Recording finalization freeze:** fixed a deadlock where stopping a recording while privacy blackout focus checks
-  were executing could leave the media worker hung indefinitely waiting on a shared lock.
-- **Windows' own "program stopped working" dialog no longer appears when a game crashes.** CE asked for it to be
-  suppressed through a flag that does not suppress that dialog, so a crash could leave a modal error box on screen
-  waiting for a click. It now sets the flag Windows Error Reporting actually reads, while still writing the crash
-  dump into the session directory.
-- **Crash on virtual desktop focus transition:** fixed a crash caused by caching an unmarshaled COM interface pointer
-  across thread apartment teardown during window focus changes.
-- **DirectX 12 sharpen queue drain:** fixed fence drain and ComPtr lifecycle issues during overlay teardown when
-  sharpening was active.
-- **Sharpening no longer risks a crash when DLSS frame generation is switched on or off.** The D3D12 filter submits
-  on whichever queue drew the frame, and an FG activation changes which queue that is mid-game. Its tracking of what
-  the GPU had already finished could not survive that change, so it could recycle GPU resources that were still in
-  use and hand the filter a torn source frame. The switch is now ordered on the GPU, at no cost to frame time.
-- **Changing `sharpen=cas` to `sharpen=rcas` while a game is running is safe.** The shader pipeline for the old mode
-  was released the instant the new one was requested, while the previous frame could still be using it. Replaced GPU
-  objects are now held until the GPU has finished with them.
-- **Vulkan sharpening no longer switches itself off for the rest of the session after a hiccup.** A submission that
-  never reached the GPU left its command buffer marked permanently busy; three of those and the filter stopped
-  running, reporting only that every command buffer was in flight.
-- **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed the game dying a few seconds in. CaptureEngine was
-  compositing on the interposer's own private output chain and holding a reference to a buffer the interposer
-  recreates on its own schedule. Also fixed the overlay flickering on that chain - roughly a third of displayed
-  frames were reaching the screen without it - and fixed the overlay reporting the interposer's output rate as
-  the game's frame rate.
-- **A crash that bypasses every in-process handler is now recorded.** `__fastfail` terminations (exit code
-  `0xC0000409`) reach no vectored handler, no SEH frame and no unhandled-exception filter, so CaptureEngine
-  wrote nothing at all for them. It now claims the dump Windows Error Reporting really writes into the session
-  directory. The registry values earlier builds wrote for this were in a location Windows never reads; they are
-  removed once on startup.
-- **DLSS DLL and Streamline overrides no longer get lost in the first half-second.** The loader redirect was
-  installed at injection but had no configuration to answer with until the hook thread read `config.ini` about
-  400 ms later, so anything loaded in that window - `sl.common` is loaded exactly once, early - passed through
-  unredirected and stood the whole `sl.*` override set down. It is now armed immediately from the configuration
-  the injector already published.
-- **The overlay stays below other overlays' present chains more reliably.** The hook that keeps CaptureEngine
-  beneath the Steam overlay could fail to land when the game was still creating threads, and is retried.
-- **Reflex and PCL hook resolution no longer stalls the render thread.** Late retries were unbounded and could
-  re-scan every 2.5 seconds for a function some Streamline builds simply do not export.
-- **Frame generation health warnings no longer fire under `auto` and `dynamic`.** Choosing not to generate a
-  frame is a legitimate operating point there, not a failed activation.
-- **CaptureEngine no longer reads a frame generation state field the game's own structure does not carry**,
-  which previously reported "dynamic MFG not supported" while the runtime was demonstrably varying its cadence.
+- **Strange Brigade / Steam module injection crash:** fixed startup access violation crash caused by concurrent CaptureEngine hook threads racing to modify memory page protection while patching adjacent Import Address Table (IAT) entries during Steam overlay library loading.
+- **Live configuration reload freeze & overlay blackout:** fixed in-game overlay disappearing and potential game render thread deadlocks when saving `config.ini`. Configuration reload queries now respond immediately with asynchronous background cache warming, preventing false IPC timeout respawns.
+- **Recording finalization freeze:** fixed a deadlock where stopping a recording while privacy blackout focus checks were executing could leave the media worker hung indefinitely waiting on a shared lock.
+- **Windows Error Reporting dialog suppression:** properly configured WER error modes so game crashes write diagnostic minidumps directly to the session folder without hanging on a modal "program has stopped working" prompt.
+- **Crash on virtual desktop focus transition:** fixed a crash caused by caching an unmarshaled COM interface pointer across thread apartment teardown during window focus changes.
+- **DirectX 12 sharpen queue drain:** fixed fence drain and ComPtr lifecycle issues during overlay teardown when sharpening was active.
+- **DirectX 12 sharpen crash during DLSS Frame Generation toggles:** properly synchronized command queue transitions when enabling/disabling DLSS Frame Generation mid-game, preventing GPU resource recycling hazards and frame tearing.
+- **Sharpening mode dynamic switch crash:** fixed crash when switching between CAS and RCAS at runtime caused by releasing pipeline state objects while previous GPU frames were still executing.
+- **Vulkan sharpening command buffer starvation:** fixed an issue where failed or aborted queue submissions left command buffers permanently marked in-flight, which eventually disabled the sharpening pass for the remainder of the session.
+- **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed startup crash caused by compositing onto the interposer's transient output swapchain buffers. Also resolved severe overlay flickering and corrected FPS counter to reflect game render rate rather than interposer presentation rate.
+- **`__fastfail` crash dump capture:** unhandled fatal crashes and security check terminations (`0xC0000409`) that bypass in-process SEH/VEH handlers are now captured from WER crash dumps into the session directory, and legacy invalid registry configuration paths are automatically cleaned up.
+- **Early-startup Streamline DLL override race:** armed the DLL redirection loader hook directly in `DllMain` using pre-published injector configuration, preventing early-loaded modules like `sl.common.dll` from bypassing overrides before the background hook thread finishes reading configuration.
+- **Steam overlay hook layering reliability:** added automatic retries when hooking present body calls during initial game thread creation, ensuring CaptureEngine layers correctly beneath the Steam overlay.
+- **Render thread stutter during Reflex / PCL hook resolution:** bounded retry attempts for Streamline functions not exported by specific library builds, preventing periodic 2.5-second render thread hitches.
+- **False frame generation health warnings in auto/dynamic modes:** suppressed false-positive activation warnings when DLSS Frame Generation dynamically chooses not to interpolate frames.
+- **DLSS Dynamic MFG status detection:** fixed false "dynamic MFG not supported" overlay warnings by gating state field reads on the game's actual DLSS-G struct version.
 
 ## v0.1.6652
 
