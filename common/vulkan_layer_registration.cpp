@@ -569,6 +569,26 @@ bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
             success &= DeleteRegistryValue(key.Get(), valueName, "superseded CE manifest", location);
         }
     }
+
+    if (!plan.processElevated) {
+        const std::vector<RegistryLocation> hklmLocations = {
+            {RegistryRoot::LocalMachine, RegistryView::Registry64},
+            {RegistryRoot::LocalMachine, RegistryView::Registry32},
+        };
+        for (const auto& location : hklmLocations) {
+            RegistryKeyGuard key;
+            if (OpenRegistryKey(location, KEY_QUERY_VALUE, false, &key) == ERROR_SUCCESS) {
+                for (const std::wstring& valueName :
+                     SelectStaleOwnedEntries(EnumerateRegistryValueNames(key.Get()), {})) {
+                    LogWarn(
+                        "[VulkanReg] Stale CaptureEngine layer in %s: %s (requires elevation to repair; may shadow HKCU "
+                        "staging)",
+                        DescribeLocation(location).c_str(), WideToUtf8(valueName).c_str());
+                }
+            }
+        }
+    }
+
     return success;
 }
 
