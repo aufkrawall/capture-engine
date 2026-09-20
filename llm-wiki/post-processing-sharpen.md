@@ -305,9 +305,13 @@ moved `SHARED_MEMORY_VERSION` to 61.
 
 ## Open questions / stale-risk
 
-- **No hardware run at all.** Nothing below has been observed on a GPU: image
-  quality, the FG cost multiplier, HDR behaviour, or the Vulkan usage
-  negotiation against a real surface.
+- **Two hardware runs, both D3D12 SDR at 4K.** Sessions `20260920_223512` and
+  `20260920_225326` (Talos, `sharpen=cas`, `sharpen_contrast=0.00`,
+  `sharpen_amount=0.30`, 3840x2160, `route=1`) ran the pass continuously with no
+  skipped frames. CE's per-frame CPU cost stayed at 11-12 us median / 23-55 us
+  p99 with the filter on. Still unobserved: image quality, the FG cost
+  multiplier, anything HDR, RCAS, D3D11, and the whole Vulkan path including the
+  `TRANSFER_SRC` negotiation against a real surface.
 - The DX12 pass is wired into the main route and the PostSL route. The FFX
   present-callback and UI-resource routes refuse by policy; whether a real FSR
   FG session reaches the main route often enough to be filtered at all is
@@ -317,7 +321,12 @@ moved `SHARED_MEMORY_VERSION` to 61.
   RCAS, nor which `sharpen_amount` default reads as natural on real content.
   (`sharpen_strength`/`sharpen_intensity` are accepted as aliases; the names in
   `config.ini.template` are `sharpen_contrast`/`sharpen_amount`.)
-- The queue-change ordering wait has never been exercised on hardware. It is
-  reasoned from the two call sites and covered by unit tests over the rule, but
-  no session log yet shows the `submitting queue changed` line, because sharpen
-  has had no hardware run at all.
+- **The queue-change ordering wait is hardware-validated.** Session
+  `20260920_225326` (Talos, build 0.1.6755) logged
+  `Sharpen: DX12 submitting queue changed 0000014AFDE27E90 -> 0000014AD36D00D0;
+  chained behind fence value 2690` at 22:55:18, three seconds after a
+  DLSS-MSFG -> off -> FSR-FG -> off sequence settled. Two genuinely different
+  queues, the GPU-side `Wait` issued once, and the pass carried on: zero
+  `skipped a frame`, zero `could not be ordered`, and no second
+  `source copy ready`, so nothing was torn down or rebuilt across the switch.
+  This is the hazard the unit tests could only describe.
