@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-20 - Automated changelog handling and ADHD-friendly guidelines
+
+Automated `CHANGELOG.md` validation, extraction, and GitHub release notes generation:
+- **Pre-commit changelog rule in `AGENTS.md`:** Agents must update `## Unreleased` in `CHANGELOG.md` before
+  committing code changes, preventing changelog drift.
+- **`llm-wiki/changelog-guidelines.md`:** Established core principles:
+  - Transparent application issue attribution: every entry must state the user-facing defect, crash, or
+    capability solved rather than purely internal code mechanism.
+  - ADHD-friendly scannability: bold lead-in anchor on every bullet (`- **<Anchor>** <Details>`), standard
+    categories (`### New`, `### Improved`, `### Fixed`), short punchy sentences scannable in 15 seconds.
+  - Continuous incremental updates during dev loops under `## Unreleased`.
+  - Parity between `CHANGELOG.md` and GitHub release tag notes.
+- **Automation tooling (`tools/manage_changelog.py`):** CLI and library for `--validate`, `--check-worktree`,
+  `--extract-notes`, `--generate-release-notes`, and `--promote-release`. Validated continuously via
+  `tools/tests/test_changelog.py` in `tools/python_tool_self_tests.py`.
+- **GitHub Actions integration:** `.github/workflows/release-stable.yml` now generates release notes directly
+  via `python tools/manage_changelog.py --generate-release-notes --version $version --commit $env:COMMIT --output $releaseNotesFile`
+  and passes `--notes-file` to `gh release create`, ensuring published release tag notes feature full issue highlights.
+
 ### 2026-09-20 - [StartupPerf] was reading a different object than the one being written
 
 Session `20260920_211603`, build 0.1.6746, Talos Reawakened, ~90 s, clean exit. The session itself was

@@ -329,7 +329,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a $tag -m "Stable release $version"
           git push origin $tag
+          $releaseNotesFile = "build/verification/release_notes.md"
+          python tools/manage_changelog.py --generate-release-notes --version $version --commit $env:COMMIT --output $releaseNotesFile
+          if (-not (Test-Path $releaseNotesFile)) {
+            throw "Failed to generate release notes at $releaseNotesFile"
+          }
           gh release create $tag `
             --title "Stable release $version" `
-            --notes "Stable release $version built and fully verified from $env:COMMIT.`n`nAssets: captureengine.7z (product), testapps.7z (test apps), ffmpeg-corresponding-source.7z (LGPL corresponding source), latest_manifest.json / latest_summary.txt (build verification evidence).`n`nFFmpeg is distributed as shared libraries under LGPL-2.1-or-later; see the bundled notices and corresponding source. Binaries are not currently Authenticode-signed." `
+            --notes-file $releaseNotesFile `
             @assets

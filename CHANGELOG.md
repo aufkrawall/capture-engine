@@ -6,6 +6,13 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- **FidelityFX CAS and RCAS post-processing sharpening is available across D3D11, D3D12, and Vulkan.** Enabled with
+  `sharpen=cas` or `sharpen=rcas` (with strength controlled via `sharpen_intensity`), sharpening runs as a lightweight
+  GPU pass on presented frames without filtering the injected overlay or altering SDR/HDR color grading (supporting
+  BT.709, scRGB, and HDR10 PQ). Also included in captured screenshots and controllable via Unreal Engine CVars.
+- **Automated changelog validation and GitHub release notes publishing:** added `tools/manage_changelog.py` to validate
+  changelog structure, extract ADHD-friendly release notes, and automatically populate GitHub release tag notes during
+  automated release builds.
 - **DLSS frame generation can be driven through the driver settings**, which is the channel NVIDIA Profile
   Inspector writes and the only one that reaches 5x and 6x. Four new `[DLSS]` keys mirror its fields:
   `dlss_fg_mode` (`off`/`fixed`/`auto`/`dynamic`), `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and
@@ -29,6 +36,9 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Vulkan implicit layer registration decoupled from build tree:** manifests are generated and staged dynamically
+  at runtime, preventing stale build paths or legacy `baseDir` entries from polluting system registries or causing
+  unelevated warnings.
 - **CaptureEngine no longer asks WMI to enumerate every process twice a second.** When it is not elevated it
   falls back to watching for process starts, and that fallback used to make the WMI service materialise the
   whole process table on a timer for the entire session. It now reads the two fields it needs from the native
@@ -40,9 +50,16 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
   recording - so only the first recording of a session has the window at all.
 - **The controller reports when a recording is actually live**, with the measured startup time, instead of
   claiming it started the moment the request was delivered.
+- **Controller startup timing is unified into a single timing object**, eliminating redundant startup measurement allocations.
 
 ### Fixed
 
+- **Recording finalization freeze:** fixed a deadlock where stopping a recording while privacy blackout focus checks
+  were executing could leave the media worker hung indefinitely waiting on a shared lock.
+- **Crash on virtual desktop focus transition:** fixed a crash caused by caching an unmarshaled COM interface pointer
+  across thread apartment teardown during window focus changes.
+- **DirectX 12 sharpen queue drain:** fixed fence drain and ComPtr lifecycle issues during overlay teardown when
+  sharpening was active.
 - **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed the game dying a few seconds in. CaptureEngine was
   compositing on the interposer's own private output chain and holding a reference to a buffer the interposer
   recreates on its own schedule. Also fixed the overlay flickering on that chain - roughly a third of displayed

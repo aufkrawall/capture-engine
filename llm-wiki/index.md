@@ -1,10 +1,12 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-09-19 (streamlined incremental dev gate with `--skip-package`; semantic-unit conversion complete across C++ and Python; consult `repo-map.md`, `current.md`, and the topic catalog below).
+Last cross-checked: 2026-09-20 (changelog guidelines and automated release notes generation via tools/manage_changelog.py; streamlined incremental dev gate with `--skip-package`; semantic-unit conversion complete across C++ and Python; consult `repo-map.md`, `current.md`, and the topic catalog below).
 
 Primary sources:
 - `AGENTS.md`
+- `CHANGELOG.md`
 - `build.py`
+- `tools/manage_changelog.py`
 - `tools/config/.clang-format`
 - `tools/config/.flake8`
 - `tools/config/pyrightconfig.json`
@@ -29,13 +31,15 @@ Primary sources:
   pipeline units, test matrix, important paths) before reading the topic page.
 - Read `current.md` next for a compact current-state summary and routing.
 - Read `log/recent.md` after that when you need the recent historical genesis for a changing area. For older entries, consult the relevant `log/archive-YYYY-Www*.md` file.
-- For build and tooling questions, read `build.py.md` and `codestyle.md`.
+- For build, commit, and tooling questions, read `build.py.md`, `codestyle.md`, and `changelog-guidelines.md`.
 - Streamline API generation (1.x vs 2.x) is an ABI precondition for hooking `slSetTag`/`slEvaluateFeature` and for `streamline_dll_path`; see `frame-generation/guardrails.md`.
 - DLSS frame generation's driver-settings keys (render preset, NVIDIA Profile Inspector's forced mode / fixed and dynamic multi-frame counts / target frame rate, and the driver VSync key `vsync_mode` has to travel) are in `frame-generation/dlss-driver-settings.md`. It also decodes the on-screen indicator.
 - `streamline_upgrade` runs a 2.x runtime inside a 1.x game (DLSS-G on SL1 titles). `frame-generation/streamline-generation-bridge.md` carries the **measured 1.x ABI** - function signatures, feature values, and the `Constants` / `Resource` / `DLSSConstants` / `DLSSSettings` / `DLSSGConstants` layouts - which exists in no public source and cannot be re-derived from documentation. Read it before touching anything 1.x-shaped.
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `present-interposers.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- `changelog-guidelines.md`
+  - ADHD-friendly, scannable structure, bold lead-in anchors, and issue transparency standards for `CHANGELOG.md` and GitHub release tag notes. Continuous pre-commit update mandate, allowed categories, and release automation via `tools/manage_changelog.py`. Last verified 2026-09-20.
 - `configuration.md`
   - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, optional bounded `[HardwareSensors]` selectors (nine metrics, all defaulting to auto), injected-overlay display-change/presentation frame-time and PC-latency selection, stable fail-closed monitor selection, best-effort fullscreen-focus WGC/DXGI blackout, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, the single target-resolved shared-memory config publication that the runtime overlay-visibility toggle rides on, the two-path hotkey delivery (RegisterHotKey plus a low-level keyboard hook for applications that suppress hotkeys with RIDEV_NOHOTKEYS), validation rules, and maintenance invariants. Last verified 2026-09-10.
 - `overlay-rendering.md`
