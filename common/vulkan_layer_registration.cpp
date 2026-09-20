@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -34,17 +35,10 @@ struct RegistryLocation {
 class RegistryKeyGuard {
 public:
     RegistryKeyGuard() = default;
-    ~RegistryKeyGuard() {
-        Reset();
-    }
-
+    ~RegistryKeyGuard() { Reset(); }
     RegistryKeyGuard(const RegistryKeyGuard&) = delete;
     RegistryKeyGuard& operator=(const RegistryKeyGuard&) = delete;
-
-    RegistryKeyGuard(RegistryKeyGuard&& other) noexcept : key_(other.key_) {
-        other.key_ = nullptr;
-    }
-
+    RegistryKeyGuard(RegistryKeyGuard&& other) noexcept : key_(other.key_) { other.key_ = nullptr; }
     RegistryKeyGuard& operator=(RegistryKeyGuard&& other) noexcept {
         if (this != &other) {
             Reset();
@@ -55,16 +49,11 @@ public:
     }
 
     void Reset(HKEY key = nullptr) {
-        if (key_) {
-            RegCloseKey(key_);
-        }
+        if (key_) RegCloseKey(key_);
         key_ = key;
     }
 
-    HKEY Get() const {
-        return key_;
-    }
-
+    HKEY Get() const { return key_; }
     HKEY* Put() {
         Reset();
         return &key_;
@@ -114,14 +103,10 @@ class HandleCloser {
 public:
     explicit HandleCloser(HANDLE handle) : handle_(handle) {}
     ~HandleCloser() {
-        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
-            CloseHandle(handle_);
-        }
+        if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
     }
-
     HandleCloser(const HandleCloser&) = delete;
     HandleCloser& operator=(const HandleCloser&) = delete;
-
 private:
     HANDLE handle_ = nullptr;
 };
@@ -159,8 +144,8 @@ LayerManifest BuildManifest(const std::filesystem::path& baseDir, const std::fil
     manifest.libraryPath = stagingDir / libraryName;
     manifest.layerName = BuildVersionedLayerName(layerName);
     manifest.is32Bit = is32Bit;
-    manifest.manifestExists = IsRegularFile(manifest.sourceManifestPath);
     manifest.libraryExists = IsRegularFile(manifest.sourceLibraryPath);
+    manifest.manifestExists = manifest.libraryExists || IsRegularFile(manifest.sourceManifestPath);
     return manifest;
 }
 
@@ -266,21 +251,11 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
         (plan.effectiveMode == RegistrationMode::AllUsers) ? RegistryRoot::LocalMachine : RegistryRoot::CurrentUser;
     RegistryTarget x64Target{root, RegistryView::Registry64, {}};
     RegistryTarget x86Target{root, RegistryView::Registry32, {}};
-
     for (const LayerManifest& manifest : plan.manifests) {
-        if (manifest.is32Bit) {
-            x86Target.manifests.push_back(manifest);
-        } else {
-            x64Target.manifests.push_back(manifest);
-        }
+        (manifest.is32Bit ? x86Target : x64Target).manifests.push_back(manifest);
     }
-
-    if (!x64Target.manifests.empty()) {
-        targets.push_back(std::move(x64Target));
-    }
-    if (!x86Target.manifests.empty()) {
-        targets.push_back(std::move(x86Target));
-    }
+    if (!x64Target.manifests.empty()) targets.push_back(std::move(x64Target));
+    if (!x86Target.manifests.empty()) targets.push_back(std::move(x86Target));
     return targets;
 }
 
@@ -499,24 +474,13 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
         (plan.effectiveMode == RegistrationMode::AllUsers) ? RegistryRoot::LocalMachine : RegistryRoot::CurrentUser;
     RegistryTarget x64Target{root, RegistryView::Registry64, {}};
     RegistryTarget x86Target{root, RegistryView::Registry32, {}};
-
     for (const LayerManifest& manifest : plan.manifests) {
-        if (!manifest.IsUsable()) {
-            continue;
-        }
-        if (manifest.is32Bit) {
-            x86Target.manifests.push_back(manifest);
-        } else {
-            x64Target.manifests.push_back(manifest);
+        if (manifest.IsUsable()) {
+            (manifest.is32Bit ? x86Target : x64Target).manifests.push_back(manifest);
         }
     }
-
-    if (!x64Target.manifests.empty()) {
-        plan.installTargets.push_back(std::move(x64Target));
-    }
-    if (!x86Target.manifests.empty()) {
-        plan.installTargets.push_back(std::move(x86Target));
-    }
+    if (!x64Target.manifests.empty()) plan.installTargets.push_back(std::move(x64Target));
+    if (!x86Target.manifests.empty()) plan.installTargets.push_back(std::move(x86Target));
     return plan;
 }
 
@@ -625,6 +589,54 @@ static bool StageFileIfChanged(const std::filesystem::path& source, const std::f
     return false;
 }
 
+static bool WriteStagedManifest(const LayerManifest& manifest) {
+    if (manifest.manifestPath.empty()) {
+        return false;
+    }
+
+    const std::string buildStr = std::to_string(GetCurrentBuildNumber());
+    const std::string jsonContent =
+        "{\n"
+        "    \"file_format_version\": \"1.2.0\",\n"
+        "    \"layer\": {\n"
+        "        \"name\": \"" + WideToUtf8(manifest.layerName) + "\",\n"
+        "        \"type\": \"GLOBAL\",\n"
+        "        \"library_path\": \".\\\\" + WideToUtf8(manifest.libraryPath.filename().wstring()) + "\",\n"
+        "        \"api_version\": \"1.3.0\",\n"
+        "        \"implementation_version\": \"" + buildStr + "\",\n"
+        "        \"description\": \"CaptureEngine Overlay and Recording Layer\",\n"
+        "        \"functions\": {\n"
+        "            \"vkGetInstanceProcAddr\": \"vkGetInstanceProcAddr\",\n"
+        "            \"vkGetDeviceProcAddr\": \"vkGetDeviceProcAddr\",\n"
+        "            \"vkNegotiateLoaderLayerInterfaceVersion\": \"vkNegotiateLoaderLayerInterfaceVersion\"\n"
+        "        },\n"
+        "        \"disable_environment\": {\n"
+        "            \"DISABLE_CE_VULKAN_LAYER\": \"1\"\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+
+    std::error_code ec;
+    if (std::filesystem::exists(manifest.manifestPath, ec)) {
+        std::ifstream in(manifest.manifestPath, std::ios::binary);
+        if (in) {
+            std::string existing((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (existing == jsonContent) {
+                return true;
+            }
+        }
+    }
+
+    std::ofstream out(manifest.manifestPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        LogError("[VulkanReg] Failed to write staged manifest to %s", PathToUtf8(manifest.manifestPath).c_str());
+        return false;
+    }
+    out.write(jsonContent.data(), static_cast<std::streamsize>(jsonContent.size()));
+    LogInfo("[VulkanReg] Staged manifest: %s", PathToUtf8(manifest.manifestPath).c_str());
+    return true;
+}
+
 static bool StagePlanArtifacts(const RegistrationPlan& plan) {
     if (plan.stagingDir.empty() || plan.stagingDir == plan.baseDir) {
         return true;
@@ -644,7 +656,7 @@ static bool StagePlanArtifacts(const RegistrationPlan& plan) {
             continue;
         }
         success &= StageFileIfChanged(manifest.sourceLibraryPath, manifest.libraryPath);
-        success &= StageFileIfChanged(manifest.sourceManifestPath, manifest.manifestPath);
+        success &= WriteStagedManifest(manifest);
     }
     return success;
 }
@@ -731,6 +743,12 @@ bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install) {
         if (!StagePlanArtifacts(plan)) {
             LogError("[VulkanReg] Failed to stage Vulkan layer artifacts to %s", PathToUtf8(plan.stagingDir).c_str());
             return false;
+        }
+
+        if (!plan.stagingDir.empty() && plan.stagingDir != plan.baseDir) {
+            std::error_code rmEc;
+            std::filesystem::remove(plan.baseDir / kManifest64Name, rmEc);
+            std::filesystem::remove(plan.baseDir / kManifest32Name, rmEc);
         }
 
         bool success = true;

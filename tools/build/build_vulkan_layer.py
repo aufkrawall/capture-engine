@@ -252,48 +252,17 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         run_command(cmd, env=env)
         log(f"Built: {layer_dll}")
 
-        # Generate layer manifest JSON dynamically
-        # This ensures the path is always correct and current
-        import json
-
+        # Manifests are staged at runtime into %LOCALAPPDATA% / %PROGRAMDATA% by
+        # CaptureEngine (common/vulkan_layer_registration.cpp). Do not leave JSON
+        # manifests in bin_dir (installed/captureengine/) to ensure external processes
+        # never map or lock bin_dir binaries through stale or legacy registry entries.
         manifest_name = "VK_LAYER_CE_overlay.json" if arch == "x64" else "VK_LAYER_CE_overlay_x86.json"
         manifest_path = os.path.join(bin_dir, manifest_name)
-
-        # Keep manifest portable/private by using a DLL name relative to the
-        # manifest location instead of an absolute machine-local path.
-        # Prefix with .\ so Vulkan loader resolves relative to manifest path.
-        # Bare DLL names are resolved via process DLL search paths and can fail.
-        manifest_dll_name = f".\\{os.path.basename(layer_dll)}"
-
-        # Give every packaged build its own loader identity. The Windows loader
-        # keeps only the first occurrence of a layer name, so a stale manifest
-        # from another build must not shadow the current one. Discovery also
-        # carries this build number, keeping older layers dormant if both load.
-        layer_name_base = "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
-        layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"
-
-        manifest = {
-            "file_format_version": "1.2.0",
-            "layer": {
-                "name": layer_name,
-                "type": "GLOBAL",
-                "library_path": manifest_dll_name,
-                "api_version": "1.3.0",
-                "implementation_version": str(CURRENT_BUILD_NUMBER),
-                "description": "CaptureEngine Overlay and Recording Layer",
-                "functions": {
-                    "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",
-                    "vkGetDeviceProcAddr": "vkGetDeviceProcAddr",
-                    "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion",
-                },
-                "disable_environment": {"DISABLE_CE_VULKAN_LAYER": "1"},
-            },
-        }
-
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=4)
-
-        log(f"Generated Manifest: {manifest_path}")
+        if os.path.exists(manifest_path):
+            try:
+                os.remove(manifest_path)
+            except OSError:
+                pass
 
     except Exception as e:
         log(f"Error linking layer: {e}")

@@ -649,9 +649,9 @@ class BuildFlagPolicyTest(unittest.TestCase):
         bump_version.assert_not_called()
 
     def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
-        source = build.read_source_text()
-        self.assertIn('layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"', source)
-        self.assertIn('"implementation_version": str(CURRENT_BUILD_NUMBER)', source)
+        cpp = (Path(build.PROJECT_ROOT) / "common" / "vulkan_layer_registration.cpp").read_text(encoding="utf-8")
+        self.assertIn('return std::wstring(baseName) + L"_b" + std::to_wstring(GetCurrentBuildNumber());', cpp)
+        self.assertIn('implementation_version', cpp)
 
     def test_failed_unit_tests_capture_diagnostics_on_linux(self) -> None:
         previous_context = build.VERIFICATION_CONTEXT

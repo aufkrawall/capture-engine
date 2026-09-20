@@ -554,7 +554,11 @@ def log(msg: str, *, detail: bool = False) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     formatted = privacy_sanitize_log_text(f"[{timestamp}] {msg}")
     if not (CONCISE_OUTPUT and detail and not VERBOSE_COMMANDS):
-        print(formatted)
+        try:
+            print(formatted)
+        except UnicodeEncodeError:
+            encoding = sys.stdout.encoding or "utf-8"
+            print(formatted.encode(encoding, errors="replace").decode(encoding, errors="replace"))
     with LOG_LOCK:
         if DETAIL_LOG_FILE:
             try:

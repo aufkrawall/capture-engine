@@ -185,6 +185,37 @@ TEST(VulkanLayerRegistrationTest, StagingCopiesArtifactsAndCleanupRemovesOldBuil
     std::filesystem::remove_all(testRoot);
 }
 
+TEST(VulkanLayerRegistrationTest, ApplyRegistrationPlanNeutralizesLegacyManifestsInBaseDir) {
+    const std::filesystem::path testRoot = std::filesystem::current_path() / "vk_reg_neutralize_test";
+    const std::filesystem::path baseDir = testRoot / "installed";
+    const std::filesystem::path stagingDir = testRoot / "staging";
+    std::filesystem::create_directories(baseDir);
+    std::filesystem::create_directories(stagingDir);
+
+    const auto legacyManifest64 = baseDir / L"VK_LAYER_CE_overlay.json";
+    const auto legacyManifest32 = baseDir / L"VK_LAYER_CE_overlay_x86.json";
+    const auto lib64 = baseDir / L"VK_LAYER_CE_overlay.dll";
+    TouchFile(legacyManifest64);
+    TouchFile(legacyManifest32);
+    TouchFile(lib64);
+
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
+    EXPECT_TRUE(std::filesystem::exists(legacyManifest64));
+    EXPECT_TRUE(std::filesystem::exists(legacyManifest32));
+
+    EXPECT_TRUE(ce::vulkan_layer::ApplyRegistrationPlan(plan, true));
+
+    // Staged manifest was created in stagingDir:
+    EXPECT_TRUE(std::filesystem::exists(stagingDir / L"VK_LAYER_CE_overlay.json"));
+    // Legacy manifests in baseDir were purged:
+    EXPECT_FALSE(std::filesystem::exists(legacyManifest64));
+    EXPECT_FALSE(std::filesystem::exists(legacyManifest32));
+
+    // Cleanup registry and test directory
+    ce::vulkan_layer::ApplyRegistrationPlan(plan, false);
+    std::filesystem::remove_all(testRoot);
+}
+
 TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritableScopes) {
     const std::filesystem::path source = std::filesystem::current_path() / "common" / "vulkan_layer_registration.cpp";
     std::ifstream input(source, std::ios::binary);
