@@ -45,6 +45,11 @@ This document establishes the mandatory standards and workflows for maintaining 
 - **GitHub release tag notes must meet these identical criteria.** Release notes published to GitHub must not be generic boilerplate; they must feature the transparent, ADHD-friendly categorized bullet points for that release.
 - Release notes are generated directly from the changelog section via `tools/manage_changelog.py --generate-release-notes` during `.github/workflows/release-stable.yml`, ensuring complete parity and zero drift between git tags and GitHub Releases.
 
+### 5. Native Feature Framing (No Unnecessary 3rd-Party Tool References)
+- **Do not unnecessarily cite, name, or claim parity with third-party tools or utilities** (e.g. NVIDIA Profile Inspector, Special K, RTSS, OBS, ReShade).
+- **Frame features and controls natively:** describe the underlying capability, operating mode, API hook, or configuration setting provided by CaptureEngine itself rather than referencing third-party software.
+- **Exceptions:** Mention third-party software *only* when resolving concrete, verified interoperability defects or compatibility behaviors with other tools running simultaneously (e.g. hook chaining or layering with the Steam overlay or RTSS).
+
 ## Entry Structure & Style Guide
 
 ```markdown
