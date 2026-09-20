@@ -590,6 +590,33 @@ legacy_d3d_native_overlay=on
 cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.
 backbuffer_count=-1
+; sharpen: off, cas, or rcas. Applies AMD FidelityFX Contrast Adaptive
+; Sharpening or its RCAS variant to the frame the application is about to
+; present, immediately before the CaptureEngine overlay is drawn - so the
+; overlay itself is never sharpened. The application's own HUD is part of the
+; frame at that point and is sharpened with it; that is inherent to sharpening
+; a finished frame and not something a post-present filter can separate.
+; cas uses a 3x3 kernel and is the more visible of the two. rcas uses a 5-tap
+; cross, is the sharpener DLSS/FSR themselves use, and rings less.
+; With frame generation active every displayed frame is filtered, generated
+; frames included: filtering only some of them would show up as a sharpness
+; pulse at the generation cadence. That also means the cost is per displayed
+; frame, so it is multiplied by the generation factor.
+; Requires a target CaptureEngine can both read and write. Where it cannot -
+; notably the frame-generation runtimes' UI-resource route, which carries an
+; overlay texture rather than a frame - the pass is skipped and the reason is
+; logged.
+sharpen=off
+; 0.0 to 1.0. This is the intensity inside each effect's own native range, and
+; 0.0 is the mildest setting rather than off - use sharpen=off to disable.
+sharpen_strength=0.5
+; sharpen_color_space: auto, direct, or gamma. auto is correct for every
+; presentation path CaptureEngine recognizes: it filters stored sRGB, plain
+; UNORM and HDR10/PQ values directly, and converts linear values (scRGB FP16,
+; or any target whose views apply the sRGB transform) to a gamma space first,
+; because sharpening linear light rings around highlights. direct and gamma
+; force one of the two for diagnosis.
+sharpen_color_space=auto
 
 [UE5]
 ; UE5 overrides affect injected x64 applications only. They redirect validated

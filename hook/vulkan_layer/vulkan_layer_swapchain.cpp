@@ -183,6 +183,37 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 }
             }
         }
+        // CE reads presentable images - the sharpen pass copies the frame it is
+        // about to filter, and inject capture copies it to the encoder - which a
+        // swapchain only permits when it was created with TRANSFER_SRC. The bit
+        // is requested here or never; it is never assumed at use time.
+        {
+            ce::vulkan_swapchain_usage::Input usageInput = {};
+            usageInput.applicationUsage = pCreateInfo->imageUsage;
+            VkPhysicalDevice usagePhysDev = disp->physicalDevice;
+            VkInstance usageInst = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(usagePhysDev);
+            InstanceDispatch* usageInstDisp = VulkanLayerState::Get().GetInstanceDispatch(usageInst);
+            if (usageInstDisp && usageInstDisp->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR) {
+                // Deliberately not value-initialized: VkSurfaceTransformFlagBitsKHR
+                // has no zero enumerator and the driver fills every field read
+                // below before the success return this is guarded on.
+                VkSurfaceCapabilitiesKHR usageCaps;
+                if (usageInstDisp->fp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(usagePhysDev, pCreateInfo->surface,
+                                                                                &usageCaps) == VK_SUCCESS) {
+                    usageInput.surfaceCapabilitiesKnown = true;
+                    usageInput.supportedUsage = usageCaps.supportedUsageFlags;
+                }
+            }
+            const ce::vulkan_swapchain_usage::Decision usagePolicy =
+                ce::vulkan_swapchain_usage::Decide(usageInput);
+            if (usagePolicy.overrideApplied) {
+                modifiedCI.imageUsage = usagePolicy.usage;
+                modified = true;
+            }
+            LayerLog("Vulkan Layer: swapchain imageUsage 0x%x -> 0x%x (%s)", pCreateInfo->imageUsage,
+                     usagePolicy.usage, usagePolicy.reason);
+        }
+
         const ce::vulkan_swapchain_image_policy::Decision imagePolicy =
             ce::vulkan_swapchain_image_policy::Decide(imagePolicyInput);
         if (imagePolicy.overrideApplied) {
@@ -214,6 +245,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         LayerLog("Vulkan Layer: Cleaning up old swapchain %p before recreation", pCreateInfo->oldSwapchain);
         SwapchainData* oldSd = VulkanLayerState::Get().GetSwapchainData(pCreateInfo->oldSwapchain);
         if (oldSd) {
+            CleanupSharpenForSwapchain(oldSd->device, pCreateInfo->oldSwapchain);
             CleanupOverlay(oldSd->device);
         }
         VulkanLayerState::Get().UnregisterSwapchain(pCreateInfo->oldSwapchain);

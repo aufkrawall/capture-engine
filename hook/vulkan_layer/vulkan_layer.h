@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sharpen_policy.h"
 #include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"
 
@@ -368,6 +369,16 @@ public:
     int32_t GetBackbufferCount() const {
         return m_BackbufferCount;
     }
+    // The host publishes the sharpen settings already parsed, so the layer
+    // reads enums rather than re-deriving the vocabulary from strings once per
+    // present.
+    ce::sharpen::Request GetSharpenRequest() const {
+        ce::sharpen::Request request;
+        request.mode = static_cast<ce::sharpen::Mode>(m_SharpenMode.load(std::memory_order_acquire));
+        request.space = static_cast<ce::sharpen::ConfiguredSpace>(m_SharpenColorSpace.load(std::memory_order_acquire));
+        request.strength = ce::sharpen::ClampStrength(m_SharpenStrength.load(std::memory_order_acquire));
+        return request;
+    }
     float GetPrerenderLimit() const {
         return m_PrerenderLimit;
     }
@@ -375,6 +386,10 @@ public:
     void UpdateFromSharedMemory(class IPCClient* ipc);
 
 private:
+    std::atomic<uint8_t> m_SharpenMode{0};
+    std::atomic<uint8_t> m_SharpenColorSpace{0};
+    std::atomic<float> m_SharpenStrength{ce::sharpen::kDefaultStrength};
+
     VulkanLayerState();
     DeviceDispatch* ResolveDispatchByKey(const void* dispatchableHandle);
     mutable std::recursive_mutex m_Lock;

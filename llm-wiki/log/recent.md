@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-09-20 - post-processing sharpen: FidelityFX CAS and RCAS on D3D11, D3D12 and Vulkan
+
+New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength` and
+`sharpen_color_space`. Full topic page: `post-processing-sharpen.md`.
+
+- **The ordering rule is the design.** The filter runs on the frame the Present will put on
+  screen, *before* inject capture copies it and *before* the overlay draws. That is what
+  keeps CE's own overlay unsharpened, keeps the recording and the screen in agreement even
+  with `capture_include_overlay=false`, and makes it work with the overlay disabled. Each
+  backend resolves its own target for that reason rather than borrowing the overlay's.
+- **Every displayed frame is filtered under FG, generated ones included.** Filtering a subset
+  would show up as a sharpness pulse at the generation cadence. The cost therefore scales with
+  the displayed rate; at 4x MFG that is four passes per rendered frame, and it is **unmeasured**.
+  Default is `off` until `overlay_gpu_timing.cpp` has produced numbers.
+- **Filtering pre-FG was rejected**, though it would cost one pass per rendered frame: with
+  FSR FG, CE has no view of the application's Present through AMD's proxy, and with DLSS-G it
+  would mean writing into a buffer Streamline owns as its interpolation input.
+- **`_SRGB` views put linear light in front of the kernel**, exactly like scRGB FP16 does, and
+  sharpening linear light rings around highlights. The `auto` working space keys on that, not
+  on the presentation encoding alone.
+- **Neither effect is off at strength 0**; 0 is each one's mildest setting and `sharpen=off` is
+  the only switch. The parser keeps an explicit 0 rather than treating it as absent.
+- **Vulkan needed `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` negotiated at swapchain creation**
+  (`vulkan_swapchain_usage_policy.h`, fail-closed against `supportedUsageFlags`). Inject capture
+  had been copying from swapchain images without that bit ever being requested.
+- `spirv-opt -O --strip-debug` takes the CAS fragment module from 61 KB to about 6 KB - a tenth
+  of the blob and a tenth of the driver's pipeline-creation work, not a size cosmetic.
+- ABI: the resolved sharpen settings grew `SharedGraphicsConfig` past its tail padding, so
+  `SHARED_MEMORY_VERSION` moved to 61. `SharedGraphicsConfig` and its layout assertions moved
+  into `common/shared_defs_detail/graphics_config.h` to keep the ABI header under the size
+  ceiling; it is included from inside that file's pack region and is deliberately not standalone.
+- Headers vendored from the MIT FidelityFX SDK 1.1.4 archive the build already downloads. The
+  newer 2.x SDK drop must not be used as the source: its `docs/license.md` is
+  binary-redistribution-only and contradicts the per-file MIT banner in the same headers.
+- **Unrelated pre-existing failure found:** `ScreenGrabPrivacyTest.TaskViewAndDesktopClassesAre`
+  `RejectedEvenWithFullscreenGeometry` faults inside `IVirtualDesktopManager::IsWindowOnCurrent`
+  `VirtualDesktop` (`common/screen_grab_privacy.cpp`). The pre-change sanitizer binary from
+  2026-09-19 crashes identically, so it predates this work. Suspect: the `thread_local` ComPtr
+  cache outliving the COM apartment it was created in. Everything else (3471 tests) passes.
+
 ### 2026-09-20 - decoupled Vulkan layer registration via runtime staging to eliminate external file locks
 
 Non-whitelisted third-party processes (Explorer, Chrome, Discord, `DataExchangeHost.exe`, etc.) frequently

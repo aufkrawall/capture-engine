@@ -280,6 +280,12 @@ void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
 
 void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 
+// Filters the frame this Present will put on screen, before capture and
+// before the overlay draws. See hook/apis/dx11_hook_sharpen.cpp.
+void SharpenDX11PresentedFrame(IDXGISwapChain* pSwapChain);
+
+void ReleaseDX11SharpenResources(bool releaseObjects = true);
+
 bool DX11Hook_ShouldPassThroughCurrentPresent();
 
 void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain);

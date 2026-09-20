@@ -1,0 +1,79 @@
+#pragma once
+
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+#include "../../common/sharpen_policy.h"
+#include "../common/sharpen_constants.h"
+#include "../common/sharpen_pass_log.h"
+#include "layer_main.h"
+#include "layer_sharpen.h"
+#include "vulkan_layer.h"
+
+// Shared state between the sharpen pass's lifecycle unit
+// (layer_sharpen_setup.cpp) and its per-present recording unit
+// (layer_sharpen.cpp). Both are halves of one logical translation unit; the
+// split exists only to keep each file under the source-size ceiling.
+
+// Command buffers and their fences ring. The source copy does not: every
+// submission goes to one queue and each frame's copy barrier waits on the
+// previous frame's fragment-shader read of the same image, so one copy is
+// enough no matter how deep the ring is.
+inline constexpr uint32_t kSharpenSlotCount = 3;
+
+struct SharpenState {
+    bool initialized = false;
+    VkDevice device = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent = {0, 0};
+    uint32_t queueFamily = 0;
+
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline casPipeline = VK_NULL_HANDLE;
+    VkPipeline rcasPipeline = VK_NULL_HANDLE;
+
+    // The untouched copy of the frame the kernel reads.
+    VkImage sourceImage = VK_NULL_HANDLE;
+    VkDeviceMemory sourceMemory = VK_NULL_HANDLE;
+    VkImageView sourceView = VK_NULL_HANDLE;
+    // False until the first copy has written it; before that its contents are
+    // undefined and its layout must be transitioned from UNDEFINED.
+    bool sourceInitialized = false;
+
+    // Per presentable image.
+    std::vector<VkImageView> imageViews;
+    std::vector<VkFramebuffer> framebuffers;
+    // Indexed by presentable image, not by slot: reacquiring an image proves
+    // the present that waited on its semaphore consumed it, which a fence on
+    // CE's own submission never does. This is the same rule inject capture uses.
+    std::vector<VkSemaphore> imageSemaphores;
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffers[kSharpenSlotCount] = {};
+    VkFence fences[kSharpenSlotCount] = {};
+    bool slotSubmitted[kSharpenSlotCount] = {};
+    uint32_t nextSlot = 0;
+
+    ce::sharpen::DecisionLogGate logGate;
+};
+
+extern std::mutex layer_sharpen_g_StateMutex;
+extern std::unordered_map<VkDevice, SharpenState> layer_sharpen_g_States;
+
+// Builds everything that depends on the device, the swapchain format/extent and
+// the presentable images. Returns false when any of it could not be created, in
+// which case nothing is left half-built.
+bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
+                            VkFormat format, VkExtent2D extent, uint32_t queueFamily, uint32_t imageCount,
+                            const VkImage* images);
+
+void DestroySharpenState(SharpenState& state, DeviceDispatch* disp);

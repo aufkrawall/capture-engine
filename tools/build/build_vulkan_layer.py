@@ -42,6 +42,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_overlay_compute.cpp"),
         os.path.join(layer_dir, "layer_overlay_queue.cpp"),
         os.path.join(layer_dir, "layer_overlay_render.cpp"),
+        os.path.join(layer_dir, "layer_sharpen.cpp"),
+        os.path.join(layer_dir, "layer_sharpen_setup.cpp"),
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_capture_d3d11_interop.cpp"),
         os.path.join(layer_dir, "layer_capture_textures.cpp"),
@@ -71,6 +73,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "common", "perf_logger.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "input_manager.cpp"),
         # CustomOverlay system for full overlay rendering
+        os.path.join(PROJECT_ROOT, "hook", "common", "sharpen_constants.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "overlay_cpu_raster.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay_vk.cpp"),

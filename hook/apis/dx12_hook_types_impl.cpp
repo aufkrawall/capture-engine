@@ -516,6 +516,10 @@ bool DX12DescFreeBackend::WaitForSlotGpuComplete(int slot) {
 }
 
 void DX12OverlayState::Cleanup() {
+    // The sharpen pass owns a copy of the frame plus a view of the swapchain's
+    // current back buffer, so it has to be torn down with this state rather
+    // than outliving the swapchain generation it was built for.
+    ReleaseDX12SharpenResources();
     // FG-SAFE: backBuffers no longer holds references
     backBuffers.clear();
     if (offscreenRT) {

@@ -1,0 +1,57 @@
+// Shared scaffolding for the Vulkan CAS and RCAS fragment shaders. The
+// HLSL counterpart is hook/shaders/sharpen_hlsl_common.hlsli; the two must
+// agree on the constant block, which is ce::sharpen::ShaderConstants.
+
+layout(push_constant) uniform SharpenConstantsBlock {
+    FfxUInt32x4 ceConst0;
+    FfxUInt32x4 ceConst1;
+    FfxInt32x2 ceMaxCoord;
+    FfxUInt32 ceFilterSpace;
+    FfxUInt32 ceReserved;
+}
+ceConstants;
+
+layout(set = 0, binding = 0) uniform sampler2D ceSource;
+
+layout(location = 0) out FfxFloat32x4 ceOutColor;
+
+// ce::sharpen::FilterSpace::LinearToGamma.
+#define CE_FILTER_SPACE_LINEAR_TO_GAMMA 1u
+#define CE_GAMMA_EXPONENT 2.2
+
+// Out-of-range texelFetch is undefined, so the neighbourhood taps clamp to the
+// edge texel rather than relying on the sampler's address mode.
+FfxFloat32x4 ceLoadSource(FfxInt32x2 position) {
+    FfxInt32x2 clamped = clamp(position, FfxInt32x2(0, 0), ceConstants.ceMaxCoord);
+    return texelFetch(ceSource, clamped, 0);
+}
+
+// scRGB is linear light and legally negative outside Rec.709, so the curve is
+// applied to the magnitude with the sign restored. The exponents are exactly
+// reciprocal, making the round trip lossless apart from float rounding.
+FfxFloat32 ceEncodeGammaChannel(FfxFloat32 value) {
+    return sign(value) * pow(abs(value), FfxFloat32(1.0 / CE_GAMMA_EXPONENT));
+}
+
+FfxFloat32 ceDecodeGammaChannel(FfxFloat32 value) {
+    return sign(value) * pow(abs(value), FfxFloat32(CE_GAMMA_EXPONENT));
+}
+
+void ceToFilterSpace(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat32 blue) {
+    if (ceConstants.ceFilterSpace == CE_FILTER_SPACE_LINEAR_TO_GAMMA) {
+        red = ceEncodeGammaChannel(red);
+        green = ceEncodeGammaChannel(green);
+        blue = ceEncodeGammaChannel(blue);
+    }
+}
+
+// Alpha is never filtered: a composition swapchain needs the exact value the
+// game wrote, and sharpening coverage produces halos of its own.
+FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxInt32x2 position) {
+    if (ceConstants.ceFilterSpace == CE_FILTER_SPACE_LINEAR_TO_GAMMA) {
+        filtered.r = ceDecodeGammaChannel(filtered.r);
+        filtered.g = ceDecodeGammaChannel(filtered.g);
+        filtered.b = ceDecodeGammaChannel(filtered.b);
+    }
+    return FfxFloat32x4(filtered, ceLoadSource(position).a);
+}

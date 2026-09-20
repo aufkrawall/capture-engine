@@ -3,6 +3,7 @@
 #include "../common/config.h"
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
+#include "../common/sharpen_policy.h"
 
 #include <cstring>
 #include <filesystem>
@@ -64,6 +65,13 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
     strncpy(graphics.msaaSamples, config.graphics.msaaSamples.c_str(), sizeof(graphics.msaaSamples) - 1);
     graphics.msaaSamples[sizeof(graphics.msaaSamples) - 1] = '\0';
+    // The vocabulary lives in the policy header, so the host publishes the same
+    // parsed enums the hook would resolve rather than a second copy of the rules.
+    graphics.sharpenMode = static_cast<uint8_t>(ce::sharpen::ParseMode(config.graphics.sharpenMode.c_str()));
+    graphics.sharpenColorSpace =
+        static_cast<uint8_t>(ce::sharpen::ParseConfiguredSpace(config.graphics.sharpenColorSpace.c_str()));
+    graphics.sharpenReserved = 0;
+    graphics.sharpenStrength = ce::sharpen::ClampStrength(config.graphics.sharpenStrength);
     graphics.nvLodSpreadFix = config.graphics.nvLodSpreadFix;
     graphics.legacyD3DNativeOverlay = config.graphics.legacyD3DNativeOverlay;
     graphics.forceRayReconstruction = config.graphics.forceRayReconstruction;
@@ -181,6 +189,11 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (static_cast<uint64_t>(sharedMemory->overlayConfig.screenshotIncludeOverlay) << 21) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.frameTimeSource) << 32) ^
         (static_cast<uint64_t>(sharedMemory->overlayConfig.showSystemLatency) << 33) ^
+        // A live sharpen change has to show up in the publication summary or a
+        // session log cannot prove the setting ever reached the hook.
+        (static_cast<uint64_t>(graphics.sharpenMode) << 24) ^
+        (static_cast<uint64_t>(graphics.sharpenColorSpace) << 26) ^
+        (std::hash<float>{}(graphics.sharpenStrength) << 28) ^
         (static_cast<uint64_t>(graphics.forceRayReconstruction) << 10) ^
         (static_cast<uint64_t>(graphics.rayReconstructionOptimalSettings) << 11) ^
         (static_cast<uint64_t>(graphics.disablePostProcessingEffects) << 12) ^
@@ -227,6 +240,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s systemLatency=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
             "fgMode=%s fgFixed=%u fgDynMax=%u fgTargetFps=%u "
+            "sharpen=%s/%.2f/%s "
             "runtimePaths=%d%d%d%d ngxOta=%u ngxLog=%u forceRR=%d ue5RROptimal=%d "
             "ue5DisablePost=%d ue5Sharpen=%.2f ue5InternalFpsLimit=%.2f ue5InternalAF=%d "
             "ue5InternalTextureMipBias=%.2f ue5DisplayGamma=%.2f ue5DepthOfField=%d ue5DlssSR=%d "
@@ -250,6 +264,9 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             graphics.dlssFGPreset, graphics.dlssDebugOverlay,
             DlssFGModeName(graphics.dlssFGMode), static_cast<unsigned>(graphics.dlssFGFixedCount),
             static_cast<unsigned>(graphics.dlssFGDynamicMax), static_cast<unsigned>(graphics.dlssFGTargetFps),
+            ce::sharpen::ModeName(static_cast<ce::sharpen::Mode>(graphics.sharpenMode)),
+            graphics.sharpenStrength,
+            ce::sharpen::ConfiguredSpaceName(static_cast<ce::sharpen::ConfiguredSpace>(graphics.sharpenColorSpace)),
             graphics.dlssSrDllPath[0] ? 1 : 0, graphics.dlssRrDllPath[0] ? 1 : 0,
             graphics.dlssFgDllPath[0] ? 1 : 0, graphics.streamlineDllPath[0] ? 1 : 0,
             static_cast<unsigned>(graphics.ngxOtaMode), static_cast<unsigned>(graphics.ngxLogLevel),

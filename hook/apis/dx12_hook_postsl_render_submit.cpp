@@ -39,6 +39,9 @@ auto captureBeforeOverlay = [&](ID3D12CommandQueue* overlaySubmitQueue,
                                 ExecuteCommandListsPtr captureExecuteCommandLists) {
     if (!overlaySubmitQueue)
         return;
+    // This route reaches the backbuffer before the overlay is composited into
+    // it, so the filter runs here for the same reason the capture does.
+    SharpenDX12PresentedFrame(pSwapChain, overlaySubmitQueue, true, bufIdx);
     if (overlayFreeRequestId != 0) {
         CaptureRequestedDX12Screenshot(pSwapChain, overlayFreeShm, overlayFreeRequestId, overlaySubmitQueue);
         overlayFreeRequestId = 0;

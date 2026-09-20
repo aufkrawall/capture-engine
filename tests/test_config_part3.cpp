@@ -563,3 +563,74 @@ TEST_F(ConfigTest, ScreenshotColorSpaceAcceptsEveryDocumentedMode) {
     LoadConfig(tempConfigFile, defaultConfig);
     EXPECT_EQ(defaultConfig.screenshotColorSpace, "both");
 }
+
+TEST_F(ConfigTest, SharpenDefaultsToOffWithTheDocumentedStrength) {
+    WriteConfig("[Graphics]\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.sharpenMode, "off");
+    EXPECT_EQ(config.graphics.sharpenColorSpace, "auto");
+    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.5f);
+}
+
+TEST_F(ConfigTest, SharpenAcceptsBothEffectsAndTheirParameters) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=cas\n"
+        "sharpen_strength=0.85\n"
+        "sharpen_color_space=gamma\n");
+    AppConfig casConfig;
+    LoadConfig(tempConfigFile, casConfig);
+    EXPECT_EQ(casConfig.graphics.sharpenMode, "cas");
+    EXPECT_FLOAT_EQ(casConfig.graphics.sharpenStrength, 0.85f);
+    EXPECT_EQ(casConfig.graphics.sharpenColorSpace, "gamma");
+
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=RCAS\n"
+        "sharpen_color_space=direct\n");
+    AppConfig rcasConfig;
+    LoadConfig(tempConfigFile, rcasConfig);
+    EXPECT_EQ(ce::sharpen::ParseMode(rcasConfig.graphics.sharpenMode.c_str()), ce::sharpen::Mode::Rcas);
+    EXPECT_EQ(rcasConfig.graphics.sharpenColorSpace, "direct");
+}
+
+TEST_F(ConfigTest, UnknownSharpenValuesFallBackInsteadOfSelectingAnotherEffect) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=fsr\n"
+        "sharpen_color_space=perceptual\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.sharpenMode, "off");
+    EXPECT_EQ(config.graphics.sharpenColorSpace, "auto");
+}
+
+TEST_F(ConfigTest, SharpenStrengthOutsideItsRangeFallsBackToTheDefault) {
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=rcas\n"
+        "sharpen_strength=4.0\n");
+    AppConfig tooHigh;
+    LoadConfig(tempConfigFile, tooHigh);
+    EXPECT_FLOAT_EQ(tooHigh.graphics.sharpenStrength, 0.5f);
+
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=rcas\n"
+        "sharpen_strength=-1\n");
+    AppConfig negative;
+    LoadConfig(tempConfigFile, negative);
+    EXPECT_FLOAT_EQ(negative.graphics.sharpenStrength, 0.5f);
+
+    // 0 is the mildest setting each effect supports, not a disable, so it has
+    // to survive as an explicit value rather than being treated as absent.
+    WriteConfig(
+        "[Graphics]\n"
+        "sharpen=cas\n"
+        "sharpen_strength=0\n");
+    AppConfig zero;
+    LoadConfig(tempConfigFile, zero);
+    EXPECT_FLOAT_EQ(zero.graphics.sharpenStrength, 0.0f);
+    EXPECT_EQ(zero.graphics.sharpenMode, "cas");
+}

@@ -72,6 +72,14 @@ Primary sources:
     Last verified 2026-09-15.
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, no device mutation hooks when every override is default, complete Agility SDK/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements. Last verified 2026-09-09.
+- `post-processing-sharpen.md`
+  - AMD FidelityFX CAS/RCAS applied to the presented frame on D3D11, D3D12 and Vulkan:
+    the before-capture/before-overlay ordering rule that keeps CE's own overlay unfiltered
+    and the recording in agreement with the screen, uniform filtering of generated frames
+    under FG and why filtering pre-FG was rejected, the refusal reasons, the linear-values
+    question behind `sharpen_color_space`, per-backend submission mechanics, the Vulkan
+    `TRANSFER_SRC` negotiation, and the vendored MIT FidelityFX headers.
+    No hardware run yet. Last verified 2026-09-20.
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics including normalized mip filtering, native DirectDraw
     Flip/full-surface-Blt overrides and the fixed-refresh-versus-DXGI-VRR boundary, dual NGX

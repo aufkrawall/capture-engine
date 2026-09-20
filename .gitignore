@@ -7,8 +7,13 @@
 /testapp/bin/
 /tests/benchmarks/
 
-# Third-party generated dependency bundle
-/external/
+# Third-party generated dependency bundle. Everything under external/ is
+# fetched or generated and stays out of the repository, with one deliberate
+# exception: the vendored MIT FidelityFX GPU headers, which the CAS/RCAS sharpen
+# shaders and hook/common/sharpen_constants.cpp compile against. They are source
+# the build needs, not a fetched bundle - see external/fidelityfx/README.md.
+/external/*
+!/external/fidelityfx/
 
 # Build outputs and binaries
 *.o

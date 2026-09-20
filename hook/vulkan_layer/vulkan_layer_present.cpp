@@ -464,6 +464,22 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 }
             };
 
+            // Before capture and before the overlay: the recording and the
+            // screen both show the filtered frame, and CE's own overlay pixels
+            // are written after the filter has run so they are never sharpened.
+            {
+                VkSemaphore sharpenDone = VK_NULL_HANDLE;
+                if (SharpenPresentedFrame(sd->device, sd->swapchain, queue, sd->images[idx], idx, sd->format,
+                                          sd->colorSpace, sd->extent, sd->imageCount, sd->images.data(),
+                                          currentWaitSemaphores, currentWaitSemaphoreCount, &sharpenDone) &&
+                    sharpenDone != VK_NULL_HANDLE) {
+                    chainedWaitSemaphore = sharpenDone;
+                    currentWaitSemaphores = &chainedWaitSemaphore;
+                    currentWaitSemaphoreCount = 1;
+                    modified = true;
+                }
+            }
+
             if (captureBeforeOverlay) {
                 doCapture();
             }

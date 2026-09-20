@@ -5,6 +5,8 @@
 #include <array>
 #include <utility>
 
+#include "sharpen_policy.h"
+
 constexpr const char* kMissingConfigValue = "\x1d";
 
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def);

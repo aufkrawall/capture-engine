@@ -738,6 +738,9 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroyDevice(VkDevice device, const VkAllo
     // Before UnregisterDevice: the queue-to-device mapping the release check
     // needs is still live at this point.
     ForgetBorrowedOverlaySubmitQueue(device);
+    // The sharpen pass holds views of the swapchain's presentable images and a
+    // full-frame copy, so it is torn down with the overlay, not after it.
+    CleanupSharpen(device);
     CleanupOverlay(device);
     // Every swapchain on the device is destroyed before the device is, so no
     // present can still be waiting on the deferred overlay semaphores.

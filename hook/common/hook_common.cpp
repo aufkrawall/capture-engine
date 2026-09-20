@@ -491,6 +491,10 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.mipBiasMode = shmGfx.mipBiasMode;
         mergedConfig.forceMipBiasClamp = shmGfx.forceMipBiasClamp;
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
+        mergedConfig.sharpenMode = ce::sharpen::ModeName(static_cast<ce::sharpen::Mode>(shmGfx.sharpenMode));
+        mergedConfig.sharpenColorSpace =
+            ce::sharpen::ConfiguredSpaceName(static_cast<ce::sharpen::ConfiguredSpace>(shmGfx.sharpenColorSpace));
+        mergedConfig.sharpenStrength = ce::sharpen::ClampStrength(shmGfx.sharpenStrength);
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
         mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
         mergedConfig.legacyD3DNativeOverlay = shmGfx.legacyD3DNativeOverlay;
@@ -627,6 +631,13 @@ GraphicsConfig GetActiveGraphicsConfig() {
         }
         if (g_pLocalConfig->graphics.msaaSamples != "default" && !g_pLocalConfig->graphics.msaaSamples.empty()) {
             mergedConfig.msaaSamples = g_pLocalConfig->graphics.msaaSamples;
+        }
+        // "off" is a real decision here, not an absent value, so a process-local
+        // config can switch sharpening off again over a host that enabled it.
+        if (!g_pLocalConfig->graphics.sharpenMode.empty()) {
+            mergedConfig.sharpenMode = g_pLocalConfig->graphics.sharpenMode;
+            mergedConfig.sharpenColorSpace = g_pLocalConfig->graphics.sharpenColorSpace;
+            mergedConfig.sharpenStrength = g_pLocalConfig->graphics.sharpenStrength;
         }
 
         // Apply Preset Overrides from g_pLocalConfig

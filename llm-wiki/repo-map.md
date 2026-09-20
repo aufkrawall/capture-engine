@@ -127,10 +127,11 @@ anchors that predate the split are approximate.
       fg_heuristics, postsl_queue, swapchain_create, swapchain_wrap_policy, observer, overlay_render,
       prerender, hook_install, screenshot, overlay_dedicated_queue,
       overlay_startup_compat, postsl_route, swapchain_tracking, swapchain_detours),
-      `dx12_hook_types*.h/cpp`, `dx12_hook_internal_globals.cpp`, `dx12_hook_swapchain.cpp`.
+      `dx12_hook_types*.h/cpp`, `dx12_hook_internal_globals.cpp`, `dx12_hook_swapchain.cpp`,
+      `dx12_hook_sharpen.cpp`.
     - DX11: `dx11_hook_present.cpp`, `dx11_hook_prerender.cpp`, `dx11_hook_device.cpp`,
       `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `dx11_hook_screenshot.cpp`,
-      `dx11_hook_overlay.cpp`, `dx11_hook_sampler_state.cpp`,
+      `dx11_hook_overlay.cpp`, `dx11_hook_sharpen.cpp`, `dx11_hook_sampler_state.cpp`,
       `dx11_hook_sampler_override.cpp`, `dx11_hook_capture_{lifecycle,init,frame}.cpp`,
       `dx11_hook_helpers.cpp`, `dx11_hook_internal.h`.
     - DX9: `dx9_hook_internal.h` + semantic units: `dx9_hook.cpp` (module
@@ -260,6 +261,11 @@ anchors that predate the split are approximate.
   discovery, callback lifetime, duplicate-worker coalescing, resident target adoption, and deject
   acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
+  `hook/vulkan_layer/layer_sharpen.cpp` (per-present recording) +
+  `layer_sharpen_setup.cpp` (per-swapchain lifecycle) + `layer_sharpen_state.h` -
+  the Vulkan half of the CAS/RCAS post-processing pass; see
+  `post-processing-sharpen.md`. The cross-API policy, constants and D3D
+  renderers are `common/sharpen_policy.h` and `hook/common/sharpen_*`.
   `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
   reactivation lifecycle across host generations.
 - `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory

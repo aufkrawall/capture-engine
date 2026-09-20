@@ -169,6 +169,11 @@ void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
         }
     };
 
+    // Before capture and before the overlay: the recording and the screen both
+    // show the filtered frame, and CE's own overlay pixels are written after the
+    // filter has already run so they are never sharpened.
+    SharpenDX11PresentedFrame(pSwapChain);
+
     if (!captureAfterOverlay) {
         doCapture(false);
     }

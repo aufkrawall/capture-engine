@@ -280,6 +280,31 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
     config.graphics.nvLodSpreadFix = reader.GetBool("Graphics", "nv_lod_spread_fix", false);
     config.graphics.legacyD3DNativeOverlay = reader.GetBool("Graphics", "legacy_d3d_native_overlay", true);
     config.graphics.msaaSamples = reader.GetStr("Graphics", "msaa_samples", "default");
+    // An unrecognized sharpen mode is "off" rather than a different effect, and
+    // the policy header owns that vocabulary so the hook and the host can never
+    // disagree about what a value means.
+    config.graphics.sharpenMode = reader.GetStr("Graphics", "sharpen", "off");
+    if (ce::sharpen::ParseMode(config.graphics.sharpenMode.c_str()) == ce::sharpen::Mode::Off &&
+        config.graphics.sharpenMode != "off") {
+        LogInvalidConfigBoundary("Graphics", "sharpen", config.graphics.sharpenMode, "off");
+        config.graphics.sharpenMode = "off";
+    }
+    config.graphics.sharpenStrength =
+        reader.GetFloat("Graphics", "sharpen_strength", ce::sharpen::kDefaultStrength);
+    if (!std::isfinite(config.graphics.sharpenStrength) ||
+        config.graphics.sharpenStrength < ce::sharpen::kMinStrength ||
+        config.graphics.sharpenStrength > ce::sharpen::kMaxStrength) {
+        LogInvalidConfigBoundary("Graphics", "sharpen_strength", std::to_string(config.graphics.sharpenStrength),
+                                 std::to_string(ce::sharpen::kDefaultStrength));
+        config.graphics.sharpenStrength = ce::sharpen::kDefaultStrength;
+    }
+    config.graphics.sharpenColorSpace = reader.GetStr("Graphics", "sharpen_color_space", "auto");
+    if (ce::sharpen::ParseConfiguredSpace(config.graphics.sharpenColorSpace.c_str()) ==
+            ce::sharpen::ConfiguredSpace::Auto &&
+        config.graphics.sharpenColorSpace != "auto") {
+        LogInvalidConfigBoundary("Graphics", "sharpen_color_space", config.graphics.sharpenColorSpace, "auto");
+        config.graphics.sharpenColorSpace = "auto";
+    }
     config.graphics.cpuPrerenderLimit = reader.GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
     if (!std::isfinite(config.graphics.cpuPrerenderLimit) ||
         config.graphics.cpuPrerenderLimit != std::trunc(config.graphics.cpuPrerenderLimit) ||

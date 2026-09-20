@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <windows.h>
 #include "../common/config.h"
+#include "../common/sharpen_policy.h"
 #include "../hook/common/nvngx_parameter_abi.h"
 
 namespace {

@@ -180,6 +180,7 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
 
 void CleanupDX11Resources(bool releaseDeviceContext) {
     ReleaseTrackedShaderResources11();
+    ReleaseDX11SharpenResources(releaseDeviceContext);
 
     // When the window is being destroyed (releaseDeviceContext=false), skip ALL
     // releases because the underlying D3D device is already being torn down.

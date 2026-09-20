@@ -196,6 +196,13 @@ struct GraphicsConfig {
     bool legacyD3DNativeOverlay = true;
     bool nvLodSpreadFix = false;
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
+    // Post-processing sharpen applied to the presented frame just before the
+    // overlay draws, so CE's own overlay is never filtered.
+    std::string sharpenMode = "off";         // "off", "cas", "rcas"
+    std::string sharpenColorSpace = "auto";  // "auto", "direct", "gamma"
+    // 0..1 inside each effect's native range. 0 is the mildest setting, not off;
+    // sharpenMode is the only switch. See common/sharpen_policy.h.
+    float sharpenStrength = 0.5f;
     float cpuPrerenderLimit = -1.0f;     // integer semantics: -1 = default, 0 = fully serialized, 1-6 = queued frames
     int backbufferCount = -1;            // -1 = app controlled, 2-6
     int frameLatency = 0;                // 0 = default, 1-6 (SetMaximumFrameLatency)

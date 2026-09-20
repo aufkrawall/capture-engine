@@ -11,6 +11,7 @@
 #include "../../common/config.h"
 #include "../../common/invariants.h"
 #include "../../common/shared_defs.h"
+#include "../../common/sharpen_policy.h"
 #include "../../common/validation.h"
 #include "ipc_client.h"
 #include "lifecycle.h"
@@ -434,6 +435,11 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.mipBiasMode = sharedMem->graphicsConfig.mipBiasMode;
         result.forceMipBiasClamp = sharedMem->graphicsConfig.forceMipBiasClamp;
         result.msaaSamples = sharedMem->graphicsConfig.msaaSamples;
+        result.sharpenMode =
+            ce::sharpen::ModeName(static_cast<ce::sharpen::Mode>(sharedMem->graphicsConfig.sharpenMode));
+        result.sharpenColorSpace = ce::sharpen::ConfiguredSpaceName(
+            static_cast<ce::sharpen::ConfiguredSpace>(sharedMem->graphicsConfig.sharpenColorSpace));
+        result.sharpenStrength = ce::sharpen::ClampStrength(sharedMem->graphicsConfig.sharpenStrength);
         result.nvLodSpreadFix = sharedMem->graphicsConfig.nvLodSpreadFix;
         result.legacyD3DNativeOverlay = sharedMem->graphicsConfig.legacyD3DNativeOverlay;
         result.forceRayReconstruction = sharedMem->graphicsConfig.forceRayReconstruction;

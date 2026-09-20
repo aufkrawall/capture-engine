@@ -12,7 +12,9 @@ struct FrameLimitState;
 
 #include "vulkan_present_chain_policy.h"
 
+#include "layer_sharpen.h"
 #include "vulkan_swapchain_image_policy.h"
+#include "vulkan_swapchain_usage_policy.h"
 
 #include <algorithm>
 
