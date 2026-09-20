@@ -6,11 +6,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import subprocess
+import sys
+
 from tools.manage_changelog import (
+    StaleUnreleasedError,
     extract_version_notes,
     generate_release_notes,
     parse_changelog,
     promote_unreleased,
+    unreleased_baseline_tag,
     validate_changelog,
 )
 
@@ -153,6 +158,75 @@ class ChangelogTest(unittest.TestCase):
         # Validate that the promoted changelog is structurally valid
         errors = validate_changelog(promoted_text)
         self.assertEqual(errors, [])
+
+    def test_unreleased_baseline_tag(self) -> None:
+        self.assertEqual(unreleased_baseline_tag(SAMPLE_VALID_CHANGELOG), "v0.1.6652")
+        no_baseline = "\n".join(["# Changelog", "", "## Unreleased", "", "### New", "", "- **A** b.", ""])
+        self.assertIsNone(unreleased_baseline_tag(no_baseline))
+
+    def test_generate_release_notes_refuses_already_promoted_unreleased(self) -> None:
+        """A version whose entries were already promoted away must not be republished.
+
+        `## Unreleased` saying 'Changes since [v0.1.6700]' is the proof that its bullets
+        belong to the cycle AFTER v0.1.6700. Re-dispatching v0.1.6700 (a deleted tag, a
+        typo in the version input) would otherwise silently publish the NEXT cycle's
+        entries under the old version's name.
+        """
+        promoted_text, ok = promote_unreleased(
+            SAMPLE_VALID_CHANGELOG, new_version="0.1.6700", prev_tag="v0.1.6652"
+        )
+        self.assertTrue(ok)
+        # Drop the promoted section, keeping the Unreleased baseline that names it.
+        without_section = promoted_text.replace("## v0.1.6700", "## v0.1.6699", 1)
+        with self.assertRaises(StaleUnreleasedError):
+            generate_release_notes(without_section, "0.1.6700")
+
+    def test_generate_release_notes_prefers_the_exact_section(self) -> None:
+        promoted_text, _ = promote_unreleased(
+            SAMPLE_VALID_CHANGELOG, new_version="0.1.6700", prev_tag="v0.1.6652"
+        )
+        notes = generate_release_notes(promoted_text, "0.1.6700")
+        self.assertIn("FidelityFX CAS/RCAS sharpening", notes)
+        # The emptied Unreleased section must not leak a second, duplicate copy.
+        self.assertEqual(notes.count("FidelityFX CAS/RCAS sharpening"), 1)
+
+    def _run_cli(self, *args: str) -> subprocess.CompletedProcess:
+        root = Path(__file__).resolve().parents[2]
+        return subprocess.run(
+            [sys.executable, str(root / "tools" / "manage_changelog.py"), *args],
+            capture_output=True,
+            text=True,
+            cwd=str(root),
+        )
+
+    def test_promote_release_accepts_both_documented_spellings(self) -> None:
+        """`--promote-release --version <v>` used to abort with 'expected one argument'.
+
+        Both spellings were in circulation - the wiki documented one, the parser accepted
+        the other - so a release operator following the documentation promoted nothing.
+        """
+        for args in (
+            ["--promote-release", "0.1.6700"],
+            ["--promote-release", "--version", "0.1.6700"],
+        ):
+            with self.subTest(args=args):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "CHANGELOG.md"
+                    path.write_text(SAMPLE_VALID_CHANGELOG, encoding="utf-8")
+                    result = self._run_cli(*args, "--changelog", str(path))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    promoted = path.read_text(encoding="utf-8")
+                    self.assertIn("## v0.1.6700", promoted)
+                    self.assertIn("Changes since [v0.1.6700]", promoted)
+
+    def test_promote_release_without_a_version_fails_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CHANGELOG.md"
+            path.write_text(SAMPLE_VALID_CHANGELOG, encoding="utf-8")
+            result = self._run_cli("--promote-release", "--changelog", str(path))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("needs a version", result.stderr)
+            self.assertEqual(path.read_text(encoding="utf-8"), SAMPLE_VALID_CHANGELOG)
 
     def test_live_repo_changelog_is_valid(self) -> None:
         repo_changelog = Path(__file__).resolve().parents[2] / "CHANGELOG.md"

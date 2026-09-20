@@ -1,6 +1,7 @@
 #include "layer_sharpen_state.h"
 
 #include "../common/sharpen_constants.h"
+#include "../common/sharpen_gpu_timeline.h"
 #include "vulkan_presentation_color.h"
 
 // Recording half of the Vulkan sharpen pass: what happens once per present.
@@ -89,11 +90,15 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (!lock.owns_lock())
         return false;
 
-    SharpenState& state = layer_sharpen_g_States[device];
-
+    // The dispatch table first: operator[] would otherwise insert a state entry
+    // for a device this function is about to refuse, and nothing ever erases it -
+    // CleanupSharpen for that device has already run by the time its dispatch
+    // table is gone.
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp)
         return false;
+
+    SharpenState& state = layer_sharpen_g_States[device];
 
     if (request.mode == ce::sharpen::Mode::Off) {
         // Switching the feature off hands its resources back rather than
@@ -188,7 +193,9 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     region.extent = {extent.width, extent.height, 1};
     disp->fp_vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.sourceImage,
                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    state.sourceInitialized = true;
+    // `sourceInitialized` says the image is really in SHADER_READ_ONLY_OPTIMAL,
+    // which only the executed command buffer can make true. Recording is not
+    // executing: it is set after the submit succeeds, further down.
 
     const VkImageMemoryBarrier preDraw[2] = {
         MakeImageBarrier(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -236,15 +243,29 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &signalSemaphore;
 
-    if (disp->fp_vkResetFences(state.device, 1, &state.fences[static_cast<uint32_t>(slot)]) != VK_SUCCESS)
-        return false;
-    const VkResult submitResult =
-        disp->fp_vkQueueSubmit(queue, 1, &submit, state.fences[static_cast<uint32_t>(slot)]);
-    if (submitResult != VK_SUCCESS) {
-        LayerLog("Vulkan Layer: Sharpen submit failed (result=%d slot=%d image=%u)", submitResult, slot, imageIndex);
+    const uint32_t slotIndex = static_cast<uint32_t>(slot);
+    // Everything from here is paired: resetting the fence is what makes the slot
+    // look busy, so any exit after it must say what really happened to the
+    // submission. `SubmissionOutcome::kNotQueued` is the case that used to be
+    // missing - a slot left marked in flight against a fence nothing will ever
+    // signal is retired for good, and enough of those retire the whole ring, at
+    // which point sharpening stops for the rest of the session with nothing but
+    // "every command buffer is still in flight" to show for it.
+    if (disp->fp_vkResetFences(state.device, 1, &state.fences[slotIndex]) != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Sharpen fence reset failed (slot=%d image=%u)", slot, imageIndex);
+        state.slotSubmitted[slotIndex] = ce::sharpen::SlotIsBusyAfter(ce::sharpen::SubmissionOutcome::kNotQueued);
         return false;
     }
-    state.slotSubmitted[static_cast<uint32_t>(slot)] = true;
+    const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submit, state.fences[slotIndex]);
+    if (submitResult != VK_SUCCESS) {
+        LayerLog("Vulkan Layer: Sharpen submit failed (result=%d slot=%d image=%u)", submitResult, slot, imageIndex);
+        state.slotSubmitted[slotIndex] = ce::sharpen::SlotIsBusyAfter(ce::sharpen::SubmissionOutcome::kNotQueued);
+        return false;
+    }
+    state.slotSubmitted[slotIndex] = ce::sharpen::SlotIsBusyAfter(ce::sharpen::SubmissionOutcome::kSubmitted);
+    // The copy is now queued ahead of everything that follows on this queue, so
+    // the next frame may legitimately claim SHADER_READ_ONLY_OPTIMAL for it.
+    state.sourceInitialized = true;
 
     if (signaledSemaphore)
         *signaledSemaphore = signalSemaphore;

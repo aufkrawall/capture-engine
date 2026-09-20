@@ -6,13 +6,20 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- **FidelityFX CAS and RCAS post-processing sharpening is available across D3D11, D3D12, and Vulkan.** Enabled with
-  `sharpen=cas` or `sharpen=rcas` (with strength controlled via `sharpen_intensity`), sharpening runs as a lightweight
-  GPU pass on presented frames without filtering the injected overlay or altering SDR/HDR color grading (supporting
-  BT.709, scRGB, and HDR10 PQ). Also included in captured screenshots and controllable via Unreal Engine CVars.
-- **Automated changelog validation and GitHub release notes publishing:** added `tools/manage_changelog.py` to validate
-  changelog structure, extract ADHD-friendly release notes, and automatically populate GitHub release tag notes during
-  automated release builds.
+- **FidelityFX CAS and RCAS post-processing sharpening is available across D3D11, D3D12 and Vulkan.** Switch it on
+  with `sharpen=cas` or `sharpen=rcas`. Two separate controls, because they are not the same question:
+  `sharpen_contrast` (0..1) is how hard the kernel reacts to local contrast, and `sharpen_amount` (0..1) is how much
+  of the filtered result is mixed back over the frame - 0 is genuinely no sharpening, 1 is the effect at full weight.
+  The filter runs as one full-screen GPU pass on the presented frame, before the overlay is composited, so CE's own
+  overlay pixels are never sharpened. It works in SDR and in HDR without shifting color: BT.709 and plain UNORM are
+  filtered as stored, an sRGB view is filtered in gamma, and scRGB linear light goes through ST 2084 PQ so highlights
+  are not crushed (`sharpen_color_space` overrides that choice). Screenshots capture the filtered frame, and Unreal
+  Engine titles can drive it from the console.
+- **Release notes are generated from this changelog.** `tools/manage_changelog.py` validates the structure, extracts
+  a release's entries and fills the GitHub release notes during an automated stable release, so the notes on a tag
+  and the notes in this file can no longer drift apart. The generator refuses to publish a set of entries twice
+  under two different versions, and the release job writes the notes before it pushes the tag, so a failure there
+  can no longer leave a tag with no release behind it.
 - **DLSS frame generation can be driven through the driver settings**, which is the channel NVIDIA Profile
   Inspector writes and the only one that reaches 5x and 6x. Four new `[DLSS]` keys mirror its fields:
   `dlss_fg_mode` (`off`/`fixed`/`auto`/`dynamic`), `dlss_fg_fixed_count`, `dlss_fg_dynamic_max` and
@@ -36,9 +43,12 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Vulkan implicit layer registration decoupled from build tree:** manifests are generated and staged dynamically
-  at runtime, preventing stale build paths or legacy `baseDir` entries from polluting system registries or causing
-  unelevated warnings.
+- **Moving or rebuilding CaptureEngine no longer leaves a broken Vulkan layer behind.** The layer used to be
+  registered from wherever it happened to sit at build time, so a moved, renamed or rebuilt install left a registry
+  entry pointing at a file that was gone - which every Vulkan game on the machine then tried to load. The manifest is
+  now written into CE's own runtime staging directory and registered from there, stale `baseDir` entries from older
+  builds are neutralized on startup, and a leftover machine-wide (HKLM) registration that CE cannot remove without
+  elevation is reported instead of silently fighting the current one.
 - **CaptureEngine no longer asks WMI to enumerate every process twice a second.** When it is not elevated it
   falls back to watching for process starts, and that fallback used to make the WMI service materialise the
   whole process table on a timer for the entire session. It now reads the two fields it needs from the native
@@ -50,16 +60,44 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
   recording - so only the first recording of a session has the window at all.
 - **The controller reports when a recording is actually live**, with the measured startup time, instead of
   claiming it started the moment the request was delivered.
-- **Controller startup timing is unified into a single timing object**, eliminating redundant startup measurement allocations.
+- **The session log now says when a hook was installed or removed under a relaxed thread check.** CE suspends the
+  game's threads before patching, and under NVIDIA Smooth Motion the strict version of that check is unreachable
+  because the driver keeps spawning worker threads. The relaxed retry that makes those hooks land at all was
+  invisible in the log, so a session could not say which patches had taken it.
+- **The `[StartupPerf]` line in the log reports real numbers again.** Every part of CE had its own private copy of
+  the startup timing, so the part that measured and the part that printed were never the same object: a 142 ms
+  startup was logged as `VulkanRegistration=0.000 ms`, `TrayCreate=0.000 ms` and `TotalToReady=36055.158 ms` (the
+  time since the machine booted). Diagnostics only - nothing CE decides was driven by those numbers.
 
 ### Fixed
 
+- **Saving `config.ini` no longer blacks out the overlay for seconds and can no longer freeze the game.** Changing a
+  single setting - a sharpen key was enough - made CE re-read the whole configuration file once per profile entry
+  before answering the injected runtime. The injected side took about five seconds to reply to a reload that is
+  allowed one, so CE concluded it had died and respawned it: every injected feature went dormant (overlay, graphics
+  overrides, frame-generation integration, the FPS limiter), the desktop "NOT RECORDING" warning flashed over a game
+  that had the in-game overlay enabled, and in one case the game's render thread then deadlocked and Unreal Engine
+  killed the title after two minutes. Reload now answers immediately and warms its cache in the background.
 - **Recording finalization freeze:** fixed a deadlock where stopping a recording while privacy blackout focus checks
   were executing could leave the media worker hung indefinitely waiting on a shared lock.
+- **Windows' own "program stopped working" dialog no longer appears when a game crashes.** CE asked for it to be
+  suppressed through a flag that does not suppress that dialog, so a crash could leave a modal error box on screen
+  waiting for a click. It now sets the flag Windows Error Reporting actually reads, while still writing the crash
+  dump into the session directory.
 - **Crash on virtual desktop focus transition:** fixed a crash caused by caching an unmarshaled COM interface pointer
   across thread apartment teardown during window focus changes.
 - **DirectX 12 sharpen queue drain:** fixed fence drain and ComPtr lifecycle issues during overlay teardown when
   sharpening was active.
+- **Sharpening no longer risks a crash when DLSS frame generation is switched on or off.** The D3D12 filter submits
+  on whichever queue drew the frame, and an FG activation changes which queue that is mid-game. Its tracking of what
+  the GPU had already finished could not survive that change, so it could recycle GPU resources that were still in
+  use and hand the filter a torn source frame. The switch is now ordered on the GPU, at no cost to frame time.
+- **Changing `sharpen=cas` to `sharpen=rcas` while a game is running is safe.** The shader pipeline for the old mode
+  was released the instant the new one was requested, while the previous frame could still be using it. Replaced GPU
+  objects are now held until the GPU has finished with them.
+- **Vulkan sharpening no longer switches itself off for the rest of the session after a hiccup.** A submission that
+  never reached the GPU left its command buffer marked permanently busy; three of those and the filter stopped
+  running, reporting only that every command buffer was in flight.
 - **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed the game dying a few seconds in. CaptureEngine was
   compositing on the interposer's own private output chain and holding a reference to a buffer the interposer
   recreates on its own schedule. Also fixed the overlay flickering on that chain - roughly a third of displayed

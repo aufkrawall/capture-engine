@@ -159,20 +159,81 @@ floor for any post-present sharpener.
   with the typeless format to prevent `E_INVALIDARG` on `CreateShaderResourceView`.
 - **D3D12** (`sharpen_d3d12.cpp`): records its own command list and submits it
   on the queue that rendered the frame, the way `SharedCaptureD3D12::CaptureFrame`
-  does. One queue executes in order, so that submission alone orders the filter
+  does. A queue executes in order, so that submission alone orders the filter
   after the game's rendering and before the present - no cross-queue fence, and
   nothing added to CE's own overlay queue. An internal mutex with `std::try_to_lock`
   prevents multi-threaded Present/PostSL collisions without stalling the present
   thread. The constants are root constants (12 DWORDs), so there is no constant
   buffer to keep alive. Allocators ring over 8 slots gated on a fence; the source
-  copy does not ring, because the in-order queue plus the per-frame barriers make
+  copy does not ring, because in-order execution plus the per-frame barriers make
   one copy sufficient.
+
+### "The queue that rendered the frame" is not one queue
+
+This is the trap the D3D12 pass fell into. It has two call sites and they do not
+name the same queue:
+
+| Call site | Queue |
+| --- | --- |
+| `dx12_hook_process_session_draw_main.cpp:356` | the game's queue |
+| `dx12_hook_postsl_render_submit.cpp:44` | `submittedQueue` - the game's queue **or** Streamline's `scQueue` |
+
+A DLSS-G activation moves CE between the two routes inside one swapchain
+generation, so the pass really does submit on different queues over its lifetime.
+One `ID3D12Fence` signalled from two queues is **not** a timeline: their completion
+values are not ordered against each other, so queue B reaching 6 while queue A's 5
+is still executing makes `GetCompletedValue()` report 6. Everything the pass
+defers off that number then breaks at once - the allocator recorded for 5 is
+`Reset()` while the GPU is still in it, and the single `sourceCopy_` is written by
+one queue while the other reads it.
+
+`RetireOnQueueChange` answers this with a GPU-side `queue->Wait(fence_, fenceValue_)`
+issued **once per switch**: the new queue cannot execute before the old queue's
+last signal, which restores one ordered timeline. It costs nothing on the CPU. If
+the `Wait` is refused the pass resets itself rather than submitting into a timeline
+it can no longer reason about.
+
+### A submitted command list keeps nothing alive
+
+D3D12 holds no reference to the pipeline states or resources a submitted command
+list uses; the application does. Two consequences the pass has to honour:
+
+- **Replaced objects go on a deferred-release list** keyed by the fence value that
+  was last submitted (`RetireObject`/`CollectRetired`). Changing `sharpen=cas` to
+  `sharpen=rcas` mid-game reaches `EnsurePipelineState` with the previous frame
+  still in flight; releasing the old PSO there is a use-after-free.
+- **A descriptor cannot be deferred that way.** Rebuilding `sourceCopy_` rewrites
+  the one *shader-visible* SRV descriptor, which must stay valid until every
+  command list referencing it has finished. That rebuild therefore waits for the
+  timeline to drain by **skipping frames**, never by blocking the present thread.
+  `DX12OverlayState::Cleanup` already drains on swapchain teardown, so in practice
+  this only covers a format/extent change that arrives without one.
+
+RTV descriptors are exempt: they live in a CPU-only heap and D3D12 reads them at
+command-list record time, which is why `EnsureTargetView` may rewrite its single
+descriptor every frame as the backbuffer index rotates.
+
+The rules themselves live in `hook/common/sharpen_gpu_timeline.h` as pure logic -
+`CompletedPast`, `TimelineIsIdle`, `SelectFreeSlot`, `SlotValueAfter`,
+`SlotIsBusyAfter`, `QueueChangeNeedsOrdering` - the same way `sharpen_policy.h`
+holds the decision rules, because ordering is exactly what can be checked without a
+GPU. `SharpenGpuTimelineTest` covers them.
 - **Vulkan** (`layer_sharpen.cpp`): copy, then a render pass into the acquired
   image, submitted on the present queue and chained into the present's own wait
   list exactly like the capture and overlay submissions. The signal semaphore is
   indexed by **presentable image**, not by slot: reacquiring an image proves the
   present that waited on its semaphore consumed it, which a fence on CE's own
   submission never does. Command buffers ring over 3 slots.
+
+  A slot is handed back to the ring according to `SubmissionOutcome`, not according
+  to whether the call returned success: work that was **never queued** (the submit
+  failed, or its fence could not be reset first) frees its slot, because nothing
+  will ever signal for it. Leaving such a slot marked in flight retires it for
+  good, and three of those retire the whole ring - sharpening then stops for the
+  rest of the session, logging only "every command buffer is still in flight".
+  `sourceInitialized` follows the same rule: it claims the source image really is
+  in `SHADER_READ_ONLY_OPTIMAL`, which only an executed command buffer can make
+  true, so it is set after the submit succeeds and not while recording.
 
 Nothing waits on the present thread. When every slot is still in flight the
 frame is skipped with a rate-limited log rather than stalling the game.
@@ -251,6 +312,12 @@ moved `SHARED_MEMORY_VERSION` to 61.
   present-callback and UI-resource routes refuse by policy; whether a real FSR
   FG session reaches the main route often enough to be filtered at all is
   unverified.
-- `sharpen_strength` mapping is AMD's native range on both effects, but no
+- `sharpen_contrast` mapping is AMD's native range on both effects, but no
   side-by-side has been done to check that 0.5 looks comparable between CAS and
-  RCAS, nor which `sharpen_intensity` default reads as natural on real content.
+  RCAS, nor which `sharpen_amount` default reads as natural on real content.
+  (`sharpen_strength`/`sharpen_intensity` are accepted as aliases; the names in
+  `config.ini.template` are `sharpen_contrast`/`sharpen_amount`.)
+- The queue-change ordering wait has never been exercised on hardware. It is
+  reasoned from the two call sites and covered by unit tests over the rule, but
+  no session log yet shows the `submitting queue changed` line, because sharpen
+  has had no hardware run at all.

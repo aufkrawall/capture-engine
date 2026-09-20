@@ -1,10 +1,12 @@
 /**
  * Minimal Inline Hook Implementation
  *
- * Installs and removes entry-point detours. The instruction decoder lives in
- * inline_hook_lde.cpp, the trampoline pool and relocation helpers in
- * inline_hook_trampoline.cpp, and the deep/bypass variants in
- * inline_hook_deep.cpp.
+ * Installs and removes entry-point detours. The live-code writes themselves -
+ * CE's entry patch and its restore, under thread quiescence - live in
+ * inline_hook_entry_patch.cpp; this unit owns the bookkeeping around them. The
+ * instruction decoder lives in inline_hook_lde.cpp, the trampoline pool and
+ * relocation helpers in inline_hook_trampoline.cpp, and the deep/bypass variants
+ * in inline_hook_deep.cpp.
  */
 
 #include "inline_hook.h"
@@ -57,153 +59,6 @@ static void* ResolveExternalEntryJump(const uint8_t* code, bool is64bit) {
     }
     return reinterpret_cast<void*>(target);
 }
-
-static void WriteJumpWithoutLogging(uint8_t* destination, void* target) {
-#ifdef _WIN64
-    memcpy(destination + 6, static_cast<const void*>(&target), sizeof(target));
-    MemoryBarrier();
-    const uint8_t header[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
-    memcpy(destination, header, sizeof(header));
-#else
-    const int32_t displacement =
-        static_cast<int32_t>(reinterpret_cast<uintptr_t>(target) - reinterpret_cast<uintptr_t>(destination + 5));
-    memcpy(destination + 1, &displacement, sizeof(displacement));
-    MemoryBarrier();
-    destination[0] = 0xE9;
-#endif
-}
-
-#ifdef _WIN64
-static bool WriteNearJumpWithoutLogging(uint8_t* destination, void* target) {
-    const int64_t displacement = static_cast<int64_t>(reinterpret_cast<uintptr_t>(target)) -
-                                 static_cast<int64_t>(reinterpret_cast<uintptr_t>(destination + 5));
-    if (displacement < INT32_MIN || displacement > INT32_MAX)
-        return false;
-    const int32_t displacement32 = static_cast<int32_t>(displacement);
-    memcpy(destination + 1, &displacement32, sizeof(displacement32));
-    MemoryBarrier();
-    destination[0] = 0xE9;
-    return true;
-}
-#endif
-
-bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patchSize,
-                                  const uint8_t* expectedBytes, uint8_t* installedBytes) {
-    if (memcmp(target, expectedBytes, patchSize) != 0) {
-        static std::atomic<uint32_t> s_mismatchLogs{0};
-        const uint32_t count = s_mismatchLogs.fetch_add(1, std::memory_order_relaxed);
-        if (count < 8 || (count % 64) == 0) {
-            HookLogImportant("InlineHook: WriteOwnedEntryPatch bytes changed concurrently at %p (count=%u)", target,
-                             count + 1);
-        }
-        return false;
-    }
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        const DWORD err = GetLastError();
-        static std::atomic<uint32_t> s_vpFailLogs{0};
-        const uint32_t count = s_vpFailLogs.fetch_add(1, std::memory_order_relaxed);
-        if (count < 8 || (count % 64) == 0) {
-            HookLogImportant("InlineHook: WriteOwnedEntryPatch VirtualProtect failed at %p (error=%lu count=%u)",
-                             target, static_cast<unsigned long>(err), count + 1);
-        }
-        return false;
-    }
-#ifdef _WIN64
-    if (patchSize == ce::inline_hook_policy::kExternalPrependPatchSize) {
-        if (!WriteNearJumpWithoutLogging(static_cast<uint8_t*>(target), patchDestination)) {
-            DWORD ignoredProtect = 0;
-            VirtualProtect(target, patchSize, oldProtect, &ignoredProtect);
-            return false;
-        }
-    } else
-#endif
-    {
-        WriteJumpWithoutLogging(static_cast<uint8_t*>(target), patchDestination);
-    }
-    for (int i = PATCH_SIZE; i < patchSize; ++i)
-        static_cast<uint8_t*>(target)[i] = 0x90;
-    DWORD ignoredProtect = 0;
-    VirtualProtect(target, patchSize, oldProtect, &ignoredProtect);
-    FlushInstructionCache(GetCurrentProcess(), target, patchSize);
-    memcpy(installedBytes, target, patchSize);
-    return true;
-}
-
-template <typename F>
-static bool ExecuteWithQuiescenceFallback(const void* target, size_t patchSize,
-                                          ce::hook_patch::QuiesceFailure* outFailure, F&& action) {
-    if (outFailure)
-        *outFailure = ce::hook_patch::QuiesceFailure::kNone;
-    {
-        ce::hook_patch::ThreadQuiescence quiescence(target, patchSize);
-        if (quiescence.IsReady())
-            return action();
-        if (outFailure)
-            *outFailure = quiescence.FailureReason();
-        if (quiescence.FailureReason() != ce::hook_patch::QuiesceFailure::kUnstableSnapshot)
-            return false;
-    }
-    ce::hook_patch::ThreadQuiescence fallback(target, patchSize,
-                                              ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet);
-    if (fallback.IsReady()) {
-        if (outFailure)
-            *outFailure = ce::hook_patch::QuiesceFailure::kNone;
-        return action();
-    }
-    if (outFailure)
-        *outFailure = fallback.FailureReason();
-    return false;
-}
-
-bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
-                          const uint8_t* expectedBytes, uint8_t* installedBytes) {
-    ce::hook_patch::QuiesceFailure quiesceFailure = ce::hook_patch::QuiesceFailure::kNone;
-    const bool success = ExecuteWithQuiescenceFallback(
-        target, static_cast<size_t>(patchSize), &quiesceFailure, [&]() {
-            return WriteOwnedEntryPatchQuiesced(target, patchDestination, patchSize, expectedBytes, installedBytes);
-        });
-    if (!success && quiesceFailure != ce::hook_patch::QuiesceFailure::kNone) {
-        static std::atomic<uint32_t> s_quiesceFailLogs{0};
-        const uint32_t count = s_quiesceFailLogs.fetch_add(1, std::memory_order_relaxed);
-        if (count < 8 || (count % 64) == 0) {
-            HookLogImportant("InlineHook: WriteOwnedEntryPatch quiescence failed at %p (reason=%d count=%u)", target,
-                             static_cast<int>(quiesceFailure), count + 1);
-        }
-    }
-    return success;
-}
-
-static bool RestoreOwnedEntryPatch(const HookEntry& hook) {
-    return ExecuteWithQuiescenceFallback(hook.target, static_cast<size_t>(hook.patchSize), nullptr, [&]() {
-        if (memcmp(hook.target, hook.installedBytes, hook.patchSize) != 0)
-            return false;
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(hook.target, hook.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect))
-            return false;
-        memcpy(hook.target, hook.origBytes, hook.patchSize);
-        DWORD ignoredProtect = 0;
-        VirtualProtect(hook.target, hook.patchSize, oldProtect, &ignoredProtect);
-        FlushInstructionCache(GetCurrentProcess(), hook.target, hook.patchSize);
-        return true;
-    });
-}
-
-static bool InstalledEntryBytesMatch(const HookEntry& hook) {
-    if (!hook.target || hook.patchSize <= 0 || hook.patchSize > static_cast<int>(sizeof(hook.installedBytes))) {
-        return false;
-    }
-    uint8_t liveBytes[sizeof(hook.installedBytes)] = {};
-    SIZE_T bytesRead = 0;
-    return ReadProcessMemory(GetCurrentProcess(), hook.target, liveBytes, static_cast<SIZE_T>(hook.patchSize),
-                             &bytesRead) &&
-           bytesRead == static_cast<SIZE_T>(hook.patchSize) &&
-           memcmp(liveBytes, hook.installedBytes, static_cast<size_t>(hook.patchSize)) == 0;
-}
-
-// ============================================================================
-// Public API
-// ============================================================================
 
 static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
                         void* publisherContext, bool hookMutexAlreadyHeld = false,
@@ -714,10 +569,6 @@ bool IsInstalledEntryPatchIntact(void* target, void** currentJumpTargetOut) {
         return false;
     }
     return false;
-}
-
-static bool OwnsInstalledEntryBytes(const HookEntry& hook) {
-    return ce::inline_hook_policy::ShouldRestoreOwnedPatch(InstalledEntryBytesMatch(hook));
 }
 
 bool Remove(void* target) {

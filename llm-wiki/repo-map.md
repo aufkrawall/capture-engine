@@ -265,7 +265,11 @@ anchors that predate the split are approximate.
   `layer_sharpen_setup.cpp` (per-swapchain lifecycle) + `layer_sharpen_state.h` -
   the Vulkan half of the CAS/RCAS post-processing pass; see
   `post-processing-sharpen.md`. The cross-API policy, constants and D3D
-  renderers are `common/sharpen_policy.h` and `hook/common/sharpen_*`.
+  renderers are `common/sharpen_policy.h` and `hook/common/sharpen_*`. Two
+  device-free policy headers carry the rules both backends share:
+  `common/sharpen_policy.h` (when to run, in which colour space, at what strength)
+  and `hook/common/sharpen_gpu_timeline.h` (what the GPU has finished with, what a
+  change of submitting queue costs, what a failed submit does to a ring slot).
   `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
   reactivation lifecycle across host generations.
 - `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory
@@ -301,7 +305,10 @@ anchors that predate the split are approximate.
   hot-path identity for third-party overlays/injects and FFX modules.
 - `hook/wrappers/inline_hook*.cpp` + `hook_patch_transaction.*` + `vtable_hook.cpp` +
   `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, callable-original
-  publication, and exact-byte single/group thread-quiesced inline patching.
+  publication, and exact-byte single/group thread-quiesced inline patching. The live-code
+  writes themselves - CE's entry patch, its restore, and the quiescence-fallback retry that
+  wraps both - are `inline_hook_entry_patch.cpp`; `inline_hook.cpp` owns the install/remove
+  bookkeeping around them.
 - `hook/common/ngx_drs_override{,_policy}.{h,cpp}` - `dlss_fg_preset`, `dlss_fg_mode`,
   `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps`: all five are
   driver-settings (DRS) keys, not NGX parameters, so this wraps the

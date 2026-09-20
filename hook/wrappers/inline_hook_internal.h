@@ -1,11 +1,11 @@
 /**
  * Inline Hook — shared engine state (internal)
  *
- * inline_hook.cpp, inline_hook_trampoline.cpp and inline_hook_deep.cpp are
- * three parts of one hook engine: they share the hook tables, the near-target
- * trampoline pools and the instruction relocation helpers. The state lives in
- * inline_hook_trampoline.cpp and is reached only through this header, which is
- * not part of the public inline_hook.h contract.
+ * inline_hook.cpp, inline_hook_entry_patch.cpp, inline_hook_trampoline.cpp and
+ * inline_hook_deep.cpp are parts of one hook engine: they share the hook tables,
+ * the near-target trampoline pools and the instruction relocation helpers. The
+ * state lives in inline_hook_trampoline.cpp and is reached only through this
+ * header, which is not part of the public inline_hook.h contract.
  */
 
 #pragma once
@@ -70,6 +70,18 @@ bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patc
                                   const uint8_t* expectedBytes, uint8_t* installedBytes);
 bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
                           const uint8_t* expectedBytes, uint8_t* installedBytes);
+// Defined in inline_hook_entry_patch.cpp with the two above: applying and
+// reverting CE's own entry bytes is one unit, and it is the only part of the
+// engine that writes live code.
+//
+// Restores hook.origBytes when CE still owns the installed bytes. False leaves
+// the patch in place, which Remove/RemoveAll report and then keep the entry for -
+// a hook CE cannot revert must stay known, not be forgotten while still patched.
+bool RestoreOwnedEntryPatch(const HookEntry& hook);
+// True when the live bytes are still the ones CE wrote.
+bool InstalledEntryBytesMatch(const HookEntry& hook);
+// InstalledEntryBytesMatch run through the restore policy: whether CE may revert.
+bool OwnsInstalledEntryBytes(const HookEntry& hook);
 bool CanCommitPreparedEntryPatchLocked(size_t hookIndex);
 bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex);
 bool CommitPreparedEntryPatchLocked(size_t hookIndex);

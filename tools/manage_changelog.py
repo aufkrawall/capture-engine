@@ -176,6 +176,21 @@ def normalize_version(version: str) -> str:
     return v
 
 
+def unreleased_baseline_tag(text: str) -> Optional[str]:
+    """Tag named by the '## Unreleased' section's 'Changes since [vX]' line, if present.
+
+    That line records which release the Unreleased entries are measured against, so it is
+    also the evidence that a promotion already happened: once `## Unreleased` says
+    'Changes since [v0.1.6748]', its bullets belong to the cycle AFTER v0.1.6748 and must
+    never be published as v0.1.6748's notes.
+    """
+    section = re.search(r"^##\s+Unreleased\s*\n(.*?)(?=^##\s|\Z)", text, re.DOTALL | re.MULTILINE)
+    if not section:
+        return None
+    baseline = re.search(r"Changes since \[(v?0\.1\.\d+)\]", section.group(1))
+    return baseline.group(1) if baseline else None
+
+
 def extract_version_notes(text: str, version: str) -> Optional[str]:
     """Extract changelog notes for a version or Unreleased."""
     target_clean = normalize_version(version)
@@ -220,6 +235,10 @@ def extract_version_notes(text: str, version: str) -> Optional[str]:
     return "\n".join(out_lines).strip()
 
 
+class StaleUnreleasedError(RuntimeError):
+    """The '## Unreleased' section cannot describe the version being released."""
+
+
 def generate_release_notes(
     text: str,
     version: str,
@@ -229,9 +248,27 @@ def generate_release_notes(
     clean_v = normalize_version(version)
     tag_name = f"v{clean_v}"
 
-    # First look for specific version; if missing, fall back to Unreleased
+    # First look for specific version; if missing, fall back to Unreleased.
+    #
+    # The fallback is the NORMAL path, not a degraded one: the build number is a local
+    # counter (tools/build/build_io.py:bump_and_write_build_version), so nobody knows the
+    # release version until the runner has built it and `## Unreleased` is therefore still
+    # un-promoted when the release is cut.
+    #
+    # What the fallback must never do is republish an already-released block. Once
+    # --promote-release has run, `## Unreleased` states 'Changes since [<that tag>]', which
+    # is the proof that its bullets belong to the NEXT cycle. Releasing that same version
+    # again - a re-dispatch after a deleted tag, or a version input typo - would otherwise
+    # silently re-publish the previous release's notes.
     notes = extract_version_notes(text, clean_v)
     if not notes:
+        baseline = unreleased_baseline_tag(text)
+        if baseline and normalize_version(baseline) == clean_v:
+            raise StaleUnreleasedError(
+                f"'## Unreleased' is measured against {tag_name} but no '## {tag_name}' section exists. "
+                f"Those entries belong to the cycle AFTER {tag_name} and must not be published as its "
+                f"notes. Restore the '## {tag_name}' section, or release a different version."
+            )
         notes = extract_version_notes(text, "Unreleased")
 
     if not notes:
@@ -357,10 +394,15 @@ def main() -> int:
     parser.add_argument("--version", type=str, help="Target version (e.g. 0.1.6652)")
     parser.add_argument("--commit", type=str, help="Target commit SHA")
     parser.add_argument("--output", type=Path, help="Output file to write generated notes")
+    # The version may be given as this flag's own value (`--promote-release 0.1.6748`) or
+    # through `--version`, because both spellings were in circulation and the second one
+    # used to abort with "expected one argument" instead of doing anything.
     parser.add_argument(
         "--promote-release",
         type=str,
-        help="Promote Unreleased section to specified release version",
+        nargs="?",
+        const="",
+        help="Promote Unreleased section to the given release version (or the one from --version)",
     )
     parser.add_argument("--prev-tag", type=str, help="Previous release tag (e.g. v0.1.6261)")
     parser.add_argument(
@@ -409,7 +451,20 @@ def main() -> int:
         if not args.version:
             print("ERROR: --version is required for --generate-release-notes", file=sys.stderr)
             return 1
-        rel_notes = generate_release_notes(text, args.version, commit_sha=args.commit)
+        try:
+            rel_notes = generate_release_notes(text, args.version, commit_sha=args.commit)
+        except StaleUnreleasedError as ex:
+            print(f"ERROR: {ex}", file=sys.stderr)
+            return 1
+        if extract_version_notes(text, normalize_version(args.version)) is None:
+            # Expected for a normal release; say so anyway, so the operator is reminded of
+            # the promotion step the release itself cannot perform.
+            print(
+                f"NOTE: no '## v{normalize_version(args.version)}' section yet; used '## Unreleased'. "
+                f"After the release, run: python tools/manage_changelog.py "
+                f"--promote-release {normalize_version(args.version)}",
+                file=sys.stderr,
+            )
         if args.output:
             args.output.write_text(rel_notes + "\n", encoding="utf-8")
             print(f"Wrote release notes to {args.output}")
@@ -417,17 +472,25 @@ def main() -> int:
             print(rel_notes)
         return 0
 
-    if args.promote_release:
+    if args.promote_release is not None:
+        promote_version = args.promote_release or (args.version or "")
+        if not promote_version:
+            print(
+                "ERROR: --promote-release needs a version, either as its own value "
+                "(--promote-release 0.1.6748) or via --version",
+                file=sys.stderr,
+            )
+            return 1
         updated, promoted = promote_unreleased(
             text,
-            args.promote_release,
+            promote_version,
             prev_tag=args.prev_tag,
         )
         if not promoted:
             print("WARNING: No unreleased notes found to promote", file=sys.stderr)
             return 1
         changelog_path.write_text(updated, encoding="utf-8")
-        print(f"Promoted unreleased changes to v{normalize_version(args.promote_release)}")
+        print(f"Promoted unreleased changes to v{normalize_version(promote_version)}")
         return 0
 
     parser.print_help()

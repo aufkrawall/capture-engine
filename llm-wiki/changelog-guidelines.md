@@ -81,7 +81,19 @@ The Python utility `tools/manage_changelog.py` provides automated verification, 
 | `python tools/manage_changelog.py --check-worktree` | Checks git worktree: returns non-zero if code files (`.cpp`, `.h`, `.py`) are modified without `CHANGELOG.md` being updated. |
 | `python tools/manage_changelog.py --extract-notes <version>` | Extracts Markdown release notes for `<version>` (or `Unreleased`). |
 | `python tools/manage_changelog.py --generate-release-notes --version <v> [--commit <sha>] [--output <path>]` | Generates full GitHub release notes with changelog highlights, asset breakdown, and license notices. Used directly by `release-stable.yml`. |
-| `python tools/manage_changelog.py --promote-release --version <v>` | Promotes `## Unreleased` to `## v<v>`, links the previous release, and resets `## Unreleased`. |
+| `python tools/manage_changelog.py --promote-release <v> [--prev-tag <tag>]` | Promotes `## Unreleased` to `## v<v>`, links the previous release, and resets `## Unreleased`. `--promote-release --version <v>` is accepted too. |
+
+### Where promotion fits in a release
+
+The build number is a local counter (`tools/build/build_io.py:bump_and_write_build_version`),
+not a git-derived one, so **nobody knows the release version until the runner has built it**.
+`## Unreleased` is therefore still un-promoted when `release-stable.yml` cuts the release, and
+`--generate-release-notes` falling back to `## Unreleased` is the normal path, not a degraded one.
+
+Promotion is the operator's step **after** the release publishes; the workflow prints the exact
+command in its job summary. Skipping it is not silently tolerated: once `## Unreleased` states
+`Changes since [v<that tag>]`, `--generate-release-notes` refuses to publish those entries under
+that same version again, so a re-dispatch cannot republish the previous release's notes.
 
 ## Invariants & Guardrails
 

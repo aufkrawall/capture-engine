@@ -45,7 +45,7 @@
   },
   "total": 1931,
   "scope": {
-    "entries": 790,
+    "entries": 793,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -495,6 +495,7 @@
       "hook/wrappers/inline_hook_batch.cpp",
       "hook/wrappers/inline_hook_deep.cpp",
       "hook/wrappers/inline_hook_deep_remove.cpp",
+      "hook/wrappers/inline_hook_entry_patch.cpp",
       "hook/wrappers/inline_hook_lde.cpp",
       "hook/wrappers/inline_hook_trampoline.cpp",
       "hook/wrappers/root_signature_parser.cpp",
@@ -719,6 +720,7 @@
       "tests/test_graphics_api_reporting_source.cpp",
       "tests/test_graphics_runtime_module_policy.cpp",
       "tests/test_hardware_sensor_plugin.cpp",
+      "tests/test_header_inline_variable_linkage.cpp",
       "tests/test_hook_cost_window.cpp",
       "tests/test_hook_cpu_cost.cpp",
       "tests/test_hook_lifecycle.cpp",
@@ -797,6 +799,7 @@
       "tests/test_sequence_lock.cpp",
       "tests/test_sequence_lock_stress.cpp",
       "tests/test_shared_runtime_state.cpp",
+      "tests/test_sharpen_gpu_timeline.cpp",
       "tests/test_sharpen_policy.cpp",
       "tests/test_startup_stall_hazards.cpp",
       "tests/test_streamline_api_generation.cpp",

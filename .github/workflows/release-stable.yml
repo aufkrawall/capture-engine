@@ -325,16 +325,41 @@ jobs:
               throw "Missing release asset: $asset"
             }
           }
+          # Notes BEFORE the tag. A generator failure after `git push origin $tag` leaves an
+          # orphan tag on origin with no release behind it, and the only way out is the
+          # delete-then-retrigger procedure. Generating first makes that failure cost nothing.
+          $releaseNotesFile = "build/verification/release_notes.md"
+          if (Test-Path $releaseNotesFile) {
+            Remove-Item $releaseNotesFile -Force
+          }
+          python tools/manage_changelog.py --generate-release-notes --version $version --commit $env:COMMIT --output $releaseNotesFile
+          if ($LASTEXITCODE -ne 0) {
+            throw "manage_changelog.py refused to generate release notes for $version (exit $LASTEXITCODE); see the message above."
+          }
+          if (-not (Test-Path $releaseNotesFile)) {
+            throw "Failed to generate release notes at $releaseNotesFile"
+          }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a $tag -m "Stable release $version"
           git push origin $tag
-          $releaseNotesFile = "build/verification/release_notes.md"
-          python tools/manage_changelog.py --generate-release-notes --version $version --commit $env:COMMIT --output $releaseNotesFile
-          if (-not (Test-Path $releaseNotesFile)) {
-            throw "Failed to generate release notes at $releaseNotesFile"
-          }
           gh release create $tag `
             --title "Stable release $version" `
             --notes-file $releaseNotesFile `
             @assets
+          # The build number is a local counter, so nobody knows the release version until
+          # this job produced it - which is why CHANGELOG.md still carries these entries
+          # under '## Unreleased'. Promoting it is a repository edit this job deliberately
+          # does not make on its own; surface the exact command instead.
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $summary = @(
+              "### Stable release $tag published",
+              "",
+              "Remaining step, in a local clone on main:",
+              "",
+              "    python tools/manage_changelog.py --promote-release $version",
+              "",
+              "Then commit CHANGELOG.md. Until that runs, '## Unreleased' still holds $tag's entries."
+            )
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
+          }

@@ -83,8 +83,11 @@ Primary sources:
     under FG and why filtering pre-FG was rejected, the refusal reasons, the linear-values
     question behind `sharpen_color_space`, per-backend submission mechanics, the Vulkan
     `TRANSFER_SRC` negotiation, the rule that a `sharpen=off` teardown must use the
-    unlocked body (re-entering the pass mutex froze the RHI thread), and the vendored
-    MIT FidelityFX headers. No hardware run yet. Last verified 2026-09-20.
+    unlocked body (re-entering the pass mutex froze the RHI thread), why "the queue that
+    rendered the frame" is two different D3D12 queues and what a switch between them has
+    to be ordered with, what a submitted command list does NOT keep alive, the
+    submission-outcome rule that keeps the Vulkan ring from draining on failed submits,
+    and the vendored MIT FidelityFX headers. No hardware run yet. Last verified 2026-09-20.
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics including normalized mip filtering, native DirectDraw
     Flip/full-surface-Blt overrides and the fixed-refresh-versus-DXGI-VRR boundary, dual NGX
