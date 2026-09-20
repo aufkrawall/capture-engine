@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-09-20 - decoupled Vulkan layer registration via runtime staging to eliminate external file locks
+
+Non-whitelisted third-party processes (Explorer, Chrome, Discord, `DataExchangeHost.exe`, etc.) frequently
+loaded `VK_LAYER_CE_overlay.dll` via the Vulkan implicit layer registry entries when enumerating Vulkan
+instances/adapters. This held shared read-execute locks on the binaries in `installed/captureengine/`,
+preventing developers and build scripts from replacing, rebuilding, or removing them even when CaptureEngine
+itself was closed.
+
+- **Root Cause:** The Vulkan loader enumerates implicit layers from `HKCU` / `HKLM` `Software\Khronos\Vulkan\ImplicitLayers`
+  for every process initializing Vulkan. When those registry entries pointed directly to manifests in
+  `installed/captureengine/`, arbitrary third-party apps kept the original DLLs open in memory.
+- **Generic Solution (Runtime Staging / Shadow Copying):**
+  - Pristine build binaries stay in `installed/captureengine/` and are never directly registered in the Vulkan
+    implicit layer registry.
+  - `BuildRegistrationPlan` resolves a staging folder under `%LOCALAPPDATA%\CaptureEngine\vulkan_layers\b<build_number>\`
+    (or `%PROGRAMDATA%` when running elevated).
+  - Manifests written to the staging directory reference the staged DLL paths.
+  - `ApplyRegistrationPlan` copies/stages the manifest and DLL artifacts to the staging folder before writing
+    the registry keys. If an existing staged file is unchanged in size and timestamp, staging is skipped. If a staged
+    file is locked by another process during an in-place reinstall of the same build, it logs a warning and reuses the
+    existing image.
+  - External non-whitelisted processes map only the AppData shadow copy, leaving `installed/captureengine/` completely
+    unlocked and freely replaceable.
+  - `CleanupStaleStagingDirectories` iterates over the parent staging directory on startup/registration and prunes
+    older build folders (`b*`), catching and ignoring `remove_all` errors if an external process still holds a lock on
+    an older build image until that process exits.
+  - Late injection is 100% preserved because the layer remains resident and registered in the Vulkan loader chain.
+- **Source anchors:** `common/vulkan_layer_registration.{h,cpp}`, `tests/test_vulkan_layer_registration.cpp`,
+  `tools/build/build_bootstrap.py`, and `llm-wiki/{dx12-injection-bootstrap,log/recent}.md`.
+
+
 ### 2026-09-20 - the FPS limiter tests measured the host scheduler, not the limiter
 
 Seven `FpsLimiterTest` cases failed intermittently with a DIFFERENT set each run, on clean HEAD as well
@@ -211,52 +242,3 @@ generation keys NVIDIA Profile Inspector writes into a driver profile, answered 
   `NGX DRS: wrapping NvAPI_DRS_GetSetting for ...` (the resolution reached CE at all), then
   `NGX DRS: answered NvAPI_DRS_GetSetting(...)`, and the runtime's own
   `Read DRS key %d = 0x%x from app profile` / `Dynamic MFG is supported` in the NGX log.
-
-### 2026-09-19 - Streamline Reflex/PCL retry quiescence thrashing and 2.5s frametime spike fix
-
-Diagnosed regular 65-110 ms frame time spikes occurring every 2.50 seconds (~348 frames at ~138 FPS) in Talos
-Principle 2 (session `20260919_204420`).
-- **Root cause:** `RetryResolveReflexFeatureHooksForRuntimeActivity` fired every 2500 ms on the game render
-  thread (`slDLSSGGetState`/`slDLSSGSetOptions`). Because Reflex and PCL inline hooks failed to patch in Talos,
-  `AreReflexFeatureHooksComplete()` was permanently false. On every tick, 13 consecutive `InlineHook::Install`
-  attempts were executed; each invoked `ThreadQuiescence` (`SuspendThread` on ~60 threads in UE5), stalling the game
-  render thread for 65–110 ms and leaking executable trampoline memory pools (~48 MB across 752 attempts).
-- **Generic Solution:**
-  1. **Policy module (`streamline_feature_retry_policy.h`):**
-     - `ShouldAttemptInlineHookOnTarget`: bails out before invoking thread quiescence if a target already failed
-       2 attempts (`kMaxInlineHookAttemptsPerTarget`).
-     - `IsReflexFeatureResolutionComplete` & `IsPclFeatureResolutionComplete`: treats hooks as complete when
-       either successfully hooked, failed max hook attempts, or exceeded query unavailability limit (`kReflexFeatureQueryUnavailableLimit = 3`).
-     - `ShouldRetryRuntimeReflexResolution`: hard-caps late runtime retries at 6 attempts (`kMaxRuntimeReflexRetryAttempts`),
-       enforces the 2500 ms cooldown, and stops permanently once complete or attempt ceiling is reached.
-  2. **Thread Quiescence & Diagnostic Logging (`inline_hook.cpp`):**
-     - Added diagnostics logging `quiescence.FailureReason()` and OS error codes when `VirtualProtect` fails.
-     - Fixed memory leak on failed hook installations by deallocating unused trampolines instead of abandoning executable pools.
-  3. **Scan Optimization (`streamline_hook_resolve.cpp` & `streamline_hook_install.cpp`):**
-     - When `sl.reflex.dll` is already loaded, skips expensive `CreateToolhelp32Snapshot` module scans.
-     - Records inspected modules in `streamline_hook_g_InstalledModuleMask` even when no core exports are present,
-       preventing redundant export/IAT re-inspection on every scan.
-     - Re-arms retry attempts on fresh module load/unload events for safe dynamic module handling.
-
-
-When a title like Alan Wake 2 imports `sl.interposer` statically, `_nvngx.dll` can spawn `nvngx_update.exe`
-during initial process loader initialization before CE's hook DLL is mapped. While `--launch` avoids this by
-spawning the target suspended, regular hooking (CE background supervisor running) needed a generic,
-robust solution:
-
-1. **Multi-layer Supervisor Watchdog (`injection_ota_watchdog.cpp`):**
-   - In `injection_manager.cpp` (`HandlePolledProcessStart`) and `injection_wmi_events.cpp` (`Indicate`), newly
-     started processes are checked via `ce::ngx_ota::IsNgxUpdaterImage`. If `ngx_ota=off`, the spawned updater is
-     terminated immediately via `OpenProcess(PROCESS_TERMINATE)` + `TerminateProcess(hProcess, 0)`.
-   - In `injection_security.cpp` (`ScanExistingProcesses`), any existing updater running before CE started is
-     terminated during the initial scan.
-   - When a whitelisted target is discovered, `SweepRunningNgxUpdatersIfDisabled("TargetLaunchSweep")` runs
-     immediately in `LaunchDelayedInjectionThread`, catching updaters launched during injection worker setup.
-   - Injected `CreateProcessW` hook continues refusing subsequent spawns (`refusal #1..#15`).
-2. **Target Profile Prewarming (`inject_config_publication.cpp`):**
-   - Synchronous disk I/O and INI re-parsing previously took ~195 ms during `onInjectCallback`.
-   - `SetPublicationBaseConfig` now prewarms `resolvedTargetConfigs` for all entries in `gameWhitelist` and
-     `overlayWhitelist` during startup, dropping target config publication latency to ~0 ms.
-3. **Reduced Discovery Polling Interval (`process_start_poll.h`):**
-   - Dropped `kDefaultPollIntervalMs` from 250 ms to 50 ms (`kMinPollIntervalMs = 10 ms`). Because
-     `NtQuerySystemInformation` takes <2 ms per sweep, this cuts discovery latency from 250 ms to ~25-50 ms.

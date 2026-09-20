@@ -44,6 +44,7 @@ TEST(VulkanPresentationColorTest, UsesSwapchainColorSpaceInsteadOfTenBitFormat) 
 
 TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) {
     const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_hkcu";
+    const std::filesystem::path stagingDir = baseDir / "staging";
     std::filesystem::create_directories(baseDir);
 
     const auto manifest64 = baseDir / L"VK_LAYER_CE_overlay.json";
@@ -56,8 +57,9 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) 
     TouchFile(manifest32);
     TouchFile(library32);
 
-    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false);
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
     ASSERT_EQ(plan.effectiveMode, RegistrationMode::CurrentUser);
+    ASSERT_EQ(plan.stagingDir, stagingDir);
     ASSERT_EQ(plan.installTargets.size(), 2u);
 
     const auto& first = plan.installTargets[0];
@@ -70,8 +72,10 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) 
     const auto* x86Target = first.view == RegistryView::Registry32 ? &first : &second;
     ASSERT_EQ(x64Target->manifests.size(), 1u);
     ASSERT_EQ(x86Target->manifests.size(), 1u);
-    EXPECT_EQ(x64Target->manifests[0].manifestPath, manifest64);
-    EXPECT_EQ(x86Target->manifests[0].manifestPath, manifest32);
+    EXPECT_EQ(x64Target->manifests[0].sourceManifestPath, manifest64);
+    EXPECT_EQ(x86Target->manifests[0].sourceManifestPath, manifest32);
+    EXPECT_EQ(x64Target->manifests[0].manifestPath, stagingDir / L"VK_LAYER_CE_overlay.json");
+    EXPECT_EQ(x86Target->manifests[0].manifestPath, stagingDir / L"VK_LAYER_CE_overlay_x86.json");
     EXPECT_EQ(x64Target->manifests[0].layerName,
               std::wstring(L"VK_LAYER_CE_overlay_b") + std::to_wstring(GetCurrentBuildNumber()));
     EXPECT_EQ(x86Target->manifests[0].layerName,
@@ -82,6 +86,7 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) 
 
 TEST(VulkanLayerRegistrationTest, ElevatedAutoPlanSplitsHKLMViewsByArchitecture) {
     const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_hklm";
+    const std::filesystem::path stagingDir = baseDir / "staging";
     std::filesystem::create_directories(baseDir);
 
     const auto manifest64 = baseDir / L"VK_LAYER_CE_overlay.json";
@@ -94,8 +99,9 @@ TEST(VulkanLayerRegistrationTest, ElevatedAutoPlanSplitsHKLMViewsByArchitecture)
     TouchFile(manifest32);
     TouchFile(library32);
 
-    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true);
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true, stagingDir);
     ASSERT_EQ(plan.effectiveMode, RegistrationMode::AllUsers);
+    ASSERT_EQ(plan.stagingDir, stagingDir);
     ASSERT_EQ(plan.installTargets.size(), 2u);
 
     const auto& first = plan.installTargets[0];
@@ -110,14 +116,17 @@ TEST(VulkanLayerRegistrationTest, ElevatedAutoPlanSplitsHKLMViewsByArchitecture)
     ASSERT_EQ(x86Target->manifests.size(), 1u);
     EXPECT_FALSE(x64Target->manifests[0].is32Bit);
     EXPECT_TRUE(x86Target->manifests[0].is32Bit);
-    EXPECT_EQ(x64Target->manifests[0].manifestPath, manifest64);
-    EXPECT_EQ(x86Target->manifests[0].manifestPath, manifest32);
+    EXPECT_EQ(x64Target->manifests[0].sourceManifestPath, manifest64);
+    EXPECT_EQ(x86Target->manifests[0].sourceManifestPath, manifest32);
+    EXPECT_EQ(x64Target->manifests[0].manifestPath, stagingDir / L"VK_LAYER_CE_overlay.json");
+    EXPECT_EQ(x86Target->manifests[0].manifestPath, stagingDir / L"VK_LAYER_CE_overlay_x86.json");
 
     std::filesystem::remove_all(baseDir);
 }
 
 TEST(VulkanLayerRegistrationTest, PlanSkipsMissingArchitectureArtifacts) {
     const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_skip_missing";
+    const std::filesystem::path stagingDir = baseDir / "staging";
     std::filesystem::create_directories(baseDir);
 
     const auto manifest64 = baseDir / L"VK_LAYER_CE_overlay.json";
@@ -125,13 +134,55 @@ TEST(VulkanLayerRegistrationTest, PlanSkipsMissingArchitectureArtifacts) {
     TouchFile(manifest64);
     TouchFile(library64);
 
-    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true);
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true, stagingDir);
     ASSERT_EQ(plan.installTargets.size(), 1u);
     EXPECT_EQ(plan.installTargets[0].view, RegistryView::Registry64);
     ASSERT_EQ(plan.installTargets[0].manifests.size(), 1u);
     EXPECT_FALSE(plan.installTargets[0].manifests[0].is32Bit);
 
     std::filesystem::remove_all(baseDir);
+}
+
+TEST(VulkanLayerRegistrationTest, DefaultStagingDirectoryResolvesExpectedSubdirectory) {
+    std::filesystem::path userStaging;
+    ASSERT_TRUE(ce::vulkan_layer::ResolveDefaultStagingDirectory(RegistrationMode::CurrentUser, &userStaging));
+    EXPECT_FALSE(userStaging.empty());
+    const std::wstring userStr = userStaging.wstring();
+    EXPECT_NE(userStr.find(L"CaptureEngine\\vulkan_layers\\b"), std::wstring::npos);
+
+    std::filesystem::path allUsersStaging;
+    ASSERT_TRUE(ce::vulkan_layer::ResolveDefaultStagingDirectory(RegistrationMode::AllUsers, &allUsersStaging));
+    EXPECT_FALSE(allUsersStaging.empty());
+    const std::wstring allStr = allUsersStaging.wstring();
+    EXPECT_NE(allStr.find(L"CaptureEngine\\vulkan_layers\\b"), std::wstring::npos);
+}
+
+TEST(VulkanLayerRegistrationTest, StagingCopiesArtifactsAndCleanupRemovesOldBuilds) {
+    const std::filesystem::path testRoot = std::filesystem::current_path() / "vk_reg_staging_test";
+    const std::filesystem::path baseDir = testRoot / "installed";
+    const std::filesystem::path stagingParent = testRoot / "vulkan_layers";
+    const std::filesystem::path activeStaging = stagingParent / ("b" + std::to_string(GetCurrentBuildNumber()));
+    const std::filesystem::path oldStaging = stagingParent / "b99998";
+
+    std::filesystem::create_directories(baseDir);
+    std::filesystem::create_directories(oldStaging);
+
+    const auto srcManifest = baseDir / L"VK_LAYER_CE_overlay.json";
+    const auto srcLib = baseDir / L"VK_LAYER_CE_overlay.dll";
+    TouchFile(srcManifest);
+    TouchFile(srcLib);
+    TouchFile(oldStaging / L"VK_LAYER_CE_overlay.dll");
+
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, activeStaging);
+    EXPECT_EQ(plan.stagingDir, activeStaging);
+    ASSERT_EQ(plan.installTargets.size(), 1u);
+
+    // Call CleanupStaleStagingDirectories and verify oldStaging is pruned
+    EXPECT_TRUE(std::filesystem::exists(oldStaging));
+    EXPECT_TRUE(ce::vulkan_layer::CleanupStaleStagingDirectories(plan));
+    EXPECT_FALSE(std::filesystem::exists(oldStaging));
+
+    std::filesystem::remove_all(testRoot);
 }
 
 TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritableScopes) {

@@ -24,6 +24,7 @@ constexpr wchar_t kManifest32Name[] = L"VK_LAYER_CE_overlay_x86.json";
 constexpr wchar_t kLibrary32Name[] = L"VK_LAYER_CE_overlay_x86.dll";
 constexpr wchar_t kLayer32Name[] = L"VK_LAYER_CE_overlay_x86";
 constexpr wchar_t kLegacyManifestName[] = L"VK_LAYER_CAPTURE_overlay.json";
+constexpr wchar_t kStagingSubdirectory[] = L"CaptureEngine\\vulkan_layers";
 
 struct RegistryLocation {
     RegistryRoot root;
@@ -148,15 +149,18 @@ bool IsRegularFile(const std::filesystem::path& path) {
     return std::filesystem::is_regular_file(path, ec);
 }
 
-LayerManifest BuildManifest(const std::filesystem::path& baseDir, const wchar_t* manifestName,
-                            const wchar_t* libraryName, const wchar_t* layerName, bool is32Bit) {
+LayerManifest BuildManifest(const std::filesystem::path& baseDir, const std::filesystem::path& stagingDir,
+                            const wchar_t* manifestName, const wchar_t* libraryName, const wchar_t* layerName,
+                            bool is32Bit) {
     LayerManifest manifest;
-    manifest.manifestPath = baseDir / manifestName;
-    manifest.libraryPath = baseDir / libraryName;
+    manifest.sourceManifestPath = baseDir / manifestName;
+    manifest.sourceLibraryPath = baseDir / libraryName;
+    manifest.manifestPath = stagingDir / manifestName;
+    manifest.libraryPath = stagingDir / libraryName;
     manifest.layerName = BuildVersionedLayerName(layerName);
     manifest.is32Bit = is32Bit;
-    manifest.manifestExists = IsRegularFile(manifest.manifestPath);
-    manifest.libraryExists = IsRegularFile(manifest.libraryPath);
+    manifest.manifestExists = IsRegularFile(manifest.sourceManifestPath);
+    manifest.libraryExists = IsRegularFile(manifest.sourceLibraryPath);
     return manifest;
 }
 
@@ -258,38 +262,11 @@ std::vector<std::wstring> BuildRetainedEntriesForLocation(const RegistrationPlan
 
 std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
     std::vector<RegistryTarget> targets;
+    const RegistryRoot root =
+        (plan.effectiveMode == RegistrationMode::AllUsers) ? RegistryRoot::LocalMachine : RegistryRoot::CurrentUser;
+    RegistryTarget x64Target{root, RegistryView::Registry64, {}};
+    RegistryTarget x86Target{root, RegistryView::Registry32, {}};
 
-    if (plan.effectiveMode == RegistrationMode::AllUsers) {
-        RegistryTarget x64Target;
-        x64Target.root = RegistryRoot::LocalMachine;
-        x64Target.view = RegistryView::Registry64;
-        RegistryTarget x86Target;
-        x86Target.root = RegistryRoot::LocalMachine;
-        x86Target.view = RegistryView::Registry32;
-
-        for (const LayerManifest& manifest : plan.manifests) {
-            if (manifest.is32Bit) {
-                x86Target.manifests.push_back(manifest);
-            } else {
-                x64Target.manifests.push_back(manifest);
-            }
-        }
-
-        if (!x64Target.manifests.empty()) {
-            targets.push_back(std::move(x64Target));
-        }
-        if (!x86Target.manifests.empty()) {
-            targets.push_back(std::move(x86Target));
-        }
-        return targets;
-    }
-
-    RegistryTarget x64Target;
-    x64Target.root = RegistryRoot::CurrentUser;
-    x64Target.view = RegistryView::Registry64;
-    RegistryTarget x86Target;
-    x86Target.root = RegistryRoot::CurrentUser;
-    x86Target.view = RegistryView::Registry32;
     for (const LayerManifest& manifest : plan.manifests) {
         if (manifest.is32Bit) {
             x86Target.manifests.push_back(manifest);
@@ -297,6 +274,7 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
             x64Target.manifests.push_back(manifest);
         }
     }
+
     if (!x64Target.manifests.empty()) {
         targets.push_back(std::move(x64Target));
     }
@@ -467,8 +445,34 @@ bool GetCurrentExecutableDirectory(std::filesystem::path* outDir) {
     }
 }
 
+bool ResolveDefaultStagingDirectory(RegistrationMode mode, std::filesystem::path* outDir) {
+    if (!outDir) {
+        return false;
+    }
+
+    std::vector<wchar_t> buffer(MAX_PATH, L'\0');
+    DWORD written = 0;
+    if (mode == RegistrationMode::AllUsers) {
+        written = GetEnvironmentVariableW(L"ProgramData", buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (written == 0 || written >= buffer.size()) {
+            written = GetEnvironmentVariableW(L"ALLUSERSPROFILE", buffer.data(), static_cast<DWORD>(buffer.size()));
+        }
+    } else {
+        written = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
+    }
+
+    if (written == 0 || written >= buffer.size()) {
+        LogWarn("[VulkanReg] Failed to resolve environment root for staging mode %s", ToString(mode));
+        return false;
+    }
+
+    const std::wstring buildFolder = L"b" + std::to_wstring(GetCurrentBuildNumber());
+    *outDir = std::filesystem::path(std::wstring(buffer.data(), written)) / kStagingSubdirectory / buildFolder;
+    return true;
+}
+
 RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, RegistrationMode requestedMode,
-                                       bool processElevated) {
+                                       bool processElevated, const std::filesystem::path& explicitStagingDir) {
     RegistrationPlan plan;
     plan.baseDir = baseDir;
     plan.requestedMode = requestedMode;
@@ -478,43 +482,24 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
         plan.effectiveMode = processElevated ? RegistrationMode::AllUsers : RegistrationMode::CurrentUser;
     }
 
-    plan.manifests.push_back(BuildManifest(baseDir, kManifest64Name, kLibrary64Name, kLayer64Name, false));
-    plan.manifests.push_back(BuildManifest(baseDir, kManifest32Name, kLibrary32Name, kLayer32Name, true));
-
-    if (plan.effectiveMode == RegistrationMode::AllUsers) {
-        RegistryTarget x64Target;
-        x64Target.root = RegistryRoot::LocalMachine;
-        x64Target.view = RegistryView::Registry64;
-        RegistryTarget x86Target;
-        x86Target.root = RegistryRoot::LocalMachine;
-        x86Target.view = RegistryView::Registry32;
-
-        for (const LayerManifest& manifest : plan.manifests) {
-            if (!manifest.IsUsable()) {
-                continue;
-            }
-            if (manifest.is32Bit) {
-                x86Target.manifests.push_back(manifest);
-            } else {
-                x64Target.manifests.push_back(manifest);
-            }
-        }
-
-        if (!x64Target.manifests.empty()) {
-            plan.installTargets.push_back(std::move(x64Target));
-        }
-        if (!x86Target.manifests.empty()) {
-            plan.installTargets.push_back(std::move(x86Target));
-        }
-        return plan;
+    if (!explicitStagingDir.empty()) {
+        plan.stagingDir = explicitStagingDir;
+    } else if (!ResolveDefaultStagingDirectory(plan.effectiveMode, &plan.stagingDir)) {
+        LogWarn("[VulkanReg] Could not resolve default staging directory; falling back to source directory %s",
+                PathToUtf8(baseDir).c_str());
+        plan.stagingDir = baseDir;
     }
 
-    RegistryTarget x64Target;
-    x64Target.root = RegistryRoot::CurrentUser;
-    x64Target.view = RegistryView::Registry64;
-    RegistryTarget x86Target;
-    x86Target.root = RegistryRoot::CurrentUser;
-    x86Target.view = RegistryView::Registry32;
+    plan.manifests.push_back(
+        BuildManifest(baseDir, plan.stagingDir, kManifest64Name, kLibrary64Name, kLayer64Name, false));
+    plan.manifests.push_back(
+        BuildManifest(baseDir, plan.stagingDir, kManifest32Name, kLibrary32Name, kLayer32Name, true));
+
+    const RegistryRoot root =
+        (plan.effectiveMode == RegistrationMode::AllUsers) ? RegistryRoot::LocalMachine : RegistryRoot::CurrentUser;
+    RegistryTarget x64Target{root, RegistryView::Registry64, {}};
+    RegistryTarget x86Target{root, RegistryView::Registry32, {}};
+
     for (const LayerManifest& manifest : plan.manifests) {
         if (!manifest.IsUsable()) {
             continue;
@@ -587,10 +572,67 @@ bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
     return success;
 }
 
+static bool StageFileIfChanged(const std::filesystem::path& source, const std::filesystem::path& target) {
+    if (source == target) {
+        return true;
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(target, ec)) {
+        const auto srcSize = std::filesystem::file_size(source, ec);
+        const auto dstSize = std::filesystem::file_size(target, ec);
+        if (!ec && srcSize == dstSize) {
+            const auto srcTime = std::filesystem::last_write_time(source, ec);
+            const auto dstTime = std::filesystem::last_write_time(target, ec);
+            if (!ec && srcTime == dstTime) {
+                return true;
+            }
+        }
+    }
+
+    std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) {
+        LogInfo("[VulkanReg] Staged %s -> %s", PathToUtf8(source).c_str(), PathToUtf8(target).c_str());
+        return true;
+    }
+
+    if (std::filesystem::exists(target, ec)) {
+        LogWarn("[VulkanReg] Staged target %s in use; reusing existing image", PathToUtf8(target).c_str());
+        return true;
+    }
+
+    LogError("[VulkanReg] Failed to stage %s to %s (error=%d, %s)", PathToUtf8(source).c_str(),
+             PathToUtf8(target).c_str(), ec.value(), ec.message().c_str());
+    return false;
+}
+
+static bool StagePlanArtifacts(const RegistrationPlan& plan) {
+    if (plan.stagingDir.empty() || plan.stagingDir == plan.baseDir) {
+        return true;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(plan.stagingDir, ec);
+    if (ec) {
+        LogError("[VulkanReg] Failed to create staging directory %s (error=%d, %s)",
+                 PathToUtf8(plan.stagingDir).c_str(), ec.value(), ec.message().c_str());
+        return false;
+    }
+
+    bool success = true;
+    for (const auto& manifest : plan.manifests) {
+        if (!manifest.IsUsable()) {
+            continue;
+        }
+        success &= StageFileIfChanged(manifest.sourceLibraryPath, manifest.libraryPath);
+        success &= StageFileIfChanged(manifest.sourceManifestPath, manifest.manifestPath);
+    }
+    return success;
+}
+
 void LogRegistrationPlan(const RegistrationPlan& plan) {
-    LogInfo("[VulkanReg] Registration mode: requested=%s effective=%s elevated=%s baseDir=%s",
+    LogInfo("[VulkanReg] Registration mode: requested=%s effective=%s elevated=%s baseDir=%s stagingDir=%s",
             ToString(plan.requestedMode), ToString(plan.effectiveMode), plan.processElevated ? "true" : "false",
-            PathToUtf8(plan.baseDir).c_str());
+            PathToUtf8(plan.baseDir).c_str(), PathToUtf8(plan.stagingDir).c_str());
 
     if (plan.effectiveMode == RegistrationMode::CurrentUser) {
         LogInfo("[VulkanReg] Using HKCU registration. Elevated Vulkan apps will ignore per-user implicit layers.");
@@ -625,6 +667,40 @@ void LogRegistrationPlan(const RegistrationPlan& plan) {
     }
 }
 
+bool CleanupStaleStagingDirectories(const RegistrationPlan& plan) {
+    if (plan.stagingDir.empty() || plan.stagingDir == plan.baseDir) {
+        return true;
+    }
+
+    const std::filesystem::path parentDir = plan.stagingDir.parent_path();
+    std::error_code ec;
+    if (!std::filesystem::exists(parentDir, ec) || !std::filesystem::is_directory(parentDir, ec)) {
+        return true;
+    }
+
+    const std::wstring currentFolder = ToLower(plan.stagingDir.filename().wstring());
+    for (const auto& entry : std::filesystem::directory_iterator(parentDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        const std::wstring folderName = ToLower(entry.path().filename().wstring());
+        if (folderName.rfind(L'b', 0) == 0 && folderName != currentFolder) {
+            std::error_code rmEc;
+            std::filesystem::remove_all(entry.path(), rmEc);
+            if (!rmEc) {
+                LogInfo("[VulkanReg] Pruned superseded staging directory: %s", PathToUtf8(entry.path()).c_str());
+            } else {
+                LogInfo("[VulkanReg] Retaining in-use superseded staging directory: %s",
+                        PathToUtf8(entry.path()).c_str());
+            }
+        }
+    }
+    return true;
+}
+
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install) {
     if (install) {
         if (plan.installTargets.empty()) {
@@ -632,16 +708,26 @@ bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install) {
             return false;
         }
 
+        if (!StagePlanArtifacts(plan)) {
+            LogError("[VulkanReg] Failed to stage Vulkan layer artifacts to %s", PathToUtf8(plan.stagingDir).c_str());
+            return false;
+        }
+
         bool success = true;
         for (const RegistryTarget& target : plan.installTargets) {
             success &= WriteRegistryTarget(target);
         }
+        CleanupStaleStagingDirectories(plan);
         return success;
     }
 
     bool success = true;
     for (const RegistryTarget& target : plan.installTargets) {
         success &= DeleteRegistryTarget(target);
+    }
+    if (!plan.stagingDir.empty() && plan.stagingDir != plan.baseDir) {
+        std::error_code ec;
+        std::filesystem::remove_all(plan.stagingDir, ec);
     }
     return success;
 }

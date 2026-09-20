@@ -26,6 +26,8 @@ enum class RegistryView {
 struct LayerManifest {
     std::filesystem::path manifestPath;
     std::filesystem::path libraryPath;
+    std::filesystem::path sourceManifestPath;
+    std::filesystem::path sourceLibraryPath;
     std::wstring layerName;
     bool is32Bit = false;
     bool manifestExists = false;
@@ -44,6 +46,7 @@ struct RegistryTarget {
 
 struct RegistrationPlan {
     std::filesystem::path baseDir;
+    std::filesystem::path stagingDir;
     RegistrationMode requestedMode = RegistrationMode::Auto;
     RegistrationMode effectiveMode = RegistrationMode::CurrentUser;
     bool processElevated = false;
@@ -57,9 +60,11 @@ const char* ToString(RegistryView view);
 
 bool IsCurrentProcessElevated();
 bool GetCurrentExecutableDirectory(std::filesystem::path* outDir);
+bool ResolveDefaultStagingDirectory(RegistrationMode mode, std::filesystem::path* outDir);
 
 RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, RegistrationMode requestedMode,
-                                       bool processElevated);
+                                       bool processElevated,
+                                       const std::filesystem::path& explicitStagingDir = {});
 
 std::string PathToUtf8ForLogging(const std::filesystem::path& path);
 
@@ -75,6 +80,7 @@ std::vector<std::wstring> SelectStaleOwnedEntries(const std::vector<std::wstring
 
 bool RepairOwnedRegistrations(const RegistrationPlan& plan);
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install);
+bool CleanupStaleStagingDirectories(const RegistrationPlan& plan);
 bool IsRegistrationActive(const RegistrationPlan& plan);
 
 }  // namespace ce::vulkan_layer

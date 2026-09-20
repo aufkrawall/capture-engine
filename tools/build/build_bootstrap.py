@@ -471,6 +471,7 @@ def find_process_locking_file(filepath: str) -> List[str]:
 
     # Try using Resource Monitor (resmon) query via WMI
     try:
+        import shutil
         import subprocess
 
         # Use handle.exe from Sysinternals if available
