@@ -66,21 +66,38 @@ bool IsWindowOnCurrentVirtualDesktop(HWND hwnd) {
     static const GUID iidVirtualDesktopManager = {
         0xa5cd92ff, 0x29be, 0x454c, {0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b}};
 
-    static thread_local bool attemptedCom = false;
-    static thread_local Microsoft::WRL::ComPtr<IVirtualDesktopManager> vdm;
-    if (!attemptedCom) {
-        const HRESULT hr = CoCreateInstance(clsidVirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
-                                            iidVirtualDesktopManager, reinterpret_cast<void**>(vdm.GetAddressOf()));
-        if (SUCCEEDED(hr) || hr != CO_E_NOTINITIALIZED) {
-            attemptedCom = true;
-        }
+    // The manager is created and released inside this call and is never cached
+    // across calls.
+    //
+    // A COM interface pointer is only valid while the apartment that created it
+    // lives, and this thread's apartment is not CaptureEngine's to rely on:
+    // USER32's text-services hook calls CoInitialize/CoUninitialize of its own
+    // accord while ordinary window messages are processed, and the balancing
+    // CoUninitialize takes the whole process's COM state down with it -
+    // `CClassCache::CleanUpDllsForProcess` calls FreeLibrary on every in-process
+    // server. A pointer cached across that boundary then has a vtable in
+    // unmapped memory, and the next call through it faults reading the vtable
+    // slot rather than anywhere inside COM. That was a reproducible 0xC0000005,
+    // and it would equally hit the media process's privacy sampling, which
+    // queries this once per captured frame.
+    //
+    // Creating per call keeps the server alive for exactly as long as the
+    // reference is held. The cost is a warm class-cache lookup, well under the
+    // DWM round trip `IsWindowCloaked` already made above.
+    Microsoft::WRL::ComPtr<IVirtualDesktopManager> vdm;
+    const HRESULT hr = CoCreateInstance(clsidVirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
+                                        iidVirtualDesktopManager, reinterpret_cast<void**>(vdm.GetAddressOf()));
+    // No COM on this thread, or no virtual desktop manager: the window cannot be
+    // proven to be on another desktop, so it is treated as visible on this one.
+    // A later call recovers on its own once the thread initializes COM, which is
+    // why there is no "already tried and failed" latch either.
+    if (FAILED(hr) || !vdm) {
+        return true;
     }
 
-    if (vdm) {
-        BOOL onCurrent = TRUE;
-        if (SUCCEEDED(vdm->IsWindowOnCurrentVirtualDesktop(root, &onCurrent)) && !onCurrent) {
-            return false;
-        }
+    BOOL onCurrent = TRUE;
+    if (SUCCEEDED(vdm->IsWindowOnCurrentVirtualDesktop(root, &onCurrent)) && !onCurrent) {
+        return false;
     }
 
     return true;

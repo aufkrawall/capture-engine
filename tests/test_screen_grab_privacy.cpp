@@ -362,3 +362,43 @@ TEST(ScreenGrabPrivacyTest, VirtualDesktopQueryRecoversAfterLateComInitializatio
 
     DestroyWindow(window);
 }
+
+TEST(ScreenGrabPrivacyTest, VirtualDesktopQuerySurvivesApartmentTeardownBetweenCalls) {
+    // A COM interface pointer is only valid while the apartment that created it
+    // lives. CaptureEngine does not own this thread's apartment: USER32's
+    // text-services hook calls CoInitialize/CoUninitialize on its own while
+    // ordinary window messages are processed, and the balancing CoUninitialize
+    // takes the process's COM state down with it - CClassCache unloads every
+    // in-process server. Caching the manager across that boundary left a vtable
+    // pointing into unmapped memory and the next query faulted with 0xC0000005.
+    //
+    // This does explicitly, on a thread of its own, what Windows was doing
+    // incidentally: query, tear the apartment down, query again.
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const HWND window = CreateWindowExW(0, L"STATIC", L"ApartmentTeardownTest", WS_OVERLAPPEDWINDOW, 0, 0, 200, 200,
+                                        nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(window, nullptr);
+
+    std::thread worker([&]() {
+        const HRESULT first = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        ASSERT_TRUE(SUCCEEDED(first));
+        // Populates whatever the implementation keeps for the next call.
+        EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(window));
+
+        // The apartment goes away, and with it every in-process COM server.
+        CoUninitialize();
+
+        const HRESULT second = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        ASSERT_TRUE(SUCCEEDED(second));
+        // Before the fix this faulted reading the freed server's vtable.
+        EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(window));
+        CoUninitialize();
+
+        // Also exercised without an apartment at all: the query must degrade to
+        // "cannot prove it is elsewhere" rather than fault or latch itself off.
+        EXPECT_TRUE(privacy::IsWindowOnCurrentVirtualDesktop(window));
+    });
+    worker.join();
+
+    DestroyWindow(window);
+}

@@ -1,5 +1,41 @@
 # llm-wiki Log
 
+### 2026-09-20 - a cached COM interface outlived the apartment Windows tore down under it
+
+`ScreenGrabPrivacyTest.TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry` faulted
+with 0xC0000005 on every run and took the whole unit-test process down mid-suite. Root cause in
+`common/screen_grab_privacy.cpp::IsWindowOnCurrentVirtualDesktop`, fixed by creating the
+`IVirtualDesktopManager` per call instead of caching it in a `thread_local`.
+
+- **The hypothesis that an *earlier test* called `CoUninitialize` was wrong.** The test crashes
+  alone, as the only test in the process, so nothing else had run. Verifying that first saved
+  chasing test-ordering ghosts.
+- **What the debugger showed.** The fault is in CE's own frame, not inside COM:
+  `mov rax,[rcx]` reads the object's vtable pointer successfully, then `mov rax,[rax+18h]` faults.
+  `!address` on that vtable reports `MEM_FREE` / `PAGE_NOACCESS` - the vtable is in **unmapped**
+  memory. That is the signature of an in-process COM server that was unloaded while CE still held
+  an interface pointer into it.
+- **Who unloaded it.** A breakpoint on `CoUninitialize` caught
+  `USER32!CtfHookProcWorker -> combase!CoUninitialize`: USER32's text-services hook balances its
+  own `CoInitialize`/`CoUninitialize` while ordinary window messages are processed. The balancing
+  call reached zero, so `combase!ProcessUninitialize -> CClassCache::CleanUpDllsForProcess`
+  called `FreeLibrary` on every in-process server. The test's `DestroyWindow`/`UnregisterClass`
+  between the two queries is what pumped the messages.
+- **The invariant:** a COM interface pointer is valid only while the apartment that created it
+  lives, and **CE does not own the apartments of the threads it runs on**. Windows itself
+  initializes and uninitializes COM on a UI thread. Caching an interface across calls is only
+  sound if CE holds its own apartment reference, which it must not do on a thread it borrows.
+- **Not a test artifact.** The media process queries this once per captured frame in the
+  screen-grab privacy gate, so the same teardown would fault a live recording.
+- Per-call creation keeps the server loaded for exactly as long as the reference is held. The
+  cost is a warm class-cache lookup, below the DWM round trip `IsWindowCloaked` already makes on
+  the same path. Removing the "already tried" latch also means a thread that initializes COM
+  late recovers on its own, which is what cac63467 had been reaching for.
+- Regression test `VirtualDesktopQuerySurvivesApartmentTeardownBetweenCalls` does explicitly what
+  Windows was doing incidentally - query, `CoUninitialize`, re-init, query - and faults with
+  0xC0000005 against the old code. Full suite now 3473 green with no gtest filter.
+
+
 ### 2026-09-20 - post-processing sharpen: FidelityFX CAS and RCAS on D3D11, D3D12 and Vulkan
 
 New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength` and
@@ -34,11 +70,7 @@ New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength` and
 - Headers vendored from the MIT FidelityFX SDK 1.1.4 archive the build already downloads. The
   newer 2.x SDK drop must not be used as the source: its `docs/license.md` is
   binary-redistribution-only and contradicts the per-file MIT banner in the same headers.
-- **Unrelated pre-existing failure found:** `ScreenGrabPrivacyTest.TaskViewAndDesktopClassesAre`
-  `RejectedEvenWithFullscreenGeometry` faults inside `IVirtualDesktopManager::IsWindowOnCurrent`
-  `VirtualDesktop` (`common/screen_grab_privacy.cpp`). The pre-change sanitizer binary from
-  2026-09-19 crashes identically, so it predates this work. Suspect: the `thread_local` ComPtr
-  cache outliving the COM apartment it was created in. Everything else (3471 tests) passes.
+- **Unrelated pre-existing failure found and fixed the same day** - see the entry above.
 
 ### 2026-09-20 - decoupled Vulkan layer registration via runtime staging to eliminate external file locks
 
