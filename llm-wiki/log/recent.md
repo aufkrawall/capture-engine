@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-09-21 - Stable release 0.1.6772, and the three gates only the release job runs
+
+`v0.1.6757` was published at 14:39 and withdrawn to a draft after Strange Brigade broke; its
+release and tag are deleted, so `v0.1.6652` -> `v0.1.6772` is the published line and 6757's
+CHANGELOG section documents a version no longer downloadable.
+
+The first dispatch (`0.1.6767`, run 35629107044) failed 74 seconds in, inside the verification
+preflight, and behind that one failure sat two more:
+
+- `hook/common/hook_common.cpp` at 813 lines. Split into `hook_common_graphics_config.cpp`
+  (485 + 339): the shared-memory/local config merge, the cached per-thread view, and the DLSS
+  driver-settings values derived from it. The two source-policy tests asserting on those merge
+  assignments now read the new unit. It deliberately does not include `fps_limiter.h` - that
+  header pulls `reflex_limiter.h`, and a new translation unit re-emits its headers' warnings
+  into the clang-tidy totals (+3 `unused-private-field` and more, purely from the include).
+- `dxgi_shared_internal.h` longest line 228 -> 239, from `DetourResizeBuffers1ReconcileOnly`
+  declared on one line in e07c3222.
+- `clang-analyzer-core.CallAndMessage` 26 > 25 at `dxgi_shared_steam.cpp`'s guarded Steam
+  Present. The .cpp had not changed since the baseline; e07c3222 changed a header it includes,
+  which re-analyzed the unit. It is the documented false-positive class - every condition
+  proving `externalPresent` is callable is evaluated into a bool and passed to a policy helper -
+  so the call site now restates the guard, with a source-policy test holding it there.
+
+**Rule.** `--no-build --lint` before dispatching a release, after a full product build. The
+per-change gate does not lint, so a green build+test run proves nothing about the file-size,
+line-length or clang-tidy ratchets the release job enforces. Run 35630917605 published
+`v0.1.6772` from `25a7335b`; attestation verified against a downloaded `captureengine.7z`.
+
 ### 2026-09-21 - CE's own swapchain flag killed Strange Brigade's startup; DX12 sampler overrides reach nothing
 
 Session `20260921_173511`, build 0.1.6757. The game showed
