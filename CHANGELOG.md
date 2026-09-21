@@ -2,44 +2,76 @@
 
 ## Unreleased
 
+Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6757).
+
+## v0.1.6757
+
 Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6652).
 
 ### New
 
 - **AMD FidelityFX CAS and RCAS post-processing sharpening (D3D11, D3D12, Vulkan):** added Contrast Adaptive Sharpening (`sharpen=cas`) and Robust Contrast Adaptive Sharpening (`sharpen=rcas`). Configurable via `sharpen_contrast` (adaptation sensitivity) and `sharpen_amount` (blend weight). Executes as a full-screen GPU pass prior to overlay composition, preserving clean overlay text. Supports SDR and HDR (using ST 2084 PQ for scRGB to protect specular highlights), includes sharpened output in screenshots, and supports live runtime tuning via Unreal Engine console variables.
+
 - **Driver-level DLSS Multi-Frame Generation controls:** added `[DLSS]` configuration keys (`dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps`) to override the driver-settings channel in-process. Enables fixed generation up to 5x/6x or dynamic cadence targeting display refresh rate (`dlss_fg_target_fps=max_refresh`) without modifying global driver profiles.
+
 - **DLSS Frame Generation V-Sync override:** extended `vsync_mode` to intercept and answer the driver-level V-Sync query read by the DLSS-G runtime, ensuring forced synchronization settings apply correctly above Streamline swapchain proxies.
+
 - **NVIDIA NGX over-the-air update control (`ngx_ota`):** added `[DLSS] ngx_ota=off|on` to intercept and suppress background `nvngx_update.exe` launches and clear Streamline OTA preferences during `slInit`, preventing remote OTA updates from overriding locally configured DLL versions.
+
 - **NVIDIA NGX diagnostic logging (`ngx_log`):** added `[DLSS] ngx_log=off|on|verbose` to route NGX runtime diagnostic logs directly into the session directory for diagnosing DLL override and Streamline plugin resolution.
+
 - **Automated GitHub release notes generation & changelog tooling:** added `tools/manage_changelog.py` to validate formatting, prevent tag/release note drift, and automate synchronized GitHub release note publication during stable release workflows.
+
 
 ### Improved
 
 - **Vulkan implicit layer registration decoupling:** the implicit layer manifest is now staged in CaptureEngine's runtime directory rather than build paths. Stale `baseDir` entries from prior builds are neutralized on startup, and orphaned machine-wide (HKLM) registrations are explicitly warned on when running unelevated.
+
 - **Unelevated process monitoring CPU reduction:** replaced periodic WMI process table queries (previously twice per second) with direct native Windows process queries, eliminating sustained background WMI service CPU overhead.
+
 - **Early recording cancellation handling:** stopping a recording during media pipeline startup now cleanly marks the session cancelled in the manifest and overlay rather than hanging indefinitely on "Finalizing recording...". Audio latency calibration is now cached per session to eliminate startup latency on subsequent recordings.
+
 - **Recording startup telemetry:** the controller now logs the confirmed live timestamp and measured pipeline startup latency rather than assuming immediate recording start upon request dispatch.
+
 - **Hook installation diagnostics under NVIDIA Smooth Motion:** logged hook installations and removals now report when fallback thread-suspension heuristics were used, clarifying hook status when driver background threads prevent strict thread quiescence.
+
 - **Startup performance diagnostics accuracy:** unified startup timing accumulation across controller subsystems so `[StartupPerf]` logs accurate elapsed durations rather than uninitialized or system uptime values.
+
 - **Developer LSP, code style, and editor tooling integration:** restored canonical root configuration files (`.clangd`, `.clang-format`, `.clang-tidy`, `.editorconfig`, `pyrightconfig.json`) to enable in-editor clangd diagnostics, automatic 4-space K&R code formatting, and EditorConfig support across all IDEs. Retained compilation database entries for unbuilt translation units across partial and test-only builds so `clangd` maintains full-codebase indexing and IntelliSense during routine test loops. Enabled C++ standard library indexing, all-scopes symbol completions, and block-end inlay hints, and configured safe header insertion policies to prevent Windows SDK include ordering issues. Configured `.vscode/settings.json` to use the project's bundled MSYS2 Clang 22 toolchain, added recommended workspace extensions, synchronized Python type-checking exclusions with internal facade units to eliminate false diagnostic squiggles, and added HLSL shader file associations.
+
 
 ### Fixed
 
 - **Strange Brigade / Steam module injection crash:** fixed startup access violation crash caused by concurrent CaptureEngine hook threads racing to modify memory page protection while patching adjacent Import Address Table (IAT) entries during Steam overlay library loading.
+
 - **Live configuration reload freeze & overlay blackout:** fixed in-game overlay disappearing and potential game render thread deadlocks when saving `config.ini`. Configuration reload queries now respond immediately with asynchronous background cache warming, preventing false IPC timeout respawns.
+
 - **Recording finalization freeze:** fixed a deadlock where stopping a recording while privacy blackout focus checks were executing could leave the media worker hung indefinitely waiting on a shared lock.
+
 - **Windows Error Reporting dialog suppression:** properly configured WER error modes so game crashes write diagnostic minidumps directly to the session folder without hanging on a modal "program has stopped working" prompt.
+
 - **Crash on virtual desktop focus transition:** fixed a crash caused by caching an unmarshaled COM interface pointer across thread apartment teardown during window focus changes.
+
 - **DirectX 12 sharpen queue drain:** fixed fence drain and ComPtr lifecycle issues during overlay teardown when sharpening was active.
+
 - **DirectX 12 sharpen crash during DLSS Frame Generation toggles:** properly synchronized command queue transitions when enabling/disabling DLSS Frame Generation mid-game, preventing GPU resource recycling hazards and frame tearing.
+
 - **Sharpening mode dynamic switch crash:** fixed crash when switching between CAS and RCAS at runtime caused by releasing pipeline state objects while previous GPU frames were still executing.
+
 - **Vulkan sharpening command buffer starvation:** fixed an issue where failed or aborted queue submissions left command buffers permanently marked in-flight, which eventually disabled the sharpening pass for the remainder of the session.
+
 - **The Witcher 3 (DX11) with NVIDIA Smooth Motion:** fixed startup crash caused by compositing onto the interposer's transient output swapchain buffers. Also resolved severe overlay flickering and corrected FPS counter to reflect game render rate rather than interposer presentation rate.
+
 - **`__fastfail` crash dump capture:** unhandled fatal crashes and security check terminations (`0xC0000409`) that bypass in-process SEH/VEH handlers are now captured from WER crash dumps into the session directory, and legacy invalid registry configuration paths are automatically cleaned up.
+
 - **Early-startup Streamline DLL override race:** armed the DLL redirection loader hook directly in `DllMain` using pre-published injector configuration, preventing early-loaded modules like `sl.common.dll` from bypassing overrides before the background hook thread finishes reading configuration.
+
 - **Steam overlay hook layering reliability:** added automatic retries when hooking present body calls during initial game thread creation, ensuring CaptureEngine layers correctly beneath the Steam overlay.
+
 - **Render thread stutter during Reflex / PCL hook resolution:** bounded retry attempts for Streamline functions not exported by specific library builds, preventing periodic 2.5-second render thread hitches.
+
 - **False frame generation health warnings in auto/dynamic modes:** suppressed false-positive activation warnings when DLSS Frame Generation dynamically chooses not to interpolate frames.
+
 - **DLSS Dynamic MFG status detection:** fixed false "dynamic MFG not supported" overlay warnings by gating state field reads on the game's actual DLSS-G struct version.
 
 ## v0.1.6652
