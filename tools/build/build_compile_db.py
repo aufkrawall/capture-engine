@@ -154,6 +154,22 @@ def write_compile_commands_json() -> Optional[str]:
                 unique_commands.append(enriched_cmd)
                 seen_files.add(enriched_cmd["file"])
         compile_commands_path = get_compile_commands_path()
+        # Retain existing entries for unbuilt translation units (e.g. during --tests-only or incremental builds)
+        # so clangd retains full codebase indexing and IntelliSense across all subsystems.
+        is_force = os.environ.get("FORCE_REBUILD") == "1" or ("--force-rebuild" in getattr(sys, "argv", []))
+        if os.path.exists(compile_commands_path) and not is_force:
+            try:
+                with open(compile_commands_path, "r", encoding="utf-8") as existing_file:
+                    existing_entries = json.load(existing_file)
+                if isinstance(existing_entries, list):
+                    for entry in existing_entries:
+                        entry_file = entry.get("file")
+                        if entry_file and entry_file not in seen_files and os.path.exists(entry_file):
+                            unique_commands.append(entry)
+                            seen_files.add(entry_file)
+            except Exception:
+                pass
+        unique_commands.sort(key=lambda c: c.get("file", ""))
         payload = json.dumps(unique_commands, indent=4) + "\n"
         changed = write_text_atomic_if_changed(compile_commands_path, payload)
         log(

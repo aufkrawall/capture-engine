@@ -7,6 +7,11 @@
     "tools",
     "testapp"
   ],
+  "extraPaths": [
+    "tools"
+  ],
+  "autoImportCompletions": true,
+  "autoSearchPaths": true,
   "exclude": [
     "**/node_modules",
     "**/__pycache__",

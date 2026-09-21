@@ -28,11 +28,14 @@ Diagnostics:
 
 Index:
   Background: Build
+  StandardLibrary: Yes
 
 InlayHints:
   Designators: true
   ParameterNames: true
   DeducedTypes: true
+  BlockEnd: true
+  TypeNameLimit: 24
 
 Hover:
   ShowAKA: true

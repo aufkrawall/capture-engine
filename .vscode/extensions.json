@@ -4,6 +4,7 @@
         "ms-python.python",
         "ms-python.vscode-pylance",
         "EditorConfig.EditorConfig",
-        "tamasfe.even-better-toml"
+        "tamasfe.even-better-toml",
+        "timonwong.hlsl"
     ]
 }

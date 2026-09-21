@@ -3,6 +3,9 @@
   "pythonVersion": "3.10",
   "pythonPlatform": "Windows",
   "include": ["../../build.py", "..", "../../testapp"],
+  "extraPaths": [".."],
+  "autoImportCompletions": true,
+  "autoSearchPaths": true,
   "exclude": [
     "../../**/node_modules",
     "../../**/__pycache__",

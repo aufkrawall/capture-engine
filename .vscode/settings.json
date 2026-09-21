@@ -10,10 +10,13 @@
         "--background-index",
         "--compile-commands-dir=${workspaceFolder}",
         "--clang-tidy",
-        "--header-insertion=iwyu",
+        "--all-scopes-completion",
+        "--header-insertion=never",
         "--completion-style=bundled",
+        "--function-arg-placeholders=1",
         "--pch-storage=memory",
-        "--cross-file-rename"
+        "--cross-file-rename",
+        "--query-driver=${workspaceFolder}/build/msys64/clang64/bin/clang++.exe"
     ],
 
     // Default formatter for C and C++ using clangd (format on save disabled to prevent
@@ -50,6 +53,10 @@
     "pyright.project": "pyrightconfig.json",
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.pythonVersion": "3.10",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.extraPaths": [
+        "tools"
+    ],
     "python.analysis.include": [
         "build.py",
         "tools",
@@ -79,6 +86,11 @@
     "files.associations": {
         "*.h": "cpp",
         "*.inl": "cpp",
-        "*.hlsl": "hlsl"
+        "*.hlsl": "hlsl",
+        "*.fx": "hlsl",
+        "*.fxh": "hlsl",
+        "*.comp": "glsl",
+        "*.vert": "glsl",
+        "*.frag": "glsl"
     }
 }
