@@ -92,11 +92,14 @@ public:
 
     // Finalizes the CSV from a process-termination hook, where Shutdown() is
     // unreachable: it only runs from this singleton's static destructor, and a
-    // game that exits through TerminateProcess/NtTerminateProcess - which UE5
-    // titles routinely do to skip a slow shutdown - never runs CRT static
-    // destructors. The file then keeps whatever stdio had buffered, so the last
-    // rows are lost and the final row is cut mid-line (Talos and RoboCop in
-    // session `20260921_183446`, both ending mid-record).
+    // game that tears the process down without unwinding the CRT never reaches
+    // it. The file then keeps whatever stdio had buffered, so the last rows are
+    // lost and the final row is cut mid-line - Talos and RoboCop both ended
+    // mid-record in session `20260921_183446`.
+    //
+    // Observed reason on both of those titles is ExitProcess, not
+    // TerminateProcess; all four exit entries CE hooks call this, because which
+    // one a title uses is not something to predict per title.
     //
     // Never blocks: a termination hook runs while other threads are still live
     // and may hold the file lock, and stalling there would hang the exit.

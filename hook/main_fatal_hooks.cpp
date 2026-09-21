@@ -82,9 +82,10 @@ NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEX
 // CE's own session artifacts have to be finalized on every exit of this
 // process, not only on the dump-worthy ones: CapturePreTerminationDumpIfNeeded
 // deliberately returns early for an ordinary exit code, and the CSV writer's
-// only other finalizer is a CRT static destructor that a TerminateProcess exit
-// never reaches. Once-only and non-blocking; this runs while the rest of the
-// process is still live.
+// only other finalizer is a CRT static destructor that a hard exit never
+// reaches. Validated on Talos and RoboCop in session `20260921_184224`, both of
+// which arrive here through ExitProcess. Once-only and non-blocking; this runs
+// while the rest of the process is still live.
 void FinalizeSessionArtifactsBeforeTermination(const char* source, bool targetIsCurrentProcess) {
   if (!targetIsCurrentProcess) {
     return;
