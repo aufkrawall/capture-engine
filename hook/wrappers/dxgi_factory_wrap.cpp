@@ -8,6 +8,7 @@
 #include "../apis/dx12_hook.h"
 #include "../common/dx12_overlay_policy.h"
 #include "../common/dxgi_shared.h"
+#include "../common/swapchain_flag_apply.h"
 #include "../common/fg_detection.h"
 #include "../common/overlay_compat.h"
 #include "dxgi_adapter_wrap.h"
@@ -120,6 +121,8 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
     const bool outputWindowVisible = !outputWindow || IsWindowVisible(outputWindow) != FALSE;
     if (ce::overlay_compat::ShouldPreserveInvisibleDX12SwapchainIdentityWithForeignOverlay(
             d3d12CommandQueueSwapchain, outputWindow != nullptr, outputWindowVisible, loadedOverlayCount)) {
+        DXGIShared::InstallResizeReconciliationHooks(static_cast<IDXGISwapChain*>(pReal),
+                                                     "wrapper preserved invisible-window identity");
         WrapperLog(
             "%s: Preserving real DX12 swapchain identity for an invisible-window create with a foreign "
             "overlay loaded (sc=%p hwnd=%p overlays=%zu) — hidden chains must not gain a retaining CE proxy",
@@ -133,6 +136,8 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
     if (ce::overlay_compat::ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
             d3d12CommandQueueSwapchain, interceptedBelowForeignChain, loadedOverlayCount,
             appFacingPresentCoveredByDeepBodyHook)) {
+        DXGIShared::InstallResizeReconciliationHooks(static_cast<IDXGISwapChain*>(pReal),
+                                                     "wrapper preserved identity");
         WrapperLog(
             "%s: Preserving real DX12 swapchain identity below the foreign Present chain "
             "(sc=%p overlays=%zu)",
@@ -358,23 +363,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-            UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip)
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-                WrapperLog(
-                    "CreateSwapChain: Skipping BufferCount override %u < game's %u "
-                    "(flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else if (modifiedDesc.BufferCount != requested) {
-                modifiedDesc.BufferCount = requested;
-                WrapperLog("CreateSwapChain: Overriding BufferCount to %u", modifiedDesc.BufferCount);
-            }
-        }
+        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChain");
 
         pDesc = &modifiedDesc;
     }
@@ -448,23 +437,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-            UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip)
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-                WrapperLog(
-                    "CreateSwapChainForHwnd: Skipping BufferCount override %u < "
-                    "game's %u (flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else if (modifiedDesc.BufferCount != requested) {
-                modifiedDesc.BufferCount = requested;
-                WrapperLog("CreateSwapChainForHwnd: Overriding BufferCount to %u", modifiedDesc.BufferCount);
-            }
-        }
+        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForHwnd");
 
         pDesc = &modifiedDesc;
     }
@@ -501,23 +474,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-            UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip)
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-                WrapperLog(
-                    "CreateSwapChainForCoreWindow: Skipping BufferCount override "
-                    "%u < game's %u (flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else if (modifiedDesc.BufferCount != requested) {
-                modifiedDesc.BufferCount = requested;
-                WrapperLog("CreateSwapChainForCoreWindow: Overriding BufferCount to %u", modifiedDesc.BufferCount);
-            }
-        }
+        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForCoreWindow");
 
         pDesc = &modifiedDesc;
     }
@@ -574,23 +531,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-            UINT requested = (UINT)gfx.backbufferCount;
-            bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                           modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-            if (isFlip)
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            if (isFlip && requested < modifiedDesc.BufferCount) {
-                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-                WrapperLog(
-                    "CreateSwapChainForComposition: Skipping BufferCount override "
-                    "%u < game's %u (flip model)",
-                    requested, modifiedDesc.BufferCount);
-            } else if (modifiedDesc.BufferCount != requested) {
-                modifiedDesc.BufferCount = requested;
-                WrapperLog("CreateSwapChainForComposition: Overriding BufferCount to %u", modifiedDesc.BufferCount);
-            }
-        }
+        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForComposition");
 
         pDesc = &modifiedDesc;
     }

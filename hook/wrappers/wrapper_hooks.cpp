@@ -159,35 +159,13 @@ extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11D
                                                   IDXGISwapChain* pSwapChain);
 #include "wrapper_hooks_internal.h"
 
+#include "../common/swapchain_flag_apply.h"
+
 bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc) {
     const auto& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
-        return false;
-    }
-
-    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip =
-        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-    if (isFlip)
-        desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-    if (isFlip && requested < desc.BufferCount) {
-        desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        WrapperLog(
-            "Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override skipped requested=%u game=%u "
-            "swapEffect=%d (flip model)",
-            requested, desc.BufferCount, desc.SwapEffect);
-        return false;
-    }
-    if (desc.BufferCount == requested) {
-        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount already matches requested=%u swapEffect=%d",
-                   requested, desc.SwapEffect);
-        return false;
-    }
-
-    WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override %u -> %u swapEffect=%d", desc.BufferCount,
-               requested, desc.SwapEffect);
-    desc.BufferCount = requested;
-    return true;
+    const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
+        desc, gfx, "Wrapped_D3D11CreateDeviceAndSwapChain");
+    return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 }
 
 // ============================================================================

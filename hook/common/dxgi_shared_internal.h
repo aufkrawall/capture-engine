@@ -499,6 +499,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
+// Reconcile-only claim: forwards the application's resize after making the
+// flags CE added at creation agree with the real chain. Used on swapchains CE
+// otherwise leaves completely alone.
+extern PFN_ResizeBuffers dxgi_shared_oResizeBuffersReconcile;
+extern PFN_ResizeBuffers1 dxgi_shared_oResizeBuffers1Reconcile;
+HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
+HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue);
 }
 
 namespace DXGIShared {

@@ -42,6 +42,25 @@ void DX12_PublishNativeLimiterDevice(ID3D12Device* device, ID3D12CommandQueue* q
 if (!device)
     return;
 
+// This is the earliest point at which CE is guaranteed to hold the game's real
+// ID3D12Device: it is resolved from the command queue the game passed to
+// CreateSwapChain, and it does not depend on CE having seen the device being
+// created.  The D3D12CreateDevice export hook frequently does not: the injector
+// waits for d3d12.dll to be present before injecting, so a game that resolved
+// D3D12CreateDevice during its own startup has already done so by the time CE
+// arrives, and the IAT patch finds no importer to rewrite (Strange Brigade DX12
+// session `20260921_173511` logged `patchResult=0` and then never emitted a
+// single `DX12 AF:` line, i.e. forced anisotropy and mip bias silently did
+// nothing all session).
+//
+// Hooking the device here still catches every sampler and root signature: those
+// live on the shared D3D12Core device vtable and are created during level load,
+// long after the swapchain exists.
+if (!HookIsShuttingDown() && !DX12_IsInternalDXGISwapchainProbe()) {
+    MarkD3D12DeviceCreated();
+    DX12_HookDeviceVTable(device);
+}
+
 g_ReflexLimiter.SetDevice(static_cast<IUnknown*>(device));
 
 bool ctxUpdated = false;

@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "../common/swapchain_flag_apply.h"
 
 
 bool ResolveD3D10Is10_1(ID3D10Device* device,  IDXGISwapChain* swapChain) {
@@ -199,49 +200,13 @@ void MarkDeferredAFBootstrapped11(ID3D11DeviceContext* context) {
 
 }
 
-void ApplyDX11WaitableFlag(DXGI_SWAP_CHAIN_DESC& desc) {
-
-
-    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-
-}
-
-void ApplyDX11WaitableFlag(DXGI_SWAP_CHAIN_DESC1& desc) {
-
-
-    desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-
-}
-
 bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc,  const char* source) {
 
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
-        return false;
-    }
-
-    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip =
-        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-    if (isFlip)
-        ApplyDX11WaitableFlag(desc);
-    if (isFlip && requested < desc.BufferCount) {
-        ApplyDX11WaitableFlag(desc);
-        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
-                         source ? source : "CreateSwapChain", requested, desc.BufferCount, desc.SwapEffect);
-        return false;
-    }
-    if (desc.BufferCount != requested) {
-        HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d", source ? source : "CreateSwapChain",
-                         desc.BufferCount, requested, desc.SwapEffect);
-        desc.BufferCount = requested;
-        return true;
-    }
-
-    HookLogImportant("DX11: %s BufferCount already matches requested=%u swapEffect=%d",
-                     source ? source : "CreateSwapChain", requested, desc.SwapEffect);
-    return false;
+    const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
+        desc, gfx, source ? source : "DX11 CreateSwapChain");
+    return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 
 }
 
@@ -249,31 +214,9 @@ bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc,  const char* 
 
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-    if (!HasBackbufferCountOverride(gfx.backbufferCount)) {
-        return false;
-    }
-
-    const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip =
-        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-    if (isFlip)
-        ApplyDX11WaitableFlag(desc);
-    if (isFlip && requested < desc.BufferCount) {
-        ApplyDX11WaitableFlag(desc);
-        HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
-                         source ? source : "CreateSwapChainForHwnd", requested, desc.BufferCount, desc.SwapEffect);
-        return false;
-    }
-    if (desc.BufferCount != requested) {
-        HookLogImportant("DX11: %s BufferCount override %u -> %u swapEffect=%d",
-                         source ? source : "CreateSwapChainForHwnd", desc.BufferCount, requested, desc.SwapEffect);
-        desc.BufferCount = requested;
-        return true;
-    }
-
-    HookLogImportant("DX11: %s BufferCount already matches requested=%u swapEffect=%d",
-                     source ? source : "CreateSwapChainForHwnd", requested, desc.SwapEffect);
-    return false;
+    const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
+        desc, gfx, source ? source : "DX11 CreateSwapChainForHwnd");
+    return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 
 }
 

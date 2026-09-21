@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/swapchain_flag_apply.h"
 #include "../common/swapchain_create_recovery.h"
 
 #include "../common/dx12_factory_slot_policy.h"
@@ -491,21 +492,7 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-        UINT requested = (UINT)gfx.backbufferCount;
-        bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                       modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-        if (isFlip)
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        if (isFlip && requested < modifiedDesc.BufferCount) {
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)", requested,
-                             modifiedDesc.BufferCount);
-        } else if (modifiedDesc.BufferCount != requested) {
-            HookLogImportant("DeepHook: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
-            modifiedDesc.BufferCount = requested;
-        }
-    }
+    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DeepHook");
     pDescToUse = &modifiedDesc;
 }
 

@@ -446,6 +446,11 @@ void** dxgi_shared_s_hookedVTable = nullptr;
 }
 
 namespace DXGIShared {
+// Swapchain vtable CE claimed the ResizeBuffers/ResizeBuffers1 slots on.
+void** dxgi_shared_s_resizeHookedVTable = nullptr;
+}
+
+namespace DXGIShared {
 // Saved original vtable[8] Present COM method captured from the temp swapchain
 // at InstallPresentInlineHooks time, before any vtable modifications.  This is
 // the real IDXGISwapChain::Present COM method (dxgi!CDXGISwapChain::Present or

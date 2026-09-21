@@ -218,3 +218,11 @@ extern IDXGISwapChain* dxgi_shared_s_PendingSwapChainForLazyHook;
 namespace DXGIShared {
 extern std::atomic<bool> dxgi_shared_s_LazyHooksInstalled;
 }
+
+namespace DXGIShared {
+// Swapchain vtable CE claimed the ResizeBuffers/ResizeBuffers1 slots on. All
+// DXGI swapchains in a process share one CDXGISwapChain vtable, so a single
+// claim covers every chain, including the ones CE deliberately hands to the
+// application unwrapped.
+extern void** dxgi_shared_s_resizeHookedVTable;
+}

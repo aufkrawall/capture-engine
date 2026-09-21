@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "../common/swapchain_flag_policy.h"
 
 namespace {
 
@@ -377,8 +378,16 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
                    ? dx11_hook_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags)
                    : DXGI_ERROR_INVALID_CALL;
     }
-    if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
-        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    // The waitable-object bit CE may have added at creation has to agree with
+    // the real chain: DXGI fails the resize with E_INVALIDARG on any
+    // disagreement there, and the live descriptor is the only authority for it.
+    {
+        DXGI_SWAP_CHAIN_DESC resizeDesc = {};
+        if (pSwapChain && SUCCEEDED(pSwapChain->GetDesc(&resizeDesc))) {
+            SwapChainFlags =
+                ce::swapchain_flag_policy::ReconcileApplicationResizeFlags(SwapChainFlags, resizeDesc.Flags);
+        }
+    }
 
     // RECURSION BREAKER: If we are calling ourselves recursively, bail out
     // immediately. This handles the "Hooked the Hook" scenario or infinite

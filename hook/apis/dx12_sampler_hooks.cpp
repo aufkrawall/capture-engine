@@ -589,8 +589,14 @@ void LogSummary(const char* reason) {
     if (ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
         if (dynamicObserved + staticObserved == 0) {
             HookLogImportant(
-                "DX12 AF: WARNING - forced AF was enabled but no dynamic or static sampler descriptors were observed; "
-                "the device/export hook was late, bypassed, or all objects were created before injection");
+                "DX12 AF: WARNING - forced AF/mip bias were enabled but no dynamic or static sampler descriptor was "
+                "observed (deviceCreates=%llu deviceHooks=%llu rootSignatures=%llu). Samplers and root signatures are "
+                "immutable once created, so this means the game built them before CE's device-vtable claim: CE was "
+                "injected after the process had already loaded d3d12.dll, and the claim lands with the DX12 bootstrap "
+                "rather than with D3D12CreateDevice. Nothing later in this session can apply the override.",
+                static_cast<unsigned long long>(g_deviceCreateCalls.load()),
+                static_cast<unsigned long long>(g_deviceHookSuccesses.load()),
+                static_cast<unsigned long long>(g_rootSignatureCalls.load()));
         } else if (dynamicModified + staticModified == 0) {
             HookLogImportant(
                 "DX12 AF: forced AF observed sampler descriptors but modified none; decision counters distinguish "

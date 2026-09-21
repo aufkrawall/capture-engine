@@ -233,8 +233,22 @@ TEST(InjectLifecycleSourceTest, LateAttachPresentDiscoveryUsesWarpInsteadOfTheGa
     EXPECT_LT(warpAdapter, deviceCreate);
     EXPECT_LT(deviceCreate, queueCreate);
     EXPECT_EQ(install.find("pD3D12CreateDevice(nullptr", tempBootstrap), std::string::npos);
-    EXPECT_EQ(install.find("DX12_HookDeviceVTable(pDevice)", tempBootstrap), std::string::npos);
     EXPECT_EQ(install.find("dx12_hook_g_CreatingTempSwapchain", tempBootstrap), std::string::npos);
+
+    // What the WARP bootstrap must not do is become application evidence: no
+    // MarkD3D12DeviceCreated, no queue/swapchain tracking, no device-creation
+    // report. Claiming the shared D3D12Core vtables is a different thing, and it
+    // is the whole point of the bootstrap - the queue claim has always been here
+    // for exactly that reason, and the device claim covers the game's already
+    // created device the same way. Without it the sampler/root-signature
+    // overrides can only reach objects built after CE discovers the game's
+    // device from its command queue, which in Strange Brigade DX12 session
+    // `20260921_175749` was every root signature too late.
+    const size_t queueClaim = install.find("DX12_HookQueueVTable(pQueue)", tempBootstrap);
+    const size_t deviceClaim = install.find("DX12_HookDeviceVTable(pDevice)", tempBootstrap);
+    ASSERT_NE(queueClaim, std::string::npos);
+    ASSERT_NE(deviceClaim, std::string::npos);
+    EXPECT_EQ(install.find("MarkD3D12DeviceCreated", tempBootstrap), std::string::npos);
     EXPECT_NE(install.find("WARP D3D12 device created; synthetic hardware-adapter creation remains"),
               std::string::npos);
 
@@ -307,9 +321,12 @@ TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyi
     ASSERT_NE(lodMutation, std::string::npos);
     EXPECT_LT(lodDormant, lodMutation);
 
+    // The mutation DetourResizeBuffers performs is the reconciliation of the
+    // waitable-object flag CE may have added at creation; while dormant it must
+    // forward the application's arguments byte-for-byte instead.
     const size_t dx11Resize = dx11.find("DetourResizeBuffers(");
     const size_t dx11Dormant = dx11.find("HookIsShuttingDown()", dx11Resize);
-    const size_t dx11Override = dx11.find("HasBackbufferCountOverride", dx11Resize);
+    const size_t dx11Override = dx11.find("ReconcileApplicationResizeFlags", dx11Resize);
     ASSERT_NE(dx11Resize, std::string::npos);
     ASSERT_NE(dx11Dormant, std::string::npos);
     ASSERT_NE(dx11Override, std::string::npos);

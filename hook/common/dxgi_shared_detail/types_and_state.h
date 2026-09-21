@@ -125,6 +125,15 @@ void Init();
 // The unified hook installer
 bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly = false);
 
+// Claims only the ResizeBuffers/ResizeBuffers1 swapchain vtable slots, so the
+// flags CE added at creation stay invisible to the application even when CE
+// leaves the Present entry and the swapchain identity untouched.
+bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* source);
+
+// True once CE can rewrite the flags of application resize calls. Gates whether
+// CE may add a creation flag the application does not know about.
+bool ReconcilesApplicationResizeFlags();
+
 inline bool DoesFGRuntimeOwnSwapchain() {
     return g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire);
 }

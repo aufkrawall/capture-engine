@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "../common/swapchain_create_recovery.h"
+#include "../common/swapchain_flag_apply.h"
 
 
 bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut, size_t modulePathOutCount) {
@@ -154,21 +155,7 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-        UINT requested = (UINT)gfx.backbufferCount;
-        bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                       modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-        if (isFlip)
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        if (isFlip && requested < modifiedDesc.BufferCount) {
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)", requested,
-                             modifiedDesc.BufferCount);
-        } else if (modifiedDesc.BufferCount != requested) {
-            HookLogImportant("INLINE: Overriding BufferCount %u -> %u", modifiedDesc.BufferCount, requested);
-            modifiedDesc.BufferCount = requested;
-        }
-    }
+    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "INLINE");
     pDescToUse = &modifiedDesc;
 }
 
@@ -444,23 +431,7 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-        UINT requested = (UINT)gfx.backbufferCount;
-        bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                       modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-        if (isFlip)
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        if (isFlip && requested < modifiedDesc.BufferCount) {
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            HookLogImportant(
-                "DetourCreateSwapChainGlobal: Skipping BufferCount override %u < game's %u (flip model)", requested,
-                modifiedDesc.BufferCount);
-        } else if (modifiedDesc.BufferCount != requested) {
-            HookLogImportant("DetourCreateSwapChainGlobal: Overriding BufferCount %u -> %u",
-                             modifiedDesc.BufferCount, requested);
-            modifiedDesc.BufferCount = requested;
-        }
-    }
+    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DetourCreateSwapChainGlobal");
     pDescToUse = &modifiedDesc;
 }
 
@@ -552,6 +523,9 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
     }
 
     if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice, *ppSwapChain)) {
+        // The application keeps calling ResizeBuffers on this exact object, so the
+        // creation flags CE added must still be reconciled there.
+        DXGIShared::InstallResizeReconciliationHooks(*ppSwapChain, "CreateSwapChain preserved identity");
         HookLogImportant(
             "DetourCreateSwapChainGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p) — deep Present interception already covers CE",
@@ -638,23 +612,8 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    if (HasBackbufferCountOverride(gfx.backbufferCount)) {
-        UINT requested = (UINT)gfx.backbufferCount;
-        bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                       modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
-        if (isFlip)
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        if (isFlip && requested < modifiedDesc.BufferCount) {
-            modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-            HookLogImportant(
-                "DetourCreateSwapChainForHwndGlobal: Skipping BufferCount override %u < game's %u (flip model)",
-                requested, modifiedDesc.BufferCount);
-        } else if (modifiedDesc.BufferCount != requested) {
-            HookLogImportant("DetourCreateSwapChainForHwndGlobal: Overriding BufferCount %u -> %u",
-                             modifiedDesc.BufferCount, requested);
-            modifiedDesc.BufferCount = requested;
-        }
-    }
+    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx,
+                                                                  "DetourCreateSwapChainForHwndGlobal");
     pDescToUse = &modifiedDesc;
 }
 
@@ -756,6 +715,9 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
     }
 
     if (ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice, *ppSC)) {
+        // The application keeps calling ResizeBuffers on this exact object, so the
+        // creation flags CE added must still be reconciled there.
+        DXGIShared::InstallResizeReconciliationHooks(*ppSC, "CreateSwapChainForHwnd preserved identity");
         HookLogImportant(
             "DetourCreateSwapChainForHwndGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",

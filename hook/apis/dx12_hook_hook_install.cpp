@@ -555,6 +555,11 @@ if (SUCCEEDED(hr) && pSwapChain) {
     } else {
         HookLog("DX12: Failed to install Present inline hooks");
     }
+    // All DXGI swapchains share one CDXGISwapChain vtable, so claiming the
+    // resize slots on the bootstrap chain establishes the reconciliation before
+    // the application creates its own. That ordering is what lets the creation
+    // path decide, rather than assume, whether it may add the waitable object.
+    DXGIShared::InstallResizeReconciliationHooks(pSwapChain, "DX12 temp swapchain bootstrap");
     pSwapChain->Release();
 } else {
     HookLog("DX12: Failed to create temp swapchain (hr=0x%08X)", hr);
@@ -565,6 +570,18 @@ if (SUCCEEDED(hr) && pSwapChain) {
 // (including the game's pre-existing queue). When ECL fires, it calls
 // DX12_SetCommandQueue which captures the game's actual queue pointer.
 DX12_HookQueueVTable(pQueue);
+
+// Same reasoning for the device: ID3D12Device is one D3D12Core class, so
+// claiming CreateRootSignature/CreateSampler here covers the game's device even
+// though CE never saw it being created.
+//
+// This is the only point early enough for the mip-bias/AF overrides to matter.
+// Strange Brigade DX12 session `20260921_175749` built every root signature it
+// uses during renderer init, before it created the command queue CE discovers
+// its device from: the hooks came up at 17:58:01.068 and then observed exactly
+// two static samplers for the whole session, both of them CE's own overlay root
+// signature, while the game rendered 10288 frames with untouched samplers.
+DX12_HookDeviceVTable(pDevice);
 
 // Cleanup
 if (hwnd)

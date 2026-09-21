@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
+#include "dx12_sampler_hooks.h"
 
 ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
 {
@@ -539,6 +540,16 @@ if (frameNum == 1 || frameNum == 10 || frameNum == 50 || frameNum == 100 || (fra
         "queue=%p, allocIdx=%d, slFGRunning=%d)",
         (unsigned long long)frameNum, (unsigned)devRemovedHr, currentFGActive ? 1 : 0, gameQueue,
         dx12_hook_g_State.allocIndex, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
+}
+
+// A settled render loop is the first point at which "CE saw no sampler at all"
+// means the overrides missed the game rather than that the game has not built
+// its resources yet. Waiting for shutdown to say so is useless while playing:
+// Strange Brigade DX12 session `20260921_175749` rendered 10288 frames with
+// forced AF and a -3.0 mip bias configured and no sampler CE could reach, and
+// nothing in the log said so until the process was already gone.
+if (frameNum == 2000) {
+    ce::dx12_sampler_hooks::LogSummary("settled render loop");
 }
 
 // Check device removed BEFORE rendering.  On first detection, tear

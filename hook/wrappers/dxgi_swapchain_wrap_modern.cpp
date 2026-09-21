@@ -1,5 +1,32 @@
 #include "dxgi_swapchain_wrap_internal.h"
 
+#include "../common/swapchain_flag_policy.h"
+
+namespace {
+
+// The wrapper sees the application's resize directly, so it carries the same
+// contract as DXGIShared::ReconcileApplicationResizeRequest: the waitable-object
+// bit CE may have added at creation has to agree with the real chain or DXGI
+// fails the call with E_INVALIDARG, and the authority for that bit is the live
+// descriptor rather than the current config.
+UINT ReconcileWrappedResizeFlags(IDXGISwapChain* real, UINT swapChainFlags, const char* source) {
+    if (!real) {
+        return swapChainFlags;
+    }
+    DXGI_SWAP_CHAIN_DESC scDesc = {};
+    if (FAILED(real->GetDesc(&scDesc))) {
+        return swapChainFlags;
+    }
+    const UINT reconciled = ce::swapchain_flag_policy::ReconcileApplicationResizeFlags(swapChainFlags, scDesc.Flags);
+    if (reconciled != swapChainFlags) {
+        WrapperLog("%s: Reconciling application resize flags 0x%X -> 0x%X against creation flags 0x%X", source,
+                   swapChainFlags, reconciled, scDesc.Flags);
+    }
+    return reconciled;
+}
+
+}  // namespace
+
 static std::atomic<bool> s_ResizeInProgress{false};
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
@@ -8,8 +35,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
         return m_pReal ? m_pReal->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags)
                        : DXGI_ERROR_INVALID_CALL;
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
-    if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
-        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    SwapChainFlags = ReconcileWrappedResizeFlags(m_pReal, SwapChainFlags, "ResizeBuffers");
 
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_resizeThreadId{0};
@@ -48,7 +74,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
                           scDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
             }
             UINT gameCount = BufferCount > 0 ? BufferCount : scDesc.BufferCount;
-            if (isFlip && requested < gameCount) {
+            if (BufferCount == 0) {
+                // DXGI reads 0 as "keep the existing buffer count". The
+                // application is not asking for a depth, so CE must not invent
+                // one and silently reallocate the chain.
+                WrapperLog("ResizeBuffers: Preserving the application's implicit BufferCount (0)");
+            } else if (isFlip && requested < gameCount) {
                 WrapperLog(
                     "ResizeBuffers: Skipping BufferCount override %u < game's %u "
                     "(flip model)",
@@ -256,8 +287,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
                                                    pCreationNodeMask, ppPresentQueue)
                         : DXGI_ERROR_INVALID_CALL;
     }
-    if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
-        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    SwapChainFlags = ReconcileWrappedResizeFlags(m_pReal, SwapChainFlags, "ResizeBuffers1");
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays
     static std::atomic<DWORD> s_resize1ThreadId{0};
     static std::atomic<int> s_resize1Depth{0};
