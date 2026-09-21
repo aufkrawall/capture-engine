@@ -16,6 +16,7 @@ struct LoggerSession {
     HANDLE hMap;
     SharedMemoryLayout* shm;
     uint32_t lastReadIndex;
+    uint32_t lastOverflowCount;
     std::string logsDirectory;
 };
 
@@ -127,7 +128,9 @@ int LoggerProcessMain(const AppConfig& config) {
                                 // from previous sessions. The hook writes early logs directly to
                                 // file before IPC connects, so SHM may contain old data.
                                 uint32_t currentWriteIdx = shm->logs.writeIndex.load(std::memory_order_acquire);
-                                sessions[pid] = {hSM, shm, currentWriteIdx, sessionLogsDirectory};
+                                sessions[pid] = {hSM, shm, currentWriteIdx,
+                                                 shm->logs.overflowCount.load(std::memory_order_relaxed),
+                                                 sessionLogsDirectory};
                                 LogInfo("[Logger] Session PID %u initialized at writeIndex=%u", pid, currentWriteIdx);
                             } else {
                                 if (shm) {
@@ -151,6 +154,11 @@ int LoggerProcessMain(const AppConfig& config) {
         // 2. Poll all active sessions for new logs
         bool hasPendingLogs = false;
         bool hasActiveSource = false;
+        // A ring that was full when we looked at it means the producer had
+        // already started discarding into its file fallback. Sleeping the normal
+        // 100 ms after draining it just guarantees the next burst overflows too,
+        // so keep draining until the producer is ahead of us again.
+        bool sawSaturatedRing = false;
         for (auto it = sessions.begin(); it != sessions.end();) {
             LoggerSession& s = it->second;
             if (s.shm->GetSourcePid() != 0) {
@@ -165,6 +173,12 @@ int LoggerProcessMain(const AppConfig& config) {
             uint32_t readIdx = s.lastReadIndex;  // Use session's tracked index, not SHM's stale value
             if (readIdx != writeIdx) {
                 hasPendingLogs = true;
+            }
+
+            const bool ringWasSaturated =
+                static_cast<uint32_t>(writeIdx - readIdx) >= SharedMemoryLayout::LogBuffer::SLOT_COUNT;
+            if (ringWasSaturated) {
+                sawSaturatedRing = true;
             }
 
             while (readIdx != writeIdx) {
@@ -229,6 +243,16 @@ int LoggerProcessMain(const AppConfig& config) {
                 readIdx++;
             }
 
+            // `overflowCount` existed from the start and nothing ever read it, so
+            // ring overflow was invisible even though the producer counted it.
+            const uint32_t overflow = s.shm->logs.overflowCount.load(std::memory_order_relaxed);
+            if (overflow != s.lastOverflowCount) {
+                LogInfo("[Logger] PID %u: log ring overflowed %u time(s) (total %u); those lines took the hook's "
+                        "file fallback, which drops them when contended",
+                        it->first, overflow - s.lastOverflowCount, overflow);
+                s.lastOverflowCount = overflow;
+            }
+
             // Update session's tracked read index
             s.lastReadIndex = readIdx;
             // Also update SHM for cross-process visibility (optional, for debugging)
@@ -239,7 +263,8 @@ int LoggerProcessMain(const AppConfig& config) {
             ++it;
         }
 
-        DWORD waitMs = hasPendingLogs ? 100 : (hasActiveSource ? 250 : 1000);
+        DWORD waitMs = static_cast<DWORD>(
+            logger_service_policy::SelectLogDrainWaitMs(sawSaturatedRing, hasPendingLogs, hasActiveSource));
         if (hShutdownEvent != INVALID_HANDLE_VALUE) {
             DWORD waitResult = WaitForSingleObject(hShutdownEvent, waitMs);
             if (waitResult == WAIT_OBJECT_0) {

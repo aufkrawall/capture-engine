@@ -30,4 +30,25 @@ inline bool IsSafeLogFilename(std::string_view filename) {
     return true;
 }
 
+// How long the logger may sleep before draining the hook's log ring again.
+//
+// The ring holds a fixed number of slots and the producer does not block: when
+// it is full the hook falls back to writing the file itself, and that fallback
+// gives up whenever its lock is contended, because a game thread must never
+// stall on a log write. So a saturated ring is not a throughput detail, it is
+// the point at which log lines start disappearing.
+//
+// Session `20260921_181509`: Talos lost 367 lines and RoboCop 945, both
+// including their entire teardown sequence, while Witcher 3 - steady output
+// rather than bursty - lost none over 29072 lines. Sleeping the normal interval
+// right after emptying a full ring guarantees the following burst overflows
+// too, so a saturated drain is followed by an immediate re-drain instead.
+inline unsigned long SelectLogDrainWaitMs(bool sawSaturatedRing, bool hasPendingLogs, bool hasActiveSource) {
+    if (sawSaturatedRing)
+        return 0;
+    if (hasPendingLogs)
+        return 100;
+    return hasActiveSource ? 250 : 1000;
+}
+
 }  // namespace logger_service_policy

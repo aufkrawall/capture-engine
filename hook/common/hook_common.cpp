@@ -297,11 +297,23 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     };
     static FileHandleCache s_FileCache;
 
+    // Messages that reached neither the shared-memory ring nor the file.
+    //
+    // The file fallback must never stall a game thread, so a contended lock
+    // gives up - that part is right. Giving up *silently* is not: session
+    // `20260921_181509` lost 367 lines in Talos and 945 in RoboCop, including
+    // both games' entire teardown sequence, and nothing in any log said so. The
+    // burstiest moment of a session is also its most diagnostically valuable
+    // one, so the loss is reported by the next writer instead of vanishing.
+    static std::atomic<uint32_t> s_DroppedFileLogs{0};
+
     // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy
     // cases
     std::unique_lock<std::mutex> lock(s_FileLogMutex, std::defer_lock);
-    if (!lock.try_lock())
-        return;  // Drop log if locked (avoid stalling)
+    if (!lock.try_lock()) {
+        s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
+        return;  // Never stall a game thread on a contended log write
+    }
 
     if (s_logDir[0] == '\0') {
         char tmpPath[MAX_PATH];
@@ -350,6 +362,22 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
         }
 
         if (hFile != INVALID_HANDLE_VALUE) {
+            // Report what the contended-lock and ring-full paths gave up on, so
+            // a gap in the sequence numbers always has a line explaining it.
+            const uint32_t droppedByLock = s_DroppedFileLogs.exchange(0, std::memory_order_relaxed);
+            if (droppedByLock != 0) {
+                char dropLine[256];
+                const int dropLen =
+                    snprintf(dropLine, sizeof(dropLine),
+                             "[LOGGING] %u line(s) dropped: the shared-memory ring was full and the file "
+                             "fallback lock was contended\r\n",
+                             droppedByLock);
+                if (dropLen > 0) {
+                    DWORD dropWritten = 0;
+                    WriteFile(hFile, dropLine, static_cast<DWORD>(dropLen), &dropWritten, NULL);
+                }
+            }
+
             const DWORD lineLen = static_cast<DWORD>(strlen(lineBuffer));
             DWORD written = 0;
             bool lineOk = WriteFile(hFile, lineBuffer, lineLen, &written, NULL) && written == lineLen;

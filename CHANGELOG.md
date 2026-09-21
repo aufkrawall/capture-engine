@@ -10,6 +10,8 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Anisotropic filtering and mip bias silently did nothing in DirectX 12 games:** forced AF and negative mip bias never reached titles that resolved Direct3D 12 before CaptureEngine attached, because the sampler and root-signature overrides were installed only when CaptureEngine observed device creation itself. They are now installed during injection setup, which covers devices the game had already created. A session that still reaches no sampler now says so explicitly in the log instead of failing silently.
 
+- **Debug log lost lines without saying so:** busy titles silently dropped log entries — including the complete shutdown sequence, where crashes and leaks show up. In one session Talos lost 367 lines and RoboCop 945 with nothing recorded anywhere. The log ring is now drained again immediately instead of after a pause whenever it was found full, and any line that still cannot be written is counted and reported rather than discarded quietly.
+
 - **Buffer count override could shrink a swap chain the game asked to leave alone:** a resize that passes no buffer count means "keep the current one" in DirectX; CaptureEngine substituted the configured depth there and reallocated the chain.
 
 ## v0.1.6757
