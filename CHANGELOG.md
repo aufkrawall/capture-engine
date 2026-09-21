@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.6772](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6772).
+
+## v0.1.6772
+
 Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6757).
 
 ### Fixed
