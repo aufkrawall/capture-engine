@@ -38,7 +38,8 @@ why `DX12_HookQueueVTable(pQueue)` on the bootstrap queue has always covered the
 queue. The device claim is now made on the WARP bootstrap device too. That claim was removed in
 6323ed47 and guarded by a source test; the guarded rule is really "the WARP bootstrap must not become
 *application evidence*", and a vtable claim is not that, so the test now asserts the claim exists and
-that `MarkD3D12DeviceCreated` still does not. Hardware run pending.
+that `MarkD3D12DeviceCreated` still does not. Confirmed on hardware 2026-09-21: forced AF and
+`mip_bias` take effect in a DX12 title with the bootstrap vtable claim in place.
 
 `LogSummary` also runs at frame 2000 now, not only at shutdown: "forced AF observed no sampler at
 all" is useless information after the process is gone.
