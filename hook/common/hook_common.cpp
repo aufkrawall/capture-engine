@@ -300,11 +300,11 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     // Messages that reached neither the shared-memory ring nor the file.
     //
     // The file fallback must never stall a game thread, so a contended lock
-    // gives up - that part is right. Giving up *silently* is not: session
-    // `20260921_181509` lost 367 lines in Talos and 945 in RoboCop, including
-    // both games' entire teardown sequence, and nothing in any log said so. The
-    // burstiest moment of a session is also its most diagnostically valuable
-    // one, so the loss is reported by the next writer instead of vanishing.
+    // gives up - that part is right. Giving up *silently* is not. The loss is
+    // small (6 lines in session `20260921_183446`) but it was unmeasurable:
+    // only the per-process `[S:N]` sequence gaps hinted at it, and those are
+    // ambiguous because the counter spans every log file a process writes.
+    // The count is reported by the next writer instead of vanishing.
     static std::atomic<uint32_t> s_DroppedFileLogs{0};
 
     // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy

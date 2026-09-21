@@ -90,6 +90,18 @@ public:
     void Init(const char* logPath, bool forceRebind = false);
     void Shutdown();
 
+    // Finalizes the CSV from a process-termination hook, where Shutdown() is
+    // unreachable: it only runs from this singleton's static destructor, and a
+    // game that exits through TerminateProcess/NtTerminateProcess - which UE5
+    // titles routinely do to skip a slow shutdown - never runs CRT static
+    // destructors. The file then keeps whatever stdio had buffered, so the last
+    // rows are lost and the final row is cut mid-line (Talos and RoboCop in
+    // session `20260921_183446`, both ending mid-record).
+    //
+    // Never blocks: a termination hook runs while other threads are still live
+    // and may hold the file lock, and stalling there would hang the exit.
+    void FlushForTermination(const char* reason);
+
     void LogFrame(const FrameMetrics& metrics);
     bool ShouldSampleDetailedFrame(uint64_t frameNum) const;
     void ActivateDebugSample(PresentDebugSample* sample);

@@ -92,6 +92,25 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
     }
 }
 
+void PerfLogger::FlushForTermination(const char* reason) {
+    std::unique_lock<std::mutex> lock(fileMutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        // Another thread is mid-write. It will finish into the same FILE*, and
+        // the OS flushes the handle when the process object is torn down; what
+        // is not acceptable is blocking the exit path to find out.
+        HookLogImportant("PerfLogger: Termination flush skipped, file busy (reason=%s)", reason ? reason : "unknown");
+        return;
+    }
+    if (!file_) {
+        return;
+    }
+    fflush(file_);
+    fclose(file_);
+    file_ = nullptr;
+    HookLogImportant("PerfLogger: Finalized on termination, logged %llu frames (reason=%s)",
+                     (unsigned long long)frameCount_.load(), reason ? reason : "unknown");
+}
+
 void PerfLogger::Shutdown() {
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (file_) {

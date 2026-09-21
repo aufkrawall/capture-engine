@@ -38,11 +38,10 @@ inline bool IsSafeLogFilename(std::string_view filename) {
 // stall on a log write. So a saturated ring is not a throughput detail, it is
 // the point at which log lines start disappearing.
 //
-// Session `20260921_181509`: Talos lost 367 lines and RoboCop 945, both
-// including their entire teardown sequence, while Witcher 3 - steady output
-// rather than bursty - lost none over 29072 lines. Sleeping the normal interval
-// right after emptying a full ring guarantees the following burst overflows
-// too, so a saturated drain is followed by an immediate re-drain instead.
+// Session `20260921_183446` overflowed the ring 1091 times in two UE5 titles
+// while a steady-output title never reached it at all. Sleeping the normal
+// interval right after emptying a full ring guarantees the following burst
+// overflows too, so a saturated drain is followed by an immediate re-drain.
 inline unsigned long SelectLogDrainWaitMs(bool sawSaturatedRing, bool hasPendingLogs, bool hasActiveSource) {
     if (sawSaturatedRing)
         return 0;

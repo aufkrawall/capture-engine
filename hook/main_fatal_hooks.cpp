@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/perf_logger.h"
 
 #include <array>
 
@@ -78,7 +79,26 @@ NTSTATUS NTAPI HookedNtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEX
   return ::NtRaiseException(ExceptionRecord, ContextRecord, FirstChance);
 }
 
+// CE's own session artifacts have to be finalized on every exit of this
+// process, not only on the dump-worthy ones: CapturePreTerminationDumpIfNeeded
+// deliberately returns early for an ordinary exit code, and the CSV writer's
+// only other finalizer is a CRT static destructor that a TerminateProcess exit
+// never reaches. Once-only and non-blocking; this runs while the rest of the
+// process is still live.
+void FinalizeSessionArtifactsBeforeTermination(const char* source, bool targetIsCurrentProcess) {
+  if (!targetIsCurrentProcess) {
+    return;
+  }
+  static std::atomic<bool> s_finalized{false};
+  bool expected = false;
+  if (!s_finalized.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return;
+  }
+  PerfLogger::Get().FlushForTermination(source);
+}
+
 BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
+  FinalizeSessionArtifactsBeforeTermination("TerminateProcess", IsCurrentProcessHandle(hProcess));
   CapturePreTerminationDumpIfNeeded("TerminateProcess", static_cast<DWORD>(uExitCode), IsCurrentProcessHandle(hProcess),
                                     nullptr, nullptr, __builtin_return_address(0));
 
@@ -91,6 +111,7 @@ BOOL WINAPI HookedTerminateProcess(HANDLE hProcess, UINT uExitCode) {
 }
 
 VOID WINAPI HookedExitProcess(UINT uExitCode) {
+  FinalizeSessionArtifactsBeforeTermination("ExitProcess", true);
   CapturePreTerminationDumpIfNeeded("ExitProcess", static_cast<DWORD>(uExitCode), true, nullptr, nullptr,
                                     __builtin_return_address(0));
 
@@ -104,6 +125,7 @@ VOID WINAPI HookedExitProcess(UINT uExitCode) {
 }
 
 VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
+  FinalizeSessionArtifactsBeforeTermination("RtlExitUserProcess", true);
   CapturePreTerminationDumpIfNeeded("RtlExitUserProcess", static_cast<DWORD>(ExitStatus), true, nullptr, nullptr,
                                     __builtin_return_address(0));
 
@@ -123,6 +145,7 @@ VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
 
 NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus) {
   const bool targetIsCurrentProcess = ProcessHandle == nullptr || IsCurrentProcessHandle(ProcessHandle);
+  FinalizeSessionArtifactsBeforeTermination("NtTerminateProcess", targetIsCurrentProcess);
   CapturePreTerminationDumpIfNeeded("NtTerminateProcess", static_cast<DWORD>(ExitStatus), targetIsCurrentProcess,
                                     nullptr, nullptr, __builtin_return_address(0));
 
