@@ -49,6 +49,7 @@ build/bin/UECC-*/
 .vs/
 .vscode/*
 !.vscode/settings.json
+!.vscode/extensions.json
 .idea/
 .cache/
 .ruff_cache/

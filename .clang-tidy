@@ -1,0 +1,47 @@
+---
+# Minimal clang-tidy configuration for CaptureEngine.
+# Run automatically as part of `python build.py --lint` (and default mode).
+# Uses compile_commands.json — does NOT recompile.
+
+# clang-analyzer-core/cplusplus are the path-sensitive checks. They are enabled because a
+# one-off run found three real defects this project's own risk model cares most about and
+# that no other gate could see: a null dereference in the implicit Vulkan layer, a call
+# through a null function pointer on the Steam Present fallback, and an unguarded frame
+# pointer in the encoder loop. Cross-translation-unit policy predicates produce a fair
+# number of false positives here (a null-guard expressed as a bool argument to a function
+# in another header is invisible to the analyzer); those are carried in the baseline rather
+# than papered over with inline suppressions.
+#
+# clang-analyzer-deadcode.DeadStores is deliberately NOT enabled: it is noisy in this tree
+# and its findings are cosmetic next to the core checks.
+Checks: >
+  bugprone-*,
+  performance-*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  misc-use-after-move,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -performance-enum-size,
+  -performance-avoid-endl,
+  -performance-no-int-to-ptr
+
+CheckOptions:
+  - key:   bugprone-argument-comment.StrictMode
+    value: '0'
+
+# Analyze project headers, but do not report diagnostics from vendored or
+# generated/runtime trees. Those sources are not maintained by this project.
+#
+# Both patterns must match Windows paths, where clang-tidy reports included
+# files with backslashes, so every separator accepts '/' or '\'.
+#
+# The exclude list names the generated subtrees under build/ rather than
+# 'build' itself. A bare 'build' segment also matched this checkout's own
+# absolute path (...\Programme\build\captureproject\...), which silently
+# suppressed clang-tidy for every project header: 456 of 1616 findings, at
+# 195 header locations, were invisible until this was narrowed.
+HeaderFilterRegex: '[\\/](common|hook|captureengine|mediaengine|testapp|tests)[\\/]'
+ExcludeHeaderFilterRegex: '[\\/](external|installed|ffmpeg_build)[\\/]|[\\/]build[\\/](msys64|obj|tmp|fg_sdk_include|verification)[\\/]'
+FormatStyle: file:.clang-format

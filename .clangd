@@ -1,0 +1,38 @@
+# Clangd configuration for CaptureEngine.
+#
+# Keep this intentionally minimal. The build already generates authoritative
+# compile commands with the exact compiler path and per-file flags. Extra
+# stdlib/resource/include overrides here caused clangd to mix MSYS2 MinGW and
+# MSVC headers, which produced persistent false diagnostics such as missing
+# `uintptr_t` in `<vcruntime.h>`.
+
+CompileFlags:
+  Remove:
+    - "-march=*"
+    - "-mtune=*"
+    - "-flto*"
+    - "-ffast-math"
+    - "-fvisibility=*"
+    - "-ffunction-sections"
+    - "-fdata-sections"
+    - "-Wl,*"
+    - "-s"
+    - "-MMD"
+    - "-MF"
+    - "-D_FORTIFY_SOURCE=*"
+
+Diagnostics:
+  Suppress:
+    - "unused-parameter"
+    - "typecheck-invalid-constexpr"
+
+Index:
+  Background: Build
+
+InlayHints:
+  Designators: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Hover:
+  ShowAKA: true

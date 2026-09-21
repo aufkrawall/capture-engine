@@ -1,12 +1,15 @@
 # Code Style
 
-Last cross-checked: 2026-09-13 (added the offset-pinning rule for mirrored external ABI structures; the rest verified 2026-07-28)
+Last cross-checked: 2026-09-21 (documented canonical root configuration files mirroring tools/config for LSP/editors)
 
 Primary sources:
 - `AGENTS.md`
-- `tools/config/.clang-format`
+- `.clang-format` (and `tools/config/.clang-format`)
+- `.clangd` (and `tools/config/.clangd`)
+- `.clang-tidy` (and `tools/config/.clang-tidy`)
+- `.editorconfig` (and `tools/config/.editorconfig`)
+- `pyrightconfig.json` (and `tools/config/pyrightconfig.json`)
 - `tools/config/.flake8`
-- `tools/config/pyrightconfig.json`
 - `common/raii_helpers.h`
 - representative headers such as `common/shared_defs.h`, `hook/common/dx12_overlay_policy.h`, and `hook/wrappers/custom_hook.h`
 

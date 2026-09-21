@@ -3,10 +3,8 @@
     // clangd consumes our build-generated compile_commands.json automatically.
     "C_Cpp.intelliSenseEngine": "disabled",
 
-    // Point VS Code's clangd extension to the OpenCode-shipped binary.
-    // OpenCode bundles clangd under the user profile cache so it is always
-    // available even before the MSYS2 build environment is fully set up.
-    "clangd.path": "${env:USERPROFILE}/.cache/opencode/bin/clangd",
+    // Point VS Code's clangd extension to the project-bundled MSYS2 Clang 22 binary.
+    "clangd.path": "${workspaceFolder}/build/msys64/clang64/bin/clangd.exe",
 
     "clangd.arguments": [
         "--background-index",
@@ -18,12 +16,22 @@
         "--cross-file-rename"
     ],
 
+    // Default formatter for C and C++ using clangd (format on save disabled to prevent
+    // unintended bulk formatting of legacy source per project engineering rules).
+    "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": false
+    },
+    "[cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": false
+    },
+
     // Keep VS Code's Git initialization and publish flow aligned with the
     // repository's protected default branch.
     "git.defaultBranchName": "main",
 
-    // EditorConfig mirror: the committed config lives in tools/config/.editorconfig,
-    // which editors cannot discover from a non-root location.
+    // EditorConfig mirror: root .editorconfig and tools/config/.editorconfig define canonical rules.
     "files.eol": "\n",
     "files.insertFinalNewline": true,
     "files.trimTrailingWhitespace": true,
@@ -37,8 +45,9 @@
         "files.trimTrailingWhitespace": false
     },
 
-    // Pyright mirror: tools/config/pyrightconfig.json is authoritative for
-    // build lint; these settings keep the editor on the same scope.
+    // Pyright configuration: pyrightconfig.json is authoritative for build lint and editor analysis.
+    "python.analysis.configurationPath": "pyrightconfig.json",
+    "pyright.project": "pyrightconfig.json",
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.pythonVersion": "3.10",
     "python.analysis.include": [
@@ -53,12 +62,23 @@
         ".venv",
         "build",
         "installed",
-        "**/*_part_*.py"
+        "**/*_part_*.py",
+        "**/analyze_capture_av_*.py",
+        "**/analyze_av_sync_stimulus_*.py",
+        "**/run_av_sync_matrix_*.py",
+        "**/run_dx12_fg_overlay_transition_*.py",
+        "**/run_tests_*.py",
+        "tools/build",
+        "tools/refactor/source_splitter_common.py",
+        "tools/refactor/source_splitter_lexer.py",
+        "tools/refactor/source_splitter_scanner.py",
+        "tools/refactor/source_splitter_split.py"
     ],
 
-    // File-association helpers so VS Code treats headers consistently
+    // File-association helpers so VS Code treats headers and shaders consistently
     "files.associations": {
         "*.h": "cpp",
-        "*.inl": "cpp"
+        "*.inl": "cpp",
+        "*.hlsl": "hlsl"
     }
 }

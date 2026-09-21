@@ -1,0 +1,49 @@
+{
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Windows",
+  "include": [
+    "build.py",
+    "tools",
+    "testapp"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "build/msys64",
+    ".venv",
+    "build",
+    "installed",
+    "**/*_part_*.py",
+    "**/analyze_capture_av_*.py",
+    "**/analyze_av_sync_stimulus_*.py",
+    "**/run_av_sync_matrix_*.py",
+    "**/run_dx12_fg_overlay_transition_*.py",
+    "**/run_tests_*.py",
+    "tools/build",
+    "tools/refactor/source_splitter_common.py",
+    "tools/refactor/source_splitter_lexer.py",
+    "tools/refactor/source_splitter_scanner.py",
+    "tools/refactor/source_splitter_split.py"
+  ],
+  "ignore": [],
+  "strict": [],
+  "defineConstant": {
+    "IS_WINDOWS": true
+  },
+  "executionEnvironments": [
+    {
+      "root": "."
+    }
+  ],
+  "analyzeUnannotatedFunctions": true,
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false,
+  "reportAttributeAccessIssue": "warning",
+  "reportOptionalSubscript": "warning",
+  "reportOptionalMemberAccess": "warning",
+  "reportGeneralTypeIssues": "warning",
+  "reportUnsupportedDunderAll": "warning",
+  "reportUndefinedVariable": "error",
+  "verboseOutput": false
+}
