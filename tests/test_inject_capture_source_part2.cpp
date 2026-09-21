@@ -292,7 +292,7 @@ TEST(InjectLifecycleSourceTest, StableDX12OverlayDiagnosticsAvoidPerFrameNoOpSpa
 }
 
 TEST(InjectLifecycleSourceTest, GraphicsConfigCachesTreatReplacementSharedMemoryAsANewHostGeneration) {
-    const std::string source = ReadSource("hook/common/hook_common.cpp");
+    const std::string source = ReadSource("hook/common/hook_common_graphics_config.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("currentSharedMemory == lastSharedMemory"), std::string::npos);

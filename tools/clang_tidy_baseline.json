@@ -45,7 +45,7 @@
   },
   "total": 1931,
   "scope": {
-    "entries": 794,
+    "entries": 796,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -387,6 +387,7 @@
       "hook/common/freeze_watchdog.cpp",
       "hook/common/freeze_watchdog_dump.cpp",
       "hook/common/hook_common.cpp",
+      "hook/common/hook_common_graphics_config.cpp",
       "hook/common/hook_common_vsync.cpp",
       "hook/common/hook_cpu_cost_report.cpp",
       "hook/common/input_manager.cpp",
@@ -810,6 +811,7 @@
       "tests/test_strict_integer_parse.cpp",
       "tests/test_stubs.cpp",
       "tests/test_swapchain_create_recovery.cpp",
+      "tests/test_swapchain_flag_policy.cpp",
       "tests/test_swapchain_probe_lifetime.cpp",
       "tests/test_system_latency_fallback_recovery.cpp",
       "tests/test_system_latency_fg_measurement.cpp",

@@ -50,7 +50,9 @@ TEST(RayReconstructionForceSourceTest, ObservesRealNgxCapabilityAndEvaluationLif
 
 TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeHookUnload) {
     const std::string host = ReadProjectSource("captureengine/inject_config.cpp");
-    const std::string hookCommon = ReadProjectSource("hook/common/hook_common.cpp");
+    // The shared-memory -> merged-config copies live in the config unit that was
+    // split out of hook_common.cpp; the invariant is about those assignments.
+    const std::string hookCommon = ReadProjectSource("hook/common/hook_common_graphics_config.cpp");
     const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
 
     EXPECT_NE(host.find("graphics.forceRayReconstruction = config.graphics.forceRayReconstruction"),

@@ -149,3 +149,22 @@ TEST(DXGISharedTest, DestroyedFFXSwapchainContextRetiresUnconfirmedOfficialFFXSt
     EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(true, false));
     EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(false, false));
 }
+
+// The guarded Steam transport reaches a foreign Present through a function pointer.
+// Every condition that establishes it is callable is evaluated into a bool and handed
+// to a policy helper, so the call site itself carries no proof - which is also why the
+// static analyzer reads it as a possible null call. Keep an explicit guard immediately
+// before the indirect call, so a future policy change cannot make it reachable.
+TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite) {
+    namespace fs = std::filesystem;
+    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    ASSERT_TRUE(fs::exists(steamSource));
+    const std::string steam = ce::test_source::ReadFile(steamSource);
+    ASSERT_FALSE(steam.empty());
+
+    const size_t indirectCall = steam.find("externalPresent(pSwapChain, SyncInterval, Flags)");
+    ASSERT_NE(indirectCall, std::string::npos);
+    const size_t guard = steam.rfind("if (!externalPresent) {", indirectCall);
+    ASSERT_NE(guard, std::string::npos);
+    EXPECT_LT(guard, indirectCall);
+}

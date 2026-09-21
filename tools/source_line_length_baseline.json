@@ -20,7 +20,7 @@
     "captureengine/media_main_internal.h": 339,
     "captureengine/wgc_capture_internal.h": 2053,
     "hook/apis/dx11_hook_internal.h": 521,
-    "hook/apis/dx11_hook_types.h": 780,
+    "hook/apis/dx11_hook_types.h": 669,
     "hook/apis/dx11_hook_types2.h": 487,
     "hook/apis/dx12_hook_ffx_startup.cpp": 208,
     "hook/apis/dx12_hook_focus_loss.cpp": 429,

@@ -684,6 +684,14 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
         return false;
     }
 
+    // The policy above already required a callable foreign hook, but it learned that
+    // through a bool parameter, so nothing here proves it to a reader - or to the
+    // analyzer - at the indirect call itself. Restate it: a future policy change must
+    // not be able to reach externalPresent() with null.
+    if (!externalPresent) {
+        return false;
+    }
+
     static std::atomic<int> s_guardedSteamInvokeLogCount{0};
     const int invokeNum = s_guardedSteamInvokeLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (invokeNum <= 20 || invokeNum == 50 || (invokeNum % 500) == 0) {

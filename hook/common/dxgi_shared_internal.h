@@ -504,8 +504,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 // otherwise leaves completely alone.
 extern PFN_ResizeBuffers dxgi_shared_oResizeBuffersReconcile;
 extern PFN_ResizeBuffers1 dxgi_shared_oResizeBuffers1Reconcile;
-HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue);
+HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
+                                                           UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
+HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
+                                                            UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags,
+                                                            const UINT* pCreationNodeMask,
+                                                            IUnknown* const* ppPresentQueue);
 }
 
 namespace DXGIShared {
