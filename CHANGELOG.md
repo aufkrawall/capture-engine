@@ -6,22 +6,6 @@ Changes since [v0.1.6772](https://github.com/aufkrawall/capture-engine/releases/
 
 ## v0.1.6772
 
-Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6757).
-
-### Fixed
-
-- **Games failed to start with a driver error when `backbuffer_count` was set:** Strange Brigade (DX12) aborted during startup with "Can't recover from driver error. Error Code 80070057" and never rendered a frame. `backbuffer_count` adds a frame-latency waitable object to the swap chain, which DirectX requires the game to repeat on every buffer resize; the correction that hid it from the game was skipped whenever another overlay (for example Steam) owned the present entry, so the game's own resize was rejected. The flag is now hidden consistently on every path, and it is only requested when that correction is guaranteed to exist.
-
-- **Anisotropic filtering and mip bias silently did nothing in DirectX 12 games:** forced AF and negative mip bias never reached titles that resolved Direct3D 12 before CaptureEngine attached, because the sampler and root-signature overrides were installed only when CaptureEngine observed device creation itself. They are now installed during injection setup, which covers devices the game had already created. A session that still reaches no sampler now says so explicitly in the log instead of failing silently.
-
-- **Debug log could drop lines without saying so:** under heavy logging a few entries were discarded with no record anywhere, making any gap impossible to tell from "nothing happened". Dropped lines are now counted and reported, log buffer overflow is reported, and the buffer is drained again immediately instead of after a pause whenever it was found full.
-
-- **Performance CSV was cut off mid-row in Unreal Engine titles:** games that exit by terminating themselves — routine in UE5 — skipped the only code that closed `perf_metrics_*.csv`, so the buffered tail was lost and the final row was truncated. The file is now finalized from the process-termination path.
-
-- **Buffer count override could shrink a swap chain the game asked to leave alone:** a resize that passes no buffer count means "keep the current one" in DirectX; CaptureEngine substituted the configured depth there and reallocated the chain.
-
-## v0.1.6757
-
 Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6652).
 
 ### New
@@ -57,6 +41,16 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 
 ### Fixed
+
+- **Games failed to start with a driver error when `backbuffer_count` was set:** Strange Brigade (DX12) aborted during startup with "Can't recover from driver error. Error Code 80070057" and never rendered a frame. `backbuffer_count` adds a frame-latency waitable object to the swap chain, which DirectX requires the game to repeat on every buffer resize; the correction that hid it from the game was skipped whenever another overlay (for example Steam) owned the present entry, so the game's own resize was rejected. The flag is now hidden consistently on every path, and it is only requested when that correction is guaranteed to exist.
+
+- **Anisotropic filtering and mip bias silently did nothing in DirectX 12 games:** forced AF and negative mip bias never reached titles that resolved Direct3D 12 before CaptureEngine attached, because the sampler and root-signature overrides were installed only when CaptureEngine observed device creation itself. They are now installed during injection setup, which covers devices the game had already created. A session that still reaches no sampler now says so explicitly in the log instead of failing silently.
+
+- **Debug log could drop lines without saying so:** under heavy logging a few entries were discarded with no record anywhere, making any gap impossible to tell from "nothing happened". Dropped lines are now counted and reported, log buffer overflow is reported, and the buffer is drained again immediately instead of after a pause whenever it was found full.
+
+- **Performance CSV was cut off mid-row in Unreal Engine titles:** games that exit by terminating themselves — routine in UE5 — skipped the only code that closed `perf_metrics_*.csv`, so the buffered tail was lost and the final row was truncated. The file is now finalized from the process-termination path.
+
+- **Buffer count override could shrink a swap chain the game asked to leave alone:** a resize that passes no buffer count means "keep the current one" in DirectX; CaptureEngine substituted the configured depth there and reallocated the chain.
 
 - **Strange Brigade / Steam module injection crash:** fixed startup access violation crash caused by concurrent CaptureEngine hook threads racing to modify memory page protection while patching adjacent Import Address Table (IAT) entries during Steam overlay library loading.
 
