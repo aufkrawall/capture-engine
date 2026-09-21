@@ -1,5 +1,48 @@
 # llm-wiki Log
 
+### 2026-09-21 - CE's own swapchain flag killed Strange Brigade's startup; DX12 sampler overrides reach nothing
+
+Session `20260921_173511`, build 0.1.6757. The game showed
+`Can't recover from driver error. Error Code 80070057`, exited with code 1, and never presented a
+frame. The 49 MB `FREEZE` dump is CE's watchdog reacting to that modal box, not the event.
+
+**Root cause.** `backbuffer_count` implements its depth by adding
+`DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` (0x40) to the *application's* creation
+descriptor. `dxgi!CDXGISwapChain::ValidateResizeBuffers` XORs the caller's flags with the chain's
+creation flags and returns `E_INVALIDARG` on any disagreement in that bit. Proof from the dump: the
+chain's stored flags at `swapchain+0x184` were `0x842`, the game's own copy on its stack `0x802`.
+
+The rewrite that hid the flag again lived in `CWrapDXGISwapChain` and in the ResizeBuffers vtable
+detour. Steam owned the dxgi Present entry, so CE logged
+`keeping the swapchain vtable pristine` and `Preserving real DX12 swapchain identity`, handed the
+game the real swapchain, and installed neither. The mutation was unconditional, the compensation was
+not - and it was duplicated across six creation paths, which is how they drifted apart.
+
+Fixed in e07c3222: `hook/common/swapchain_flag_policy.h` holds the rule once, the reconciliation
+reads the live `GetDesc().Flags` instead of re-deriving intent from the config (a stale "add the
+bit" is as fatal as a missing one), a reconcile-only ResizeBuffers claim is installed at the DX12
+and DX11 bootstrap independently of the Present-ownership question, and the flag is withheld when
+no reconciliation can be established. Validated on hardware in `20260921_175749`:
+`ResizeBuffers: Reconciling application resize flags 0x802 -> 0x842`, 10288 frames, clean exit.
+
+**Second finding, from the same session.** Forced AF and `mip_bias=-3.0` did nothing: zero
+`DX12 AF:` lines. `PatchIATAllModules("d3d12.dll", "D3D12CreateDevice", ...)` logs `patchResult=0`
+because nothing imports it statically, and the injector waits for `d3d12.dll` to be *present* before
+injecting (`waitMs=0`, `d3d12=1` on the first poll), so the game had already resolved the export.
+Hooking the device CE discovers from the game's command queue (`DX12_PublishNativeLimiterDevice`)
+was still too late: in `20260921_175749` the hooks came up at 17:58:01.068 and observed exactly two
+static samplers all session, both CE's own overlay root signature.
+
+All `ID3D12Device` objects share one D3D12Core vtable, exactly like `ID3D12CommandQueue` - which is
+why `DX12_HookQueueVTable(pQueue)` on the bootstrap queue has always covered the game's pre-existing
+queue. The device claim is now made on the WARP bootstrap device too. That claim was removed in
+6323ed47 and guarded by a source test; the guarded rule is really "the WARP bootstrap must not become
+*application evidence*", and a vtable claim is not that, so the test now asserts the claim exists and
+that `MarkD3D12DeviceCreated` still does not. Hardware run pending.
+
+`LogSummary` also runs at frame 2000 now, not only at shutdown: "forced AF observed no sampler at
+all" is useless information after the process is gone.
+
 ### 2026-09-20 - Both fixes validated: Strange Brigade starts, and the sharpen queue switch fired
 
 Session `20260920_225326`, build 0.1.6755, two games back to back. No dump, no `crash.log`, no error

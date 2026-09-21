@@ -294,6 +294,21 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   entry-owner and adapter evidence before attributing the failure. Absence of that optional report is
   not evidence that the WARP bootstrap attempted hardware creation.
 - Do not re-add an unbounded retry around device creation. If a new failure mode genuinely needs retrying, classify its HRESULT in `IsTerminalCreationFailure` instead of widening the budget.
+- The WARP bootstrap must not become *application evidence* (`MarkD3D12DeviceCreated`, queue/swapchain
+  tracking, device-creation report), but it must claim the shared D3D12Core vtables. All
+  `ID3D12Device` and `ID3D12CommandQueue` objects in a process share one vtable each, so
+  `DX12_HookQueueVTable(pQueue)` and `DX12_HookDeviceVTable(pDevice)` on the bootstrap objects cover
+  the game's already-created ones. That is the only point early enough for the sampler/root-signature
+  overrides: those objects are immutable once created, and a game that resolved `D3D12CreateDevice`
+  before CE attached (the normal case - the injector waits for `d3d12.dll` to be present, and
+  `patchResult=0` because nothing imports the export statically) has already built them by the time
+  CE discovers its device from a command queue.
+- CE may add a swapchain *creation* flag only where it also rewrites the application's later calls
+  that DXGI validates against it. `backbuffer_count` adds
+  `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`, and
+  `dxgi!CDXGISwapChain::ValidateResizeBuffers` fails with `E_INVALIDARG` on any disagreement in that
+  bit. The rule lives in `hook/common/swapchain_flag_policy.h`; the reconciliation must read the live
+  `GetDesc().Flags`, never the current config. See `llm-wiki/log/recent.md` (2026-09-21).
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because injection timing, resident lifecycle, and hook bootstrap are coupled to runtime behavior and can drift when wrapper or startup logic changes.
