@@ -10,7 +10,7 @@ Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- **AMD FidelityFX CAS and RCAS post-processing sharpening (D3D11, D3D12, Vulkan):** added Contrast Adaptive Sharpening (`sharpen=cas`) and Robust Contrast Adaptive Sharpening (`sharpen=rcas`). Configurable via `sharpen_contrast` (adaptation sensitivity) and `sharpen_amount` (blend weight). Executes as a full-screen GPU pass prior to overlay composition, preserving clean overlay text. Supports SDR and HDR (using ST 2084 PQ for scRGB to protect specular highlights), includes sharpened output in screenshots, and supports live runtime tuning via Unreal Engine console variables.
+- **AMD FidelityFX CAS and RCAS post-processing sharpening (D3D11, D3D12, Vulkan):** added Contrast Adaptive Sharpening (`sharpen=cas`) and Robust Contrast Adaptive Sharpening (`sharpen=rcas`). Configurable via `sharpen_contrast` (adaptation sensitivity) and `sharpen_amount` (blend weight). Executes as a full-screen GPU pass prior to overlay composition, preserving clean overlay text. Supports SDR and HDR (using ST 2084 PQ for scRGB to protect specular highlights), includes sharpened output in screenshots, and supports live runtime tuning via configuration reloading without restarting the game.
 
 - **Driver-level DLSS Multi-Frame Generation controls:** added `[DLSS]` configuration keys (`dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps`) to override the driver-settings channel in-process. Enables fixed generation up to 5x/6x or dynamic cadence targeting display refresh rate (`dlss_fg_target_fps=max_refresh`) without modifying global driver profiles.
 
