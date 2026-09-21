@@ -3,8 +3,11 @@
 ### 2026-09-21 - Stable release 0.1.6772, and the three gates only the release job runs
 
 `v0.1.6757` was published at 14:39 and withdrawn to a draft after Strange Brigade broke; its
-release and tag are deleted, so `v0.1.6652` -> `v0.1.6772` is the published line and 6757's
-CHANGELOG section documents a version no longer downloadable.
+release and tag are deleted, so `v0.1.6652` -> `v0.1.6772` is the published line. Everything
+6757 introduced reached users for the first time in 6772, so its CHANGELOG section is merged
+into 6772's (which now covers changes since 6652) and the published notes were regenerated.
+A withdrawn release means merging its section forward, not leaving it to document a version
+nobody can download.
 
 The first dispatch (`0.1.6767`, run 35629107044) failed 74 seconds in, inside the verification
 preflight, and behind that one failure sat two more:
