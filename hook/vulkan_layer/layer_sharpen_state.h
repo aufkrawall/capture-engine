@@ -10,6 +10,7 @@
 #include "layer_main.h"
 #include "layer_sharpen.h"
 #include "vulkan_layer.h"
+#include "vulkan_sharpen_route_policy.h"
 
 // Shared state between the sharpen pass's lifecycle unit
 // (layer_sharpen_setup.cpp) and its per-present recording unit
@@ -31,13 +32,29 @@ struct SharpenState {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent = {0, 0};
     uint32_t queueFamily = 0;
+    // Graphics: a render pass into the presentable image. Compute: a dispatch
+    // writing it as a storage image, for compute-only present queues. The two
+    // routes share the source copy, sampler, image views, semaphores and
+    // command ring; the objects below that differ are noted per field.
+    ce::vulkan_sharpen_route::Route route = ce::vulkan_sharpen_route::Route::kNone;
+    // Cached answer to "may a shader write this format without a format
+    // qualifier", for the format it was asked about.
+    VkFormat storageQueryFormat = VK_FORMAT_UNDEFINED;
+    bool storageWritable = false;
 
+    // Graphics route only.
     VkRenderPass renderPass = VK_NULL_HANDLE;
+    // Graphics: the source sampler. Compute: the source sampler plus the
+    // presentable image as a storage image, one set per image.
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    // Graphics route: the one set every image shares.
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    // Compute route: indexed by presentable image.
+    std::vector<VkDescriptorSet> imageDescriptorSets;
     VkSampler sampler = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    // Graphics or compute pipelines, matching `route`.
     VkPipeline casPipeline = VK_NULL_HANDLE;
     VkPipeline rcasPipeline = VK_NULL_HANDLE;
 
@@ -51,6 +68,7 @@ struct SharpenState {
 
     // Per presentable image.
     std::vector<VkImageView> imageViews;
+    // Graphics route only.
     std::vector<VkFramebuffer> framebuffers;
     // Indexed by presentable image, not by slot: reacquiring an image proves
     // the present that waited on its semaphore consumed it, which a fence on
@@ -101,7 +119,18 @@ void DrainDeferredSharpenSemaphoresLocked(VkDevice device, VkSwapchainKHR destro
 // layer_sharpen_g_DeferredSemaphores tagged with the state's swapchain. Caller
 // holds layer_sharpen_g_StateMutex for both.
 bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
-                            VkFormat format, VkExtent2D extent, uint32_t queueFamily, uint32_t imageCount,
-                            const VkImage* images);
+                            VkFormat format, VkExtent2D extent, uint32_t queueFamily,
+                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images);
+
+// What `state` was built for, in the terms MustRebuild compares.
+ce::vulkan_sharpen_route::Identity SharpenStateIdentity(const SharpenState& state);
+
+// Compute route (layer_sharpen_compute.cpp): the descriptor sets and pipelines,
+// built over image views and a source view that already exist.
+bool CreateSharpenComputeObjects(SharpenState& state, DeviceDispatch* disp);
+
+// Records the compute route's copy, dispatch and layout transitions into `cmd`.
+void RecordSharpenCompute(SharpenState& state, DeviceDispatch* disp, VkCommandBuffer cmd, VkImage image,
+                          uint32_t imageIndex, VkPipeline pipeline, const ce::sharpen::ShaderConstants& constants);
 
 void DestroySharpenState(SharpenState& state, DeviceDispatch* disp);

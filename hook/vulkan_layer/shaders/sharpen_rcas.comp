@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Compute variant of sharpen_rcas.frag for compute-only present queues. Same
+// kernel, same constants, same resolve; it writes the presentable image as a
+// storage image instead of a colour attachment.
+
+#define FFX_GPU 1
+#define FFX_GLSL 1
+#define FFX_HALF 0
+#define CE_SHARPEN_COMPUTE 1
+
+#include "ffx_core.h"
+#include "sharpen_common.glsl"
+
+#define FSR_RCAS_F 1
+#include "fsr1/ffx_fsr1.h"
+
+// ffx_fsr1.h declares these itself, so they are defined after the include.
+FfxFloat32x4 FsrRcasLoadF(FfxInt32x2 position) {
+    return ceLoadSource(position);
+}
+
+void FsrRcasInputF(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloat32 blue) {
+    ceToFilterSpace(red, green, blue);
+}
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+void main() {
+    FfxInt32x2 position = FfxInt32x2(gl_GlobalInvocationID.xy);
+    if (any(greaterThan(position, ceConstants.ceMaxCoord))) {
+        return;
+    }
+    FfxUInt32x2 gxy = FfxUInt32x2(position);
+    FfxFloat32x4 original = ceLoadSource(position);
+    FfxFloat32x3 filtered;
+    FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0);
+    imageStore(ceTarget, position, ceResolveOutput(filtered, original));
+}

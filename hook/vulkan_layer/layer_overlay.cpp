@@ -11,6 +11,7 @@
 #include "../common/dxgi_shared.h"
 #include "../common/system_metrics.h"
 #include "overlay_swapchain_lifetime_policy.h"
+#include "vulkan_formatless_storage.h"
 #include "vulkan_presentation_color.h"
 
 // Detect if a DLL is loaded from outside System32 (i.e. a DXVK replacement).
@@ -143,29 +144,12 @@ static uint32_t FindGraphicsQueueFamily(VkPhysicalDevice physDevice, InstanceDis
     return 0;  // Fallback to 0 if not found
 }
 
-static bool HasCoreFormatlessStorageGuarantee(VkFormat format) {
-    // These are the WSI-capable members of Vulkan's required
-    // "formats without shader storage format" list. Other formats can still
-    // opt in through VkFormatProperties3 below.
-    return format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-           format == VK_FORMAT_R16G16B16A16_SFLOAT;
-}
-
 static void QueryFormatlessStorageSupport(OverlayState& state, InstanceDispatch* instDisp,
                                           bool formatFeatureFlags2Available) {
-    const bool coreGuarantee = HasCoreFormatlessStorageGuarantee(state.format);
-    VkFormatFeatureFlags2 optimalFeatures = 0;
-    if (formatFeatureFlags2Available && instDisp && instDisp->fp_vkGetPhysicalDeviceFormatProperties2) {
-        VkFormatProperties3 properties3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
-        VkFormatProperties2 properties2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
-        properties2.pNext = &properties3;
-        instDisp->fp_vkGetPhysicalDeviceFormatProperties2(state.physicalDevice, state.format, &properties2);
-        optimalFeatures = properties3.optimalTilingFeatures;
-    }
-    state.storageFormatReadWithoutFormatSupported =
-        coreGuarantee || (optimalFeatures & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) != 0;
-    state.storageFormatWriteWithoutFormatSupported =
-        coreGuarantee || (optimalFeatures & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT) != 0;
+    const ce::vulkan_formatless_storage::Support support = ce::vulkan_formatless_storage::Query(
+        instDisp, state.physicalDevice, state.format, formatFeatureFlags2Available);
+    state.storageFormatReadWithoutFormatSupported = support.read;
+    state.storageFormatWriteWithoutFormatSupported = support.write;
 }
 
 bool RecreateOverlayCommandResources(OverlayState& state, DeviceDispatch* disp, uint32_t queueFamilyIndex) {

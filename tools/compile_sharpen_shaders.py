@@ -47,6 +47,9 @@ SPIRV_SHADERS = (
     ("sharpen_fullscreen.vert", "vert", "g_SharpenVertexShaderSpv"),
     ("sharpen_cas.frag", "frag", "g_SharpenCasFragmentShaderSpv"),
     ("sharpen_rcas.frag", "frag", "g_SharpenRcasFragmentShaderSpv"),
+    # Compute-only present queues (Vulkan "present from compute").
+    ("sharpen_cas.comp", "comp", "g_SharpenCasComputeShaderSpv"),
+    ("sharpen_rcas.comp", "comp", "g_SharpenRcasComputeShaderSpv"),
 )
 
 BANNER = (

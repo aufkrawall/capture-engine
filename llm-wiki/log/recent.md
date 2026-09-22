@@ -13,6 +13,11 @@ lifetime bugs (`20260913_174040`, `20260914_122133`) in a component added later.
 shows the second bug: `sharpen=cas` published live twice, and the layer never read it. Hardware run
 pending: start DOOM with sharpen on, toggle it live, change resolution/fullscreen.
 
+Follow-up session `20260923_003755` (0.1.6774): the recreate was clean, then DOOM moved its present
+to compute-only family 2 on the live swapchain and the render-pass route kept submitting there.
+The device was lost 2.3 s later. Sharpen now has a compute route and rebuilds on a family change
+(`post-processing-sharpen.md` "Vulkan compute route").
+
 ### 2026-09-22 - Nothing CE runs may make other applications' keystrokes wait
 
 Review for "other applications register keyboard input delayed". The controller's

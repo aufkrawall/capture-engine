@@ -719,7 +719,12 @@ TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentIsCapabilityGatedAndKeeps
     EXPECT_NE(hooks.find("VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME"), std::string::npos)
         << "the SPIR-V capabilities may come from Vulkan 1.3 or the format-feature-flags2 extension";
 
-    const std::string initialization = ReadProjectSource("hook/vulkan_layer/layer_overlay.cpp");
+    // The query is shared with the compute sharpen pass; the overlay has to
+    // keep using it.
+    const std::string overlay = ReadProjectSource("hook/vulkan_layer/layer_overlay.cpp");
+    ASSERT_FALSE(overlay.empty());
+    EXPECT_NE(overlay.find("ce::vulkan_formatless_storage::Query("), std::string::npos);
+    const std::string initialization = ReadProjectSource("hook/vulkan_layer/vulkan_formatless_storage.h");
     ASSERT_FALSE(initialization.empty());
     EXPECT_NE(initialization.find("VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT"), std::string::npos);
     EXPECT_NE(initialization.find("VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT"), std::string::npos)

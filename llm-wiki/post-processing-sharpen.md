@@ -261,6 +261,37 @@ The pass obeys the overlay's two lifetime rules
   `CleanupSharpen` drains everything at device teardown. A live switch to `off`
   defers the same way.
 
+### Vulkan compute route (present from compute)
+
+The pass submits on the present queue, and a game may present from a family
+without graphics support. DOOM Eternal's "present from compute" moves the
+present from family 0 to the compute-only family 2 *on a live swapchain*
+(`Present queue family changed 0 -> 2 without swapchain recreation`). The pass
+compared only swapchain-derived identity, so it kept submitting its family-0
+render pass there: `Sharpen submit failed (result=-4)` 2.3 s later, black window
+(session `20260923_003755`).
+
+`vulkan_sharpen_route_policy.h` now decides both things:
+
+- `Choose`: graphics family -> render pass; compute-only family with
+  `VK_IMAGE_USAGE_STORAGE_BIT` and formatless storage writes (device feature and
+  the swapchain format's `STORAGE_WRITE_WITHOUT_FORMAT`, via the shared
+  `vulkan_formatless_storage.h`, which the compute-present overlay uses as well)
+  -> compute; anything else -> no filter, with the reason logged on the
+  `Sharpen idle` line (`compute_present_without_storage_usage`, ...).
+- `MustRebuild`: the queue family and the route are part of the state identity,
+  so a family move rebuilds the command pool and pipelines (`Sharpen rebuilding`
+  log line).
+
+The compute route (`layer_sharpen_compute.cpp`, `sharpen_{cas,rcas}.comp`) shares
+the source copy, sampler, views, semaphores and command ring with the render-pass
+route. It dispatches 8x8 groups writing the presentable image in `GENERAL` as a
+formatless `writeonly image2D`, then transitions it back to `PRESENT_SRC_KHR`.
+The kernel and resolve are the fragment shaders' (`CE_SHARPEN_COMPUTE` in
+`sharpen_common.glsl` swaps the colour output for the storage image). An sRGB
+swapchain is refused on this route: sRGB formats are not storage-writable.
+The route is not hardware-validated yet.
+
 ### Vulkan reads the live config
 
 `SharpenPresentedFrame` refreshes the request from `g_IPCClient`'s shared

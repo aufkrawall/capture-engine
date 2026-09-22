@@ -13,7 +13,14 @@ ceConstants;
 
 layout(set = 0, binding = 0) uniform sampler2D ceSource;
 
+#ifdef CE_SHARPEN_COMPUTE
+// The presentable image itself, written in place on a compute-only present
+// queue. No format qualifier: the swapchain format is the application's, so the
+// pipeline is only used where STORAGE_WRITE_WITHOUT_FORMAT covers it.
+layout(set = 0, binding = 1) uniform writeonly image2D ceTarget;
+#else
 layout(location = 0) out FfxFloat32x4 ceOutColor;
+#endif
 
 // ce::sharpen::FilterSpace values:
 #define CE_FILTER_SPACE_LINEAR_TO_GAMMA 1u

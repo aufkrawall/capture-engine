@@ -3,6 +3,7 @@
 #include "../common/sharpen_constants.h"
 #include "../common/sharpen_gpu_timeline.h"
 #include "overlay_swapchain_lifetime_policy.h"
+#include "vulkan_formatless_storage.h"
 #include "vulkan_presentation_color.h"
 
 // Recording half of the Vulkan sharpen pass: what happens once per present.
@@ -55,6 +56,20 @@ VkImageMemoryBarrier MakeImageBarrier(VkImage image, VkImageLayout oldLayout, Vk
     barrier.image = image;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     return barrier;
+}
+
+// Whether a shader may write `format` through a formatless storage image. Asked
+// only for a compute-only present queue, and once per state lifetime.
+bool FormatIsStorageWritable(SharpenState& state, DeviceDispatch* disp, VkFormat format) {
+    if (state.storageQueryFormat != format) {
+        InstanceDispatch* inst = VulkanLayerState::Get().GetInstanceDispatch(
+            VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice));
+        state.storageWritable = ce::vulkan_formatless_storage::Query(inst, disp->physicalDevice, format,
+                                                                     disp->formatFeatureFlags2Available)
+                                    .write;
+        state.storageQueryFormat = format;
+    }
+    return state.storageWritable;
 }
 
 // A slot whose previous submission has retired, or -1 when all are still in
@@ -131,32 +146,66 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     const SwapchainData* swapchainData = VulkanLayerState::Get().GetSwapchainData(swapchain);
     target.readable =
         swapchainData != nullptr && (swapchainData->imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
-    target.writable =
-        swapchainData != nullptr && (swapchainData->imageUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+    const uint32_t imageUsage = swapchainData != nullptr ? swapchainData->imageUsage : 0u;
+
+    // The pass runs on the present queue, which need not support graphics.
+    const uint32_t queueFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
+    ce::vulkan_sharpen_route::Input routeInput;
+    routeInput.queueFamilyKnown = queueFamily != VK_QUEUE_FAMILY_IGNORED;
+    routeInput.queueSupportsGraphics =
+        routeInput.queueFamilyKnown && VulkanLayerState::Get().QueueSupportsGraphics(queue);
+    routeInput.queueSupportsCompute =
+        routeInput.queueFamilyKnown && VulkanLayerState::Get().QueueSupportsCompute(queue);
+    routeInput.swapchainHasStorageUsage = (imageUsage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+    if (!routeInput.queueSupportsGraphics && routeInput.queueSupportsCompute && routeInput.swapchainHasStorageUsage) {
+        routeInput.storageWriteWithoutFormat =
+            disp->storageImageWriteWithoutFormatAvailable && FormatIsStorageWritable(state, disp, format);
+    }
+    const ce::vulkan_sharpen_route::Route route = ce::vulkan_sharpen_route::Choose(routeInput);
+    // The compute route's storage requirement is already part of the route
+    // decision; the render-pass route writes through a colour attachment.
+    target.writable = route == ce::vulkan_sharpen_route::Route::kGraphics
+                          ? (imageUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0
+                          : true;
 
     const ce::sharpen::Decision decision = ce::sharpen::Decide(request, target);
-    if (state.logGate.ShouldLog(decision.run, decision.reason)) {
-        LayerLog("Vulkan Layer: Sharpen %s reason=%s %ux%u fmt=%d srgbView=%d usage=0x%x param=%.3f",
-                 decision.run ? "running" : "idle", decision.reason, target.width, target.height,
-                 static_cast<int>(format), target.viewAppliesSrgbConversion ? 1 : 0,
-                 swapchainData ? swapchainData->imageUsage : 0u, static_cast<double>(decision.effectParameter));
+    const bool routeRefused = decision.run && route == ce::vulkan_sharpen_route::Route::kNone;
+    const bool run = decision.run && !routeRefused;
+    const char* reason = routeRefused ? ce::vulkan_sharpen_route::RefusalReason(routeInput) : decision.reason;
+    if (state.logGate.ShouldLog(run, reason)) {
+        LayerLog("Vulkan Layer: Sharpen %s reason=%s %ux%u fmt=%d srgbView=%d usage=0x%x param=%.3f route=%s "
+                 "family=%u",
+                 run ? "running" : "idle", reason, target.width, target.height, static_cast<int>(format),
+                 target.viewAppliesSrgbConversion ? 1 : 0, imageUsage, static_cast<double>(decision.effectParameter),
+                 ce::vulkan_sharpen_route::RouteName(route), queueFamily);
     }
-    if (!decision.run)
+    if (!run)
         return false;
 
     // A swapchain generation change invalidates every view, framebuffer and
-    // semaphore built over the old presentable images.
-    if (state.initialized && (state.swapchain != swapchain || state.format != format ||
-                              state.extent.width != extent.width || state.extent.height != extent.height ||
-                              state.imageViews.size() != imageCount)) {
+    // semaphore built over the old presentable images, and a present-queue
+    // family change invalidates the command pool and possibly the route.
+    ce::vulkan_sharpen_route::Identity current;
+    current.swapchain = SharpenSwapchainKey(swapchain);
+    current.format = static_cast<int32_t>(format);
+    current.width = extent.width;
+    current.height = extent.height;
+    current.imageCount = imageCount;
+    current.queueFamily = queueFamily;
+    current.route = route;
+    if (state.initialized && ce::vulkan_sharpen_route::MustRebuild(SharpenStateIdentity(state), current)) {
+        LayerLog("Vulkan Layer: Sharpen rebuilding (swapchain %p family %u -> %u route %s -> %s)", swapchain,
+                 state.queueFamily, queueFamily, ce::vulkan_sharpen_route::RouteName(state.route),
+                 ce::vulkan_sharpen_route::RouteName(route));
         DestroySharpenState(state, disp);
     }
     if (!state.initialized) {
-        const uint32_t queueFamily = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
-        if (!InitializeSharpenState(state, disp, device, swapchain, format, extent, queueFamily, imageCount, images))
+        if (!InitializeSharpenState(state, disp, device, swapchain, format, extent, queueFamily, route, imageCount,
+                                    images)) {
             return false;
+        }
     }
-    if (imageIndex >= state.framebuffers.size() || imageIndex >= state.imageSemaphores.size())
+    if (imageIndex >= state.imageViews.size() || imageIndex >= state.imageSemaphores.size())
         return false;
 
     const int slot = AcquireSlot(state, disp);
@@ -179,60 +228,64 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (disp->fp_vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
         return false;
 
-    // The frame becomes a transfer source, and the copy target waits for the
-    // previous frame's fragment-shader read of the same image. Both barriers
-    // are submission-ordered against everything already on this queue, which is
-    // what makes one source image enough for the whole ring.
-    const VkImageMemoryBarrier preCopy[2] = {
-        MakeImageBarrier(image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
-        MakeImageBarrier(state.sourceImage,
-                         state.sourceInitialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
-                         VK_ACCESS_TRANSFER_WRITE_BIT),
-    };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                                  nullptr, 0, nullptr, 2, preCopy);
-
-    VkImageCopy region = {};
-    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.extent = {extent.width, extent.height, 1};
-    disp->fp_vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.sourceImage,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    // `sourceInitialized` says the image is really in SHADER_READ_ONLY_OPTIMAL,
-    // which only the executed command buffer can make true. Recording is not
-    // executing: it is set after the submit succeeds, further down.
-
-    const VkImageMemoryBarrier preDraw[2] = {
-        MakeImageBarrier(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                         VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
-        MakeImageBarrier(state.sourceImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                         VK_ACCESS_SHADER_READ_BIT),
-    };
-    disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                  0, 0, nullptr, 0, nullptr, 2, preDraw);
-
-    VkRenderPassBeginInfo passInfo = {};
-    passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    passInfo.renderPass = state.renderPass;
-    passInfo.framebuffer = state.framebuffers[imageIndex];
-    passInfo.renderArea = {{0, 0}, extent};
-    disp->fp_vkCmdBeginRenderPass(cmd, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
-    disp->fp_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                               request.mode == ce::sharpen::Mode::Cas ? state.casPipeline : state.rcasPipeline);
-    disp->fp_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.pipelineLayout, 0, 1,
-                                     &state.descriptorSet, 0, nullptr);
     const ce::sharpen::ShaderConstants constants =
         ce::sharpen::BuildShaderConstants(request.mode, decision, extent.width, extent.height);
-    disp->fp_vkCmdPushConstants(cmd, state.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants),
-                                &constants);
-    disp->fp_vkCmdDraw(cmd, 3, 1, 0, 0);
-    disp->fp_vkCmdEndRenderPass(cmd);
+    const VkPipeline pipeline = request.mode == ce::sharpen::Mode::Cas ? state.casPipeline : state.rcasPipeline;
+    if (state.route == ce::vulkan_sharpen_route::Route::kCompute) {
+        RecordSharpenCompute(state, disp, cmd, image, imageIndex, pipeline, constants);
+    } else {
+        // The frame becomes a transfer source, and the copy target waits for the
+        // previous frame's fragment-shader read of the same image. Both barriers
+        // are submission-ordered against everything already on this queue, which is
+        // what makes one source image enough for the whole ring.
+        const VkImageMemoryBarrier preCopy[2] = {
+            MakeImageBarrier(image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
+            MakeImageBarrier(state.sourceImage,
+                             state.sourceInitialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                     : VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                             VK_ACCESS_TRANSFER_WRITE_BIT),
+        };
+        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                      nullptr, 0, nullptr, 2, preCopy);
+
+        VkImageCopy region = {};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.extent = {extent.width, extent.height, 1};
+        disp->fp_vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state.sourceImage,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        // `sourceInitialized` says the image is really in SHADER_READ_ONLY_OPTIMAL,
+        // which only the executed command buffer can make true. Recording is not
+        // executing: it is set after the submit succeeds, further down.
+
+        const VkImageMemoryBarrier preDraw[2] = {
+            MakeImageBarrier(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                             VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
+            MakeImageBarrier(state.sourceImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                             VK_ACCESS_SHADER_READ_BIT),
+        };
+        disp->fp_vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                      0, 0, nullptr, 0, nullptr, 2, preDraw);
+
+        VkRenderPassBeginInfo passInfo = {};
+        passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        passInfo.renderPass = state.renderPass;
+        passInfo.framebuffer = state.framebuffers[imageIndex];
+        passInfo.renderArea = {{0, 0}, extent};
+        disp->fp_vkCmdBeginRenderPass(cmd, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
+        disp->fp_vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        disp->fp_vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state.pipelineLayout, 0, 1,
+                                         &state.descriptorSet, 0, nullptr);
+        disp->fp_vkCmdPushConstants(cmd, state.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants),
+                                    &constants);
+        disp->fp_vkCmdDraw(cmd, 3, 1, 0, 0);
+        disp->fp_vkCmdEndRenderPass(cmd);
+    }
 
     if (disp->fp_vkEndCommandBuffer(cmd) != VK_SUCCESS)
         return false;

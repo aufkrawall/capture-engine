@@ -6,3 +6,5 @@
 #include "sharpen_shader_spirv/sharpenvertexshaderspv.h"
 #include "sharpen_shader_spirv/sharpencasfragmentshaderspv.h"
 #include "sharpen_shader_spirv/sharpenrcasfragmentshaderspv.h"
+#include "sharpen_shader_spirv/sharpencascomputeshaderspv.h"
+#include "sharpen_shader_spirv/sharpenrcascomputeshaderspv.h"

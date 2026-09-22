@@ -133,7 +133,7 @@ bool CreateSourceImage(SharpenState& state, DeviceDispatch* disp) {
     return true;
 }
 
-bool CreateDescriptorObjects(SharpenState& state, DeviceDispatch* disp) {
+bool CreateSampler(SharpenState& state, DeviceDispatch* disp) {
     // The kernel only ever uses texelFetch, so the sampler's filtering and
     // addressing never come into play; it exists because the binding is a
     // combined image sampler.
@@ -147,9 +147,10 @@ bool CreateDescriptorObjects(SharpenState& state, DeviceDispatch* disp) {
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    if (disp->fp_vkCreateSampler(state.device, &samplerInfo, nullptr, &state.sampler) != VK_SUCCESS)
-        return false;
+    return disp->fp_vkCreateSampler(state.device, &samplerInfo, nullptr, &state.sampler) == VK_SUCCESS;
+}
 
+bool CreateDescriptorObjects(SharpenState& state, DeviceDispatch* disp) {
     VkDescriptorSetLayoutBinding binding = {};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -302,6 +303,13 @@ bool CreatePipelines(SharpenState& state, DeviceDispatch* disp) {
     return created;
 }
 
+bool CreateImageSemaphore(SharpenState& state, DeviceDispatch* disp, uint32_t image) {
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    return disp->fp_vkCreateSemaphore(state.device, &semaphoreInfo, nullptr, &state.imageSemaphores[image]) ==
+           VK_SUCCESS;
+}
+
 bool CreatePerImageObjects(SharpenState& state, DeviceDispatch* disp, uint32_t imageCount, const VkImage* images) {
     state.imageViews.assign(imageCount, VK_NULL_HANDLE);
     state.framebuffers.assign(imageCount, VK_NULL_HANDLE);
@@ -316,6 +324,14 @@ bool CreatePerImageObjects(SharpenState& state, DeviceDispatch* disp, uint32_t i
         if (disp->fp_vkCreateImageView(state.device, &viewInfo, nullptr, &state.imageViews[i]) != VK_SUCCESS)
             return false;
 
+        // The compute route writes the image as a storage image and has no
+        // render pass to build a framebuffer against.
+        if (state.renderPass == VK_NULL_HANDLE) {
+            if (!CreateImageSemaphore(state, disp, i))
+                return false;
+            continue;
+        }
+
         VkFramebufferCreateInfo framebufferInfo = {};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = state.renderPass;
@@ -329,12 +345,8 @@ bool CreatePerImageObjects(SharpenState& state, DeviceDispatch* disp, uint32_t i
             return false;
         }
 
-        VkSemaphoreCreateInfo semaphoreInfo = {};
-        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (disp->fp_vkCreateSemaphore(state.device, &semaphoreInfo, nullptr, &state.imageSemaphores[i]) !=
-            VK_SUCCESS) {
+        if (!CreateImageSemaphore(state, disp, i))
             return false;
-        }
     }
     return true;
 }
@@ -368,33 +380,55 @@ bool CreateCommandObjects(SharpenState& state, DeviceDispatch* disp) {
 }  // namespace
 
 bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
-                            VkFormat format, VkExtent2D extent, uint32_t queueFamily, uint32_t imageCount,
-                            const VkImage* images) {
-    if (!disp || imageCount == 0 || !images || extent.width == 0 || extent.height == 0)
+                            VkFormat format, VkExtent2D extent, uint32_t queueFamily,
+                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images) {
+    if (!disp || imageCount == 0 || !images || extent.width == 0 || extent.height == 0 ||
+        route == ce::vulkan_sharpen_route::Route::kNone) {
         return false;
+    }
 
     state.device = device;
     state.swapchain = swapchain;
     state.format = format;
     state.extent = extent;
     state.queueFamily = queueFamily;
+    state.route = route;
     state.physicalDevice = disp->physicalDevice;
     state.instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice);
 
-    const bool ready = CreateRenderPass(state, disp) && CreateSourceImage(state, disp) &&
-                       CreateDescriptorObjects(state, disp) && CreatePipelines(state, disp) &&
-                       CreatePerImageObjects(state, disp, imageCount, images) && CreateCommandObjects(state, disp);
+    const bool ready =
+        route == ce::vulkan_sharpen_route::Route::kGraphics
+            ? CreateRenderPass(state, disp) && CreateSourceImage(state, disp) && CreateSampler(state, disp) &&
+                  CreateDescriptorObjects(state, disp) && CreatePipelines(state, disp) &&
+                  CreatePerImageObjects(state, disp, imageCount, images) && CreateCommandObjects(state, disp)
+            : CreateSourceImage(state, disp) && CreateSampler(state, disp) &&
+                  CreatePerImageObjects(state, disp, imageCount, images) && CreateSharpenComputeObjects(state, disp) &&
+                  CreateCommandObjects(state, disp);
     if (!ready) {
-        LayerLog("Vulkan Layer: Sharpen initialization failed for swapchain %p (%ux%u fmt=%d)", swapchain,
-                 extent.width, extent.height, static_cast<int>(format));
+        LayerLog("Vulkan Layer: Sharpen initialization failed for swapchain %p (%ux%u fmt=%d route=%s family=%u)",
+                 swapchain, extent.width, extent.height, static_cast<int>(format),
+                 ce::vulkan_sharpen_route::RouteName(route), queueFamily);
         DestroySharpenState(state, disp);
         return false;
     }
 
     state.initialized = true;
-    LayerLog("Vulkan Layer: Sharpen ready for swapchain %p (%ux%u fmt=%d images=%u family=%u)", swapchain,
-             extent.width, extent.height, static_cast<int>(format), imageCount, queueFamily);
+    LayerLog("Vulkan Layer: Sharpen ready for swapchain %p (%ux%u fmt=%d images=%u family=%u route=%s)", swapchain,
+             extent.width, extent.height, static_cast<int>(format), imageCount, queueFamily,
+             ce::vulkan_sharpen_route::RouteName(route));
     return true;
+}
+
+ce::vulkan_sharpen_route::Identity SharpenStateIdentity(const SharpenState& state) {
+    ce::vulkan_sharpen_route::Identity identity;
+    identity.swapchain = SharpenSwapchainKey(state.swapchain);
+    identity.format = static_cast<int32_t>(state.format);
+    identity.width = state.extent.width;
+    identity.height = state.extent.height;
+    identity.imageCount = static_cast<uint32_t>(state.imageViews.size());
+    identity.queueFamily = state.queueFamily;
+    identity.route = state.route;
+    return identity;
 }
 
 void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
