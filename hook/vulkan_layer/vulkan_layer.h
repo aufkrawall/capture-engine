@@ -380,6 +380,16 @@ public:
         request.intensity = ce::sharpen::ClampIntensity(m_SharpenIntensity.load(std::memory_order_acquire));
         return request;
     }
+    // Called at IPC connect and again on every present by the sharpen pass:
+    // the host republishes these on a live config reload, and a connect-time
+    // snapshot alone meant a sharpen change made while a Vulkan game ran never
+    // took effect.
+    void StoreSharpenSettings(uint8_t mode, uint8_t colorSpace, float strength, float intensity) {
+        m_SharpenMode.store(mode, std::memory_order_release);
+        m_SharpenColorSpace.store(colorSpace, std::memory_order_release);
+        m_SharpenStrength.store(strength, std::memory_order_release);
+        m_SharpenIntensity.store(intensity, std::memory_order_release);
+    }
     float GetPrerenderLimit() const {
         return m_PrerenderLimit;
     }

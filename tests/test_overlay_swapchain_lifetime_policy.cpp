@@ -203,3 +203,70 @@ TEST(OverlaySwapchainLifetimeSourceTest, OverlayTeardownDefersThePresentSemaphor
     EXPECT_EQ(source.find("for (auto s : state.semaphores)"), std::string::npos)
         << "the ring's semaphores may only be destroyed from the deferred store";
 }
+
+// DOOM Eternal `20260922_235937`: the sharpen pass holds a view and framebuffer
+// per presentable image but was only released at the next create's
+// `oldSwapchain`. DOOM destroys and recreates without one, NVIDIA handed the new
+// swapchain the old handle, the present-time generation check matched, and the
+// first sharpen draw went through views of freed images: VK_ERROR_DEVICE_LOST
+// and a black window.
+TEST(SharpenSwapchainLifetimeSourceTest, DestroyHookReleasesSharpenBeforeTheDriverDestroy) {
+    const std::string source = StripComments(ReadLayerSource("vulkan_layer_swapchain.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    const size_t hook = source.find("Capture_vkDestroySwapchainKHR(VkDevice device");
+    ASSERT_NE(hook, std::string::npos);
+    const size_t release = source.find("ReleaseSharpenForSwapchain(device, swapchain)", hook);
+    const size_t driverDestroy = source.find("fp_vkDestroySwapchainKHR(device, swapchain", hook);
+    const size_t drain = source.find("DestroyDeferredSharpenSemaphores(device, swapchain)", hook);
+    ASSERT_NE(release, std::string::npos) << "the destroy hook must release the sharpen pass's image views";
+    ASSERT_NE(driverDestroy, std::string::npos);
+    ASSERT_NE(drain, std::string::npos) << "the destroy hook must release the deferred sharpen semaphores";
+    EXPECT_LT(release, driverDestroy) << "the views must go before the driver frees the presentable images";
+    EXPECT_LT(driverDestroy, drain) << "a pending present of this swapchain may still wait on the semaphores";
+}
+
+// When no overlay or capture stage runs after it, the present waits on the
+// sharpen semaphore directly, so the pass's teardown - swapchain release,
+// `oldSwapchain` retirement, a live switch to off - must defer it like the
+// overlay ring's semaphores and destroy it only from the drain.
+TEST(SharpenSwapchainLifetimeSourceTest, SharpenTeardownDefersItsPresentSemaphores) {
+    const std::string source = StripComments(ReadLayerSource("layer_sharpen_setup.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    const size_t destroyState = source.find("void DestroySharpenState(SharpenState& state");
+    const size_t drain = source.find("void DrainDeferredSharpenSemaphoresLocked(");
+    ASSERT_NE(destroyState, std::string::npos);
+    ASSERT_NE(drain, std::string::npos);
+    const size_t firstDestroy = source.find("fp_vkDestroySemaphore(");
+    ASSERT_NE(firstDestroy, std::string::npos);
+    EXPECT_GT(firstDestroy, drain) << "only the deferred drain may destroy the sharpen semaphores";
+    EXPECT_EQ(source.find("fp_vkDestroySemaphore(", firstDestroy + 1), std::string::npos);
+    EXPECT_NE(source.find("layer_sharpen_g_DeferredSemaphores.push_back", destroyState), std::string::npos);
+}
+
+TEST(SharpenSwapchainLifetimeSourceTest, DeviceTeardownDrainsEveryDeferredSharpenSemaphore) {
+    const std::string source = StripComments(ReadLayerSource("layer_sharpen.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    const size_t cleanup = source.find("void CleanupSharpen(VkDevice device)");
+    ASSERT_NE(cleanup, std::string::npos);
+    const size_t drain = source.find("DrainDeferredSharpenSemaphoresLocked(device, VK_NULL_HANDLE, true)", cleanup);
+    EXPECT_NE(drain, std::string::npos);
+}
+
+// The same session's earlier DOOM run: the host published `sharpen=cas` twice
+// while the game ran and the layer never filtered a frame, because it only
+// read the setting once at IPC connect. The D3D hooks read the live copy.
+TEST(SharpenSwapchainLifetimeSourceTest, SharpenFollowsTheLiveSharedConfig) {
+    const std::string source = StripComments(ReadLayerSource("layer_sharpen.cpp"));
+    ASSERT_FALSE(source.empty());
+
+    const size_t entry = source.find("bool SharpenPresentedFrame(");
+    ASSERT_NE(entry, std::string::npos);
+    const size_t refresh = source.find("StoreSharpenSettings(", entry);
+    const size_t read = source.find("GetSharpenRequest()", entry);
+    ASSERT_NE(refresh, std::string::npos) << "the pass must refresh the request from shared memory per present";
+    ASSERT_NE(read, std::string::npos);
+    EXPECT_LT(refresh, read);
+}

@@ -27,6 +27,14 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
 // presentable images and a copy of the frame.
 void CleanupSharpen(VkDevice device);
 
-// Drops the pass's state for a swapchain that is being destroyed while the
-// device stays alive.
-void CleanupSharpenForSwapchain(VkDevice device, VkSwapchainKHR swapchain);
+// Drops the pass's views and framebuffers over `swapchain`'s presentable
+// images. Must run before the driver destroys the swapchain (or while it is
+// only retired through `oldSwapchain`), because the images die with it. The
+// present-wait semaphores are deferred, not destroyed - see below.
+void ReleaseSharpenForSwapchain(VkDevice device, VkSwapchainKHR swapchain);
+
+// Destroys the pass's semaphores that presents against `swapchain` may have
+// waited on. Must run after the driver's vkDestroySwapchainKHR has returned:
+// that is the only point proving no present of it is still waiting. Same rule
+// as overlay_present_semaphore_lifetime.
+void DestroyDeferredSharpenSemaphores(VkDevice device, VkSwapchainKHR swapchain);

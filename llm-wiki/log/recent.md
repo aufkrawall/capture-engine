@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-23 - Vulkan sharpen lost the device on DOOM Eternal's swapchain recreate
+
+Session `20260922_235937`, build 0.1.6773, first run with `sharpen=cas` active at Vulkan
+startup: the sharpen pass ran on the startup swapchain, DOOM destroyed it (no `oldSwapchain`)
+and NVIDIA returned the same handle for the replacement. The sharpen state was never released
+on destroy, passed the present-time generation check, and drew through freed image views:
+`QueueSubmit FAILED with result -4`, black window. The manual dump shows only the game's
+threads parked, with no CE frame, as expected for a GPU-side fault. This repeats both DOOM overlay
+lifetime bugs (`20260913_174040`, `20260914_122133`) in a component added later. Fixed per
+`post-processing-sharpen.md` "Vulkan swapchain lifetime". The same session's earlier DOOM run
+shows the second bug: `sharpen=cas` published live twice, and the layer never read it. Hardware run
+pending: start DOOM with sharpen on, toggle it live, change resolution/fullscreen.
+
 ### 2026-09-22 - Nothing CE runs may make other applications' keystrokes wait
 
 Review for "other applications register keyboard input delayed". The controller's

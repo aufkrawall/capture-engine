@@ -66,12 +66,40 @@ struct SharpenState {
     ce::sharpen::DecisionLogGate logGate;
 };
 
+// Non-dispatchable handles are pointers only on 64-bit builds.
+inline uint64_t SharpenSwapchainKey(VkSwapchainKHR swapchain) {
+#if (VK_USE_64_BIT_PTR_DEFINES == 1)
+    return reinterpret_cast<uint64_t>(swapchain);
+#else
+    return static_cast<uint64_t>(swapchain);
+#endif
+}
+
+// Per-image semaphores taken out of a destroyed SharpenState. The present of
+// that image may still be waiting on one, and nothing but the destruction of
+// the swapchain it was presented against proves otherwise.
+struct DeferredSharpenSemaphores {
+    VkDevice device = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::vector<VkSemaphore> semaphores;
+};
+
 extern std::mutex layer_sharpen_g_StateMutex;
 extern std::unordered_map<VkDevice, SharpenState> layer_sharpen_g_States;
+// Guarded by layer_sharpen_g_StateMutex.
+extern std::vector<DeferredSharpenSemaphores> layer_sharpen_g_DeferredSemaphores;
+
+// Destroys the deferred batches that `destroyedSwapchain`'s destruction (or the
+// device's) has made safe. Caller holds layer_sharpen_g_StateMutex.
+void DrainDeferredSharpenSemaphoresLocked(VkDevice device, VkSwapchainKHR destroyedSwapchain, bool deviceTeardown);
 
 // Builds everything that depends on the device, the swapchain format/extent and
 // the presentable images. Returns false when any of it could not be created, in
 // which case nothing is left half-built.
+//
+// DestroySharpenState never destroys `imageSemaphores`: it hands them to
+// layer_sharpen_g_DeferredSemaphores tagged with the state's swapchain. Caller
+// holds layer_sharpen_g_StateMutex for both.
 bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
                             VkFormat format, VkExtent2D extent, uint32_t queueFamily, uint32_t imageCount,
                             const VkImage* images);

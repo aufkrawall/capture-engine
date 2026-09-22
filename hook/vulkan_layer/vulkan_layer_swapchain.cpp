@@ -245,7 +245,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         LayerLog("Vulkan Layer: Cleaning up old swapchain %p before recreation", pCreateInfo->oldSwapchain);
         SwapchainData* oldSd = VulkanLayerState::Get().GetSwapchainData(pCreateInfo->oldSwapchain);
         if (oldSd) {
-            CleanupSharpenForSwapchain(oldSd->device, pCreateInfo->oldSwapchain);
+            ReleaseSharpenForSwapchain(oldSd->device, pCreateInfo->oldSwapchain);
             CleanupOverlay(oldSd->device);
         }
         VulkanLayerState::Get().UnregisterSwapchain(pCreateInfo->oldSwapchain);
@@ -342,6 +342,9 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwap
     // next create instead leaves CE holding views over freed images and then
     // hands those stale views back to the driver, which is a use-after-free the
     // NVIDIA kernel driver answers with a GPU error and a lost device.
+    // The sharpen pass follows the same rule: it holds a view and framebuffer
+    // per presentable image too.
+    ReleaseSharpenForSwapchain(device, swapchain);
     ReleaseOverlayForSwapchain(device, swapchain);
     RetireCaptureSwapchain(device, swapchain);
     if (disp && disp->fp_vkDestroySwapchainKHR)
@@ -350,6 +353,7 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwap
     // on may only be destroyed once the swapchain those presents were made
     // against is gone. A device-idle wait does not prove a present's semaphore
     // wait has executed - see overlay_present_semaphore_lifetime.
+    DestroyDeferredSharpenSemaphores(device, swapchain);
     DestroyDeferredOverlayPresentSemaphores(device, swapchain);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
 }

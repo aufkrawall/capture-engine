@@ -238,6 +238,39 @@ GPU. `SharpenGpuTimelineTest` covers them.
 Nothing waits on the present thread. When every slot is still in flight the
 frame is skipped with a rate-limited log rather than stalling the game.
 
+### Vulkan swapchain lifetime
+
+The pass obeys the overlay's two lifetime rules
+(`overlay_swapchain_lifetime_policy.h`), and until 2026-09-23 it obeyed neither:
+
+- **Views and framebuffers go before the driver's destroy.**
+  `ReleaseSharpenForSwapchain` runs first in `Capture_vkDestroySwapchainKHR`
+  (and on `oldSwapchain` retirement). Before, the only release was at the next
+  create's `oldSwapchain`. DOOM Eternal recreates without one, NVIDIA reused the
+  destroyed swapchain's handle, so the present-time "generation changed" check
+  (swapchain handle, format, extent, image count) matched and the first sharpen
+  draw on the new chain went through views of freed images:
+  `QueueSubmit FAILED with result -4` one frame later, black window (session
+  `20260922_235937`). The present-time check cannot catch handle reuse. Only the
+  destroy hook can.
+- **The per-image semaphores go after it.** With no overlay or capture stage
+  behind it, the present waits on the sharpen semaphore directly. `DestroySharpenState`
+  therefore moves `imageSemaphores` into `layer_sharpen_g_DeferredSemaphores`,
+  tagged with the swapchain, and `DestroyDeferredSharpenSemaphores` drains them
+  after the driver's destroy (`overlay_present_semaphore_lifetime::MayDestroy`);
+  `CleanupSharpen` drains everything at device teardown. A live switch to `off`
+  defers the same way.
+
+### Vulkan reads the live config
+
+`SharpenPresentedFrame` refreshes the request from `g_IPCClient`'s shared
+`graphicsConfig` on every present, like the D3D hooks. Before, the layer read it
+once at IPC connect (`UpdateFromSharedMemory`), so a live `sharpen=cas` never
+reached a running Vulkan game: the same DOOM session published it twice with no
+`Sharpen running` line. Other layer settings read in `UpdateFromSharedMemory`
+(AF, mip bias, vsync, backbuffer count) are still connect-time only. That is
+stale-risk if any of them is expected to apply live.
+
 ### Teardown must not re-enter the pass mutex
 
 D3D12 and Vulkan both hold a state mutex for the whole present-side call, and both

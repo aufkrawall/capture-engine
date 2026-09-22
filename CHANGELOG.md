@@ -6,6 +6,8 @@ Changes since [v0.1.6772](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Black screen in Vulkan games with sharpening enabled (e.g. DOOM Eternal):** when a game destroyed its swapchain and created a new one, CaptureEngine's sharpen pass kept drawing through views of the destroyed images, and the GPU driver reported a lost device on the next frame. The sharpen pass is now released before the swapchain is destroyed, and the semaphores a pending present may still wait on are kept until afterwards.
+- **Sharpening changes had no effect in running Vulkan games:** a `sharpen` setting changed while a Vulkan game was running was ignored until the game restarted. The setting now applies on the next frame, as it already did for D3D11 and D3D12.
 - **Delayed keystrokes in other applications while a hotkey fired:** the global hotkey keyboard hook, which every keystroke on the desktop waits for, wrote a log line (with a disk flush under a process-wide lock) inside its callback. A slow flush, typically right when a recording starts, held keyboard input for every application. The hook thread now only counts. The controller does the logging.
 - **Keyboard input could wait on busy game threads:** the hotkey hook thread now runs at time-critical priority, so a game's high-priority render threads can no longer keep it from answering while all cores are busy.
 - **Silent loss of the hotkey keyboard hook:** Windows removes a keyboard hook without notice after repeated timeouts, which left hotkeys dead in games that suppress normal hotkeys (e.g. DOOM Eternal). A late answer is now detected, logged (`[Hotkey] Keyboard hook answered late`), and the hook is re-armed immediately; a removal Windows had already made is logged and repaired.

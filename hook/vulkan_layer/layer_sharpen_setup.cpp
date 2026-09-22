@@ -1,12 +1,14 @@
 #include "layer_sharpen_state.h"
 
 #include "../common/sharpen_shader_spirv.h"
+#include "overlay_swapchain_lifetime_policy.h"
 
 // Lifecycle half of the Vulkan sharpen pass: everything that is built once per
 // swapchain generation and destroyed with it.
 
 std::mutex layer_sharpen_g_StateMutex;
 std::unordered_map<VkDevice, SharpenState> layer_sharpen_g_States;
+std::vector<DeferredSharpenSemaphores> layer_sharpen_g_DeferredSemaphores;
 
 namespace {
 
@@ -417,9 +419,15 @@ void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
         if (view != VK_NULL_HANDLE)
             disp->fp_vkDestroyImageView(state.device, view, nullptr);
     }
-    for (VkSemaphore semaphore : state.imageSemaphores) {
-        if (semaphore != VK_NULL_HANDLE)
-            disp->fp_vkDestroySemaphore(state.device, semaphore, nullptr);
+    // The present of an image may still be waiting on its semaphore, and CE's
+    // own fences say nothing about that wait. Only the swapchain's destruction
+    // does, so the semaphores wait for it in the deferred store.
+    if (!state.imageSemaphores.empty()) {
+        DeferredSharpenSemaphores batch;
+        batch.device = state.device;
+        batch.swapchain = state.swapchain;
+        batch.semaphores = std::move(state.imageSemaphores);
+        layer_sharpen_g_DeferredSemaphores.push_back(std::move(batch));
     }
     for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
         if (state.fences[slot] != VK_NULL_HANDLE)
@@ -449,4 +457,33 @@ void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
         disp->fp_vkDestroyRenderPass(state.device, state.renderPass, nullptr);
 
     state = SharpenState();
+}
+
+void DrainDeferredSharpenSemaphoresLocked(VkDevice device, VkSwapchainKHR destroyedSwapchain, bool deviceTeardown) {
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    size_t destroyed = 0;
+    for (auto batch = layer_sharpen_g_DeferredSemaphores.begin();
+         batch != layer_sharpen_g_DeferredSemaphores.end();) {
+        ce::overlay_present_semaphore_lifetime::Input input = {};
+        input.deferredSwapchain = SharpenSwapchainKey(batch->swapchain);
+        input.destroyedSwapchain = SharpenSwapchainKey(destroyedSwapchain);
+        input.deviceTeardown = deviceTeardown;
+        if (batch->device != device || !ce::overlay_present_semaphore_lifetime::MayDestroy(input)) {
+            ++batch;
+            continue;
+        }
+        if (disp && disp->fp_vkDestroySemaphore) {
+            for (VkSemaphore semaphore : batch->semaphores) {
+                if (semaphore != VK_NULL_HANDLE) {
+                    disp->fp_vkDestroySemaphore(device, semaphore, nullptr);
+                    ++destroyed;
+                }
+            }
+        }
+        batch = layer_sharpen_g_DeferredSemaphores.erase(batch);
+    }
+    if (destroyed > 0) {
+        LayerLog("Vulkan Layer: destroyed %zu sharpen present semaphores held past swapchain %p%s", destroyed,
+                 destroyedSwapchain, deviceTeardown ? " (device teardown)" : "");
+    }
 }

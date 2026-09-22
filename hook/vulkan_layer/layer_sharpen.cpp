@@ -2,6 +2,7 @@
 
 #include "../common/sharpen_constants.h"
 #include "../common/sharpen_gpu_timeline.h"
+#include "overlay_swapchain_lifetime_policy.h"
 #include "vulkan_presentation_color.h"
 
 // Recording half of the Vulkan sharpen pass: what happens once per present.
@@ -84,6 +85,13 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (device == VK_NULL_HANDLE || queue == VK_NULL_HANDLE || image == VK_NULL_HANDLE)
         return false;
 
+    // The host rewrites graphicsConfig in place on a live reload and the D3D
+    // hooks read it on every call; this pass has to follow the same live copy.
+    if (const SharedMemoryLayout* shared = g_IPCClient.GetSharedMem()) {
+        const auto& cfg = shared->graphicsConfig;
+        VulkanLayerState::Get().StoreSharpenSettings(cfg.sharpenMode, cfg.sharpenColorSpace, cfg.sharpenStrength,
+                                                     cfg.sharpenIntensity);
+    }
     const ce::sharpen::Request request = VulkanLayerState::Get().GetSharpenRequest();
 
     std::unique_lock<std::mutex> lock(layer_sharpen_g_StateMutex, std::try_to_lock);
@@ -275,17 +283,36 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
 void CleanupSharpen(VkDevice device) {
     std::lock_guard<std::mutex> lock(layer_sharpen_g_StateMutex);
     auto it = layer_sharpen_g_States.find(device);
+    if (it != layer_sharpen_g_States.end()) {
+        DestroySharpenState(it->second, VulkanLayerState::Get().GetDeviceDispatch(device));
+        layer_sharpen_g_States.erase(it);
+    }
+    // Every swapchain on the device is gone before the device is, so no
+    // present can still be waiting on any deferred semaphore.
+    DrainDeferredSharpenSemaphoresLocked(device, VK_NULL_HANDLE, true);
+}
+
+void ReleaseSharpenForSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
+    std::lock_guard<std::mutex> lock(layer_sharpen_g_StateMutex);
+    auto it = layer_sharpen_g_States.find(device);
     if (it == layer_sharpen_g_States.end())
         return;
+    // Same decision as the overlay's: only the state built over this swapchain
+    // goes. A driver may hand the next swapchain the same handle (DOOM Eternal
+    // `20260922_235937` did), so a state kept past the destroy would pass the
+    // present-time generation check and draw through views of freed images.
+    ce::overlay_swapchain_lifetime::Input input = {};
+    input.overlayStateExists = it->second.initialized;
+    input.overlayStateSwapchain = SharpenSwapchainKey(it->second.swapchain);
+    input.destroyedSwapchain = SharpenSwapchainKey(swapchain);
+    if (!ce::overlay_swapchain_lifetime::Decide(input).release)
+        return;
+    LayerLog("Vulkan Layer: Releasing sharpen state built over swapchain %p before the driver destroys it", swapchain);
     DestroySharpenState(it->second, VulkanLayerState::Get().GetDeviceDispatch(device));
     layer_sharpen_g_States.erase(it);
 }
 
-void CleanupSharpenForSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
+void DestroyDeferredSharpenSemaphores(VkDevice device, VkSwapchainKHR swapchain) {
     std::lock_guard<std::mutex> lock(layer_sharpen_g_StateMutex);
-    auto it = layer_sharpen_g_States.find(device);
-    if (it == layer_sharpen_g_States.end() || it->second.swapchain != swapchain)
-        return;
-    DestroySharpenState(it->second, VulkanLayerState::Get().GetDeviceDispatch(device));
-    layer_sharpen_g_States.erase(it);
+    DrainDeferredSharpenSemaphoresLocked(device, swapchain, false);
 }
