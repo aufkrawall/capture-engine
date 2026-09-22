@@ -81,7 +81,6 @@ typedef float D3DVALUE;
 
 #include "../common/graphics_api_identity.h"
 
-#include "../common/input_manager.h"
 
 #include "../common/custom_overlay_d3d7.h"
 

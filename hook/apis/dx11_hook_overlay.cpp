@@ -337,7 +337,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         dx11_hook_g_CachedHwnd = currentHwnd;
         lastHwnd = currentHwnd;
 
-        InputManager::Get().HookWindow(currentHwnd);
         g_OverlayAdapter.SetHwnd(currentHwnd);
 
         if (g_OverlayAdapter.InitDX11(device, context)) {

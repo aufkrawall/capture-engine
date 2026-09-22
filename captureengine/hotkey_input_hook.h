@@ -19,9 +19,11 @@
 // A low-level keyboard hook runs ahead of that suppression. It consumes the
 // keystroke on a match, which is both the RegisterHotKey behaviour and the
 // reason the two paths can never both fire for one press: a consumed key
-// produces no WM_HOTKEY at all. The hook lives on its own thread that does
-// nothing but pump messages, so a busy controller thread can never stall the
-// system input queue.
+// produces no WM_HOTKEY at all. The hook lives on its own time-critical thread
+// that does nothing but pump messages and never logs, so neither a busy
+// controller thread nor a slow log write can stall the system input queue.
+// Everything the hook thread observes is counted and reported from the
+// controller thread by ReportHotkeyInputHookDiagnostics().
 
 // Registers one configured hotkey with the system and reports whether the
 // controller owns it. A combination another application registered first stays
@@ -34,7 +36,9 @@ bool RegisterConfiguredHotkey(int hotkeyId, const AppConfig::HotkeyConfig& hotke
 void PublishHotkeyBindings(const AppConfig& config, const HotkeyOwnership& ownership);
 
 // Starts the hook thread and routes matches to targetThreadId as
-// main_kMsgHotkeyFromInputHook. Returns false when the hook cannot be
+// main_kMsgHotkeyFromInputHook (wParam = hotkey id, lParam = virtual key).
+// Also registers the crash pre-dump callback that removes the hook before a
+// crash dump suspends this process. Returns false when the hook cannot be
 // installed; RegisterHotKey then remains the only delivery path, exactly as
 // before this hook existed.
 bool StartHotkeyInputHook(DWORD targetThreadId);
@@ -44,3 +48,12 @@ void StopHotkeyInputHook();
 
 // True while the hook is installed.
 bool IsHotkeyInputHookActive();
+
+// Hotkey presses the hook delivered since it started.
+uint64_t GetHotkeyInputHookDeliveredCount();
+
+// Logs what the hook thread counted since the previous call: presses that
+// could not be delivered, callbacks that answered late (keyboard input on the
+// whole desktop waited on CaptureEngine), re-arms, and hooks the system had
+// already removed. Controller thread only; cheap when nothing changed.
+void ReportHotkeyInputHookDiagnostics();

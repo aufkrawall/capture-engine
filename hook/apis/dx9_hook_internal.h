@@ -64,7 +64,6 @@ struct PresentTiming;
 
 #include "../common/graphics_api_identity.h"
 
-#include "../common/input_manager.h"
 
 #include "../common/overlay_adapter.h"
 

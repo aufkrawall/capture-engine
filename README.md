@@ -259,7 +259,6 @@ flowchart LR
     Controller["Controller<br/>tray, hotkeys, profiles, child supervision"]
     Inject["Inject host<br/>injection and shared-state owner"]
     Media["Disposable media process<br/>capture, mix, encode, mux, validate"]
-    Limiter["Optional limiter process"]
     Aux["Logger, sensor, and display-timing services"]
     AppAudio["App audio workers<br/>disposable per-source process-loopback workers"]
     Hook["Hook DLL<br/>inside the game"]
@@ -267,7 +266,6 @@ flowchart LR
 
     Controller -->|"authenticated private pipe"| Inject
     Controller -->|"authenticated private pipe"| Media
-    Controller -->|"authenticated private pipe"| Limiter
     Controller -->|"restricted child processes"| Aux
     Media <-->|"spawns; ordered packet ring"| AppAudio
     Inject -->|"injects"| Hook
@@ -291,10 +289,8 @@ flowchart LR
   spawned by the media process. The AudioSes COM graph stays out of the long-lived media process; only ordered packet
   records cross a private shared-ring/event boundary, and workers are recycled on target-process or activation
   lifecycle changes.
-- **Limiter process:** provides the optional process-side limiter role; basic and fallback timer cadence itself remains
-  hook-local, so it does not pay a cross-process round trip per frame.
 
-Controller-to-inject/media/limiter commands use a unique duplex named-pipe channel per child. Only the child's pipe
+Controller-to-inject/media commands use a unique duplex named-pipe channel per child. Only the child's pipe
 handle is inherited, the channel is restricted to the current user and SYSTEM, and startup authenticates the exact
 child PID, role, protocol, sequence, and a random 128-bit nonce. The high-volume shared-memory path is an exact,
 versioned ABI with size and layout fingerprints; mixed or stale binaries fail closed instead of reading shifted frame

@@ -26,6 +26,7 @@ std::atomic<bool> g_DumpSuccessfullyWritten{false};
 std::atomic<bool> g_ForceUnhandledDump{false};
 static std::atomic<bool> g_CrashTraceActive{false};
 static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
+static std::atomic<CrashPreDumpCallback> g_PreDumpCallback{nullptr};
 static std::atomic<bool (*)(const char*, bool)> g_ExternalCrashDumpCapture{nullptr};
 static std::atomic<bool (*)()> g_ForeignOverlayLoadedQuery{nullptr};
 static std::mutex g_TraceCrashMutex;
@@ -484,6 +485,18 @@ void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler) {
     g_ExecutionFaultHandler.store(handler, std::memory_order_release);
 }
 
+void RegisterCrashPreDumpCallback(CrashPreDumpCallback callback) {
+    g_PreDumpCallback.store(callback, std::memory_order_release);
+}
+
+void NotifyCrashPreDump() {
+    const CrashPreDumpCallback callback = g_PreDumpCallback.load(std::memory_order_acquire);
+    if (!callback)
+        return;
+    TraceCrash("Running pre-dump release callback");
+    callback();
+}
+
 void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks) {
     g_ExternalCrashDumpCapture.store(hooks.captureWithExternalHelper, std::memory_order_release);
     g_ForeignOverlayLoadedQuery.store(hooks.foreignOverlayLoaded, std::memory_order_release);
@@ -505,6 +518,10 @@ bool IsForeignOverlayLoadedForCrashDump() {
 
 LONG DispatchCrashExecutionFaultHandlerForTesting(EXCEPTION_POINTERS* pExceptionPointers) {
     return DispatchCrashExecutionFaultHandler(pExceptionPointers);
+}
+
+void NotifyCrashPreDumpForTesting() {
+    NotifyCrashPreDump();
 }
 
 // Trace function for debugging the crash handler itself

@@ -45,7 +45,6 @@ TEST(RecordingStartFeedbackSourceTest, ControllerClearsIntentOnEveryOwnedTermina
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("\"media readiness failure\""), std::string::npos);
-    EXPECT_NE(source.find("\"limiter readiness failure\""), std::string::npos);
     EXPECT_NE(source.find("\"inject start command failure\""), std::string::npos);
     EXPECT_NE(source.find("\"inject unavailable\""), std::string::npos);
     EXPECT_NE(source.find("\"audio-only media readiness failure\""), std::string::npos);
@@ -243,7 +242,6 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnS
     ASSERT_FALSE(source.empty());
     const std::vector<std::pair<std::string, bool>> cases = {
         {"\"media readiness failure\"", true},
-        {"\"limiter readiness failure\"", true},
         {"\"inject start command failure\"", true},
         {"\"inject unavailable\"", true},
         {"\"audio-only media readiness failure\"", false},

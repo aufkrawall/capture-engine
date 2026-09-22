@@ -179,8 +179,7 @@ void LaunchGameSuspended(const std::string& path) {
 
 // Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.
 bool ConnectToChildProcesses(DWORD) {
-    return (!main_g_hInjectProcess || main_g_InjectClient->IsConnected()) && (!main_g_hMediaProcess || main_g_MediaClient->IsConnected()) &&
-           (!main_g_hLimiterProcess || main_g_LimiterClient->IsConnected());
+    return (!main_g_hInjectProcess || main_g_InjectClient->IsConnected()) && (!main_g_hMediaProcess || main_g_MediaClient->IsConnected());
 }
 
 // Send command to all child processes
@@ -190,9 +189,6 @@ void SendCommandToAll(ProcessCommand cmd) {
     }
     if (main_g_MediaClient && main_g_MediaClient->IsConnected()) {
         main_g_MediaClient->SendCommand(cmd);
-    }
-    if (main_g_LimiterClient && main_g_LimiterClient->IsConnected()) {
-        main_g_LimiterClient->SendCommand(cmd);
     }
 }
 

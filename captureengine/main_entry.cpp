@@ -126,7 +126,6 @@ int ControllerMain(HINSTANCE hInstance) {
     // Create IPC clients
     main_g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
     main_g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
-    main_g_LimiterClient = std::make_unique<ProcessIPCClient>(ProcessMode::Limiter);
 
     main_g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
     main_g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
@@ -195,6 +194,11 @@ int ControllerMain(HINSTANCE hInstance) {
                 }
                 continue;
             }
+            if (msg.message == main_kMsgHotkeyFromInputHook) {
+                LogDebug("[Hotkey] Keyboard-hook delivery id=%d vk=0x%02X total=%llu", static_cast<int>(msg.wParam),
+                         static_cast<unsigned>(msg.lParam),
+                         static_cast<unsigned long long>(GetHotkeyInputHookDeliveredCount()));
+            }
             if (msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook) {
                 DispatchHotkey(static_cast<int>(msg.wParam));
                 continue;
@@ -204,6 +208,8 @@ int ControllerMain(HINSTANCE hInstance) {
         }
 
         const int64_t postMsgUs = Log_GetQpcUs();
+
+        ReportHotkeyInputHookDiagnostics();
 
         // A fatal media transport failure must clear controller ownership before
         // health recovery can mistake the intentional failed stop for a crash.
@@ -281,7 +287,6 @@ int ControllerMain(HINSTANCE hInstance) {
                     {
                         MainThreadBlockTimer _blk("config-reload service sync");
                         SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig);
-                        SyncLimiterProcess(main_g_Config);
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
 
@@ -529,7 +534,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
                                     : mode == ProcessMode::Inject   ? "Inject"
                                     : mode == ProcessMode::Media    ? "Media"
-                                    : mode == ProcessMode::Limiter  ? "Limiter"
                                     : mode == ProcessMode::Logger   ? "Logger"
                                     : mode == ProcessMode::Sensors  ? "Sensors"
                                                                     : "Unknown");
@@ -617,9 +621,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             break;
         case ProcessMode::Media:
             result = MediaProcessMain(main_g_Config);
-            break;
-        case ProcessMode::Limiter:
-            result = LimiterProcessMain(main_g_Config);
             break;
         case ProcessMode::Logger:
             result = LoggerProcessMain(main_g_Config);

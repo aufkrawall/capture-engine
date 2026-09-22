@@ -53,7 +53,6 @@ namespace {
 #include "../common/fg_detection.h"
 #include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
-#include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/overlay_compat.h"
 #include "../common/overlay_metrics_publisher.h"

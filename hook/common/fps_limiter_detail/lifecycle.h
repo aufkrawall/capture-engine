@@ -82,18 +82,6 @@ inline void FpsLimiter::ResetTraceLogPath() {
 
 inline void FpsLimiter::Shutdown() {
     {
-        std::lock_guard<std::mutex> lock(eventStateMutex_);
-        if (releaseEvent) {
-            CloseHandle(releaseEvent);
-            releaseEvent = NULL;
-        }
-        if (requestEvent) {
-            CloseHandle(requestEvent);
-            requestEvent = NULL;
-        }
-        eventsInitialized = false;
-    }
-    {
         std::lock_guard<std::mutex> lock(timerStateMutex_);
         if (highResTimer) {
             CancelWaitableTimer(highResTimer);
@@ -108,7 +96,6 @@ inline void FpsLimiter::Shutdown() {
         }
         highResTimerFailed = false;
     }
-    sessionIdPublished = false;
     loggedInactive_ = false;
     loggedNoEvent_ = false;
     loggedActive_ = false;

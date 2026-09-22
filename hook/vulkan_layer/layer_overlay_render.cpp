@@ -192,20 +192,6 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         return false;
     }
 
-    // Deferred window hook
-    if (state.needsWindowHook) {
-        HWND hwnd = GetForegroundWindow();
-        if (hwnd) {
-            DWORD foregroundPid = 0;
-            GetWindowThreadProcessId(hwnd, &foregroundPid);
-            if (foregroundPid == GetCurrentProcessId()) {
-                InputManager::Get().HookWindow(hwnd);
-                state.needsWindowHook = false;
-                LayerLog("Vulkan Layer: Deferred window hook successful (hwnd=%p)", hwnd);
-            }
-        }
-    }
-
     // Update metrics
     if (state.metrics) {
         state.metrics->Update(PerfLogger::GetQpcUs());

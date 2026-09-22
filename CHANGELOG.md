@@ -4,6 +4,18 @@
 
 Changes since [v0.1.6772](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6772).
 
+### Fixed
+
+- **Delayed keystrokes in other applications while a hotkey fired:** the global hotkey keyboard hook, which every keystroke on the desktop waits for, wrote a log line (with a disk flush under a process-wide lock) inside its callback. A slow flush, typically right when a recording starts, held keyboard input for every application. The hook thread now only counts. The controller does the logging.
+- **Keyboard input could wait on busy game threads:** the hotkey hook thread now runs at time-critical priority, so a game's high-priority render threads can no longer keep it from answering while all cores are busy.
+- **Silent loss of the hotkey keyboard hook:** Windows removes a keyboard hook without notice after repeated timeouts, which left hotkeys dead in games that suppress normal hotkeys (e.g. DOOM Eternal). A late answer is now detected, logged (`[Hotkey] Keyboard hook answered late`), and the hook is re-armed immediately; a removal Windows had already made is logged and repaired.
+- **Keyboard input froze during a CaptureEngine crash dump:** writing the controller's crash dump suspends its threads, including the keyboard hook's, so every keystroke on the desktop waited on the hook timeout until the dump finished. The hook is now removed before the dump starts.
+
+### Removed
+
+- **Limiter helper process:** the separate limiter process had not paced anything since frame pacing moved into the game process, but it still ran a highest-priority thread pinned to CPU core 1 with a spin-wait, which could delay other threads on that core, including input processing of unrelated applications. Its request wait could also spin a core at full load. It is gone. Capture-synced recording no longer waits for it or fails with "limiter readiness failure". The FPS limiter itself is unchanged.
+- **In-game window procedure hook:** the injected runtime no longer replaces the game window's message handler. It forwarded every window message (including every high-rate mouse input message) through a lock without using any of them, and made unloading riskier alongside other overlays.
+
 ## v0.1.6772
 
 Changes since [v0.1.6652](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6652).

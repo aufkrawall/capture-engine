@@ -9,10 +9,6 @@ HANDLE g_InjectDormantEvent = nullptr;
 std::atomic<bool> g_HookLifecycleBootstrapComplete{false};
 
 void QuiesceHostBoundCaptureResources() {
-  // Keep the WndProc link resident. A later third-party WndProc can retain
-  // HookWndProc as its predecessor, and HookWndProc is already a transparent
-  // forwarder. Rewriting GWLP_WNDPROC during cooperative dejection would add a
-  // needless race with overlays installing or replacing their own link.
   if (g_DX12Hook)
     g_DX12Hook->OnHostDisconnect();
   if (g_DX11Hook)

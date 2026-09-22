@@ -81,8 +81,6 @@ extern int InjectProcessMain(const AppConfig& config);
 
 extern int MediaProcessMain(const AppConfig& config);
 
-extern int LimiterProcessMain(const AppConfig& config);
-
 extern int LoggerProcessMain(const AppConfig& config);
 
 extern int SensorProcessMain(const AppConfig& config);
@@ -160,8 +158,6 @@ inline HANDLE main_g_hInjectProcess = NULL;
 
 inline HANDLE main_g_hMediaProcess = NULL;
 
-inline HANDLE main_g_hLimiterProcess = NULL;
-
 inline HANDLE main_g_hLoggerProcess = NULL;
 
 inline HANDLE main_g_hSensorProcess = NULL;
@@ -170,8 +166,6 @@ inline HANDLE main_g_hSensorProcess = NULL;
 inline std::unique_ptr<ProcessIPCClient> main_g_InjectClient;
 
 inline std::unique_ptr<ProcessIPCClient> main_g_MediaClient;
-
-inline std::unique_ptr<ProcessIPCClient> main_g_LimiterClient;
 
 inline TrayIcon* main_g_Tray = nullptr;
 
@@ -288,15 +282,6 @@ inline void PrepareRecordingDiagnosticIdentity() {
     LogInfo("[Controller] Recording diagnostic identity allocated: %s", g_RecordingId.c_str());
 }
 
-inline bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
-    return config.fpsLimiter.generalEnabled || (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
-}
-
-inline bool ShouldKeepLimiterProcessRunning(const AppConfig& config) {
-    return config.fpsLimiter.generalEnabled || (main_g_Recording && config.fpsLimiter.captureSyncEnabled) ||
-           (main_g_AutoRecordEnabled && config.fpsLimiter.captureSyncEnabled);
-}
-
 inline bool ShouldStartLoggerProcess(const AppConfig& config) {
     return IsAnyLoggingEnabled(config.logLevel);
 }
@@ -334,7 +319,6 @@ inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& co
              << (mode == ProcessMode::Controller ? "Controller"
                  : mode == ProcessMode::Inject   ? "Inject"
                  : mode == ProcessMode::Media    ? "Media"
-                 : mode == ProcessMode::Limiter  ? "Limiter"
                  : mode == ProcessMode::Logger   ? "Logger"
                  : mode == ProcessMode::Sensors  ? "Sensors"
                                                  : "Unknown")
@@ -478,11 +462,6 @@ inline bool EnsureMediaProcessReady(DWORD timeoutMs) {
     return EnsureChildProcessConnected(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), timeoutMs, "media");
 }
 
-inline bool EnsureLimiterProcessReady(DWORD timeoutMs) {
-    return EnsureChildProcessConnected(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), timeoutMs,
-                                       "limiter");
-}
-
 inline bool EnsureSensorProcessReady() {
     return EnsureChildProcessConnected(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, 0, "sensor");
 }
@@ -510,20 +489,6 @@ inline bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* cli
     }
     CloseProcessHandle(processHandle);
     return waitResult == WAIT_OBJECT_0;
-}
-
-inline void SyncLimiterProcess(const AppConfig& config) {
-    if (ShouldKeepLimiterProcessRunning(config)) {
-        EnsureLimiterProcessReady(10000);
-        return;
-    }
-
-    if (main_g_hLimiterProcess) {
-        LogInfo("[Controller] Limiter no longer needed; shutting it down");
-        ShutdownIpcChildProcess(main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter", 5000);
-    } else if (main_g_LimiterClient) {
-        main_g_LimiterClient->Disconnect();
-    }
 }
 
 inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {

@@ -164,7 +164,6 @@ bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7
     }
     ddraw_hook_g_DDrawCapture.ReleaseCompositeRegionResources();
     if (ddraw_hook_g_CachedHwnd) {
-        InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
         g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);
     }
     if (!g_OverlayAdapter.InitCpuRaster()) {

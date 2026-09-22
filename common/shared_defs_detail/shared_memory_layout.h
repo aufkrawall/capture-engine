@@ -264,23 +264,6 @@ public:
         void SetGeneralLimiterMode(uint32_t val) {
             generalLimiterMode_.store(val, std::memory_order_release);
         }
-
-        // Remote Limiter IPC
-        std::atomic<uint32_t> requestCount{0};  // Hook increments to request present
-        std::atomic<uint32_t> releaseCount{0};  // Limiter increments to release hook
-
-        // Named event for efficient signaling (hook waits, limiter signals)
-        wchar_t releaseEventName[64];  // Name of the release event (created by Limiter)
-
-        // NEW: Request event (Hook signals, Limiter waits)
-        wchar_t requestEventName[64];  // Name of the request event (created by Hook
-                                       // or Limiter?) -> Created by Limiter
-
-        // Session ID to detect hook restarts
-        std::atomic<uint32_t> hookSessionId{0};
-
-        // High-precision sync (Target QPC ticks for next frame)
-        std::atomic<int64_t> targetTimeTicks{0};
     } fpsLimiter;
 
     // Hook -> Host - shared texture ring.

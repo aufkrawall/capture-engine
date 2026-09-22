@@ -151,27 +151,12 @@ TEST_F(FpsLimiterTest, GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout)
     mockShm->fpsLimiter.SetGeneralFps(140);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
-    wchar_t releaseName[64] = {};
-    wchar_t requestName[64] = {};
-    swprintf(releaseName, 64, L"Local\\CE_TEST_LR_%lu_%lu", GetCurrentProcessId(), GetTickCount());
-    swprintf(requestName, 64, L"Local\\CE_TEST_LQ_%lu_%lu", GetCurrentProcessId(), GetTickCount());
-    wcscpy_s(mockShm->fpsLimiter.releaseEventName, releaseName);
-    wcscpy_s(mockShm->fpsLimiter.requestEventName, requestName);
-
-    HANDLE releaseEvent = CreateEventW(nullptr, FALSE, FALSE, releaseName);
-    HANDLE requestEvent = CreateEventW(nullptr, FALSE, FALSE, requestName);
-    ASSERT_NE(releaseEvent, nullptr);
-    ASSERT_NE(requestEvent, nullptr);
-
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
 
     limiter.Apply();
 
     QueryPerformanceCounter(&end);
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    CloseHandle(releaseEvent);
-    CloseHandle(requestEvent);
 
 // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)

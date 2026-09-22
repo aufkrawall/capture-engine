@@ -44,7 +44,6 @@ struct DX8Capture;
 
 #include "../common/frame_timing.h"
 
-#include "../common/input_manager.h"
 
 #include "../common/overlay_adapter.h"
 

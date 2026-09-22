@@ -286,24 +286,6 @@ int InjectProcessMain(const AppConfig& config) {
     SetPublicationBaseConfig(configPath, currentConfig);
     PublishResolvedConfig(pSharedMem, "startup");
 
-    // Create FPS limiter events (named for cross-process access)
-    wchar_t releaseEventName[64];
-    wchar_t requestEventName[64];
-    swprintf(releaseEventName, 64, L"Local\\CE_LR_%08X", GetCurrentProcessId());
-    swprintf(requestEventName, 64, L"Local\\CE_LQ_%08X", GetCurrentProcessId());
-    // SECURITY FIX: Use wcscpy_s instead of wcscpy to prevent buffer overflow
-    wcscpy_s(pSharedMem->fpsLimiter.releaseEventName, 64, releaseEventName);
-    wcscpy_s(pSharedMem->fpsLimiter.requestEventName, 64, requestEventName);
-
-    HANDLE hLimiterReleaseEvent = CreateEventW(NULL, FALSE, FALSE, releaseEventName);  // Auto-reset
-    HANDLE hLimiterRequestEvent = CreateEventW(NULL, FALSE, FALSE, requestEventName);  // Auto-reset
-
-    if (!hLimiterReleaseEvent || !hLimiterRequestEvent) {
-        LogError("[Inject] Failed to create limiter events: %lu", GetLastError());
-    } else {
-        LogInfo("[Inject] Created limiter events");
-    }
-
     InjectLifecycleControl injectLifecycle;
     injectLifecycle.Initialize();
 
@@ -682,11 +664,6 @@ int InjectProcessMain(const AppConfig& config) {
         CloseHandle(hDiscoveryFile);
     }
 
-    // Close limiter event handles
-    if (hLimiterReleaseEvent)
-        CloseHandle(hLimiterReleaseEvent);
-    if (hLimiterRequestEvent)
-        CloseHandle(hLimiterRequestEvent);
     if (hHookDll) {
         FreeLibrary(hHookDll);
     }

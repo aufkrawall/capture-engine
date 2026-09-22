@@ -179,8 +179,6 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
     dx12_hook_g_OverlayAdapterBackendQueue.store(queueForBackend, std::memory_order_release);
     dx12_hook_g_OverlayAdapterBackendFormat.store(static_cast<int>(format), std::memory_order_release);
 
-    InputManager::Get().HookWindow(hwnd);
-
     // We don't need SRV heap for ImGui anymore, OverlayAdapter manages its own
     // resources. But we might need it if we keep ImGui for menus? For now
     // assuming full replacement for overlay.

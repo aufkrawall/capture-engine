@@ -243,8 +243,50 @@ TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpaw
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("recoverProcess(ProcessMode::Inject"), std::string::npos);
     EXPECT_NE(source.find("recoverProcess(ProcessMode::Media"), std::string::npos);
-    EXPECT_NE(source.find("recoverProcess(ProcessMode::Limiter"), std::string::npos);
     EXPECT_NE(source.find("EnsureChildProcessConnected(mode, process, client"), std::string::npos);
+}
+
+// The limiter child process paced nothing after the hook took over pacing in
+// process, yet it kept a priority-31 (REALTIME + TIME_CRITICAL + MMCSS Pro
+// Audio) thread pinned to CPU 1 with a QPC spin-wait, and its request wait
+// busy-looped whenever the inject-created events could not be opened. A thread
+// like that holds every other thread whose ideal processor is CPU 1 - input
+// processing of unrelated applications included. It must not come back.
+TEST(ProcessIPCTest, RetiredLimiterProcessStaysRetired) {
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::current_path() / "captureengine" / "limiter_main.cpp"));
+    EXPECT_STREQ(GetLogFileName(static_cast<ProcessMode>(3)), "captureengine.log");
+    EXPECT_EQ(static_cast<uint32_t>(ProcessMode::Logger), 4u);
+    EXPECT_EQ(static_cast<uint32_t>(ProcessMode::Sensors), 5u);
+
+    char modeArgument[] = "--mode=limiter";
+    EXPECT_EQ(ParseProcessMode(modeArgument), ProcessMode::Controller);
+
+    const std::string controller = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(controller.empty());
+    EXPECT_EQ(controller.find("SpawnLimiter"), std::string::npos);
+    EXPECT_EQ(controller.find("limiter readiness"), std::string::npos);
+}
+
+// No CE thread may pin itself to a hard-coded processor or raise its own
+// process to the realtime class. Which core is quiet is a property of the
+// machine, and a realtime-class thread outranks the system's input processing.
+TEST(ProcessIPCTest, NoFirstPartyThreadPinsAHardCodedCoreOrRunsRealtime) {
+    const std::filesystem::path root = std::filesystem::current_path();
+    size_t scanned = 0;
+    for (const char* directory : {"captureengine", "common", "hook"}) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root / directory)) {
+            const std::string extension = entry.path().extension().string();
+            if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".h"))
+                continue;
+            std::ifstream stream(entry.path(), std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+            ++scanned;
+            EXPECT_EQ(text.find("SetThreadAffinityMask("), std::string::npos) << entry.path().string();
+            EXPECT_EQ(text.find("SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)"), std::string::npos)
+                << entry.path().string();
+        }
+    }
+    EXPECT_GT(scanned, 100u);
 }
 
 TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndpointRelease) {

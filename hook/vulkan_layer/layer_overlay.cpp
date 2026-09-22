@@ -280,16 +280,6 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     std::lock_guard<std::mutex> lock(g_OverlayMutex);
     LayerLog("Vulkan Layer: InitializeOverlay - Got mutex lock");
 
-    if (window) {
-        LayerLog("Vulkan Layer: InitializeOverlay - Hooking window...");
-        InputManager::Get().HookWindow(window);
-        LayerLog("Vulkan Layer: InitializeOverlay - Window hooked");
-    } else {
-        LayerLog(
-            "Vulkan Layer: [Warning] No window provided for overlay. Will "
-            "attempt deferred hook.");
-    }
-
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     LayerLog("Vulkan Layer: InitializeOverlay - Got device dispatch: %p", disp);
     if (!disp) {
@@ -330,7 +320,6 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.imageUsage = imageUsage;
     QueryFormatlessStorageSupport(state, instDisp, disp->formatFeatureFlags2Available);
     state.swapchainImages.assign(images, images + imageCount);
-    state.needsWindowHook = (window == nullptr);
 
     // NOTE: SystemMetricsCollector initialization is deferred until AFTER
     // overlay initialization succeeds to avoid race conditions

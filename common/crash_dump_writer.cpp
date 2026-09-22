@@ -649,6 +649,10 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    // Release what the rest of the desktop waits on before the dump suspends this
+    // process's threads.
+    NotifyCrashPreDump();
+
     // Copy the exception state out of the crashing thread's stack before handing it to a
     // thread that can outlive this filter. See the DumpParams comment: the 5 s wait below
     // expires routinely on large dumps, and the stack is reused as soon as the exception is

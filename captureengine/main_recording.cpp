@@ -92,21 +92,6 @@ void ToggleRecording() {
             return;
         }
 
-        bool limiterReady = true;
-        if (main_g_Config.fpsLimiter.captureSyncEnabled) {
-            MainThreadBlockTimer _blk("record-start limiter readiness wait");
-            limiterReady = EnsureLimiterProcessReady(10000);
-        }
-        if (!limiterReady) {
-            LogError("[Controller] Limiter process is not ready for capture-synced recording");
-            main_g_Recording = false;
-            if (main_g_Tray)
-                main_g_Tray->SetRecordingState(false);
-            PublishRecordingStartIntent(RecordingStartIntent::Idle, "limiter readiness failure");
-            PublishRecordingFailureOverlayNotification("limiter readiness failure", IsControllerLiveStreamOutput());
-            return;
-        }
-
         // Notify inject process - it sets shared memory flags and media polls them
         if (main_g_InjectClient && main_g_InjectClient->IsConnected()) {
             ProcessResponse resp;
@@ -318,10 +303,6 @@ void ShutdownChildProcesses() {
     const char* handleNames[5] = {};
     int handleCount = 0;
 
-    if (main_g_hLimiterProcess) {
-        handles[handleCount] = main_g_hLimiterProcess;
-        handleNames[handleCount++] = "Limiter";
-    }
     if (main_g_hMediaProcess) {
         handles[handleCount] = main_g_hMediaProcess;
         handleNames[handleCount++] = "Media";
@@ -393,8 +374,6 @@ void ShutdownChildProcesses() {
                         handleNames[i]);
                 }
             }
-            if (main_g_hLimiterProcess)
-                TerminateProcess(main_g_hLimiterProcess, 1);
             if (main_g_hMediaProcess)
                 TerminateProcess(main_g_hMediaProcess, 1);
             if (main_g_hInjectProcess)
@@ -409,8 +388,6 @@ void ShutdownChildProcesses() {
     }
 
     // Cleanup handles
-    if (main_g_hLimiterProcess)
-        CloseHandle(main_g_hLimiterProcess);
     if (main_g_hMediaProcess)
         CloseHandle(main_g_hMediaProcess);
     if (main_g_hInjectProcess)
@@ -420,7 +397,6 @@ void ShutdownChildProcesses() {
     if (main_g_hSensorProcess)
         CloseHandle(main_g_hSensorProcess);
 
-    main_g_hLimiterProcess = NULL;
     main_g_hMediaProcess = NULL;
     main_g_hInjectProcess = NULL;
     main_g_hLoggerProcess = NULL;
@@ -466,13 +442,8 @@ void CheckChildProcessHealth() {
     const bool injectUnavailable = recordingStartPending && recordingStartIntent == RecordingStartIntent::Video &&
                                    (!main_g_hInjectProcess || !IsProcessRunning(main_g_hInjectProcess) || !main_g_InjectClient ||
                                     !main_g_InjectClient->IsConnected());
-    const bool limiterUnavailable =
-        recordingStartPending && recordingStartIntent == RecordingStartIntent::Video &&
-        main_g_Config.fpsLimiter.captureSyncEnabled &&
-        (!main_g_hLimiterProcess || !IsProcessRunning(main_g_hLimiterProcess) || !main_g_LimiterClient ||
-         !main_g_LimiterClient->IsConnected());
-    if (mediaUnavailable || injectUnavailable || limiterUnavailable) {
-        const char* failedChild = mediaUnavailable ? "media" : (injectUnavailable ? "inject" : "limiter");
+    if (mediaUnavailable || injectUnavailable) {
+        const char* failedChild = mediaUnavailable ? "media" : "inject";
         LogError("[Controller] Required %s process/channel exited before recording became live; cancelling start intent",
                  failedChild);
         RequestRecordingStopAndReleaseMedia("required child exited before recording live", 1000);
@@ -544,13 +515,10 @@ void CheckChildProcessHealth() {
 
     static bool injectRecoveryFailure = false;
     static bool mediaRecoveryFailure = false;
-    static bool limiterRecoveryFailure = false;
     static bool sensorRecoveryFailure = false;
     recoverProcess(ProcessMode::Inject, main_g_hInjectProcess, main_g_InjectClient.get(), "inject", true, injectRecoveryFailure);
     recoverProcess(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), "media", main_g_hMediaProcess != nullptr,
                    mediaRecoveryFailure);
-    recoverProcess(ProcessMode::Limiter, main_g_hLimiterProcess, main_g_LimiterClient.get(), "limiter",
-                   main_g_hLimiterProcess != nullptr, limiterRecoveryFailure);
     recoverProcess(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, "sensor",
                    ShouldStartSensorProcess(main_g_Config), sensorRecoveryFailure);
 }
@@ -583,19 +551,6 @@ bool CompleteControllerStartup() {
         }
     } else {
         LogInfo("[Controller] Deferring media process startup until recording begins");
-    }
-
-    int64_t limiterSpawnUs = 0;
-    if (ShouldStartLimiterProcessAtStartup(main_g_Config)) {
-        const int64_t limiterSpawnStartUs = Log_GetQpcUs();
-        main_g_hLimiterProcess = SpawnChildProcess(ProcessMode::Limiter, main_g_ConfigPath.c_str(), main_g_LimiterClient.get());
-        limiterSpawnUs = Log_GetQpcUs() - limiterSpawnStartUs;
-        if (!main_g_hLimiterProcess) {
-            LogError("[Controller] Failed to spawn limiter process");
-            return false;
-        }
-    } else {
-        LogInfo("[Controller] Deferring limiter process startup until a limiter is enabled");
     }
 
     const int64_t auxSpawnStartUs = Log_GetQpcUs();
@@ -659,10 +614,10 @@ bool CompleteControllerStartup() {
     PrimeStartupCursor();
     LogInfo(
         "[StartupPerf] Controller startup: VulkanRegistration=%.3f ms, SpawnInject=%.3f ms, "
-        "SpawnMedia=%.3f ms, SpawnLimiter=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
+        "SpawnMedia=%.3f ms, SpawnAux=%.3f ms, IPCConnect=%.3f ms, TrayCreate=%.3f ms, "
         "RegisterHotkeys=%.3f ms, TotalToReady=%.3f ms",
         QpcDeltaToMs(main_g_ControllerStartupTiming.vulkanRegUs), QpcDeltaToMs(injectSpawnUs), QpcDeltaToMs(mediaSpawnUs),
-        QpcDeltaToMs(limiterSpawnUs), QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
+        QpcDeltaToMs(auxSpawnUs), QpcDeltaToMs(ipcConnectUs),
         QpcDeltaToMs(main_g_ControllerStartupTiming.trayCreateUs), QpcDeltaToMs(hotkeyUs),
         QpcDeltaToMs(Log_GetQpcUs() - main_g_ControllerStartupTiming.controllerStartUs));
 

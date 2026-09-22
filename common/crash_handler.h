@@ -38,6 +38,17 @@ using CrashExecutionFaultHandler = LONG (*)(EXCEPTION_POINTERS* pExceptionPointe
                                             ULONG_PTR faultAddr);
 void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
 
+// Optional callback run on the fatal-crash path right before this process
+// writes its own dump. Writing the dump suspends the process's other threads,
+// so anything the rest of the desktop waits on - the controller's low-level
+// keyboard hook - has to be released first, or every keystroke on the machine
+// waits for the system hook timeout until the dump is done. The callback runs
+// on the crashing thread with the process in an unknown state: it must be
+// idempotent, must not allocate or log, and must not wait unboundedly.
+// Passing nullptr unregisters it.
+using CrashPreDumpCallback = void (*)();
+void RegisterCrashPreDumpCallback(CrashPreDumpCallback callback);
+
 // Optional hook-module services for the crash-dump worker. The injected hook
 // runs inside a host process it does not own, where an in-process dbghelp dump
 // has to walk the module list through whatever foreign overlays have hooked the
@@ -75,4 +86,5 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
 
 #ifdef CE_UNIT_TESTS
 LONG DispatchCrashExecutionFaultHandlerForTesting(EXCEPTION_POINTERS* pExceptionPointers);
+void NotifyCrashPreDumpForTesting();
 #endif

@@ -47,16 +47,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         allowPostPresentReflexCadence && nativePacingBackend_.context && nativePacingBackend_.isAvailable &&
         nativePacingBackend_.setTargetFps && nativePacingBackend_.sleep;
 
-    // Publish session ID once — use QPC ticks for better entropy
-    if (!sessionIdPublished) {
-        LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
-        uint32_t sid = GetCurrentProcessId() ^ GetTickCount() ^ static_cast<uint32_t>(qpc.QuadPart) ^
-                       static_cast<uint32_t>(qpc.QuadPart >> 32);
-        shm->fpsLimiter.hookSessionId.store(sid, std::memory_order_release);
-        sessionIdPublished = true;
-        HookLog("FPS Limiter: Published Session ID: %u", sid);
-    }
 
     // One detection snapshot drives constraint arbitration, multiplier math,
     // and the driver interval so they cannot disagree about the FG runtime.
@@ -775,9 +765,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     if (localCadenceFirstFrame) {
         TraceLog(
             "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "
-            "events=%d/%d firstWaitUs=%lld firstLateUs=%lld site=%u strictGrid=%d",
+            "firstWaitUs=%lld firstLateUs=%lld site=%u strictGrid=%d",
             usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps, effectiveTargetFps,
-            cadenceTargetFps, cadenceScale, releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs,
+            cadenceTargetFps, cadenceScale, cadence.scheduledWaitUs,
             cadence.lateUs, static_cast<unsigned>(site), strictGrid ? 1 : 0);
         HookLog(
             "FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d, site=%u, "

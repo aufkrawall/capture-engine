@@ -123,7 +123,6 @@ static bool TrackOpenGLContext(HDC hdc) {
     HWND hwnd = WindowFromDC(hdc);
     if (hwnd && hwnd != opengl_hook_g_CachedHwnd) {
         opengl_hook_g_CachedHwnd = hwnd;
-        InputManager::Get().HookWindow(hwnd);
         g_OverlayAdapter.SetHwnd(hwnd);
     }
 
@@ -309,7 +308,6 @@ static void DrawOpenGLOverlay(HDC hdc) {
         HWND hwnd = WindowFromDC(hdc);
         if (hwnd) {
             opengl_hook_g_CachedHwnd = hwnd;
-            InputManager::Get().HookWindow(hwnd);
             g_OverlayAdapter.SetHwnd(hwnd);
         }
 

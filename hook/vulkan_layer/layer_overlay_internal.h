@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "../common/custom_overlay_vk.h"  // For VulkanBackend access
-#include "../common/input_manager.h"
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
 #include "../common/overlay_metrics_publisher.h"
@@ -93,7 +92,6 @@ struct OverlayState {
     bool storageFormatReadWithoutFormatSupported = false;
     bool storageFormatWriteWithoutFormatSupported = false;
     PerformanceMetrics* metrics = nullptr;
-    bool needsWindowHook = false;
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
     // GPU-side cost of the overlay's own command buffer. Two timestamps per

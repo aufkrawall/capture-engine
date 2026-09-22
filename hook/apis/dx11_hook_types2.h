@@ -108,7 +108,6 @@ extern ce::DeferredReleaseQueue g_DeferredRelease;
 
 #include <dxgi1_4.h>  // For IDXGISwapChain3
 
-#include "../common/input_manager.h"
 
 #include "../wrappers/custom_hook.h"
 

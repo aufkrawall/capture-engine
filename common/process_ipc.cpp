@@ -104,7 +104,7 @@ bool IsResponseAllowed(ProcessCommand command, ProcessResponse response) {
 }
 
 bool IsIpcMode(ProcessMode mode) {
-    return mode == ProcessMode::Inject || mode == ProcessMode::Media || mode == ProcessMode::Limiter;
+    return mode == ProcessMode::Inject || mode == ProcessMode::Media;
 }
 
 const wchar_t* ModeNameWide(ProcessMode mode) {
@@ -113,8 +113,6 @@ const wchar_t* ModeNameWide(ProcessMode mode) {
             return L"inject";
         case ProcessMode::Media:
             return L"media";
-        case ProcessMode::Limiter:
-            return L"limiter";
         case ProcessMode::Logger:
             return L"logger";
         case ProcessMode::Sensors:
@@ -130,8 +128,6 @@ const char* ModeName(ProcessMode mode) {
             return "inject";
         case ProcessMode::Media:
             return "media";
-        case ProcessMode::Limiter:
-            return "limiter";
         case ProcessMode::Logger:
             return "logger";
         case ProcessMode::Sensors:
@@ -325,8 +321,6 @@ ProcessMode ParseProcessMode(int argc, char* argv[]) {
             return ProcessMode::Inject;
         if (strcmp(argv[index], "--mode=media") == 0)
             return ProcessMode::Media;
-        if (strcmp(argv[index], "--mode=limiter") == 0)
-            return ProcessMode::Limiter;
         if (strcmp(argv[index], "--mode=logger") == 0)
             return ProcessMode::Logger;
         if (strcmp(argv[index], "--mode=sensors") == 0)
@@ -346,8 +340,6 @@ ProcessMode ParseProcessMode(LPSTR commandLine) {
         return ProcessMode::Inject;
     if (strncmp(mode, "media", 5) == 0 && HasModeTokenBoundary(mode, 5))
         return ProcessMode::Media;
-    if (strncmp(mode, "limiter", 7) == 0 && HasModeTokenBoundary(mode, 7))
-        return ProcessMode::Limiter;
     if (strncmp(mode, "logger", 6) == 0 && HasModeTokenBoundary(mode, 6))
         return ProcessMode::Logger;
     if (strncmp(mode, "sensors", 7) == 0 && HasModeTokenBoundary(mode, 7))
@@ -423,8 +415,6 @@ const char* GetLogFileName(ProcessMode mode) {
             return "inject.log";
         case ProcessMode::Media:
             return "media.log";
-        case ProcessMode::Limiter:
-            return "limiter.log";
         case ProcessMode::Logger:
             return "logger.log";
         case ProcessMode::Sensors:

@@ -9,7 +9,9 @@
 #include <mutex>
 #include <string>
 
-enum class ProcessMode : uint32_t { Controller = 0, Inject = 1, Media = 2, Limiter = 3, Logger = 4, Sensors = 5 };
+// Value 3 belonged to the retired limiter process; it stays unassigned so the
+// remaining values never change meaning.
+enum class ProcessMode : uint32_t { Controller = 0, Inject = 1, Media = 2, Logger = 4, Sensors = 5 };
 
 enum class ProcessCommand : uint16_t {
     None = 0,

@@ -380,7 +380,6 @@ TEST(InjectLifecycleSourceTest, DynamicDetachDoesNoLoaderLockCleanup) {
     EXPECT_NE(detach.find("RequestHookShutdown()"), std::string::npos);
     EXPECT_EQ(detach.find("InlineHook::RemoveAll()"), std::string::npos);
     EXPECT_EQ(detach.find("SafeShutdownHook("), std::string::npos);
-    EXPECT_EQ(detach.find("InputManager::Get().Shutdown()"), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, ProcessExitLatchesTheRuntimeDormantBeforeTeardownReleasesState) {

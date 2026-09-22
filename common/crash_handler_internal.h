@@ -76,6 +76,10 @@ std::string& CrashDumpDirectoryStorage();
 // handler; returns EXCEPTION_CONTINUE_SEARCH when nobody claims it.
 LONG DispatchCrashExecutionFaultHandler(EXCEPTION_POINTERS* pExceptionPointers);
 
+// Runs the registered CrashPreDumpCallback, if any. Called by the fatal path
+// once per dump attempt, before any thread of this process is suspended.
+void NotifyCrashPreDump();
+
 // The registered CrashDumpEnvironmentHooks accessors now live in the public
 // crash_handler.h, because the freeze watchdog needs the same decision.
 

@@ -422,7 +422,6 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
 
     if (capture.targetHwnd && capture.targetHwnd != ddraw_hook_g_CachedHwnd) {
         ddraw_hook_g_CachedHwnd = capture.targetHwnd;
-        InputManager::Get().HookWindow(ddraw_hook_g_CachedHwnd);
     }
     if (ddraw_hook_g_CachedHwnd) {
         g_OverlayAdapter.SetHwnd(ddraw_hook_g_CachedHwnd);

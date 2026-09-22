@@ -94,10 +94,6 @@ public:
     void ResetMissedFrames() {
         missedFrames = 0;
     }
-    bool IsEventsInitialized() const {
-        std::lock_guard<std::mutex> lock(eventStateMutex_);
-        return eventsInitialized;
-    }
     // Get last actual wait time in microseconds (for perf logging)
     int64_t GetLastWaitUs() const {
         return lastActualWaitUs_;
@@ -404,11 +400,7 @@ private:
 
     IPCClient* ipc = nullptr;
     SharedMemoryLayout* dbgShm = nullptr;  // Direct injection for testing
-    HANDLE releaseEvent = NULL;
-    HANDLE requestEvent = NULL;
     HANDLE highResTimer = NULL;  // High-resolution waitable timer (Win10 1803+)
-    bool eventsInitialized = false;
-    bool sessionIdPublished = false;
     bool timerResolutionSet = false;  // Whether timeBeginPeriod(1) was called
     bool highResTimerFailed = false;  // Fall back to polling if timer creation fails
     bool loggedInactive_ = false;     // Tracks whether the inactive log was already emitted
@@ -508,7 +500,6 @@ private:
     int lastCadenceTargetFps_ = 0;                       // Transition key: configured output cadence target
     int lastCadenceScale_ = 1;                           // Transition key: cadence scale (FG multiplier)
     int traceLogCount_ = 0;
-    mutable std::mutex eventStateMutex_;
     mutable std::mutex timerStateMutex_;
     mutable std::mutex cadenceMutex_;
     std::array<int64_t, 64> timerOvershootUs_{};
