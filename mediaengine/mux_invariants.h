@@ -18,23 +18,45 @@ enum class HeaderValidationIssue : uint8_t {
 enum class VideoOutputDisposition : uint8_t {
     kPublish = 0,
     kDiscardCancelled,
-    kDiscardFinalizeFailure,
     kDiscardNoVideo,
+    // The trailer or the final close reported an error, but committed video
+    // packets are already on disk. The recording is kept: see below.
+    kPublishAfterFinalizeFailure,
 };
 
+// A failed trailer or close never discards committed video. FFmpeg's
+// av_write_trailer returns the AVIOContext's sticky error, so a single
+// transient write failure anywhere in a multi-hour recording - or a full disk
+// while the final cues are written - used to delete the entire file. Everything
+// written before that point is still playable (Matroska without cues seeks
+// slower, but plays and remuxes), and deleting it is the one outcome the user
+// can never recover from.
 inline VideoOutputDisposition SelectVideoOutputDisposition(bool cancellationRequested, int trailerResult,
                                                            int closeResult, int64_t finalDurationUs,
                                                            uint64_t writtenVideoPackets) {
     if (cancellationRequested) {
         return VideoOutputDisposition::kDiscardCancelled;
     }
-    if (trailerResult < 0 || closeResult < 0) {
-        return VideoOutputDisposition::kDiscardFinalizeFailure;
-    }
     if (finalDurationUs <= 0 || writtenVideoPackets == 0) {
         return VideoOutputDisposition::kDiscardNoVideo;
     }
+    if (trailerResult < 0 || closeResult < 0) {
+        return VideoOutputDisposition::kPublishAfterFinalizeFailure;
+    }
     return VideoOutputDisposition::kPublish;
+}
+
+inline bool ShouldPublishVideoOutput(VideoOutputDisposition disposition) {
+    return disposition == VideoOutputDisposition::kPublish ||
+           disposition == VideoOutputDisposition::kPublishAfterFinalizeFailure;
+}
+
+// Audio-only recordings follow the same rule: once packets are committed, a
+// failed trailer or close keeps the file instead of deleting it. Without any
+// committed packet the old contract stands (publish only a cleanly finalized
+// file).
+inline bool ShouldPublishAudioOnlyOutput(bool trailerSucceeded, bool closeSucceeded, uint64_t writtenPackets) {
+    return writtenPackets > 0 || (trailerSucceeded && closeSucceeded);
 }
 
 inline const char* VideoOutputDispositionToString(VideoOutputDisposition disposition) {
@@ -43,8 +65,8 @@ inline const char* VideoOutputDispositionToString(VideoOutputDisposition disposi
             return "publish";
         case VideoOutputDisposition::kDiscardCancelled:
             return "cancelled-before-live";
-        case VideoOutputDisposition::kDiscardFinalizeFailure:
-            return "finalize-failure";
+        case VideoOutputDisposition::kPublishAfterFinalizeFailure:
+            return "publish-after-finalize-failure";
         case VideoOutputDisposition::kDiscardNoVideo:
             return "no-video-packets";
     }

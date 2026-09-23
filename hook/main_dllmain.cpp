@@ -92,7 +92,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       crashDir = ".\\logs";
     }
     CreateDirectoryA(crashDir.c_str(), NULL);
-    SetCrashDumpDirectory(crashDir);
+    // DllMain runs under the loader lock: never stage installed symbols here.
+    // The controller archives them into the session directory it owns.
+    SetCrashDumpDirectory(crashDir, /*archiveInstalledSymbols=*/false);
 
     // CRITICAL FIX: Install crash handler IMMEDIATELY for all non-service
     // processes Don't wait for whitelist check or graphics DLL detection -

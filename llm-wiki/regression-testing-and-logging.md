@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-08-11 (media-log cadence audit on sessions 20260811_032044 and 20260810_224930; held-mode entry log gating; 600-frame QUEUE STATS / 500-packet audio cadence; AppDiag kept at 1 s deliberately)
+Last cross-checked: 2026-09-23 (first-chance crash handling, helper exception streams, late IPC replies, output-finalization retention, and injected callback regressions)
 
 Primary sources:
 - `AGENTS.md`
@@ -36,7 +36,14 @@ Primary sources:
 - `hook/wrappers/inline_hook.cpp`
 - `hook/wrappers/inline_hook_policy.h`
 - `common/crash_dump_policy.h`
+- `common/crash_first_chance.{h,cpp}`
+- `common/crash_symbol_store.{h,cpp}`
 - `common/crash_handler.cpp`
+- `common/crash_dump_writer.cpp`
+- `captureengine/dump_helper.cpp`
+- `hook/main_fatal_dump.cpp`
+- `hook/common/dxgi_shared_steam_veh.cpp`
+- `hook/apis/ffx_hook_install.cpp`
 - `common/process_ipc.cpp`
 - `common/process_ipc.h`
 - `captureengine/media_main_encoder_05_loop_wgc_select.cpp`
@@ -288,7 +295,9 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Every classification is a range check against bounds cached by `CacheTerminationOriginModuleBounds()` while the fatal hooks are installed — the executable, CE's own image, and `ce::crash_dump_policy::kTerminationPlumbingModuleNames` (ntdll, kernel32, KERNELBASE, ucrtbase, msvcrt, vcruntime140). It deliberately makes no loader call on the termination path, where whatever is tearing the process down may already hold the loader lock, and where `NtTerminateProcess` is reached from `RtlExitUserProcess` with that lock held by the terminating thread itself. The plumbing list stays narrow rather than covering the Windows directory wholesale, because NVIDIA's FG runtimes load from the DriverStore under that directory and an FG runtime killing the process during teardown is exactly what the fallback exists to capture. Unresolved frames, an uncached executable and a stack of nothing but forwarding layers all resolve to `kUnknown`, which still dumps.
   - A suppressed dump is never silent: `FatalExitDump: Skipping pre-termination dump - the application terminated itself from its own image with a non-crash exit code` is logged once per process with the caller address and module **plus `requester=`/`requesterModule=`**, and the capture line carries `origin=primary-module|loaded-module|unknown` with the same requester pair. The two are what distinguish a genuine layered false positive from a real loaded-module exit.
 - `common/crash_dump_writer.cpp`
-  - The vectored handler sees every first-chance exception in the host process, so it classifies by NTSTATUS severity (`ce::crash_dump_policy::ShouldTreatFirstChanceExceptionAsCrash`): below error severity only the explicitly listed codes (breakpoint, UE5 `ensure`, the COM/DXGI set) are dump-worthy, everything else forwards untouched. An exception nobody handles still reaches the unhandled filter, which re-enters with `forceDump`. Wukong `20260817_052857` is the regression: CEF's exit-time `WTSUnRegisterSessionNotification` makes rpcrt4 raise `RPC_S_CALL_CANCELLED` (0x0000071A), which CE dumped as a crash twice.
+  - The vectored handler sees every first-chance exception in the host process (`ce::crash_dump_policy::ClassifyFirstChanceException`). A first-chance exception is not a crash: Mono (Unity) and the JVM turn access violations into null checks and safepoints, emulators map memory through them, .NET and LuaJIT raise error-severity codes for every managed/script exception. So only inherently fatal codes (stack overflow, fail-fast/GS, heap corruption, fatal user callback, assertion failure) and an undebugged breakpoint dump immediately, UE5 `ensure` gets its quick assert dump, application-defined codes (customer bit) and C++ EH are ignored, and every other error-severity fault is only **recorded** (`common/crash_first_chance.{h,cpp}`: fixed per-thread slots, no allocation/lock/I/O). A vectored continue handler forgets a thread's record when any handler resumes execution. The dump happens when the process dies of it: the unhandled filter re-enters with `forceDump`, and the pre-termination hooks dump a non-zero exit that follows an unresolved fault (`IsTerminationFollowingUnresolvedFault`: the terminating thread is still inside exception dispatch - a KiUserExceptionDispatcher/RtlRaiseException frame on its stack - or it holds a recorded fault on its own stack), using the recorded context. Wukong `20260817_052857` is the older regression (RPC_S_CALL_CANCELLED dumped twice); the 2026-09-23 audit is the newer one (each handled AV cost a dump stall, the dump budget and three crash.log writes). The duplicate last-position registration is gone.
+  - External-helper dumps carry the exception stream: `ExternalDumpException` passes the EXCEPTION_POINTERS address and thread id, and the x64 helper writes them with `ClientPointers=TRUE` (same-bitness targets only; `WriteSupplementalCrashDump` retries without the stream if dbghelp cannot read it). Freeze dumps prefer the helper whenever it is registered (`ShouldPreferExternalFreezeDumpHelper`).
+  - `RegisterWithWER` ORs its bits into the host's existing error mode and WER flags instead of replacing them.
   - With a foreign overlay loaded the worker captures through the external helper first and refuses the in-process fallback entirely (`ShouldPreferExternalCrashDumpHelper` + the existing `ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure`). dbghelp reads every module's version resource through the overlay's loader/version hooks while all other threads stay suspended; the same session measured 61.6 s per `MiniDumpNormal`. The hook publishes the helper and the overlay predicate through `RegisterCrashDumpEnvironmentHooks` before `InstallCrashHandler`; nothing registered keeps the plain in-process path (captureengine's own processes).
 - `hook/common/overlay_metrics_publisher.cpp`
   - Logs FG publication state changes and invariant violations.

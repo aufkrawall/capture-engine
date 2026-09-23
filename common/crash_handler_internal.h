@@ -64,9 +64,6 @@ extern std::atomic<bool> g_DumpAttemptInProgress;
 extern std::atomic<bool> g_DumpSuccessfullyWritten;
 extern std::atomic<bool> g_ForceUnhandledDump;
 extern std::atomic<int> g_VEHCallCount;
-extern std::atomic<int> g_RPCDisconnectedExceptionCount;
-extern std::atomic<int> g_RPCServerUnavailableExceptionCount;
-extern std::atomic<int> g_ENoInterfaceExceptionCount;
 extern MINIDUMPWRITEDUMP g_pMiniDumpWriteDump;
 
 // Dump-directory storage. Callers must hold g_DumpDirMutex.
@@ -88,6 +85,5 @@ void NotifyCrashPreDump();
 bool PromoteInProgressDumpFile(const char* tempDumpPath, const char* dumpPath, const char* traceContext,
                                bool* preservedTempDump);
 
-int IncrementExceptionCount(std::atomic<int>& counter);
 void ActivateCrashTrace();
 void RegisterWithWER();

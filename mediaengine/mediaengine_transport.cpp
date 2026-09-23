@@ -66,7 +66,17 @@ void MediaEngine::WritePacket(AVPacket* pkt) {
                 if (codec_tb.den > 0)
                     av_packet_rescale_ts(pkt, codec_tb, st->time_base);
             }
-            av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
+            const int writeResult = av_interleaved_write_frame(audioOnlyFmtCtx, pkt);
+            if (writeResult >= 0) {
+                ++audioOnlyWrittenPackets;
+            } else {
+                static std::atomic<uint32_t> s_audioOnlyWriteFailures{0};
+                const uint32_t failures = s_audioOnlyWriteFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (failures <= 4 || (failures & (failures - 1)) == 0) {
+                    DLL_Log("MediaEngine: ERROR audio-only packet write failed: %d (failure #%u, written=%llu)",
+                            writeResult, failures, static_cast<unsigned long long>(audioOnlyWrittenPackets));
+                }
+            }
         } else if (videoEnc) {
             videoEnc->WriteFrame(pkt);
         }

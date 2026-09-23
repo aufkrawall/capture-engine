@@ -219,8 +219,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
       CreateDirectoryA(sessionLogsDir.c_str(), NULL);
 
-      // Update crash dump directory to session folder
-      SetCrashDumpDirectory(sessionLogsDir);
+      // Update crash dump directory to session folder.
+      // The controller already archived this session's symbols; the hook never
+      // copies installed artifacts itself (least of all under the loader lock).
+      SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
 
       char perfLogPath[MAX_PATH];
       snprintf(perfLogPath, sizeof(perfLogPath),

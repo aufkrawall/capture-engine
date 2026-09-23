@@ -415,6 +415,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     LoadConfig(main_g_ConfigPath, main_g_Config);
 
     std::string logsRootDir = baseDir + "\\logs";
+    // Session symbol archives are hard links into one shared store below the
+    // logs root instead of a ~180 MB copy per session (see crash_symbol_store.h).
+    SetCrashSymbolStoreRoot(logsRootDir);
 
     // Determine session directory: Controller generates a new timestamped folder,
     // child processes inherit the name from --session-dir= on the command line.
@@ -608,6 +611,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         SetCrashDumpDirectory(crashDir);
+        if (mode == ProcessMode::Controller) {
+            // After this session linked its own symbols and old sessions were
+            // pruned: a store file nothing links anymore is no longer needed.
+            PruneCrashSymbolStore();
+        }
     }
 
     // Dispatch to appropriate process

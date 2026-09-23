@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include "crash_dump_policy.h"
+#include "crash_symbol_store.h"
 #include "logging.h"
 #include "secure_dll_loading.h"
 
@@ -27,7 +28,7 @@ std::atomic<bool> g_ForceUnhandledDump{false};
 static std::atomic<bool> g_CrashTraceActive{false};
 static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
 static std::atomic<CrashPreDumpCallback> g_PreDumpCallback{nullptr};
-static std::atomic<bool (*)(const char*, bool)> g_ExternalCrashDumpCapture{nullptr};
+static std::atomic<bool (*)(const char*, bool, const ExternalDumpException*)> g_ExternalCrashDumpCapture{nullptr};
 static std::atomic<bool (*)()> g_ForeignOverlayLoadedQuery{nullptr};
 static std::mutex g_TraceCrashMutex;
 // TraceCrash runs from a vectored exception handler, which Windows can re-enter
@@ -43,10 +44,8 @@ static std::mutex g_TraceCrashMutex;
 static std::atomic<DWORD> g_TraceCrashOwnerThread{0};
 std::atomic<DWORD> g_DumpDirMutexOwnerThread{0};
 std::atomic<int> g_VEHCallCount{0};
-std::atomic<int> g_RPCDisconnectedExceptionCount{0};
-std::atomic<int> g_RPCServerUnavailableExceptionCount{0};
-std::atomic<int> g_ENoInterfaceExceptionCount{0};
 static std::mutex g_SymbolArchiveMutex;
+static std::filesystem::path g_SymbolStoreDir;  // guarded by g_SymbolArchiveMutex
 MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 
 void TraceCrash(const char* msg);
@@ -165,15 +164,7 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
             continue;
         }
 
-        const std::filesystem::path destinationPath = archiveDir / entry.path().filename();
-        if (std::filesystem::exists(destinationPath)) {
-            continue;
-        }
-
-        std::filesystem::copy_file(entry.path(), destinationPath, std::filesystem::copy_options::none, ec);
-        if (ec) {
-            ec.clear();
-        }
+        ce::crash_symbols::PlaceArtifact(entry.path(), archiveDir / entry.path().filename(), g_SymbolStoreDir);
     }
 
     // Also copy PDB files directly to the symbols/ root directory so that cdb
@@ -198,15 +189,7 @@ void ArchiveInstalledCrashArtifactsForDumpDirectory(const std::string& dumpDir) 
             continue;
         }
 
-        const std::filesystem::path dest = symbolsRoot / entry.path().filename();
-        if (std::filesystem::exists(dest)) {
-            continue;
-        }
-
-        std::filesystem::copy_file(entry.path(), dest, std::filesystem::copy_options::none, ec);
-        if (ec) {
-            ec.clear();
-        }
+        ce::crash_symbols::PlaceArtifact(entry.path(), symbolsRoot / entry.path().filename(), g_SymbolStoreDir);
     }
 }
 
@@ -367,10 +350,6 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
            preservedTempDump;
 }
 
-int IncrementExceptionCount(std::atomic<int>& counter) {
-    return counter.fetch_add(1, std::memory_order_acq_rel) + 1;
-}
-
 void ActivateCrashTrace() {
     g_CrashTraceActive.store(true, std::memory_order_release);
 }
@@ -391,7 +370,11 @@ void RegisterWithWER() {
     // is the same rule the build itself follows (tools/build/build_common.py:
     // "crash reporting must keep producing the dumps this project debugs
     // from"), applied to the runtime.
-    SetErrorMode(SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
+    //
+    // The error mode is process state this module shares with its host (the
+    // game, when this is the injected hook), so CE adds its two bits instead of
+    // replacing whatever the host chose.
+    SetErrorMode(GetErrorMode() | SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
 
     // Enable WER crash dumps - this catches __fastfail and other exceptions
     // that bypass our VEH handler
@@ -400,8 +383,16 @@ void RegisterWithWER() {
         hWer = ce::security::LoadSystemLibrary(L"wer.dll");
     if (hWer) {
         typedef HRESULT(WINAPI * PFN_WerSetFlags)(DWORD);
+        typedef HRESULT(WINAPI * PFN_WerGetFlags)(HANDLE, PDWORD);
         auto pfnWerSetFlags = (PFN_WerSetFlags)GetProcAddress(hWer, "WerSetFlags");
+        auto pfnWerGetFlags = (PFN_WerGetFlags)GetProcAddress(hWer, "WerGetFlags");
         if (pfnWerSetFlags) {
+            // Like the error mode, the WER flags belong to the host process as
+            // well; keep the ones it already set.
+            DWORD existingWerFlags = 0;
+            if (!pfnWerGetFlags || FAILED(pfnWerGetFlags(GetCurrentProcess(), &existingWerFlags))) {
+                existingWerFlags = 0;
+            }
             // WER_FAULT_REPORTING_NO_UI (0x20) is what actually keeps WerFault
             // from putting a dialog on screen, and it has to be set explicitly:
             // this call used to pass 0x3 while claiming to pass NO_UI, but 0x3
@@ -417,7 +408,8 @@ void RegisterWithWER() {
             constexpr DWORD kWerFaultReportingFlagNoHeap = 0x00000001;
             constexpr DWORD kWerFaultReportingFlagQueue = 0x00000002;
             constexpr DWORD kWerFaultReportingNoUi = 0x00000020;
-            pfnWerSetFlags(kWerFaultReportingFlagNoHeap | kWerFaultReportingFlagQueue | kWerFaultReportingNoUi);
+            pfnWerSetFlags(existingWerFlags | kWerFaultReportingFlagNoHeap | kWerFaultReportingFlagQueue |
+                           kWerFaultReportingNoUi);
         }
     }
 
@@ -469,6 +461,21 @@ void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols)
     }
 }
 
+void SetCrashSymbolStoreRoot(const std::string& logsRoot) {
+    std::lock_guard<std::mutex> lock(g_SymbolArchiveMutex);
+    g_SymbolStoreDir =
+        logsRoot.empty() ? std::filesystem::path() : ce::crash_symbols::StoreDirForLogsRoot(logsRoot);
+}
+
+void PruneCrashSymbolStore() {
+    std::lock_guard<std::mutex> lock(g_SymbolArchiveMutex);
+    if (g_SymbolStoreDir.empty())
+        return;
+    const size_t removed = ce::crash_symbols::PruneUnreferencedStoreFiles(g_SymbolStoreDir);
+    if (removed > 0)
+        LogInfo("CrashHandler: Pruned %zu symbol-store file(s) no retained session references", removed);
+}
+
 std::string GetCrashDumpDirectory() {
     std::lock_guard<std::mutex> lock(g_DumpDirMutex);
     return CrashDumpDirectoryStorage();
@@ -506,9 +513,10 @@ bool HasExternalCrashDumpCapture() {
     return g_ExternalCrashDumpCapture.load(std::memory_order_acquire) != nullptr;
 }
 
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly) {
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly,
+                                        const ExternalDumpException* exception) {
     auto capture = g_ExternalCrashDumpCapture.load(std::memory_order_acquire);
-    return capture && dumpFileNameHint && dumpFileNameHint[0] && capture(dumpFileNameHint, stackOnly);
+    return capture && dumpFileNameHint && dumpFileNameHint[0] && capture(dumpFileNameHint, stackOnly, exception);
 }
 
 bool IsForeignOverlayLoadedForCrashDump() {

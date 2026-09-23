@@ -95,8 +95,10 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
 
     const std::string lifecycle = readFile(fs::current_path() / "hook" / "main_host_lifecycle.cpp");
     ASSERT_FALSE(lifecycle.empty());
-    EXPECT_NE(lifecycle.find("SetCrashDumpDirectory(sessionLogsDir)"), std::string::npos)
-        << "reactivation must re-point the crash dump directory to the new session";
+    EXPECT_NE(lifecycle.find("SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false)"),
+              std::string::npos)
+        << "reactivation must re-point the crash dump directory to the new session (the controller, not the "
+           "hook, archives that session's symbols)";
     EXPECT_NE(lifecycle.find("PerfLogger::Get().Init(perfLogPath, true)"), std::string::npos)
         << "reactivation must force-rebind the perf metrics CSV to the new session";
     EXPECT_NE(lifecycle.find("g_SharedFpsLimiter.ResetTraceLogPath()"), std::string::npos)

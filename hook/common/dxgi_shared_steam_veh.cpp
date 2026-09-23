@@ -1,5 +1,8 @@
 #include "dxgi_shared_internal.h"
 
+#include <atomic>
+#include <mutex>
+
 namespace DXGIShared {
 void** ResolveSteamNullCallbackSlotFromFault(uintptr_t returnAddress, uintptr_t steamStart, uintptr_t steamEnd) {
 
@@ -164,6 +167,13 @@ bool TryRecoverForeignOverlayInvokeCrash(PEXCEPTION_POINTERS ep) {
 }  // namespace
 
 LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
+    // Registered once for the whole process, so it must stay out of every fault
+    // that is not raised inside a guarded foreign Present on THIS thread. Before,
+    // any thread's `call rax` through NULL with a Steam return address - on any
+    // path, guarded or not - would have had Steam's memory patched.
+    if (!dxgi_shared_s_steamNullCallbackRecoveryContext.active) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION &&
         TryRecoverForeignOverlayInvokeCrash(ep)) {
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -180,7 +190,6 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
 
 #ifdef _WIN64
     const wchar_t* steamModuleName = L"gameoverlayrenderer64.dll";
-    const uintptr_t kSteamCallbackRva = 0x1621d8;
     const int kCallOpcodeSize = 2;  // FF D0 = call rax (2 bytes)
     // RIP=0, RAX=0: calling through NULL (`call rax` where RAX loaded from NULL ptr)
     if (ep->ContextRecord->Rip != 0 || ep->ContextRecord->Rax != 0) {
@@ -198,7 +207,6 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     }
 #else
     const wchar_t* steamModuleName = L"gameoverlayrenderer.dll";
-    const uintptr_t kSteamCallbackRva = 0x1621d8;
     const int kCallOpcodeSize = 2;  // FF D0 = call eax (2 bytes)
     // EIP=0, EAX=0: calling through NULL (`call eax` where EAX loaded from NULL ptr)
     if (ep->ContextRecord->Eip != 0 || ep->ContextRecord->Eax != 0) {
@@ -252,14 +260,18 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
 
     const SteamNullCallbackRecoveryContext recoveryContext = dxgi_shared_s_steamNullCallbackRecoveryContext;
     const void* patchTarget = SelectSteamNullCallbackRecoveryTarget(recoveryContext);
+    // Only a slot proven by the faulting `mov reg,[slot]; call reg` sequence is
+    // ever written. The former fallback wrote a fixed RVA (0x1621d8, taken from
+    // one 2025 x64 Steam build and applied to x86 as well); current Steam
+    // builds keep the callback elsewhere (RoboCop 20260809_141705: 0x167340),
+    // so the fallback wrote CE's pointer into whatever NULL-valued Steam global
+    // happened to live there.
     void** nullFnPtr = ResolveSteamNullCallbackSlotFromFault(returnAddress, steamStart, steamEnd);
     const bool dynamicallyResolvedSlot = nullFnPtr != nullptr;
-    if (!nullFnPtr) {
-        nullFnPtr = reinterpret_cast<void**>(steamStart + kSteamCallbackRva);
-    }
-    const uintptr_t resolvedRva = reinterpret_cast<uintptr_t>(nullFnPtr) - steamStart;
+    const uintptr_t resolvedRva = nullFnPtr ? reinterpret_cast<uintptr_t>(nullFnPtr) - steamStart : 0;
     void* callbackBefore = nullptr;
-    const bool callbackSlotReadable = IsReadableMemory(reinterpret_cast<const void*>(nullFnPtr), sizeof(void*));
+    const bool callbackSlotReadable =
+        nullFnPtr && IsReadableMemory(reinterpret_cast<const void*>(nullFnPtr), sizeof(void*));
     if (callbackSlotReadable) {
         callbackBefore = *nullFnPtr;
     }
@@ -287,8 +299,9 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
         }
     } else {
         HookLogImportant(
-            "SteamOverlayInitVehHandler: RVA 0x%zX not patchable (slot=%p readable=%d value=%p) - RVA may have "
-            "changed, skipping patch and falling back to crash skip context=%s reason=%s dynamicSlot=%d",
+            "SteamOverlayInitVehHandler: slot RVA 0x%zX not patchable (slot=%p readable=%d value=%p) - no "
+            "proven NULL slot, skipping the patch and returning from the NULL call context=%s reason=%s "
+            "dynamicSlot=%d",
             resolvedRva, nullFnPtr, callbackSlotReadable ? 1 : 0, callbackBefore,
             recoveryContext.context ? recoveryContext.context : "unknown",
             recoveryContext.reason ? recoveryContext.reason : "Present", dynamicallyResolvedSlot ? 1 : 0);
@@ -329,5 +342,26 @@ LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
     }
 
     return EXCEPTION_CONTINUE_EXECUTION;
+}
+}
+
+namespace DXGIShared {
+bool EnsureSteamNullCallbackRecoveryHandlerRegistered() {
+    static std::atomic<PVOID> s_handle{nullptr};
+    if (s_handle.load(std::memory_order_acquire))
+        return true;
+    static std::mutex s_registrationMutex;
+    std::lock_guard<std::mutex> lock(s_registrationMutex);
+    if (s_handle.load(std::memory_order_relaxed))
+        return true;
+    // First position: the recovery has to see the fault before CE's crash
+    // handler records it. The handler lives in this pinned module and is inert
+    // without an armed thread-local context, so it is never removed.
+    PVOID handle = AddVectoredExceptionHandler(1, SteamOverlayInitVehHandler);
+    if (!handle)
+        return false;
+    s_handle.store(handle, std::memory_order_release);
+    HookLogImportant("DXGIShared: Registered the process-lifetime Steam null-callback recovery handler (%p)", handle);
+    return true;
 }
 }

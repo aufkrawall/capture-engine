@@ -24,11 +24,15 @@ class MediaEngine;
 
 #include "matroska_timing.h"
 
+#include "mux_invariants.h"
+
 #include "process_loopback_capture.h"
 
 #include <dxgi1_5.h>
 
 #include <algorithm>
+
+#include <atomic>
 
 #include <cctype>
 
@@ -252,9 +256,11 @@ public:
     std::string audioOnlyFilename;
     ce::capture_output::ReservedCaptureOutput audioOnlyOutputReservation;
     bool audioOnlyTrailerSucceeded = false;
+    uint64_t audioOnlyWrittenPackets = 0;  // guarded by muxMutex
     std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 
     AppConfig config;
+    std::unique_ptr<AppConfig> deferredConfig;  // guarded by muxMutex
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
     bool recording;
     bool processLoopbackIntegrityFailureSignaled = false;
@@ -381,6 +387,8 @@ void PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain = false);
 
     // Create shared D3D11 textures for Vulkan games to import
 bool CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format, SharedMemoryLayout* sharedMem);void WritePacket(AVPacket* pkt);void ReloadConfig(const AppConfig* newConfig);
+    // Applies a ReloadConfig that arrived while a recording was live. Caller holds muxMutex.
+    void ApplyConfigDeferredDuringRecording();
 
 private:
     // Identity of an app-audio capture targeting a specific track. Two app-audio

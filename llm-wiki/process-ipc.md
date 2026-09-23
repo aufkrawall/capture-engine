@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-08-04 (media-owned completion and failure notifications, restricted process channels, immutable per-recording media evidence, limited-query process identity, non-inject sensor targets, accept-before-finalize media stops, Explorer tray recovery, and exact shared-memory ABI/build publication/isolation)
+Last cross-checked: 2026-09-23 (tolerated late ReloadConfig/Ping replies and recording-safe media config reload)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
@@ -66,11 +66,29 @@ The private pipe name is only a transient rendezvous used while the controller a
 ## The `ReloadConfig` Ack Budget
 
 A child's reply window is a contract on the work its handler may do, not a detail.
-`ProcessIPCClient::SendCommand` waits 1000 ms; a timeout genuinely desynchronizes
-the pipe's message framing, so the client closes the channel and
-`CheckChildProcessHealth::recoverProcess` spawns a replacement. That reaction is
-correct. The failure mode is a handler that is merely *slow*, because the
-controller cannot tell it apart from a dead one.
+`ProcessIPCClient::SendCommand` waits 1000 ms. For a state-changing command
+(start/stop recording, overlay toggles, shutdown) a timeout still closes the
+channel and `CheckChildProcessHealth::recoverProcess` spawns a replacement: the
+child may have acted on a command the controller concluded it had not, and the
+teardown is what makes the child unwind it. For `ReloadConfig` and `Ping`
+(`ClassifyReplyTimeout`, 2026-09-23) one missed reply keeps the channel: the
+sequence is remembered as unanswered and its late reply, if it comes, is discarded
+by the next command's read loop. A second miss while one is outstanding still
+breaks the channel - that child is not serving its pipe. Before this, one slow
+reload ack made the media child see a fatal disconnect and stop a live recording.
+The media child also acks `ReloadConfig` before doing the reload (an idle reload
+re-creates encoders). `tests/test_process_ipc_late_reply.cpp` drives a real client
+against an in-process fake child. The inject child still acks after the reload,
+because the controller reads what that handler publishes; its cost remains the
+contract described below.
+
+The media engine separately defers the config object itself when a reload
+arrives during a recording. Audio, frame, and stop paths read that object
+without `muxMutex`; replacing its strings and vectors in place raced those
+readers even though the reload never rebuilt the live encoders. The latest
+settings are applied under `muxMutex` at the next `StartRecording`, preserving
+the running recording's configuration. See `MediaEngine::ReloadConfig`,
+`ApplyConfigDeferredDuringRecording`, and `tests/test_mediaengine_config_reload.cpp`.
 
 For the inject child this is expensive far beyond the child itself. Losing the
 host makes every injected hook run `DeactivateHookRuntimeAndWaitForHost`: graphics

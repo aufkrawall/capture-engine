@@ -638,7 +638,7 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
     const auto disposition = ce::mux::SelectVideoOutputDisposition(
         discardOutputRequested.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
         writtenVideoPackets);
-    if (disposition != ce::mux::VideoOutputDisposition::kPublish) {
+    if (!ce::mux::ShouldPublishVideoOutput(disposition)) {
         const bool removed = outputReservation.CleanupOwnedFile();
         DLL_Log(
             "[VideoEncoder] output_discarded reason=%s durationUs=%lld videoPackets=%llu trailer=%d close=%d "
@@ -647,6 +647,14 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
             static_cast<unsigned long long>(writtenVideoPackets), trailerResult, closeResult, removed ? 1 : 0,
             OutputTargetForLog().c_str());
         return false;
+    }
+    if (disposition == ce::mux::VideoOutputDisposition::kPublishAfterFinalizeFailure) {
+        DLL_Log(
+            "[VideoEncoder] ERROR: output finalize reported an error (trailer=%d close=%d) after %llu committed video "
+            "packets (durationUs=%lld); keeping the recording - its index may be incomplete, so seeking can be "
+            "slower until it is remuxed",
+            trailerResult, closeResult, static_cast<unsigned long long>(writtenVideoPackets),
+            static_cast<long long>(finalDurationUs));
     }
 
     const fs::path outputDirectory = ce::capture_output::ResolveCaptureDirectory(

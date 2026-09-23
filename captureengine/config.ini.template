@@ -1140,7 +1140,8 @@ dx12_focus_analysis=false
 ; always = also load the DLL with WGC, DXGI Duplication, or no video so the
 ;          injected overlay and graphics overrides can work.
 ; never = block DLL loading. If the selected video source is inject, this profile
-;         has no video route.
+;         has no video route. This also keeps CaptureEngine's Vulkan layer out:
+;         the layer only enters applications that are injection targets.
 ; when_needed = the normal behavior described above. This value remains accepted,
 ;               but the setting can simply be left out.
 ;

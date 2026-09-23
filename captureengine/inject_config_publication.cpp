@@ -6,6 +6,9 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -17,6 +20,7 @@
 #include "../common/logging.h"
 #include "../common/process_identity.h"
 #include "../common/shared_defs.h"
+#include "../common/vulkan_layer_target_list.h"
 #include "inject_config.h"
 
 namespace {
@@ -284,6 +288,48 @@ bool TogglePublishedOverlayVisibility(SharedMemoryLayout* sharedMemory) {
     return publication.overlayVisibility.showOverlay;
 }
 
+// Persists the injection whitelist next to the Vulkan layer, for the layer's
+// negotiation-time decision while no host is running (vulkan_layer_target_list.h).
+// Written only when the contents change, and through a replacing rename so the
+// layer never reads a half-written list.
+static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) {
+    std::wstring exePath(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
+    if (length == 0 || length >= exePath.size()) {
+        LogWarn("[Inject] Vulkan layer target list not written: executable path unavailable");
+        return;
+    }
+    exePath.resize(length);
+    const std::filesystem::path listPath =
+        std::filesystem::path(exePath).parent_path() / ce::vulkan_layer_targets::kTargetListFileName;
+    const std::string contents = ce::vulkan_layer_targets::SerializeTargetList(names);
+
+    {
+        std::ifstream existing(listPath, std::ios::binary);
+        if (existing) {
+            const std::string current((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
+            if (current == contents)
+                return;
+        }
+    }
+    const std::filesystem::path temporary = listPath.wstring() + L".tmp";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out << contents;
+        if (!out) {
+            LogWarn("[Inject] Vulkan layer target list not written (temporary file unwritable)");
+            return;
+        }
+    }
+    if (!MoveFileExW(temporary.c_str(), listPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        LogWarn("[Inject] Vulkan layer target list not replaced (error=%lu)", GetLastError());
+        std::error_code ec;
+        std::filesystem::remove(temporary, ec);
+        return;
+    }
+    LogInfo("[Inject] Vulkan layer target list updated (%zu executable(s))", names.size());
+}
+
 void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
     if (!discovery)
         return;
@@ -291,9 +337,11 @@ void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
 
     char* output = discovery->processWhitelist;
     char* end = output + sizeof(discovery->processWhitelist) - 2;
+    std::vector<std::string> persistedNames;
     auto addName = [&](const std::string& name) {
         if (name.empty())
             return;
+        persistedNames.push_back(name);
         const size_t length = name.length();
         if (output + length + 1 < end) {
             std::string lower = name;
@@ -326,6 +374,7 @@ void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
         addName("vulkan_test.exe");
     }
     *output = '\0';
+    PersistVulkanLayerTargetList(persistedNames);
     LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu traceExtras=%d", gameCount,
             overlayCount, IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
 }

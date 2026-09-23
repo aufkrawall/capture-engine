@@ -121,32 +121,11 @@ void LaunchGameSuspended(const std::string& path) {
             s_launcherInjector = std::make_shared<InjectionManager>(main_g_Config);
             auto& injector = s_launcherInjector;
 
-            // Determine DLL path based on target architecture
-            BOOL isWow64 = FALSE;
-            HANDLE hCheckProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pi.dwProcessId);
-            if (hCheckProcess) {
-                IsWow64Process(hCheckProcess, &isWow64);
-                CloseHandle(hCheckProcess);
-            }
-
-            std::string hookDllPath;
-            char buffer[MAX_PATH];
-            const DWORD modulePathChars = GetModuleFileNameA(NULL, buffer, MAX_PATH);
-            const size_t lastSeparator =
-                (modulePathChars > 0 && modulePathChars < MAX_PATH)
-                    ? std::string(buffer).find_last_of("\\/")
-                    : std::string::npos;
-            if (modulePathChars == 0 || modulePathChars >= MAX_PATH || lastSeparator == std::string::npos) {
-                LogError("[Launcher] Cannot resolve the application directory reliably (chars=%lu); resuming %s "
-                         "without injection",
-                         static_cast<unsigned long>(modulePathChars), launchCommand.fileName.c_str());
-                ResumeThread(pi.hThread);
-            } else {
-                const std::string baseDir = std::string(buffer).substr(0, lastSeparator);
-                hookDllPath = isWow64 ? (baseDir + "\\capture_hook_x86.dll") : (baseDir + "\\capture_hook_x64.dll");
-
-                // Try early APC injection first (runs before import resolution)
-                bool injected = injector->InjectEarly(pi.dwProcessId, hookDllPath, pi.hThread);
+            {
+                // Try early APC injection first (runs before import resolution). The
+                // injector selects the hook DLL for the target's architecture from its
+                // own UTF-16 install path.
+                bool injected = injector->InjectEarly(pi.dwProcessId, pi.hThread);
 
                 if (injected) {
                     LogInfo("[Launcher] Early APC injection successful. Resuming thread.");

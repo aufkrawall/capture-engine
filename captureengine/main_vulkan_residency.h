@@ -32,11 +32,15 @@ inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan(
 // the consequence: no vulkan_layer*.log at all, no Vulkan ownership claim, and
 // the hook falling through to the D3D path with no overlay.
 //
-// Residency is safe because the layer is inert without a host: it finds no
-// discovery mapping, reports itself not whitelisted, stays in passthrough for
-// every entry point, and logs nothing. When a host does appear, the injector
-// signals the per-PID Vulkan reactivation event and the resident layer wakes up
-// and late-initializes the overlay on its next present. This is also how every
+// Residency does not put CE into every Vulkan application: the layer declines
+// at vkNegotiateLoaderLayerInterfaceVersion in any process that is not an
+// injection target - by the running host's whitelist, or, with no host, by the
+// whitelist the injector persisted next to the layer - so the loader leaves it
+// out of that instance and unloads it (common/vulkan_layer_target_list.h).
+// A whitelisted title started before CaptureEngine keeps the layer resident and
+// dormant; when a host appears, the injector signals the per-PID Vulkan
+// reactivation event and the layer late-initializes the overlay on its next
+// present. This is also how every
 // other resident Vulkan overlay on this system is registered (Steam, OBS, RTSS,
 // EOS). `DISABLE_CE_VULKAN_LAYER=1` disables it per app, and
 // `layer_register.exe --unregister` removes it entirely.

@@ -21,16 +21,29 @@ TEST(InjectionPathPolicyTest, RejectsSiblingPrefixesAndOutsidePaths) {
     EXPECT_FALSE(ce::injection::IsPathInsideDirectory("C:\\appdir\\capture_hook_x64.dll", ""));
 }
 
-// The wide conversion feeds WinVerifyTrust. ASCII paths must round-trip
-// byte-for-byte, and empty input must fail closed (empty output) so callers can
-// reject it instead of verifying an arbitrary path.
-TEST(InjectionPathPolicyTest, AnsiPathToWideRoundTripsAsciiAndFailsClosedOnEmpty) {
-    const std::string asciiPath = "C:\\Programme\\captureengine\\capture_hook_x64.dll";
-    const std::wstring wide = ce::injection::AnsiPathToWide(asciiPath);
-    ASSERT_EQ(wide.size(), asciiPath.size());
-    for (size_t index = 0; index < asciiPath.size(); ++index) {
-        ASSERT_EQ(wide[index], static_cast<wchar_t>(static_cast<unsigned char>(asciiPath[index])));
-    }
+TEST(InjectionPathPolicyTest, WideContainmentMatchesNarrowSemantics) {
+    EXPECT_TRUE(ce::injection::IsPathInsideDirectory(L"C:\\appdir\\capture_hook_x64.dll", L"C:\\appdir"));
+    EXPECT_FALSE(ce::injection::IsPathInsideDirectory(L"C:\\appdir2\\capture_hook_x64.dll", L"C:\\appdir"));
+    EXPECT_FALSE(ce::injection::IsPathInsideDirectory(L"C:\\appdir\\capture_hook_x64.dll", L""));
+}
 
-    EXPECT_TRUE(ce::injection::AnsiPathToWide("").empty());
+// Regression: the injector used GetModuleFileNameA + LoadLibraryA, so an install
+// directory containing characters outside the system ANSI code page became
+// '?'-mangled and no process could be injected. The path now stays UTF-16 up to
+// the remote LoadLibraryW; this pins that a non-ANSI directory survives intact.
+TEST(InjectionPathPolicyTest, NonAnsiInstallDirectoryRoundTripsLosslessly) {
+    const std::wstring path =
+        L"C:\\Users\\\u042E\u043B\u0438\u044F\\\u30B2\u30FC\u30E0\\capture_hook_x64.dll";
+    const std::string utf8 = ce::injection::WidePathToUtf8(path);
+    ASSERT_FALSE(utf8.empty());
+    EXPECT_EQ(utf8.find('?'), std::string::npos);
+    const int wideLength =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.c_str(), static_cast<int>(utf8.size()), nullptr, 0);
+    ASSERT_EQ(wideLength, static_cast<int>(path.size()));
+    std::wstring roundTrip(static_cast<size_t>(wideLength), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), static_cast<int>(utf8.size()), roundTrip.data(), wideLength);
+    EXPECT_EQ(roundTrip, path);
+
+    EXPECT_EQ(ce::injection::RemoteWidePathBytes(path), (path.size() + 1) * sizeof(wchar_t));
+    EXPECT_TRUE(ce::injection::WidePathToUtf8(L"").empty());
 }

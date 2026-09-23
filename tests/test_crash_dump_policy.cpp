@@ -322,40 +322,88 @@ TEST(CrashDumpPolicyTest, InProcessDumpFallbackRefusedWithForeignOverlayLoaded) 
 }
 
 TEST(CrashDumpPolicyTest, FirstChanceExceptionsBelowErrorSeverityAreNotCrashes) {
+    using Action = policy::FirstChanceAction;
     // Black Myth: Wukong exit (session 20260817_052857): CEF cancels its session
     // notification wait while shutting down and rpcrt4 raises
     // RPC_S_CALL_CANCELLED (0x0000071A) through RaiseException. RPC handles it
     // itself. CE classified it as a crash twice, froze the exiting game for
     // ~62 s per dump, and then had no dump budget left for the real access
     // violation that followed.
-    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x0000071AUL, false));
-    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x406D1388UL, false));  // thread naming
-    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x40010006UL, false));  // OutputDebugString
-    EXPECT_FALSE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x000006BAUL, false));  // RPC_S_SERVER_UNAVAILABLE win32
-
-    // Real faults keep their dump.
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_ACCESS_VIOLATION, false));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_STACK_OVERFLOW, false));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_ILLEGAL_INSTRUCTION, false));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(policy::kFailFastExceptionExitCode, false));
-
-    // Every code the exception filter reasons about explicitly must survive the
-    // severity gate, so its own counting/threshold rules still decide.
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(EXCEPTION_BREAKPOINT, false));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(policy::kUe5EnsureExceptionCode, false));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80010108UL, false));  // RPC_E_DISCONNECTED
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80004002UL, false));  // E_NOINTERFACE
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x80004005UL, false));  // E_FAIL
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x800706baUL, false));  // RPC_S_SERVER_UNAVAILABLE
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x8876086aUL, false));  // DXGI_ERROR_DEVICE_RESET
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0006UL, false));  // DXGI_ERROR_DEVICE_HUNG
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0007UL, false));  // DXGI_ERROR_DEVICE_REMOVED
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x887a0020UL, false));  // DXGI_ERROR_ACCESS_LOST
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x0000071AUL, false, false), Action::kIgnore);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x406D1388UL, false, false), Action::kIgnore);  // thread naming
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x40010006UL, false, false), Action::kIgnore);  // OutputDebugString
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x000006BAUL, false, false), Action::kIgnore);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xE06D7363UL, false, false), Action::kIgnore);  // MSVC C++ EH
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x20474343UL, false, false), Action::kIgnore);  // GCC C++ EH
 
     // The top-level unhandled filter re-enters with forceDump, so an exception
-    // that really did terminate the process is never lost to this gate.
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x0000071AUL, true));
-    EXPECT_TRUE(policy::ShouldTreatFirstChanceExceptionAsCrash(0x406D1388UL, true));
+    // that really did reach it is never lost to this gate.
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x0000071AUL, true, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_ACCESS_VIOLATION, true, false), Action::kDumpNow);
+}
+
+// Regression: every first-chance error-severity exception was dumped. Mono
+// (Unity) and the JVM handle access violations as null checks and safepoints,
+// emulators as memory mapping, .NET and LuaJIT raise error-severity codes for
+// every managed/script exception - each of them cost an in-process dump stall,
+// the process's only dump budget, and three crash.log writes per exception.
+TEST(CrashDumpPolicyTest, FirstChanceFaultsAreRecordedNotDumped) {
+    using Action = policy::FirstChanceAction;
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_ACCESS_VIOLATION, false, false), Action::kRecordFault);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_ILLEGAL_INSTRUCTION, false, false), Action::kRecordFault);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_PRIV_INSTRUCTION, false, false), Action::kRecordFault);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_INT_DIVIDE_BY_ZERO, false, false), Action::kRecordFault);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_IN_PAGE_ERROR, false, false), Action::kRecordFault);
+
+    // Application-defined codes (customer bit) are software raises a runtime
+    // handles itself; an unhandled one reaches the top-level filter.
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xE0434352UL, false, false), Action::kIgnore);  // .NET
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xE24C4A02UL, false, false), Action::kIgnore);  // LuaJIT
+    EXPECT_TRUE(policy::IsApplicationDefinedExceptionCode(0xE0434352UL));
+    EXPECT_FALSE(policy::IsApplicationDefinedExceptionCode(EXCEPTION_ACCESS_VIOLATION));
+
+    // COM/DXGI HRESULTs raised as exceptions are handled by their raisers; they
+    // no longer dump at first chance.
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x80010108UL, false, false), Action::kIgnore);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x887a0007UL, false, false), Action::kIgnore);
+}
+
+TEST(CrashDumpPolicyTest, InherentlyFatalCodesStillDumpImmediately) {
+    using Action = policy::FirstChanceAction;
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_STACK_OVERFLOW, false, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(policy::kFailFastExceptionExitCode, false, false),
+              Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xC0000374UL, false, false), Action::kDumpNow);  // heap corruption
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xC000041DUL, false, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(policy::kUe5EnsureExceptionCode, false, false),
+              Action::kQuickAssertDump);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true), Action::kIgnore);
+}
+
+// A recorded fault becomes a dump when the process dies of it: the terminating
+// thread is still inside that exception's dispatch (a game's own unhandled
+// filter or crash reporter calling TerminateProcess), or it recorded a fault no
+// handler resumed from. A clean zero exit never qualifies.
+TEST(CrashDumpPolicyTest, TerminationFollowingAnUnresolvedFaultIsDumped) {
+    EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(3, true, false));
+    EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(1, false, true));
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(0, true, true));
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(3, false, false));
+
+    // Exit code 3 from the game's own image is normally suppressed ...
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 3, false, true,
+                                                         policy::TerminationOrigin::kPrimaryModule));
+    // ... but not when it follows a fault the process never recovered from.
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 3, false, false,
+                                                        policy::TerminationOrigin::kPrimaryModule, true));
+    // The once-per-process budget and the sentinel exit codes still win.
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 3, true, false,
+                                                         policy::TerminationOrigin::kPrimaryModule, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kProcessIsTerminatingExitCode, false, false,
+                                                         policy::TerminationOrigin::kUnknown, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(false, 3, false, false,
+                                                         policy::TerminationOrigin::kUnknown, true));
 }
 
 TEST(CrashDumpPolicyTest, ExceptionSeverityClassificationFollowsNtstatusBits) {
@@ -541,6 +589,14 @@ TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
         << "dropping SEM_NOGPFAULTERRORBOX is only safe while the WER fault-report UI is suppressed here";
     EXPECT_EQ(flagsCall.find("0x00000003"), std::string::npos)
         << "0x3 is NOHEAP | QUEUE, which does not suppress the dialog";
+
+    // Both are process-wide settings of the HOST process when this is the
+    // injected hook: CE adds its bits and keeps what the game already chose.
+    EXPECT_NE(errorModeCall.find("GetErrorMode() |"), std::string::npos)
+        << "SetErrorMode replaces the whole mode; the game's own flags must survive";
+    EXPECT_NE(flagsCall.find("existingWerFlags |"), std::string::npos)
+        << "WerSetFlags replaces the whole flag set; the game's own flags must survive";
+    EXPECT_NE(handler.find("pfnWerGetFlags(GetCurrentProcess(), &existingWerFlags)"), std::string::npos);
 
     // The named constants must match werapi.h, since CE mirrors rather than
     // includes them.

@@ -184,11 +184,16 @@ bool ShouldForceFifoNow() {
 using IsLiveVulkanSurfaceHwndFn = BOOL (*)(HWND);
 
 IsLiveVulkanSurfaceHwndFn ResolveLiveSurfaceHwndQuery() {
-    HMODULE layer = GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll");
-    if (!layer)
-        layer = GetModuleHandleW(L"VK_LAYER_CE_overlay.dll");
-    if (!layer)
+    // The resolved pointer is cached for the process lifetime, so the module
+    // behind it must never unmap. The layer pins itself only once it takes part
+    // in an instance (it declines, and is unloaded, in non-target processes),
+    // so the cache takes its own pin instead of relying on that.
+    HMODULE layer = nullptr;
+    const DWORD pinFlags = GET_MODULE_HANDLE_EX_FLAG_PIN;
+    if (!GetModuleHandleExW(pinFlags, L"VK_LAYER_CE_overlay_x86.dll", &layer) &&
+        !GetModuleHandleExW(pinFlags, L"VK_LAYER_CE_overlay.dll", &layer)) {
         return nullptr;
+    }
     return reinterpret_cast<IsLiveVulkanSurfaceHwndFn>(
         GetProcAddress(layer, "CEVulkanLayerIsLiveVulkanSurfaceHwnd"));
 }

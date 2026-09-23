@@ -606,7 +606,19 @@ struct SteamNullCallbackRecoveryContext {
     void* bypass = nullptr;
     bool streamlineStackActive = false;
     bool pluginLookupGuardReady = false;
+    // Set only while a guard on THIS thread is armed. The vectored handler is
+    // process-wide, so this is what keeps it from acting on another thread's
+    // fault.
+    bool active = false;
 };
+}
+
+namespace DXGIShared {
+// Registers SteamOverlayInitVehHandler once for the process lifetime. It is
+// inert unless the faulting thread has an armed recovery context, so there is no
+// reason to add and remove a process-wide handler around every Present (which
+// took the loader's vectored-handler lock and allocated twice per frame).
+bool EnsureSteamNullCallbackRecoveryHandlerRegistered();
 }
 
 namespace DXGIShared {
@@ -619,33 +631,30 @@ public:
             return;
         }
 
-        dxgi_shared_s_steamNullCallbackRecoveryContext = SteamNullCallbackRecoveryContext{
-            context ? context : "unknown", reason, hook, bypass, streamlineStackActive, pluginLookupGuardReady,
-        };
-        handle_ = AddVectoredExceptionHandler(1, SteamOverlayInitVehHandler);
-        if (handle_) {
-            static std::atomic<int> s_guardInstallLogCount{0};
-            const int logCount = s_guardInstallLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 20 || logCount == 50 || (logCount % 500) == 0) {
-                HookLogImportant(
-                    "Guarded Steam Present hook installed Steam null-callback VEH recovery #%d "
-                    "(context=%s reason=%s hook=%p bypass=%p streamlineStack=%d pluginGuard=%d tid=0x%04X)",
-                    logCount, context ? context : "unknown", reason ? reason : "Present", hook, bypass,
-                    streamlineStackActive ? 1 : 0, pluginLookupGuardReady ? 1 : 0, GetCurrentThreadId());
-            }
-        } else {
+        if (!EnsureSteamNullCallbackRecoveryHandlerRegistered()) {
             HookLogImportant(
-                "Guarded Steam Present hook failed to install Steam null-callback VEH recovery "
+                "Guarded Steam Present hook failed to register the Steam null-callback VEH recovery "
                 "(context=%s reason=%s hook=%p bypass=%p streamlineStack=%d pluginGuard=%d err=%lu)",
                 context ? context : "unknown", reason ? reason : "Present", hook, bypass, streamlineStackActive ? 1 : 0,
                 pluginLookupGuardReady ? 1 : 0, GetLastError());
+            return;
+        }
+        dxgi_shared_s_steamNullCallbackRecoveryContext = SteamNullCallbackRecoveryContext{
+            context ? context : "unknown", reason, hook, bypass, streamlineStackActive, pluginLookupGuardReady, true,
+        };
+        armed_ = true;
+        static std::atomic<int> s_guardInstallLogCount{0};
+        const int logCount = s_guardInstallLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || logCount == 50 || (logCount % 500) == 0) {
+            HookLogImportant(
+                "Guarded Steam Present hook armed Steam null-callback VEH recovery #%d "
+                "(context=%s reason=%s hook=%p bypass=%p streamlineStack=%d pluginGuard=%d tid=0x%04X)",
+                logCount, context ? context : "unknown", reason ? reason : "Present", hook, bypass,
+                streamlineStackActive ? 1 : 0, pluginLookupGuardReady ? 1 : 0, GetCurrentThreadId());
         }
     }
 
     ~ScopedSteamNullCallbackRecoveryGuard() {
-        if (handle_) {
-            RemoveVectoredExceptionHandler(handle_);
-        }
         dxgi_shared_s_steamNullCallbackRecoveryContext = previousContext_;
     }
 
@@ -653,12 +662,12 @@ public:
     ScopedSteamNullCallbackRecoveryGuard& operator=(const ScopedSteamNullCallbackRecoveryGuard&) = delete;
 
     bool IsInstalled() const {
-        return handle_ != nullptr;
+        return armed_;
     }
 
 private:
     SteamNullCallbackRecoveryContext previousContext_;
-    PVOID handle_ = nullptr;
+    bool armed_ = false;
 };
 }
 

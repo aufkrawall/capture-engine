@@ -102,8 +102,12 @@ void MediaProcessSession::Loop() {
                     ipc.SendResponse(ProcessResponse::Pong);
                     break;
                 case ProcessCommand::ReloadConfig: {
-                    refreshActiveConfig(true);
+                    // Acknowledge before the work. Nothing in the controller
+                    // depends on the media process having finished the reload,
+                    // while an idle reload re-creates encoders (seconds for some
+                    // hardware encoders) - far beyond the 1 s ack window.
                     ipc.SendResponse(ProcessResponse::Ack);
+                    refreshActiveConfig(true);
                     break;
                 }
                 default:

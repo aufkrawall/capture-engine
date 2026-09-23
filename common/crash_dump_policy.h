@@ -424,9 +424,22 @@ inline TerminationOrigin ResolveTerminationOriginFromFrames(const TerminationFra
     return TerminationOrigin::kUnknown;
 }
 
+// A termination that follows a fault the vectored handler only recorded (see
+// ClassifyFirstChanceException): the terminating thread is still inside that
+// exception's dispatch - an unhandled-exception filter or a crash reporter's
+// __except filter calling TerminateProcess - or it recorded a hardware fault
+// that no handler resolved by continuing. A zero exit code is a clean quit
+// whatever preceded it (games leave catch blocks with exit(0)), so it never
+// qualifies.
+inline bool IsTerminationFollowingUnresolvedFault(DWORD exitCode, bool insideExceptionDispatch,
+                                                  bool unresolvedFaultPending) {
+    return exitCode != 0 && (insideExceptionDispatch || unresolvedFaultPending);
+}
+
 inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
                                             bool frameGenerationRuntimeActiveOrRecent = false,
-                                            TerminationOrigin origin = TerminationOrigin::kUnknown) {
+                                            TerminationOrigin origin = TerminationOrigin::kUnknown,
+                                            bool terminationFollowsUnresolvedFault = false) {
     // STATUS_PROCESS_IS_TERMINATING is the runtime's own "the process is
     // already exiting" sentinel; it never represents a genuine abnormal exit,
     // so it must also skip the active-FG fallback below.
@@ -434,7 +447,7 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
         exitCode == kProcessIsTerminatingExitCode) {
         return false;
     }
-    if (IsCrashLikeProcessExitCode(exitCode)) {
+    if (IsCrashLikeProcessExitCode(exitCode) || terminationFollowsUnresolvedFault) {
         return true;
     }
     if (!frameGenerationRuntimeActiveOrRecent || exitCode == 0) {
@@ -467,22 +480,23 @@ inline constexpr bool IsErrorSeverityExceptionCode(DWORD code) {
     return (code & 0xC0000000UL) == 0xC0000000UL;
 }
 
-// The non-error-severity codes CE deliberately still classifies as dump-worthy.
-// Each one is either a real termination path that Windows encodes below error
-// severity, or a COM/DXGI failure whose own counting/logging rule lives in the
-// exception filter.
-inline constexpr bool IsDumpWorthyNonErrorSeverityExceptionCode(DWORD code) {
+// NTSTATUS "customer" bit: set on every code an application defines for its
+// own RaiseException (C++ runtimes, .NET 0xE0434352, LuaJIT 0xE24C4Axx, ...),
+// clear on faults the system raises.
+inline constexpr bool IsApplicationDefinedExceptionCode(DWORD code) {
+    return (code & 0x20000000UL) != 0;
+}
+
+// Codes that end the thread whatever handlers exist - dumping them first is the
+// only chance, and no runtime raises them to steer its own control flow.
+inline constexpr bool IsInherentlyFatalExceptionCode(DWORD code) {
     switch (code) {
-        case static_cast<DWORD>(EXCEPTION_BREAKPOINT):  // can terminate without ExitProcess
-        case kUe5EnsureExceptionCode:                   // answered by the quick assert dump
-        case 0x80010108UL:                              // RPC_E_DISCONNECTED
-        case 0x80004002UL:                              // E_NOINTERFACE
-        case 0x80004005UL:                              // E_FAIL
-        case 0x800706baUL:                              // RPC_S_SERVER_UNAVAILABLE
-        case 0x8876086aUL:                              // DXGI_ERROR_DEVICE_RESET
-        case 0x887a0006UL:                              // DXGI_ERROR_DEVICE_HUNG
-        case 0x887a0007UL:                              // DXGI_ERROR_DEVICE_REMOVED
-        case 0x887a0020UL:                              // DXGI_ERROR_ACCESS_LOST
+        case static_cast<DWORD>(EXCEPTION_STACK_OVERFLOW):
+        case kFailFastExceptionExitCode:  // STATUS_STACK_BUFFER_OVERRUN
+        case 0xC0000374UL:                // STATUS_HEAP_CORRUPTION
+        case 0xC000041DUL:                // STATUS_FATAL_USER_CALLBACK_EXCEPTION
+        case 0xC0000602UL:                // STATUS_FAIL_FAST_EXCEPTION
+        case 0xC0000420UL:                // STATUS_ASSERTION_FAILURE
             return true;
         default:
             return false;
@@ -502,11 +516,54 @@ inline constexpr bool IsDumpWorthyNonErrorSeverityExceptionCode(DWORD code) {
 //
 // An exception that nobody handles still reaches the top-level unhandled filter,
 // which re-enters with forceDump so genuinely fatal cases are never lost.
-inline bool ShouldTreatFirstChanceExceptionAsCrash(DWORD code, bool forceDump) {
+//
+// Error severity alone is not enough either. Managed and JIT runtimes handle
+// hardware faults as ordinary control flow - Mono (Unity) and the JVM turn
+// access violations into null-reference exceptions and safepoint polls,
+// emulators map guest memory through them, LuaJIT and .NET raise error-severity
+// codes for every script/managed exception. Each of those was dumped at first
+// chance: a multi-second in-process stall, the process's single dump spent on
+// a non-crash, and three crash.log writes per exception after that. So a
+// first-chance fault is only RECORDED (no I/O, no allocation). It becomes a
+// dump when the process actually dies of it: the unhandled filter re-enters
+// with forceDump, and the pre-termination hooks dump a termination that
+// follows an unresolved fault (IsTerminationFollowingUnresolvedFault) with the
+// recorded context.
+enum class FirstChanceAction : uint8_t {
+    kIgnore,
+    kRecordFault,      // remember the context; dump only if the process dies of it
+    kDumpNow,          // inherently fatal, or the unhandled filter asked for it
+    kQuickAssertDump,  // UE5 ensure(): the small synchronous assert dump
+};
+
+inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent) {
     if (forceDump) {
-        return true;
+        return FirstChanceAction::kDumpNow;
     }
-    return IsErrorSeverityExceptionCode(code) || IsDumpWorthyNonErrorSeverityExceptionCode(code);
+    switch (code) {
+        case 0x406D1388UL:  // thread naming (VS debugger)
+        case 0x40010006UL:  // OutputDebugString
+        case 0x4001000AUL:  // OutputDebugStringW
+        case 0x4000001FUL:  // WoW64 breakpoint
+        case 0xE06D7363UL:  // MSVC C++ EH - an unhandled one reaches the top-level filter
+        case 0x20474343UL:  // GCC/clang C++ EH (" GCC")
+            return FirstChanceAction::kIgnore;
+        case kUe5EnsureExceptionCode:
+            return FirstChanceAction::kQuickAssertDump;
+        case static_cast<DWORD>(EXCEPTION_BREAKPOINT):
+            // An escaped breakpoint can end the process without a recorded
+            // context, so it keeps its immediate dump unless a debugger owns it.
+            return debuggerPresent ? FirstChanceAction::kIgnore : FirstChanceAction::kDumpNow;
+        default:
+            break;
+    }
+    if (IsInherentlyFatalExceptionCode(code)) {
+        return FirstChanceAction::kDumpNow;
+    }
+    if (IsErrorSeverityExceptionCode(code) && !IsApplicationDefinedExceptionCode(code)) {
+        return FirstChanceAction::kRecordFault;
+    }
+    return FirstChanceAction::kIgnore;
 }
 
 // The crash-dump worker runs inside the crashing process, and dbghelp reads the

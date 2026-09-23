@@ -34,16 +34,43 @@ TEST(MuxInvariantTest, BundledMatroskaMuxerRequiresAndReportsMicrosecondPrecisio
     avformat_free_context(formatContext);
 }
 
-TEST(MuxInvariantTest, VideoOutputPublishesOnlyFinalizedCommittedVideo) {
+TEST(MuxInvariantTest, VideoOutputPublishesOnlyCommittedVideo) {
     EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 1), VideoOutputDisposition::kPublish);
     EXPECT_EQ(SelectVideoOutputDisposition(true, 0, 0, 16667, 1),
               VideoOutputDisposition::kDiscardCancelled);
-    EXPECT_EQ(SelectVideoOutputDisposition(false, -1, 0, 16667, 1),
-              VideoOutputDisposition::kDiscardFinalizeFailure);
-    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, -1, 16667, 1),
-              VideoOutputDisposition::kDiscardFinalizeFailure);
     EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 0, 1), VideoOutputDisposition::kDiscardNoVideo);
     EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 0), VideoOutputDisposition::kDiscardNoVideo);
+    EXPECT_TRUE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kPublish));
+    EXPECT_FALSE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kDiscardCancelled));
+    EXPECT_FALSE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kDiscardNoVideo));
+}
+
+// Regression: av_write_trailer returns the AVIOContext's sticky error, so one
+// transient write failure anywhere in a long recording, or a full disk while the
+// final index is written, used to delete the whole recording.
+TEST(MuxInvariantTest, FinalizeFailureKeepsCommittedVideo) {
+    constexpr int64_t kTwoHoursUs = 2LL * 60 * 60 * 1000000;
+    EXPECT_EQ(SelectVideoOutputDisposition(false, -28, 0, kTwoHoursUs, 432000),
+              VideoOutputDisposition::kPublishAfterFinalizeFailure);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, -5, 16667, 1),
+              VideoOutputDisposition::kPublishAfterFinalizeFailure);
+    EXPECT_TRUE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kPublishAfterFinalizeFailure));
+    EXPECT_STREQ(ce::mux::VideoOutputDispositionToString(VideoOutputDisposition::kPublishAfterFinalizeFailure),
+                 "publish-after-finalize-failure");
+
+    // Without committed video there is nothing to save, finalize failure or not;
+    // cancellation still wins over everything.
+    EXPECT_EQ(SelectVideoOutputDisposition(false, -1, -1, 16667, 0), VideoOutputDisposition::kDiscardNoVideo);
+    EXPECT_EQ(SelectVideoOutputDisposition(true, -1, -1, kTwoHoursUs, 432000),
+              VideoOutputDisposition::kDiscardCancelled);
+}
+
+TEST(MuxInvariantTest, AudioOnlyFinalizeFailureKeepsCommittedPackets) {
+    EXPECT_TRUE(ce::mux::ShouldPublishAudioOnlyOutput(true, true, 0));
+    EXPECT_TRUE(ce::mux::ShouldPublishAudioOnlyOutput(false, true, 1200));
+    EXPECT_TRUE(ce::mux::ShouldPublishAudioOnlyOutput(true, false, 1200));
+    EXPECT_FALSE(ce::mux::ShouldPublishAudioOnlyOutput(false, true, 0));
+    EXPECT_FALSE(ce::mux::ShouldPublishAudioOnlyOutput(true, false, 0));
 }
 
 TEST(MuxInvariantTest, HeaderValidationAcceptsStreamsWithCodecParamsAndTimeBase) {

@@ -12,33 +12,49 @@ namespace ce::injection {
 // expected to be weakly-canonical absolute paths as produced by
 // std::filesystem::weakly_canonical on Windows. A shared string prefix alone is
 // not sufficient: "C:\appdir2\x.dll" must not pass for "C:\appdir".
-inline bool IsPathInsideDirectory(const std::string& childPath, const std::string& parentDir) {
+template <typename String>
+inline bool IsPathInsideDirectory(const String& childPath, const String& parentDir) {
     if (parentDir.empty() || childPath.size() < parentDir.size())
         return false;
     if (childPath.compare(0, parentDir.size(), parentDir) != 0)
         return false;
     if (childPath.size() == parentDir.size())
         return true;
-    return childPath[parentDir.size()] == '\\';
+    return childPath[parentDir.size()] == static_cast<typename String::value_type>('\\');
 }
 
-// Convert an ANSI path (the codepage GetModuleFileNameA and LoadLibraryA
-// interpret) to wide form so signature verification sees exactly the file name
-// the loader will open, including non-ASCII install directories. Widening
-// char-by-char would sign-extend bytes >= 0x80 and verify a different path.
-// Returns an empty string when conversion fails; callers fail closed.
-inline std::wstring AnsiPathToWide(const std::string& text) {
+inline bool IsPathInsideDirectory(const char* childPath, const char* parentDir) {
+    return IsPathInsideDirectory(std::string(childPath ? childPath : ""), std::string(parentDir ? parentDir : ""));
+}
+
+inline bool IsPathInsideDirectory(const wchar_t* childPath, const wchar_t* parentDir) {
+    return IsPathInsideDirectory(std::wstring(childPath ? childPath : L""),
+                                 std::wstring(parentDir ? parentDir : L""));
+}
+
+// The hook DLL path is carried as UTF-16 from GetModuleFileNameW all the way to
+// the remote LoadLibraryW. The ANSI route (GetModuleFileNameA + LoadLibraryA)
+// replaced every character the system code page cannot represent with '?', so
+// an installation below, for example, a Cyrillic or CJK user-profile folder on
+// a Western-locale Windows could never be injected at all. UTF-8 is only the
+// log representation. Returns an empty string when conversion fails.
+inline std::string WidePathToUtf8(const std::wstring& text) {
     if (text.empty())
         return {};
-    const int length = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, text.c_str(),
-                                           static_cast<int>(text.size()), nullptr, 0);
+    const int length =
+        WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
     if (length <= 0)
         return {};
-    std::wstring result(static_cast<size_t>(length), L'\0');
-    if (MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, text.c_str(), static_cast<int>(text.size()),
-                            result.data(), length) != length)
+    std::string result(static_cast<size_t>(length), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), result.data(), length, nullptr,
+                            nullptr) != length)
         return {};
     return result;
+}
+
+// Bytes WriteProcessMemory must copy for LoadLibraryW, terminator included.
+inline size_t RemoteWidePathBytes(const std::wstring& path) {
+    return (path.size() + 1) * sizeof(wchar_t);
 }
 
 }  // namespace ce::injection

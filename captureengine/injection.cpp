@@ -1,29 +1,31 @@
 #include "injection_internal.h"
 
+#include "injection_path_policy.h"
+
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
-    // Determine DLL paths (assume next to exe)
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    fs::path exePath(buffer);
+    // Determine DLL paths (next to the exe). Resolved as UTF-16 so an install
+    // directory outside the system ANSI code page still names the real file.
+    std::wstring exePath(32768, L'\0');
+    const DWORD exePathLength = GetModuleFileNameW(NULL, exePath.data(), static_cast<DWORD>(exePath.size()));
+    exePath.resize(exePathLength < exePath.size() ? exePathLength : 0);
+    const fs::path exeDir = fs::path(exePath).parent_path();
 
-    hookDllPathX64 = (exePath.parent_path() / "capture_hook_x64.dll").string();
-    hookDllPathX86 = (exePath.parent_path() / "capture_hook_x86.dll").string();
+    // Absolute paths: relative ones would be resolved against the target's CWD.
+    std::error_code ec;
+    fs::path x64Path = fs::absolute(exeDir / L"capture_hook_x64.dll", ec);
+    if (ec)
+        x64Path = exeDir / L"capture_hook_x64.dll";
+    fs::path x86Path = fs::absolute(exeDir / L"capture_hook_x86.dll", ec);
+    if (ec)
+        x86Path = exeDir / L"capture_hook_x86.dll";
+    hookDllPathX64W = x64Path.wstring();
+    hookDllPathX86W = x86Path.wstring();
+    hookDllPathX64 = ce::injection::WidePathToUtf8(hookDllPathX64W);
+    hookDllPathX86 = ce::injection::WidePathToUtf8(hookDllPathX86W);
 
-    // FIX: Force absolute path resolution to ensure the correct DLL is injected.
-    // Relative paths can be ambiguous if the target process has a different CWD.
-    try {
-        if (fs::exists(hookDllPathX64))
-            hookDllPathX64 = fs::absolute(hookDllPathX64).string();
-        if (fs::exists(hookDllPathX86))
-            hookDllPathX86 = fs::absolute(hookDllPathX86).string();
-    } catch (const fs::filesystem_error& e) {
-        LogError("Filesystem error resolving absolute paths: %s", e.what());
-    }
-
-    // Check if DLLs exist
-    if (!fs::exists(hookDllPathX64))
+    if (!fs::exists(x64Path, ec))
         LogError("Capture Hook X64 DLL not found: %s", hookDllPathX64.c_str());
-    if (!fs::exists(hookDllPathX86))
+    if (!fs::exists(x86Path, ec))
         LogError("Capture Hook X86 DLL not found: %s", hookDllPathX86.c_str());
 }
 

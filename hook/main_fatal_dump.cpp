@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "apis/dx12_hook_internal.h"
+#include "../common/crash_first_chance.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 
@@ -220,9 +221,8 @@ std::filesystem::path GetInstalledCaptureEnginePath() {
   return baseDir / "captureengine.exe";
 }
 
-ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(const char* source,
-                                                                                const char* dumpHint,
-                                                                                bool stackOnly) {
+ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
+    const char* source, const char* dumpHint, bool stackOnly, const ExternalDumpException* exception) {
   const std::string dumpDir = GetCrashDumpDirectory();
   if (dumpDir.empty() || !dumpHint || dumpHint[0] == '\0') {
     return ExternalPreTerminationDumpResult::kUnavailable;
@@ -248,6 +248,21 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   if (stackOnly) {
     commandLine += " --dump-helper-scope=stacks";
   }
+#ifdef _WIN64
+  // The helper is x64 and reads the pointers straight out of this process
+  // (ClientPointers). A WoW64 target's 32-bit EXCEPTION_POINTERS layout is not
+  // what an x64 dbghelp would read there, so only a same-bitness target passes
+  // them; a 32-bit dump keeps its plain thread list.
+  if (exception && exception->pointers && exception->threadId != 0) {
+    char exceptionArguments[96] = {};
+    snprintf(exceptionArguments, sizeof(exceptionArguments), " --dump-helper-exception=0x%llX --dump-helper-tid=%lu",
+             static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(exception->pointers)),
+             static_cast<unsigned long>(exception->threadId));
+    commandLine += exceptionArguments;
+  }
+#else
+  (void)exception;
+#endif
 
   std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
   mutableCommandLine.push_back('\0');
@@ -307,8 +322,9 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 // APIs (that is the ~62 s all-threads-suspended freeze from session
 // 20260817_052857), so hand it the same external helper the fatal-exit path
 // already prefers, plus the overlay presence it has to decide on.
-bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint, bool stackOnly) {
-  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint, stackOnly) ==
+bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint, bool stackOnly,
+                                                      const ExternalDumpException* exception) {
+  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint, stackOnly, exception) ==
          ExternalPreTerminationDumpResult::kCaptured;
 }
 
@@ -464,8 +480,22 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   const void* terminationRequester = callerAddress;
   const ce::crash_dump_policy::TerminationOrigin origin =
       ResolveTerminationOrigin(callerAddress, &terminationRequester);
+
+  // The vectored handler only records first-chance faults (see
+  // ClassifyFirstChanceException); this is where a fault the process actually
+  // dies of becomes a dump, with the recorded faulting context.
+  EXCEPTION_RECORD pendingFaultRecord = {};
+  CONTEXT pendingFaultContext = {};
+  const bool pendingFault =
+      targetIsCurrentProcess && !exceptionRecord &&
+      ce::crash_first_chance::CopyFaultForCurrentThread(&pendingFaultRecord, &pendingFaultContext);
+  const bool insideExceptionDispatch =
+      targetIsCurrentProcess && !alreadyAttempted && ce::crash_first_chance::IsCurrentThreadInsideExceptionDispatch();
+  const bool followsUnresolvedFault =
+      ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault(exitCode, insideExceptionDispatch, pendingFault);
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
-                                                              frameGenerationRuntimeActiveOrRecent, origin)) {
+                                                              frameGenerationRuntimeActiveOrRecent, origin,
+                                                              followsUnresolvedFault)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
     if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
@@ -491,6 +521,18 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   LogFatalExitCallerStack(source, exitCode, callerAddress);
 
   CONTEXT capturedContext = {};
+  if (followsUnresolvedFault && pendingFault) {
+    exceptionRecord = &pendingFaultRecord;
+    contextRecord = &pendingFaultContext;
+    HookLogImportant(
+        "FatalExitDump: Termination follows unresolved first-chance fault 0x%08lX at %p (insideDispatch=%d) - "
+        "dumping with the recorded faulting context",
+        static_cast<unsigned long>(pendingFaultRecord.ExceptionCode), pendingFaultRecord.ExceptionAddress,
+        insideExceptionDispatch ? 1 : 0);
+  } else if (followsUnresolvedFault) {
+    HookLogImportant("FatalExitDump: Termination requested from inside exception dispatch (source=%s code=0x%08lX)",
+                     source ? source : "unknown", static_cast<unsigned long>(exitCode));
+  }
   if (!contextRecord) {
     RtlCaptureContext(&capturedContext);
     contextRecord = &capturedContext;
@@ -530,8 +572,13 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
 
   HookLogImportant("FatalExitDump: Using minimal-first pre-termination dump attempt (source=%s hint=%s)",
                    source ? source : "unknown", dumpHint);
+  // This thread waits for the helper, so `pointers` (on this stack) stays valid
+  // for the helper's ClientPointers read.
+  ExternalDumpException externalException;
+  externalException.pointers = &pointers;
+  externalException.threadId = GetCurrentThreadId();
   const ExternalPreTerminationDumpResult externalDumpResult =
-      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint);
+      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint, false, &externalException);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
   if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
       ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(

@@ -31,6 +31,7 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
     pipe_ = INVALID_HANDLE_VALUE;
     connected_.store(false, std::memory_order_release);
     sequence_ = 0;
+    unansweredSequence_ = 0;
     expectedChildPid_ = 0;
 
     PipeSecurity security;
@@ -103,9 +104,12 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
     return true;
 }
 
-bool ProcessIPCClient::ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs) {
+bool ProcessIPCClient::ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs,
+                                              bool* timedOut) {
     message = {};
     bytesRead = 0;
+    if (timedOut)
+        *timedOut = false;
     OVERLAPPED overlapped{};
     overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!overlapped.hEvent)
@@ -113,10 +117,13 @@ bool ProcessIPCClient::ReadMessageWithTimeout(ProcessMessage& message, DWORD& by
     BOOL read = ReadFile(pipe_, &message, sizeof(message), &bytesRead, &overlapped);
     if (!read && GetLastError() == ERROR_IO_PENDING) {
         const DWORD waitResult = WaitForSingleObject(overlapped.hEvent, timeoutMs);
-        if (waitResult == WAIT_OBJECT_0)
+        if (waitResult == WAIT_OBJECT_0) {
             read = GetOverlappedResult(pipe_, &overlapped, &bytesRead, FALSE);
-        else
+        } else {
             CancelOverlapped(pipe_, overlapped);
+            if (timedOut)
+                *timedOut = waitResult == WAIT_TIMEOUT;
+        }
     }
     CloseHandle(overlapped.hEvent);
     return read != FALSE;
@@ -163,6 +170,17 @@ bool ProcessIPCClient::CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs) {
     return true;
 }
 
+void ProcessIPCClient::BreakChannelLocked(const char* reason) {
+    connected_.store(false, std::memory_order_release);
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+    }
+    unansweredSequence_ = 0;
+    LogWarn("[IPC] %s command channel broke (%s); a fresh child is required", ModeName(targetMode_),
+            reason ? reason : "unknown");
+}
+
 void ProcessIPCClient::Disconnect() {
     std::lock_guard<std::mutex> lock(mutex_);
     connected_.store(false, std::memory_order_release);
@@ -194,21 +212,56 @@ bool ProcessIPCClient::SendCommand(ProcessCommand command, const char* payload, 
                      GetCurrentProcessId(), nonce_, payload);
     if (!ValidateOpcodePayload(request))
         return false;
-    ProcessMessage reply{};
-    DWORD bytesRead = 0;
-    if (!WriteMessageWithTimeout(request, timeoutMs) || !ReadMessageWithTimeout(reply, bytesRead, timeoutMs) ||
-        !ValidateProcessMessage(reply, bytesRead, ProcessMessageKind::Response, targetMode_, expectedChildPid_, nonce_,
-                                sequence, true) ||
-        !IsResponseAllowed(command, static_cast<ProcessResponse>(reply.opcode))) {
-        connected_.store(false, std::memory_order_release);
-        CloseHandle(pipe_);
-        pipe_ = INVALID_HANDLE_VALUE;
-        LogWarn("[IPC] %s command channel broke; a fresh child is required", ModeName(targetMode_));
+    if (!WriteMessageWithTimeout(request, timeoutMs)) {
+        BreakChannelLocked("write failed");
         return false;
     }
-    if (response)
-        *response = static_cast<ProcessResponse>(reply.opcode);
-    return true;
+
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    for (;;) {
+        const ULONGLONG now = GetTickCount64();
+        const DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+        ProcessMessage reply{};
+        DWORD bytesRead = 0;
+        bool timedOut = false;
+        if (!ReadMessageWithTimeout(reply, bytesRead, remaining, &timedOut)) {
+            if (timedOut &&
+                ClassifyReplyTimeout(command, unansweredSequence_ != 0) == ReplyTimeoutOutcome::kKeepChannel) {
+                unansweredSequence_ = sequence;
+                LogWarn(
+                    "[IPC] %s reply to command %u (seq=%llu) missed its %lu ms window; keeping the channel and "
+                    "discarding the reply if it arrives late",
+                    ModeName(targetMode_), static_cast<unsigned>(command), static_cast<unsigned long long>(sequence),
+                    static_cast<unsigned long>(timeoutMs));
+                return false;
+            }
+            BreakChannelLocked(timedOut ? (unansweredSequence_ != 0 ? "second missed reply" : "reply timeout")
+                                        : "read failed");
+            return false;
+        }
+        // The late reply to an earlier tolerated command: drop it and keep
+        // reading for this command's own reply.
+        if (unansweredSequence_ != 0 && reply.sequence < sequence &&
+            ValidateProcessMessage(reply, bytesRead, ProcessMessageKind::Response, targetMode_, expectedChildPid_,
+                                   nonce_, unansweredSequence_ - 1, false)) {
+            LogInfo("[IPC] %s late reply for seq=%llu discarded", ModeName(targetMode_),
+                    static_cast<unsigned long long>(reply.sequence));
+            unansweredSequence_ = 0;
+            continue;
+        }
+        if (!ValidateProcessMessage(reply, bytesRead, ProcessMessageKind::Response, targetMode_, expectedChildPid_,
+                                    nonce_, sequence, true) ||
+            !IsResponseAllowed(command, static_cast<ProcessResponse>(reply.opcode))) {
+            BreakChannelLocked("invalid reply");
+            return false;
+        }
+        // An in-order reply proves the earlier one was consumed (or lost to the
+        // cancelled read), so nothing is outstanding anymore.
+        unansweredSequence_ = 0;
+        if (response)
+            *response = static_cast<ProcessResponse>(reply.opcode);
+        return true;
+    }
 }
 
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient) {

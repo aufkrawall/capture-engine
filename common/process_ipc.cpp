@@ -83,6 +83,18 @@ bool ValidateOpcodePayload(const ProcessMessage& message) {
     return false;
 }
 
+ReplyTimeoutOutcome ClassifyReplyTimeout(ProcessCommand command, bool earlierReplyStillMissing) {
+    if (earlierReplyStillMissing)
+        return ReplyTimeoutOutcome::kBreakChannel;
+    switch (command) {
+        case ProcessCommand::ReloadConfig:
+        case ProcessCommand::Ping:
+            return ReplyTimeoutOutcome::kKeepChannel;
+        default:
+            return ReplyTimeoutOutcome::kBreakChannel;
+    }
+}
+
 bool IsResponseAllowed(ProcessCommand command, ProcessResponse response) {
     if (response == ProcessResponse::Error)
         return true;

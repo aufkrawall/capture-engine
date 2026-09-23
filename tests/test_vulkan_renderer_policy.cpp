@@ -305,27 +305,25 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
               std::string::npos);
     EXPECT_NE(layerBridge.find("LiveSurfaceHwndTable"), std::string::npos);
 
-    // The hook caches the exported query in a function pointer, so the layer
-    // module must stay resident for the whole process lifetime: DllMain pins
-    // itself by address (FROM_ADDRESS | PIN), and a failed pin must fail the
-    // load instead of letting the query's backing module be unloaded later.
-    const size_t dllMain = layerMain.find("BOOL WINAPI DllMain(");
-    const size_t pinCall = layerMain.find("GetModuleHandleExW(", dllMain);
-    ASSERT_NE(dllMain, std::string::npos);
-    ASSERT_NE(pinCall, std::string::npos)
-        << "DllMain must pin the layer module; the hook caches CEVulkanLayerIsLiveVulkanSurfaceHwnd";
-    const size_t pinFlag = layerMain.find("GET_MODULE_HANDLE_EX_FLAG_PIN", pinCall);
-    const size_t fromAddressFlag = layerMain.find("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", pinCall);
-    const size_t attachLog = layerMain.find("DLL_PROCESS_ATTACH", pinCall);
+    // The hook caches the exported query in a function pointer, so the module
+    // behind it must stay resident for the whole process lifetime. The layer
+    // pins itself once it participates in an instance (it declines, and is
+    // unloaded again, in non-target processes), and a failed pin declines the
+    // layer; the hook's cache takes its own pin when it resolves the export.
+    const size_t negotiate = layerMain.find("vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface*");
+    ASSERT_NE(negotiate, std::string::npos);
+    const size_t participation = layerMain.find("if (!ShouldParticipateInThisProcess()) {", negotiate);
+    const size_t pinFlag = layerMain.find("GET_MODULE_HANDLE_EX_FLAG_PIN", negotiate);
+    const size_t fromAddressFlag = layerMain.find("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", pinFlag - 64);
+    ASSERT_NE(participation, std::string::npos);
     ASSERT_NE(pinFlag, std::string::npos);
     ASSERT_NE(fromAddressFlag, std::string::npos);
-    ASSERT_NE(attachLog, std::string::npos);
-    const size_t pinFailure = layerMain.find("return FALSE", pinCall);
-    ASSERT_NE(pinFailure, std::string::npos)
-        << "a failed pin must fail DLL load (DllMain returns FALSE)";
-    EXPECT_LT(pinFlag, pinFailure);
-    EXPECT_LT(pinFailure, attachLog)
-        << "the pin-failure return must sit between the pin and the attach path";
+    EXPECT_LT(participation, pinFlag);
+    const size_t pinFailure = layerMain.find("return VK_ERROR_INITIALIZATION_FAILED;", pinFlag);
+    ASSERT_NE(pinFailure, std::string::npos) << "a failed pin must decline the layer";
+    EXPECT_NE(finalPresent.find("GetModuleHandleExW(pinFlags, L\"VK_LAYER_CE_overlay.dll\", &layer)"),
+              std::string::npos)
+        << "the hook must pin the module whose export it caches";
     for (const char* forbidden : {"CreateFileMapping", "OpenFileMapping", "MapViewOfFile", "CreatePipe"}) {
         EXPECT_EQ(finalPresent.find(forbidden), std::string::npos)
             << forbidden << " must not appear in the WSI bridge";

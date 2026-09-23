@@ -53,7 +53,8 @@ public:
 
   // Early injection using APC - runs before loader/import resolution
   // Requires process to be created with CREATE_SUSPENDED
-  bool InjectEarly(DWORD pid, const std::string &dllPath, HANDLE hMainThread);
+  // The hook DLL is chosen from the target's architecture, exactly as Inject() does.
+  bool InjectEarly(DWORD pid, HANDLE hMainThread);
 
   // Callback to execute before injection (e.g. to reload config)
   void SetOnInjectCallback(std::function<void(DWORD, const std::string &)> callback);
@@ -66,9 +67,9 @@ public:
   void SweepRunningNgxUpdatersIfDisabled(const char *reason);
 
   // Security Validation
-  bool ValidateDllSecurity(const std::string &dllPath);
+  bool ValidateDllSecurity(const std::wstring &dllPath);
   bool VerifyDLLSignature(
-      const std::string &dllPath,
+      const std::wstring &dllPath,
       bool logFailures = true); // Verify Authenticode signature
 
   // WMI Event Sink
@@ -103,6 +104,10 @@ public:
 private:
   AppConfig config;
   mutable std::mutex configMutex;
+  // UTF-16 is authoritative (it reaches the remote LoadLibraryW unchanged); the
+  // UTF-8 copies exist only for logging.
+  std::wstring hookDllPathX64W;
+  std::wstring hookDllPathX86W;
   std::string hookDllPathX64;
   std::string hookDllPathX86;
 

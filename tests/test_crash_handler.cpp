@@ -22,7 +22,7 @@ int g_ExternalCaptureCallCount = 0;
 std::string g_LastExternalCaptureHint;
 bool g_LastExternalCaptureStackOnly = false;
 
-bool RecordExternalCapture(const char* dumpFileNameHint, bool stackOnly) {
+bool RecordExternalCapture(const char* dumpFileNameHint, bool stackOnly, const ExternalDumpException*) {
     ++g_ExternalCaptureCallCount;
     g_LastExternalCaptureHint = dumpFileNameHint ? dumpFileNameHint : "";
     g_LastExternalCaptureStackOnly = stackOnly;
@@ -170,7 +170,9 @@ TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings
     EXPECT_NE(contents.find("BypassTrampoline: Created RX/CFG trampoline"), std::string::npos);
     EXPECT_NE(contents.find("SetProcessValidCallTargets failed"), std::string::npos);
     EXPECT_NE(contents.find("Extended resume offset past patched fill bytes"), std::string::npos);
-    EXPECT_NE(contents.find("Guarded Steam Present hook installed Steam null-callback VEH recovery"),
+    EXPECT_NE(contents.find("Guarded Steam Present hook armed Steam null-callback VEH recovery"),
+              std::string::npos);
+    EXPECT_NE(contents.find("Registered the process-lifetime Steam null-callback recovery handler"),
               std::string::npos);
     EXPECT_NE(contents.find("Streamline startup-handoff normal-route bypass"), std::string::npos);
     EXPECT_NE(contents.find("Streamline startup normal-route transport allowed"), std::string::npos);
@@ -289,6 +291,34 @@ TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;"), std::string::npos);
+}
+
+// The vectored filter runs for every exception the host raises - thousands per
+// second under a JIT or managed runtime. Until an exception is classified as a
+// dump, the filter must not allocate, lock or write a file, and a first-chance
+// fault is recorded rather than dumped.
+TEST(CrashHandlerSourceTest, FirstChanceFilterRecordsFaultsWithoutIoOrAllocation) {
+    const std::string contents =
+        ReadSourceFile(std::filesystem::current_path() / "common" / "crash_dump_writer.cpp");
+    ASSERT_FALSE(contents.empty());
+    const size_t filter = contents.find("LONG WINAPI CrashHandlerExceptionFilter(");
+    const size_t classify = contents.find("ClassifyFirstChanceException(", filter);
+    const size_t record = contents.find("ce::crash_first_chance::RecordFault(pExceptionPointers);", filter);
+    const size_t firstTrace = contents.find("TraceCrash(", filter);
+    ASSERT_NE(filter, std::string::npos);
+    ASSERT_NE(classify, std::string::npos);
+    ASSERT_NE(record, std::string::npos);
+    const std::string preClassification = contents.substr(filter, classify - filter);
+    EXPECT_EQ(preClassification.find("std::string"), std::string::npos);
+    EXPECT_EQ(preClassification.find("TraceCrash("), std::string::npos);
+    EXPECT_EQ(preClassification.find("unique_lock"), std::string::npos);
+    EXPECT_EQ(preClassification.find("lock_guard"), std::string::npos);
+    EXPECT_EQ(preClassification.find("ExceptionSafeLock"), std::string::npos);
+    EXPECT_LT(record, firstTrace) << "recording a fault must return before any crash.log write";
+
+    // One registration: the last-position duplicate ran every exception twice.
+    EXPECT_EQ(contents.find("AddVectoredExceptionHandler(0, CrashHandlerExceptionFilter)"), std::string::npos);
+    EXPECT_NE(contents.find("ce::crash_first_chance::Install();"), std::string::npos);
 }
 
 TEST(CrashHandlerSourceTest, DumpWorkerOwnsItsExceptionStateAndTheAttemptFlag) {
@@ -508,6 +538,19 @@ TEST(FreezeWatchdogPolicyTest, ThePresentationWindowIsNeverABlockingDialog) {
     // still counts, which is what preserves the startup-crash dumps.
     EXPECT_TRUE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(renderWindow, nullptr));
     EXPECT_FALSE(ce::freeze_watchdog_policy::DialogWindowCanBlockPresentation(nullptr, nullptr));
+}
+
+// A freeze claim is a timeout the process may still recover from (a very long
+// load on the render thread). An in-process dump suspends every thread for its
+// whole duration, so the helper is preferred whenever it is registered - not
+// only when a foreign overlay makes the in-process walk slow.
+TEST(FreezeWatchdogPolicyTest, FreezeDumpsPreferTheExternalHelperWheneverAvailable) {
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldPreferExternalFreezeDumpHelper(true));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldPreferExternalFreezeDumpHelper(false));
+    const std::string dump =
+        ReadSourceFile(std::filesystem::current_path() / "hook" / "common" / "freeze_watchdog_dump.cpp");
+    ASSERT_FALSE(dump.empty());
+    EXPECT_NE(dump.find("ShouldPreferExternalFreezeDumpHelper(HasExternalCrashDumpCapture())"), std::string::npos);
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {

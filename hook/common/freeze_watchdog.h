@@ -20,6 +20,13 @@ inline bool ShouldCaptureWatchdogDump(bool dumpAlreadyCaptured) {
     return !dumpAlreadyCaptured;
 }
 
+// A freeze dump goes through the external helper whenever one is registered:
+// the process is expected to keep running (the claim may be a very long load),
+// and an in-process dump would suspend every thread for its whole duration.
+inline bool ShouldPreferExternalFreezeDumpHelper(bool externalHelperAvailable) {
+    return externalHelperAvailable;
+}
+
 inline bool ShouldSuppressFreezeCheckForBackgroundProcess(bool processForeground, bool forceMonitor,
                                                           bool presentInFlight, bool runtimePresentationMonitor) {
     return !processForeground && !forceMonitor && !presentInFlight && !runtimePresentationMonitor;

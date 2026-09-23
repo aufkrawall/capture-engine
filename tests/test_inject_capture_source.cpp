@@ -643,6 +643,31 @@ TEST(InjectLifecycleSourceTest, TargetWakeupsExistBeforeRemoteOrApcLoadCanStart)
     EXPECT_LT(apcWakeup, apcLoad);
 }
 
+// Regression: GetModuleFileNameA + LoadLibraryA turned every install-path
+// character outside the system code page into '?', so a CE folder below a
+// non-ANSI user profile could never be injected. Both injection routes now pass
+// the UTF-16 path to the remote LoadLibraryW.
+TEST(InjectLifecycleSourceTest, InjectionPassesUtf16PathsToRemoteLoadLibraryW) {
+    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    const std::string manager = ReadSource("captureengine/injection.cpp");
+    const std::string security = ReadSource("captureengine/injection_security.cpp");
+    ASSERT_FALSE(injection.empty());
+    ASSERT_FALSE(manager.empty());
+    ASSERT_FALSE(security.empty());
+
+    EXPECT_EQ(injection.find("\"LoadLibraryA\""), std::string::npos);
+    EXPECT_NE(injection.find("GetProcAddress(GetModuleHandleA(\"kernel32.dll\"), \"LoadLibraryW\")"),
+              std::string::npos);
+    EXPECT_NE(injection.find("GetRemoteModuleProcAddress(hProcess, L\"kernel32.dll\", \"LoadLibraryW\")"),
+              std::string::npos);
+    EXPECT_NE(injection.find("WriteProcessMemory(hProcess, pRemotePath, dllPathW.c_str(), pathSize"),
+              std::string::npos);
+    EXPECT_EQ(manager.find("GetModuleFileNameA"), std::string::npos);
+    EXPECT_NE(manager.find("GetModuleFileNameW"), std::string::npos);
+    EXPECT_EQ(security.find("GetModuleFileNameA"), std::string::npos);
+    EXPECT_EQ(security.find("GetNamedSecurityInfoA"), std::string::npos);
+}
+
 TEST(InjectLifecycleSourceTest, FailedReactivationWaitsForAnotherTargetSignal) {
     const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
     const std::string vulkan = ReadSource("hook/vulkan_layer/layer_ipc.cpp");

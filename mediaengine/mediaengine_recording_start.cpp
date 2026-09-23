@@ -7,6 +7,7 @@ bool MediaEngine::StartRecording() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (recording)
             return true;
+        ApplyConfigDeferredDuringRecording();
         processLoopbackIntegrityFailureSignaled = false;
         if (sharedMemLayout) {
             sharedMemLayout->runtimeState.recordingFailureCode.store(static_cast<uint32_t>(RecordingFailureCode::None),

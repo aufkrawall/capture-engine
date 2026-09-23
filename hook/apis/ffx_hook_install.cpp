@@ -321,6 +321,27 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
 
 }
 
+// Writes the one entry byte the breakpoint hook owns. VirtualProtect is the
+// normal route; WriteProcessMemory on the own process adjusts the protection
+// itself and is the fallback when another component changed the page. The
+// previous protection is restored rather than assumed.
+static bool WriteFfxConfigureEntryByte(void* target, uint8_t value) {
+    DWORD oldProtect = 0;
+    if (VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        *static_cast<volatile uint8_t*>(target) = value;
+        FlushInstructionCache(GetCurrentProcess(), target, 1);
+        DWORD ignored = 0;
+        VirtualProtect(target, 1, oldProtect, &ignored);
+        return true;
+    }
+    SIZE_T written = 0;
+    if (WriteProcessMemory(GetCurrentProcess(), target, &value, 1, &written) && written == 1) {
+        FlushInstructionCache(GetCurrentProcess(), target, 1);
+        return true;
+    }
+    return false;
+}
+
 void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_reason) {
 
 
@@ -343,15 +364,11 @@ void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_
         return;
     }
 
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    if (!WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
         HookLogImportant("FFX Hook: Failed to restore stale VEH breakpoint at %p before retargeting (err=%lu)", target,
                          GetLastError());
         return;
     }
-    *targetByte = ffx_hook_g_ffxConfigureOriginalFirstByte;
-    FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-    VirtualProtect(target, 1, PAGE_EXECUTE_READ, &oldProtect);
     ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
     HookLogImportant("FFX Hook: Restored stale VEH breakpoint at %p before retargeting (%s)", target,
                      ffx_hook_reason && ffx_hook_reason[0] ? ffx_hook_reason : "target changed");
@@ -419,16 +436,16 @@ bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_mod
         ffx_hook_g_ffxConfigureOriginalFirstByte = currentByte;
     }
 
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        return false;
-    }
-    *targetByte = 0xCC;
-    FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READ, &oldProtect);
-
+    // Publish target and armed state BEFORE the int3 exists: a thread that traps
+    // on the new byte must find its breakpoint accounted for. An int3 at the
+    // target while the flag is clear is then provably not CE's
+    // (FFXHook::detail::ClassifyEntryBreakpoint).
     ffx_hook_g_ffxConfigureTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
     ffx_hook_g_ffxConfigureVehArmed.store(true, std::memory_order_release);
+    if (!WriteFfxConfigureEntryByte(reinterpret_cast<void*>(target), 0xCC)) {
+        ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+        return false;
+    }
     if (!ffx_hook_g_ffxConfigureInlineHooked.load(std::memory_order_acquire) && ffx_hook_g_Original_ffxConfigure != target) {
         HookLogImportant("FFX Hook: Updating protected ffxConfigure original for VEH target (old=%p new=%p)",
                          reinterpret_cast<void*>(ffx_hook_g_Original_ffxConfigure), reinterpret_cast<void*>(target));
@@ -487,11 +504,7 @@ ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigur
             auto* targetByte = static_cast<uint8_t*>(target);
             if (*targetByte == 0xCC) {
 
-                DWORD oldProtect = 0;
-                if (VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                    *targetByte = ffx_hook_g_ffxConfigureOriginalFirstByte;
-                    FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-                    VirtualProtect(target, 1, PAGE_EXECUTE_READ, &oldProtect);
+                if (WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
                     ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
                     pausedBreakpoint = true;
 
@@ -550,19 +563,47 @@ LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
 #else
         ctx ? static_cast<uintptr_t>(ctx->Eip) : 0;
 #endif
-    if (!ctx || !rec || rec->ExceptionCode != STATUS_BREAKPOINT || !target ||
-        !FFXHook::detail::IsEntryBreakpointHit(rec->ExceptionAddress, instructionPointer, target) ||
-        !ffx_hook_g_ffxConfigureVehArmed.load(std::memory_order_acquire)) {
+    if (!ctx || !rec || rec->ExceptionCode != STATUS_BREAKPOINT || !target) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    const bool hitsTarget = FFXHook::detail::IsEntryBreakpointHit(rec->ExceptionAddress, instructionPointer, target);
+    const bool armed = ffx_hook_g_ffxConfigureVehArmed.load(std::memory_order_acquire);
+    const bool targetByteIsBreakpoint =
+        hitsTarget && *static_cast<const volatile uint8_t*>(target) == static_cast<uint8_t>(0xCC);
+    const auto action = FFXHook::detail::ClassifyEntryBreakpoint(hitsTarget, armed, targetByteIsBreakpoint);
+    if (action == FFXHook::detail::EntryBreakpointAction::kNotOurs) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (action == FFXHook::detail::EntryBreakpointAction::kResumeAtTarget) {
+        // Another thread's handler (or the forwarding pause) restored the byte
+        // between this thread's trap and now. Run the real instruction; this one
+        // call is simply not observed.
+#ifdef _WIN64
+        ctx->Rip = reinterpret_cast<DWORD64>(target);
+#else
+        ctx->Eip = reinterpret_cast<DWORD>(target);
+#endif
+        static std::atomic<uint32_t> s_raceResumeCount{0};
+        const uint32_t races = s_raceResumeCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (races <= 4 || (races & (races - 1)) == 0) {
+            HookLogImportant(
+                "FFX Hook: ffxConfigure breakpoint hit after another thread disarmed it - resuming at %p "
+                "(occurrence=%u)",
+                target, races);
+        }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(target)) = ffx_hook_g_ffxConfigureOriginalFirstByte;
-    FlushInstructionCache(GetCurrentProcess(), target, 1);
-    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READ, &oldProtect);
+
+    if (!WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
+        // Resuming on an int3 that cannot be removed would trap again at once
+        // and spin this thread forever. Fail visibly instead.
+        ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
+        HookLogImportant(
+            "FFX Hook: ERROR cannot restore ffxConfigure's first byte at %p (err=%lu); leaving the breakpoint to the "
+            "next handler instead of spinning",
+            target, GetLastError());
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
 
     auto contextPtr = reinterpret_cast<ffxContext*>(

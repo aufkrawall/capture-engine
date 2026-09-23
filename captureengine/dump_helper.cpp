@@ -101,6 +101,20 @@ int RunDumpHelperFromCommandLine() {
     TryGetWideArgumentValue(argc, argv, L"--dump-helper-hint=", &hintArg);
     const wchar_t* scopeArg = nullptr;
     TryGetWideArgumentValue(argc, argv, L"--dump-helper-scope=", &scopeArg);
+    // Optional: the target's own EXCEPTION_POINTERS and faulting thread, so the
+    // dump's exception stream names the fault instead of the helper launch.
+    const wchar_t* exceptionArg = nullptr;
+    const wchar_t* exceptionTidArg = nullptr;
+    unsigned long long exceptionPointersAddress = 0;
+    DWORD exceptionThreadId = 0;
+    if (TryGetWideArgumentValue(argc, argv, L"--dump-helper-exception=", &exceptionArg) &&
+        TryGetWideArgumentValue(argc, argv, L"--dump-helper-tid=", &exceptionTidArg) &&
+        ParseDumpHelperPid(exceptionTidArg, &exceptionThreadId)) {
+        wchar_t* end = nullptr;
+        exceptionPointersAddress = wcstoull(exceptionArg, &end, 16);
+        if (!end || *end != L'\0')
+            exceptionPointersAddress = 0;
+    }
     // Only the caller knows whether the process's memory is worth recording. A
     // freeze the application explains itself - its own modal dialog on the
     // render thread - asks for stacks; everything else gets the rich dump.
@@ -149,8 +163,20 @@ int RunDumpHelperFromCommandLine() {
 
     const MINIDUMP_TYPE dumpType = stackOnlyScope ? ce::crash_dump_policy::kStackOnlyDumpType
                                                   : ce::crash_dump_policy::kRichCrashDumpType;
-    const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid, dumpType, nullptr,
-                                                      nullptr, callbackParam);
+    MINIDUMP_EXCEPTION_INFORMATION exceptionInformation = {};
+    PMINIDUMP_EXCEPTION_INFORMATION exceptionParam = nullptr;
+    if (exceptionPointersAddress != 0 && exceptionThreadId != 0) {
+        exceptionInformation.ThreadId = exceptionThreadId;
+        exceptionInformation.ExceptionPointers =
+            reinterpret_cast<PEXCEPTION_POINTERS>(static_cast<uintptr_t>(exceptionPointersAddress));
+        exceptionInformation.ClientPointers = TRUE;
+        exceptionParam = &exceptionInformation;
+        TraceCrash("DumpHelper: Recording the target's exception context (ClientPointers)");
+    }
+    // WriteSupplementalCrashDump retries without the exception stream if dbghelp
+    // cannot read it, so a bad pointer costs the stream, never the dump.
+    const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid, dumpType,
+                                                      exceptionParam, nullptr, callbackParam);
     if (stackOnlyScope) {
         TraceCrash("DumpHelper: Stack-only scope requested - thread stacks, thread info and modules only");
     }

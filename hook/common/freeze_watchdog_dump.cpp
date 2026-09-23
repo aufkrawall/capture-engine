@@ -146,13 +146,18 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     // claim itself was wrong. The external helper writes the same dump from
     // outside without holding this process's threads, so prefer it, exactly
     // like the crash worker does.
+    //
+    // Unlike a crash, a freeze claim is a timeout that can be wrong (a very long
+    // load or shader compile on the render thread), and the process is still
+    // expected to continue. Suspending it for an in-process rich dump only makes
+    // that stall longer, so the helper is preferred whenever it exists, not only
+    // when a foreign overlay makes the in-process walk slow.
     const bool foreignOverlayLoaded = IsForeignOverlayLoadedForCrashDump();
-    if (ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(foreignOverlayLoaded,
-                                                                   HasExternalCrashDumpCapture())) {
+    if (ce::freeze_watchdog_policy::ShouldPreferExternalFreezeDumpHelper(HasExternalCrashDumpCapture())) {
         HookLogImportant(
-            "FreezeWatchdog: Foreign overlay loaded — capturing the freeze dump with the external helper "
-            "(hint=%s targetTid=%lu stackOnly=%d)",
-            dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0);
+            "FreezeWatchdog: Capturing the freeze dump with the external helper so this process keeps running "
+            "(hint=%s targetTid=%lu stackOnly=%d foreignOverlay=%d)",
+            dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0, foreignOverlayLoaded ? 1 : 0);
         if (CaptureCrashDumpWithExternalHelper(dumpFileName.c_str(), stackOnly)) {
             HookLogImportant(
                 "FreezeWatchdog: External helper captured the freeze dump (hint=%s targetTid=%lu stackOnly=%d)",

@@ -244,3 +244,19 @@ TEST(FFXHookPolicyTest, EntryBreakpointHitAcceptsExceptionAddressOrAdvancedInstr
                                                        reinterpret_cast<const void*>(target)));
     EXPECT_FALSE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(target), target + 1, nullptr));
 }
+
+// Regression: a second thread trapping on the ffxConfigure int3 after the first
+// thread's handler had restored the byte and cleared the armed flag was
+// declined, reached the crash handler, and crashed the game as an unhandled
+// breakpoint. It must resume at the restored instruction instead.
+TEST(FFXHookPolicyTest, EntryBreakpointRaceResumesInsteadOfEscaping) {
+    using FFXHook::detail::ClassifyEntryBreakpoint;
+    using FFXHook::detail::EntryBreakpointAction;
+    EXPECT_EQ(ClassifyEntryBreakpoint(true, true, true), EntryBreakpointAction::kHandleCall);
+    EXPECT_EQ(ClassifyEntryBreakpoint(true, true, false), EntryBreakpointAction::kHandleCall);
+    EXPECT_EQ(ClassifyEntryBreakpoint(true, false, false), EntryBreakpointAction::kResumeAtTarget);
+    // An int3 still in place while CE's flag is clear is not CE's (the flag is
+    // published before the byte is written).
+    EXPECT_EQ(ClassifyEntryBreakpoint(true, false, true), EntryBreakpointAction::kNotOurs);
+    EXPECT_EQ(ClassifyEntryBreakpoint(false, true, true), EntryBreakpointAction::kNotOurs);
+}

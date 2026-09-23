@@ -28,7 +28,7 @@ void RebindHookSessionDiagnostics() {
   if (!GetSessionLogsDirectory(sessionLogsDir, sizeof(sessionLogsDir)))
     return;
   CreateDirectoryA(sessionLogsDir, NULL);
-  SetCrashDumpDirectory(sessionLogsDir);
+  SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false);
   if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
     char perfLogPath[MAX_PATH];
     snprintf(perfLogPath, sizeof(perfLogPath), "%s\\perf_metrics_%lu.csv", sessionLogsDir,

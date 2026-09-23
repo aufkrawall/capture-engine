@@ -1,5 +1,7 @@
 #include "injection_internal.h"
 
+#include "injection_path_policy.h"
+
 bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     // Execute callback if set (e.g. to reload config for this specific process)
     std::function<void(DWORD, const std::string&)> injectCallback;
@@ -25,12 +27,13 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     BOOL isWow64 = FALSE;
     IsWow64Process(hProcess.get(), &isWow64);
 
-    std::string dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
+    const std::wstring& dllPathW = isWow64 ? hookDllPathX86W : hookDllPathX64W;
+    const std::string& dllPath = isWow64 ? hookDllPathX86 : hookDllPathX64;
 
     // SECURITY: Contain the DLL to the application directory and reject broadly
     // writable install locations before any remote load. Production builds fail
     // closed; development builds log and continue so local trees stay usable.
-    if (!ValidateDllSecurity(dllPath)) {
+    if (!ValidateDllSecurity(dllPathW)) {
         LogError("[SECURITY] DLL security validation failed for %s - refusing to inject", dllPath.c_str());
         return false;
     }
@@ -43,7 +46,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     // To create a production build, pass --production to build.py.
 #ifdef CE_PRODUCTION_BUILD
     // PRODUCTION BUILD: Require valid Authenticode signature
-    if (!VerifyDLLSignature(dllPath, true)) {
+    if (!VerifyDLLSignature(dllPathW, true)) {
         LogError(
             "[SECURITY] DLL signature verification failed for %s - refusing "
             "to inject",
@@ -61,7 +64,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
     if (skipVerification && strcmp(skipVerification, "1") == 0) {
         LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
-    } else if (!VerifyDLLSignature(dllPath, false)) {
+    } else if (!VerifyDLLSignature(dllPathW, false)) {
         LogWarn("[SECURITY] DLL is not Authenticode-signed: %s", dllPath.c_str());
         LogWarn(
             "[SECURITY] This is expected for development builds. Set "
@@ -73,7 +76,8 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
     LogInfo("Using DLL: %s (WoW64: %d)", dllPath.c_str(), isWow64);
 
-    if (!fs::exists(dllPath)) {
+    std::error_code dllExistsError;
+    if (!fs::exists(fs::path(dllPathW), dllExistsError)) {
         LogError("Required DLL for %s injection missing: %s", isWow64 ? "x86" : "x64", dllPath.c_str());
         return false;
     }
@@ -146,7 +150,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     LPVOID pLoadLibrary = nullptr;
     if (!isWow64) {
         // 64-bit target, same address as ours usually
-        pLoadLibrary = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
+        pLoadLibrary = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryW");
     } else {
         // 32-bit target (WoW64)
         // We must wait for kernel32.dll to be loaded. It might take a moment during
@@ -166,14 +170,14 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
                         if (modName.find("kernel32.dll") != std::string::npos) {
                             // Found kernel32!
-                            pLoadLibrary = GetRemoteProcAddress(hProcess.get(), hMods[i], "LoadLibraryA");
+                            pLoadLibrary = GetRemoteProcAddress(hProcess.get(), hMods[i], "LoadLibraryW");
 
                             if (pLoadLibrary)
-                                LogInfo("Resolved LoadLibraryA in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary,
+                                LogInfo("Resolved LoadLibraryW in x86 process at 0x%p (Base: 0x%p)", pLoadLibrary,
                                         hMods[i]);
                             else
                                 LogError(
-                                    "Failed to resolve LoadLibraryA in x86 process via PE "
+                                    "Failed to resolve LoadLibraryW in x86 process via PE "
                                     "parsing");
                             goto found_kernel32;
                         }
@@ -194,13 +198,15 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
     // Allocate memory in remote process - use RAII VirtualAllocGuard
     ce::VirtualAllocGuard pRemotePath(
-        hProcess.get(), VirtualAllocEx(hProcess.get(), NULL, dllPath.size() + 1, MEM_COMMIT, PAGE_READWRITE));
+        hProcess.get(), VirtualAllocEx(hProcess.get(), NULL, ce::injection::RemoteWidePathBytes(dllPathW), MEM_COMMIT,
+                                      PAGE_READWRITE));
     if (!pRemotePath) {
         LogError("VirtualAllocEx failed for PID %lu", pid);
         return false;
     }
 
-    if (!WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPath.c_str(), dllPath.size() + 1, NULL)) {
+    if (!WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPathW.c_str(),
+                            ce::injection::RemoteWidePathBytes(dllPathW), NULL)) {
         LogError("WriteProcessMemory failed for PID %lu", pid);
         return false;
     }
@@ -242,13 +248,13 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     DWORD exitCode = 0;
     if (GetExitCodeThread(hThread.get(), &exitCode)) {
         if (exitCode == 0) {
-            // LoadLibraryA returned NULL
+            // LoadLibraryW returned NULL
             LogError(
-                "LoadLibraryA failed in remote process (Exit Code: 0). DLL "
+                "LoadLibraryW failed in remote process (Exit Code: 0). DLL "
                 "failed to load.");
             return false;
         } else {
-            LogInfo("LoadLibraryA succeeded (Remote Handle: 0x%lX)", (unsigned long)exitCode);
+            LogInfo("LoadLibraryW succeeded (Remote Handle: 0x%lX)", (unsigned long)exitCode);
         }
     } else {
         LogError("Failed to get thread exit code.");
@@ -294,7 +300,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     return true;
 }
 
-bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE hMainThread) {
+bool InjectionManager::InjectEarly(DWORD pid, HANDLE hMainThread) {
     LogInfo("[APC] Attempting early APC injection for PID %lu", pid);
 
     HANDLE hProcess = OpenProcess(
@@ -308,19 +314,21 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
 
     BOOL isWow64Target = FALSE;
     IsWow64Process(hProcess, &isWow64Target);
+    const std::wstring& dllPathW = isWow64Target ? hookDllPathX86W : hookDllPathX64W;
+    const std::string& dllPath = isWow64Target ? hookDllPathX86 : hookDllPathX64;
 
     // SECURITY: Mirror Inject()'s integrity gates. Early APC injection runs
     // before import resolution and previously skipped every check, so a swapped
     // hook DLL would execute inside the game without even a warning log.
     // Production builds fail closed; development builds log advisories and
     // honor SKIP_DLL_VERIFICATION=1 like Inject().
-    if (!ValidateDllSecurity(dllPath)) {
+    if (!ValidateDllSecurity(dllPathW)) {
         LogError("[SECURITY] DLL security validation failed for %s - refusing early APC injection", dllPath.c_str());
         CloseHandle(hProcess);
         return false;
     }
 #ifdef CE_PRODUCTION_BUILD
-    if (!VerifyDLLSignature(dllPath, true)) {
+    if (!VerifyDLLSignature(dllPathW, true)) {
         LogError("[SECURITY] DLL signature verification failed for %s - refusing early APC injection",
                  dllPath.c_str());
         CloseHandle(hProcess);
@@ -330,30 +338,30 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     const char* skipVerification = getenv("SKIP_DLL_VERIFICATION");
     if (skipVerification && strcmp(skipVerification, "1") == 0) {
         LogWarn("[SECURITY] Skipping DLL verification (SKIP_DLL_VERIFICATION=1)");
-    } else if (!VerifyDLLSignature(dllPath, false)) {
+    } else if (!VerifyDLLSignature(dllPathW, false)) {
         LogWarn("[SECURITY] Early APC target DLL is not Authenticode-signed: %s", dllPath.c_str());
     }
 #endif
 
-    LPVOID pLoadLibraryA = nullptr;
+    LPVOID pLoadLibraryW = nullptr;
     if (isWow64Target) {
-        pLoadLibraryA = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "LoadLibraryA");
-        if (!pLoadLibraryA) {
-            LogError("[APC] Failed to resolve LoadLibraryA in WoW64 process");
+        pLoadLibraryW = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "LoadLibraryW");
+        if (!pLoadLibraryW) {
+            LogError("[APC] Failed to resolve LoadLibraryW in WoW64 process");
             CloseHandle(hProcess);
             return false;
         }
     } else {
         HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-        pLoadLibraryA = (LPVOID)GetProcAddress(hKernel32, "LoadLibraryA");
-        if (!pLoadLibraryA) {
-            LogError("[APC] Failed to get LoadLibraryA address");
+        pLoadLibraryW = (LPVOID)GetProcAddress(hKernel32, "LoadLibraryW");
+        if (!pLoadLibraryW) {
+            LogError("[APC] Failed to get LoadLibraryW address");
             CloseHandle(hProcess);
             return false;
         }
     }
 
-    SIZE_T pathSize = dllPath.size() + 1;
+    const SIZE_T pathSize = ce::injection::RemoteWidePathBytes(dllPathW);
     LPVOID pRemotePath = VirtualAllocEx(hProcess, NULL, pathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pRemotePath) {
         LogError("[APC] VirtualAllocEx failed: %lu", GetLastError());
@@ -361,7 +369,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
         return false;
     }
 
-    if (!WriteProcessMemory(hProcess, pRemotePath, dllPath.c_str(), pathSize, NULL)) {
+    if (!WriteProcessMemory(hProcess, pRemotePath, dllPathW.c_str(), pathSize, NULL)) {
         LogError("[APC] WriteProcessMemory failed: %lu", GetLastError());
         VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);
         CloseHandle(hProcess);
@@ -373,7 +381,7 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
     CreateTargetReactivationEvents(pid, true, true, reactivateEvent.addressof(),
                                    vulkanReactivateEvent.addressof());
 
-    DWORD result = QueueUserAPC((PAPCFUNC)pLoadLibraryA, hMainThread, (ULONG_PTR)pRemotePath);
+    DWORD result = QueueUserAPC((PAPCFUNC)pLoadLibraryW, hMainThread, (ULONG_PTR)pRemotePath);
     if (!result) {
         LogError("[APC] QueueUserAPC failed: %lu", GetLastError());
         VirtualFreeEx(hProcess, pRemotePath, 0, MEM_RELEASE);

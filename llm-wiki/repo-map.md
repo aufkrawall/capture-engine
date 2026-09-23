@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-09-15
+Last cross-checked: 2026-09-23
 
 Primary sources:
 - top-level repo layout (verified against the working tree)
@@ -68,6 +68,11 @@ anchors that predate the split are approximate.
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
     fail-closed RTMP/RTMPS profile and `face_camera_config.h` owns face-camera parsing/layout policy.
   - `process_ipc.h/.cpp` + `process_ipc_client.cpp` - private IPC channels.
+  - `crash_handler.cpp` + `crash_dump_writer.cpp` (vectored/unhandled filters, dump worker) +
+    `crash_first_chance.{h,cpp}` (first-chance fault records, dispatch detection, continue handler) +
+    `crash_symbol_store.{h,cpp}` (hard-linked per-session symbol archive) + `crash_dump_policy.h`.
+  - `vulkan_layer_target_list.h` - which processes the implicit Vulkan layer may enter; the inject
+    child persists `vulkan_layer_targets.txt`, the layer decides at negotiation.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.

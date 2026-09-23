@@ -19,6 +19,14 @@ void InstallCrashHandler();
 // archives its own copy moments later.
 void SetCrashDumpDirectory(const std::string& dir, bool archiveInstalledSymbols = true);
 
+// Root of the shared symbol store (normally the logs root). When set, archived
+// session artifacts are hard links into `<root>\symbol_store` instead of full
+// copies; see crash_symbol_store.h. Unset keeps plain per-directory copies.
+void SetCrashSymbolStoreRoot(const std::string& logsRoot);
+
+// Removes store files no retained session links anymore.
+void PruneCrashSymbolStore();
+
 // Returns the current directory where crash dumps should be written.
 std::string GetCrashDumpDirectory();
 
@@ -49,6 +57,15 @@ void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
 using CrashPreDumpCallback = void (*)();
 void RegisterCrashPreDumpCallback(CrashPreDumpCallback callback);
 
+// The exception an external dump should carry: EXCEPTION_POINTERS in THIS
+// process's memory (the helper reads them with ClientPointers) and the thread
+// that raised it. The caller keeps both alive until the helper has finished,
+// which it does anyway by waiting for it.
+struct ExternalDumpException {
+    const EXCEPTION_POINTERS* pointers = nullptr;
+    DWORD threadId = 0;
+};
+
 // Optional hook-module services for the crash-dump worker. The injected hook
 // runs inside a host process it does not own, where an in-process dbghelp dump
 // has to walk the module list through whatever foreign overlays have hooked the
@@ -61,8 +78,10 @@ struct CrashDumpEnvironmentHooks {
     // `dumpFileNameHint`. Returns true only when a dump was actually written.
     // `stackOnly` asks the helper for thread stacks, thread info and modules
     // instead of process memory; a caller that has no reason to shrink the
-    // dump passes false and gets exactly the dump it always got.
-    bool (*captureWithExternalHelper)(const char* dumpFileNameHint, bool stackOnly) = nullptr;
+    // dump passes false and gets exactly the dump it always got. `exception`
+    // (optional) makes the dump's exception stream name the faulting context.
+    bool (*captureWithExternalHelper)(const char* dumpFileNameHint, bool stackOnly,
+                                      const ExternalDumpException* exception) = nullptr;
     // True when a third-party overlay module is loaded in this process.
     bool (*foreignOverlayLoaded)() = nullptr;
 };
@@ -73,7 +92,8 @@ void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks);
 // the freeze watchdog). Each answers conservatively (false) when the hook
 // module registered nothing.
 bool HasExternalCrashDumpCapture();
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly = false);
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly = false,
+                                        const ExternalDumpException* exception = nullptr);
 bool IsForeignOverlayLoadedForCrashDump();
 
 // Writes an additional CE-owned dump for externally handled crashes when we still

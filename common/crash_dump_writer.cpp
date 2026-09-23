@@ -4,6 +4,7 @@
 
 #include "crash_handler_internal.h"
 #include "cpp_exception_message.h"
+#include "crash_first_chance.h"
 
 #include <atomic>
 #include <cstdio>
@@ -99,7 +100,10 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     if (ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(foreignOverlayLoaded,
                                                                    HasExternalCrashDumpCapture())) {
         TraceCrash("Foreign overlay loaded - capturing crash dump with the external helper first");
-        if (CaptureCrashDumpWithExternalHelper(dumpFileName)) {
+        ExternalDumpException exception;
+        exception.pointers = &params->pointers;
+        exception.threadId = params->threadId;
+        if (CaptureCrashDumpWithExternalHelper(dumpFileName, false, &exception)) {
             TraceCrash("External helper captured the crash dump");
             g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
             return 0;
@@ -275,121 +279,24 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    if (code == EXCEPTION_ACCESS_VIOLATION && pExceptionPointers->ExceptionRecord->NumberParameters >= 2) {
-        ULONG_PTR accessType = pExceptionPointers->ExceptionRecord->ExceptionInformation[0];
-        ULONG_PTR faultAddr = pExceptionPointers->ExceptionRecord->ExceptionInformation[1];
-
-        // === Trampoline Region VTable Corruption ===
-        // Detect RIP=0 (DEP crash executing at NULL) where RAX points into our
-        // trampoline-like address. This is diagnostic only; actual recoverable
-        // execute faults are handled by the registered hook-side callback above.
-        if (faultAddr == 0 && accessType == 2) {
-            CONTEXT* ctx = pExceptionPointers->ContextRecord;
-#ifdef _WIN64
-            uintptr_t rax = ctx->Rax;
-            if (rax != 0 && rax >= 0x0000700000000000ULL) {
-                char diagMsg[256];
-                snprintf(diagMsg, sizeof(diagMsg),
-                         "Possible trampoline vtable dispatch crash at RAX=0x%llX - address read as vtable ptr",
-                         (unsigned long long)rax);
-                TraceCrash(diagMsg);
-            }
-#endif  // _WIN64
-        }
-    }
-
     // If the UnhandledExceptionFilter has asked us to force a dump, do it
     // regardless of exception code.
-    bool forceDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
+    const bool forceDump = g_ForceUnhandledDump.load(std::memory_order_acquire);
 
-    // Read dump directory with try_lock to avoid deadlock if crashed thread owns the mutex
-    std::string dumpDir;
-    {
-        std::unique_lock<std::mutex> dirLock(g_DumpDirMutex, std::try_to_lock);
-        if (dirLock.owns_lock()) {
-            dumpDir = CrashDumpDirectoryStorage();
-        } else {
-            dumpDir = ".\\logs";  // Fallback default if mutex is contended
-        }
-    }
-
-    // Skip ONLY truly benign exceptions that are used for debug/IPC purposes
-    // These are first-chance only and never indicate real crashes.
-    if (!forceDump) {
-        switch (code) {
-            case 0x406D1388:  // Thread naming exception (VS debugger)
-            case 0x40010006:  // OutputDebugString
-            case 0x4001000A:  // WOW64 debug
-            case 0x4000001F:  // Wow64 breakpoint
-                return EXCEPTION_CONTINUE_SEARCH;
-            default:
-                break;
-        }
-    }
-
-    // COM disconnect exceptions on thread pool workers are benign during
-    // process shutdown. COM's LRPC infrastructure tries to dispatch pending
-    // RPC calls after the process has started releasing COM objects.
-    // This causes RPC_E_DISCONNECTED on a TppWorkerThread.
-    // Only dump if we get an excessive number of THIS exception (indicates a
-    // real issue). A global VEH counter is too noisy because unrelated
-    // first-chance exceptions happen frequently in graphics processes.
-    if (!forceDump && code == 0x80010108) {
-        if (IncrementExceptionCount(g_RPCDisconnectedExceptionCount) <= 5) {
+    // Nothing above this line may allocate, lock or write a file: it runs for
+    // every exception the host raises, including the thousands a managed or
+    // JIT runtime handles itself. See ClassifyFirstChanceException.
+    const auto action =
+        ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, IsDebuggerPresent() != FALSE);
+    switch (action) {
+        case ce::crash_dump_policy::FirstChanceAction::kIgnore:
             return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-
-    // RPC_S_SERVER_UNAVAILABLE (0x800706ba) on thread pool timer callbacks:
-    // Windows COM timer tries to clean up marshaling context for a dead process.
-    // This is benign during cross-process teardown (e.g., inject process exits).
-    // Apply the threshold per exception code rather than per total VEH count so
-    // earlier benign exceptions do not force a dump here.
-    if (!forceDump && code == 0x800706ba) {
-        if (IncrementExceptionCount(g_RPCServerUnavailableExceptionCount) <= 3) {
+        case ce::crash_dump_policy::FirstChanceAction::kRecordFault:
+            ce::crash_first_chance::RecordFault(pExceptionPointers);
             return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-
-    // E_NOINTERFACE (0x80004002) on thread pool workers during COM shutdown:
-    // WMI async callbacks already queued on the thread pool may try to dispatch
-    // after CancelAsyncCall + Release have torn down the stub sink. The COM
-    // runtime raises E_NOINTERFACE when it fails to QI the dead stub. This is
-    // benign during process teardown — the notification is no longer needed.
-    if (!forceDump && code == 0x80004002) {
-        if (IncrementExceptionCount(g_ENoInterfaceExceptionCount) <= 5) {
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-
-    // Breakpoints that escape to the process can terminate with 0x80000003
-    // without calling ExitProcess/NtTerminateProcess. Do not skip them when no
-    // debugger owns the breakpoint; this is the only in-process chance to get a
-    // dump for Talos-style startup failures.
-    if (code == EXCEPTION_BREAKPOINT) {
-        if (ce::crash_dump_policy::ShouldSkipBreakpointExceptionDump(forceDump, IsDebuggerPresent())) {
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-        TraceCrash("Breakpoint exception is dump-worthy because no debugger is attached");
-    }
-
-    // Generic C++ exceptions are commonly used for recoverable library error
-    // paths (for example, D3D11/WinRT throwing before the caller falls back to
-    // a safe path). MinGW/clang uses 0x20474343 (" GCC"), while MSVC/CRT uses
-    // 0xE06D7363. Do not treat first-chance C++ EH as a crash here; if it is
-    // truly unhandled, the top-level UEF path will re-enter with forceDump=true
-    // and write the dump there.
-    if (!forceDump && (code == 0xE06D7363 || code == 0x20474343)) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // Everything the filter reasons about explicitly has now had its say. What
-    // remains is decided by NTSTATUS severity: a first-chance exception below
-    // error severity was raised deliberately by a caller that handles it, and
-    // dumping it stalls the whole process for the duration of the dump. If it is
-    // truly unhandled, the top-level filter re-enters with forceDump.
-    if (!ce::crash_dump_policy::ShouldTreatFirstChanceExceptionAsCrash(code, forceDump)) {
-        return EXCEPTION_CONTINUE_SEARCH;
+        case ce::crash_dump_policy::FirstChanceAction::kQuickAssertDump:
+        case ce::crash_dump_policy::FirstChanceAction::kDumpNow:
+            break;
     }
 
     // Unhandled C++ exception: log the thrown object (message) before dumping;
@@ -400,18 +307,19 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     ActivateCrashTrace();
 
-    // STATUS_STACK_BUFFER_OVERRUN (0xC0000409) is often raised via __fastfail()
-    // which bypasses normal VEH. If we catch it here, it's a second-chance
-    // or the process has a custom handler. Always dump these - they indicate
-    // real corruption.
-    if (code == 0xC0000409) {
-        TraceCrash("STACK_BUFFER_OVERRUN detected - generating dump");
-        // Fall through to dump generation
+    if (code == EXCEPTION_BREAKPOINT && !forceDump) {
+        TraceCrash("Breakpoint exception is dump-worthy because no debugger is attached");
     }
-
-    // STATUS_FATAL_USER_CALLBACK_EXCEPTION - crash in a Windows callback
-    if (code == 0xC000041D) {
-        TraceCrash("FATAL_USER_CALLBACK_EXCEPTION - generating dump");
+    if (forceDump) {
+        const auto stats = ce::crash_first_chance::GetStatistics();
+        char statsMsg[192];
+        snprintf(statsMsg, sizeof(statsMsg),
+                 "First-chance faults before this unhandled exception: recorded=%llu resolvedByContinue=%llu "
+                 "dropped=%llu",
+                 static_cast<unsigned long long>(stats.recorded),
+                 static_cast<unsigned long long>(stats.resolvedByContinue),
+                 static_cast<unsigned long long>(stats.dropped));
+        TraceCrash(statsMsg);
     }
 
     // Log the exception for debugging
@@ -421,22 +329,16 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
              callCount);
     TraceCrash(codeStr);
 
-    // COM disconnected exceptions often precede real crashes in DirectX
-    // when the GPU driver resets or the device is lost. Always dump these.
-    if (code == 0x80010108 ||  // RPC_E_DISCONNECTED
-        code == 0x80004005 ||  // E_FAIL
-        code == 0x8876086A ||  // DXGI_ERROR_DEVICE_RESET
-        code == 0x887A0006 ||  // DXGI_ERROR_DEVICE_HUNG
-        code == 0x887A0007 ||  // DXGI_ERROR_DEVICE_REMOVED
-        code == 0x887A0020) {  // DXGI_ERROR_ACCESS_LOST
-        TraceCrash("COM/DXGI fatal exception detected - generating dump");
-        // Fall through to dump generation
-    }
-
     // UE5 ensure() assertion (0x4000): continuable, but UE5 may call
     // TerminateProcess shortly after. Write a FAST MiniDumpNormal for
     // diagnostics (<50 ms, ~100 KB) then let UE5's handler continue.
-    if (code == 0x00004000) {
+    if (action == ce::crash_dump_policy::FirstChanceAction::kQuickAssertDump) {
+        // Read the dump directory with try_lock: the crashed thread may own the mutex.
+        std::string dumpDir;
+        {
+            std::unique_lock<std::mutex> dirLock(g_DumpDirMutex, std::try_to_lock);
+            dumpDir = dirLock.owns_lock() ? CrashDumpDirectoryStorage() : std::string(".\\logs");
+        }
         {
             HMODULE hMod = NULL;
             GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -755,19 +657,19 @@ void InstallCrashHandler() {
         TraceCrash("Failed to install VEH handler");
     }
 
-    // Also install a SECOND VEH handler with LAST priority (0)
-    // This catches exceptions that other VEH handlers might have skipped.
-    // Some frameworks install VEH handlers that return EXCEPTION_CONTINUE_SEARCH
-    // for crashes they don't recognize. Our last-position handler catches those.
-    PVOID vehLastHandle = AddVectoredExceptionHandler(0, CrashHandlerExceptionFilter);
-    if (vehLastHandle) {
-        TraceCrash("VEH last-position handler installed");
-    }
+    // No second, last-position registration: a handler ahead of CE that
+    // returns EXCEPTION_CONTINUE_SEARCH passes the exception on to this one
+    // anyway, and one that resumes execution has handled it. The duplicate only
+    // ran every exception through this filter twice.
+    //
+    // The continue handler clears a recorded first-chance fault once any
+    // handler resumes execution after it.
+    ce::crash_first_chance::Install();
 
     // Also install Unhandled Exception Filter as backup
     // (some games might install their own handlers that preempt VEH)
     g_OldUnhandledFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterCallback);
     TraceCrash("Unhandled exception filter installed");
 
-    OutputDebugStringA("[CrashHandler] Crash handler installed (VEH + VEH-last + UnhandledFilter).\n");
+    OutputDebugStringA("[CrashHandler] Crash handler installed (VEH + VEH-continue + UnhandledFilter).\n");
 }

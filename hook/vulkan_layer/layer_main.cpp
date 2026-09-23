@@ -10,6 +10,11 @@
 #include <filesystem>
 
 #include "../../common/log_privacy.h"
+#include "../../common/vulkan_layer_target_list.h"
+
+#include <atomic>
+#include <fstream>
+#include <iterator>
 
 // Get the directory where this DLL is located
 static std::string GetLayerDllDirectory() {
@@ -190,11 +195,8 @@ static bool g_LogFileInitialized = false;
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInst);
-        HMODULE pinnedLayer = nullptr;
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                                reinterpret_cast<LPCWSTR>(hInst), &pinnedLayer)) {
-            return FALSE;
-        }
+        // Not pinned here: a process the layer declines at negotiation must get
+        // the module unloaded again. Negotiation pins it once it participates.
         LayerEarlyLog("DLL_PROCESS_ATTACH - Layer DLL loaded");
     } else if (reason == DLL_PROCESS_DETACH) {
         // Never call IPC, logging, Vulkan, or C++ cleanup while the loader lock is
@@ -275,6 +277,71 @@ void LayerLog(const char* fmt, ...) {
 // Layer Negotiation
 // ============================================================================
 
+// True when a CaptureEngine host with this layer's shared-memory layout has
+// published its discovery mapping.
+static bool IsCompatibleHostPublished() {
+    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    if (!discovery)
+        return false;
+    auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
+    const bool compatible = ValidateDiscoveryInfo(info);
+    if (info)
+        UnmapViewOfFile(info);
+    CloseHandle(discovery);
+    return compatible;
+}
+
+// The injection whitelist the host persisted next to this DLL.
+static bool IsListedAsResidentTarget() {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&IsListedAsResidentTarget), &module)) {
+        return false;
+    }
+    std::wstring modulePath(32768, L'\0');
+    const DWORD moduleLength = GetModuleFileNameW(module, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+    std::wstring exePath(32768, L'\0');
+    const DWORD exeLength = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
+    if (moduleLength == 0 || moduleLength >= modulePath.size() || exeLength == 0 || exeLength >= exePath.size())
+        return false;
+    modulePath.resize(moduleLength);
+    exePath.resize(exeLength);
+
+    const std::filesystem::path listPath =
+        std::filesystem::path(modulePath).parent_path() / ce::vulkan_layer_targets::kTargetListFileName;
+    std::ifstream in(listPath, std::ios::binary);
+    if (!in)
+        return false;
+    const std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::wstring exeName = std::filesystem::path(exePath).filename().wstring();
+    const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, exeName.c_str(), static_cast<int>(exeName.size()), nullptr,
+                                               0, nullptr, nullptr);
+    if (utf8Length <= 0)
+        return false;
+    std::string exeNameUtf8(static_cast<size_t>(utf8Length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, exeName.c_str(), static_cast<int>(exeName.size()), exeNameUtf8.data(), utf8Length,
+                        nullptr, nullptr);
+    return ce::vulkan_layer_targets::IsProcessNameListed(contents, exeNameUtf8);
+}
+
+static bool PerformEarlyWhitelistCheck();
+
+// Decided once per process; see common/vulkan_layer_target_list.h.
+static bool ShouldParticipateInThisProcess() {
+    static std::atomic<int> s_decision{-1};
+    const int cached = s_decision.load(std::memory_order_acquire);
+    if (cached >= 0)
+        return cached != 0;
+    const bool hostPublished = IsCompatibleHostPublished();
+    const bool eligibleByHost = hostPublished && PerformEarlyWhitelistCheck();
+    const bool listed = !hostPublished && IsListedAsResidentTarget();
+    const bool participate = ce::vulkan_layer_targets::ShouldLayerParticipate(hostPublished, eligibleByHost, listed);
+    s_decision.store(participate ? 1 : 0, std::memory_order_release);
+    LayerEarlyLog("Participation decision: participate=%d hostPublished=%d eligibleByHost=%d listedTarget=%d",
+                  participate ? 1 : 0, hostPublished ? 1 : 0, eligibleByHost ? 1 : 0, listed ? 1 : 0);
+    return participate;
+}
+
 extern "C" __declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
     LayerEarlyLog("NegotiateLoaderLayerInterfaceVersion called");
@@ -300,13 +367,34 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    // A process CE may never inject into gets no CE layer at all: declining
+    // here makes the loader treat the layer as unusable and build the instance
+    // without it, and the unpinned module is unloaded again. Neither the call
+    // chain nor a watcher thread of CE's is left in that application - that is
+    // what `dll_injection=never` and anti-cheat-protected titles need.
     LayerEarlyLog("Checking whitelist...");
-    if (!PerformEarlyWhitelistCheck()) {
-        LayerEarlyLog("Process not whitelisted - layer entering passthrough mode");
-        LayerLog("Vulkan Layer: Process not whitelisted - entering passthrough mode");
-        // Do NOT return error, just set flag (already done by check)
+    if (!ShouldParticipateInThisProcess()) {
+        LayerEarlyLog("Process is not a CaptureEngine injection target - declining the layer");
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (!g_LayerState.whitelisted) {
+        LayerEarlyLog("Whitelisted target without a running host - resident and dormant until one appears");
+        LayerLog("Vulkan Layer: Whitelisted target, no host yet - dormant");
     } else {
         LayerLog("Vulkan Layer: Process whitelisted - full layer mode enabled");
+    }
+
+    // From here on the loader holds this module's function pointers, and games
+    // or other layers may save them: the image must never be unmapped.
+    static std::atomic<bool> s_pinned{false};
+    if (!s_pinned.exchange(true, std::memory_order_acq_rel)) {
+        HMODULE pinnedLayer = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                reinterpret_cast<LPCWSTR>(&vkNegotiateLoaderLayerInterfaceVersion), &pinnedLayer)) {
+            s_pinned.store(false, std::memory_order_release);
+            LayerEarlyLog("Could not pin the layer module - declining");
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
     }
 
     LayerEarlyLog("Initializing IPC...");

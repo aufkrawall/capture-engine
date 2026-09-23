@@ -1,5 +1,44 @@
 # llm-wiki Log
 
+### 2026-09-23 - Risk audit: ten user-facing hazards addressed; Vulkan pre-host gap remains
+
+A read-only audit asked which areas were most likely to hurt users; it led to the local
+changes below (no restructuring). Source review then found the no-host Vulkan target-list
+staging gap recorded under Open. No hardware run yet for any of them.
+
+- **Crash VEH dumped handled first-chance faults** (Mono/JVM/.NET/LuaJIT/emulators): now
+  recorded only, dumped when the process dies of them - `regression-testing-and-logging.md`.
+- **A failed trailer/close deleted whole recordings** - `recording-output-paths.md`.
+- **One late `ReloadConfig` ack killed the media child mid-recording** - `process-ipc.md`.
+- **Media `ReloadConfig` raced recording threads on `config`**: parked in `deferredConfig`,
+  assigned at the next `StartRecording` with the old assign-only semantics.
+- **Vulkan implicit layer sat in every Vulkan process** as passthrough: now declines at
+  negotiation in non-targets when a compatible host is present. The no-host target-list
+  path has a staging-location gap - `dx12-injection-bootstrap.md`. The loader's documented
+  behavior for `VK_ERROR_INITIALIZATION_FAILED` from negotiation is "unusable, not loaded".
+- **Steam null-callback VEH** acted on other threads' faults and wrote a fixed Steam RVA
+  (0x1621d8, stale since at least the RoboCop build's 0x167340); now thread-scoped, proven
+  slot only, registered once instead of add/remove per Present.
+- **FFX `ffxConfigure` int3 race**: a second thread trapping after disarm escaped to the crash
+  handler; `ClassifyEntryBreakpoint` resumes it. Armed flag is published before the byte.
+  A byte that cannot be restored no longer spins the thread.
+- **Injection used ANSI paths** (`LoadLibraryA`): UTF-16 end to end now. Other hook-side
+  `GetModuleFileNameA` users (logs/config dirs, ~56 files) remain ANSI - stale-risk for
+  non-ACP install paths.
+- **~180 MB symbol copy per session, twice**: hard links into `logs\symbol_store`
+  (`common/crash_symbol_store.h`), pruned by link count; the hook never archives.
+- **Freeze dumps** prefer the registered external helper when available. Audit correction: the effective
+  watchdog timeout is 30 s (120 s UE5/DLSS-FG), not the 5 s field initializer.
+
+Open: `log_level=trace` stays the template default (diagnostics-first project policy);
+hardware validation of all of the above; a hardware-fault test for the
+KiUserExceptionDispatcher range (only the RtlRaiseException path is unit-tested).
+The no-host Vulkan target-list path is also incomplete: the inject child writes
+the list beside `captureengine.exe`, while the registered layer is loaded from a
+versioned staging directory and searches beside its own DLL. `StageFileIfChanged`
+stages the manifest and DLL but not this list, so a game launched before the host
+cannot pass negotiation and will not late-wake.
+
 ### 2026-09-23 - Vulkan sharpen lost the device on DOOM Eternal's swapchain recreate
 
 Session `20260922_235937`, build 0.1.6773, first run with `sharpen=cas` active at Vulkan

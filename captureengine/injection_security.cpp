@@ -2,18 +2,24 @@
 
 #include "injection_path_policy.h"
 
-bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
-    char exePathBuf[MAX_PATH];
-    GetModuleFileNameA(NULL, exePathBuf, MAX_PATH);
+bool InjectionManager::ValidateDllSecurity(const std::wstring& dllPath) {
+    const std::string dllPathForLog = ce::injection::WidePathToUtf8(dllPath);
+    std::wstring exePathBuf(32768, L'\0');
+    const DWORD exePathLength = GetModuleFileNameW(NULL, exePathBuf.data(), static_cast<DWORD>(exePathBuf.size()));
+    if (exePathLength == 0 || exePathLength >= exePathBuf.size()) {
+        LogError("[Security] Cannot resolve the application directory (error=%lu)", GetLastError());
+        return false;
+    }
+    exePathBuf.resize(exePathLength);
     fs::path exePath = fs::path(exePathBuf).parent_path();
-    fs::path checkPath = fs::absolute(dllPath);
 
     // 1. Path Validation
     std::error_code ec;
-    auto canonicalCheck = fs::weakly_canonical(checkPath, ec);
-    auto canonicalExe = fs::weakly_canonical(exePath, ec);
-    if (ec || !ce::injection::IsPathInsideDirectory(canonicalCheck.string(), canonicalExe.string())) {
-        LogError("[Security] DLL path is outside application directory: %s", checkPath.string().c_str());
+    fs::path checkPath = fs::absolute(fs::path(dllPath), ec);
+    auto canonicalCheck = ec ? fs::path() : fs::weakly_canonical(checkPath, ec);
+    auto canonicalExe = ec ? fs::path() : fs::weakly_canonical(exePath, ec);
+    if (ec || !ce::injection::IsPathInsideDirectory(canonicalCheck.wstring(), canonicalExe.wstring())) {
+        LogError("[Security] DLL path is outside application directory: %s", dllPathForLog.c_str());
         return false;
     }
 
@@ -25,7 +31,7 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
     // authenticated-user group (e.g. user-writable install directories).
     PACL pDacl = NULL;
     PSECURITY_DESCRIPTOR pSD = NULL;
-    if (GetNamedSecurityInfoA(dllPath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDacl, NULL,
+    if (GetNamedSecurityInfoW(dllPath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDacl, NULL,
                               &pSD) == ERROR_SUCCESS) {
         struct SidDefinition {
             SID_IDENTIFIER_AUTHORITY authority;
@@ -40,7 +46,7 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
         };
         bool writableByBroadIdentity = false;
         for (const SidDefinition& sidDefinition : kWriteProtectionSids) {
-            TRUSTEE_A trustee = {};
+            TRUSTEE_W trustee = {};
             trustee.TrusteeForm = TRUSTEE_IS_SID;
             trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
 
@@ -51,10 +57,10 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
                                           0, 0, 0, &pSid)) {
                 continue;
             }
-            trustee.ptstrName = (LPSTR)pSid;
+            trustee.ptstrName = (LPWSTR)pSid;
 
             ACCESS_MASK access = 0;
-            GetEffectiveRightsFromAclA(pDacl, &trustee, &access);
+            GetEffectiveRightsFromAclW(pDacl, &trustee, &access);
             FreeSid(pSid);
 
             if (access & (FILE_WRITE_DATA | FILE_APPEND_DATA | WRITE_DAC | WRITE_OWNER)) {
@@ -73,21 +79,19 @@ bool InjectionManager::ValidateDllSecurity(const std::string& dllPath) {
         }
     }
 
-    LogInfo("[Security] DLL security validation passed for %s", dllPath.c_str());
+    LogInfo("[Security] DLL security validation passed for %s", dllPathForLog.c_str());
     return true;
 }
 
 // Verify DLL Authenticode signature (production builds only)
 // Returns true if DLL is properly signed, false otherwise
-bool InjectionManager::VerifyDLLSignature(const std::string& dllPath, bool logFailures) {
-    // Convert to wide string for WinVerifyTrust. The ANSI codepage matches what
-    // GetModuleFileNameA/LoadLibraryA interpreted, so non-ASCII install paths
-    // verify the exact file the loader opens instead of a sign-extension-mangled
-    // name. Conversion failure fails closed.
-    const std::wstring widePath = ce::injection::AnsiPathToWide(dllPath);
+bool InjectionManager::VerifyDLLSignature(const std::wstring& widePath, bool logFailures) {
+    // The same UTF-16 path the remote LoadLibraryW receives, so the verified
+    // file is exactly the one the loader opens. An empty path fails closed.
+    const std::string dllPath = ce::injection::WidePathToUtf8(widePath);
     if (widePath.empty()) {
         if (logFailures) {
-            LogError("[Security] Could not convert DLL path for signature verification: %s", dllPath.c_str());
+            LogError("[Security] No DLL path to verify");
         }
         return false;
     }

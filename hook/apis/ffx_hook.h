@@ -126,6 +126,27 @@ inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instruc
            instructionPointer == targetAddress || instructionPointer == targetAddress + 1;
 }
 
+enum class EntryBreakpointAction : uint8_t {
+    kNotOurs,         // leave it to the next handler
+    kHandleCall,      // restore the byte and route the call through CE
+    kResumeAtTarget,  // re-execute the already restored original instruction
+};
+
+// ffxConfigure can be entered from several threads. Two of them can trap on
+// the same int3 while one handler restores the original byte and clears the
+// armed flag, so "not armed" does not mean "not ours": the late thread's
+// breakpoint used to fall through to the crash handler, which treats an
+// unhandled STATUS_BREAKPOINT as fatal. The armed flag is published BEFORE the
+// byte is written, so an int3 at the target that is still in place while the
+// flag is clear was not written by CE.
+inline EntryBreakpointAction ClassifyEntryBreakpoint(bool hitsTarget, bool armed, bool targetByteIsBreakpoint) {
+    if (!hitsTarget)
+        return EntryBreakpointAction::kNotOurs;
+    if (armed)
+        return EntryBreakpointAction::kHandleCall;
+    return targetByteIsBreakpoint ? EntryBreakpointAction::kNotOurs : EntryBreakpointAction::kResumeAtTarget;
+}
+
 }  // namespace detail
 
 }  // namespace FFXHook

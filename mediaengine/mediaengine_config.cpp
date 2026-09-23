@@ -64,6 +64,7 @@ void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
         }
         audioOnlyFilename = audioOnlyOutputReservation.Utf8Path();
         audioOnlyTrailerSucceeded = false;
+        audioOnlyWrittenPackets = 0;
         if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
             DLL_Log("MediaEngine: Failed to create audio-only muxer");
             audioOnlyFmtCtx = nullptr;
@@ -88,13 +89,22 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
             avformat_free_context(audioOnlyFmtCtx);
             audioOnlyFmtCtx = nullptr;
         }
-        const bool outputPublished = audioOnlyTrailerSucceeded && closeResult >= 0;
+        const bool outputPublished = ce::mux::ShouldPublishAudioOnlyOutput(audioOnlyTrailerSucceeded, closeResult >= 0,
+                                                                          audioOnlyWrittenPackets);
         if (outputPublished) {
+            if (!audioOnlyTrailerSucceeded || closeResult < 0) {
+                DLL_Log(
+                    "MediaEngine: ERROR audio-only finalize failed (trailerOk=%d close=%d) after %llu committed "
+                    "packets; keeping the recording",
+                    audioOnlyTrailerSucceeded ? 1 : 0, closeResult,
+                    static_cast<unsigned long long>(audioOnlyWrittenPackets));
+            }
             audioOnlyOutputReservation.Publish();
         } else {
             audioOnlyOutputReservation.CleanupOwnedFile();
         }
         audioOnlyTrailerSucceeded = false;
+        audioOnlyWrittenPackets = 0;
         audioOnlyFilename.clear();
         return outputPublished;
 
@@ -107,20 +117,25 @@ void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         DLL_Log("MediaEngine::ReloadConfig called");
 
+        // A live recording's audio, frame and stop paths read `config` (strings
+        // and vectors included) without muxMutex, so replacing it mid-recording
+        // was a data race. It was never applied to the running recording anyway;
+        // keep it aside until the next start.
+        if (recording) {
+            deferredConfig = std::make_unique<AppConfig>(*newConfig);
+            DLL_Log(
+                "MediaEngine: Config reload deferred while recording is active; it applies when the next "
+                "recording starts");
+            return;
+        }
+        deferredConfig.reset();
+
         // Update config
         this->config = *newConfig;
         trackAudioFormats = ResolveTrackAudioFormats(*newConfig);
         DLL_Log("[AVSyncAuto] engine_reload: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
                 static_cast<double>(this->config.avSyncResolvedRenderLatencyMs), this->config.avSyncConfidence.c_str(),
                 this->config.avSyncReason.c_str(), this->config.avSyncUsedAudioProbe ? 1 : 0);
-
-        // If recording, we can't fully re-init, but we can log a warning.
-        if (recording) {
-            DLL_Log(
-                "MediaEngine: Config updated, but recording is active. Changes "
-                "will apply on next recording.");
-            return;
-        }
 
         DLL_Log("MediaEngine: Re-initializing encoders with new config...");
 
@@ -444,4 +459,16 @@ void MediaEngine::InitAudioSourceBuffers(AudioSource& source,  const AudioConfig
         DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d channels=%d)", sourceIdx,
                 kMixerSampleRate, channels);
 
+}
+
+void MediaEngine::ApplyConfigDeferredDuringRecording() {
+    if (!deferredConfig)
+        return;
+    // Exactly what a reload during recording used to do, only no longer while
+    // recording threads read `config`: replace the settings, keep the encoders
+    // (and the per-recording hints already applied to them) as they are.
+    const std::unique_ptr<AppConfig> pending = std::move(deferredConfig);
+    config = *pending;
+    trackAudioFormats = ResolveTrackAudioFormats(config);
+    DLL_Log("MediaEngine: Applied the config reload deferred during the previous recording");
 }

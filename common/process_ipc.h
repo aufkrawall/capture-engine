@@ -123,6 +123,21 @@ private:
     std::mutex mutex_;
 };
 
+// A reply that misses its window does not always mean a dead child. For
+// commands that change nothing the controller depends on afterwards, the late
+// reply is discarded when it arrives and the channel stays up; only a second
+// miss while one is still outstanding proves the child is not serving its pipe.
+// A state-changing command (start/stop recording, overlay toggles, shutdown)
+// keeps the old rule, because the child may have acted on it while the
+// controller concluded it had not - tearing the channel down makes the child
+// unwind exactly that. Before this, one slow ReloadConfig ack killed the media
+// child and with it a live recording.
+enum class ReplyTimeoutOutcome : uint8_t {
+    kKeepChannel,
+    kBreakChannel,
+};
+ReplyTimeoutOutcome ClassifyReplyTimeout(ProcessCommand command, bool earlierReplyStillMissing);
+
 class ProcessIPCClient {
 public:
     explicit ProcessIPCClient(ProcessMode targetMode);
@@ -142,13 +157,17 @@ public:
     }
 
 private:
-    bool ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs);
+    bool ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs, bool* timedOut = nullptr);
     bool WriteMessageWithTimeout(const ProcessMessage& message, DWORD timeoutMs);
+    void BreakChannelLocked(const char* reason);
 
     ProcessMode targetMode_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     std::atomic<bool> connected_{false};
     uint64_t sequence_ = 0;
+    // Sequence of a tolerated command whose reply never arrived (0 = none). Its
+    // reply, if it still comes, is discarded by the next command.
+    uint64_t unansweredSequence_ = 0;
     uint32_t expectedChildPid_ = 0;
     ProcessChannelNonce nonce_{};
     std::mutex mutex_;
