@@ -138,4 +138,11 @@ inline LONG WritePersistedTargetList(const std::wstring& list, const wchar_t* va
                            static_cast<DWORD>(list.size() * sizeof(wchar_t)));
 }
 
+// Removes the persisted list (explicit unregistration). An already absent
+// value counts as removed. Returns the Win32 status.
+inline LONG DeletePersistedTargetList(const wchar_t* valueName = kRegistryValue) {
+    const LONG status = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRegistryKey, valueName);
+    return status == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : status;
+}
+
 }  // namespace ce::vulkan_layer_targets

@@ -28,6 +28,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     # optimization flags (HOOK_OPT_FLAGS_X64/X86) to maintain consistency.
     layer_only_sources = [
         os.path.join(layer_dir, "layer_main.cpp"),
+        # Shared with the negotiation gate (compile_vulkan_layer_gate).
+        os.path.join(layer_dir, "layer_participation.cpp"),
         os.path.join(layer_dir, "vulkan_layer.cpp"),
         os.path.join(layer_dir, "vulkan_layer_state.cpp"),
         os.path.join(layer_dir, "vulkan_layer_hooks.cpp"),
@@ -270,3 +272,56 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     except Exception as e:
         log(f"Error linking layer: {e}")
         raise
+
+    compile_vulkan_layer_gate(env, clang_exe, layer_cflags, arch, obj_dir, bin_dir)
+
+
+def vulkan_layer_gate_dll_name(arch):
+    return "VK_LAYER_CE_gate.dll" if arch == "x64" else "VK_LAYER_CE_gate_x86.dll"
+
+
+def compile_vulkan_layer_gate(env, clang_exe, layer_cflags, arch, obj_dir, bin_dir):
+    """Build VK_LAYER_CE_gate, the library the implicit-layer manifest names.
+
+    The Vulkan loader maps it into every Vulkan process on the machine. It
+    decides participation and loads the full layer only for an admitted process
+    (hook/vulkan_layer/layer_gate.cpp), so it links neither the Vulkan import
+    library nor the graphics/system libraries the full layer needs: a declined
+    process must map nothing beyond what it already has.
+    """
+    layer_dir = os.path.join(PROJECT_ROOT, "hook", "vulkan_layer")
+    gate_obj = os.path.join(obj_dir, "layer_gate.o")
+    gate_src = os.path.join(layer_dir, "layer_gate.cpp")
+    compiled, _ = parallel_compile(env, clang_exe, layer_cflags, [(gate_src, gate_obj)])
+    if compiled > 0:
+        log(f"Vulkan Layer gate ({arch}): compiled {compiled}")
+    # The full layer compiled layer_participation.cpp with these same flags.
+    gate_objs = [gate_obj, os.path.join(obj_dir, "layer_participation.o")]
+
+    gate_dll = os.path.join(bin_dir, vulkan_layer_gate_dll_name(arch))
+    ldflags = ["-shared", "-static", "-o", gate_dll]
+    ldflags.extend(LD_OPT_FLAGS)
+    if arch == "x64":
+        ldflags.extend(get_x64_linker_flags(clang_exe))
+    else:
+        # VKAPI_CALL is __stdcall on x86; the loader resolves the undecorated name.
+        ldflags.append("-Wl,--kill-at")
+        if not IS_LINUX:
+            ldflags.extend(
+                [
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-fuse-ld=lld",
+                    "-stdlib=libstdc++",
+                    "-rtlib=libgcc",
+                    "--unwindlib=libgcc",
+                    "-lpthread",
+                ]
+            )
+    append_windows_pdb_linker_flag(ldflags, gate_dll)
+
+    if os.path.exists(gate_dll) and not safe_delete_file(gate_dll) and os.path.exists(gate_dll):
+        log(f"[Warning] {os.path.basename(gate_dll)} is still locked, build may fail")
+
+    run_command([clang_exe] + gate_objs + ldflags, env=env)
+    log(f"Built: {gate_dll}")

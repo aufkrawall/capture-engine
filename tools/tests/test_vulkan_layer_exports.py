@@ -9,7 +9,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from tools.verify_vulkan_layer_exports import (  # noqa: E402
+    GATE_FORBIDDEN_EXPORTS,
+    GATE_REQUIRED_EXPORTS,
     REQUIRED_EXPORTS,
+    forbidden_exports,
     missing_exports,
     parse_exported_names,
 )
@@ -98,6 +101,35 @@ class MissingExportsTest(unittest.TestCase):
     def test_reports_missing_names_in_the_required_order(self) -> None:
         missing = missing_exports({"vkGetInstanceProcAddr"}, REQUIRED_EXPORTS)
         self.assertEqual(missing[0], "vkGetDeviceProcAddr")
+
+
+GATE_OUTPUT = """File: VK_LAYER_CE_gate.dll
+Format: COFF-x86-64
+Arch: x86_64
+AddressSize: 64bit
+Export {
+  Ordinal: 1
+  Name: vkNegotiateLoaderLayerInterfaceVersion
+  RVA: 0x1010
+}
+"""
+
+
+class GateExportsTest(unittest.TestCase):
+    def test_a_negotiation_only_gate_passes(self) -> None:
+        exported = parse_exported_names(GATE_OUTPUT)
+        self.assertEqual(missing_exports(exported, GATE_REQUIRED_EXPORTS), [])
+        self.assertEqual(forbidden_exports(exported, GATE_FORBIDDEN_EXPORTS), [])
+
+    def test_a_gate_exporting_proc_addresses_is_rejected(self) -> None:
+        # A loader that falls back to vkGetInstanceProcAddr after a declined
+        # negotiation would chain such a gate into every Vulkan process.
+        exported = parse_exported_names(GATE_OUTPUT) | {"vkGetInstanceProcAddr"}
+        self.assertEqual(forbidden_exports(exported, GATE_FORBIDDEN_EXPORTS), ["vkGetInstanceProcAddr"])
+
+    def test_a_decorated_x86_proc_address_export_is_still_rejected(self) -> None:
+        decorated = parse_exported_names("Export {\n  Name: _vkGetDeviceProcAddr@8\n}\n")
+        self.assertEqual(forbidden_exports(decorated, GATE_FORBIDDEN_EXPORTS), ["vkGetDeviceProcAddr"])
 
 
 if __name__ == "__main__":

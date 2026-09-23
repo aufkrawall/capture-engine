@@ -24,6 +24,8 @@ constexpr wchar_t kLayer64Name[] = L"VK_LAYER_CE_overlay";
 constexpr wchar_t kManifest32Name[] = L"VK_LAYER_CE_overlay_x86.json";
 constexpr wchar_t kLibrary32Name[] = L"VK_LAYER_CE_overlay_x86.dll";
 constexpr wchar_t kLayer32Name[] = L"VK_LAYER_CE_overlay_x86";
+constexpr wchar_t kGate64Name[] = L"VK_LAYER_CE_gate.dll";
+constexpr wchar_t kGate32Name[] = L"VK_LAYER_CE_gate_x86.dll";
 constexpr wchar_t kLegacyManifestName[] = L"VK_LAYER_CAPTURE_overlay.json";
 constexpr wchar_t kStagingSubdirectory[] = L"CaptureEngine\\vulkan_layers";
 
@@ -135,16 +137,19 @@ bool IsRegularFile(const std::filesystem::path& path) {
 }
 
 LayerManifest BuildManifest(const std::filesystem::path& baseDir, const std::filesystem::path& stagingDir,
-                            const wchar_t* manifestName, const wchar_t* libraryName, const wchar_t* layerName,
-                            bool is32Bit) {
+                            const wchar_t* manifestName, const wchar_t* libraryName, const wchar_t* gateName,
+                            const wchar_t* layerName, bool is32Bit) {
     LayerManifest manifest;
     manifest.sourceManifestPath = baseDir / manifestName;
     manifest.sourceLibraryPath = baseDir / libraryName;
+    manifest.sourceGatePath = baseDir / gateName;
     manifest.manifestPath = stagingDir / manifestName;
     manifest.libraryPath = stagingDir / libraryName;
+    manifest.gatePath = stagingDir / gateName;
     manifest.layerName = BuildVersionedLayerName(layerName);
     manifest.is32Bit = is32Bit;
     manifest.libraryExists = IsRegularFile(manifest.sourceLibraryPath);
+    manifest.gateExists = IsRegularFile(manifest.sourceGatePath);
     manifest.manifestExists = manifest.libraryExists || IsRegularFile(manifest.sourceManifestPath);
     return manifest;
 }
@@ -466,9 +471,9 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
     }
 
     plan.manifests.push_back(
-        BuildManifest(baseDir, plan.stagingDir, kManifest64Name, kLibrary64Name, kLayer64Name, false));
+        BuildManifest(baseDir, plan.stagingDir, kManifest64Name, kLibrary64Name, kGate64Name, kLayer64Name, false));
     plan.manifests.push_back(
-        BuildManifest(baseDir, plan.stagingDir, kManifest32Name, kLibrary32Name, kLayer32Name, true));
+        BuildManifest(baseDir, plan.stagingDir, kManifest32Name, kLibrary32Name, kGate32Name, kLayer32Name, true));
 
     const RegistryRoot root =
         (plan.effectiveMode == RegistrationMode::AllUsers) ? RegistryRoot::LocalMachine : RegistryRoot::CurrentUser;
@@ -601,13 +606,14 @@ static bool WriteStagedManifest(const LayerManifest& manifest) {
         "    \"layer\": {\n"
         "        \"name\": \"" + WideToUtf8(manifest.layerName) + "\",\n"
         "        \"type\": \"GLOBAL\",\n"
-        "        \"library_path\": \".\\\\" + WideToUtf8(manifest.libraryPath.filename().wstring()) + "\",\n"
+        // The gate, never the full layer: the loader maps this library into
+        // every Vulkan process. Its only entry point is negotiation; the proc
+        // addresses come from the full layer through the negotiated struct.
+        "        \"library_path\": \".\\\\" + WideToUtf8(manifest.gatePath.filename().wstring()) + "\",\n"
         "        \"api_version\": \"1.3.0\",\n"
         "        \"implementation_version\": \"" + buildStr + "\",\n"
         "        \"description\": \"CaptureEngine Overlay and Recording Layer\",\n"
         "        \"functions\": {\n"
-        "            \"vkGetInstanceProcAddr\": \"vkGetInstanceProcAddr\",\n"
-        "            \"vkGetDeviceProcAddr\": \"vkGetDeviceProcAddr\",\n"
         "            \"vkNegotiateLoaderLayerInterfaceVersion\": \"vkNegotiateLoaderLayerInterfaceVersion\"\n"
         "        },\n"
         "        \"disable_environment\": {\n"
@@ -655,7 +661,10 @@ static bool StagePlanArtifacts(const RegistrationPlan& plan) {
         if (!manifest.IsUsable()) {
             continue;
         }
+        // The full layer first: the manifest names the gate, and a gate staged
+        // without its full layer beside it could only decline.
         success &= StageFileIfChanged(manifest.sourceLibraryPath, manifest.libraryPath);
+        success &= StageFileIfChanged(manifest.sourceGatePath, manifest.gatePath);
         success &= WriteStagedManifest(manifest);
     }
     return success;
@@ -679,9 +688,9 @@ void LogRegistrationPlan(const RegistrationPlan& plan) {
     }
 
     for (const LayerManifest& manifest : plan.manifests) {
-        LogInfo("[VulkanReg] Manifest %s: json=%s dll=%s usable=%s", PathToUtf8(manifest.manifestPath).c_str(),
+        LogInfo("[VulkanReg] Manifest %s: json=%s dll=%s gate=%s usable=%s", PathToUtf8(manifest.manifestPath).c_str(),
                 manifest.manifestExists ? "present" : "missing", manifest.libraryExists ? "present" : "missing",
-                manifest.IsUsable() ? "true" : "false");
+                manifest.gateExists ? "present" : "missing", manifest.IsUsable() ? "true" : "false");
         LogInfo("[VulkanReg]   layer identity: %s", WideToUtf8(manifest.layerName).c_str());
     }
 

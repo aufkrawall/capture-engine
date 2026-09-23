@@ -548,22 +548,28 @@ TEST(VulkanRendererPolicySourceTest, VulkanLayerOwnsTranslatedD3D9FinalPresentat
 
 TEST(VulkanRendererPolicySourceTest, LayerEligibilityFollowsOnlyThePublishedWhitelistedParent) {
     namespace fs = std::filesystem;
+    // The negotiation gate and the full layer share one eligibility unit.
+    const std::string participation = ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" /
+                                                                "layer_participation.cpp");
     const std::string ipc =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_ipc.cpp");
     const std::string main =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
     const std::string injectHost =
         ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_main.cpp");
+    ASSERT_FALSE(participation.empty());
     ASSERT_FALSE(ipc.empty());
     ASSERT_FALSE(main.empty());
     ASSERT_FALSE(injectHost.empty());
 
-    EXPECT_NE(ipc.find("CreateToolhelp32Snapshot"), std::string::npos);
-    EXPECT_NE(ipc.find("sharedMemory->GetSourcePid()"), std::string::npos);
-    EXPECT_NE(ipc.find("info->GetProfileTargetPid()"), std::string::npos);
-    EXPECT_NE(ipc.find("IsProcessNameWhitelisted(info, parentName)"), std::string::npos);
-    EXPECT_NE(ipc.find("ShouldEnableVulkanLayerForProfile"), std::string::npos);
+    EXPECT_NE(participation.find("CreateToolhelp32Snapshot"), std::string::npos);
+    EXPECT_NE(participation.find("sharedMemory->GetSourcePid()"), std::string::npos);
+    EXPECT_NE(participation.find("info->GetProfileTargetPid()"), std::string::npos);
+    EXPECT_NE(participation.find("IsProcessNameWhitelisted(info, parentName)"), std::string::npos);
+    EXPECT_NE(participation.find("ShouldEnableVulkanLayerForProfile"), std::string::npos);
+    EXPECT_NE(ipc.find("IsProcessEligibleByDiscovery(info, g_ProcessName, inheritedParentPid)"), std::string::npos);
     EXPECT_NE(main.find("LayerIPC_IsProcessEligibleByCurrentHost"), std::string::npos);
+    EXPECT_EQ(participation.find("NvRemixBridge"), std::string::npos);
     const size_t publishTarget = injectHost.find("SetProfileTargetPid(targetPid)");
     const size_t publishConfig = injectHost.find("PublishResolvedConfigForTarget(pSharedMem, processName");
     ASSERT_NE(publishTarget, std::string::npos);

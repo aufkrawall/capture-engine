@@ -397,6 +397,7 @@ def sanitizer_stage_outputs() -> List[str]:
         os.path.join(capture_dir, "mediaengine.dll"),
         os.path.join(capture_dir, "capture_hook_x64.dll"),
         os.path.join(capture_dir, "VK_LAYER_CE_overlay.dll"),
+        os.path.join(capture_dir, "VK_LAYER_CE_gate.dll"),
     ]
 
 

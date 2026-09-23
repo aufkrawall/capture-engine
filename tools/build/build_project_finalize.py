@@ -15,6 +15,7 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
     # 8. Compile Vulkan Layer (VK_LAYER_CE_overlay)
     compile_vulkan_layer(env, clang_exe, cflags, "x64")
     record_verification_artifact("vulkan_layer_x64", os.path.join(BIN_DIR, "VK_LAYER_CE_overlay.dll"))
+    record_verification_artifact("vulkan_layer_gate_x64", os.path.join(BIN_DIR, vulkan_layer_gate_dll_name("x64")))
     # x86 layer using mingw32 toolchain (disabled for sanitizer builds)
     if get_env_x86 and env.get("CE_SANITIZE") != "1":
         if IS_LINUX and not has_linux_x86_compiler():
@@ -163,11 +164,13 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
             BIN_DIR,
             "--require",
             "VK_LAYER_CE_overlay.dll",
+            "--require",
+            vulkan_layer_gate_dll_name("x64"),
         ],
         cwd=PROJECT_ROOT,
         env=env,
     )
-    log("Verified Vulkan layer exports consumed by the hook DLL")
+    log("Verified Vulkan layer exports consumed by the hook DLL and the negotiation-only gate exports")
 
     if IS_WINDOWS and env.get("CE_SANITIZE") != "1" and not ISOLATED_BUILD_ROOT:
         scrub_and_verify_privacy_paths()

@@ -6,7 +6,6 @@
  */
 
 #include <dxgiformat.h>
-#include <tlhelp32.h>
 #include <vulkan/vulkan.h>
 #include <cstdarg>
 #include <cstdio>
@@ -14,6 +13,7 @@
 #include "../common/ipc_client.h"
 #include "../common/perf_logger.h"
 #include "../common/vulkan_renderer_policy.h"
+#include "layer_participation.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
 
@@ -119,86 +119,7 @@ HANDLE g_LayerDormantEvent = nullptr;
 }
 
 static void RefreshLayerProcessName() {
-    char fullPath[MAX_PATH] = {};
-    GetModuleFileNameA(NULL, fullPath, sizeof(fullPath));
-    const char* base = strrchr(fullPath, '\\');
-    strncpy(g_ProcessName, base ? base + 1 : fullPath, sizeof(g_ProcessName) - 1);
-    g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
-}
-
-static bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const char* processName) {
-    if (!info || !processName)
-        return false;
-
-    const char* entry = info->processWhitelist;
-    const char* end = entry + sizeof(info->processWhitelist);
-    while (entry < end && *entry != '\0') {
-        if (_stricmp(processName, entry) == 0)
-            return true;
-        const size_t remaining = static_cast<size_t>(end - entry);
-        const size_t length = strnlen(entry, remaining);
-        if (length == remaining)
-            break;
-        entry += length + 1;
-    }
-    return false;
-}
-
-static bool GetCurrentParentIdentity(DWORD* parentPid, char* parentName, size_t parentNameSize) {
-    if (!parentPid || !parentName || parentNameSize == 0)
-        return false;
-    *parentPid = 0;
-    parentName[0] = '\0';
-
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE)
-        return false;
-
-    PROCESSENTRY32W entry = {};
-    entry.dwSize = sizeof(entry);
-    bool foundCurrent = false;
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            if (entry.th32ProcessID == GetCurrentProcessId()) {
-                *parentPid = entry.th32ParentProcessID;
-                foundCurrent = *parentPid != 0;
-                break;
-            }
-        } while (Process32NextW(snapshot, &entry));
-    }
-
-    bool foundParent = false;
-    entry = {};
-    entry.dwSize = sizeof(entry);
-    if (foundCurrent && Process32FirstW(snapshot, &entry)) {
-        do {
-            if (entry.th32ProcessID == *parentPid) {
-                foundParent = WideCharToMultiByte(CP_UTF8, 0, entry.szExeFile, -1, parentName,
-                                                  static_cast<int>(parentNameSize), nullptr, nullptr) > 0;
-                break;
-            }
-        } while (Process32NextW(snapshot, &entry));
-    }
-    CloseHandle(snapshot);
-    return foundParent;
-}
-
-static uint32_t ReadActiveSourcePid(const DiscoveryInfo* info) {
-    if (!info || info->GetInjectPid() == 0)
-        return 0;
-
-    wchar_t sharedMemName[64] = {};
-    GenerateSharedMemName(sharedMemName, _countof(sharedMemName), info->GetInjectPid());
-    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
-    if (!mapping)
-        return 0;
-
-    auto* sharedMemory = static_cast<SharedMemoryLayout*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
-    const uint32_t sourcePid = ValidateSharedMemory(sharedMemory) ? sharedMemory->GetSourcePid() : 0;
-    if (sharedMemory)
-        UnmapViewOfFile(sharedMemory);
-    CloseHandle(mapping);
-    return sourcePid;
+    ce::vulkan_layer_participation::GetCurrentProcessBaseName(g_ProcessName, sizeof(g_ProcessName));
 }
 
 bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid) {
@@ -210,27 +131,11 @@ bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid) {
     if (!discovery)
         return false;
     auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
-    bool eligible = false;
     // A host that appeared after this layer loaded may be an incompatible build;
     // that is exactly the late-injection wake path, so report it from here too.
     LayerReportIncompatibleDiscovery(info);
-    if (ValidateDiscoveryInfo(info)) {
-        const bool currentProcessWhitelisted = IsProcessNameWhitelisted(info, g_ProcessName);
-        eligible = currentProcessWhitelisted;
-        if (!eligible) {
-            DWORD parentPid = 0;
-            char parentName[MAX_PATH] = {};
-            const bool parentKnown = GetCurrentParentIdentity(&parentPid, parentName, sizeof(parentName));
-            const uint32_t activeSourcePid = parentKnown ? ReadActiveSourcePid(info) : 0;
-            const uint32_t profileTargetPid = info->GetProfileTargetPid();
-            const bool parentProcessWhitelisted = parentKnown && IsProcessNameWhitelisted(info, parentName);
-            eligible = ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile(
-                false, parentPid, activeSourcePid, profileTargetPid, parentProcessWhitelisted);
-            if (eligible && inheritedParentPid) {
-                *inheritedParentPid = parentPid;
-            }
-        }
-    }
+    const bool eligible =
+        ce::vulkan_layer_participation::IsProcessEligibleByDiscovery(info, g_ProcessName, inheritedParentPid);
     if (info)
         UnmapViewOfFile(info);
     CloseHandle(discovery);

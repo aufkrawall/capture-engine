@@ -278,6 +278,11 @@ anchors that predate the split are approximate.
   change of submitting queue costs, what a failed submit does to a ring slot).
   `hook/vulkan_layer/layer_ipc.cpp` - host-stop, dormant, and target-specific
   reactivation lifecycle across host generations.
+  `hook/vulkan_layer/layer_gate.cpp` - `VK_LAYER_CE_gate[_x86].dll`, the library the
+  implicit-layer manifest names; exports negotiation only and loads the full layer
+  beside it for admitted processes. `layer_participation.{h,cpp}` - the admission
+  decision the gate and the full layer share. `testapp/run_vulkan_layer_participation.py`
+  + `vulkan_test.exe --probe-ce-layer` - the `--verify-runtime` end-to-end check.
 - `captureengine/inject_main.cpp` + `inject_config.cpp` + `inject_config_publication.cpp` - shared-memory
   setup/config reload orchestration, serialized resolved-config/discovery publication, and inject-overlay runtime
   handoff flags. The per-target profile prewarm lives on its own worker thread here; it must stay off the

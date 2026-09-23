@@ -16,7 +16,11 @@ changes below (no restructuring). No hardware run yet for any of them.
   first had a location mismatch (written beside `captureengine.exe`, read beside the staged
   layer DLL); it now lives in `HKCU\Software\CaptureEngine\VulkanLayerTargets` -
   `dx12-injection-bootstrap.md`. The loader's documented
-  behavior for `VK_ERROR_INITIALIZATION_FAILED` from negotiation is "unusable, not loaded".
+  behavior for `VK_ERROR_INITIALIZATION_FAILED` from negotiation is "unusable, not loaded"
+  (confirmed in Vulkan-Loader `loader_create_instance_chain`), but it still MAPS the
+  library first, so the manifest now names a negotiation-only gate DLL that loads the full
+  layer only for admitted processes. `--verify-runtime` gained a deterministic
+  participation probe (`testapp/run_vulkan_layer_participation.py`), not yet run.
 - **Steam null-callback VEH** acted on other threads' faults and wrote a fixed Steam RVA
   (0x1621d8, stale since at least the RoboCop build's 0x167340); now thread-scoped, proven
   slot only, registered once instead of add/remove per Present.

@@ -3,6 +3,7 @@
 //
 // Settings read from testappconfig.ini (next to exe)
 // Command line overrides: vulkan_test.exe [width] [height] [gpu_load_passes]
+// Layer participation probe: vulkan_test.exe --probe-ce-layer
 //
 // Build with: python build.py
 
@@ -573,8 +574,53 @@ void Cleanup() {
         FreeLibrary(g_VulkanLib);
 }
 
+// `--probe-ce-layer`: create one Vulkan instance, report which CaptureEngine
+// layer images the loader mapped into this process, and exit. The implicit
+// layer's negotiation gate is mapped into every Vulkan process; the full layer
+// only into one the gate admits. testapp/run_vulkan_layer_participation.py
+// drives this under different executable names, with and without a running
+// CaptureEngine.
+static int ProbeCaptureEngineLayer() {
+#if defined(_WIN64)
+    const wchar_t* gateName = L"VK_LAYER_CE_gate.dll";
+    const wchar_t* layerName = L"VK_LAYER_CE_overlay.dll";
+#else
+    const wchar_t* gateName = L"VK_LAYER_CE_gate_x86.dll";
+    const wchar_t* layerName = L"VK_LAYER_CE_overlay_x86.dll";
+#endif
+    if (!LoadVulkanLibrary())
+        return 2;
+    VkApplicationInfo appInfo = {};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "CE layer probe";
+    appInfo.apiVersion = VK_API_VERSION_1_0;
+    VkInstanceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pApplicationInfo = &appInfo;
+    VkInstance instance = VK_NULL_HANDLE;
+    const VkResult result = pfn_vkCreateInstance(&createInfo, nullptr, &instance);
+    if (result != VK_SUCCESS) {
+        printf("CE_LAYER_PROBE error=vkCreateInstance result=%d\n", static_cast<int>(result));
+        return 3;
+    }
+    // Sampled while the instance - and so every layer library the loader
+    // opened for it - is still alive.
+    const bool gateLoaded = GetModuleHandleW(gateName) != nullptr;
+    const bool layerLoaded = GetModuleHandleW(layerName) != nullptr;
+    printf("CE_LAYER_PROBE gate=%d layer=%d\n", gateLoaded ? 1 : 0, layerLoaded ? 1 : 0);
+    fflush(stdout);
+    auto destroyInstance =
+        reinterpret_cast<PFN_vkDestroyInstance>(pfn_vkGetInstanceProcAddr(instance, "vkDestroyInstance"));
+    if (destroyInstance)
+        destroyInstance(instance, nullptr);
+    return 0;
+}
+
     // NOLINTNEXTLINE(bugprone-exception-escape) - standalone test harness: an unexpected exception terminating the process is acceptable and yields a nonzero exit
 int main(int argc, char* argv[]) {
+    if (argc >= 2 && strcmp(argv[1], "--probe-ce-layer") == 0)
+        return ProbeCaptureEngineLayer();
+
     // Load config from testappconfig.ini first
     LoadConfig();
 

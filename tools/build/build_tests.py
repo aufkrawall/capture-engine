@@ -142,9 +142,15 @@ def run_integration_tests(env, full_matrix=False):
             ("smoke_modern", ["--api", "both", "--arch", "x64"]),
         ]
 
-    for label, args in targets:
+    # Which processes the Vulkan layer enters, with and without a running host.
+    # Deterministic probes, so it runs in both modes and ahead of the recordings.
+    participation_script = os.path.join(PROJECT_ROOT, "testapp", "run_vulkan_layer_participation.py")
+    commands = [("vulkan_layer_participation", [sys.executable, participation_script, "--arch", "both"])]
+    commands += [(label, base_cmd + args) for label, args in targets]
+
+    for label, command in commands:
         result_json = os.path.join(logs_dir, f"integration_{label}.json")
-        cmd = base_cmd + args + ["--results-json", result_json]
+        cmd = command + ["--results-json", result_json]
         log(f"Executing: {' '.join(cmd)}")
         target_start = time.time()
         result = subprocess.run(cmd, cwd=os.path.dirname(script), env=env)
@@ -163,7 +169,7 @@ def run_integration_tests(env, full_matrix=False):
     record_verification_step(
         "integration_tests",
         "passed",
-        details={"mode": mode, "targets": [label for label, _ in targets]},
+        details={"mode": mode, "targets": [label for label, _ in commands]},
     )
 
 

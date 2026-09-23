@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Verify the built Vulkan layer DLLs export the names the hook DLL resolves.
+"""Verify the built Vulkan layer DLLs export the names the hook DLL resolves,
+and that the negotiation gate exports exactly what the loader needs from it.
 
 The layer exports through ``__declspec(dllexport)`` only; there is no .def file
 in any link command. A name that loses the attribute still compiles, still
@@ -34,6 +35,14 @@ REQUIRED_EXPORTS: List[str] = [
 
 LAYER_DLLS: List[str] = ["VK_LAYER_CE_overlay.dll", "VK_LAYER_CE_overlay_x86.dll"]
 
+# The negotiation gate the implicit-layer manifest names (hook/vulkan_layer/
+# layer_gate.cpp). It must export negotiation and must NOT export the proc-address
+# entry points: when negotiation declines, a loader that falls back to looking
+# those names up would otherwise chain the gate into the declined process anyway.
+GATE_REQUIRED_EXPORTS: List[str] = ["vkNegotiateLoaderLayerInterfaceVersion"]
+GATE_FORBIDDEN_EXPORTS: List[str] = ["vkGetInstanceProcAddr", "vkGetDeviceProcAddr"]
+GATE_DLLS: List[str] = ["VK_LAYER_CE_gate.dll", "VK_LAYER_CE_gate_x86.dll"]
+
 _EXPORT_NAME = re.compile(r"^\s*Name:\s*(\S+)\s*$")
 
 
@@ -63,14 +72,32 @@ def missing_exports(exported: Iterable[str], required: Iterable[str]) -> List[st
     return [name for name in required if name not in present]
 
 
-def verify_layer(llvm_readobj: str, dll_path: str) -> List[str]:
+def forbidden_exports(exported: Iterable[str], forbidden: Iterable[str]) -> List[str]:
+    present = set(exported)
+    return [name for name in forbidden if name in present]
+
+
+def read_exports(llvm_readobj: str, dll_path: str) -> Set[str]:
     completed = subprocess.run(
         [llvm_readobj, "--coff-exports", dll_path],
         check=True,
         capture_output=True,
         text=True,
     )
-    return missing_exports(parse_exported_names(completed.stdout), REQUIRED_EXPORTS)
+    return parse_exported_names(completed.stdout)
+
+
+def verify_layer(llvm_readobj: str, dll_path: str) -> List[str]:
+    return [
+        f"does not export {name}" for name in missing_exports(read_exports(llvm_readobj, dll_path), REQUIRED_EXPORTS)
+    ]
+
+
+def verify_gate(llvm_readobj: str, dll_path: str) -> List[str]:
+    exported = read_exports(llvm_readobj, dll_path)
+    return [f"does not export {name}" for name in missing_exports(exported, GATE_REQUIRED_EXPORTS)] + [
+        f"must not export {name}" for name in forbidden_exports(exported, GATE_FORBIDDEN_EXPORTS)
+    ]
 
 
 def main() -> int:
@@ -86,14 +113,15 @@ def main() -> int:
     args = parser.parse_args()
 
     failures: List[str] = []
-    for dll in LAYER_DLLS:
+    checks = [(dll, verify_layer) for dll in LAYER_DLLS] + [(dll, verify_gate) for dll in GATE_DLLS]
+    for dll, verify in checks:
         dll_path = os.path.join(args.root, dll)
         if not os.path.exists(dll_path):
             if dll in args.require:
                 failures.append(f"{dll}: missing from {args.root}")
             continue
-        for name in verify_layer(args.llvm_readobj, dll_path):
-            failures.append(f"{dll}: does not export {name}")
+        for problem in verify(args.llvm_readobj, dll_path):
+            failures.append(f"{dll}: {problem}")
 
     if failures:
         sys.stderr.write("Vulkan layer export verification failed:\n")

@@ -12,6 +12,7 @@
 #include <string>
 
 #include "../../common/vulkan_layer_registration.h"
+#include "../../common/vulkan_layer_target_list.h"
 
 namespace {
 
@@ -78,6 +79,17 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    const bool success = ce::vulkan_layer::ApplyRegistrationPlan(plan, doRegister && !doUnregister);
+    const bool install = doRegister && !doUnregister;
+    bool success = ce::vulkan_layer::ApplyRegistrationPlan(plan, install);
+    if (!install) {
+        // The persisted injection whitelist only exists for the layer; an
+        // unregistered layer must not leave it behind.
+        const LONG status = ce::vulkan_layer_targets::DeletePersistedTargetList();
+        if (status != ERROR_SUCCESS) {
+            std::wcerr << L"Failed to remove HKCU\\" << ce::vulkan_layer_targets::kRegistryKey << L"\\"
+                       << ce::vulkan_layer_targets::kRegistryValue << L" (error " << status << L")" << std::endl;
+            success = false;
+        }
+    }
     return success ? 0 : 1;
 }

@@ -11,6 +11,7 @@
 
 #include "../../common/log_privacy.h"
 #include "../../common/vulkan_layer_target_list.h"
+#include "layer_participation.h"
 
 #include <atomic>
 
@@ -61,40 +62,7 @@ static bool IsLayerDebugLoggingEnabled() {
     if (shm) {
         return shm->GetDebugLogging();
     }
-
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!hDisc) {
-        return false;
-    }
-
-    bool debugLoggingEnabled = false;
-    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (ValidateDiscoveryInfo(pDisc)) {
-        const uint32_t hostPid = pDisc->GetInjectPid();
-        if (hostPid != 0) {
-            wchar_t sharedMemName[64] = {};
-            GenerateSharedMemName(sharedMemName, _countof(sharedMemName), hostPid);
-
-            HANDLE hSharedMem = OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
-            if (hSharedMem) {
-                SharedMemoryLayout* pSharedMem =
-                    (SharedMemoryLayout*)MapViewOfFile(hSharedMem, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-                if (pSharedMem && ValidateSharedMemory(pSharedMem)) {
-                    debugLoggingEnabled = pSharedMem->GetDebugLogging();
-                }
-                if (pSharedMem) {
-                    UnmapViewOfFile(pSharedMem);
-                }
-                CloseHandle(hSharedMem);
-            }
-        }
-    }
-
-    if (pDisc) {
-        UnmapViewOfFile(pDisc);
-    }
-    CloseHandle(hDisc);
-    return debugLoggingEnabled;
+    return ce::vulkan_layer_participation::ReadPublishedHostLogging(nullptr, 0);
 }
 
 // The layer never writes to the host process's stdout/stderr. Those streams
@@ -275,50 +243,20 @@ void LayerLog(const char* fmt, ...) {
 // Layer Negotiation
 // ============================================================================
 
-// True when a CaptureEngine host with this layer's shared-memory layout has
-// published its discovery mapping.
-static bool IsCompatibleHostPublished() {
-    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!discovery)
-        return false;
-    auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
-    const bool compatible = ValidateDiscoveryInfo(info);
-    if (info)
-        UnmapViewOfFile(info);
-    CloseHandle(discovery);
-    return compatible;
-}
-
-// The injection whitelist the host persisted in CE's per-user registry key.
-static bool IsListedAsResidentTarget() {
-    std::wstring exePath(32768, L'\0');
-    const DWORD exeLength = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
-    if (exeLength == 0 || exeLength >= exePath.size())
-        return false;
-    exePath.resize(exeLength);
-
-    std::wstring list;
-    if (!ce::vulkan_layer_targets::ReadPersistedTargetList(&list)) {
-        // Without this line an absent list is indistinguishable from "not a
-        // target", which is how the first, misplaced list went unnoticed.
-        LayerEarlyLog("No persisted Vulkan layer target list (HKCU\\%ls\\%ls)", ce::vulkan_layer_targets::kRegistryKey,
-                      ce::vulkan_layer_targets::kRegistryValue);
-        return false;
-    }
-    return ce::vulkan_layer_targets::IsProcessNameListed(list, std::filesystem::path(exePath).filename().wstring());
-}
-
 static bool PerformEarlyWhitelistCheck();
 
-// Decided once per process; see common/vulkan_layer_target_list.h.
+// Decided once per process; see common/vulkan_layer_target_list.h. The gate
+// (layer_gate.cpp) made the same decision before loading this image. Deciding
+// again keeps this image correct on its own, and a host that appeared in
+// between is authoritative here as well.
 static bool ShouldParticipateInThisProcess() {
     static std::atomic<int> s_decision{-1};
     const int cached = s_decision.load(std::memory_order_acquire);
     if (cached >= 0)
         return cached != 0;
-    const bool hostPublished = IsCompatibleHostPublished();
+    const bool hostPublished = ce::vulkan_layer_participation::IsCompatibleHostPublished();
     const bool eligibleByHost = hostPublished && PerformEarlyWhitelistCheck();
-    const bool listed = !hostPublished && IsListedAsResidentTarget();
+    const bool listed = !hostPublished && ce::vulkan_layer_participation::IsListedAsResidentTarget();
     const bool participate = ce::vulkan_layer_targets::ShouldLayerParticipate(hostPublished, eligibleByHost, listed);
     s_decision.store(participate ? 1 : 0, std::memory_order_release);
     LayerEarlyLog("Participation decision: participate=%d hostPublished=%d eligibleByHost=%d listedTarget=%d",

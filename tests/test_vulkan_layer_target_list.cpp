@@ -48,19 +48,20 @@ TEST(VulkanLayerTargetListTest, ListEndsAtTheFirstEmptyStringOrTheEndOfTheData) 
 // round-trips it under a scratch value name so the real list is untouched.
 TEST(VulkanLayerTargetListTest, RegistryRoundTripKeepsEveryName) {
     const wchar_t* scratchValue = L"VulkanLayerTargets_UnitTest";
-    const std::wstring written = targets::SerializeTargetList({L"Game.exe", L"Spielä.exe"});
+    const std::wstring written = targets::SerializeTargetList({L"Game.exe", L"Spiel\u00e4.exe"});
     ASSERT_EQ(targets::WritePersistedTargetList(written, scratchValue), ERROR_SUCCESS);
     std::wstring read;
     const bool readOk = targets::ReadPersistedTargetList(&read, scratchValue);
-    RegDeleteKeyValueW(HKEY_CURRENT_USER, targets::kRegistryKey, scratchValue);
+    EXPECT_EQ(targets::DeletePersistedTargetList(scratchValue), ERROR_SUCCESS);
     ASSERT_TRUE(readOk);
     EXPECT_TRUE(targets::IsProcessNameListed(read, L"GAME.EXE"));
-    EXPECT_TRUE(targets::IsProcessNameListed(read, L"spielä.exe"));
+    EXPECT_TRUE(targets::IsProcessNameListed(read, L"spiel\u00e4.exe"));
     EXPECT_FALSE(targets::IsProcessNameListed(read, L"other.exe"));
 
     std::wstring absent = L"stale";
     EXPECT_FALSE(targets::ReadPersistedTargetList(&absent, scratchValue));
     EXPECT_TRUE(absent.empty());
+    EXPECT_EQ(targets::DeletePersistedTargetList(scratchValue), ERROR_SUCCESS) << "an absent list counts as removed";
 }
 
 // Regression: the implicit layer entered EVERY Vulkan process on the machine and
@@ -118,7 +119,11 @@ TEST(VulkanLayerTargetListSourceTest, WriterAndReaderShareOneLocationIndependent
     ASSERT_FALSE(layer.empty());
     ASSERT_FALSE(publication.empty());
 
-    const std::string reader = FunctionBody(layer, "static bool IsListedAsResidentTarget() {");
+    const std::string participation =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_participation.cpp");
+    const std::string registrar =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_register.cpp");
+    const std::string reader = FunctionBody(participation, "bool IsListedAsResidentTarget() {");
     const std::string writer =
         FunctionBody(publication, "static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) {");
     ASSERT_FALSE(reader.empty());
@@ -129,4 +134,41 @@ TEST(VulkanLayerTargetListSourceTest, WriterAndReaderShareOneLocationIndependent
         EXPECT_EQ(body->find("parent_path()"), std::string::npos) << "the list must not live beside a module";
         EXPECT_EQ(body->find("GetModuleHandleExW"), std::string::npos);
     }
+    // Both the gate and the full layer read it through that one function.
+    EXPECT_NE(layer.find("ce::vulkan_layer_participation::IsListedAsResidentTarget()"), std::string::npos);
+    // An unregistered layer leaves no list behind.
+    EXPECT_NE(registrar.find("ce::vulkan_layer_targets::DeletePersistedTargetList()"), std::string::npos);
+}
+
+// The gate is what every Vulkan process on the machine maps. It must decide with
+// the same unit as the full layer, load the full layer only once admitted and
+// only from its own directory, release it again when the full layer declines,
+// and never export the proc-address entry points a loader could chain.
+TEST(VulkanLayerTargetListSourceTest, GateLoadsTheFullLayerOnlyForAnAdmittedProcess) {
+    namespace fs = std::filesystem;
+    const std::string gate =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_gate.cpp");
+    ASSERT_FALSE(gate.empty());
+
+    const std::string negotiate = FunctionBody(
+        gate, "vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {");
+    ASSERT_FALSE(negotiate.empty());
+    const size_t decide = negotiate.find("ce::vulkan_layer_participation::DecideParticipation(processName)");
+    const size_t decline = negotiate.find("if (!decision.participate) {");
+    const size_t load = negotiate.find("LoadLayerBesideGate(&error)");
+    const size_t release = negotiate.find("FreeLibrary(layer);");
+    ASSERT_NE(decide, std::string::npos);
+    ASSERT_NE(decline, std::string::npos);
+    ASSERT_NE(load, std::string::npos);
+    ASSERT_NE(release, std::string::npos);
+    EXPECT_LT(decide, decline);
+    EXPECT_LT(decline, load) << "a declined process must never map the full layer";
+    EXPECT_NE(gate.find("LOAD_WITH_ALTERED_SEARCH_PATH"), std::string::npos);
+    EXPECT_NE(gate.find("wcsrchr(path, L'\\\\')"), std::string::npos) << "resolve beside the gate, never search";
+
+    EXPECT_EQ(gate.find("vkGetInstanceProcAddr("), std::string::npos);
+    EXPECT_EQ(gate.find("vkGetDeviceProcAddr("), std::string::npos);
+    // Nothing of the full layer's runtime: that is the whole point of the gate.
+    EXPECT_EQ(gate.find("layer_main.h"), std::string::npos);
+    EXPECT_EQ(gate.find("ipc_client.h"), std::string::npos);
 }

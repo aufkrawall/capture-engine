@@ -54,8 +54,10 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) 
 
     TouchFile(manifest64);
     TouchFile(library64);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
     TouchFile(manifest32);
     TouchFile(library32);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate_x86.dll");
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
     ASSERT_EQ(plan.effectiveMode, RegistrationMode::CurrentUser);
@@ -96,8 +98,10 @@ TEST(VulkanLayerRegistrationTest, ElevatedAutoPlanSplitsHKLMViewsByArchitecture)
 
     TouchFile(manifest64);
     TouchFile(library64);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
     TouchFile(manifest32);
     TouchFile(library32);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate_x86.dll");
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true, stagingDir);
     ASSERT_EQ(plan.effectiveMode, RegistrationMode::AllUsers);
@@ -133,6 +137,7 @@ TEST(VulkanLayerRegistrationTest, PlanSkipsMissingArchitectureArtifacts) {
     const auto library64 = baseDir / L"VK_LAYER_CE_overlay.dll";
     TouchFile(manifest64);
     TouchFile(library64);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true, stagingDir);
     ASSERT_EQ(plan.installTargets.size(), 1u);
@@ -171,6 +176,7 @@ TEST(VulkanLayerRegistrationTest, StagingCopiesArtifactsAndCleanupRemovesOldBuil
     const auto srcLib = baseDir / L"VK_LAYER_CE_overlay.dll";
     TouchFile(srcManifest);
     TouchFile(srcLib);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
     TouchFile(oldStaging / L"VK_LAYER_CE_overlay.dll");
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, activeStaging);
@@ -198,6 +204,7 @@ TEST(VulkanLayerRegistrationTest, ApplyRegistrationPlanNeutralizesLegacyManifest
     TouchFile(legacyManifest64);
     TouchFile(legacyManifest32);
     TouchFile(lib64);
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
     EXPECT_TRUE(std::filesystem::exists(legacyManifest64));
@@ -214,6 +221,60 @@ TEST(VulkanLayerRegistrationTest, ApplyRegistrationPlanNeutralizesLegacyManifest
     // Cleanup registry and test directory
     ce::vulkan_layer::ApplyRegistrationPlan(plan, false);
     std::filesystem::remove_all(testRoot);
+}
+
+// The manifest names the negotiation gate, which loads the full layer from its
+// own directory. A full layer without its gate is not registrable: registering
+// the full layer directly would map ~1.5 MB and its imports into every Vulkan
+// process on the machine again.
+TEST(VulkanLayerRegistrationTest, PlanRequiresTheGateBesideTheFullLayer) {
+    const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_gate";
+    const std::filesystem::path stagingDir = baseDir / "staging";
+    std::filesystem::create_directories(baseDir);
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay.json");
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay.dll");
+
+    const auto withoutGate = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
+    EXPECT_TRUE(withoutGate.installTargets.empty());
+    ASSERT_FALSE(withoutGate.manifests.empty());
+    EXPECT_TRUE(withoutGate.manifests[0].libraryExists);
+    EXPECT_FALSE(withoutGate.manifests[0].gateExists);
+
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
+    const auto withGate = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
+    ASSERT_EQ(withGate.installTargets.size(), 1u);
+    const auto& manifest = withGate.installTargets[0].manifests.at(0);
+    EXPECT_EQ(manifest.gatePath, stagingDir / L"VK_LAYER_CE_gate.dll");
+    EXPECT_EQ(manifest.libraryPath, stagingDir / L"VK_LAYER_CE_overlay.dll");
+    EXPECT_EQ(manifest.gatePath.parent_path(), manifest.libraryPath.parent_path())
+        << "the gate loads the full layer from its own directory";
+
+    std::filesystem::remove_all(baseDir);
+}
+
+TEST(VulkanLayerRegistrationSourceTest, ManifestNamesTheGateAndBothImagesAreStaged) {
+    const std::string text = ce::test_source::ReadFile(std::filesystem::current_path() / "common" /
+                                                       "vulkan_layer_registration.cpp");
+    ASSERT_FALSE(text.empty());
+    const size_t manifest = text.find("static bool WriteStagedManifest(const LayerManifest& manifest) {");
+    const size_t manifestEnd = text.find("static bool StagePlanArtifacts(", manifest);
+    ASSERT_NE(manifest, std::string::npos);
+    ASSERT_NE(manifestEnd, std::string::npos);
+    const std::string json = text.substr(manifest, manifestEnd - manifest);
+    EXPECT_NE(json.find("manifest.gatePath.filename()"), std::string::npos);
+    EXPECT_EQ(json.find("manifest.libraryPath"), std::string::npos) << "the full layer must never be the manifest's";
+    EXPECT_EQ(json.find("vkGetInstanceProcAddr"), std::string::npos)
+        << "the gate exports negotiation only; the manifest must not name proc-address exports";
+
+    const size_t stage = text.find("static bool StagePlanArtifacts(");
+    const size_t stageEnd = text.find("void LogRegistrationPlan(", stage);
+    ASSERT_NE(stageEnd, std::string::npos);
+    const std::string staging = text.substr(stage, stageEnd - stage);
+    const size_t full = staging.find("StageFileIfChanged(manifest.sourceLibraryPath, manifest.libraryPath)");
+    const size_t gate = staging.find("StageFileIfChanged(manifest.sourceGatePath, manifest.gatePath)");
+    ASSERT_NE(full, std::string::npos);
+    ASSERT_NE(gate, std::string::npos);
+    EXPECT_LT(full, gate) << "stage the full layer before the gate that loads it";
 }
 
 TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritableScopes) {

@@ -23,18 +23,25 @@ enum class RegistryView {
     Registry64,
 };
 
+// One architecture's layer. The manifest names the GATE library
+// (hook/vulkan_layer/layer_gate.cpp), which the loader maps into every Vulkan
+// process; the gate loads the full layer (`libraryPath`) from its own directory
+// only for a process it admits. Both are staged side by side.
 struct LayerManifest {
     std::filesystem::path manifestPath;
     std::filesystem::path libraryPath;
+    std::filesystem::path gatePath;
     std::filesystem::path sourceManifestPath;
     std::filesystem::path sourceLibraryPath;
+    std::filesystem::path sourceGatePath;
     std::wstring layerName;
     bool is32Bit = false;
     bool manifestExists = false;
     bool libraryExists = false;
+    bool gateExists = false;
 
     bool IsUsable() const {
-        return manifestExists && libraryExists;
+        return manifestExists && libraryExists && gateExists;
     }
 };
 
