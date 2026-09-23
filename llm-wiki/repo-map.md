@@ -72,7 +72,8 @@ anchors that predate the split are approximate.
     `crash_first_chance.{h,cpp}` (first-chance fault records, dispatch detection, continue handler) +
     `crash_symbol_store.{h,cpp}` (hard-linked per-session symbol archive) + `crash_dump_policy.h`.
   - `vulkan_layer_target_list.h` - which processes the implicit Vulkan layer may enter; the inject
-    child persists `vulkan_layer_targets.txt`, the layer decides at negotiation.
+    child persists the list to `HKCU\Software\CaptureEngine\VulkanLayerTargets` (REG_MULTI_SZ),
+    the layer decides at negotiation.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.

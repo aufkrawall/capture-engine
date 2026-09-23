@@ -1,10 +1,9 @@
 # llm-wiki Log
 
-### 2026-09-23 - Risk audit: ten user-facing hazards addressed; Vulkan pre-host gap remains
+### 2026-09-23 - Risk audit: ten user-facing hazards addressed
 
 A read-only audit asked which areas were most likely to hurt users; it led to the local
-changes below (no restructuring). Source review then found the no-host Vulkan target-list
-staging gap recorded under Open. No hardware run yet for any of them.
+changes below (no restructuring). No hardware run yet for any of them.
 
 - **Crash VEH dumped handled first-chance faults** (Mono/JVM/.NET/LuaJIT/emulators): now
   recorded only, dumped when the process dies of them - `regression-testing-and-logging.md`.
@@ -13,8 +12,10 @@ staging gap recorded under Open. No hardware run yet for any of them.
 - **Media `ReloadConfig` raced recording threads on `config`**: parked in `deferredConfig`,
   assigned at the next `StartRecording` with the old assign-only semantics.
 - **Vulkan implicit layer sat in every Vulkan process** as passthrough: now declines at
-  negotiation in non-targets when a compatible host is present. The no-host target-list
-  path has a staging-location gap - `dx12-injection-bootstrap.md`. The loader's documented
+  negotiation in non-targets when a compatible host is present. The no-host target list
+  first had a location mismatch (written beside `captureengine.exe`, read beside the staged
+  layer DLL); it now lives in `HKCU\Software\CaptureEngine\VulkanLayerTargets` -
+  `dx12-injection-bootstrap.md`. The loader's documented
   behavior for `VK_ERROR_INITIALIZATION_FAILED` from negotiation is "unusable, not loaded".
 - **Steam null-callback VEH** acted on other threads' faults and wrote a fixed Steam RVA
   (0x1621d8, stale since at least the RoboCop build's 0x167340); now thread-scoped, proven
@@ -32,12 +33,9 @@ staging gap recorded under Open. No hardware run yet for any of them.
 
 Open: `log_level=trace` stays the template default (diagnostics-first project policy);
 hardware validation of all of the above; a hardware-fault test for the
-KiUserExceptionDispatcher range (only the RtlRaiseException path is unit-tested).
-The no-host Vulkan target-list path is also incomplete: the inject child writes
-the list beside `captureengine.exe`, while the registered layer is loaded from a
-versioned staging directory and searches beside its own DLL. `StageFileIfChanged`
-stages the manifest and DLL but not this list, so a game launched before the host
-cannot pass negotiation and will not late-wake.
+KiUserExceptionDispatcher range (only the RtlRaiseException path is unit-tested);
+a hardware run of a whitelisted Vulkan title started before CaptureEngine (late wake
+through the registry-persisted target list).
 
 ### 2026-09-23 - Vulkan sharpen lost the device on DOOM Eternal's swapchain recreate
 

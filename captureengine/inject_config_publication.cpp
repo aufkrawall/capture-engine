@@ -6,9 +6,6 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -288,46 +285,38 @@ bool TogglePublishedOverlayVisibility(SharedMemoryLayout* sharedMemory) {
     return publication.overlayVisibility.showOverlay;
 }
 
-// Persists the injection whitelist next to the Vulkan layer, for the layer's
-// negotiation-time decision while no host is running (vulkan_layer_target_list.h).
-// Written only when the contents change, and through a replacing rename so the
-// layer never reads a half-written list.
+// Persists the injection whitelist in CE's per-user registry key, for the
+// Vulkan layer's negotiation-time decision while no host is running
+// (vulkan_layer_target_list.h). Written only when the contents change.
 static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) {
-    std::wstring exePath(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
-    if (length == 0 || length >= exePath.size()) {
-        LogWarn("[Inject] Vulkan layer target list not written: executable path unavailable");
-        return;
+    std::vector<std::wstring> wideNames;
+    wideNames.reserve(names.size());
+    for (const std::string& name : names) {
+        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(),
+                                               static_cast<int>(name.size()), nullptr, 0);
+        if (length <= 0) {
+            LogWarn("[Inject] Vulkan layer target list skips an executable name that is not valid UTF-8");
+            continue;
+        }
+        std::wstring wide(static_cast<size_t>(length), L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(), static_cast<int>(name.size()), wide.data(),
+                            length);
+        wideNames.push_back(std::move(wide));
     }
-    exePath.resize(length);
-    const std::filesystem::path listPath =
-        std::filesystem::path(exePath).parent_path() / ce::vulkan_layer_targets::kTargetListFileName;
-    const std::string contents = ce::vulkan_layer_targets::SerializeTargetList(names);
+    const std::wstring contents = ce::vulkan_layer_targets::SerializeTargetList(wideNames);
 
-    {
-        std::ifstream existing(listPath, std::ios::binary);
-        if (existing) {
-            const std::string current((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
-            if (current == contents)
-                return;
-        }
-    }
-    const std::filesystem::path temporary = listPath.wstring() + L".tmp";
-    {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        out << contents;
-        if (!out) {
-            LogWarn("[Inject] Vulkan layer target list not written (temporary file unwritable)");
-            return;
-        }
-    }
-    if (!MoveFileExW(temporary.c_str(), listPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        LogWarn("[Inject] Vulkan layer target list not replaced (error=%lu)", GetLastError());
-        std::error_code ec;
-        std::filesystem::remove(temporary, ec);
+    std::wstring current;
+    if (ce::vulkan_layer_targets::ReadPersistedTargetList(&current) && current == contents)
+        return;
+    const LONG status = ce::vulkan_layer_targets::WritePersistedTargetList(contents);
+    if (status != ERROR_SUCCESS) {
+        LogWarn("[Inject] Vulkan layer target list not written to HKCU\\%ls\\%ls (error=%ld); Vulkan titles "
+                "started before CaptureEngine keep the previous list",
+                ce::vulkan_layer_targets::kRegistryKey, ce::vulkan_layer_targets::kRegistryValue, status);
         return;
     }
-    LogInfo("[Inject] Vulkan layer target list updated (%zu executable(s))", names.size());
+    LogInfo("[Inject] Vulkan layer target list updated in HKCU\\%ls\\%ls (%zu executable(s))",
+            ce::vulkan_layer_targets::kRegistryKey, ce::vulkan_layer_targets::kRegistryValue, wideNames.size());
 }
 
 void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {

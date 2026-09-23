@@ -35,7 +35,7 @@ inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan(
 // Residency does not put CE into every Vulkan application: the layer declines
 // at vkNegotiateLoaderLayerInterfaceVersion in any process that is not an
 // injection target - by the running host's whitelist, or, with no host, by the
-// whitelist the injector persisted next to the layer - so the loader leaves it
+// whitelist the injector persisted in HKCU\Software\CaptureEngine - so the loader leaves it
 // out of that instance and unloads it (common/vulkan_layer_target_list.h).
 // A whitelisted title started before CaptureEngine keeps the layer resident and
 // dormant; when a host appears, the injector signals the per-PID Vulkan

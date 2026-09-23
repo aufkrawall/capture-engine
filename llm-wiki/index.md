@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-09-23 (reliability audit entries cross-checked against code and regression coverage; crash capture, output publication, IPC, injection, and Vulkan layer membership updates; see the open no-host Vulkan target-list staging issue in `dx12-injection-bootstrap.md`).
+Last cross-checked: 2026-09-23 (reliability audit entries cross-checked against code and regression coverage; crash capture, output publication, IPC, injection, and Vulkan layer membership updates; the no-host Vulkan target list now lives in the registry, see `dx12-injection-bootstrap.md`).
 
 Primary sources:
 - `AGENTS.md`

@@ -13,8 +13,6 @@
 #include "../../common/vulkan_layer_target_list.h"
 
 #include <atomic>
-#include <fstream>
-#include <iterator>
 
 // Get the directory where this DLL is located
 static std::string GetLayerDllDirectory() {
@@ -291,37 +289,23 @@ static bool IsCompatibleHostPublished() {
     return compatible;
 }
 
-// The injection whitelist the host persisted next to this DLL.
+// The injection whitelist the host persisted in CE's per-user registry key.
 static bool IsListedAsResidentTarget() {
-    HMODULE module = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&IsListedAsResidentTarget), &module)) {
-        return false;
-    }
-    std::wstring modulePath(32768, L'\0');
-    const DWORD moduleLength = GetModuleFileNameW(module, modulePath.data(), static_cast<DWORD>(modulePath.size()));
     std::wstring exePath(32768, L'\0');
     const DWORD exeLength = GetModuleFileNameW(nullptr, exePath.data(), static_cast<DWORD>(exePath.size()));
-    if (moduleLength == 0 || moduleLength >= modulePath.size() || exeLength == 0 || exeLength >= exePath.size())
+    if (exeLength == 0 || exeLength >= exePath.size())
         return false;
-    modulePath.resize(moduleLength);
     exePath.resize(exeLength);
 
-    const std::filesystem::path listPath =
-        std::filesystem::path(modulePath).parent_path() / ce::vulkan_layer_targets::kTargetListFileName;
-    std::ifstream in(listPath, std::ios::binary);
-    if (!in)
+    std::wstring list;
+    if (!ce::vulkan_layer_targets::ReadPersistedTargetList(&list)) {
+        // Without this line an absent list is indistinguishable from "not a
+        // target", which is how the first, misplaced list went unnoticed.
+        LayerEarlyLog("No persisted Vulkan layer target list (HKCU\\%ls\\%ls)", ce::vulkan_layer_targets::kRegistryKey,
+                      ce::vulkan_layer_targets::kRegistryValue);
         return false;
-    const std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const std::wstring exeName = std::filesystem::path(exePath).filename().wstring();
-    const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, exeName.c_str(), static_cast<int>(exeName.size()), nullptr,
-                                               0, nullptr, nullptr);
-    if (utf8Length <= 0)
-        return false;
-    std::string exeNameUtf8(static_cast<size_t>(utf8Length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, exeName.c_str(), static_cast<int>(exeName.size()), exeNameUtf8.data(), utf8Length,
-                        nullptr, nullptr);
-    return ce::vulkan_layer_targets::IsProcessNameListed(contents, exeNameUtf8);
+    }
+    return ce::vulkan_layer_targets::IsProcessNameListed(list, std::filesystem::path(exePath).filename().wstring());
 }
 
 static bool PerformEarlyWhitelistCheck();

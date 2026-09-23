@@ -18,70 +18,81 @@
 //  - with a compatible CaptureEngine host running, exactly when the host's
 //    published whitelist (or a whitelisted parent) makes it eligible;
 //  - with no host, when its executable is in the injection whitelist the host
-//    persisted last time (this file). That keeps late injection working for a
+//    persisted last time (below). That keeps late injection working for a
 //    whitelisted Vulkan title started before CaptureEngine.
 // A declined layer never pins itself, so the loader unloads it again.
+//
+// The persisted list is a REG_MULTI_SZ value in CE's per-user key, not a file.
+// The layer runs from a versioned staging copy
+// (common/vulkan_layer_registration.cpp: %LOCALAPPDATA% or %ProgramData%
+// \CaptureEngine\vulkan_layers\b<build>), which the injector has no reason to
+// know and which a resident layer of an older build does not share with the
+// current host; the registry key is the same for every build, both bitnesses
+// (HKCU\Software is not WOW64-redirected) and every installation directory.
+// The first version wrote vulkan_layer_targets.txt beside captureengine.exe
+// while the layer looked beside its staged DLL, so no Vulkan title started
+// before CaptureEngine was ever admitted.
 
-#include <cctype>
+#include <windows.h>
+
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace ce::vulkan_layer_targets {
 
-// Lives next to the layer DLL and the manifest (the installation directory).
-inline constexpr const wchar_t* kTargetListFileName = L"vulkan_layer_targets.txt";
-inline constexpr std::string_view kTargetListHeader =
-    "# CaptureEngine: executables the Vulkan layer may enter while CaptureEngine is not running.\n"
-    "# Written from the injection-enabled application profiles; do not edit.\n";
+inline constexpr const wchar_t* kRegistryKey = L"Software\\CaptureEngine";
+inline constexpr const wchar_t* kRegistryValue = L"VulkanLayerTargets";
 
-inline std::string ToLowerAscii(std::string_view text) {
-    std::string lower(text);
-    for (char& ch : lower)
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+inline std::wstring ToLowerAscii(std::wstring_view text) {
+    std::wstring lower(text);
+    for (wchar_t& ch : lower) {
+        if (ch >= L'A' && ch <= L'Z')
+            ch = static_cast<wchar_t>(ch - L'A' + L'a');
+    }
     return lower;
 }
 
-// One lower-cased executable name per line, stable order, no duplicates.
-inline std::string SerializeTargetList(const std::vector<std::string>& names) {
-    std::vector<std::string> unique;
-    for (const std::string& name : names) {
-        if (name.empty() || name.find_first_of("\r\n") != std::string::npos)
+// The REG_MULTI_SZ image: one lower-cased executable name per string, stable
+// order, no duplicates, terminated by an empty string.
+inline std::wstring SerializeTargetList(const std::vector<std::wstring>& names) {
+    std::vector<std::wstring> unique;
+    for (const std::wstring& name : names) {
+        if (name.empty() || name.find(L'\0') != std::wstring::npos)
             continue;
-        const std::string lower = ToLowerAscii(name);
+        const std::wstring lower = ToLowerAscii(name);
         bool seen = false;
-        for (const std::string& existing : unique)
+        for (const std::wstring& existing : unique)
             seen = seen || existing == lower;
         if (!seen)
             unique.push_back(lower);
     }
-    std::string contents(kTargetListHeader);
-    for (const std::string& name : unique) {
+    std::wstring contents;
+    for (const std::wstring& name : unique) {
         contents += name;
-        contents += '\n';
+        contents += L'\0';
     }
+    contents += L'\0';
     return contents;
 }
 
-// Case-insensitive exact match of `processName` against the list, the same rule
-// the host's published whitelist uses.
-inline bool IsProcessNameListed(std::string_view contents, std::string_view processName) {
+// Case-insensitive exact match of `processName` against a REG_MULTI_SZ list,
+// the same rule the host's published whitelist uses. The list ends at the first
+// empty string or at the end of the data, whichever comes first.
+inline bool IsProcessNameListed(std::wstring_view list, std::wstring_view processName) {
     if (processName.empty())
         return false;
-    const std::string wanted = ToLowerAscii(processName);
-    size_t lineStart = 0;
-    while (lineStart < contents.size()) {
-        size_t lineEnd = contents.find('\n', lineStart);
-        if (lineEnd == std::string_view::npos)
-            lineEnd = contents.size();
-        std::string_view line = contents.substr(lineStart, lineEnd - lineStart);
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
-            line.remove_suffix(1);
-        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
-            line.remove_prefix(1);
-        if (!line.empty() && line.front() != '#' && ToLowerAscii(line) == wanted)
+    const std::wstring wanted = ToLowerAscii(processName);
+    size_t start = 0;
+    while (start < list.size()) {
+        size_t end = list.find(L'\0', start);
+        if (end == std::wstring_view::npos)
+            end = list.size();
+        if (end == start)
+            return false;
+        if (ToLowerAscii(list.substr(start, end - start)) == wanted)
             return true;
-        lineStart = lineEnd + 1;
+        start = end + 1;
     }
     return false;
 }
@@ -91,6 +102,40 @@ inline bool IsProcessNameListed(std::string_view contents, std::string_view proc
 // processes); the persisted list only stands in while no host is published.
 inline bool ShouldLayerParticipate(bool compatibleHostPublished, bool eligibleByHost, bool listedAsTarget) {
     return compatibleHostPublished ? eligibleByHost : listedAsTarget;
+}
+
+// Reads the persisted list. Returns false when the value is absent or
+// unreadable; `outList` is then empty.
+inline bool ReadPersistedTargetList(std::wstring* outList, const wchar_t* valueName = kRegistryValue) {
+    outList->clear();
+    // The value can be replaced between the size query and the read; the
+    // second read then reports ERROR_MORE_DATA and is simply repeated.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        DWORD bytes = 0;
+        LONG status =
+            RegGetValueW(HKEY_CURRENT_USER, kRegistryKey, valueName, RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &bytes);
+        if (status != ERROR_SUCCESS)
+            return false;
+        std::wstring data(bytes / sizeof(wchar_t) + 1, L'\0');
+        DWORD size = static_cast<DWORD>(data.size() * sizeof(wchar_t));
+        status = RegGetValueW(HKEY_CURRENT_USER, kRegistryKey, valueName, RRF_RT_REG_MULTI_SZ, nullptr, data.data(),
+                              &size);
+        if (status == ERROR_MORE_DATA)
+            continue;
+        if (status != ERROR_SUCCESS)
+            return false;
+        data.resize(size / sizeof(wchar_t));
+        *outList = std::move(data);
+        return true;
+    }
+    return false;
+}
+
+// Replaces the persisted list. A registry value is replaced as a whole, so a
+// reader never observes a partial list. Returns the Win32 status.
+inline LONG WritePersistedTargetList(const std::wstring& list, const wchar_t* valueName = kRegistryValue) {
+    return RegSetKeyValueW(HKEY_CURRENT_USER, kRegistryKey, valueName, REG_MULTI_SZ, list.data(),
+                           static_cast<DWORD>(list.size() * sizeof(wchar_t)));
 }
 
 }  // namespace ce::vulkan_layer_targets

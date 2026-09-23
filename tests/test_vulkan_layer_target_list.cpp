@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <windows.h>
+
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -9,23 +11,56 @@
 
 namespace targets = ce::vulkan_layer_targets;
 
-TEST(VulkanLayerTargetListTest, SerializedListMatchesCaseInsensitivelyAndExactly) {
-    const std::string contents = targets::SerializeTargetList({"DOOMEternalx64vk.exe", "Talos2.exe", "talos2.EXE", ""});
-    EXPECT_TRUE(targets::IsProcessNameListed(contents, "doometernalx64vk.exe"));
-    EXPECT_TRUE(targets::IsProcessNameListed(contents, "TALOS2.exe"));
-    EXPECT_FALSE(targets::IsProcessNameListed(contents, "Talos2"));
-    EXPECT_FALSE(targets::IsProcessNameListed(contents, "chrome.exe"));
-    EXPECT_FALSE(targets::IsProcessNameListed(contents, ""));
-    // The header is a comment, never a match; duplicates collapse.
-    EXPECT_FALSE(targets::IsProcessNameListed(contents, "# CaptureEngine: executables the Vulkan layer may enter "
-                                                        "while CaptureEngine is not running."));
-    EXPECT_EQ(contents.find("talos2.exe"), contents.rfind("talos2.exe"));
+namespace {
+
+std::string FunctionBody(const std::string& source, const std::string& signature) {
+    const size_t begin = source.find(signature);
+    const size_t end = begin == std::string::npos ? begin : source.find("\n}\n", begin);
+    if (end == std::string::npos)
+        return {};
+    return source.substr(begin, end - begin);
 }
 
-TEST(VulkanLayerTargetListTest, ToleratesCrLfAndSurroundingWhitespace) {
-    EXPECT_TRUE(targets::IsProcessNameListed("# header\r\n  game.exe \r\nother.exe", "GAME.EXE"));
-    EXPECT_TRUE(targets::IsProcessNameListed("# header\r\n  game.exe \r\nother.exe", "other.exe"));
-    EXPECT_FALSE(targets::IsProcessNameListed("", "game.exe"));
+}  // namespace
+
+TEST(VulkanLayerTargetListTest, SerializedListMatchesCaseInsensitivelyAndExactly) {
+    const std::wstring list = targets::SerializeTargetList({L"DOOMEternalx64vk.exe", L"Talos2.exe", L"talos2.EXE", L""});
+    EXPECT_TRUE(targets::IsProcessNameListed(list, L"doometernalx64vk.exe"));
+    EXPECT_TRUE(targets::IsProcessNameListed(list, L"TALOS2.exe"));
+    EXPECT_FALSE(targets::IsProcessNameListed(list, L"Talos2"));
+    EXPECT_FALSE(targets::IsProcessNameListed(list, L"chrome.exe"));
+    EXPECT_FALSE(targets::IsProcessNameListed(list, L""));
+    // Duplicates collapse; empty names are dropped instead of ending the list early.
+    EXPECT_EQ(list, std::wstring(L"doometernalx64vk.exe\0talos2.exe\0\0", 33));
+}
+
+TEST(VulkanLayerTargetListTest, ListEndsAtTheFirstEmptyStringOrTheEndOfTheData) {
+    EXPECT_FALSE(targets::IsProcessNameListed(std::wstring(L"a.exe\0\0b.exe\0\0", 14), L"b.exe"));
+    EXPECT_TRUE(targets::IsProcessNameListed(std::wstring(L"a.exe\0b.exe", 11), L"b.exe"));
+    EXPECT_FALSE(targets::IsProcessNameListed(std::wstring(), L"a.exe"));
+    EXPECT_FALSE(targets::IsProcessNameListed(targets::SerializeTargetList({}), L"a.exe"));
+}
+
+// Regression: the injector wrote the list beside captureengine.exe while the
+// layer read it beside its STAGED copy (%LOCALAPPDATA%\CaptureEngine\
+// vulkan_layers\b<build>), so no Vulkan title started before CaptureEngine was
+// ever admitted. Both sides now go through the same registry value; this
+// round-trips it under a scratch value name so the real list is untouched.
+TEST(VulkanLayerTargetListTest, RegistryRoundTripKeepsEveryName) {
+    const wchar_t* scratchValue = L"VulkanLayerTargets_UnitTest";
+    const std::wstring written = targets::SerializeTargetList({L"Game.exe", L"Spielä.exe"});
+    ASSERT_EQ(targets::WritePersistedTargetList(written, scratchValue), ERROR_SUCCESS);
+    std::wstring read;
+    const bool readOk = targets::ReadPersistedTargetList(&read, scratchValue);
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, targets::kRegistryKey, scratchValue);
+    ASSERT_TRUE(readOk);
+    EXPECT_TRUE(targets::IsProcessNameListed(read, L"GAME.EXE"));
+    EXPECT_TRUE(targets::IsProcessNameListed(read, L"spielä.exe"));
+    EXPECT_FALSE(targets::IsProcessNameListed(read, L"other.exe"));
+
+    std::wstring absent = L"stale";
+    EXPECT_FALSE(targets::ReadPersistedTargetList(&absent, scratchValue));
+    EXPECT_TRUE(absent.empty());
 }
 
 // Regression: the implicit layer entered EVERY Vulkan process on the machine and
@@ -69,5 +104,29 @@ TEST(VulkanLayerTargetListSourceTest, NonTargetsAreDeclinedAtNegotiationAndNever
     EXPECT_LT(decline, watcher) << "a declined process must not get CE's host watcher thread";
 
     EXPECT_NE(publication.find("PersistVulkanLayerTargetList(persistedNames);"), std::string::npos);
-    EXPECT_NE(publication.find("MOVEFILE_REPLACE_EXISTING"), std::string::npos);
+}
+
+// The writer and the reader must name the list the same way. A location derived
+// from either module's own path cannot: the layer runs from a versioned staging
+// copy that neither the injector nor a newer host shares.
+TEST(VulkanLayerTargetListSourceTest, WriterAndReaderShareOneLocationIndependentOfModulePaths) {
+    namespace fs = std::filesystem;
+    const std::string layer =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
+    const std::string publication =
+        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
+    ASSERT_FALSE(layer.empty());
+    ASSERT_FALSE(publication.empty());
+
+    const std::string reader = FunctionBody(layer, "static bool IsListedAsResidentTarget() {");
+    const std::string writer =
+        FunctionBody(publication, "static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) {");
+    ASSERT_FALSE(reader.empty());
+    ASSERT_FALSE(writer.empty());
+    EXPECT_NE(reader.find("ce::vulkan_layer_targets::ReadPersistedTargetList(&list)"), std::string::npos);
+    EXPECT_NE(writer.find("ce::vulkan_layer_targets::WritePersistedTargetList(contents)"), std::string::npos);
+    for (const std::string* body : {&reader, &writer}) {
+        EXPECT_EQ(body->find("parent_path()"), std::string::npos) << "the list must not live beside a module";
+        EXPECT_EQ(body->find("GetModuleHandleExW"), std::string::npos);
+    }
 }
