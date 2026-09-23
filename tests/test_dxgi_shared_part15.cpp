@@ -170,3 +170,25 @@ TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite)
     ASSERT_NE(guard, std::string::npos);
     EXPECT_LT(guard, indirectCall);
 }
+
+// Session 20260923_233317 (Talos, FSR FG -> DLSS FG in the menu): sl.dlss_g created the new swapchain on
+// its own queue, the game kept submitting on its primary queue and DLSS-G stayed ON-but-not-interpolating.
+// The queue-settle defer (a guard for a DEPARTING runtime's leftover queue) waited for cmdQ==scQ, which
+// never happens there, so the overlay stayed gone until the game closed. The INCOMING runtime's fresh
+// swapchain on a submittable queue must initialize the overlay immediately.
+TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSettle) {
+    using ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit;
+    // The exact failing state: FG inactive, runtime owns, cmdQ != scQ, fresh handoff on a submittable queue.
+    EXPECT_FALSE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+        /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
+        /*hasSwapchainQueue=*/true, /*hasCommandQueue=*/true, /*commandQueueMatchesSwapchainQueue=*/false,
+        /*retainedNoCallbackFSRSuspension=*/false, /*freshStreamlineHandoffOnSubmittableQueue=*/true));
+    // Command tracking not populated yet: the render targets the live swapchain queue either way.
+    EXPECT_FALSE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
+                                                                     /*hasCommandQueue=*/false, false, false, true));
+    // Without the fresh handoff the departing-runtime guard is unchanged.
+    EXPECT_TRUE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true, true, false, false,
+                                                                    /*freshHandoff=*/false));
+    EXPECT_TRUE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true, false, false, false,
+                                                                    /*freshHandoff=*/false));
+}

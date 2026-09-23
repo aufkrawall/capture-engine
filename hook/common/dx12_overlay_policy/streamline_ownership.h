@@ -179,7 +179,8 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
                                                                 bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
                                                                 bool hasCommandQueue,
                                                                 bool commandQueueMatchesSwapchainQueue,
-                                                                bool retainedNoCallbackFSRSuspension) {
+                                                                bool retainedNoCallbackFSRSuspension,
+                                                                bool freshStreamlineHandoffOnSubmittableQueue) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
@@ -198,6 +199,16 @@ inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGAct
     // documented-safe route, and the ProcessFrame queue routing picks scQueue for exactly this state), so
     // overlay init must proceed instead of waiting for a settle that cannot occur.
     if (retainedNoCallbackFSRSuspension) {
+        return false;
+    }
+
+    // FRESH STREAMLINE HANDOFF (session 20260923_233317, Talos FSR FG -> DLSS FG in the menu: overlay gone
+    // until the game closed): sl.dlss_g created the new swapchain on its own queue, the game kept rendering
+    // on its primary queue, and DLSS-G stayed ON-but-not-interpolating, so cmdQ==scQ could never happen.
+    // The crash this defer guards is a DEPARTING runtime's leftover queue. A swapchain the INCOMING
+    // runtime just created, whose queue CE can submit on, is the live present queue - the same pre-SL
+    // scQueue route the game-startup Streamline swapchain already draws on before DLSS-G engages.
+    if (freshStreamlineHandoffOnSubmittableQueue) {
         return false;
     }
 

@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-09-24 - FSR FG -> DLSS FG: overlay init stranded on the fresh Streamline queue
+
+Talos `20260923_233317` (0.1.6782): after the menu switch, `sl.dlss_g` recreated the swapchain on a new queue
+(`fgOwned=1`), DLSS-G never interpolated before the user quit (fence frozen at 424, no `SetOptions(ON)`), and
+`Deferring inactive runtime-owned swapchain overlay init until queue settles` repeated until exit. Fixed by the
+fresh-handoff exemption in `streamline_ownership.h` (see `frame-generation/guardrails.md`). Open: hardware
+re-test; whether the pre-SL scQueue draw then hands over to PostSL cleanly once DLSS-G starts after a menu switch.
+
 ### 2026-09-23 - Risk audit: ten user-facing hazards addressed
 
 A read-only audit asked which areas were most likely to hurt users; it led to the local

@@ -362,9 +362,15 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
 
     {
         ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+        bool swapchainQueueSubmittable = false;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             currentSwapchainQueue = dx12_hook_g_SwapchainQueue;
+            // Same submit-path evidence as the safe post-FSR bootstrap proof; read under the lock
+            // because it dereferences the queue CE's reference keeps alive.
+            swapchainQueueSubmittable = currentSwapchainQueue != nullptr &&
+                                        (HasTrackedExecuteCommandListsOriginal(currentSwapchainQueue) ||
+                                         dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr);
         }
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         bool actualFGActive = IsActualFrameGenerationActive();
@@ -382,11 +388,27 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         const bool retainedNoCallbackFSRSuspension =
             dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
-        if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-                actualFGActive, streamlineFGRunning, dx12_hook_g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
-                currentCommandQueue != nullptr,
+        const bool freshStreamlineHandoffOnSubmittableQueue =
+            DXGIShared::IsStreamlineStartupHandoffPending() && swapchainQueueSubmittable;
+        const auto deferInactiveRuntimeOwnedInit = [&](bool freshHandoffExemption) {
+            return ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+                actualFGActive, streamlineFGRunning, dx12_hook_g_FGRuntimeOwnsSwapchain,
+                currentSwapchainQueue != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
-                retainedNoCallbackFSRSuspension)) {
+                retainedNoCallbackFSRSuspension, freshHandoffExemption);
+        };
+        const bool deferInit = deferInactiveRuntimeOwnedInit(freshStreamlineHandoffOnSubmittableQueue);
+        if (!deferInit && freshStreamlineHandoffOnSubmittableQueue && deferInactiveRuntimeOwnedInit(false)) {
+            static std::atomic<int> s_freshHandoffInitLogCount{0};
+            if (s_freshHandoffInitLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                HookLogImportant(
+                    "DX12: Initializing overlay on fresh Streamline handoff swapchain queue without waiting for "
+                    "queue settle (scQ=%p cmdQ=%p origGame=%p fgOwned=%d) - the incoming runtime's queue is live",
+                    currentSwapchainQueue, currentCommandQueue, dx12_hook_g_OriginalGameQueue,
+                    dx12_hook_g_FGRuntimeOwnsSwapchain ? 1 : 0);
+            }
+        }
+        if (deferInit) {
             // Attribute these presents as gated so a blank window here shows up as an
             // [OVERLAY COVERAGE] uncovered streak instead of hiding behind coverage inheritance
             // (session 20260702_142655 had ZERO streaks logged while the overlay was invisible).

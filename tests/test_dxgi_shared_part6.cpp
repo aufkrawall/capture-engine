@@ -139,24 +139,18 @@ TEST(DXGISharedTest, SwapchainChangeGuardCatchesRecentStreamlineTeardownOnRuntim
 }
 
 TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSettle) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             true, false, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             false, false, false));
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             true, false, false));
+    // No exemption applies: the departing-runtime settle rule alone.
+    const auto defer = [](bool fg, bool sl, bool owns, bool scQ, bool cmdQ, bool cmdMatchesScQ) {
+        return ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(fg, sl, owns, scQ, cmdQ,
+                                                                                          cmdMatchesScQ, false, false);
+    };
+    EXPECT_TRUE(defer(false, false, true, true, true, false));
+    EXPECT_TRUE(defer(false, false, true, true, false, false));
 
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, false, true,
-                                                                                              true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(true, false, true, true,
-                                                                                              true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, true, true, true,
-                                                                                              true, false, false));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                              true, true, false));
-
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             true, false, false));
+    EXPECT_FALSE(defer(false, false, false, true, true, false));
+    EXPECT_FALSE(defer(true, false, true, true, true, false));
+    EXPECT_FALSE(defer(false, true, true, true, true, false));
+    EXPECT_FALSE(defer(false, false, true, true, true, true));
 }
 
 // ---------------------------------------------------------------------------
@@ -172,13 +166,13 @@ TEST(DXGISharedTest, RetainedNoCallbackFSRSuspensionInitIsNotDeferredByQueueSett
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
         /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
         /*hasSwapchainQueue=*/true, /*hasCommandQueue=*/true, /*commandQueueMatchesSwapchainQueue=*/false,
-        /*retainedNoCallbackFSRSuspension=*/true));
+        /*retainedNoCallbackFSRSuspension=*/true, false));
     // Null command queue during the suspension: same exemption (the render targets scQueue anyway).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-        false, false, true, true, /*hasCommandQueue=*/false, false, true));
+        false, false, true, true, /*hasCommandQueue=*/false, false, true, false));
     // The exemption changes nothing outside the suspension (Talos post-FG settle crash path stays guarded).
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-        false, false, true, true, true, false, /*retainedNoCallbackFSRSuspension=*/false));
+        false, false, true, true, true, false, /*retainedNoCallbackFSRSuspension=*/false, false));
 }
 
 TEST(DXGISharedTest, D3D12InjectionProbeDoesNotAddFixedStartupDelay) {
