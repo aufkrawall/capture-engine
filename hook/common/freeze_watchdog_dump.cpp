@@ -316,7 +316,7 @@ void FreezeWatchdog::NoteRenderThreadDialog(HWND dialog, DWORD dialogThreadId, c
     renderThreadDialogHeartbeat_.store(heartbeat, std::memory_order_release);
     renderThreadDialogSeen_.store(true, std::memory_order_release);
 
-    char body[768] = {};
+    char body[2048] = {};
     ce::window_text::ReadDialogBodyTextBounded(dialog, body, static_cast<int>(sizeof(body)));
     HookLogImportant(
         "FreezeWatchdog: Render thread tid=%lu is running %s's modal loop; a process exit before its next "

@@ -27,6 +27,15 @@ inline bool ShouldReleaseChainBeforeCreation(bool primaryDescription, int bootst
     return primaryDescription && bootstrapDepth == 0 && !shuttingDown;
 }
 
+// Whether a device Release just dropped the application's last reference:
+// everything still counted is CE's. `ceReferences` is counted before the call,
+// so zero means CE holds nothing and the device may already be gone.
+// Anything above CE's count is someone else's - the application's, or a
+// transient acquisition whose own Release will ask again.
+inline bool ApplicationReleasedLastDeviceReference(uint32_t ceReferences, unsigned long remaining) {
+    return ceReferences != 0 && remaining == ceReferences;
+}
+
 // DirectDraw HRESULTs are MAKE_DDHRESULT(code) = 0x88760000 | code. Spelled out
 // here so the policy stays free of <ddraw.h>; the test pins them to the SDK.
 inline constexpr uint32_t kPrimarySurfaceAlreadyExists = 0x88760234u;

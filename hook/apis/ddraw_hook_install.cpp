@@ -123,8 +123,10 @@ void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api,  void* d
                 record->applyStateBlock.store(original, std::memory_order_release);
             }
         }
-        if (isD3D7)
+        if (isD3D7) {
             InstallD3D7StateBlockTrackingHooks(record, vtable);
+            InstallD3D7DeviceReleaseHook(record, vtable);
+        }
     }
 
     auto queryMaxAnisotropy = api == ce::legacy_d3d_sampler_state::Api::D3D7 ? QueryD3D7MaxAnisotropy

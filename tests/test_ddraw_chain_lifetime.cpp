@@ -145,11 +145,18 @@ TEST(DDrawChainLifetimeTest, TheChainReleaseCoversEveryReferenceCeTakes) {
     EXPECT_NE(reset.find("ResetDirectDrawPresentationOverrides()"), std::string::npos)
         << "the prerender queue's surface references";
 
+    const size_t sidecar = reset.find("ReleaseNativeLegacyD3DOverlay()");
+    const size_t queue = reset.find("ResetDirectDrawPresentationOverrides()");
+    EXPECT_LT(sidecar, queue) << "a device reference must go before the surfaces its render target lives in";
+
     const std::string release = FunctionBody(route, "void ReleaseDirectDrawChainBeforePrimaryCreation(");
     ASSERT_FALSE(release.empty());
     EXPECT_NE(release.find("ResetDirectDrawPresentationStateForPrimaryChange()"), std::string::npos);
-    EXPECT_NE(release.find("ReleaseTrackedLegacyD3D7Device()"), std::string::npos)
-        << "the tracked device keeps its render target, the old back buffer, alive";
+    // Gothic II 20260924_235830: releasing the tracked device here made CE's
+    // reference the device's last one after the chain was gone, and Direct3D
+    // faulted destroying it. Only the device Release interception drops it.
+    EXPECT_EQ(release.find("ReleaseTrackedLegacyD3D7Device"), std::string::npos)
+        << "the pre-creation release must not destroy the application's device";
     EXPECT_NE(release.find("ddraw_hook_g_PrimarySurface = nullptr"), std::string::npos);
     EXPECT_NE(release.find("ddraw_hook_g_PrimarySurface4 = nullptr"), std::string::npos);
     EXPECT_NE(release.find("HookLogImportant("), std::string::npos) << "what CE released must be provable";
@@ -178,12 +185,59 @@ TEST(DDrawChainLifetimeTest, EndSceneTracksTheDeviceAgain) {
     EXPECT_LT(track, draw);
 
     const std::string helpers = ReadSource("hook/apis/ddraw_hook_helpers.cpp");
-    const std::string untrack = FunctionBody(helpers, "bool ReleaseTrackedLegacyD3D7Device()");
+    const std::string untrack = FunctionBody(helpers, "bool ReleaseTrackedLegacyD3D7DeviceIf(");
     ASSERT_FALSE(untrack.empty());
     const size_t exchange = untrack.find("exchange(nullptr");
     const size_t unlock = untrack.find("}", exchange);
-    const size_t releaseCall = untrack.find("device->Release()");
+    const size_t releaseCall = untrack.find("tracked->Release()");
     ASSERT_NE(exchange, std::string::npos);
     ASSERT_NE(releaseCall, std::string::npos);
     EXPECT_LT(unlock, releaseCall) << "the last device reference must be dropped outside the identity lock";
+}
+
+TEST(DDrawChainLifetimeTest, OnlyAReleaseThatLeavesCeAloneEndsCesReferences) {
+    EXPECT_TRUE(lifetime::ApplicationReleasedLastDeviceReference(2, 2)) << "tracker + sidecar remain, nothing else";
+    EXPECT_TRUE(lifetime::ApplicationReleasedLastDeviceReference(1, 1));
+    EXPECT_FALSE(lifetime::ApplicationReleasedLastDeviceReference(2, 3)) << "the application still owns one";
+    EXPECT_FALSE(lifetime::ApplicationReleasedLastDeviceReference(0, 0))
+        << "CE held nothing - the device is already gone and must not be touched";
+    EXPECT_FALSE(lifetime::ApplicationReleasedLastDeviceReference(2, 1)) << "never below CE's own count";
+}
+
+// CE may hold the application's device only while the Release interception
+// can hand the reference back inside the application's own last Release.
+TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRelease) {
+    const std::string lifetimeSource = ReadSource("hook/apis/ddraw_hook_device_lifetime.cpp");
+    const std::string detour = FunctionBody(lifetimeSource, "ULONG STDMETHODCALLTYPE DetourD3D7DeviceRelease(");
+    ASSERT_FALSE(detour.empty());
+    const size_t count = detour.find("CountCeDeviceReferences(ddraw_hook_device)");
+    const size_t forward = detour.find("const ULONG remaining = release(ddraw_hook_device);");
+    const size_t sidecar = detour.find("ReleaseNativeLegacyD3DOverlayForDevice(");
+    const size_t tracked = detour.find("ReleaseTrackedLegacyD3D7DeviceIf(");
+    const size_t textures = detour.find("ReleaseLegacyD3D7TextureBindingsForDevice(");
+    ASSERT_NE(count, std::string::npos);
+    ASSERT_NE(forward, std::string::npos);
+    ASSERT_NE(sidecar, std::string::npos);
+    ASSERT_NE(tracked, std::string::npos);
+    ASSERT_NE(textures, std::string::npos);
+    EXPECT_LT(count, forward) << "CE's references must be counted before the device can be gone";
+    EXPECT_LT(forward, sidecar);
+    EXPECT_LT(sidecar, tracked) << "the sidecar deletes its state block on the still-live device";
+    EXPECT_LT(tracked, textures);
+    EXPECT_NE(detour.find("LegacyD3DInternalCallActive()"), std::string::npos) << "CE's own releases pass through";
+
+    const std::string helpers = ReadSource("hook/apis/ddraw_hook_helpers.cpp");
+    const std::string track = FunctionBody(helpers, "void TrackLegacyD3D7Device(");
+    const size_t gate = track.find("LegacyD3D7DeviceReleaseIsIntercepted(device)");
+    const size_t addRef = track.find("device->AddRef()");
+    ASSERT_NE(gate, std::string::npos) << "a device CE cannot release in time must not be referenced";
+    ASSERT_NE(addRef, std::string::npos);
+    EXPECT_LT(gate, addRef);
+
+    const std::string route = ReadSource("hook/apis/ddraw_hook_overlay_route.cpp");
+    const std::string prime = FunctionBody(route, "bool PrimeNativeLegacyD3DOverlay(");
+    EXPECT_NE(prime.find("LegacyD3D7DeviceReleaseIsIntercepted(device)"), std::string::npos);
+
+    const std::string install = ReadSource("hook/apis/ddraw_hook_install.cpp");
+    EXPECT_NE(install.find("InstallD3D7DeviceReleaseHook(record, vtable)"), std::string::npos);
 }

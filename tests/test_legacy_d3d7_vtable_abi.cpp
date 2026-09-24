@@ -25,6 +25,7 @@
 // in the hook build can check them - this translation unit is deliberately the
 // only one that sees the real interface declaration.
 TEST(LegacyD3D7VTableAbiTest, DeviceIndicesUsedByTheHookMatchTheInterface) {
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, Release) / sizeof(void*), 2u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, GetRenderTarget) / sizeof(void*), 9u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, EndScene) / sizeof(void*), 6u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetRenderState) / sizeof(void*), 20u);

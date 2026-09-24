@@ -182,6 +182,24 @@ void ReleaseLegacyD3D7TextureBindings() {
 
 }
 
+bool ReleaseLegacyD3D7TextureBindingsForDevice(void* ddraw_hook_device) {
+    if (!ddraw_hook_device)
+        return false;
+    // "For as long as the device does": once the device is gone its bindings
+    // can never be restored again, and the textures keep their DirectDraw
+    // object alive. The entry goes too, so a new device at this address starts
+    // without a borrowed restore proof.
+    std::lock_guard<std::mutex> lock(g_TextureBindingMutex);
+    for (auto& entry : g_TextureBindings) {
+        if (!entry || entry->device != ddraw_hook_device)
+            continue;
+        entry->bindings.ReleaseAll(!HookIsShuttingDown());
+        entry.reset();
+        return true;
+    }
+    return false;
+}
+
 HRESULT STDMETHODCALLTYPE DetourSetTexture7(IDirect3DDevice7* ddraw_hook_device,  DWORD Stage, 
                                                    IDirectDrawSurface7* ddraw_hook_texture) {
 

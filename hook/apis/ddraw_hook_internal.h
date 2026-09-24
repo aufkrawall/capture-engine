@@ -132,6 +132,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D7BeginStateBlock_t)(void* ddraw_hook_devic
 typedef HRESULT(STDMETHODCALLTYPE* D3D7EndStateBlock_t)(void* ddraw_hook_device, DWORD* ddraw_hook_blockHandle);
 typedef HRESULT(STDMETHODCALLTYPE* D3D7CaptureStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
 typedef HRESULT(STDMETHODCALLTYPE* D3D7DeleteStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+typedef ULONG(STDMETHODCALLTYPE* D3D7DeviceRelease_t)(void* ddraw_hook_device);
+
 typedef HRESULT(STDMETHODCALLTYPE* D3D7CreateStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_type,
                                                           DWORD* ddraw_hook_blockHandle);
 
@@ -156,6 +158,8 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_ho
 // d3d9.h), so the few methods CE calls on the application's device are
 // reached by vtable index. `LegacyD3D7VTableAbiTest` pins every index used
 // here against the real interface declaration.
+#define D3D7_VTABLE_RELEASE 2
+
 #define D3D7_VTABLE_GETRENDERTARGET 9
 
 #define D3D7_VTABLE_SETRENDERSTATE 20
@@ -372,10 +376,11 @@ void TrackLegacyD3D7Device(IDirect3DDevice7* device);
 // Returns the tracked device with a reference the caller must release.
 IDirect3DDevice7* AcquireLegacyD3D7Device();
 
-// Drops CE's tracking reference. The device holds its render target, so while
-// CE tracks it the application's whole flip chain stays alive. False when no
-// device was tracked; the application's next EndScene tracks it again.
-bool ReleaseTrackedLegacyD3D7Device();
+// Drops CE's tracking reference if it is `device`. Only for the device-release
+// interception: releasing it anywhere else can make CE's reference the device's
+// last one after the application already released the surfaces it renders to.
+bool ReleaseTrackedLegacyD3D7DeviceIf(void* device);
+bool TrackedLegacyD3D7DeviceIs(void* device);
 
 // CE's own calls into the legacy Direct3D device must not travel through the
 // forced-filtering interception: that layer caches what it believes the
@@ -415,10 +420,9 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight);
 struct DirectDrawChainReferenceRelease {
     uint32_t presentationReferences = 0;
     bool nativeSidecar = false;
-    bool d3d7Device = false;
 
     bool Any() const {
-        return presentationReferences != 0 || nativeSidecar || d3d7Device;
+        return presentationReferences != 0 || nativeSidecar;
     }
 };
 
@@ -445,6 +449,9 @@ void ClearNativeLegacyD3DOverlayState(IUnknown* surface);
 void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool flipSwapsSurfaceMemory);
 // True when a primed sidecar - and with it a device reference - was released.
 bool ReleaseNativeLegacyD3DOverlay();
+bool NativeLegacyD3DOverlayHoldsDevice(void* device);
+// Releases the sidecar only when it renders with `device`.
+bool ReleaseNativeLegacyD3DOverlayForDevice(void* device);
 
 // Ownership of the application's Direct3D 7 texture bindings
 // (`ddraw_hook_texture_bindings.cpp`). A `D3DSBT_ALL` state block records them
@@ -456,6 +463,9 @@ bool LegacyD3D7TextureBindingsAreRestoreSafe(void* device);
 // Returns the application's binding with a reference the caller releases.
 IUnknown* AcquireLegacyD3D7TextureBinding(void* device, DWORD stage);
 void ReleaseLegacyD3D7TextureBindings();
+// Drops one device's shadow once that device is gone (pointer-keyed; the
+// device itself is never touched).
+bool ReleaseLegacyD3D7TextureBindingsForDevice(void* device);
 
 void LogDirectDrawPresentationMix(const char* reason);
 
@@ -574,11 +584,18 @@ struct LegacyD3DSamplerVTableRecord {
     std::atomic<D3D7CaptureStateBlock_t> captureStateBlock{nullptr};
     std::atomic<D3D7DeleteStateBlock_t> deleteStateBlock{nullptr};
     std::atomic<D3D7CreateStateBlock_t> createStateBlock{nullptr};
+    std::atomic<D3D7DeviceRelease_t> release{nullptr};
 };
 
 // Hooks CreateStateBlock/CaptureStateBlock/DeleteStateBlock and the recording pair
 // BeginStateBlock/EndStateBlock on a D3D7 device vtable (ddraw_hook_detours_legacy_d3d.cpp).
 void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable);
+
+// IUnknown::Release on a D3D7 device vtable (ddraw_hook_device_lifetime.cpp).
+// CE holds the application's device only while this interception is live, and
+// drops its references inside the application's own last Release.
+void InstallD3D7DeviceReleaseHook(LegacyD3DSamplerVTableRecord* record, void** vtable);
+bool LegacyD3D7DeviceReleaseIsIntercepted(void* device);
 
 inline std::mutex ddraw_hook_g_LegacyD3DSamplerVTableMutex;
 

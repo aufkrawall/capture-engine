@@ -390,14 +390,35 @@ void TrackLegacyD3D7Device(IDirect3DDevice7* device) {
     if (!device || ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed) == device)
         return;
 
-    std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-    IDirect3DDevice7* previous = ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed);
-    if (previous == device)
+    // CE's reference must never be a device's last one after the application
+    // has released the surfaces the device renders to: Direct3D destroys a
+    // device through its render target, and Gothic II `20260924_235830`
+    // faulted in ~CDirect3DDevice7 exactly that way. The Release interception
+    // drops this reference inside the application's own last Release; without
+    // it CE does not hold the device at all and the native route stays off.
+    if (!LegacyD3D7DeviceReleaseIsIntercepted(device)) {
+        static std::atomic<void*> loggedDevice{nullptr};
+        if (loggedDevice.exchange(device, std::memory_order_relaxed) != static_cast<void*>(device)) {
+            HookLogImportant("DDraw: Not tracking D3D7 device=%p - its Release is not intercepted, so CE could "
+                             "outlive the application's reference; the CPU composite keeps the overlay",
+                             device);
+        }
         return;
-    device->AddRef();
-    ddraw_hook_g_D3D7Device.store(device, std::memory_order_release);
-    // Released only under the lock, and every reader takes its reference under
-    // the same lock, so a concurrent reader can never hold a dead pointer.
+    }
+
+    IDirect3DDevice7* previous = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        previous = ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed);
+        if (previous == device)
+            return;
+        device->AddRef();
+        ddraw_hook_g_D3D7Device.store(device, std::memory_order_release);
+    }
+    // Every reader takes its reference under the lock, and the global no longer
+    // names `previous`, so this reference is CE's alone to drop. Outside the
+    // lock and through the intercepted Release, so that interception can see
+    // whether the application still owns the device.
     if (previous)
         previous->Release();
 
@@ -414,19 +435,22 @@ IDirect3DDevice7* AcquireLegacyD3D7Device() {
 
 }
 
-bool ReleaseTrackedLegacyD3D7Device() {
-    IDirect3DDevice7* device = nullptr;
+bool TrackedLegacyD3D7DeviceIs(void* device) {
+    return device && ddraw_hook_g_D3D7Device.load(std::memory_order_acquire) == device;
+}
+
+bool ReleaseTrackedLegacyD3D7DeviceIf(void* device) {
+    IDirect3DDevice7* tracked = nullptr;
     {
         std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
-        device = ddraw_hook_g_D3D7Device.exchange(nullptr, std::memory_order_acq_rel);
+        if (!device || ddraw_hook_g_D3D7Device.load(std::memory_order_relaxed) != device)
+            return false;
+        tracked = ddraw_hook_g_D3D7Device.exchange(nullptr, std::memory_order_acq_rel);
     }
-    if (!device)
-        return false;
-    // Outside the lock on purpose: this is normally the device's last
-    // reference, and Direct3D tears its render target down through the very
-    // DirectDraw interfaces CE hooks. Readers that already acquired the device
-    // hold their own references; nobody can acquire it any more.
-    device->Release();
+    // Outside the lock on purpose: this can be the device's last reference, and
+    // Direct3D tears the device down through DirectDraw interfaces CE hooks.
+    // Nobody can acquire it any more; earlier acquirers hold their own refs.
+    tracked->Release();
     return true;
 }
 

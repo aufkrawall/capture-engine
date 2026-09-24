@@ -195,11 +195,15 @@ DirectDrawChainReferenceRelease ResetDirectDrawPresentationStateForPrimaryChange
 }
 
 void ReleaseDirectDrawChainBeforePrimaryCreation(const char* api) {
-    DirectDrawChainReferenceRelease released = ResetDirectDrawPresentationStateForPrimaryChange();
-    // Only here, not in every reset: a runtime primary noticed mid-stream does
-    // not mean the application let go of its device. The tracked device keeps
-    // its render target - the old chain's back buffer - alive on its own.
-    released.d3d7Device = ReleaseTrackedLegacyD3D7Device();
+    // The device is deliberately not released here. If the application still
+    // owns it, CE's reference changes nothing; if it does not, the device
+    // Release interception already dropped CE's references inside the
+    // application's own last Release, while the render target still existed.
+    // Releasing it here instead made CE's reference the last one after the
+    // chain was gone, and Direct3D faulted destroying the device
+    // (Gothic II `20260924_235830`). The reset releases the sidecar's device
+    // reference before the queued surfaces, in Direct3D's teardown order.
+    const DirectDrawChainReferenceRelease released = ResetDirectDrawPresentationStateForPrimaryChange();
     // Raw identities of a chain that may now be destroyed; an address DirectDraw
     // hands out again must not be mistaken for the old primary.
     ddraw_hook_g_PrimarySurface = nullptr;
@@ -207,9 +211,8 @@ void ReleaseDirectDrawChainBeforePrimaryCreation(const char* api) {
     if (released.Any()) {
         HookLogImportant(
             "DDraw: Released CE's references into the previous presentation chain before the application's %s "
-            "primary creation (presentationRefs=%u nativeSidecar=%d d3d7Device=%d)",
-            api ? api : "unknown", released.presentationReferences, released.nativeSidecar ? 1 : 0,
-            released.d3d7Device ? 1 : 0);
+            "primary creation (presentationRefs=%u nativeSidecar=%d)",
+            api ? api : "unknown", released.presentationReferences, released.nativeSidecar ? 1 : 0);
     } else {
         HookLog("DDraw: %s primary creation - CE held no references into a previous chain", api ? api : "unknown");
     }
@@ -231,6 +234,10 @@ void LogApplicationPrimaryCreationFailure(const char* api, HRESULT hr, uint32_t 
 
 bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
     if (!device || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
+        return false;
+    // The sidecar references the device; only the Release interception can
+    // hand that reference back before the application's own one is gone.
+    if (!LegacyD3D7DeviceReleaseIsIntercepted(device))
         return false;
 
     // The sidecar's `D3DSBT_ALL` block restores the application's textures, and
@@ -444,4 +451,21 @@ bool ReleaseNativeLegacyD3DOverlay() {
     g_nativeOverlay.useCounter = 0;
     ClearNativeBackendFailureLocked();
     return hadBackend;
+}
+
+bool NativeLegacyD3DOverlayHoldsDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    return device && g_nativeOverlay.backend && g_nativeOverlay.backend->GetDevice() == device;
+}
+
+bool ReleaseNativeLegacyD3DOverlayForDevice(void* device) {
+    std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
+    if (!device || !g_nativeOverlay.backend || g_nativeOverlay.backend->GetDevice() != device)
+        return false;
+    LegacyD3DInternalScope internalScope;
+    g_nativeOverlay.backend.reset();
+    g_nativeOverlay.surfaces = {};
+    g_nativeOverlay.useCounter = 0;
+    ClearNativeBackendFailureLocked();
+    return true;
 }

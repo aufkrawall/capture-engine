@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-25 - Follow-up: pre-creation device release crashed Gothic II; device refs now end in the app's Release
+
+Session `20260924_235830` (0.1.6804, user alt-tab): Gothic II caught an AV in `D3DIM700` and showed its own
+`Application Error - Access Violation` box (text now logged by the new dialog recorder); the process later died
+unhandled (0xC0000005) and CE adopted the WER dump. `dps` over the stale stack in the dump recovered the first
+fault: `DetourDirectDraw7CreateSurface -> ReleaseDirectDrawChainBeforePrimaryCreation ->
+ReleaseTrackedLegacyD3D7Device -> DIRECT3DDEVICEI::Release -> ~CDirect3DDevice7 -> ~CDirect3DDeviceIDP2 -> D3DFree`.
+CE's tracked ref was the device's last and outlived the chain. Fix (0.1.6806): `IDirect3DDevice7::Release`
+interception drops CE's device refs inside the application's last Release; pre-creation release no longer touches the
+device; tracking/priming require the interception. Dialog text buffers raised to 2048 (the box lists a stack).
+User reports Gothic II alt-tab crashes without CE too - expected to remain, but must no longer involve `capture_hook`.
+Open: in-game alt-tab on 0.1.6806 - expect `Application released its last reference to D3D7 device=...`.
+
 ### 2026-09-24 - Gothic II exit after focus loss: CE kept the old DirectDraw chain alive; dialog-exit dumps
 
 Session `20260924_233030` (0.1.6803): after a save load plus focus loss (`Foreground grace aborted: focus_lost`

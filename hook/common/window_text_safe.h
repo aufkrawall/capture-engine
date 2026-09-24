@@ -103,7 +103,8 @@ inline BOOL CALLBACK CollectDialogBodyTextProc(HWND child, LPARAM lParam) {
     if (_stricmp(className, "Static") != 0 && _stricmp(className, "Edit") != 0) {
         return TRUE;
     }
-    char text[512] = {};
+    // A crash report box lists a whole call stack; the useful frames come last.
+    char text[2048] = {};
     ReadWindowTitleBounded(child, text, static_cast<int>(sizeof(text)), context->timeoutMs);
     AppendDialogTextFragment(context->buffer, context->bufferChars, text);
     return TRUE;
