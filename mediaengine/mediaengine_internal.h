@@ -302,6 +302,11 @@ public:
 
     // Get current video elapsed time for audio clock compensation
 int64_t GetVideoElapsedMs() const;bool SessionUsesVfr() const;bool SessionUsesScreenGrab() const;int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const;void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs);size_t GetBufferedTimelineSamples(const AudioSource& src) const;
+    // Logs and reports sources that ran without their endpoint in this recording.
+    bool AudioSourcesLostTheirDevice() const;
+    // Logs and reports tracks whose encoder recorded content holes (samples it
+    // consumed but could not encode; they are silence in the file).
+    bool AudioTracksHaveContentHoles() const;
 
     // AudioLoop -> PullAndEncodeAudio hand-off for the adaptive ingestion reservoir.
     // Publishes the worst (minimum) headroom seen since the pull side last consumed it,

@@ -59,7 +59,35 @@ public:
 
     size_t PendingPacketCount();
 
+    // Spans in which this source ran without a live endpoint during the current
+    // capture: none was available at start, or one was lost and not re-acquired
+    // at once. Those spans hold silence, so the recording is reported degraded.
+    uint32_t GetDeviceUnavailableEpisodes() const {
+        return deviceUnavailableEpisodes_.load(std::memory_order_acquire);
+    }
+
 private:
+    // Endpoint notifications for the worker's enumerator: a Windows default-device
+    // switch (followed when no device is configured) and device arrival (retry a
+    // source that is waiting for its endpoint now instead of after its backoff).
+    // The callbacks only publish flags; all WASAPI work stays on the worker.
+    class EndpointListener final : public IMMNotificationClient {
+    public:
+        explicit EndpointListener(AudioCapture& owner) : owner_(owner) {}
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override;
+        ULONG STDMETHODCALLTYPE AddRef() override;
+        ULONG STDMETHODCALLTYPE Release() override;
+        HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR deviceId, DWORD newState) override;
+        HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR deviceId) override;
+        HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR deviceId) override;
+        HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR deviceId) override;
+        HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR deviceId, const PROPERTYKEY key) override;
+
+    private:
+        AudioCapture& owner_;
+        std::atomic<ULONG> refs_{1};
+    };
+
     // Allow a couple of seconds of capture jitter before we have to drop the
     // oldest queued audio packet.
     static constexpr size_t kMaxQueuedPackets = 256;
@@ -104,6 +132,17 @@ private:
 
     // Mid-recording stream re-activation policy (endpoint device invalidation).
     ce::audio::StreamRecoveryConfig recoveryConfig_;
+
+    EndpointListener endpointListener_{*this};
+    bool endpointListenerRegistered_ = false;  // worker-only
+    std::atomic<bool> defaultDeviceChanged_{false};
+    std::atomic<bool> endpointArrived_{false};
+    std::atomic<uint32_t> deviceUnavailableEpisodes_{0};
+    void RegisterEndpointListenerOnWorker();
+    void UnregisterEndpointListenerOnWorker();
+    // True when the default endpoint for this source's flow is a different
+    // device than the live client's (or there is no live client). Worker-only.
+    bool DefaultEndpointDiffersFromActiveOnWorker();
 
     void CaptureLoop();
     void CompleteStartup(bool succeeded);

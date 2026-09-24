@@ -103,7 +103,10 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
         } else {
             audioOnlyOutputReservation.CleanupOwnedFile();
         }
-        lastOutputDegraded = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0;
+        const bool audioDeviceLost = AudioSourcesLostTheirDevice();
+        const bool audioContentHoles = AudioTracksHaveContentHoles();
+        lastOutputDegraded = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0 ||
+                             audioDeviceLost || audioContentHoles;
         audioOnlyWriteErrorCount = 0;
         audioOnlyTrailerSucceeded = false;
         audioOnlyWrittenPackets = 0;

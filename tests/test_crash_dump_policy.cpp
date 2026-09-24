@@ -166,6 +166,27 @@ TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesOnlyCurrentProcessCrashLikeE
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, policy::kProcessIsTerminatingExitCode, false, true));
 }
 
+// Session 20260924_073945: Strange Brigade quit through exit(-1) from a Steam
+// callback and CE held the exit 1.7 s for a 49 MB "fatal exit" dump.
+TEST(CrashDumpPolicyTest, SmallNegativeApplicationExitCodesAreNotCrashes) {
+    for (const DWORD code : {0xFFFFFFFFu, 0xFFFFFFFEu, 0xFFFFFF00u, 0xFFFF0001u}) {
+        EXPECT_TRUE(policy::IsSmallNegativeApplicationExitCode(code)) << std::hex << code;
+        EXPECT_FALSE(policy::IsCrashLikeProcessExitCode(code)) << std::hex << code;
+        EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, code, false)) << std::hex << code;
+        EXPECT_FALSE(policy::ShouldAdoptWerDumpForTrackedProcessExit(code, false)) << std::hex << code;
+        EXPECT_STREQ(policy::DescribeProcessExitCodeClass(code), "normal exit");
+    }
+    // Real exception/NTSTATUS exits keep their crash classification.
+    EXPECT_FALSE(policy::IsSmallNegativeApplicationExitCode(EXCEPTION_ACCESS_VIOLATION));
+    EXPECT_FALSE(policy::IsSmallNegativeApplicationExitCode(0xE06D7363u));
+    EXPECT_TRUE(policy::IsCrashLikeProcessExitCode(0xE06D7363u));
+    EXPECT_TRUE(policy::IsCrashLikeProcessExitCode(policy::kFailFastExceptionExitCode));
+    EXPECT_FALSE(policy::IsSmallNegativeApplicationExitCode(0));
+    // exit(-1) after an unresolved fault still dumps: the fault decides, not the code.
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 0xFFFFFFFFu, false, false,
+                                                        policy::TerminationOrigin::kPrimaryModule, true));
+}
+
 TEST(CrashDumpPolicyTest, PreTerminationDumpCapturesActiveFrameGenerationRuntimeExits) {
     EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(true, 0, false, true));
     EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(true, 1, false, true));

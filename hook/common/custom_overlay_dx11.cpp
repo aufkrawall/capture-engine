@@ -341,6 +341,15 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     ID3D11PixelShader* oldPS = nullptr;
     context->VSGetShader(&oldVS, nullptr, nullptr);
     context->PSGetShader(&oldPS, nullptr, nullptr);
+    // A geometry or tessellation shader the application left bound would run
+    // on the overlay's triangles (garbled or missing overlay); bind none for
+    // the draw and put the application's back afterwards.
+    ID3D11GeometryShader* oldGS = nullptr;
+    ID3D11HullShader* oldHS = nullptr;
+    ID3D11DomainShader* oldDS = nullptr;
+    context->GSGetShader(&oldGS, nullptr, nullptr);
+    context->HSGetShader(&oldHS, nullptr, nullptr);
+    context->DSGetShader(&oldDS, nullptr, nullptr);
 
     // Save IA state
     ID3D11InputLayout* oldInputLayout = nullptr;
@@ -365,10 +374,10 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     context->PSGetShaderResources(0, 1, &oldPSSRV);
     context->PSGetSamplers(0, 1, &oldPSSampler);
 
-    // Save viewport
-    UINT oldNumViewports = 1;
-    D3D11_VIEWPORT oldViewport = {};
-    context->RSGetViewports(&oldNumViewports, &oldViewport);
+    // Save every bound viewport (multi-viewport renderers bind more than one).
+    UINT oldNumViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+    context->RSGetViewports(&oldNumViewports, oldViewports);
 
     // Set state
     float blendFactor[4] = {0, 0, 0, 0};
@@ -376,6 +385,9 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     context->OMSetBlendState(blendState.Get(), blendFactor, 0xFFFFFFFF);
     context->OMSetDepthStencilState(depthState.Get(), 0);
     context->VSSetShader(vertexShader.Get(), nullptr, 0);
+    context->GSSetShader(nullptr, nullptr, 0);
+    context->HSSetShader(nullptr, nullptr, 0);
+    context->DSSetShader(nullptr, nullptr, 0);
     context->VSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
     context->PSSetConstantBuffers(0, 1, constantBuffer.GetAddressOf());
     context->PSSetSamplers(0, 1, sampler.GetAddressOf());
@@ -416,6 +428,9 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     context->OMSetRenderTargets(kMaxRTVs, oldRTVs, oldDSV);
     context->VSSetShader(oldVS, nullptr, 0);
     context->PSSetShader(oldPS, nullptr, 0);
+    context->GSSetShader(oldGS, nullptr, 0);
+    context->HSSetShader(oldHS, nullptr, 0);
+    context->DSSetShader(oldDS, nullptr, 0);
     context->IASetInputLayout(oldInputLayout);
     context->IASetPrimitiveTopology(oldTopology);
     context->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
@@ -425,7 +440,7 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     context->PSSetShaderResources(0, 1, &oldPSSRV);
     context->PSSetSamplers(0, 1, &oldPSSampler);
     if (oldNumViewports > 0) {
-        context->RSSetViewports(oldNumViewports, &oldViewport);
+        context->RSSetViewports(oldNumViewports, oldViewports);
     }
 
     // Release saved state references
@@ -439,6 +454,12 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         oldVS->Release();
     if (oldPS)
         oldPS->Release();
+    if (oldGS)
+        oldGS->Release();
+    if (oldHS)
+        oldHS->Release();
+    if (oldDS)
+        oldDS->Release();
     if (oldInputLayout)
         oldInputLayout->Release();
     if (oldVB)

@@ -1,5 +1,13 @@
 #include "main_internal.h"
 
+#include "../common/config_reload_policy.h"
+#include "../common/path_utils.h"
+
+namespace {
+// Hot-reload debounce state for config.ini (see config_reload_policy.h).
+ce::config_reload::State g_ConfigReloadState;
+}  // namespace
+
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
         ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
@@ -157,7 +165,7 @@ int ControllerMain(HINSTANCE hInstance) {
             const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
             LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
                      (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,
-                     GetControllerLoopWaitMs(lastConfigCheck), 0);
+                     GetControllerLoopWaitMs(lastConfigCheck, ce::config_reload::CheckIntervalMs(g_ConfigReloadState)), 0);
             iterRateLogCount = 0;
             iterRateLogStartUs = iterNowUs;
         }
@@ -222,76 +230,78 @@ int ControllerMain(HINSTANCE hInstance) {
 
         // Config hot-reload
         DWORD configNow = GetTickCount();
-        if (configNow - lastConfigCheck >= 1000) {
-            WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-            if (GetFileAttributesExA(main_g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo)) {
-                // Reload on ANY identity change (mtime OR size), not only a
-                // newer mtime: an editor/restore/sync can replace the file with
-                // an older timestamp, which the previous > comparison missed.
-                static FILETIME lastWriteTime = fileInfo.ftLastWriteTime;
-                static DWORD lastConfigSize = fileInfo.nFileSizeLow;
-                static bool lastConfigSeen = false;
-                const bool firstSeen = !lastConfigSeen;
-                lastConfigSeen = true;
-                const bool configIdentityChanged =
-                    !firstSeen && (CompareFileTime(&fileInfo.ftLastWriteTime, &lastWriteTime) != 0 ||
-                                   fileInfo.nFileSizeLow != lastConfigSize);
-                if (configIdentityChanged) {
-                    LogInfo("[Controller] Config change detected, reloading...");
-                    lastWriteTime = fileInfo.ftLastWriteTime;
-                    lastConfigSize = fileInfo.nFileSizeLow;
+        if (configNow - lastConfigCheck >= ce::config_reload::CheckIntervalMs(g_ConfigReloadState)) {
+            // Reload on ANY identity change (mtime OR size), not only a newer
+            // mtime: an editor/restore/sync can replace the file with an older
+            // timestamp. The change must be stable across two checks first, so a
+            // save in progress is never read half-written (config_reload_policy.h).
+            WIN32_FILE_ATTRIBUTE_DATA fileInfo = {};
+            ce::config_reload::FileIdentity identity;
+            identity.exists = GetFileAttributesExA(main_g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo) != FALSE;
+            if (identity.exists) {
+                identity.lastWriteTime = (static_cast<uint64_t>(fileInfo.ftLastWriteTime.dwHighDateTime) << 32) |
+                                         fileInfo.ftLastWriteTime.dwLowDateTime;
+                identity.size = (static_cast<uint64_t>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
+            }
+            const ce::config_reload::Decision reloadDecision =
+                ce::config_reload::Observe(g_ConfigReloadState, identity);
+            if (reloadDecision == ce::config_reload::Decision::kWait) {
+                LogDebug("[Controller] Config change seen (exists=%d size=%llu); applying once it is stable",
+                         identity.exists ? 1 : 0, static_cast<unsigned long long>(identity.size));
+            }
+            if (reloadDecision == ce::config_reload::Decision::kReload) {
+                LogInfo("[Controller] Config change detected, reloading...");
 
-                    AppConfig oldConfig = main_g_Config;
-                    LoadConfig(main_g_ConfigPath, main_g_Config);
-                    Log_SetLevel(main_g_Config.logLevel);
+                AppConfig oldConfig = main_g_Config;
+                LoadConfig(main_g_ConfigPath, main_g_Config);
+                Log_SetLevel(main_g_Config.logLevel);
 
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
-                        UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-                        main_g_HotkeyOwnership.record =
-                            RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
-                    }
-
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
-                        UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-                        main_g_HotkeyOwnership.screenshot =
-                            RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot,
-                                                     "screenshot");
-                    }
-
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
-                        UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-                        main_g_HotkeyOwnership.audioOnly =
-                            RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly,
-                                                     "audio-only");
-                    }
-
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, main_g_Config.hotkeyToggleOverlay)) {
-                        UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
-                        main_g_HotkeyOwnership.toggleOverlay =
-                            RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay,
-                                                     "overlay toggle");
-                    }
-
-                    if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, main_g_Config.hotkeyBenchmark)) {
-                        UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
-                        main_g_HotkeyOwnership.benchmark =
-                            RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark,
-                                                     "benchmark");
-                    }
-
-                    // The keyboard-hook path recognizes the same hotkeys, so it
-                    // has to follow every reload, including one that only
-                    // disabled a hotkey.
-                    PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
-
-                    {
-                        MainThreadBlockTimer _blk("config-reload service sync");
-                        SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig);
-                        SendCommandToAll(ProcessCommand::ReloadConfig);
-                    }
-
-                    SyncPseudoOverlayConfiguration("config reload");
+                if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
+                    UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
+                    main_g_HotkeyOwnership.record =
+                        RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
                 }
+
+                if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
+                    UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
+                    main_g_HotkeyOwnership.screenshot =
+                        RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot,
+                                                 "screenshot");
+                }
+
+                if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
+                    UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
+                    main_g_HotkeyOwnership.audioOnly =
+                        RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly,
+                                                 "audio-only");
+                }
+
+                if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, main_g_Config.hotkeyToggleOverlay)) {
+                    UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
+                    main_g_HotkeyOwnership.toggleOverlay =
+                        RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay,
+                                                 "overlay toggle");
+                }
+
+                if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, main_g_Config.hotkeyBenchmark)) {
+                    UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
+                    main_g_HotkeyOwnership.benchmark =
+                        RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark,
+                                                 "benchmark");
+                }
+
+                // The keyboard-hook path recognizes the same hotkeys, so it
+                // has to follow every reload, including one that only
+                // disabled a hotkey.
+                PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
+
+                {
+                    MainThreadBlockTimer _blk("config-reload service sync");
+                    SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig);
+                    SendCommandToAll(ProcessCommand::ReloadConfig);
+                }
+
+                SyncPseudoOverlayConfiguration("config reload");
             }
             lastConfigCheck = GetTickCount();
         }
@@ -311,7 +321,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const int64_t preWaitUs = Log_GetQpcUs();
 
-        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck);
+        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck, ce::config_reload::CheckIntervalMs(g_ConfigReloadState));
 
         // Log per-iteration timing breakdown at trace level when rate is logged
         if (iterRateLogCount == 0) {
@@ -402,11 +412,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         PrimeStartupCursor();
     }
 
-    // Get paths
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, exePath.find_last_of("\\/"));
+    // Get paths. Config, logs and crash handling open files through the ANSI
+    // APIs; an installation folder the code page cannot express would reach them
+    // '?'-mangled (config silently at defaults, no logs), so it is resolved from
+    // the Unicode module path into an exact ANSI or 8.3 form.
+    wchar_t exePathW[MAX_PATH] = {};
+    GetModuleFileNameW(NULL, exePathW, MAX_PATH);
+    const std::wstring exePathWide = exePathW;
+    bool baseDirExact = true;
+    std::string baseDir =
+        ce::path::AnsiCompatiblePath(exePathWide.substr(0, exePathWide.find_last_of(L"\\/")), &baseDirExact);
     main_g_ConfigPath = baseDir + "\\config.ini";
 
     // Load config early so directory and crash-handler setup can be gated on
@@ -534,6 +549,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
         Log_Init(logPath, main_g_Config.logLevel);
         LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
+        if (!baseDirExact) {
+            LogWarn(
+                "[Controller] The installation folder cannot be expressed in the Windows code page and has no 8.3 "
+                "short name; config.ini and logs may not be found. Install CaptureEngine to a folder with Latin "
+                "characters or enable 8.3 names on that volume");
+        }
         LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
                                     : mode == ProcessMode::Inject   ? "Inject"
                                     : mode == ProcessMode::Media    ? "Media"

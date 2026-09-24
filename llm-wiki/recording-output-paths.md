@@ -59,3 +59,27 @@ Limits:
 - Runtime validation with an actual elevated CE process writing to a persistent mapped network drive should confirm the log reports `source=registry_mapping` when the elevated token cannot see the live mapping.
 - A real hotkey stop during both inject and WGC/DXGI warm-up should confirm that no final recording and no lingering staging file remain; deterministic lifecycle and output-disposition tests cover the race and cleanup policy offline.
 - Filesystem atomicity and identity semantics still depend on the destination filesystem implementing the corresponding Windows operations; network-share runtime validation remains useful.
+
+## Source changes after the output opened (2026-09-24)
+
+`mediaengine/encode_geometry_policy.h` decides what a committed recording does when its capture source changes:
+
+- **Colour contract** (HDR on/off, 10-bit input appearing/disappearing): `ReinitForFormatModeChange` /
+  `PrepareFrameD3D11` used to `Stop()` and re-`Init()` with the preserved staging reservation, and the next
+  `avio_open2(AVIO_FLAG_WRITE)` truncated the same staging file - everything before the switch was lost. After
+  `fileOpened` the encoder now refuses the frame, calls `RequestStopForSourceContractChange` (shm
+  `cmdStopRecording`) and `WasLastOutputDegraded` reports it via `sourceContractChanged`. Pre-open re-init is
+  unchanged. Open: seamless continuation would need an SDR->HDR transform (`RgbColorTransform` has none) or
+  segmenting into a second file with a re-anchored audio timeline.
+- **Size**: the geometry is locked at header acceptance (`lockedGeometryWidth/Height`). A resized source is drawn
+  by `FitSourceToLockedGeometry` (`video_encoder_geometry.cpp`) into a CE texture of the locked size, aspect
+  preserved, centred on black, linear sampling, same typed format - every downstream path (VP, direct RGB, HDR
+  P010 shader, repeat caches, face camera) keeps seeing the original geometry. The cursor state is kept raw and
+  re-mapped onto the fitted rectangle (`AdjustCursorForFit`) for fresh frames and CFR repeats.
+- **Persistent encode failure** (captureengine side): `ObserveVideoOutputAttempt` (`recording_health.h`) ends the
+  recording after 5 s and >= 8 attempts with neither a fresh frame nor a cached repeat emitted (deferrals excluded),
+  latching the video-degraded health flag.
+
+Audio: sources that ran without their endpoint (`AudioCapture::GetDeviceUnavailableEpisodes`) and tracks with
+`contentHoleSamples > 0` also mark the output degraded (`AudioSourcesLostTheirDevice`, `AudioTracksHaveContentHoles`).
+Hardware validation of all of this is pending.

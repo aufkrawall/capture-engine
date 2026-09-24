@@ -251,3 +251,40 @@ TEST(AudioFaultAccounting, CrossThreadCursorReadsSnapshotUnderTheLeafLock) {
     EXPECT_LT(pullSync.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
               pullSync.find("trackCursorSamples += samplesToEncode;"));
 }
+
+TEST(AudioFaultAccounting, CursorContainerRebuildsHoldTheLeafLock) {
+    // The recording-start reset runs while the audio worker keeps reading the
+    // cursors under the leaf lock (SyncAudioToFirstVideoFrame only waits for the
+    // worker's acknowledgement); clearing the map without the lock raced the
+    // worker's lookups. The same holds for the pull-side resize.
+    const std::string timeline = ReadMediaEngineUnit("mediaengine_timeline.cpp");
+    const std::string pullTargets = ReadMediaEngineUnit("mediaengine_audio_pull_targets.cpp");
+    ASSERT_FALSE(timeline.empty());
+    ASSERT_FALSE(pullTargets.empty());
+    const size_t reset = timeline.find("void MediaEngine::ResetAudioPullStateForRecording()");
+    ASSERT_NE(reset, std::string::npos);
+    const size_t lock = timeline.find("cursorLock(ce::audio::g_audioCursorSyncMutex)", reset);
+    const size_t clear = timeline.find("trackTimelineSamples.clear();", reset);
+    const size_t unlock = timeline.find("cursorLock.unlock();", reset);
+    ASSERT_NE(lock, std::string::npos);
+    ASSERT_NE(clear, std::string::npos);
+    ASSERT_NE(unlock, std::string::npos);
+    EXPECT_LT(lock, clear);
+    EXPECT_LT(clear, unlock);
+    EXPECT_LT(pullTargets.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
+              pullTargets.find("encodedSamplesPerSource.resize("));
+}
+
+TEST(AudioFaultAccounting, ContentHolesReachTheCompletionAsDegraded) {
+    // contentHoleSamples was booked but had no consumer: a recording with holes
+    // (silence where audio was lost) still completed as a clean save.
+    const std::string stop = ReadMediaEngineUnit("mediaengine_recording_stop.cpp");
+    const std::string config = ReadMediaEngineUnit("mediaengine_config.cpp");
+    const std::string flush = ReadMediaEngineUnit("audio_encoder_flush.cpp");
+    ASSERT_FALSE(stop.empty());
+    ASSERT_FALSE(config.empty());
+    ASSERT_FALSE(flush.empty());
+    EXPECT_NE(stop.find("AudioTracksHaveContentHoles()"), std::string::npos);
+    EXPECT_NE(config.find("AudioTracksHaveContentHoles()"), std::string::npos);
+    EXPECT_NE(flush.find("contentHoles=%lld"), std::string::npos);
+}

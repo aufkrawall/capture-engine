@@ -1,5 +1,7 @@
 #include "video_encoder_internal.h"
 
+#include "encode_geometry_policy.h"
+
 // EncodeFrameD3D11: Direct D3D11 texture encoding for framegrab
 // mode Zero-copy path - texture is converted RGB/BGRA -> NV12/P010 directly on GPU
 bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t frameWidth, uint32_t frameHeight,
@@ -28,6 +30,15 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     D3D11_TEXTURE2D_DESC texDesc = {};
     bgraTexture->GetDesc(&texDesc);
     const bool wants10BitInput = ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format);
+    const bool contractChanged =
+        initDone && (isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput);
+    if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, frameWidth, frameHeight,
+                                                  lockedGeometryWidth, lockedGeometryHeight) ==
+        ce::encode_geometry::SourceChangeAction::kFinalizeAndStop) {
+        // Re-initializing here re-opened the same output and truncated it.
+        RequestStopForSourceContractChange("screen-grab source", isHDR, wants10BitInput);
+        return false;
+    }
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
@@ -86,6 +97,21 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     if (!PrepareFrameD3D11(bgraTexture, frameWidth, frameHeight, isHDR)) {
         return false;
+    }
+    // A source resized after the output opened is fitted into the locked
+    // geometry; everything below then sees the recording's own frame size.
+    ce::ComGuard<ID3D11Texture2D> fittedSource;
+    {
+        ID3D11Texture2D* fitted = nullptr;
+        if (!FitSourceToLockedGeometry(bgraTexture, &fitted)) {
+            return false;
+        }
+        fittedSource.reset(fitted);
+    }
+    if (fittedSource) {
+        bgraTexture = fittedSource.get();
+        frameWidth = lockedGeometryWidth;
+        frameHeight = lockedGeometryHeight;
     }
 
     // Detect new recording start and reset counters (using class members)

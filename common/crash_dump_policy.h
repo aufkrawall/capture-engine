@@ -337,9 +337,20 @@ inline bool ShouldTerminateAfterExternalDumpStorm(bool strongSignature, uint32_t
     return currentHitMs >= firstHitMs && (currentHitMs - firstHitMs) <= kExternalDumpStormWindowMs;
 }
 
+// A C/C++ program that returns or exits with a small negative number (exit(-1),
+// `return -1;` from main, a Steam shutdown callback ending in exit(-1)) reaches
+// the kernel as 0xFFFFxxxx. Those values carry the error-severity bits but are
+// not NTSTATUS codes: facility 0xFFF does not exist, so no exception, fail-fast
+// or runtime abort ever produces one. Session 20260924_073945 dumped 49 MB and
+// held Strange Brigade's exit for 1.7 s for exactly this.
+inline bool IsSmallNegativeApplicationExitCode(DWORD exitCode) {
+    const int32_t signedCode = static_cast<int32_t>(exitCode);
+    return signedCode < 0 && signedCode >= -0xFFFF;
+}
+
 inline bool IsCrashLikeProcessExitCode(DWORD exitCode) {
     if (exitCode == kExternalDumpStormTerminationExitCode ||
-        exitCode == kProcessIsTerminatingExitCode) {
+        exitCode == kProcessIsTerminatingExitCode || IsSmallNegativeApplicationExitCode(exitCode)) {
         return false;
     }
     if (exitCode == kFailFastExceptionExitCode || exitCode == kBreakpointExceptionExitCode ||

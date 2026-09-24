@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-09-24 - Third risk audit: ten findings plus audit-2 leftovers
+
+Read-only audit, then targeted fixes (no restructuring). Unit gate green; no hardware run for any of them.
+
+- **HDR/10-bit switch mid-recording truncated the file** (re-open of the same staging path). Now finalizes and
+  stops degraded; size changes are letterboxed into the locked geometry - `recording-output-paths.md`.
+- **OpenGL overlay state leak** (modern path restored almost nothing; legacy path left client pointers into overlay
+  memory) - `overlay-rendering.md`, `gl_overlay_state_policy.h`.
+- **System audio never followed a default-device switch; device-less start dropped the source silently** -
+  `multi-audio-capture.md`.
+- **Persistent encode failure had no stop** - 5 s streak ends the recording degraded (`recording_health.h`).
+- **exit(-1) dumped as a crash** (Strange Brigade, session `20260924_073945`): 0xFFFF0001..0xFFFFFFFF are ordinary
+  exits (`IsSmallNegativeApplicationExitCode`).
+- **DX12 focus-loss fence wait** no longer falls back to INFINITE; **DXGI wrapper destruction callback** lost its
+  100x `Sleep(1)` poll; **DX11 overlay** unbinds/restores GS/HS/DS and all viewports.
+- **config.ini**: UTF-8 values converted to ACP, reload debounce, Unicode/8.3 install path - `configuration.md`.
+- Audit-2 leftovers: cursor container rebuild/resize under the leaf lock; `contentHoleSamples` now reaches
+  `[AudioFinalization]` and the degraded completion; checked-in `VK_LAYER_CE_overlay*.json` name the gate.
+
+Open: hardware runs (HDR toggle while recording, window resize while recording, OpenGL title with the overlay,
+default-output switch and mic plug-in while recording, a TDR); S6 state-block restore, sampler re-hook on drift and
+multi-swapchain Vulkan sharpen remain deferred from audit 2.
+
 ### 2026-09-24 - Review follow-up to the second risk audit (3cfe8272)
 
 A code review of 3cfe8272 found ten issues; eight changed code, two needed no change. Unit gate

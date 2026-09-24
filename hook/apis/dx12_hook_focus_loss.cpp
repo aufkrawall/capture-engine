@@ -449,14 +449,13 @@ if (!completed) {
     RequestImmediateFocusLossFenceDumpOnce("D3D12 focus-loss same-frame overlay fence wait stalled", fenceValue,
                                            completedValue, queue, presentContext, foregroundWindow, foregroundPid,
                                            gameWindow, processId, waitResult, waitLastError);
-    if (waitResult == WAIT_TIMEOUT) {
-        const DWORD finalWaitResult = WaitForSingleObject(fenceEvent, INFINITE);
-        const DWORD finalLastError = (finalWaitResult == WAIT_FAILED) ? GetLastError() : 0;
-        completedValue = fence->GetCompletedValue();
-        completed = completedValue >= fenceValue || finalWaitResult == WAIT_OBJECT_0;
-        waitResult = finalWaitResult;
-        waitLastError = finalLastError;
-    }
+    // Never wait on past the bound. This runs on the application's present
+    // thread, and the overlay work may sit behind a GPU wait on a fence the
+    // application only signals after this Present returns: an unbounded wait
+    // there turned a stall into a permanent hang. The Present itself is ordered
+    // after the overlay work on the same queue, and the pending fence recorded
+    // above holds further unfocused overlay work until it completes (the same
+    // state the SetEventOnCompletion failure path leaves).
 }
 
 if (completed) {

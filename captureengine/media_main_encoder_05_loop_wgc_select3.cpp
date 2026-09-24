@@ -1,6 +1,8 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 
+#include "../common/capture_retarget_policy.h"
+
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -576,6 +578,26 @@ if (s_freshEncodeRecoveryCount <= 5 || (s_freshEncodeRecoveryCount % 120ull) == 
 }
 return true;
 
+}
+
+void MediaEncoderSession::observeVideoOutputAttempt(bool emitted, bool deferred, const char* context) {
+if (!ce::capture_policy::ObserveVideoOutputAttempt(videoOutputFailureStreak, emitted, deferred, GetTickCount64())) {
+    return;
+}
+LogError(
+    "[EncoderThread] Video output failed for %llu ms (%u attempts, last=%s) without emitting a frame: the encoder "
+    "or its GPU device is gone (for example after a driver reset). Ending the recording; everything encoded so far "
+    "is kept and reported as degraded",
+    static_cast<unsigned long long>(GetTickCount64() - videoOutputFailureStreak.firstFailureMs),
+    videoOutputFailureStreak.failures, context ? context : "unknown");
+// Same latched video-degraded truth as a lost capture source: the committed
+// output cannot contain what followed.
+ce::capture_retarget::RecordSourceLossHealth(
+    media_main_g_RecordingHealthFlags,
+    media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+if (media_main_g_pSharedMem) {
+    media_main_g_pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+}
 }
 
 void MediaEncoderSession::releaseWgcLeaseAfterMediaEngineCopy(QueuedFrame& encodedFrame, const char* context) {

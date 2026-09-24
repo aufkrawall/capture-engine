@@ -330,3 +330,43 @@ void MediaEngine::DiscardPendingAudioPackets() {
         }
 
 }
+
+bool MediaEngine::AudioSourcesLostTheirDevice() const {
+    bool lost = false;
+    for (const AudioSource& src : audioSources) {
+        if (!src.capture) {
+            continue;
+        }
+        const uint32_t episodes = src.capture->GetDeviceUnavailableEpisodes();
+        if (episodes == 0) {
+            continue;
+        }
+        lost = true;
+        DLL_Log(
+            "[AudioFinalization] track=%d source=%s ran without its audio device %u time(s) (absent, refused or lost "
+            "and not re-acquired at once); those spans hold silence, so the recording is reported as degraded",
+            src.track, src.sourceType == AudioConfig::Microphone ? "microphone" : "system", episodes);
+    }
+    return lost;
+}
+
+bool MediaEngine::AudioTracksHaveContentHoles() const {
+    bool holes = false;
+    // Each track's encoder is owned by exactly one source (the track's first).
+    for (const AudioSource& src : audioSources) {
+        const AudioEncoder* encoder = src.encoder.get();
+        if (!encoder) {
+            continue;
+        }
+        const int64_t holeSamples = encoder->GetFinalizationReport().contentHoleSamples;
+        if (holeSamples <= 0) {
+            continue;
+        }
+        holes = true;
+        DLL_Log(
+            "[AudioFinalization] encoder=%s holds %lld sample(s) of content holes (audio it consumed but could not "
+            "encode, placed as silence at their exact positions); the recording is reported as degraded",
+            encoder->GetRuntimeContract().encoderName.c_str(), static_cast<long long>(holeSamples));
+    }
+    return holes;
+}

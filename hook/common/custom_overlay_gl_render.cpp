@@ -12,71 +12,40 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
         legacyArrayProbeSucceeded = false;
     }
 
-    GLint lastViewport[4] = {0};
-    custom_overlay_gl_pglGetIntegerv(GL_VIEWPORT, lastViewport);
-    const GLboolean lastBlend = custom_overlay_gl_pglIsEnabled(GL_BLEND);
-    const GLboolean lastDepthTest = custom_overlay_gl_pglIsEnabled(GL_DEPTH_TEST);
-    const GLboolean lastCullFace = custom_overlay_gl_pglIsEnabled(GL_CULL_FACE);
-    GLint lastBlendSrcRGB = GL_ONE;
-    GLint lastBlendDstRGB = GL_ZERO;
-    GLint lastBlendSrcAlpha = GL_ONE;
-    GLint lastBlendDstAlpha = GL_ZERO;
-    custom_overlay_gl_pglGetIntegerv(GL_BLEND_SRC, &lastBlendSrcRGB);
-    custom_overlay_gl_pglGetIntegerv(GL_BLEND_DST, &lastBlendDstRGB);
-    if (custom_overlay_gl_pglBlendFuncSeparate) {
-        custom_overlay_gl_pglGetIntegerv(GL_BLEND_SRC_ALPHA, &lastBlendSrcAlpha);
-        custom_overlay_gl_pglGetIntegerv(GL_BLEND_DST_ALPHA, &lastBlendDstAlpha);
-    } else {
-        lastBlendSrcAlpha = lastBlendSrcRGB;
-        lastBlendDstAlpha = lastBlendDstRGB;
-    }
-
-    GLint lastActiveTexture = GL_TEXTURE0;
-    if (custom_overlay_gl_pglActiveTexture) {
-        custom_overlay_gl_pglGetIntegerv(GL_ACTIVE_TEXTURE, &lastActiveTexture);
-        custom_overlay_gl_pglActiveTexture(GL_TEXTURE0);
-    }
+    // Everything below changes the application's context; it is all captured
+    // first and put back exactly (see gl_overlay_state_policy.h). Capture leaves
+    // texture unit 0 active.
+    GLHookStateApi stateApi;
+    const ce::gl_overlay_state::Snapshot applicationState = ce::gl_overlay_state::Capture(stateApi, stateCaps);
     GLint lastClientActiveTexture = GL_TEXTURE0;
     if (custom_overlay_gl_pglClientActiveTexture) {
         custom_overlay_gl_pglGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &lastClientActiveTexture);
         custom_overlay_gl_pglClientActiveTexture(GL_TEXTURE0);
     }
-    GLint lastTexture = 0;
-    custom_overlay_gl_pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
-    const GLboolean lastTexture2D = custom_overlay_gl_pglIsEnabled(GL_TEXTURE_2D);
 
-    GLint lastVAO = 0;
+    // Fixed-function draws would run through an application GLSL program.
+    if (stateCaps.programs)
+        custom_overlay_gl_pglUseProgramState(0);
+    // Client pointers below address CPU memory. Move to VAO 0 and clear the
+    // buffer bindings, but only after VAO 0's own array specification is saved:
+    // the overlay overwrites it, and the application may source from it later.
     if (custom_overlay_gl_pglBindVertexArray)
-        custom_overlay_gl_pglGetIntegerv(GL_VERTEX_ARRAY_BINDING, &lastVAO);
-    GLint lastVBO = 0;
-    GLint lastIBO = 0;
-    if (custom_overlay_gl_pglBindBuffer) {
-        custom_overlay_gl_pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO);
-        custom_overlay_gl_pglGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &lastIBO);
-    }
-
+        custom_overlay_gl_pglBindVertexArray(0);
+    const ce::gl_overlay_state::ClientArraySnapshot applicationArrays =
+        ce::gl_overlay_state::CaptureClientArrays(stateApi, stateCaps);
     const GLboolean lastVertexArray = custom_overlay_gl_pglIsEnabled(GL_VERTEX_ARRAY);
     const GLboolean lastTexCoordArray = custom_overlay_gl_pglIsEnabled(GL_TEXTURE_COORD_ARRAY);
     const GLboolean lastColorArray = custom_overlay_gl_pglIsEnabled(GL_COLOR_ARRAY);
     GLint lastMatrixMode = GL_MODELVIEW;
     custom_overlay_gl_pglGetIntegerv(GL_MATRIX_MODE, &lastMatrixMode);
-
-    // Client pointers below address CPU memory. Move to VAO 0 and explicitly
-    // clear buffer bindings only after every original binding/enable was saved.
-    if (custom_overlay_gl_pglBindVertexArray)
-        custom_overlay_gl_pglBindVertexArray(0);
     if (custom_overlay_gl_pglBindBuffer) {
         custom_overlay_gl_pglBindBuffer(GL_ARRAY_BUFFER, 0);
         custom_overlay_gl_pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     }
 
-    custom_overlay_gl_pglEnable(GL_BLEND);
-    custom_overlay_gl_pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    custom_overlay_gl_pglDisable(GL_DEPTH_TEST);
-    custom_overlay_gl_pglDisable(GL_CULL_FACE);
-    custom_overlay_gl_pglEnable(GL_TEXTURE_2D);
-
-    custom_overlay_gl_pglViewport(0, 0, viewportWidth, viewportHeight);
+    ce::gl_overlay_state::PrepareOverlayDraw(stateApi, stateCaps, viewportWidth, viewportHeight);
+    if (stateCaps.fixedFunction)
+        custom_overlay_gl_pglEnable(GL_TEXTURE_2D);
 
     if (!legacyMatrixChecked) {
         ClearGLErrors();
@@ -178,13 +147,8 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
     }
     custom_overlay_gl_pglMatrixMode((GLenum)lastMatrixMode);
 
-    if (custom_overlay_gl_pglBindVertexArray)
-        custom_overlay_gl_pglBindVertexArray((GLuint)lastVAO);
-    if (custom_overlay_gl_pglBindBuffer) {
-        custom_overlay_gl_pglBindBuffer(GL_ARRAY_BUFFER, (GLuint)lastVBO);
-        custom_overlay_gl_pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)lastIBO);
-    }
-
+    // Still on VAO 0: its array specification and enables, then the rest.
+    ce::gl_overlay_state::RestoreClientArrays(stateApi, stateCaps, applicationArrays);
     if (lastVertexArray)
         custom_overlay_gl_pglEnableClientState(GL_VERTEX_ARRAY);
     else
@@ -197,35 +161,9 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
         custom_overlay_gl_pglEnableClientState(GL_COLOR_ARRAY);
     else
         custom_overlay_gl_pglDisableClientState(GL_COLOR_ARRAY);
-
-    custom_overlay_gl_pglBindTexture(GL_TEXTURE_2D, (GLuint)lastTexture);
-    if (lastTexture2D)
-        custom_overlay_gl_pglEnable(GL_TEXTURE_2D);
-    else
-        custom_overlay_gl_pglDisable(GL_TEXTURE_2D);
     if (custom_overlay_gl_pglClientActiveTexture)
         custom_overlay_gl_pglClientActiveTexture((GLenum)lastClientActiveTexture);
-    if (custom_overlay_gl_pglActiveTexture)
-        custom_overlay_gl_pglActiveTexture((GLenum)lastActiveTexture);
 
-    custom_overlay_gl_pglViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
-    if (custom_overlay_gl_pglBlendFuncSeparate) {
-        custom_overlay_gl_pglBlendFuncSeparate((GLenum)lastBlendSrcRGB, (GLenum)lastBlendDstRGB, (GLenum)lastBlendSrcAlpha,
-                             (GLenum)lastBlendDstAlpha);
-    } else {
-        custom_overlay_gl_pglBlendFunc((GLenum)lastBlendSrcRGB, (GLenum)lastBlendDstRGB);
-    }
-    if (lastBlend)
-        custom_overlay_gl_pglEnable(GL_BLEND);
-    else
-        custom_overlay_gl_pglDisable(GL_BLEND);
-    if (lastDepthTest)
-        custom_overlay_gl_pglEnable(GL_DEPTH_TEST);
-    else
-        custom_overlay_gl_pglDisable(GL_DEPTH_TEST);
-    if (lastCullFace)
-        custom_overlay_gl_pglEnable(GL_CULL_FACE);
-    else
-        custom_overlay_gl_pglDisable(GL_CULL_FACE);
+    ce::gl_overlay_state::Restore(stateApi, stateCaps, applicationState);
 }
 }

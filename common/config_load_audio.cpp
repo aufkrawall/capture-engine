@@ -196,9 +196,7 @@ void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path)
         // The literal section value is read directly (bypassing override fallback);
         // if it differs from the resolved name, a profile override leaked into it.
         {
-            char rawProc[4096];
-            GetPrivateProfileStringA(section, "process", "", rawProc, sizeof(rawProc), path.c_str());
-            std::string literalProc = Trim(rawProc);
+            std::string literalProc = Trim(ce::config_text::ReadIniValue(path, section, "process", ""));
             if (!literalProc.empty() && !appAudio.processName.empty() &&
                 _stricmp(literalProc.c_str(), appAudio.processName.c_str()) != 0) {
                 LogWarn(

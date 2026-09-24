@@ -367,15 +367,15 @@ inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& 
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
-inline DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
+inline DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck, DWORD configCheckIntervalMs = 1000) {
     DWORD waitMs = 2000;
     DWORD now = GetTickCount();
 
     DWORD configElapsed = now - lastConfigCheck;
-    if (configElapsed >= 1000) {
+    if (configElapsed >= configCheckIntervalMs) {
         return 0;
     }
-    DWORD configWaitMs = 1000 - configElapsed;
+    DWORD configWaitMs = configCheckIntervalMs - configElapsed;
     if (configWaitMs < waitMs) {
         waitMs = configWaitMs;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config_internal.h"
+#include "config_text_encoding.h"
 
 #include <array>
 #include <utility>
@@ -12,7 +13,8 @@ constexpr const char* kMissingConfigValue = "\x1d";
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def);
 uint32_t ParseColor(const char* key, const std::string& hexStr, uint32_t defaultColor);
 
-// INI reader with per-process override support (GetPrivateProfileStringA).
+// INI reader with per-process override support (GetPrivateProfileStringA through
+// ce::config_text, which converts values of a UTF-8 config to the active code page).
 class ConfigReader {
 public:
     ConfigReader(const std::string& path, const std::string& overrideSection)
@@ -22,8 +24,8 @@ public:
         if (!overrideSection_.empty()) {
             // 1. Try an explicit profile override: Section.Key=Value
             std::string explicitKey = std::string(section) + "." + key;
-            GetPrivateProfileStringA(overrideSection_.c_str(), explicitKey.c_str(), "", buffer_, 4096, path_.c_str());
-            std::string val = Trim(buffer_);
+            value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), explicitKey.c_str(), "");
+            std::string val = Trim(value_);
             if (!val.empty())
                 return val;
 
@@ -35,15 +37,15 @@ public:
             //    overridable collapsed every app-audio source onto the running
             //    game and summed identical captures into one track (metallic audio).
             if (!IsReservedOverrideSelectorKey(key)) {
-                GetPrivateProfileStringA(overrideSection_.c_str(), key, "", buffer_, 4096, path_.c_str());
-                val = Trim(buffer_);
+                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), key, "");
+                val = Trim(value_);
                 if (!val.empty())
                     return val;
             }
         }
         // 3. Fallback to global
-        GetPrivateProfileStringA(section, key, def, buffer_, 4096, path_.c_str());
-        return Trim(buffer_);
+        value_ = ce::config_text::ReadIniValue(path_, section, key, def);
+        return Trim(value_);
     }
 
     std::string GetStrCompat(const char* section, const char* key, const char* legacySection, const char* legacyKey,
@@ -67,9 +69,8 @@ public:
             // newly added canonical global default after a config migration.
             for (const auto& [candidateSection, candidateKey] : locations) {
                 const std::string explicitKey = std::string(candidateSection) + "." + candidateKey;
-                GetPrivateProfileStringA(overrideSection_.c_str(), explicitKey.c_str(), "", buffer_, 4096,
-                                         path_.c_str());
-                const std::string value = Trim(buffer_);
+                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), explicitKey.c_str(), "");
+                const std::string value = Trim(value_);
                 if (!value.empty())
                     return value;
             }
@@ -77,17 +78,15 @@ public:
                 (void)candidateSection;
                 if (IsReservedOverrideSelectorKey(candidateKey))
                     continue;
-                GetPrivateProfileStringA(overrideSection_.c_str(), candidateKey, "", buffer_, 4096,
-                                         path_.c_str());
-                const std::string value = Trim(buffer_);
+                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), candidateKey, "");
+                const std::string value = Trim(value_);
                 if (!value.empty())
                     return value;
             }
         }
         for (const auto& [candidateSection, candidateKey] : locations) {
-            GetPrivateProfileStringA(candidateSection, candidateKey, kMissingConfigValue, buffer_, 4096,
-                                     path_.c_str());
-            const std::string value = Trim(buffer_);
+            value_ = ce::config_text::ReadIniValue(path_, candidateSection, candidateKey, kMissingConfigValue);
+            const std::string value = Trim(value_);
             if (value != kMissingConfigValue)
                 return value;
         }
@@ -226,8 +225,8 @@ public:
     }
 
     std::string GetLiteralStr(const char* section, const char* key, const char* def) {
-        GetPrivateProfileStringA(section, key, def, buffer_, 4096, path_.c_str());
-        return Trim(buffer_);
+        value_ = ce::config_text::ReadIniValue(path_, section, key, def);
+        return Trim(value_);
     }
 
     bool GetLiteralBool(const char* section, const char* key, bool def) {
@@ -270,7 +269,7 @@ public:
 private:
     const std::string& path_;
     const std::string& overrideSection_;
-    char buffer_[4096];
+    std::string value_;
 };
 
 // Config load helpers shared across the section units.

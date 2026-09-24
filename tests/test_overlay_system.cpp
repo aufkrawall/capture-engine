@@ -633,6 +633,28 @@ TEST(LegacyOverlayBackendSourceTest, FailedUploadsReturnBeforeLegacyDrawSubmissi
     }
 }
 
+// A geometry/tessellation shader left bound by the application ran on the
+// overlay's triangles; the overlay binds none and restores the application's.
+TEST(OverlayBackendSourceTest, DX11OverlayOwnsEveryShaderStageAndViewportItTouches) {
+    const std::string source = ReadOverlaySource("hook/common/custom_overlay_dx11.cpp");
+    ASSERT_FALSE(source.empty());
+    for (const char* stage : {"GS", "HS", "DS"}) {
+        SCOPED_TRACE(stage);
+        const std::string prefix = std::string("context->") + stage;
+        const size_t get = source.find(prefix + "GetShader(&old" + stage);
+        const size_t clear = source.find(prefix + "SetShader(nullptr, nullptr, 0)", get);
+        const size_t draw = source.find("context->DrawIndexed(", clear);
+        const size_t restore = source.find(prefix + "SetShader(old" + stage + ", nullptr, 0)", draw);
+        ASSERT_NE(get, std::string::npos);
+        ASSERT_NE(clear, std::string::npos);
+        ASSERT_NE(draw, std::string::npos);
+        ASSERT_NE(restore, std::string::npos);
+    }
+    EXPECT_NE(source.find("UINT oldNumViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;"),
+              std::string::npos);
+    EXPECT_NE(source.find("context->RSSetViewports(oldNumViewports, oldViewports);"), std::string::npos);
+}
+
 TEST(LegacyOverlayBackendSourceTest, OpenGLLegacyPathPreservesSentinelsWithoutPerFrameErrorDrain) {
     const std::string source = ReadOverlaySource("hook/common/custom_overlay_gl.cpp");
     const std::string hookSource = ReadOverlaySource("hook/apis/opengl_hook.cpp");
@@ -645,20 +667,26 @@ TEST(LegacyOverlayBackendSourceTest, OpenGLLegacyPathPreservesSentinelsWithoutPe
     ASSERT_NE(modernStart, std::string::npos);
     EXPECT_EQ(source.substr(renderStart, modernStart - renderStart).find("ClearGLErrors();"), std::string::npos);
 
-    const size_t saveVbo = source.find("pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO)");
-    const size_t zeroVbo = source.find("pglBindBuffer(GL_ARRAY_BUFFER, 0)", saveVbo);
-    const size_t restoreVao = source.find("pglBindVertexArray((GLuint)lastVAO)", zeroVbo);
-    const size_t restoreArrays = source.find("if (lastVertexArray)", restoreVao);
-    ASSERT_NE(saveVbo, std::string::npos);
+    // Application state (bindings, enables, blend, texture units) is owned by
+    // gl_overlay_state; the legacy path saves VAO 0's client arrays before it
+    // clears the buffer bindings and restores them before the full restore.
+    const size_t legacyStart = source.find("void OpenGLBackend::RenderLegacy(");
+    ASSERT_NE(legacyStart, std::string::npos);
+    const size_t saveState = source.find("gl_overlay_state::Capture(stateApi, stateCaps)", legacyStart);
+    const size_t saveArrays = source.find("gl_overlay_state::CaptureClientArrays(", saveState);
+    const size_t zeroVbo = source.find("pglBindBuffer(GL_ARRAY_BUFFER, 0)", saveArrays);
+    const size_t restoreArrays = source.find("gl_overlay_state::RestoreClientArrays(", zeroVbo);
+    const size_t restoreEnables = source.find("if (lastVertexArray)", restoreArrays);
+    const size_t restoreState = source.find("gl_overlay_state::Restore(stateApi, stateCaps, applicationState)",
+                                            restoreEnables);
+    ASSERT_NE(saveState, std::string::npos);
+    ASSERT_NE(saveArrays, std::string::npos);
     ASSERT_NE(zeroVbo, std::string::npos);
-    ASSERT_NE(restoreVao, std::string::npos);
     ASSERT_NE(restoreArrays, std::string::npos);
-    EXPECT_LT(saveVbo, zeroVbo);
-    EXPECT_LT(restoreVao, restoreArrays);
+    ASSERT_NE(restoreEnables, std::string::npos);
+    ASSERT_NE(restoreState, std::string::npos);
 
-    EXPECT_NE(source.find("pglGetIntegerv(GL_ACTIVE_TEXTURE, &lastActiveTexture)"), std::string::npos);
     EXPECT_NE(source.find("pglGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &lastClientActiveTexture)"), std::string::npos);
-    EXPECT_NE(source.find("pglBlendFuncSeparate((GLenum)lastBlendSrcRGB"), std::string::npos);
     EXPECT_NE(source.find("pglMatrixMode((GLenum)lastMatrixMode)"), std::string::npos);
 
     EXPECT_EQ(hookSource.find("DetourSwapBuffers(0x%p) entering"), std::string::npos);

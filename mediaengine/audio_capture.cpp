@@ -175,6 +175,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     isLoopback_ = isLoopback;
     deviceId_ = deviceId;  // Remembered so CaptureLoop can re-resolve after device invalidation.
     streamLatency100ns_ = 0;
+    deviceUnavailableEpisodes_.store(0, std::memory_order_release);
     // Clear any stale packets from previous session
     {
         std::lock_guard<std::mutex> lock(queueMutex);
@@ -338,6 +339,7 @@ void AudioCapture::ReleaseActiveClientOnWorkerThread(bool releaseDevice) {
 
 void AudioCapture::ReleaseAllInterfacesOnWorkerThread() {
     ReleaseActiveClientOnWorkerThread(true);
+    UnregisterEndpointListenerOnWorker();
     if (pEnumerator) {
         pEnumerator->Release();
         pEnumerator = NULL;

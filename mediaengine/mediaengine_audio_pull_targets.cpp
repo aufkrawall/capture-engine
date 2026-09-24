@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "audio_fault_accounting.h"
 
 bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimelineUs, bool forceDrain) {
     auto& isCfrRecording = s.isCfrRecording;
@@ -281,6 +282,9 @@ bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimeli
                 isCfrRecording, forceDrain, timelineShortfallMs, wgcEncoderBottlenecked);
 
         if (encodedSamplesPerSource.size() != audioSources.size()) {
+            // Structural change of a cursor container the audio worker reads under
+            // the leaf lock (audio_fault_accounting.h).
+            std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
             encodedSamplesPerSource.resize(audioSources.size(), 0);
         }
 

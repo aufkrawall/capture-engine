@@ -223,6 +223,108 @@ inline PFN_glActiveTexture custom_overlay_gl_pglActiveTexture = nullptr;
 
 inline PFN_glClientActiveTexture custom_overlay_gl_pglClientActiveTexture = nullptr;
 
+typedef void(APIENTRY* PFN_glBlendEquationSeparate)(GLenum, GLenum);
+
+typedef void(APIENTRY* PFN_glColorMask)(GLboolean, GLboolean, GLboolean, GLboolean);
+
+typedef void(APIENTRY* PFN_glPolygonMode)(GLenum, GLenum);
+
+typedef void(APIENTRY* PFN_glBindSampler)(GLuint, GLuint);
+
+typedef void(APIENTRY* PFN_glPixelStorei)(GLenum, GLint);
+
+typedef void(APIENTRY* PFN_glGetPointerv)(GLenum, void**);
+
+// Optional entry points used only to save and restore application state.
+inline PFN_glBlendEquationSeparate custom_overlay_gl_pglBlendEquationSeparate = nullptr;
+
+inline PFN_glColorMask custom_overlay_gl_pglColorMask = nullptr;
+
+inline PFN_glPolygonMode custom_overlay_gl_pglPolygonMode = nullptr;
+
+inline PFN_glBindSampler custom_overlay_gl_pglBindSampler = nullptr;
+
+inline PFN_glPixelStorei custom_overlay_gl_pglPixelStorei = nullptr;
+
+inline PFN_glGetPointerv custom_overlay_gl_pglGetPointerv = nullptr;
+
+inline PFN_glUseProgram custom_overlay_gl_pglUseProgramState = nullptr;
+
+// ce::gl_overlay_state adapter over the resolved entry points. Callers pass
+// Capabilities that only name entry points which resolved.
+struct GLHookStateApi {
+    void GetInteger(uint32_t pname, int32_t* values) {
+        custom_overlay_gl_pglGetIntegerv(static_cast<GLenum>(pname), reinterpret_cast<GLint*>(values));
+    }
+    bool IsEnabled(uint32_t cap) {
+        return custom_overlay_gl_pglIsEnabled(static_cast<GLenum>(cap)) != GL_FALSE;
+    }
+    void SetEnabled(uint32_t cap, bool enabled) {
+        if (enabled)
+            custom_overlay_gl_pglEnable(static_cast<GLenum>(cap));
+        else
+            custom_overlay_gl_pglDisable(static_cast<GLenum>(cap));
+    }
+    void BlendFunc(uint32_t src, uint32_t dst) {
+        custom_overlay_gl_pglBlendFunc(static_cast<GLenum>(src), static_cast<GLenum>(dst));
+    }
+    void BlendFuncSeparate(uint32_t srcRgb, uint32_t dstRgb, uint32_t srcAlpha, uint32_t dstAlpha) {
+        custom_overlay_gl_pglBlendFuncSeparate(static_cast<GLenum>(srcRgb), static_cast<GLenum>(dstRgb),
+                                               static_cast<GLenum>(srcAlpha), static_cast<GLenum>(dstAlpha));
+    }
+    void BlendEquationSeparate(uint32_t rgb, uint32_t alpha) {
+        custom_overlay_gl_pglBlendEquationSeparate(static_cast<GLenum>(rgb), static_cast<GLenum>(alpha));
+    }
+    void ColorMask(bool r, bool g, bool b, bool a) {
+        if (custom_overlay_gl_pglColorMask)
+            custom_overlay_gl_pglColorMask(r ? GL_TRUE : GL_FALSE, g ? GL_TRUE : GL_FALSE, b ? GL_TRUE : GL_FALSE,
+                                           a ? GL_TRUE : GL_FALSE);
+    }
+    void PolygonMode(uint32_t face, uint32_t mode) {
+        custom_overlay_gl_pglPolygonMode(static_cast<GLenum>(face), static_cast<GLenum>(mode));
+    }
+    void ActiveTexture(uint32_t unit) {
+        custom_overlay_gl_pglActiveTexture(static_cast<GLenum>(unit));
+    }
+    void BindTexture2D(uint32_t texture) {
+        custom_overlay_gl_pglBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture));
+    }
+    void BindSampler(uint32_t unit, uint32_t sampler) {
+        custom_overlay_gl_pglBindSampler(static_cast<GLuint>(unit), static_cast<GLuint>(sampler));
+    }
+    void UseProgram(uint32_t program) {
+        custom_overlay_gl_pglUseProgramState(static_cast<GLuint>(program));
+    }
+    void BindVertexArray(uint32_t vao) {
+        custom_overlay_gl_pglBindVertexArray(static_cast<GLuint>(vao));
+    }
+    void BindBuffer(uint32_t target, uint32_t buffer) {
+        custom_overlay_gl_pglBindBuffer(static_cast<GLenum>(target), static_cast<GLuint>(buffer));
+    }
+    void PixelStore(uint32_t pname, int32_t value) {
+        if (custom_overlay_gl_pglPixelStorei)
+            custom_overlay_gl_pglPixelStorei(static_cast<GLenum>(pname), value);
+    }
+    void Viewport(int32_t x, int32_t y, int32_t width, int32_t height) {
+        custom_overlay_gl_pglViewport(x, y, width, height);
+    }
+    const void* GetPointer(uint32_t pname) {
+        void* pointer = nullptr;
+        if (custom_overlay_gl_pglGetPointerv)
+            custom_overlay_gl_pglGetPointerv(static_cast<GLenum>(pname), &pointer);
+        return pointer;
+    }
+    void VertexPointer(int32_t size, uint32_t type, int32_t stride, const void* pointer) {
+        custom_overlay_gl_pglVertexPointer(size, static_cast<GLenum>(type), stride, pointer);
+    }
+    void ColorPointer(int32_t size, uint32_t type, int32_t stride, const void* pointer) {
+        custom_overlay_gl_pglColorPointer(size, static_cast<GLenum>(type), stride, pointer);
+    }
+    void TexCoordPointer(int32_t size, uint32_t type, int32_t stride, const void* pointer) {
+        custom_overlay_gl_pglTexCoordPointer(size, static_cast<GLenum>(type), stride, pointer);
+    }
+};
+
 inline void ClearGLErrors() {
     if (custom_overlay_gl_pglGetError) {
         while (custom_overlay_gl_pglGetError() != GL_NO_ERROR) {}

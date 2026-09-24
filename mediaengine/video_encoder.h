@@ -85,7 +85,8 @@ public:
         return ce::mux::IsFinalizedOutputDegraded(muxOutputErrorCount.load(std::memory_order_acquire),
                                                   hdrMetadataDropCount.load(std::memory_order_acquire),
                                                   cfrCoverageIncomplete.load(std::memory_order_acquire),
-                                                  lastStopFinalizeTimedOut.load(std::memory_order_acquire));
+                                                  lastStopFinalizeTimedOut.load(std::memory_order_acquire)) ||
+               sourceContractChanged.load(std::memory_order_acquire);
     }
 
     // Set Adapter LUID (call before Start or EncodeFrame)
@@ -117,9 +118,10 @@ public:
     void ResetRepeatFrameCache();
     bool WasLastFrameDeferred() const;
 
-    void SetCursorCaptureState(const ce::cursor::CaptureState& state) {
-        cursorCaptureState = state;
-    }
+    // Stores the source's cursor state; while a resized source is being fitted
+    // into the locked geometry, the composited state is mapped onto the fitted
+    // rectangle (fresh frames and CFR repeats alike).
+    void SetCursorCaptureState(const ce::cursor::CaptureState& state);
 
     int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);
 
@@ -269,6 +271,9 @@ private:
     std::atomic<uint32_t> hdrMetadataDropCount{0};
     std::atomic<bool> cfrCoverageIncomplete{false};
     std::atomic<bool> lastStopFinalizeTimedOut{false};
+    // The capture's colour contract (HDR / 10-bit input) changed after the output
+    // was committed; the recording was ended there instead of re-opening the file.
+    std::atomic<bool> sourceContractChanged{false};
     bool liveOutput = false;
     std::atomic<bool> liveOutputFailed{false};
     std::atomic<bool> outputIoAbort{false};
@@ -491,6 +496,16 @@ private:
     ID3D11RenderTargetView* swapRBTextureRTV = nullptr;
     uint32_t swapRBTexWidth = 0;
     uint32_t swapRBTexHeight = 0;
+    // Mid-recording source size changes (ce::encode_geometry): the frame
+    // geometry is locked when the output opens, and a resized source is fitted
+    // into it here.
+    uint32_t lockedGeometryWidth = 0;
+    uint32_t lockedGeometryHeight = 0;
+    ID3D11Texture2D* geometryFitTexture = nullptr;
+    ID3D11RenderTargetView* geometryFitRTV = nullptr;
+    DXGI_FORMAT geometryFitFormat = DXGI_FORMAT_UNKNOWN;
+    uint32_t lastFittedSourceWidth = 0;
+    uint32_t lastFittedSourceHeight = 0;
     ID3D11Texture2D* rgb10IntermediateTexture = nullptr;
     ID3D11RenderTargetView* rgb10IntermediateRTV = nullptr;
     uint32_t rgb10IntermediateWidth = 0;
@@ -555,6 +570,16 @@ private:
     bool cursorFullCopyFallbackLogged = false;
     uint32_t cursorPrecompositionFailureLogs = 0;
     ce::cursor::CaptureState cursorCaptureState;
+    ce::cursor::CaptureState rawCursorCaptureState;
+    // Active letterbox of the most recent fresh frame (ce::encode_geometry).
+    bool geometryFitActive = false;
+    int32_t geometryFitX = 0;
+    int32_t geometryFitY = 0;
+    int32_t geometryFitW = 0;
+    int32_t geometryFitH = 0;
+    uint32_t geometryFitSourceWidth = 0;
+    uint32_t geometryFitSourceHeight = 0;
+    void ApplyGeometryFitToCursorState();
     ID3D11Texture2D* faceCameraRestoreTexture = nullptr;
     ID3D11Texture2D* faceCameraCompositeTexture = nullptr;
     bool faceCameraPrecompositionLogged = false;
@@ -602,6 +627,12 @@ private:
                            uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
+    // ce::encode_geometry handling of a source that changes after the output opened.
+    // FitSourceToLockedGeometry returns true with *fitted == nullptr when the
+    // source already matches; *fitted is an owned reference otherwise.
+    bool FitSourceToLockedGeometry(ID3D11Texture2D* source, ID3D11Texture2D** fitted);
+    void ReleaseGeometryFitResources();
+    void RequestStopForSourceContractChange(const char* reason, bool sourceIsHdr, bool sourceIs10Bit);
     bool ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice);
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,

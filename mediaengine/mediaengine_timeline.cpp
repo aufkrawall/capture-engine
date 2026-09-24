@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "audio_fault_accounting.h"
 
 
 int64_t MediaEngine::GetVideoElapsedMs() const {
@@ -115,6 +116,11 @@ int64_t MediaEngine::GetLastVideoFenceWaitUs() const {
 void MediaEngine::ResetAudioPullStateForRecording() {
 
 
+        // The audio worker keeps running across this reset (SyncAudioToFirstVideoFrame
+        // only waits for its acknowledgement) and reads both cursor containers under
+        // the leaf lock; rebuilding them without it raced a std::map clear against
+        // the worker's lookups.
+        std::unique_lock<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
         encodedSamplesPerSource.assign(audioSources.size(), 0);
         trackTimelineSamples.clear();
         trackRealMixedSamples.clear();
@@ -140,6 +146,7 @@ void MediaEngine::ResetAudioPullStateForRecording() {
             trackFullSilenceSamples[src.track] = 0;
             trackPartialSilenceSamples[src.track] = 0;
         }
+        cursorLock.unlock();
 
         audioIngestWorstHeadroomSamples.store(kNoAudioIngestHeadroom, std::memory_order_relaxed);
         audioIngestReservoir = ce::audio::AudioIngestReservoirState{};

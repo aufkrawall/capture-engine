@@ -632,7 +632,9 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
         if (videoEnc) {
             videoEnc->Stop();
             videoOutputPublished = videoEnc->WasLastOutputPublished();
-            lastOutputDegraded = videoEnc->WasLastOutputDegraded();
+            const bool audioDeviceLost = AudioSourcesLostTheirDevice();
+            const bool audioContentHoles = AudioTracksHaveContentHoles();
+            lastOutputDegraded = videoEnc->WasLastOutputDegraded() || audioDeviceLost || audioContentHoles;
         }
         return videoOutputPublished;
 

@@ -1,5 +1,7 @@
 #include "video_encoder_internal.h"
 
+#include "encode_geometry_policy.h"
+
 bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t fenceValue, int64_t timestamp,
                                uint32_t sourcePid, int width, int height, int format, bool isHDR, bool isShmem,
                                int shmemSlot) {
@@ -16,6 +18,15 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     const bool wants10BitInput =
         isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
+    const bool contractChanged =
+        initDone && (isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput);
+    if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, static_cast<uint32_t>(width),
+                                                  static_cast<uint32_t>(height), lockedGeometryWidth,
+                                                  lockedGeometryHeight) ==
+        ce::encode_geometry::SourceChangeAction::kFinalizeAndStop) {
+        RequestStopForSourceContractChange("inject source", isHDR, wants10BitInput);
+        return false;
+    }
     if (!ReinitForFormatModeChange(isHDR, wants10BitInput, width, height))
         return false;
 
@@ -57,6 +68,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex, stats, afterFence))
         return false;
     ce::ComGuard<ID3D11Texture2D> bgraTextureGuard(bgraTex);
+    // A source resized after the output opened is fitted into the locked geometry.
+    ID3D11Texture2D* fittedSource = nullptr;
+    if (!FitSourceToLockedGeometry(bgraTextureGuard.get(), &fittedSource))
+        return false;
+    if (fittedSource)
+        bgraTextureGuard.reset(fittedSource);
 
     auto afterOpen = PerfTimer::now();
     const AVPixelFormat activeSwFormat = GetActiveD3D11SwFormat();
@@ -95,7 +112,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     video_encoder_g_framesEncoded++;
     outputFrameCount++;
     if (stagedDynamicOverlaySource) {
-        CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(width), static_cast<uint32_t>(height), isHDR, 0,
+        CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(this->width), static_cast<uint32_t>(this->height), isHDR, 0,
                                              0);
         // Seed one converted fallback without adding a second copy to every
         // accepted frame. Successful dynamic repeats normally refresh it;
@@ -173,6 +190,10 @@ bool VideoEncoder::HandleResolutionChange(int newWidth, int newHeight) {
     if (this->width != newWidth || this->height != newHeight) {
         if (this->width == 0) {
             DLL_Log("[VideoEncoder] Initial resolution discovered: %dx%d (Input: %dx%d)", newWidth, newHeight, newWidth, newHeight);
+        } else if (fileOpened) {
+            // The committed output keeps its geometry; FitSourceToLockedGeometry
+            // places the resized source into it (logged there per new size).
+            return true;
         } else {
             DLL_Log("[VideoEncoder] Resolution CHANGE detected: %dx%d -> %dx%d", this->width, this->height, newWidth,
                     newHeight);
@@ -318,8 +339,10 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
     }
 
     fileOpened = true;
-    DLL_Log("[VideoEncoder] Output header accepted target=%s mode=%s", OutputTargetForLog().c_str(),
-            liveOutput ? "live" : "recording");
+    lockedGeometryWidth = static_cast<uint32_t>(width);
+    lockedGeometryHeight = static_cast<uint32_t>(height);
+    DLL_Log("[VideoEncoder] Output header accepted target=%s mode=%s geometry=%ux%u", OutputTargetForLog().c_str(),
+            liveOutput ? "live" : "recording", lockedGeometryWidth, lockedGeometryHeight);
     return true;
 }
 

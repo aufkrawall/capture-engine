@@ -303,3 +303,19 @@ Updated on 2026-06-14:
 
 - This hardening pass intentionally did not run `tools/analysis/run_av_sync_matrix.py`, stimulus captures, or automated real-time soaks. Real WGC/DXGI/inject, VRR/stall/overload, long-runtime, application churn, and endpoint recovery evidence remains a manual validation handoff. Use the completed-file analyzer on those recordings/session logs; synthetic matrices remain a separate future release gate only when explicitly authorized.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.
+
+## Endpoint following and device-less start (2026-09-24)
+
+- `AudioCapture` registers an `IMMNotificationClient` (`audio_capture_endpoints.cpp`) on its worker's enumerator.
+  Callbacks only set flags; the worker (`serviceEndpointNotifications` in `audio_capture_loop.cpp`) acts on them.
+- **Default switch**: a source with no configured device follows `OnDefaultDeviceChanged` for its own flow and the
+  console role (`IsFollowedDefaultDeviceChange`), and re-activates immediately (backoff reset) when the default is
+  a different endpoint (`ShouldSwitchToNewDefaultEndpoint`). Before, only `AUDCLNT_E_DEVICE_INVALIDATED` moved a
+  stream, so a default switch with the old device still present recorded silence.
+- **No device at start** (missing, busy, privacy-denied): the worker now starts without a client and the existing
+  recovery loop acquires the endpoint later; device arrival (`OnDeviceAdded` / state ACTIVE) resets the backoff.
+  Spans without a client count as `deviceUnavailableEpisodes_` and make the completion degraded.
+- The recording-start reset of the cursor containers (`ResetAudioPullStateForRecording`) and the pull-side resize now
+  hold `g_audioCursorSyncMutex`; the audio worker keeps running across that reset. Stop-path cursor reads were
+  reviewed and are serialized by `muxMutex` / thread joins. Open: the worker's `cachedTrackToSources` iteration in
+  the stop catch-up path is not under the leaf lock.

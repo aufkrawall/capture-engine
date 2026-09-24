@@ -8,6 +8,8 @@
 
 #include "config_resource.h"
 
+#include "config_text_encoding.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -272,9 +274,7 @@ inline std::vector<std::string> EnumerateIniSections(const std::string& path) {
 
 inline std::string ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,
                                        const char* fallback) {
-    char value[4096];
-    GetPrivateProfileStringA(section.c_str(), key, fallback, value, sizeof(value), path.c_str());
-    return Trim(value);
+    return Trim(ce::config_text::ReadIniValue(path, section.c_str(), key, fallback));
 }
 
 inline bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {

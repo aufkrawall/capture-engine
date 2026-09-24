@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "../common/path_utils.h"
 #include "common/child_inject_policy.h"
 #include "common/overlay_gpu_timing.h"
 #include "common/pacing_trace.h"
@@ -78,11 +79,17 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   {
     wchar_t moduleDirW[MAX_PATH] = {0};
     ce::child_inject_policy::GetHookModuleDirectoryW(g_hModule, moduleDirW, MAX_PATH);
-    // config.ini is opened through common/config's CreateFileA-based reader,
-    // which is ANSI-only, so this boundary converts CP_ACP. Consumers with a
-    // wide API (the wrapper DLL load below) use moduleDirW directly instead of
-    // inheriting a '?'-mangled derivation.
-    std::string dir = ce::child_inject_policy::NarrowFromWideAcp(moduleDirW);
+    // config.ini is opened through common/config's ANSI reader, so this
+    // boundary needs an ANSI path. A folder the code page cannot express used to
+    // arrive '?'-mangled and the game silently ran on default settings;
+    // AnsiCompatiblePath falls back to the folder's 8.3 short name. Consumers
+    // with a wide API (the wrapper DLL load below) use moduleDirW directly.
+    bool dirExact = true;
+    std::string dir = ce::path::AnsiCompatiblePath(moduleDirW, &dirExact);
+    if (!dirExact) {
+      EarlyLog("HookThread: install folder is not expressible in the code page and has no 8.3 name; "
+               "config.ini cannot be read, settings stay at defaults");
+    }
     std::string configPath = dir + "\\config.ini";
 
     EnsureLocalConfigAllocated();

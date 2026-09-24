@@ -113,6 +113,7 @@ void MediaEncoderSession::LoopEncode() {
                 encodeDeferred = false;
                 isDuplicate = true;
             }
+            observeVideoOutputAttempt(encodeSucceeded, encodeDeferred, "main");
 
             if (attemptedFreshCandidate && !encodeDeferred) {
                 if (recoveredFreshEncodeFailure) {
@@ -237,6 +238,7 @@ void MediaEncoderSession::LoopEncode() {
                         duplicateFromDeferred = true;
                         encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
                         encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+                        observeVideoOutputAttempt(encodeSucceeded, encodeDeferred, "deferred-frame repeat");
                         if (!encodeSucceeded || encodeDeferred) {
                             if (scheduledLiveCfrTick) {
                                 cadenceCounters.liveTickMissCount++;

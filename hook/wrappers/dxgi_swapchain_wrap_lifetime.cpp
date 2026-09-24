@@ -35,12 +35,21 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData) {
     if (pSwapChain) {
         WrapperLog("SwapChain: DestructionCallback for wrapper %p", pSwapChain);
 
-        // CRITICAL FIX: Check if Present() is still using the swapchain
-        // Wait for refs to drop to 1 (only the callback itself)
-        int attempts = 0;
-        while (pSwapChain->m_RealSwapchainRefs.load() > 1 && attempts < 100) {
-            Sleep(1);  // Wait 1ms
-            attempts++;
+        // DXGI runs this callback once the real swapchain's reference count has
+        // reached zero, so nothing can still be using it through a reference:
+        // Present() holds its own COM reference for the whole call, and every
+        // mirrored wrapper reference has already been released. There is
+        // nothing to wait for. (This used to poll Sleep(1) up to 100 times on
+        // m_RealSwapchainRefs, which Present never touches, stalling the
+        // releasing thread during frame-generation swapchain recreation.) A
+        // count above the in-flight final release means a reference was
+        // released around the wrapper; record it for diagnosis.
+        const int mirroredRefs = pSwapChain->m_RealSwapchainRefs.load(std::memory_order_acquire);
+        if (mirroredRefs > 1) {
+            WrapperLog(
+                "SwapChain: DestructionCallback with %d mirrored wrapper reference(s) outstanding for wrapper %p; "
+                "a reference to the real swapchain was released outside the wrapper",
+                mirroredRefs, pSwapChain);
         }
 
         // CRITICAL FIX: Lock mutex before modifying swapchain pointers
@@ -60,9 +69,8 @@ void WINAPI CWrapDXGISwapChain::DestructionCallback(void* pData) {
         pSwapChain->m_pReal4 = nullptr;
         pSwapChain->m_pRealCached = nullptr;
         WrapperLog(
-            "SwapChain: Real swapchain pointers nulled out for wrapper %p "
-            "(mutex protected, waited %d ms)",
-            pSwapChain, attempts);
+            "SwapChain: Real swapchain pointers nulled out for wrapper %p (mutex protected, mirroredRefs=%d)",
+            pSwapChain, mirroredRefs);
     }
 }
 

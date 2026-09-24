@@ -119,4 +119,37 @@ inline bool ShouldReactivateForSilentStall(bool activationQualified, uint64_t no
     return RecoveryBackoffElapsed(nowMs, lastReactivateTickMs, currentBackoffMs);
 }
 
+// Following the Windows default device. A source configured without a device
+// records "the default output" (or input). Windows only invalidates a stream
+// when its endpoint disappears; switching the default (volume flyout, a headset
+// that becomes the default while the speakers stay connected) leaves the old
+// stream alive and silent, and the track used to stay on the old endpoint for
+// the rest of the recording. Only the role CaptureEngine resolves (console) on
+// the source's own data flow is followed, and only onto a different endpoint.
+// Flow/role use the EDataFlow/ERole numbering: eRender=0, eCapture=1, eConsole=0.
+inline bool IsFollowedDefaultDeviceChange(bool followsDefault, bool isLoopback, int flow, int role) {
+    constexpr int kRender = 0;
+    constexpr int kCapture = 1;
+    constexpr int kConsole = 0;
+    return followsDefault && role == kConsole && flow == (isLoopback ? kRender : kCapture);
+}
+
+inline bool ShouldSwitchToNewDefaultEndpoint(bool haveLiveClient, const wchar_t* activeEndpointId,
+                                             const wchar_t* defaultEndpointId) {
+    if (!defaultEndpointId || defaultEndpointId[0] == L'\0') {
+        return false;  // no default right now: keep what is running (or keep waiting)
+    }
+    if (!haveLiveClient || !activeEndpointId) {
+        return true;
+    }
+    for (size_t i = 0;; ++i) {
+        if (activeEndpointId[i] != defaultEndpointId[i]) {
+            return true;
+        }
+        if (activeEndpointId[i] == L'\0') {
+            return false;
+        }
+    }
+}
+
 }  // namespace ce::audio

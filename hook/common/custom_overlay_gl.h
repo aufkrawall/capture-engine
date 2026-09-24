@@ -11,6 +11,7 @@
 #include <GL/gl.h>
 #include <windows.h>
 #include "custom_overlay.h"
+#include "gl_overlay_state_policy.h"
 #include "legacy_overlay_cache.h"
 
 namespace CustomOverlay {
@@ -37,6 +38,8 @@ private:
     bool legacyMatrixValid = true;
     bool legacyArrayChecked = false;
     bool legacyArrayProbeSucceeded = false;
+    // Which application state this context lets the overlay save and restore.
+    ce::gl_overlay_state::Capabilities stateCaps;
 
     struct ModernResources {
         GLuint programTextured = 0;
@@ -52,6 +55,7 @@ private:
 
     bool InitModernPath();
     void ShutdownModernPath();
+    void ResolveStateCapabilities(int major, int minor);
     void RenderModern(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                       const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight);
     void RenderLegacy(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,

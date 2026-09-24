@@ -119,6 +119,8 @@ void VideoEncoder::CleanupResources() {
 
     initDone = false;
     fileOpened = false;
+    lockedGeometryWidth = 0;
+    lockedGeometryHeight = 0;
     startPts = -1;
     inputFrameCount = 0;
     outputFrameCount = 0;

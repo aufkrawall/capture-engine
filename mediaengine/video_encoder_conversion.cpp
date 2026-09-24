@@ -506,6 +506,7 @@ void VideoEncoder::CleanupVideoProcessor() {
         swapRBTextureRTV->Release();
         swapRBTextureRTV = nullptr;
     }
+    ReleaseGeometryFitResources();
     if (swapRBTexture) {
         swapRBTexture->Release();
         swapRBTexture = nullptr;

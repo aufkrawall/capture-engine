@@ -125,6 +125,7 @@ private:
     HANDLE hTimer;
     double smoothedEncodeMs;
     ce::capture_policy::RecordingHealthState recordingHealthState{};
+    ce::capture_policy::VideoOutputFailureStreak videoOutputFailureStreak{};
     double smoothedWgcFreshServiceMs;
     double smoothedWgcRepeatServiceMs;
     uint32_t wgcFreshServiceSamples;
@@ -724,6 +725,7 @@ private:
     bool recoverScheduledFreshEncodeFailure(bool scheduledCfrTick, bool freshEncodeSucceeded,
                                                       bool freshEncodeDeferred, int64_t scheduledQpc,
                                                       const QueuedFrame* failedFrame, const char* context);
+    void observeVideoOutputAttempt(bool emitted, bool deferred, const char* context);
     void releaseWgcLeaseAfterMediaEngineCopy(QueuedFrame& encodedFrame, const char* context);
     void recordDuplicate(const QueuedFrame* duplicateFrame, const InjectFrameLineage* duplicateLineage,
                                    bool duplicateFromDrainReason, bool duplicateFromDeferredReason,

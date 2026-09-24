@@ -165,4 +165,42 @@ inline RecordingHealthState UpdateRecordingHealth(RecordingHealthState state,
     return state;
 }
 
+// A video output that keeps failing does not recover by itself: after a GPU
+// driver reset or a removed device the fresh encode fails, the cached-repeat
+// recovery fails with it, and the recording used to run on for as long as the
+// user let it - live audio over no video, reported as saved. Back-pressure
+// deferrals are not failures. Only a failure streak that lasts a bounded time
+// with no emitted frame ends the recording (the committed part is kept).
+constexpr uint64_t kVideoOutputFailureStopMs = 5000;
+constexpr uint32_t kVideoOutputFailureStopMinAttempts = 8;
+
+struct VideoOutputFailureStreak {
+    uint64_t firstFailureMs = 0;
+    uint32_t failures = 0;
+    bool stopRequested = false;
+};
+
+// Returns true exactly once, when the streak crosses the bound.
+inline bool ObserveVideoOutputAttempt(VideoOutputFailureStreak& streak, bool emitted, bool deferred,
+                                      uint64_t nowMs) {
+    if (emitted) {
+        streak.firstFailureMs = 0;
+        streak.failures = 0;
+        return false;
+    }
+    if (deferred || streak.stopRequested) {
+        return false;
+    }
+    if (streak.failures == 0) {
+        streak.firstFailureMs = nowMs;
+    }
+    ++streak.failures;
+    if (streak.failures >= kVideoOutputFailureStopMinAttempts && nowMs >= streak.firstFailureMs &&
+        nowMs - streak.firstFailureMs >= kVideoOutputFailureStopMs) {
+        streak.stopRequested = true;
+        return true;
+    }
+    return false;
+}
+
 }  // namespace ce::capture_policy

@@ -203,3 +203,15 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - The focused config/profile/pseudo-overlay/injected-overlay gate covers generated-template parity, the system-latency default/parser, hardware-sensor defaults/bounds/identifier validation, the fullscreen-focus blackout default/global/profile parsing and warning annotation, source-driven WGC/DXGI behavior, injection overrides, safe invalid-value fallback, compatibility-key precedence, overlay-only profiles, legacy behavior, and all three commented examples. Focused config plus encoder-option coverage additionally passes the NVENC split-encode parser/default and planning matrix.
 - Clean product build `0.1.5105` passed x64/x86 hooks, MediaEngine/CaptureEngine, 149 unit-test objects, 30 test apps, both Vulkan layers, packaging, import closure, PE mitigations, effective CFG, architecture, and PDB checks.
 - The exact `0.1.5105` no-build gate passed the complete native suite and all six Python tool self-tests.
+
+## Text encoding and hot reload (2026-09-24)
+
+- Values are read through `ce::config_text::ReadIniValue` (`common/config_text_encoding.*`): when `config.ini` is
+  UTF-8 (BOM, or non-ASCII bytes that are all valid UTF-8), values are converted to the active code page, which is
+  what every consumer expects. ANSI-saved files are untouched. Section names stay raw (they are fed back to the
+  profile API). On DBCS code pages the ANSI profile API may already mangle UTF-8 bytes - stale-risk, unverified.
+- The controller reloads only after the file identity (write time + size) is stable across two checks and never an
+  empty/missing file (`common/config_reload_policy.h`); checks run every 250 ms while a change settles, else 1 s.
+- Install folders the code page cannot express resolve through `ce::path::AnsiCompatiblePath` (exact ANSI or the 8.3
+  short name) in the host (`main_entry.cpp`) and the hook (`main_hookthread.cpp`). Other `GetModuleFileNameA` users
+  in the hook remain ANSI (stale-risk).

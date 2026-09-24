@@ -212,3 +212,18 @@ TEST(VulkanLayerGateRegression, SubmitRouteDetectionGoesThroughTheWindowedPolicy
     EXPECT_NE(boundary.find("GetLastSubmitTickMs(queueDevice)"), std::string::npos);
     EXPECT_NE(boundary.find("DetectSubmitThreadMismatch(lastSubmitThreadId, lastSubmitTickMs"), std::string::npos);
 }
+
+// The checked-in reference manifests named the full layer; registered anywhere,
+// they would map it (and its imports) into every Vulkan process again.
+TEST(VulkanLayerGateRegression, CheckedInManifestsNameTheGateNotTheFullLayer) {
+    for (const auto& [name, gate] : {std::pair{"VK_LAYER_CE_overlay.json", "VK_LAYER_CE_gate.dll"},
+                                     std::pair{"VK_LAYER_CE_overlay_x86.json", "VK_LAYER_CE_gate_x86.dll"}}) {
+        SCOPED_TRACE(name);
+        const std::string manifest = ReadLayerSource(name);
+        ASSERT_FALSE(manifest.empty());
+        EXPECT_NE(manifest.find(gate), std::string::npos);
+        EXPECT_EQ(manifest.find("VK_LAYER_CE_overlay.dll"), std::string::npos);
+        EXPECT_EQ(manifest.find("VK_LAYER_CE_overlay_x86.dll"), std::string::npos);
+        EXPECT_EQ(manifest.find("vkGetInstanceProcAddr"), std::string::npos);
+    }
+}

@@ -185,6 +185,11 @@ static bool LoadGLFunctions() {
     custom_overlay_gl_pglVertex2f = (PFN_glVertex2f)GetProcAddress(gl, "glVertex2f");
     custom_overlay_gl_pglTexCoord2f = (PFN_glTexCoord2f)GetProcAddress(gl, "glTexCoord2f");
     custom_overlay_gl_pglColor4ub = (PFN_glColor4ub)GetProcAddress(gl, "glColor4ub");
+    // State-restore helpers; optional, never a reason to refuse the overlay.
+    custom_overlay_gl_pglColorMask = (PFN_glColorMask)GetProcAddress(gl, "glColorMask");
+    custom_overlay_gl_pglPolygonMode = (PFN_glPolygonMode)GetProcAddress(gl, "glPolygonMode");
+    custom_overlay_gl_pglPixelStorei = (PFN_glPixelStorei)GetProcAddress(gl, "glPixelStorei");
+    custom_overlay_gl_pglGetPointerv = (PFN_glGetPointerv)GetProcAddress(gl, "glGetPointerv");
 
     if (!pglGenTextures || !pglDeleteTextures || !custom_overlay_gl_pglBindTexture || !pglTexImage2D || !pglTexParameteri ||
         !custom_overlay_gl_pglGetIntegerv || !custom_overlay_gl_pglViewport || !custom_overlay_gl_pglEnable || !custom_overlay_gl_pglDisable || !custom_overlay_gl_pglIsEnabled || !custom_overlay_gl_pglBlendFunc ||
@@ -216,6 +221,14 @@ static void LoadGLLegacyOptionalFunctions() {
         custom_overlay_gl_pglClientActiveTexture =
             (PFN_glClientActiveTexture)GetOptionalGLProc("glClientActiveTexture", "glClientActiveTextureARB");
     }
+    if (!custom_overlay_gl_pglBlendEquationSeparate) {
+        custom_overlay_gl_pglBlendEquationSeparate =
+            (PFN_glBlendEquationSeparate)GetOptionalGLProc("glBlendEquationSeparate", "glBlendEquationSeparateEXT");
+    }
+    if (!custom_overlay_gl_pglBindSampler)
+        custom_overlay_gl_pglBindSampler = (PFN_glBindSampler)GetOptionalGLProc("glBindSampler");
+    if (!custom_overlay_gl_pglUseProgramState)
+        custom_overlay_gl_pglUseProgramState = (PFN_glUseProgram)GetOptionalGLProc("glUseProgram");
 }
 }
 
@@ -503,6 +516,57 @@ void OpenGLBackend::ShutdownModernPath() {
 }
 
 namespace CustomOverlay {
+void OpenGLBackend::ResolveStateCapabilities(int major, int minor) {
+    constexpr GLenum kContextProfileMask = 0x9126;
+    constexpr GLint kCompatibilityProfileBit = 0x2;
+    constexpr GLenum kContextFlags = 0x821E;
+    constexpr GLint kForwardCompatibleBit = 0x1;
+    auto versionAtLeast = [&](int wantMajor, int wantMinor) {
+        return major > wantMajor || (major == wantMajor && minor >= wantMinor);
+    };
+
+    GLint profileMask = 0;
+    GLint contextFlags = 0;
+    if (versionAtLeast(3, 2))
+        custom_overlay_gl_pglGetIntegerv(kContextProfileMask, &profileMask);
+    if (versionAtLeast(3, 0))
+        custom_overlay_gl_pglGetIntegerv(kContextFlags, &contextFlags);
+    // Fixed-function state exists in every pre-3.0 context, in a 3.0/3.1 context
+    // that is not forward-compatible, and in a 3.2+ compatibility profile. A 3.2+
+    // context reporting no profile is treated as core: querying fixed-function
+    // enables there would raise errors the application may be checking for.
+    const bool fixedFunction = !versionAtLeast(3, 0) ||
+                               (!versionAtLeast(3, 2) && (contextFlags & kForwardCompatibleBit) == 0) ||
+                               (profileMask & kCompatibilityProfileBit) != 0;
+    ClearGLErrors();
+
+    stateCaps = {};
+    stateCaps.blendFuncSeparate = custom_overlay_gl_pglBlendFuncSeparate != nullptr;
+    stateCaps.blendEquationSeparate = custom_overlay_gl_pglBlendEquationSeparate != nullptr;
+    stateCaps.activeTexture = custom_overlay_gl_pglActiveTexture != nullptr;
+    stateCaps.samplerObjects = custom_overlay_gl_pglBindSampler != nullptr && versionAtLeast(3, 3);
+    stateCaps.programs = custom_overlay_gl_pglUseProgramState != nullptr && versionAtLeast(2, 0);
+    stateCaps.vertexArrays = custom_overlay_gl_pglBindVertexArray != nullptr;
+    stateCaps.buffers = custom_overlay_gl_pglBindBuffer != nullptr;
+    stateCaps.pixelUnpackBuffer = stateCaps.buffers && versionAtLeast(2, 1);
+    // Core profiles removed the GL_POLYGON_MODE query, so the mode is only owned
+    // where it can be read back.
+    stateCaps.polygonMode = custom_overlay_gl_pglPolygonMode != nullptr && fixedFunction;
+    stateCaps.fixedFunction = fixedFunction;
+    stateCaps.clientArrayPointers = custom_overlay_gl_pglGetPointerv != nullptr;
+    HookLog(
+        "OpenGLBackend: State ownership (fixedFunction=%d profileMask=0x%X flags=0x%X blendSeparate=%d "
+        "equationSeparate=%d activeTexture=%d samplers=%d programs=%d vao=%d buffers=%d unpackBuffer=%d "
+        "polygonMode=%d colorMask=%d pointers=%d)",
+        fixedFunction ? 1 : 0, profileMask, contextFlags, stateCaps.blendFuncSeparate ? 1 : 0,
+        stateCaps.blendEquationSeparate ? 1 : 0, stateCaps.activeTexture ? 1 : 0, stateCaps.samplerObjects ? 1 : 0,
+        stateCaps.programs ? 1 : 0, stateCaps.vertexArrays ? 1 : 0, stateCaps.buffers ? 1 : 0,
+        stateCaps.pixelUnpackBuffer ? 1 : 0, stateCaps.polygonMode ? 1 : 0,
+        custom_overlay_gl_pglColorMask != nullptr ? 1 : 0, custom_overlay_gl_pglGetPointerv != nullptr ? 1 : 0);
+}
+}
+
+namespace CustomOverlay {
 bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) {
     if (initialized)
         return true;
@@ -537,10 +601,19 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, cons
         sscanf_s(versionStr, "%d.%d", &major, &minor);
         HookLog("OpenGLBackend: GL version %d.%d (%s)", major, minor, versionStr);
     }
+    ResolveStateCapabilities(major, minor);
+    GLHookStateApi stateApi;
+    // Font upload and modern-path setup bind CE objects; the application's
+    // bindings and unpack state are put back before Initialize returns.
+    const ce::gl_overlay_state::Snapshot initState = ce::gl_overlay_state::Capture(stateApi, stateCaps);
+    const ce::gl_overlay_state::UnpackSnapshot initUnpack =
+        ce::gl_overlay_state::CaptureAndResetUnpack(stateApi, stateCaps);
 
     pglGenTextures(1, &fontTextureId);
     if (fontTextureId == 0) {
         HookLog("OpenGLBackend: Failed to create font texture");
+        ce::gl_overlay_state::RestoreUnpack(stateApi, stateCaps, initUnpack);
+        ce::gl_overlay_state::Restore(stateApi, stateCaps, initState);
         return false;
     }
 
@@ -551,7 +624,7 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, cons
     pglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     pglTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, fontTextureWidth, fontTextureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                   fontTextureData);
-    custom_overlay_gl_pglBindTexture(GL_TEXTURE_2D, 0);
+    ce::gl_overlay_state::RestoreUnpack(stateApi, stateCaps, initUnpack);
 
     GLenum err = custom_overlay_gl_pglGetError ? custom_overlay_gl_pglGetError() : 0;
     if (err != 0) {
@@ -569,6 +642,7 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, cons
     } else {
         HookLog("OpenGLBackend: Using legacy path (GL %d.%d)", major, minor);
     }
+    ce::gl_overlay_state::Restore(stateApi, stateCaps, initState);
 
     initialized = true;
     return true;
@@ -624,27 +698,11 @@ void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices, const std::v
 namespace CustomOverlay {
 void OpenGLBackend::RenderModern(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                                  const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
-    GLint lastTexture = 0;
-    custom_overlay_gl_pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
-
-    GLint lastViewport[4] = {0};
-    custom_overlay_gl_pglGetIntegerv(GL_VIEWPORT, lastViewport);
-    GLboolean lastBlend = custom_overlay_gl_pglIsEnabled(GL_BLEND);
-    GLint lastProgram = 0;
-    custom_overlay_gl_pglGetIntegerv(GL_CURRENT_PROGRAM, &lastProgram);
-    GLint lastVAO = 0;
-    custom_overlay_gl_pglGetIntegerv(0x85B5, &lastVAO);
-    GLint lastVBO = 0;
-    custom_overlay_gl_pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO);
-    GLint lastIBO = 0;
-    custom_overlay_gl_pglGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &lastIBO);
-
-    custom_overlay_gl_pglEnable(GL_BLEND);
-    custom_overlay_gl_pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    custom_overlay_gl_pglDisable(GL_DEPTH_TEST);
-    custom_overlay_gl_pglDisable(GL_CULL_FACE);
-
-    custom_overlay_gl_pglViewport(0, 0, viewportWidth, viewportHeight);
+    // The draw runs inside the application's context; every state it changes is
+    // captured first and put back exactly (see gl_overlay_state_policy.h).
+    GLHookStateApi stateApi;
+    const ce::gl_overlay_state::Snapshot applicationState = ce::gl_overlay_state::Capture(stateApi, stateCaps);
+    ce::gl_overlay_state::PrepareOverlayDraw(stateApi, stateCaps, viewportWidth, viewportHeight);
 
     custom_overlay_gl_pglBindVertexArray(modern.vao);
     custom_overlay_gl_pglBindBuffer(GL_ARRAY_BUFFER, modern.vbo);
@@ -661,8 +719,6 @@ void OpenGLBackend::RenderModern(const std::vector<DrawVertex>& vertices, const 
 
         if (cmd.useTexture) {
             pglUniform2f(modern.uViewportTextured, (float)viewportWidth, (float)viewportHeight);
-            if (custom_overlay_gl_pglActiveTexture)
-                custom_overlay_gl_pglActiveTexture(GL_TEXTURE0);
             custom_overlay_gl_pglBindTexture(GL_TEXTURE_2D, fontTextureId);
             pglUniform1i(modern.uTexture, 0);
         } else {
@@ -675,24 +731,6 @@ void OpenGLBackend::RenderModern(const std::vector<DrawVertex>& vertices, const 
                         (const void*)(cmd.indexOffset * sizeof(uint16_t)));
     }
 
-    custom_overlay_gl_pglBindVertexArray(0);
-    pglUseProgram(0);
-
-    custom_overlay_gl_pglBindTexture(GL_TEXTURE_2D, lastTexture);
-    custom_overlay_gl_pglViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
-
-    if (lastBlend)
-        custom_overlay_gl_pglEnable(GL_BLEND);
-    else
-        custom_overlay_gl_pglDisable(GL_BLEND);
-
-    if (lastVAO && custom_overlay_gl_pglBindVertexArray)
-        custom_overlay_gl_pglBindVertexArray(lastVAO);
-    if (lastVBO)
-        custom_overlay_gl_pglBindBuffer(GL_ARRAY_BUFFER, lastVBO);
-    if (lastIBO)
-        custom_overlay_gl_pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lastIBO);
-    if (lastProgram)
-        pglUseProgram(lastProgram);
+    ce::gl_overlay_state::Restore(stateApi, stateCaps, applicationState);
 }
 }

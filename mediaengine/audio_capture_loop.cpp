@@ -13,22 +13,43 @@ void AudioCapture::CaptureLoop() {
     const bool coInitNeedsUninitialize = SUCCEEDED(coInitHr);
 
     bool startupSucceeded = false;
+    // The endpoint may be absent or refused at start (unplugged, disabled, busy,
+    // or microphone access denied in Windows privacy settings). Such a source
+    // used to be dropped for the whole recording with only a log line. It now
+    // runs without a device and the recovery loop below acquires the endpoint
+    // as soon as it becomes available; the recording is reported degraded.
+    bool startWithoutDevice = false;
     try {
         HRESULT hr = CoCreateInstance(audio_capture_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, audio_capture_IID_IMMDeviceEnumerator,
                                       reinterpret_cast<void**>(&pEnumerator));
+        if (SUCCEEDED(hr) && pEnumerator) {
+            RegisterEndpointListenerOnWorker();
+        }
         if (FAILED(hr) || !pEnumerator) {
             DLL_Log("[AudioCapture] Worker CoCreateInstance(MMDeviceEnumerator) failed: 0x%x", hr);
         } else if (!isCapturing.load(std::memory_order_acquire)) {
             DLL_Log("[AudioCapture] Worker initialization cancelled before endpoint resolution");
         } else if (!ResolveCaptureDevice()) {
             DLL_Log("[AudioCapture] Worker could not resolve the requested endpoint");
+            startWithoutDevice = true;
         } else if (!isCapturing.load(std::memory_order_acquire)) {
             DLL_Log("[AudioCapture] Worker initialization cancelled before client activation");
         } else if (!ActivateAndStartClientOnDevice()) {
             DLL_Log("[AudioCapture] Worker could not activate/start the requested endpoint");
+            startWithoutDevice = true;
         } else if (!isCapturing.load(std::memory_order_acquire)) {
             DLL_Log("[AudioCapture] Worker initialization cancelled after client activation");
         } else {
+            startupSucceeded = true;
+        }
+        if (startWithoutDevice && isCapturing.load(std::memory_order_acquire)) {
+            ReleaseActiveClientOnWorkerThread(true);
+            deviceUnavailableEpisodes_.fetch_add(1, std::memory_order_acq_rel);
+            DLL_Log(
+                "[AudioCapture] WARNING: no usable %s endpoint at start (device=%s); capture continues without one "
+                "and switches to it when it becomes available. The track holds silence until then and the "
+                "recording is reported as degraded",
+                isLoopback_ ? "output (loopback)" : "input", deviceId_.empty() ? "default" : deviceId_.c_str());
             startupSucceeded = true;
         }
     } catch (const std::exception& error) {
@@ -140,6 +161,34 @@ void AudioCapture::CaptureLoop() {
         return ok;
     };
 
+    // Endpoint-notification follow-ups, run on this worker. A switch of the
+    // Windows default moves a default-following source onto the new endpoint
+    // immediately (a user action, so no backoff); an arriving device lets a
+    // source that is waiting for its endpoint retry now.
+    bool clientWasLive = pCaptureClient != nullptr;
+    auto serviceEndpointNotifications = [&]() {
+        if (defaultDeviceChanged_.exchange(false, std::memory_order_acq_rel)) {
+            if (DefaultEndpointDiffersFromActiveOnWorker()) {
+                DLL_Log("[AudioCapture] Windows default %s device changed; moving the capture to it",
+                        isLoopback_ ? "output" : "input");
+                lastReactivateTick = 0;
+                recoveryBackoffMs = 0;
+                attemptReactivate("default_device_changed", 0);
+            }
+        }
+        if (endpointArrived_.exchange(false, std::memory_order_acq_rel) && !pCaptureClient) {
+            lastReactivateTick = 0;
+            recoveryBackoffMs = 0;
+        }
+        const bool clientLive = pCaptureClient != nullptr;
+        if (clientWasLive && !clientLive) {
+            deviceUnavailableEpisodes_.fetch_add(1, std::memory_order_acq_rel);
+            DLL_Log("[AudioCapture] WARNING: %s capture lost its endpoint; silence until it is re-acquired",
+                    isLoopback_ ? "loopback" : "input");
+        }
+        clientWasLive = clientLive;
+    };
+
     auto readNextPacketSize = [&](const char* context, bool allowRecovery) -> bool {
         packetLength = 0;
         const HRESULT packetHr = pCaptureClient->GetNextPacketSize(&packetLength);
@@ -201,6 +250,10 @@ void AudioCapture::CaptureLoop() {
                     finalDrainFrameBudget = 1;
                 }
             }
+        }
+
+        if (!drainingAfterStop) {
+            serviceEndpointNotifications();
         }
 
         // A previous re-activation may have failed and left no client; recover it

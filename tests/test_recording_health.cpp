@@ -147,3 +147,42 @@ TEST(RecordingHealthPolicyTest, OverlayKeepsPureSourceLimitationQuietButShowsCau
                       policy::kRecordingHealthFlagVideoDegraded),
               policy::kOverlayWarningRecordingDegraded);
 }
+
+// A GPU driver reset left the encoder failing every tick while the recording
+// ran on as live audio over no video, reported as saved.
+TEST(VideoOutputFailureStreakTest, OnlyASustainedFailureStreakEndsTheRecording) {
+    using ce::capture_policy::ObserveVideoOutputAttempt;
+    using ce::capture_policy::VideoOutputFailureStreak;
+    constexpr uint64_t kStopMs = ce::capture_policy::kVideoOutputFailureStopMs;
+
+    VideoOutputFailureStreak streak;
+    // Failures inside the bound, then a success: no stop, streak cleared.
+    for (uint64_t t = 1000; t < 1000 + kStopMs - 1; t += 16) {
+        EXPECT_FALSE(ObserveVideoOutputAttempt(streak, false, false, t));
+    }
+    EXPECT_FALSE(ObserveVideoOutputAttempt(streak, true, false, 1000 + kStopMs));
+    EXPECT_EQ(streak.failures, 0u);
+
+    // Back-pressure deferrals are never failures, however long they last.
+    for (uint64_t t = 10000; t < 10000 + 2 * kStopMs; t += 16) {
+        EXPECT_FALSE(ObserveVideoOutputAttempt(streak, false, true, t));
+    }
+    EXPECT_EQ(streak.failures, 0u);
+
+    // A sustained streak requests the stop exactly once.
+    int stops = 0;
+    for (uint64_t t = 30000; t <= 30000 + 2 * kStopMs; t += 16) {
+        stops += ObserveVideoOutputAttempt(streak, false, false, t) ? 1 : 0;
+    }
+    EXPECT_EQ(stops, 1);
+    EXPECT_TRUE(streak.stopRequested);
+}
+
+TEST(VideoOutputFailureStreakTest, AFewSlowFailuresNeverCrossTheBoundAlone) {
+    using ce::capture_policy::ObserveVideoOutputAttempt;
+    ce::capture_policy::VideoOutputFailureStreak streak;
+    // Two failures far apart in time are not a sustained streak of attempts.
+    EXPECT_FALSE(ObserveVideoOutputAttempt(streak, false, false, 0));
+    EXPECT_FALSE(ObserveVideoOutputAttempt(streak, false, false, 60000));
+    EXPECT_FALSE(streak.stopRequested);
+}

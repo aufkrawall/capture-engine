@@ -339,7 +339,7 @@ void AudioEncoder::Flush() {
     DLL_Log(
         "[AudioFinalization] encoder=%s stream=%d target=%lld input=%lld expectedSilence=%lld submitted=%lld "
         "priming=%lld terminalPadding=%lld packetEnd=%lld expectedDecoded=%lld packets=%llu bytes=%llu "
-        "controlPackets=%llu durationless=%llu drainEof=%d protocolError=%d",
+        "controlPackets=%llu durationless=%llu contentHoles=%lld drainEof=%d protocolError=%d",
         runtimeContract.encoderName.c_str(), streamIndex,
         static_cast<long long>(finalizationReport.timelineTargetSamples),
         static_cast<long long>(finalizationReport.inputTimelineSamples),
@@ -353,6 +353,7 @@ void AudioEncoder::Flush() {
         static_cast<unsigned long long>(finalizationReport.packetBytes),
         static_cast<unsigned long long>(finalizationReport.controlPacketCount),
         static_cast<unsigned long long>(finalizationReport.durationlessPacketCount),
-        finalizationReport.drainReachedEof ? 1 : 0, finalizationReport.protocolError ? 1 : 0);
+        static_cast<long long>(finalizationReport.contentHoleSamples), finalizationReport.drainReachedEof ? 1 : 0,
+        finalizationReport.protocolError ? 1 : 0);
     DLL_Log("[AudioEncoder] Flush complete");
 }
