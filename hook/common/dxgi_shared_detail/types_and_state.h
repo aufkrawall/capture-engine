@@ -310,6 +310,42 @@ inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool /*thirdPartyOv
     return !presentEntryLeftToForeignChain;
 }
 
+// Present coverage is per method. Games call Present or Present1, and a view of one says
+// nothing about the other. Accepting either as "hooked" let a failed Present install hide
+// behind a successful Present1 install: the real-swapchain retry stopped, the leave-entry mode
+// forbids the vtable fallback, and a game presenting through plain Present stayed uncovered for
+// the whole session.
+struct PresentMethodViews {
+    bool presentEntryTrampoline = false;   // CE's prepend on the Present entry
+    bool present1EntryTrampoline = false;  // CE's prepend on the Present1 entry
+    bool presentDeepBody = false;          // deep body hook below a foreign Present chain
+    bool present1DeepBody = false;
+    bool swapchainVTableClaimed = false;   // CE claimed the swapchain class vtable slots
+};
+
+inline bool CoversPresentMethod(const PresentMethodViews& views) {
+    return views.presentEntryTrampoline || views.presentDeepBody || views.swapchainVTableClaimed;
+}
+
+inline bool CoversPresent1Method(const PresentMethodViews& views) {
+    return views.present1EntryTrampoline || views.present1DeepBody || views.swapchainVTableClaimed;
+}
+
+// A real swapchain event retries the inline install while either method lacks a view. The
+// retry installs only the missing method. `present1EntryKnown` is false when the swapchain
+// exposes no Present1 entry, which then cannot be missing.
+inline bool ShouldRetryPresentHookInstall(const PresentMethodViews& views, bool present1EntryKnown) {
+    return !CoversPresentMethod(views) || (present1EntryKnown && !CoversPresent1Method(views));
+}
+
+// Live per-method views, from the published trampolines and the vtable claim.
+PresentMethodViews GetPresentMethodViews();
+// True when CE has a detour view of that one method (Present1 when `present1`).
+bool HasPresentMethodDetourHook(bool present1);
+// False once every exposed method has a view, or after CE deliberately moved to wrapper-only
+// interception (MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain).
+bool ShouldRetryPresentInlineHookInstall();
+
 inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,
                                                            bool presentHookInstalled, bool present1HookInstalled,
                                                            bool presentEntryLeftToForeignChain) {

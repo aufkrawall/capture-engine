@@ -11,6 +11,7 @@
 #include "../common/shared_defs.h"
 #include "../common/strict_integer_parse.h"
 #include "logger_service_policy.h"
+#include "service_lifetime_wait.h"
 
 struct LoggerSession {
     HANDLE hMap;
@@ -54,12 +55,27 @@ int LoggerProcessMain(const AppConfig& config) {
         }
     }
 
-    // Create/open shutdown event keyed to controller PID
-    HANDLE hShutdownEvent = INVALID_HANDLE_VALUE;
+    // Create/open shutdown event keyed to controller PID, and watch the controller
+    // process itself: a hard controller exit never sets the event, and an orphaned
+    // logger would keep draining the shared log rings against the next controller's.
+    HANDLE hShutdownEvent = nullptr;
+    HANDLE hControllerProcess = nullptr;
     if (controllerPid != 0) {
         wchar_t eventName[64];
         GenerateShutdownEventName(eventName, 64, controllerPid);
         hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
+        if (!hShutdownEvent) {
+            LogWarn("[Logger] Cannot create the controller shutdown event (error=%lu)", GetLastError());
+        }
+        hControllerProcess = OpenProcess(SYNCHRONIZE, FALSE, controllerPid);
+        if (!hControllerProcess) {
+            // The controller is already gone (or cannot be watched): never run orphaned.
+            LogError("[Logger] Cannot monitor controller PID %u lifetime (error=%lu); exiting", controllerPid,
+                     GetLastError());
+            if (hShutdownEvent)
+                CloseHandle(hShutdownEvent);
+            return 1;
+        }
     }
 
     std::map<uint32_t, LoggerSession> sessions;
@@ -265,19 +281,30 @@ int LoggerProcessMain(const AppConfig& config) {
 
         DWORD waitMs = static_cast<DWORD>(
             logger_service_policy::SelectLogDrainWaitMs(sawSaturatedRing, hasPendingLogs, hasActiveSource));
-        if (hShutdownEvent != INVALID_HANDLE_VALUE) {
-            DWORD waitResult = WaitForSingleObject(hShutdownEvent, waitMs);
-            if (waitResult == WAIT_OBJECT_0) {
-                LogInfo("[Logger] Shutdown signal received, exiting");
-                break;
+        const auto outcome = ce::service_lifetime::WaitForServiceLifetime(hShutdownEvent, hControllerProcess, waitMs);
+        if (outcome == ce::service_lifetime::WaitOutcome::kShutdownSignaled) {
+            LogInfo("[Logger] Shutdown signal received, exiting");
+            break;
+        }
+        if (outcome == ce::service_lifetime::WaitOutcome::kControllerExited) {
+            LogInfo("[Logger] Controller exited without a shutdown signal; exiting so the next controller's "
+                    "logger owns the log rings");
+            break;
+        }
+        if (outcome == ce::service_lifetime::WaitOutcome::kFailed) {
+            static bool s_loggedWaitFailure = false;
+            if (!s_loggedWaitFailure) {
+                LogWarn("[Logger] Lifetime wait failed (error=%lu); falling back to bounded sleeps", GetLastError());
+                s_loggedWaitFailure = true;
             }
-        } else {
             Sleep(waitMs);
         }
     }
 
-    if (hShutdownEvent != INVALID_HANDLE_VALUE)
+    if (hShutdownEvent)
         CloseHandle(hShutdownEvent);
+    if (hControllerProcess)
+        CloseHandle(hControllerProcess);
 
     // Close all cached file handles to prevent handle leak
     for (auto& [path, hFile] : openFiles) {

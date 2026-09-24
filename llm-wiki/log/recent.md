@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-24 - Fourth risk audit + legacy D3D state blocks; HDR-switch assessment
+
+Each audit claim re-checked against code first; all six confirmed. Gate green at 0.1.6803; no hardware run.
+Worked on `main` directly (user request); the session worktree `.claude/worktrees/vigilant-swirles-f87224` still has
+junctions into the main `build/` (msys64, caches) and `ffmpeg_build` - remove them with `rmdir` (link only) before
+deleting that worktree, never recursively.
+
+- **Audio** - `multi-audio-capture.md`: explicit device bound (no default fallback, ACTIVE required, arrival retry);
+  overrun loss and audio-worker death latched before the stop reset and reported degraded.
+- **DXGI Present coverage** - per method (`PresentMethodViews`); partial installs stay unlatched and retry only the
+  missing method; a lone Present1 deep hook no longer counts as a Present view for wrapping/delegation.
+- **Config reload** - `configuration.md`: optional hotkeys always assigned; identity committed only after a coherent
+  candidate load (`IsCoherentLoad`, `ConfigReadFailureCount`). Parser untouched, so no fuzz run.
+- **Vulkan overlay fence** - `vulkan-forced-fifo.md`: re-arm or strand on failed submit; bounded backpressure.
+- **D3D7/D3D8 state blocks** - `cross-api-forced-af.md`: D3D9 snapshot model ported; inactive-override Apply writes
+  nothing. `legacy_d3d_sampler_state.cpp` is 774 lines (near the 800 ceiling).
+- **Logger** - waits on the controller process too (`captureengine/service_lifetime_wait.h`).
+- **HDR switch** - assessed, not implemented (`recording-output-paths.md`): SDR->HDR-source is bounded via existing
+  tonemaps; the reverse needs a new transform; segmenting conflicts with the audio lattice.
+
+Open: hardware runs - explicit mic unplug/replug mid-recording, encoder overload with `starve>0`, Steam+RTSS DX12
+title, Vulkan title (fence path only on a failed submit), a D3D7 and a D3D8 title using state blocks with and without
+forced AF, a hard controller kill followed by restart (one logger).
+
 ### 2026-09-24 - Deferred audit items: D3D9 state blocks, sampler re-arm, multi-swapchain sharpen, ANSI paths, DBCS config
 
 The five items deferred by audits 2/3, fixed in code. Incremental gate green at 0.1.6799; no hardware run.

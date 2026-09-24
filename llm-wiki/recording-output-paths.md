@@ -70,7 +70,12 @@ Limits:
   `fileOpened` the encoder now refuses the frame, calls `RequestStopForSourceContractChange` (shm
   `cmdStopRecording`) and `WasLastOutputDegraded` reports it via `sourceContractChanged`. Pre-open re-init is
   unchanged. Open: seamless continuation would need an SDR->HDR transform (`RgbColorTransform` has none) or
-  segmenting into a second file with a re-anchored audio timeline.
+  segmenting into a second file with a re-anchored audio timeline. Assessment 2026-09-24 (audit 4, not implemented):
+  SDR recording + source turns HDR is the bounded case - `SelectRgbColorTransform` already has `kScRgbToSdr` /
+  `kHdr10ToSdr`, so the 8-bit encoder can stay and only the conversion stage (VP/direct-RGB/shader resources keyed
+  on input format) must switch mid-stream without `Stop()`/`Init()`. HDR recording + source turns SDR needs a new
+  sRGB->PQ/BT.2020 transform with the Windows SDR white level as reference white. Segmenting needs a common split
+  instant across all audio tracks with exact per-file lengths, which the CFR lattice/priming design does not offer.
 - **Size**: the geometry is locked at header acceptance (`lockedGeometryWidth/Height`). A resized source is drawn
   by `FitSourceToLockedGeometry` (`video_encoder_geometry.cpp`) into a CE texture of the locked size, aspect
   preserved, centred on black, linear sampling, same typed format - every downstream path (VP, direct RGB, HDR
@@ -81,5 +86,8 @@ Limits:
   latching the video-degraded health flag.
 
 Audio: sources that ran without their endpoint (`AudioCapture::GetDeviceUnavailableEpisodes`) and tracks with
-`contentHoleSamples > 0` also mark the output degraded (`AudioSourcesLostTheirDevice`, `AudioTracksHaveContentHoles`).
+`contentHoleSamples > 0` also mark the output degraded (`AudioSourcesLostTheirDevice`, `AudioTracksHaveContentHoles`),
+and so do consumer-overrun losses and a dead audio worker (`AudioContentWasLost`, audit 4). MP4/MOV decoded-endpoint
+coverage now exists next to Matroska in `tests/test_audio_mux_integration.cpp` (mp4: aac/alac/flac/opus; mov:
+aac/alac/pcm) - exact at 2026-09-24.
 Hardware validation of all of this is pending.

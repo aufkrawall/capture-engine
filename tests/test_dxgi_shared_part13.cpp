@@ -294,7 +294,9 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     EXPECT_NE(install.find("ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)", leaveEntry),
               std::string::npos);
     EXPECT_EQ(install.find("externalJmpDetected || loadedOverlayCount", leaveEntry), std::string::npos);
-    const size_t bypassBlock = install.find("if (externalJmpDetected) {");
+    // The bypass block also skips a retry whose Present entry CE already prepended (audit 4):
+    // CE's own patch there is not a foreign jump.
+    const size_t bypassBlock = install.find("if (externalJmpDetected && !presentAlreadyPrepended) {");
     ASSERT_NE(bypassBlock, std::string::npos);
     EXPECT_LT(leaveEntry, bypassBlock);
     // The body view is taken inside the leave-entry branch, and only a view that was actually
@@ -303,12 +305,14 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     const size_t deepInstall = install.find("InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr,",
                                             leaveEntry);
     ASSERT_NE(deepInstall, std::string::npos);
-    // The latch is the obtained view, never a bare `= true`.
-    const size_t firstLatchAfterDecision = install.find("s_inlineHooksInstalled =", leaveEntry);
+    // The latch is the obtained view (per method since audit 4), never a bare `= true`.
+    const size_t firstLatchAfterDecision = install.find("s_presentInlineInstallComplete.store(", leaveEntry);
     ASSERT_NE(firstLatchAfterDecision, std::string::npos);
-    EXPECT_NE(install.find("s_inlineHooksInstalled = haveBodyView;", leaveEntry), std::string::npos);
+    EXPECT_NE(install.find("const bool complete = haveBodyView && (!present1Addr || dxgi_shared_oPresent1DeepBody",
+                           leaveEntry),
+              std::string::npos);
     const std::string decisionBlock = install.substr(leaveEntry, bypassBlock - leaveEntry);
-    EXPECT_EQ(decisionBlock.find("s_inlineHooksInstalled = true;"), std::string::npos);
+    EXPECT_EQ(decisionBlock.find("s_presentInlineInstallComplete.store(true"), std::string::npos);
 
     // The Present view below the chain is a deep body hook, never an entry patch.
     const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");

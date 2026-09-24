@@ -23,8 +23,18 @@ HRESULT GetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
                              QueryMaxAnisotropyFn queryMaxAnisotropy);
 void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
                           QueryMaxAnisotropyFn queryMaxAnisotropy);
-void ReconcileAfterExternalStateChange(Api api, void* device, SetTextureStageStateFn setState,
+// After a successful ApplyStateBlock(blockHandle). A block CE saw created or
+// recorded is merged from its snapshot; any other block re-reads the device.
+// Writes nothing while no override is active (legacy_d3d_state_block_policy.h).
+void ReconcileAfterExternalStateChange(Api api, void* device, DWORD blockHandle, SetTextureStageStateFn setState,
                                        GetTextureStageStateFn getState, QueryMaxAnisotropyFn queryMaxAnisotropy);
+// State-block bookkeeping (legacy_d3d_sampler_state_blocks.cpp). Called after the
+// runtime call; `handle` is the block the runtime returned or was given.
+void OnBeginStateBlock(Api api, void* device);
+void OnEndStateBlock(Api api, void* device, bool succeeded, DWORD handle);
+void OnCreateStateBlock(Api api, void* device, DWORD type, DWORD handle);
+void OnCaptureStateBlock(Api api, void* device, DWORD handle);
+void ForgetStateBlock(Api api, void* device, DWORD handle);
 void ResetDevice(Api api, void* device);
 void LogSummary(Api api);
 

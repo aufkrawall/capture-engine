@@ -55,6 +55,22 @@ inline int64_t ComputeOutputRateChunkSamples(int64_t chunkSamples, int chunkRate
     return ComputeDurationUsToSamples(ComputeSamplesToDurationUs(chunkSamples, chunkRate), outputRate);
 }
 
+// Recording-level audio content loss that no track length reveals. Latched before the
+// stop path resets the per-source counters, then folded into the saved/degraded result.
+// - overrunLostSamples: real captured samples destroyed because the consumer ran past
+//   the live capture edge (`[STOP AUDIO INGEST] starve=`). Healthy recordings hold 0.
+// - audioWorkerFailed: the audio worker died (or never started) with sources configured;
+//   everything after that point is silence the file cannot distinguish from quiet.
+// A source that was merely idle (no packets, expected silence) sets neither.
+struct RecordingAudioLossEvidence {
+    uint64_t overrunLostSamples = 0;
+    bool audioWorkerFailed = false;
+};
+
+inline bool IsRecordingAudioContentLost(const RecordingAudioLossEvidence& evidence) {
+    return evidence.overrunLostSamples > 0 || evidence.audioWorkerFailed;
+}
+
 // Leaf lock for the two cross-thread audio timeline cursors (encodedSamplesPerSource /
 // trackTimelineSamples): the pull thread advances them while the audio worker reads them
 // for write-cursor pinning and gap suppression. Deliberately NOT muxMutex: the audio

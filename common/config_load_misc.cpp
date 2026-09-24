@@ -42,27 +42,22 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
         config.hotkeyStartStop.vkey = VK_F9;
     }
 
+    // Optional hotkeys are assigned on EVERY load: the controller reloads into its existing
+    // AppConfig, so skipping a blank or deleted key kept the previous binding alive after the
+    // user removed it. An empty value parses to "disabled" (vkey 0).
     std::string toggleOverlayKey = reader.GetStr("Hotkeys", "toggle_overlay", "");
-    if (!toggleOverlayKey.empty()) {
-        config.hotkeyToggleOverlay = ParseHotkey(toggleOverlayKey, "toggle_overlay", "none");
-    }
+    config.hotkeyToggleOverlay = ParseHotkey(toggleOverlayKey, "toggle_overlay", "none");
 
     std::string screenshotKey = reader.GetStr("Hotkeys", "screenshot", "");
-    if (!screenshotKey.empty()) {
-        config.hotkeyScreenshot = ParseHotkey(screenshotKey, "screenshot", "none");
-    }
+    config.hotkeyScreenshot = ParseHotkey(screenshotKey, "screenshot", "none");
 
     std::string audioOnlyKey = reader.GetStr("Hotkeys", "audio_only", "");
-    if (!audioOnlyKey.empty()) {
-        config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey, "audio_only", "none");
-    }
+    config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey, "audio_only", "none");
 
     // A broken optional hotkey stays disabled (there is no code fallback here),
     // so "none" is what the warning has to name.
     std::string benchmarkKey = reader.GetStr("Hotkeys", "benchmark", "CTRL+7");
-    if (!benchmarkKey.empty()) {
-        config.hotkeyBenchmark = ParseHotkey(benchmarkKey, "benchmark", "none");
-    }
+    config.hotkeyBenchmark = ParseHotkey(benchmarkKey, "benchmark", "none");
 
     // Benchmark configuration
     config.benchmark.startDelaySeconds =

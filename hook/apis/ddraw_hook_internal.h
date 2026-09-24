@@ -126,6 +126,15 @@ typedef HRESULT(STDMETHODCALLTYPE* LegacyD3DEndScene_t)(void* ddraw_hook_device)
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D7ApplyStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
 
+// State-block lifetime, tracked so an Apply can be merged from what the block holds
+// (legacy_d3d_state_block_policy.h). D3DSTATEBLOCKTYPE is passed as its DWORD value.
+typedef HRESULT(STDMETHODCALLTYPE* D3D7BeginStateBlock_t)(void* ddraw_hook_device);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7EndStateBlock_t)(void* ddraw_hook_device, DWORD* ddraw_hook_blockHandle);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7CaptureStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7DeleteStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7CreateStateBlock_t)(void* ddraw_hook_device, DWORD ddraw_hook_type,
+                                                          DWORD* ddraw_hook_blockHandle);
+
 typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_hook_device, DWORD Type, DWORD ddraw_hook_Value);
 
 // DirectDraw vtable indices
@@ -160,6 +169,16 @@ typedef HRESULT(STDMETHODCALLTYPE* SetRenderState7_t)(IDirect3DDevice7* ddraw_ho
 #define D3D7_VTABLE_SETTEXTURESTAGESTATE 37
 
 #define D3D7_VTABLE_APPLYSTATEBLOCK 39
+
+#define D3D7_VTABLE_BEGINSTATEBLOCK 22
+
+#define D3D7_VTABLE_ENDSTATEBLOCK 23
+
+#define D3D7_VTABLE_CAPTURESTATEBLOCK 40
+
+#define D3D7_VTABLE_DELETESTATEBLOCK 41
+
+#define D3D7_VTABLE_CREATESTATEBLOCK 42
 
 #define D3D6_VTABLE_ENDSCENE 10
 
@@ -524,7 +543,16 @@ struct LegacyD3DSamplerVTableRecord {
     std::atomic<LegacyD3DEndScene_t> endScene{nullptr};
     std::atomic<D3D7ApplyStateBlock_t> applyStateBlock{nullptr};
     std::atomic<SetTexture7_t> setTexture{nullptr};
+    std::atomic<D3D7BeginStateBlock_t> beginStateBlock{nullptr};
+    std::atomic<D3D7EndStateBlock_t> endStateBlock{nullptr};
+    std::atomic<D3D7CaptureStateBlock_t> captureStateBlock{nullptr};
+    std::atomic<D3D7DeleteStateBlock_t> deleteStateBlock{nullptr};
+    std::atomic<D3D7CreateStateBlock_t> createStateBlock{nullptr};
 };
+
+// Hooks CreateStateBlock/CaptureStateBlock/DeleteStateBlock and the recording pair
+// BeginStateBlock/EndStateBlock on a D3D7 device vtable (ddraw_hook_detours_legacy_d3d.cpp).
+void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable);
 
 inline std::mutex ddraw_hook_g_LegacyD3DSamplerVTableMutex;
 

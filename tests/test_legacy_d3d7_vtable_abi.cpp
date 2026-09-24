@@ -32,6 +32,15 @@ TEST(LegacyD3D7VTableAbiTest, DeviceIndicesUsedByTheHookMatchTheInterface) {
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetTextureStageState) / sizeof(void*), 37u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, SetTexture) / sizeof(void*), 35u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, ApplyStateBlock) / sizeof(void*), 39u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, BeginStateBlock) / sizeof(void*), 22u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, EndStateBlock) / sizeof(void*), 23u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, CaptureStateBlock) / sizeof(void*), 40u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, DeleteStateBlock) / sizeof(void*), 41u);
+    EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, CreateStateBlock) / sizeof(void*), 42u);
+    // legacy_d3d_state_block_policy.h relies on these values.
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_ALL), 1u);
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_PIXELSTATE), 2u);
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_VERTEXSTATE), 3u);
     EXPECT_EQ(offsetof(IDirect3DDevice7Vtbl, GetCaps) / sizeof(void*), 3u);
 }
 

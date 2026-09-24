@@ -18,6 +18,15 @@ TEST(LegacyD3D8VTableAbiTest, IndicesUsedByTheHookMatchTheInterfaces) {
     EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, Reset) / sizeof(void*), 14u);
     EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, Present) / sizeof(void*), 15u);
     EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, ApplyStateBlock) / sizeof(void*), 54u);
+    EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, BeginStateBlock) / sizeof(void*), 52u);
+    EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, EndStateBlock) / sizeof(void*), 53u);
+    EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, CaptureStateBlock) / sizeof(void*), 55u);
+    EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, DeleteStateBlock) / sizeof(void*), 56u);
+    EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, CreateStateBlock) / sizeof(void*), 57u);
+    // legacy_d3d_state_block_policy.h relies on these values.
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_ALL), 1u);
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_PIXELSTATE), 2u);
+    EXPECT_EQ(static_cast<DWORD>(D3DSBT_VERTEXSTATE), 3u);
     EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, GetTextureStageState) / sizeof(void*), 62u);
     EXPECT_EQ(offsetof(IDirect3DDevice8Vtbl, SetTextureStageState) / sizeof(void*), 63u);
     EXPECT_EQ(offsetof(D3DCAPS8, MaxAnisotropy), 108u);

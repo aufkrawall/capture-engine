@@ -76,6 +76,16 @@ struct DX8Capture;
 
 #define D3D8_VTABLE_APPLYSTATEBLOCK 54
 
+#define D3D8_VTABLE_BEGINSTATEBLOCK 52
+
+#define D3D8_VTABLE_ENDSTATEBLOCK 53
+
+#define D3D8_VTABLE_CAPTURESTATEBLOCK 55
+
+#define D3D8_VTABLE_DELETESTATEBLOCK 56
+
+#define D3D8_VTABLE_CREATESTATEBLOCK 57
+
 #define D3D8_VTABLE_GETTEXTURESTAGESTATE 62
 
 #define D3D8_VTABLE_SETTEXTURESTAGESTATE 63
@@ -125,6 +135,15 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8GetTextureStageState_t)(IDirect3DDevice8*
                                                                 DWORD* dx8_hook_pValue);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8ApplyStateBlock_t)(IDirect3DDevice8* device, DWORD dx8_hook_Token);
+
+// State-block lifetime, tracked so an Apply can be merged from what the block holds
+// (legacy_d3d_state_block_policy.h). D3DSTATEBLOCKTYPE is passed as its DWORD value.
+typedef HRESULT(STDMETHODCALLTYPE* D3D8BeginStateBlock_t)(IDirect3DDevice8* device);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8EndStateBlock_t)(IDirect3DDevice8* device, DWORD* dx8_hook_pToken);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8CaptureStateBlock_t)(IDirect3DDevice8* device, DWORD dx8_hook_Token);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8DeleteStateBlock_t)(IDirect3DDevice8* device, DWORD dx8_hook_Token);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateStateBlock_t)(IDirect3DDevice8* device, DWORD dx8_hook_Type,
+                                                          DWORD* dx8_hook_pToken);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceGetDesc_t)(IDirect3DSurface8* dx8_hook_surface, void* pDesc);
 
@@ -222,6 +241,11 @@ struct D3D8SamplerVTableRecord {
     std::atomic<D3D8SetTextureStageState_t> setState{nullptr};
     std::atomic<D3D8GetTextureStageState_t> getState{nullptr};
     std::atomic<D3D8ApplyStateBlock_t> applyStateBlock{nullptr};
+    std::atomic<D3D8BeginStateBlock_t> beginStateBlock{nullptr};
+    std::atomic<D3D8EndStateBlock_t> endStateBlock{nullptr};
+    std::atomic<D3D8CaptureStateBlock_t> captureStateBlock{nullptr};
+    std::atomic<D3D8DeleteStateBlock_t> deleteStateBlock{nullptr};
+    std::atomic<D3D8CreateStateBlock_t> createStateBlock{nullptr};
     bool setHooked = false;
     bool getHooked = false;
     bool applyHooked = false;

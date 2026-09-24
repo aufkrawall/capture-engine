@@ -307,6 +307,14 @@ int64_t GetVideoElapsedMs() const;bool SessionUsesVfr() const;bool SessionUsesSc
     // Logs and reports tracks whose encoder recorded content holes (samples it
     // consumed but could not encode; they are silence in the file).
     bool AudioTracksHaveContentHoles() const;
+    // Recording-level audio loss no track length reveals (audio_fault_accounting.h,
+    // RecordingAudioLossEvidence). Reset at StartRecording; the overrun total is latched
+    // from the per-source counters before the stop path clears them.
+    std::atomic<bool> audioWorkerFailedThisRecording{false};
+    uint64_t audioOverrunLostSamplesThisRecording = 0;
+    void LatchAudioOverrunLossForStop();
+    // Logs and reports latched overrun loss or a dead audio worker.
+    bool AudioContentWasLost() const;
 
     // AudioLoop -> PullAndEncodeAudio hand-off for the adaptive ingestion reservoir.
     // Publishes the worst (minimum) headroom seen since the pull side last consumed it,

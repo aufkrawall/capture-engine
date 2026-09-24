@@ -405,6 +405,13 @@ screen.
 
 ## The overlay submission ring must not pace the game
 
+- **A failed submit must not strand its fence (audit 4, 2026-09-24).** The direct route reset the slot fence, then a
+  non-device-lost `vkQueueSubmit` failure left it unsignalled with the slot marked used; backpressure could later wait
+  on it with `UINT64_MAX`. Both routes now re-arm with a fence-only submit, else `MarkSubmissionSlotStranded`;
+  `ChooseSubmissionSlotAvoidingStranded` never probes or waits on a stranded slot, and backpressure is bounded by
+  `kSubmissionSlotBackpressureWaitBoundNs` (2 s, the Windows TDR window - a hang guard, not a frame-scale timeout;
+  the overlay skips that present). Tests: `tests/test_overlay_submit_fence_recovery.cpp` (mock dispatch).
+
 - **CE's own overlay resource recycling blocks the game's present thread.** `20260830_182939` measured a
   `fence_wait_us` median of 2867 us on more than half of all presents; `20260830_185703`, with the reuse gate below in
   place, measures a median of 30 us but a p99 of 34 ms and a max of 65 ms - roughly 14 ms of a 29 ms rendered frame,

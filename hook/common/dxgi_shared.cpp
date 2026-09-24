@@ -402,7 +402,9 @@ bool ArePresentMethodsInterceptedBelowForeignChain() {
 }
 
 bool IsSwapchainPresentCoveredByDeepBodyHook(IDXGISwapChain* pSwapChain) {
-    if (!pSwapChain || !IsPresentInterceptedBelowForeignChain()) {
+    // The question is about vtable[8], i.e. Present: a lone Present1 deep hook does not cover it,
+    // and treating it as covered kept CE from wrapping a swapchain it had no Present view of.
+    if (!pSwapChain || dxgi_shared_oPresentDeepBody == nullptr) {
         return false;
     }
     // dxgi_shared_oPresent holds the real dxgi!Present entry in the left-to-foreign-chain mode,

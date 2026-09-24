@@ -209,12 +209,15 @@ inline const char* GetDX12PresentDelegationOverlayModuleName() {
 // runtime present through both the wrapper and the detour.
 inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut = nullptr,
                                                   bool streamlineRuntimeNonRetainingWrapper = false,
-                                                  bool presentInvisibleToDetourHook = false) {
+                                                  bool presentInvisibleToDetourHook = false,
+                                                  bool delegatedMethodIsPresent1 = false) {
     const char* overlayModule = GetDX12PresentDelegationOverlayModuleName();
     if (overlayModuleOut) {
         *overlayModuleOut = overlayModule;
     }
-    if (!DXGIShared::HasPresentDetourHooks()) {
+    // Delegating hands the call to the real method and relies on CE's detour catching it, so the
+    // detour must exist for THIS method: a Present1-only view left delegated Presents unseen.
+    if (!DXGIShared::HasPresentMethodDetourHook(delegatedMethodIsPresent1)) {
         return false;
     }
     if (DXGIShared::HasCompositablePresentInterposerOutputChain()) {

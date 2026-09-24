@@ -1,11 +1,24 @@
 #include "main_internal.h"
 
 #include "../common/config_reload_policy.h"
+#include "../common/config_text_encoding.h"
 #include "../common/path_utils.h"
 
 namespace {
 // Hot-reload debounce state for config.ini (see config_reload_policy.h).
 ce::config_reload::State g_ConfigReloadState;
+
+ce::config_reload::FileIdentity ReadConfigFileIdentity(const std::string& path) {
+    WIN32_FILE_ATTRIBUTE_DATA fileInfo = {};
+    ce::config_reload::FileIdentity identity;
+    identity.exists = GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fileInfo) != FALSE;
+    if (identity.exists) {
+        identity.lastWriteTime = (static_cast<uint64_t>(fileInfo.ftLastWriteTime.dwHighDateTime) << 32) |
+                                 fileInfo.ftLastWriteTime.dwLowDateTime;
+        identity.size = (static_cast<uint64_t>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
+    }
+    return identity;
+}
 }  // namespace
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
@@ -235,25 +248,51 @@ int ControllerMain(HINSTANCE hInstance) {
             // mtime: an editor/restore/sync can replace the file with an older
             // timestamp. The change must be stable across two checks first, so a
             // save in progress is never read half-written (config_reload_policy.h).
-            WIN32_FILE_ATTRIBUTE_DATA fileInfo = {};
-            ce::config_reload::FileIdentity identity;
-            identity.exists = GetFileAttributesExA(main_g_ConfigPath.c_str(), GetFileExInfoStandard, &fileInfo) != FALSE;
-            if (identity.exists) {
-                identity.lastWriteTime = (static_cast<uint64_t>(fileInfo.ftLastWriteTime.dwHighDateTime) << 32) |
-                                         fileInfo.ftLastWriteTime.dwLowDateTime;
-                identity.size = (static_cast<uint64_t>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
-            }
-            const ce::config_reload::Decision reloadDecision =
-                ce::config_reload::Observe(g_ConfigReloadState, identity);
+            const ce::config_reload::FileIdentity identity = ReadConfigFileIdentity(main_g_ConfigPath);
+            ce::config_reload::Decision reloadDecision = ce::config_reload::Observe(g_ConfigReloadState, identity);
             if (reloadDecision == ce::config_reload::Decision::kWait) {
                 LogDebug("[Controller] Config change seen (exists=%d size=%llu); applying once it is stable",
                          identity.exists ? 1 : 0, static_cast<unsigned long long>(identity.size));
+            }
+            // Load into a candidate and publish it only after a coherent read: the file was
+            // readable before the load, no read failed during it, and it did not change while
+            // it ran (config_reload_policy.h, IsCoherentLoad). Otherwise nothing is published
+            // and the identity is not committed, so the next stable checks retry.
+            AppConfig candidateConfig;
+            if (reloadDecision == ce::config_reload::Decision::kReload) {
+                ce::config_reload::LoadEvidence evidence;
+                evidence.identityBeforeLoad = identity;
+                evidence.fileReadBeforeLoad = ce::config_text::PrimeConfigDocument(main_g_ConfigPath);
+                const uint64_t readFailuresBefore = ce::config_text::ConfigReadFailureCount();
+                if (evidence.fileReadBeforeLoad) {
+                    candidateConfig = main_g_Config;
+                    LoadConfig(main_g_ConfigPath, candidateConfig);
+                }
+                evidence.readFailuresDuringLoad = ce::config_text::ConfigReadFailureCount() - readFailuresBefore;
+                evidence.identityAfterLoad = ReadConfigFileIdentity(main_g_ConfigPath);
+                if (ce::config_reload::IsCoherentLoad(evidence)) {
+                    ce::config_reload::CommitReload(g_ConfigReloadState, identity);
+                } else {
+                    ce::config_reload::DeferReload(g_ConfigReloadState);
+                    reloadDecision = ce::config_reload::Decision::kWait;
+                    static uint32_t s_deferredReloadLogs = 0;
+                    if (s_deferredReloadLogs++ < 8 || (s_deferredReloadLogs % 64) == 0) {
+                        LogWarn(
+                            "[Controller] Config reload deferred: readable=%d readFailures=%llu changedDuringLoad=%d "
+                            "(size %llu -> %llu); keeping the current configuration and retrying",
+                            evidence.fileReadBeforeLoad ? 1 : 0,
+                            static_cast<unsigned long long>(evidence.readFailuresDuringLoad),
+                            evidence.identityBeforeLoad != evidence.identityAfterLoad ? 1 : 0,
+                            static_cast<unsigned long long>(evidence.identityBeforeLoad.size),
+                            static_cast<unsigned long long>(evidence.identityAfterLoad.size));
+                    }
+                }
             }
             if (reloadDecision == ce::config_reload::Decision::kReload) {
                 LogInfo("[Controller] Config change detected, reloading...");
 
                 AppConfig oldConfig = main_g_Config;
-                LoadConfig(main_g_ConfigPath, main_g_Config);
+                main_g_Config = std::move(candidateConfig);
                 Log_SetLevel(main_g_Config.logLevel);
 
                 if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {

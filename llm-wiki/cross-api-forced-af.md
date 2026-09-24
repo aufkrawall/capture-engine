@@ -47,7 +47,7 @@ that material textures received the intended AF effect, performance was good, an
 - **D3D8/D3D7/D3D6:** a shared event-driven texture-stage-state owner provides the same logical/physical split and
   bounded one-time bootstrap. Returned DX6/7/8 device classes retain originals per vtable instead of assuming the
   bootstrap HAL class. D3D6/7 refresh config at EndScene and D3D8 at Present with a version fast path; D3D7/8
-  ApplyStateBlock performs a bounded physical-state refresh and immediate reconciliation. D3D7 uses slots 36/37 for
+  state blocks follow the D3D9 snapshot model (section below). D3D7 uses slots 36/37 for
   Get/SetTextureStageState and slot 39 for ApplyStateBlock. D3D6 uses Device3 slots 39/40. Legacy MAG anisotropy is
   value 5 (`D3DTFG_ANISOTROPIC`), not MIN's value 3; using 3 as MAG selects flat-cubic filtering. D3D5 and older expose
   no anisotropic value in their pre-stage `D3DTEXTUREFILTER` render states, so there is no generic AF action to take.
@@ -90,6 +90,26 @@ that material textures received the intended AF effect, performance was good, an
 - Logs: `State block %p applied from its snapshot`, `applied without a snapshot`, `sampler slot %d stayed on %p ...
   re-arming below it`, `re-armed below the foreign slot owner`, refusal/failure lines; summary counters
   `trackedStateBlockApplies`, `recordedStateBlocks`.
+
+## D3D7/D3D8 state blocks (2026-09-24, audit 4)
+
+- **Same defect as D3D9, plus a worse no-override case** (derived from code): Apply refreshed the physical values and
+  reconciled from the pre-Apply logical shadow, undoing the block. With no override the shadow is not maintained
+  (Set passes straight through) but `RegisterDevice` seeds it as initialized defaults, and after the first EndScene
+  every Apply bootstraps it once - so each later Apply wrote the defaults or the previous Apply's re-read back.
+- **Fix** - `legacy_d3d_state_block_policy.h` (pure; tested by a fake-device harness in
+  `tests/test_legacy_d3d_state_block_policy.cpp`), `legacy_d3d_sampler_state_internal.h`,
+  `legacy_d3d_sampler_state_blocks.cpp`. Inactive override: Apply writes nothing and drops the shadow. Otherwise
+  Create/Capture copy the shadow (valid only while it tracks the application), Begin/EndStateBlock record Sets
+  unforced, Apply merges the snapshot first and reconciles covered stages; unknown blocks re-read and adopt changed
+  values. ALL/PIXELSTATE cover all tracked stage states (D3D7 has no ADDRESSW), VERTEXSTATE none. Snapshots are keyed
+  by handle/token, dropped at RegisterDevice(new)/ResetDevice, capped at 2048 per device.
+- **Hooks**: D3D7 slots 22/23/40/41/42 (`InstallD3D7StateBlockTrackingHooks`, ddraw_hook_detours_legacy_d3d.cpp),
+  D3D8 slots 52/53/55/56/57 (`InstallD3D8StateBlockTrackingHooks`); indices pinned by the SDK-backed ABI tests.
+  Begin is hooked only if End is (a Begin without End would latch "recording" and stop forcing). CE's own calls
+  (`LegacyD3DInternalCallActive`, `dx8_hook_g_DX8StateHookBypassDepth`) are not tracked. D3D6 has no state blocks.
+- Logs: `State block %lu applied from its snapshot`, `applied without a snapshot`, `applied with no sampler override
+  active; nothing written`, `state-block tracking partial`.
 
 ## Performance and diagnostics
 

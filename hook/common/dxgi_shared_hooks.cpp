@@ -448,6 +448,21 @@ bool HasPresentDetourHooks() {
            dxgi_shared_oPresent1Trampoline != nullptr || dxgi_shared_oPresentDeepBody != nullptr ||
            dxgi_shared_oPresent1DeepBody != nullptr;
 }
+
+PresentMethodViews GetPresentMethodViews() {
+    PresentMethodViews views;
+    views.presentEntryTrampoline = dxgi_shared_oPresentTrampoline != nullptr;
+    views.present1EntryTrampoline = dxgi_shared_oPresent1Trampoline != nullptr;
+    views.presentDeepBody = dxgi_shared_oPresentDeepBody != nullptr;
+    views.present1DeepBody = dxgi_shared_oPresent1DeepBody != nullptr;
+    views.swapchainVTableClaimed = dxgi_shared_s_hookedVTable != nullptr;
+    return views;
+}
+
+bool HasPresentMethodDetourHook(bool present1) {
+    const PresentMethodViews views = GetPresentMethodViews();
+    return present1 ? CoversPresent1Method(views) : CoversPresentMethod(views);
+}
 }
 
 namespace DXGIShared {

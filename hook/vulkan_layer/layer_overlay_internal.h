@@ -56,6 +56,12 @@ struct OverlayState {
     std::vector<uint32_t> slotImageIndex;
     std::vector<uint64_t> slotAcquireGeneration;
     std::vector<uint8_t> slotEverUsed;
+    // Per slot: its fence can never signal again (a failed submit whose fence-only
+    // re-arm failed too). Never probed, never waited on (ChooseSubmissionSlotAvoidingStranded).
+    std::vector<uint8_t> slotStranded;
+    uint64_t strandedSlotCount = 0;
+    // Presents whose overlay was skipped because backpressure hit its bound.
+    uint64_t submissionBackpressureSkips = 0;
     // Per swapchain image: the acquire generation the overlay was last
     // composited into it at. A frame-generation runtime may present one image
     // again without the application re-acquiring it, and an application may not
@@ -151,6 +157,8 @@ void CleanupComputePresentOverlay(OverlayState& state, DeviceDispatch* disp);
 // Extends the compute-composite route by exactly one submission slot. Called
 // while the ring grows so every slot keeps a complete composite route.
 bool AppendComputePresentSlot(OverlayState& state, DeviceDispatch* disp);
+// Records that `slot`'s fence can never signal again (see slotStranded).
+void MarkSubmissionSlotStranded(OverlayState& state, uint32_t slot);
 bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, const OverlaySubmitTarget& graphicsTarget,
                                  VkQueue presentQueue, uint32_t submissionSlot, uint32_t imageIndex,
                                  const VkSemaphore* waitSemaphores,

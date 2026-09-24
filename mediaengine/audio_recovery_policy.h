@@ -134,6 +134,26 @@ inline bool IsFollowedDefaultDeviceChange(bool followsDefault, bool isLoopback, 
     return followsDefault && role == kConsole && flow == (isLoopback ? kRender : kCapture);
 }
 
+// Endpoint selection. A source configured with an explicit device records that
+// device or nothing: it used to fall back to the Windows default when the device
+// was absent (unplugged, disabled, renamed), so the recording silently held a
+// different microphone or output and the completion said "saved". An absent
+// requested device now leaves the source waiting (silence, reported degraded);
+// device arrival retries it. Only a source without a configured device follows
+// the default.
+enum class EndpointSelection {
+    UseDefaultDevice,
+    UseRequestedDevice,
+    WaitForRequestedDevice,
+};
+
+inline EndpointSelection SelectCaptureEndpoint(bool explicitDeviceRequested, bool requestedDeviceActive) {
+    if (!explicitDeviceRequested) {
+        return EndpointSelection::UseDefaultDevice;
+    }
+    return requestedDeviceActive ? EndpointSelection::UseRequestedDevice : EndpointSelection::WaitForRequestedDevice;
+}
+
 inline bool ShouldSwitchToNewDefaultEndpoint(bool haveLiveClient, const wchar_t* activeEndpointId,
                                              const wchar_t* defaultEndpointId) {
     if (!defaultEndpointId || defaultEndpointId[0] == L'\0') {

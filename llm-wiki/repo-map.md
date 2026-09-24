@@ -152,6 +152,8 @@ anchors that predate the split are approximate.
       `dx9_sampler_state_blocks.cpp` (+ `_internal.h`, `dx9_state_block_sampler_policy.h`).
     - DX8: `dx8_hook_capture_{lifecycle,init,frame,copy}.cpp`, `dx8_hook_detours.cpp`,
       `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
+    - D3D6/7/8 texture-stage shadow: `legacy_d3d_sampler_state.cpp` + `legacy_d3d_sampler_state_blocks.cpp`
+      (+ `_internal.h`, `legacy_d3d_state_block_policy.h`).
     - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_capture.cpp` (presentation
       and capture ordering), `ddraw_hook_overlay_composite.cpp` + `ddraw_hook_composite_state.h`
       (per-surface CPU backdrop/composite state), `ddraw_hook_overlay_route.cpp` (persistent CPU

@@ -25,7 +25,9 @@ CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice,
     // its own module and presents its private chain to dxgi. CE's deep body hook then only ever
     // sees that private chain, so this wrapper is CE's ONLY view of the game's presents and must
     // never delegate them to the detour.
-    m_PresentInvisibleToDetourHook = pReal != nullptr && DXGIShared::IsPresentInterceptedBelowForeignChain() &&
+    // Only a Present deep view can be "the interposer's chain, not this one"; a lone Present1 deep
+    // hook means CE has no Present detour at all, which the per-method delegation gate handles.
+    m_PresentInvisibleToDetourHook = pReal != nullptr && DXGIShared::GetPresentMethodViews().presentDeepBody &&
                                      !DXGIShared::IsSwapchainPresentCoveredByDeepBodyHook(pReal);
     if (m_PresentInvisibleToDetourHook) {
         WrapperLog(
@@ -627,7 +629,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     const char* delegationOverlayModule = nullptr;
     if (m_IsD3D12 && ShouldDelegateDX12PresentToDetourHook(&delegationOverlayModule, m_StreamlineRuntimeNonRetaining,
-                                                          m_PresentInvisibleToDetourHook)) {
+                                                          m_PresentInvisibleToDetourHook,
+                                                          /*delegatedMethodIsPresent1=*/true)) {
         static std::atomic<int> s_inlineRouteLogCount1{0};
         if (s_inlineRouteLogCount1.fetch_add(1, std::memory_order_relaxed) < 20) {
             WrapperLog("Present1: Delegating DX12 Present1 to detour hook for external overlay %s%s",

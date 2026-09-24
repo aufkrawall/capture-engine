@@ -169,6 +169,16 @@ The bundled Windows FFmpeg build includes matching decoders as well as the encod
 
 ## Diagnostics
 
+- **Explicit device selection (audit 4, 2026-09-24):** a configured mic/output is bound to that device
+  (`SelectCaptureEndpoint`, `audio_recovery_policy.h`). `ResolveCaptureDevice` no longer falls back to the Windows
+  default and requires `DEVICE_STATE_ACTIVE` from `GetDevice`; an absent device leaves the source waiting (episode
+  counted, degraded), and endpoint arrival clears the backoff so the `client_null` retry re-acquires it. Log:
+  `Requested %s device '%s' is not available; waiting for it (no default fallback)`. `ProbeMixFormat` still probes the
+  default for track-format sizing only.
+- **Loss latch:** `LatchAudioOverrunLossForStop` sums `timelineStarvationDropSamples` before the stop reset;
+  `audioWorkerFailedThisRecording` is set by a dying or unstartable audio worker. `AudioContentWasLost` folds both into
+  both degraded decisions (`[AudioFinalization] audio content was lost ...`). An idle source sets neither.
+
 Useful logs for this area:
 
 - `[AudioReset]` / startup-contract generation lines identify command, per-owner acknowledgement, committed generation/anchor, outstanding owners, and any transactional abort. A video commit before every route/encoder acknowledgement is a strict fault.

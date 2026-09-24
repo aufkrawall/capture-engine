@@ -9,6 +9,8 @@ bool MediaEngine::StartRecording() {
             return true;
         ApplyConfigDeferredDuringRecording();
         processLoopbackIntegrityFailureSignaled = false;
+        audioWorkerFailedThisRecording.store(false, std::memory_order_release);
+        audioOverrunLostSamplesThisRecording = 0;
         if (sharedMemLayout) {
             sharedMemLayout->runtimeState.recordingFailureCode.store(static_cast<uint32_t>(RecordingFailureCode::None),
                                                                      std::memory_order_release);

@@ -151,11 +151,27 @@ bool ReadWholeFile(const std::string& path, std::string* bytes) {
     return ok;
 }
 
+std::atomic<uint64_t> g_configReadFailures{0};
+
+void NoteConfigReadFailure(const std::string& path) {
+    const uint64_t failures = g_configReadFailures.fetch_add(1, std::memory_order_acq_rel) + 1;
+    // Rate-limited: a locked file is re-tried by every key lookup of a load.
+    if (failures <= 4 || (failures % 256) == 0) {
+        LogWarn("Config: could not read %s (error %lu, failure #%llu); values fall back to defaults for this read",
+                path.c_str(), static_cast<unsigned long>(GetLastError()), static_cast<unsigned long long>(failures));
+    }
+}
+
 // The parsed document when `path` is a UTF-8 file, null when it is ANSI text
-// (which keeps the profile API and its exact legacy semantics).
-std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path) {
+// (which keeps the profile API and its exact legacy semantics). *readOk reports
+// whether the file's bytes were available (cached or read now).
+std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path, bool* readOk = nullptr) {
+    if (readOk) {
+        *readOk = false;
+    }
     WIN32_FILE_ATTRIBUTE_DATA attributes = {};
     if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &attributes)) {
+        NoteConfigReadFailure(path);
         return nullptr;
     }
     const uint64_t size = (static_cast<uint64_t>(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
@@ -163,11 +179,20 @@ std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path) {
     std::lock_guard<std::mutex> lock(cache.mutex);
     if (cache.valid && cache.path == path && cache.size == size &&
         CompareFileTime(&cache.lastWrite, &attributes.ftLastWriteTime) == 0) {
+        if (readOk) {
+            *readOk = true;
+        }
         return cache.utf8Document;
     }
     std::string bytes;
     if (!ReadWholeFile(path, &bytes)) {
+        // A UTF-8 file then falls through to the profile API (lossy on DBCS, or all
+        // defaults when the file is locked). Counted so a reload can refuse to publish it.
+        NoteConfigReadFailure(path);
         return nullptr;
+    }
+    if (readOk) {
+        *readOk = true;
     }
     cache.path = path;
     cache.lastWrite = attributes.ftLastWriteTime;
@@ -220,6 +245,16 @@ std::string ReadIniValueForCodePage(const std::string& path, const char* section
     char buffer[4096];
     GetPrivateProfileStringA(section, key, defaultValue, buffer, sizeof(buffer), path.c_str());
     return buffer;
+}
+
+uint64_t ConfigReadFailureCount() {
+    return g_configReadFailures.load(std::memory_order_acquire);
+}
+
+bool PrimeConfigDocument(const std::string& path) {
+    bool readOk = false;
+    Utf8DocumentFor(path, &readOk);
+    return readOk;
 }
 
 std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue) {

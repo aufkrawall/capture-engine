@@ -242,7 +242,8 @@ if (IsDX12Swapchain(pSwapChain)) {
 
 
 void EnsurePresentInlineHooksForRealSwapchain(IDXGISwapChain* pSwapChain, const char* source) {
-if (!pSwapChain || DXGIShared::HasPresentDetourHooks()) {
+// Per method: a Present1 view never stands in for Present. Retry while either is missing.
+if (!pSwapChain || !DXGIShared::ShouldRetryPresentInlineHookInstall()) {
     return;
 }
 

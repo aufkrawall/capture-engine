@@ -17,6 +17,7 @@
 // code page too: the ones ReadIniSectionNames returns are what ReadIniValue
 // expects back.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,6 +46,12 @@ std::string ReadIniValue(const std::string& path, const char* section, const cha
 // ReadIniValue with the code page injected (tests force a DBCS code page).
 std::string ReadIniValueForCodePage(const std::string& path, const char* section, const char* key,
                                     const char* defaultValue, unsigned codePage);
+// Monotonic count of config reads that could not read the file's bytes (sharing
+// violation, access denied, vanished). A caller compares it around a load to tell
+// a coherent read from one that silently fell back to defaults.
+uint64_t ConfigReadFailureCount();
+// Reads (and caches) the whole file now; false when its bytes are unavailable.
+bool PrimeConfigDocument(const std::string& path);
 // GetPrivateProfileSectionNamesA / GetPrivateProfileSectionA equivalents over
 // the same UTF-8-aware path.
 std::vector<std::string> ReadIniSectionNames(const std::string& path);

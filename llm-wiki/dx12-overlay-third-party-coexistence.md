@@ -281,6 +281,8 @@ D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during 
 `20260606_211023` (mid-stall dump = ground truth), `20260608_162931` (focus-analysis: flat residency + UMD AV crash), `20260608_163139` (observer-only: no freeze), `20260608_170854` (clean GPUView: TDR confirmed), `20260608_171158` (debug-layer: no freeze, iflip still on).
 
 ## Facts
+- Present coverage is per method (audit 4): `PresentMethodViews`, `ShouldRetryPresentInlineHookInstall()`; a lone
+  Present1 view no longer blocks the Present retry, suppresses the swapchain wrapper, or permits wrapper delegation.
 - The tree currently identifies known third-party overlays primarily by module-path tokens such as `gameoverlayrenderer`, `discord_hook`, `socialclub`, `eosovh`, `eossdk_win64_shipping`, `nvspcap`, `nvoverlay`, `rtsshooks`, and `specialk`.
 - A smaller startup-blocking subset is tracked separately. Current tokens include `socialclub`, `eosovh`, and `eossdk` variants.
 - If a third-party overlay is already loaded before the real D3D12 device exists, the DX12 policy can defer early temporary-swapchain `Present` hook installation to avoid recursion and stack-overflow startup failures.

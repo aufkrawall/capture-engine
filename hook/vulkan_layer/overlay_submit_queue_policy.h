@@ -191,20 +191,82 @@ inline bool IsSubmissionSlotReusable(bool fenceRetired, bool everUsed, uint64_t 
 // command buffer and binary semaphore while every other slot sits idle.
 // Prefer the next retired slot, scan the rest only when necessary, and apply
 // backpressure to the oldest slot only when the entire ring is genuinely busy.
-template <typename IsReady>
-inline SubmissionSlotChoice ChooseSubmissionSlot(uint32_t slotCount, uint32_t nextSlot, IsReady&& isReady,
-                                                 bool ringMayGrow = false) {
+//
+// A slot whose fence was reset for a submission that then failed, and whose
+// fence could not be re-armed either, is *stranded*: nothing will ever signal
+// that fence. It is never probed and never chosen for backpressure - waiting on
+// it is an unbounded hang of the game's present thread. When every slot is
+// stranded there is no valid choice and the overlay is skipped for that present.
+template <typename IsReady, typename IsStranded>
+inline SubmissionSlotChoice ChooseSubmissionSlotAvoidingStranded(uint32_t slotCount, uint32_t nextSlot,
+                                                                 IsReady&& isReady, IsStranded&& isStranded,
+                                                                 bool ringMayGrow = false) {
     if (slotCount == 0)
         return {};
     const uint32_t first = nextSlot % slotCount;
     for (uint32_t offset = 0; offset < slotCount; ++offset) {
         const uint32_t candidate = (first + offset) % slotCount;
-        if (isReady(candidate))
+        if (!isStranded(candidate) && isReady(candidate))
             return {candidate, true, false, false};
     }
     if (ringMayGrow && slotCount < kMaxSubmissionSlots)
         return {slotCount, true, false, true};
-    return {first, true, true, false};
+    for (uint32_t offset = 0; offset < slotCount; ++offset) {
+        const uint32_t candidate = (first + offset) % slotCount;
+        if (!isStranded(candidate))
+            return {candidate, true, true, false};
+    }
+    return {};
+}
+
+template <typename IsReady>
+inline SubmissionSlotChoice ChooseSubmissionSlot(uint32_t slotCount, uint32_t nextSlot, IsReady&& isReady,
+                                                 bool ringMayGrow = false) {
+    return ChooseSubmissionSlotAvoidingStranded(
+        slotCount, nextSlot, isReady, [](uint32_t) { return false; }, ringMayGrow);
+}
+
+// A submission whose fence was reset but whose vkQueueSubmit failed leaves that
+// fence unsignalled with nothing queued to signal it. The slot is recovered with
+// a fence-only submit; when that fails too, the slot is stranded (above).
+enum class FailedSubmitSlotFate : uint8_t {
+    kRearmed,
+    kStranded,
+};
+
+inline FailedSubmitSlotFate ResolveFailedSubmitSlotFate(bool fenceReArmed) noexcept {
+    return fenceReArmed ? FailedSubmitSlotFate::kRearmed : FailedSubmitSlotFate::kStranded;
+}
+
+// Backpressure waits on a slot that is genuinely in flight, but that submission
+// waits on the present's own semaphores, which CE does not control. The wait is
+// bounded by the Windows GPU timeout-detection window (TdrDelay, 2 s by
+// default): a submission that has not retired by then without the device being
+// lost is waiting on something external and will not retire because CE waits
+// longer. CE then skips its overlay for that present and leaves the slot in
+// flight (fail closed) instead of hanging the game's present thread.
+inline constexpr uint64_t kSubmissionSlotBackpressureWaitBoundNs = 2000ull * 1000ull * 1000ull;
+
+enum class BackpressureWaitOutcome : uint8_t {
+    kSlotRetired,
+    kSkipOverlayThisPresent,  // still in flight after the bound; slot stays busy
+    kDeviceLost,
+    kFailed,
+};
+
+// Vulkan result codes as plain ints so the policy stays header-only and testable:
+// VK_SUCCESS=0, VK_TIMEOUT=2, VK_ERROR_DEVICE_LOST=-4.
+inline BackpressureWaitOutcome ClassifyBackpressureWait(int vkResult) noexcept {
+    switch (vkResult) {
+        case 0:
+            return BackpressureWaitOutcome::kSlotRetired;
+        case 2:
+            return BackpressureWaitOutcome::kSkipOverlayThisPresent;
+        case -4:
+            return BackpressureWaitOutcome::kDeviceLost;
+        default:
+            return BackpressureWaitOutcome::kFailed;
+    }
 }
 
 inline uint32_t ComputeCompositeResourceIndex(uint32_t submissionSlot, uint32_t imageIndex,

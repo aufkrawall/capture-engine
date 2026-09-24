@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "audio_fault_accounting.h"
 
 
 float MediaEngine::ComputeRaisedCosineFade(size_t index,  size_t totalSamples) {
@@ -348,6 +349,29 @@ bool MediaEngine::AudioSourcesLostTheirDevice() const {
             src.track, src.sourceType == AudioConfig::Microphone ? "microphone" : "system", episodes);
     }
     return lost;
+}
+
+void MediaEngine::LatchAudioOverrunLossForStop() {
+    uint64_t lost = 0;
+    for (const AudioSource& src : audioSources) {
+        lost += src.timelineStarvationDropSamples;
+    }
+    audioOverrunLostSamplesThisRecording = lost;
+}
+
+bool MediaEngine::AudioContentWasLost() const {
+    ce::audio::RecordingAudioLossEvidence evidence;
+    evidence.overrunLostSamples = audioOverrunLostSamplesThisRecording;
+    evidence.audioWorkerFailed = audioWorkerFailedThisRecording.load(std::memory_order_acquire);
+    if (!ce::audio::IsRecordingAudioContentLost(evidence)) {
+        return false;
+    }
+    DLL_Log(
+        "[AudioFinalization] audio content was lost: overrunLostSamples=%llu (%.1f ms at 48 kHz) workerFailed=%d; "
+        "track lengths stay exact but that content never reached the file, so the recording is reported as degraded",
+        static_cast<unsigned long long>(evidence.overrunLostSamples),
+        static_cast<double>(evidence.overrunLostSamples) / 48.0, evidence.audioWorkerFailed ? 1 : 0);
+    return true;
 }
 
 bool MediaEngine::AudioTracksHaveContentHoles() const {

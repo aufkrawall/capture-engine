@@ -11,25 +11,19 @@
 #include "../../common/mip_mapping_policy.h"
 #include "../common/sampler_override_utils.h"
 #include "hook_common.h"
+#include "legacy_d3d_sampler_state_internal.h"
 #include "lod_helper.h"
 
 namespace ce::legacy_d3d_sampler_state {
 namespace {
 
-constexpr size_t kStageCount = 8;
-constexpr size_t kStateCount = 9;
-constexpr std::array<DWORD, kStateCount> kTrackedTypes = {13, 14, 25, 16, 17, 18, 19, 20, 21};
+using detail::DeviceState;
+using detail::kStageCount;
+using detail::kStateCount;
+using detail::StageState;
+namespace blocks = ce::legacy_d3d_state_block;
 
-struct StageState {
-    std::array<DWORD, kStateCount> logical{};
-    std::array<DWORD, kStateCount> physical{};
-    uint64_t loggedMipFingerprint = ~uint64_t{0};
-    int loggedAfDecision = -1;
-    UINT loggedAfRequest = 0;
-    bool loggedAfAggressive = false;
-    bool initialized = false;
-    bool bootstrapAttempted = false;
-};
+constexpr std::array<DWORD, kStateCount> kTrackedTypes = {13, 14, 25, 16, 17, 18, 19, 20, 21};
 
 struct MipMappingResult {
     sampler_override::LegacyD3DMipMappingDecision decision =
@@ -37,18 +31,6 @@ struct MipMappingResult {
     DWORD magFilter = 0;
     DWORD minFilter = 0;
     DWORD mipFilter = 0;
-};
-
-struct DeviceState {
-    Api api = Api::D3D8;
-    void* device = nullptr;
-    std::mutex mutex;
-    std::array<StageState, kStageCount> stages;
-    UINT maxAnisotropy = 1;
-    std::atomic<uint64_t> configHash{0};
-    std::atomic<uint32_t> configVersion{0xFFFFFFFFu};
-    std::atomic<bool> overrideActive{false};
-    bool bootstrapSweepPending = true;
 };
 
 std::mutex g_registryMutex;
@@ -433,6 +415,9 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
 
 void RefreshConfigLocked(DeviceState& deviceState, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
                          bool sweepUnknownStages) {
+    // Writes made now would be recorded into the block, not applied.
+    if (deviceState.recording.load(std::memory_order_relaxed))
+        return;
     const uint32_t version = GetActiveGraphicsConfigVersion();
     const bool sweepNeeded = sweepUnknownStages && deviceState.bootstrapSweepPending &&
                              deviceState.overrideActive.load(std::memory_order_relaxed);
@@ -480,7 +465,40 @@ void RefreshConfigLocked(DeviceState& deviceState, SetTextureStageStateFn setSta
     }
 }
 
+void DropStateBlocksLocked(DeviceState& deviceState) {
+    deviceState.stateBlocks.clear();
+    deviceState.recording.store(false, std::memory_order_relaxed);
+    deviceState.recordingSnapshot = blocks::Snapshot{};
+}
+
+std::array<std::atomic<uint64_t>, 3> g_snapshotApplies{};
+std::array<std::atomic<uint64_t>, 3> g_inactiveApplies{};
+
 }  // namespace
+
+namespace detail {
+
+DeviceState* FindOrCreateDevice(Api api, void* device) {
+    return FindOrCreate(api, device, nullptr);
+}
+
+DeviceState* FindExistingDevice(Api api, void* device) {
+    return FindExisting(api, device);
+}
+
+bool ShadowTracksApplication(const DeviceState& deviceState) {
+    return HasOverride(GetActiveGraphicsConfigCached()) || deviceState.overrideActive.load(std::memory_order_acquire);
+}
+
+uint16_t TrackedStatesMask(Api api) {
+    return api == Api::D3D8 ? blocks::kAllStatesMask : blocks::kD3D7StatesMask;
+}
+
+const char* ApiName(Api api) {
+    return ce::legacy_d3d_sampler_state::ApiName(api);
+}
+
+}  // namespace detail
 
 void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn queryMaxAnisotropy) {
     if (!device)
@@ -494,6 +512,7 @@ void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn 
     deviceState->maxAnisotropy = queryMaxAnisotropy ? std::max<UINT>(1, queryMaxAnisotropy(device)) : 1;
     for (StageState& stage : deviceState->stages)
         ResetStage(stage, api, true);
+    DropStateBlocksLocked(*deviceState);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
@@ -523,9 +542,24 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
     const bool overrideConfigured = HasOverride(gfx);
     DeviceState* deviceState =
         overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
-    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
+    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
+                         !deviceState->recording.load(std::memory_order_acquire)))
         return setState(device, stage, type, value);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    if (deviceState->recording.load(std::memory_order_relaxed)) {
+        // Recorded, not applied: the block gets the application's own value and
+        // the shadow stays what the device really holds. The Apply forces it.
+        const HRESULT recordHr = setState(device, stage, type, value);
+        if (SUCCEEDED(recordHr)) {
+            if (combinedAddress) {
+                blocks::RecordState(deviceState->recordingSnapshot, stage, 0, value);
+                blocks::RecordState(deviceState->recordingSnapshot, stage, 1, value);
+            } else {
+                blocks::RecordState(deviceState->recordingSnapshot, stage, static_cast<size_t>(stateIndex), value);
+            }
+        }
+        return recordHr;
+    }
     RefreshConfigLocked(*deviceState, setState, getState, false);
     if (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))
         return setState(device, stage, type, value);
@@ -628,21 +662,74 @@ void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState
     RefreshConfigLocked(*deviceState, setState, getState, true);
 }
 
-void ReconcileAfterExternalStateChange(Api api, void* device, SetTextureStageStateFn setState,
+void ReconcileAfterExternalStateChange(Api api, void* device, DWORD blockHandle, SetTextureStageStateFn setState,
                                        GetTextureStageStateFn getState, QueryMaxAnisotropyFn queryMaxAnisotropy) {
     if (!device || !setState || !getState)
         return;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    DeviceState* deviceState = HasOverride(gfx) ? FindOrCreate(api, device, queryMaxAnisotropy)
-                                                : FindExisting(api, device);
+    const bool overrideConfigured = HasOverride(gfx);
+    DeviceState* deviceState =
+        overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState)
         return;
 
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    if (!blocks::ApplyMayWrite(overrideConfigured, deviceState->overrideActive.load(std::memory_order_acquire),
+                               deviceState->recording.load(std::memory_order_relaxed))) {
+        if (deviceState->recording.load(std::memory_order_relaxed))
+            return;
+        // Nothing is forced, so the block's state is the application's and the shadow
+        // (not kept up to date while inactive) must not be written back. Drop it: an
+        // override enabled later bootstraps from the device.
+        for (StageState& stage : deviceState->stages)
+            ResetStage(stage, api, false);
+        const uint64_t inactive = g_inactiveApplies[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+        if (inactive < 2) {
+            HookLog("%s: State block %lu applied with no sampler override active; nothing written, shadow dropped",
+                    ApiName(api), static_cast<unsigned long>(blockHandle));
+        }
+        return;
+    }
+
+    const auto tracked = deviceState->stateBlocks.find(blockHandle);
+    if (tracked != deviceState->stateBlocks.end()) {
+        // Merge FIRST: a reconcile against the pre-Apply shadow is exactly the
+        // write that used to undo the block.
+        const blocks::ApplyResult applied = blocks::ApplySnapshotToShadow(tracked->second, deviceState->stages);
+        bool reconciled = true;
+        for (size_t i = 0; i < deviceState->stages.size(); ++i) {
+            if ((applied.coveredStages & (1u << i)) == 0)
+                continue;
+            StageState& stage = deviceState->stages[i];
+            if ((applied.staleStages & (1u << i)) != 0)
+                ResetStage(stage, api, false);
+            if (!Bootstrap(*deviceState, static_cast<DWORD>(i), stage, getState))
+                continue;
+            reconciled = ReconcileStage(*deviceState, static_cast<DWORD>(i), stage, gfx, setState) && reconciled;
+        }
+        RefreshConfigLocked(*deviceState, setState, getState, false);
+        if (!reconciled) {
+            deviceState->configHash.store(0, std::memory_order_relaxed);
+            deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
+        }
+        const uint64_t applies = g_snapshotApplies[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+        if (applies < 4) {
+            HookLogImportant("%s: State block %lu applied from its snapshot (stages=0x%02X stale=0x%02X)",
+                             ApiName(api), static_cast<unsigned long>(blockHandle), applied.coveredStages,
+                             applied.staleStages);
+        }
+        return;
+    }
+
     bool complete = true;
     for (size_t i = 0; i < deviceState->stages.size(); ++i) {
         StageState& stage = deviceState->stages[i];
+        const bool wasInitialized = stage.initialized;
+        const auto previousPhysical = stage.physical;
         complete = RefreshPhysicalStageState(*deviceState, static_cast<DWORD>(i), stage, getState) && complete;
+        // An unseen block's values are the application's own: keep them.
+        if (wasInitialized && stage.initialized)
+            blocks::AdoptExternalPhysical(stage, previousPhysical);
     }
     deviceState->bootstrapSweepPending = false;
     deviceState->configHash.store(0, std::memory_order_relaxed);
@@ -652,7 +739,11 @@ void ReconcileAfterExternalStateChange(Api api, void* device, SetTextureStageSta
         deviceState->configHash.store(0, std::memory_order_relaxed);
         deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     }
-    g_externalResyncs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+    const uint64_t resyncs = g_externalResyncs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+    if (resyncs < 4) {
+        HookLogImportant("%s: State block %lu applied without a snapshot (made before CE saw it); device re-read",
+                         ApiName(api), static_cast<unsigned long>(blockHandle));
+    }
 }
 
 void ResetDevice(Api api, void* device) {
@@ -662,6 +753,8 @@ void ResetDevice(Api api, void* device) {
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     for (StageState& stage : deviceState->stages)
         ResetStage(stage, api, true);
+    // Blocks restore pre-Reset values (or are gone): their snapshots are not trusted.
+    DropStateBlocksLocked(*deviceState);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);

@@ -193,7 +193,9 @@ void MediaEngine::AudioThreadEntry() noexcept {
         if (failed) {
             // No consumer remains after an unexpected worker exit. Stop the
             // producers and discard their queues instead of allowing them to
-            // grow indefinitely for the rest of the recording.
+            // grow indefinitely for the rest of the recording. Latch the loss:
+            // every track holds silence from here on, so the output is degraded.
+            audioWorkerFailedThisRecording.store(true, std::memory_order_release);
             StopAudioCaptureSources(true);
         }
         audioRunning.store(false, std::memory_order_release);
@@ -217,6 +219,7 @@ bool MediaEngine::StartAudioThread() {
             DLL_Log("[AudioLoop] ERROR: Failed to create audio worker with unknown exception");
         }
 
+        audioWorkerFailedThisRecording.store(true, std::memory_order_release);
         audioRunning.store(false, std::memory_order_release);
         audioStopDrainComplete.store(true, std::memory_order_release);
         audioDrainCv.notify_all();

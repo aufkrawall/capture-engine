@@ -86,6 +86,17 @@ HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device);
 
 HRESULT STDMETHODCALLTYPE DetourD3D7ApplyStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
 
+HRESULT STDMETHODCALLTYPE DetourD3D7BeginStateBlock(void* ddraw_hook_device);
+
+HRESULT STDMETHODCALLTYPE DetourD3D7EndStateBlock(void* ddraw_hook_device, DWORD* ddraw_hook_blockHandle);
+
+HRESULT STDMETHODCALLTYPE DetourD3D7CaptureStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+
+HRESULT STDMETHODCALLTYPE DetourD3D7DeleteStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_blockHandle);
+
+HRESULT STDMETHODCALLTYPE DetourD3D7CreateStateBlock(void* ddraw_hook_device, DWORD ddraw_hook_type,
+                                                     DWORD* ddraw_hook_blockHandle);
+
 HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device);
 
 HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,

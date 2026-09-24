@@ -221,6 +221,12 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   API writes into its name arguments when trimming them - never pass it read-only literals with trailing blanks.
 - The controller reloads only after the file identity (write time + size) is stable across two checks and never an
   empty/missing file (`common/config_reload_policy.h`); checks run every 250 ms while a change settles, else 1 s.
+- `kReload` is a request, not the commit (audit 4): the controller primes the whole file
+  (`ce::config_text::PrimeConfigDocument`), loads into a candidate copy, and commits the identity only when
+  `IsCoherentLoad` holds (readable before, `ConfigReadFailureCount` unchanged during, identity unchanged after);
+  otherwise `DeferReload` and retry. Children (inject, media) still re-read the file themselves after the command.
+- Optional hotkeys are assigned on every load (blank/deleted = disabled); the controller reloads into its live
+  AppConfig, so skipping empty values kept removed bindings.
 - Install folders the code page cannot express resolve through `ce::path::AnsiCompatiblePath` (exact ANSI or the 8.3
   short name), now header-only in `common/ansi_path.h` (`ce::ansi_path::CompatiblePath`, `ModuleDirectoryAnsi`,
   `ModuleFileNameAnsi`, `ModulePathW`) so the Vulkan layer can use it; CP_UTF8 as ACP no longer returns "".

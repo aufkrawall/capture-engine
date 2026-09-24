@@ -693,8 +693,12 @@ TEST(OverlaySubmitQueuePolicySourceTest, GeneratedPresentsUseAGlobalSubmissionSl
         << "a healthy in-flight slot must not turn into a missing overlay frame after a wall-clock timeout";
     EXPECT_EQ(render.find("state.fences[imageIndex]"), std::string::npos);
     EXPECT_EQ(render.find("state.commandBuffers[imageIndex]"), std::string::npos);
-    EXPECT_NE(render.find("UINT64_MAX"), std::string::npos)
-        << "only a genuinely full slot ring applies correctness backpressure";
+    // Only a genuinely full slot ring applies correctness backpressure, and that wait is
+    // bounded by a hang guard at GPU-timeout scale (audit 4, item 4: an unsignalled fence
+    // hung the present thread forever), never by a frame-scale timeout.
+    EXPECT_NE(render.find("kSubmissionSlotBackpressureWaitBoundNs"), std::string::npos);
+    EXPECT_GE(ce::overlay_submit_queue_policy::kSubmissionSlotBackpressureWaitBoundNs, 1000ull * 1000ull * 1000ull)
+        << "a healthy in-flight slot must never time out at frame scale";
     EXPECT_NE(compute.find("ComputeCompositeResourceIndex"), std::string::npos);
     EXPECT_NE(compute.find("state.commandBuffers[submissionSlot]"), std::string::npos);
     EXPECT_NE(compute.find("state.offscreenFramebuffers[submissionSlot]"), std::string::npos);

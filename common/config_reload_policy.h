@@ -10,6 +10,14 @@
 // re-registered). A change is now applied only once the file's identity (write
 // time and size) has been seen unchanged on two consecutive checks, and an empty
 // or missing file is never applied.
+//
+// A kReload decision is not the commit. The controller loads into a candidate
+// copy and commits the identity only after a coherent read (CommitReload): the
+// whole file was readable before the load, no read failed during it, and the
+// identity did not change while it ran. Otherwise it defers (DeferReload) and
+// the next checks retry. Committing up front turned an unreadable moment (an
+// editor or scanner holding the file) into defaults that were published and
+// never retried, because the identity already counted as applied.
 
 #include <cstdint>
 
@@ -66,13 +74,37 @@ inline Decision Observe(State& state, const FileIdentity& now) {
         return Decision::kWait;
     }
     if (state.pendingValid && state.pending == now) {
-        state.applied = now;
-        state.pendingValid = false;
         return Decision::kReload;
     }
     state.pending = now;
     state.pendingValid = true;
     return Decision::kWait;
+}
+
+// What the controller saw around one candidate load.
+struct LoadEvidence {
+    bool fileReadBeforeLoad = false;  // the whole file could be read right before the load
+    uint64_t readFailuresDuringLoad = 0;
+    FileIdentity identityBeforeLoad;
+    FileIdentity identityAfterLoad;
+};
+
+inline bool IsCoherentLoad(const LoadEvidence& evidence) {
+    return evidence.fileReadBeforeLoad && evidence.readFailuresDuringLoad == 0 &&
+           evidence.identityBeforeLoad.exists && evidence.identityBeforeLoad.size != 0 &&
+           evidence.identityBeforeLoad == evidence.identityAfterLoad;
+}
+
+// The candidate was published: this identity is now the applied one.
+inline void CommitReload(State& state, const FileIdentity& loaded) {
+    state.applied = loaded;
+    state.pendingValid = false;
+}
+
+// The candidate was discarded. The file stays "changed" against the applied
+// identity, so it must be seen stable twice more before the next attempt.
+inline void DeferReload(State& state) {
+    state.pendingValid = false;
 }
 
 }  // namespace ce::config_reload

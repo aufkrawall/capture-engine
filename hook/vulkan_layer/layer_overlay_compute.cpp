@@ -691,9 +691,9 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
             LayerLog("Vulkan Layer: compute-present composite submit FAILED (slot %u, image %u); re-arming its fence",
                      submissionSlot, imageIndex);
             if (disp->fp_vkQueueSubmit(presentQueue, 0, nullptr, fence) != VK_SUCCESS) {
-                LayerLog(
-                    "Vulkan Layer: [Error] overlay submission slot %u is stranded; the ring is one slot shallower",
-                    submissionSlot);
+                // Recorded, not just logged: a stranded fence must never be probed or
+                // waited on again (overlay_submit_queue_policy.h).
+                MarkSubmissionSlotStranded(state, submissionSlot);
             }
             return false;
         }

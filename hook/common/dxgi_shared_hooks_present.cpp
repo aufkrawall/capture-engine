@@ -1,6 +1,12 @@
 #include "dxgi_shared_internal.h"
 
 namespace {
+// Set only once every method the swapchain exposes has a CE view (see PresentMethodViews). A
+// partial install stays unlatched so the next real swapchain event installs the missing method.
+std::atomic<bool> s_presentInlineInstallComplete{false};
+// CE removed its entry prepends and chose wrapper-only interception on purpose; never re-install.
+std::atomic<bool> s_presentWrapperOnlyAfterRuntimeWrap{false};
+
 struct PresentTrampolinePublication {
     PFN_Present fallback = nullptr;
 };
@@ -95,8 +101,9 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
     // transient reasons are retried; an enumeration or suspend failure says
     // something about the process that another pass will not change.
     bool haveBodyView = false;
-    void* deepPresentBody = nullptr;
-    for (int attempt = 1; attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
+    void* deepPresentBody = reinterpret_cast<void*>(dxgi_shared_oPresentDeepBody);
+    // A retry after a partial install: the Present view already exists, only Present1 is missing.
+    for (int attempt = 1; !deepPresentBody && attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
         // The last attempt drops the no-new-threads requirement, which is simply
         // unreachable while NvPresent64 is spawning its workers, and keeps the
         // check that actually makes the patch safe: no suspended thread is in the
@@ -150,7 +157,7 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
             presentAddr);
     }
 
-    if (!present1Addr || (!haveBodyView && prependFallbackAvailable)) {
+    if (!present1Addr || (!haveBodyView && prependFallbackAvailable) || dxgi_shared_oPresent1DeepBody) {
         return haveBodyView;
     }
 
@@ -233,10 +240,19 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    static bool s_inlineHooksInstalled = false;
-    if (s_inlineHooksInstalled) {
+    if (s_presentInlineInstallComplete.load(std::memory_order_acquire) ||
+        s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_acquire)) {
         HookLog("InstallPresentInlineHooks: Inline hooks already installed");
         return true;
+    }
+    {
+        const PresentMethodViews views = GetPresentMethodViews();
+        if (CoversPresentMethod(views) || CoversPresent1Method(views)) {
+            HookLogImportant(
+                "InstallPresentInlineHooks: retrying a partial Present install (present=%d present1=%d "
+                "present1Entry=%p) - only the missing method is installed",
+                CoversPresentMethod(views) ? 1 : 0, CoversPresent1Method(views) ? 1 : 0, present1Addr);
+        }
     }
 
     // Two or more loaded overlay modules is CE's decisive evidence that the Present entry
@@ -322,7 +338,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // Present hooks — and RTSS restores and re-patches those bytes around every call. Sampling
     // therefore decided nothing but who was first, and CE being first is what breaks the other
     // overlay (Cyberpunk + Steam, 20260816_154722).
-    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)) {
+    const bool belowChainViewExists = IsPresentInterceptedBelowForeignChain();
+    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount) ||
+        belowChainViewExists) {
         const PFN_Present previousPresent = dxgi_shared_oPresent;
         const PFN_Present1 previousPresent1 = dxgi_shared_oPresent1;
         dxgi_shared_s_presentEntryLeftToForeignChain.store(true, std::memory_order_release);
@@ -354,13 +372,23 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         // pre-dates injection is covered too. Only a view that was actually obtained latches
         // the install, so a refused body patch is retried by the next real swapchain event
         // instead of blinding the whole session.
+        // An existing deep view (from an earlier partial install) rules the prepend out: the two
+        // modes contradict each other (see InstallPresentBodyHooksBelowForeignChain).
         const bool prependFallbackAvailable =
-            ce::overlay_compat::MayPrependPresentEntryWhenBelowChainViewUnavailable(loadedOverlayCount);
+            ce::overlay_compat::MayPrependPresentEntryWhenBelowChainViewUnavailable(loadedOverlayCount) &&
+            !belowChainViewExists;
         const bool haveBodyView = InstallPresentBodyHooksBelowForeignChain(presentAddr, present1Addr,
                                                                           observedEntryPatchSize,
                                                                           prependFallbackAvailable);
         if (haveBodyView || !prependFallbackAvailable) {
-            s_inlineHooksInstalled = haveBodyView;
+            const bool complete = haveBodyView && (!present1Addr || dxgi_shared_oPresent1DeepBody != nullptr);
+            s_presentInlineInstallComplete.store(complete, std::memory_order_release);
+            if (!complete) {
+                HookLogImportant(
+                    "InstallPresentInlineHooks: below-chain coverage is partial (present=%d present1=%d) - the next "
+                    "real swapchain event retries the missing method",
+                    haveBodyView ? 1 : 0, dxgi_shared_oPresent1DeepBody ? 1 : 0);
+            }
             return true;
         }
         // Single foreign overlay and no body view: the prepend is the historical, validated
@@ -379,7 +407,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             presentAddr);
     }
 
-    if (externalJmpDetected) {
+    const bool presentAlreadyPrepended = dxgi_shared_oPresentTrampoline != nullptr;
+    const bool present1AlreadyPrepended = dxgi_shared_oPresent1Trampoline != nullptr;
+    if (externalJmpDetected && !presentAlreadyPrepended) {
 #ifdef _WIN64
         constexpr bool kRequiresBypassTrampolineOnInstall = false;
 #else
@@ -400,7 +430,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
 
         void* present1Bypass = nullptr;
-        if (present1Addr) {
+        if (present1Addr && !present1AlreadyPrepended) {
             present1Bypass = InlineHook::CreateBypassTrampoline(present1Addr);
             if (!present1Bypass &&
                 !CanSafelyInstallExternalPresentDetourPath(kRequiresBypassTrampolineOnInstall, false)) {
@@ -463,29 +493,52 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     Present1TrampolinePublication present1Publication{dxgi_shared_oPresent1};
     void* presentTrampoline = nullptr;
     void* present1Trampoline = nullptr;
-    InlineHook::PublishedHookSpec inlineHooks[] = {
-        {presentAddr, (void*)DetourPresent, &presentTrampoline, PublishPresentTrampoline, &presentPublication},
-        {present1Addr, (void*)DetourPresent1, &present1Trampoline, PublishPresent1Trampoline,
-         &present1Publication},
-    };
-    InlineHook::InstallPublishedBatch(inlineHooks, present1Addr ? 2 : 1);
-    if (!inlineHooks[0].installed) {
-        HookLog("InstallPresentInlineHooks: Failed to install Present inline hook");
-        return false;
+    // Only the methods still missing a view: a partial earlier install keeps what it has.
+    InlineHook::PublishedHookSpec inlineHooks[2] = {};
+    size_t specCount = 0;
+    int presentSpec = -1;
+    int present1Spec = -1;
+    if (!presentAlreadyPrepended) {
+        presentSpec = static_cast<int>(specCount);
+        inlineHooks[specCount++] = {presentAddr, (void*)DetourPresent, &presentTrampoline, PublishPresentTrampoline,
+                                    &presentPublication};
     }
-    HookLogImportant(
-        "InstallPresentInlineHooks: Present INLINE hook installed (addr=%p, "
-        "trampoline=%p) — s_hookedVTable remains %p",
-        presentAddr, presentTrampoline, dxgi_shared_s_hookedVTable);
-
-    if (present1Addr && inlineHooks[1].installed) {
+    if (present1Addr && !present1AlreadyPrepended) {
+        present1Spec = static_cast<int>(specCount);
+        inlineHooks[specCount++] = {present1Addr, (void*)DetourPresent1, &present1Trampoline,
+                                    PublishPresent1Trampoline, &present1Publication};
+    }
+    if (specCount > 0) {
+        InlineHook::InstallPublishedBatch(inlineHooks, specCount);
+    }
+    const bool presentCovered = presentAlreadyPrepended || (presentSpec >= 0 && inlineHooks[presentSpec].installed);
+    const bool present1Covered =
+        !present1Addr || present1AlreadyPrepended || (present1Spec >= 0 && inlineHooks[present1Spec].installed);
+    if (presentSpec >= 0 && inlineHooks[presentSpec].installed) {
+        HookLogImportant(
+            "InstallPresentInlineHooks: Present INLINE hook installed (addr=%p, "
+            "trampoline=%p) — s_hookedVTable remains %p",
+            presentAddr, presentTrampoline, dxgi_shared_s_hookedVTable);
+    }
+    if (present1Spec >= 0 && inlineHooks[present1Spec].installed) {
         HookLog(
             "InstallPresentInlineHooks: Present1 inline hook installed "
             "(addr=%p, trampoline=%p)",
             present1Addr, present1Trampoline);
     }
-
-    s_inlineHooksInstalled = true;
+    if (!presentCovered || !present1Covered) {
+        // Per method: a Present1 view never stands in for Present (or the reverse). Stay
+        // unlatched so the next real swapchain event installs the missing one.
+        HookLogImportant(
+            "InstallPresentInlineHooks: Present entry coverage is partial (present=%d present1=%d) - the next real "
+            "swapchain event retries the missing method",
+            presentCovered ? 1 : 0, present1Covered ? 1 : 0);
+    }
+    if (!presentCovered) {
+        HookLog("InstallPresentInlineHooks: Failed to install Present inline hook");
+        return false;
+    }
+    s_presentInlineInstallComplete.store(present1Covered, std::memory_order_release);
     return true;
 }
 }
@@ -631,6 +684,7 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
         dxgi_shared_oPresent1Trampoline = nullptr;
     }
     dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
+    s_presentWrapperOnlyAfterRuntimeWrap.store(true, std::memory_order_release);
 
     HookLogImportant(
         "DXGIShared: Wrapped FG runtime swapchain %p — CE left the Present entry to the foreign "
@@ -638,5 +692,16 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
         "wrapper-only interception active",
         pRealSwapChain, loadedOverlayCount, dxgi_shared_s_presentEntryAddress,
         dxgi_shared_s_present1EntryAddress, claimedThisVTable ? 1 : 0, source ? source : "runtime wrap");
+}
+}
+
+namespace DXGIShared {
+bool ShouldRetryPresentInlineHookInstall() {
+    if (s_presentInlineInstallComplete.load(std::memory_order_acquire) ||
+        s_presentWrapperOnlyAfterRuntimeWrap.load(std::memory_order_acquire)) {
+        return false;
+    }
+    // Before the first attempt no entry is known and nothing is covered, so this retries too.
+    return ShouldRetryPresentHookInstall(GetPresentMethodViews(), dxgi_shared_s_present1EntryAddress != nullptr);
 }
 }

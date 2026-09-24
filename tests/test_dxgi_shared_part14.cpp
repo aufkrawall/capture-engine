@@ -301,7 +301,9 @@ TEST(DXGISharedSourceTest, BelowChainViewFallsBackToThePrependOnlyAgainstASingle
     // must never invoke a foreign handler; prepended it must).
     const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
     ASSERT_NE(helper, std::string::npos);
-    EXPECT_NE(install.find("if (!present1Addr || (!haveBodyView && prependFallbackAvailable)) {", helper),
+    EXPECT_NE(install.find("if (!present1Addr || (!haveBodyView && prependFallbackAvailable) || "
+                           "dxgi_shared_oPresent1DeepBody) {",
+                           helper),
               std::string::npos);
 }
 
@@ -525,4 +527,90 @@ TEST(DXGISharedSourceTest, GuardedTempSwapchainRouteRunsWithoutADXGIProxy) {
     EXPECT_NE(deep.find("cached->second.resumeOffset == resumeOffset", bypassFn), std::string::npos);
     EXPECT_NE(deep.find("s_bypassTrampolines[target] = BypassTrampolineEntry{trampoline, resumeOffset};", bypassFn),
               std::string::npos);
+}
+
+// Audit 4, item 2: with two overlays on the entry the Present body hook could be refused while
+// the Present1 body hook succeeded. HasPresentDetourHooks() accepted either, so the
+// real-swapchain retry exited forever, the leave-entry mode forbade the vtable fallback, and a
+// game presenting through plain Present stayed uncovered for the whole session.
+TEST(DXGISharedTest, PresentCoverageAndRetryAreDecidedPerMethod) {
+    using DXGIShared::CoversPresent1Method;
+    using DXGIShared::CoversPresentMethod;
+    using DXGIShared::PresentMethodViews;
+    using DXGIShared::ShouldRetryPresentHookInstall;
+
+    // Forced partial install: only the Present1 body hook exists.
+    PresentMethodViews present1Only;
+    present1Only.present1DeepBody = true;
+    EXPECT_FALSE(CoversPresentMethod(present1Only));
+    EXPECT_TRUE(CoversPresent1Method(present1Only));
+    EXPECT_TRUE(ShouldRetryPresentHookInstall(present1Only, true));
+
+    // The mirror case (Present prepend refused, Present1 prepend installed).
+    PresentMethodViews present1PrependOnly;
+    present1PrependOnly.present1EntryTrampoline = true;
+    EXPECT_TRUE(ShouldRetryPresentHookInstall(present1PrependOnly, true));
+
+    // Present covered, Present1 missing: still retried, for Present1 alone.
+    PresentMethodViews presentOnly;
+    presentOnly.presentDeepBody = true;
+    EXPECT_TRUE(ShouldRetryPresentHookInstall(presentOnly, true));
+    // ...unless the swapchain exposes no Present1 at all.
+    EXPECT_FALSE(ShouldRetryPresentHookInstall(presentOnly, false));
+
+    PresentMethodViews both;
+    both.presentDeepBody = true;
+    both.present1DeepBody = true;
+    EXPECT_FALSE(ShouldRetryPresentHookInstall(both, true));
+
+    // A claimed swapchain vtable covers both slots.
+    PresentMethodViews vtable;
+    vtable.swapchainVTableClaimed = true;
+    EXPECT_FALSE(ShouldRetryPresentHookInstall(vtable, true));
+
+    // Nothing at all (first attempt).
+    EXPECT_TRUE(ShouldRetryPresentHookInstall(PresentMethodViews{}, false));
+}
+
+TEST(DXGISharedTest, PartialPresentInstallStaysUnlatchedAndRetriesOnlyTheMissingMethod) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::current_path();
+    const std::string install =
+        ce::test_source::ReadFile(root / "hook" / "common" / "dxgi_shared_hooks_present.cpp");
+    const std::string tracking =
+        ce::test_source::ReadFile(root / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+    const std::string shared = ce::test_source::ReadFile(root / "hook" / "common" / "dxgi_shared.cpp");
+    const std::string wrapInternal =
+        ce::test_source::ReadFile(root / "hook" / "wrappers" / "dxgi_swapchain_wrap_internal.h");
+    const std::string wrapPresent =
+        ce::test_source::ReadFile(root / "hook" / "wrappers" / "dxgi_swapchain_wrap_present.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(tracking.empty());
+
+    // The retry gate is the per-method policy, not "any detour exists".
+    const size_t ensure = tracking.find("void EnsurePresentInlineHooksForRealSwapchain(");
+    ASSERT_NE(ensure, std::string::npos);
+    const size_t ensureEnd = tracking.find("void RefreshPresentHooksForRealSwapchain(", ensure);
+    const std::string ensureBody = tracking.substr(ensure, ensureEnd - ensure);
+    EXPECT_NE(ensureBody.find("!DXGIShared::ShouldRetryPresentInlineHookInstall()"), std::string::npos);
+    EXPECT_EQ(ensureBody.find("HasPresentDetourHooks()) {\n    return;"), std::string::npos);
+
+    // The install latches only complete coverage, and a retry skips methods already covered.
+    EXPECT_EQ(install.find("static bool s_inlineHooksInstalled"), std::string::npos);
+    EXPECT_NE(install.find("s_presentInlineInstallComplete.store(complete"), std::string::npos);
+    EXPECT_NE(install.find("s_presentInlineInstallComplete.store(present1Covered"), std::string::npos);
+    EXPECT_NE(install.find("!deepPresentBody && attempt <= kDeepPresentBodyInstallAttempts"), std::string::npos);
+    EXPECT_NE(install.find("|| dxgi_shared_oPresent1DeepBody) {"), std::string::npos);
+    // A retry never re-analyses CE's own Present patch as a foreign jump, never mixes a prepend
+    // with an existing below-chain view, and never re-installs after the wrapper-only transition.
+    EXPECT_NE(install.find("if (externalJmpDetected && !presentAlreadyPrepended) {"), std::string::npos);
+    EXPECT_NE(install.find("!belowChainViewExists;"), std::string::npos);
+    EXPECT_NE(install.find("s_presentWrapperOnlyAfterRuntimeWrap.store(true"), std::string::npos);
+
+    // Consumers of "is Present covered" ask about Present, not about either method.
+    const size_t covered = shared.find("bool IsSwapchainPresentCoveredByDeepBodyHook(");
+    ASSERT_NE(covered, std::string::npos);
+    EXPECT_NE(shared.find("dxgi_shared_oPresentDeepBody == nullptr", covered), std::string::npos);
+    EXPECT_NE(wrapInternal.find("HasPresentMethodDetourHook(delegatedMethodIsPresent1)"), std::string::npos);
+    EXPECT_NE(wrapPresent.find("/*delegatedMethodIsPresent1=*/true"), std::string::npos);
 }

@@ -184,3 +184,43 @@ TEST(AudioDefaultDeviceFollowTest, CaptureWorkerKeepsRunningWithoutADeviceAndRep
     EXPECT_NE(stop.find("AudioSourcesLostTheirDevice()"), std::string::npos);
     EXPECT_NE(config.find("AudioSourcesLostTheirDevice()"), std::string::npos);
 }
+
+// An explicitly selected microphone/output that was absent at start (or lost
+// mid-recording) was silently replaced by the Windows default: the file held a
+// different device and the completion said "saved".
+TEST(AudioEndpointSelectionTest, ExplicitDeviceIsNeverReplacedByTheDefault) {
+    using ce::audio::EndpointSelection;
+    using ce::audio::SelectCaptureEndpoint;
+    EXPECT_EQ(SelectCaptureEndpoint(true, true), EndpointSelection::UseRequestedDevice);
+    EXPECT_EQ(SelectCaptureEndpoint(true, false), EndpointSelection::WaitForRequestedDevice);
+    EXPECT_EQ(SelectCaptureEndpoint(false, false), EndpointSelection::UseDefaultDevice);
+    EXPECT_EQ(SelectCaptureEndpoint(false, true), EndpointSelection::UseDefaultDevice);
+}
+
+TEST(AudioEndpointSelectionTest, ResolverWaitsForTheRequestedDeviceAndArrivalRetriesIt) {
+    const auto root = std::filesystem::current_path();
+    const std::string capture = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture.cpp");
+    const std::string loop = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture_loop.cpp");
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(loop.empty());
+    const size_t resolver = capture.find("bool AudioCapture::ResolveCaptureDevice()");
+    const size_t resolverEnd = capture.find("void AudioCapture::ReleaseActiveClientOnWorkerThread", resolver);
+    ASSERT_NE(resolver, std::string::npos);
+    ASSERT_NE(resolverEnd, std::string::npos);
+    const std::string body = capture.substr(resolver, resolverEnd - resolver);
+    // Exactly one default lookup: the branch for a source without a configured device.
+    const size_t firstDefault = body.find("GetDefaultAudioEndpoint(");
+    ASSERT_NE(firstDefault, std::string::npos);
+    EXPECT_EQ(body.find("GetDefaultAudioEndpoint(", firstDefault + 1), std::string::npos);
+    EXPECT_EQ(body.find("falling back to default"), std::string::npos);
+    EXPECT_NE(body.find("SelectCaptureEndpoint(true, pDevice != nullptr)"), std::string::npos);
+    // GetDevice returns unplugged endpoints too; only an ACTIVE one is used.
+    EXPECT_NE(body.find("state != DEVICE_STATE_ACTIVE"), std::string::npos);
+    // Unplug -> the dead client is released and re-resolution fails, so the
+    // source waits with no client and counts the episode; replug -> arrival
+    // clears the backoff so the client_null retry re-acquires it at once.
+    EXPECT_NE(loop.find("endpointArrived_.exchange(false, std::memory_order_acq_rel) && !pCaptureClient"),
+              std::string::npos);
+    EXPECT_NE(loop.find("attemptReactivate(\"client_null\", 0);"), std::string::npos);
+    EXPECT_NE(loop.find("clientWasLive && !clientLive"), std::string::npos);
+}

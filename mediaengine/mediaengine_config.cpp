@@ -105,8 +105,9 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
         }
         const bool audioDeviceLost = AudioSourcesLostTheirDevice();
         const bool audioContentHoles = AudioTracksHaveContentHoles();
+        const bool audioContentLost = AudioContentWasLost();
         lastOutputDegraded = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0 ||
-                             audioDeviceLost || audioContentHoles;
+                             audioDeviceLost || audioContentHoles || audioContentLost;
         audioOnlyWriteErrorCount = 0;
         audioOnlyTrailerSucceeded = false;
         audioOnlyWrittenPackets = 0;

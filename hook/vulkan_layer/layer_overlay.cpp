@@ -427,6 +427,8 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.slotImageIndex.assign(slotCount, 0);
     state.slotAcquireGeneration.assign(slotCount, 0);
     state.slotEverUsed.assign(slotCount, 0);
+    state.slotStranded.assign(slotCount, 0);
+    state.strandedSlotCount = 0;
     state.nextSubmissionSlot = 0;
     state.submissionRingGrowths = 0;
     state.timestampSlotCapacity = slotCount;

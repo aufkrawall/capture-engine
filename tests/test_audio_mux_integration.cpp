@@ -24,12 +24,12 @@ extern "C" {
 namespace {
 
 struct TemporaryMka {
-    TemporaryMka() {
+    explicit TemporaryMka(const wchar_t* extension = L".mka") {
         wchar_t directory[MAX_PATH]{};
         wchar_t temporary[MAX_PATH]{};
         if (GetTempPathW(MAX_PATH, directory) && GetTempFileNameW(directory, L"cea", 0, temporary)) {
             DeleteFileW(temporary);
-            path = std::filesystem::path(temporary).replace_extension(L".mka");
+            path = std::filesystem::path(temporary).replace_extension(extension);
         }
     }
     ~TemporaryMka() {
@@ -239,15 +239,20 @@ std::pair<double, int> BestCorrelation(const std::vector<float>& reference, cons
 
 }  // namespace
 
-TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatroska) {
-    TemporaryMka file;
+namespace {
+
+// Encodes the same signal once per codec into one file of `muxer`, then decodes every
+// stream back and requires the exact recording endpoint and aligned content.
+void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extension,
+                                      const std::vector<const char*>& codecs) {
+    TemporaryMka file(extension);
     ASSERT_FALSE(file.path.empty());
     AVFormatContext* format = nullptr;
-    ASSERT_GE(avformat_alloc_output_context2(&format, nullptr, "matroska", file.path.string().c_str()), 0);
+    ASSERT_GE(avformat_alloc_output_context2(&format, nullptr, muxer, file.path.string().c_str()), 0);
     ASSERT_NE(format, nullptr);
-    ASSERT_TRUE(ce::media::RequireMicrosecondMatroskaTimestampPrecision(format));
-
-    const char* codecs[] = {"aac", "alac", "flac", "opus", "pcm"};
+    if (std::string(muxer) == "matroska") {
+        ASSERT_TRUE(ce::media::RequireMicrosecondMatroskaTimestampPrecision(format));
+    }
     std::vector<std::unique_ptr<MuxTrack>> tracks;
     for (const char* codec : codecs) {
         auto track = std::make_unique<MuxTrack>();
@@ -286,7 +291,7 @@ TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatro
     }
 
     ASSERT_GE(avio_open(&format->pb, file.path.string().c_str(), AVIO_FLAG_WRITE), 0);
-    ASSERT_GE(avformat_write_header(format, nullptr), 0);
+    ASSERT_GE(avformat_write_header(format, nullptr), 0) << muxer;
     constexpr int kTargetSamples = 4800;
     const std::vector<float> source = MakeDeterministicStereoSignal(kTargetSamples, 48000);
     uint64_t generation = 1;
@@ -308,14 +313,31 @@ TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatro
     std::vector<DecodedTrack> decoded(tracks.size());
     for (size_t index = 0; index < decoded.size(); ++index) {
         ASSERT_TRUE(DecodeAudioStream(file.path, static_cast<int>(index), decoded[index]))
-            << codecs[index] << ": " << decoded[index].failure;
-        EXPECT_EQ(decoded[index].samples, kTargetSamples) << codecs[index];
-        EXPECT_EQ(decoded[index].mono.size(), static_cast<size_t>(kTargetSamples)) << codecs[index];
+            << muxer << "/" << codecs[index] << ": " << decoded[index].failure;
+        EXPECT_EQ(decoded[index].samples, kTargetSamples) << muxer << "/" << codecs[index];
+        EXPECT_EQ(decoded[index].mono.size(), static_cast<size_t>(kTargetSamples)) << muxer << "/" << codecs[index];
     }
     const DecodedTrack& reference = decoded.back();
     for (size_t index = 0; index + 1 < decoded.size(); ++index) {
         const auto [correlation, lag] = BestCorrelation(reference.mono, decoded[index].mono, 48);
-        EXPECT_GE(correlation, 0.85) << codecs[index];
-        EXPECT_LE(std::abs(lag), 48) << codecs[index];
+        EXPECT_GE(correlation, 0.85) << muxer << "/" << codecs[index];
+        EXPECT_LE(std::abs(lag), 48) << muxer << "/" << codecs[index];
     }
+}
+
+}  // namespace
+
+TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatroska) {
+    ExpectExactEndpointsThroughMuxer("matroska", L".mka", {"aac", "alac", "flac", "opus", "pcm"});
+}
+
+// The output container is config.video.container handed to FFmpeg by extension, so
+// MP4 and MOV recordings go through movenc, whose end trimming (edit lists) differs
+// from Matroska's. Audit 4: only Matroska had decoded-endpoint coverage.
+TEST(AudioMuxIntegrationTest, CodecsDecodeToTheSameExactEndpointThroughMp4) {
+    ExpectExactEndpointsThroughMuxer("mp4", L".mp4", {"aac", "alac", "flac", "opus"});
+}
+
+TEST(AudioMuxIntegrationTest, CodecsDecodeToTheSameExactEndpointThroughMov) {
+    ExpectExactEndpointsThroughMuxer("mov", L".mov", {"aac", "alac", "pcm"});
 }

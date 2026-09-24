@@ -60,6 +60,118 @@ UINT QueryD3D8MaxAnisotropy(void* opaqueDevice) {
 }
 
 
+namespace {
+
+constexpr auto kD3D8 = ce::legacy_d3d_sampler_state::Api::D3D8;
+
+// CE's own device calls run with the bypass depth raised; they are not the application's.
+bool ShouldTrackD3D8StateBlockCall() {
+    return !HookIsShuttingDown() && dx8_hook_g_DX8StateHookBypassDepth == 0;
+}
+
+template <typename Fn>
+bool HookD3D8StateBlockSlot(void** vtable, int index, void* detour, std::atomic<Fn>& slot) {
+    if (slot.load(std::memory_order_acquire))
+        return true;
+    Fn original = nullptr;
+    if (VTableHook::Create(reinterpret_cast<void*>(&vtable[index]), reinterpret_cast<LPVOID>(detour),
+                           reinterpret_cast<LPVOID*>(&original)) != VTableHook::Success) {
+        return false;
+    }
+    slot.store(original, std::memory_order_release);
+    return true;
+}
+
+HRESULT STDMETHODCALLTYPE DetourD3D8BeginStateBlock(IDirect3DDevice8* device) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const auto original = record ? record->beginStateBlock.load(std::memory_order_acquire) : nullptr;
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(device);
+    if (SUCCEEDED(hr) && ShouldTrackD3D8StateBlockCall())
+        ce::legacy_d3d_sampler_state::OnBeginStateBlock(kD3D8, device);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourD3D8EndStateBlock(IDirect3DDevice8* device, DWORD* dx8_hook_pToken) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const auto original = record ? record->endStateBlock.load(std::memory_order_acquire) : nullptr;
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(device, dx8_hook_pToken);
+    if (ShouldTrackD3D8StateBlockCall()) {
+        // Recording ends either way; only a returned token gets a snapshot.
+        const bool stored = SUCCEEDED(hr) && dx8_hook_pToken;
+        ce::legacy_d3d_sampler_state::OnEndStateBlock(kD3D8, device, stored, stored ? *dx8_hook_pToken : 0);
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourD3D8CaptureStateBlock(IDirect3DDevice8* device, DWORD dx8_hook_Token) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const auto original = record ? record->captureStateBlock.load(std::memory_order_acquire) : nullptr;
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(device, dx8_hook_Token);
+    if (SUCCEEDED(hr) && ShouldTrackD3D8StateBlockCall())
+        ce::legacy_d3d_sampler_state::OnCaptureStateBlock(kD3D8, device, dx8_hook_Token);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourD3D8DeleteStateBlock(IDirect3DDevice8* device, DWORD dx8_hook_Token) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const auto original = record ? record->deleteStateBlock.load(std::memory_order_acquire) : nullptr;
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(device, dx8_hook_Token);
+    if (SUCCEEDED(hr) && ShouldTrackD3D8StateBlockCall())
+        ce::legacy_d3d_sampler_state::ForgetStateBlock(kD3D8, device, dx8_hook_Token);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DetourD3D8CreateStateBlock(IDirect3DDevice8* device, DWORD dx8_hook_Type,
+                                                     DWORD* dx8_hook_pToken) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const auto original = record ? record->createStateBlock.load(std::memory_order_acquire) : nullptr;
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(device, dx8_hook_Type, dx8_hook_pToken);
+    if (SUCCEEDED(hr) && dx8_hook_pToken && ShouldTrackD3D8StateBlockCall())
+        ce::legacy_d3d_sampler_state::OnCreateStateBlock(kD3D8, device, dx8_hook_Type, *dx8_hook_pToken);
+    return hr;
+}
+
+// Caller holds dx8_hook_g_D3D8SamplerVTableMutex.
+void InstallD3D8StateBlockTrackingHooks(D3D8SamplerVTableRecord* record, void** vtable) {
+    if (!record || !vtable)
+        return;
+    // The recording pair is all or nothing: a BeginStateBlock CE saw without the
+    // matching EndStateBlock would leave the shadow "recording" and stop forcing.
+    const bool endHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_ENDSTATEBLOCK,
+                                                  reinterpret_cast<void*>(&DetourD3D8EndStateBlock),
+                                                  record->endStateBlock);
+    const bool beginHooked = endHooked && HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_BEGINSTATEBLOCK,
+                                                                 reinterpret_cast<void*>(&DetourD3D8BeginStateBlock),
+                                                                 record->beginStateBlock);
+    const bool createHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_CREATESTATEBLOCK,
+                                                     reinterpret_cast<void*>(&DetourD3D8CreateStateBlock),
+                                                     record->createStateBlock);
+    const bool captureHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_CAPTURESTATEBLOCK,
+                                                      reinterpret_cast<void*>(&DetourD3D8CaptureStateBlock),
+                                                      record->captureStateBlock);
+    const bool deleteHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_DELETESTATEBLOCK,
+                                                     reinterpret_cast<void*>(&DetourD3D8DeleteStateBlock),
+                                                     record->deleteStateBlock);
+    if (!(beginHooked && createHooked && captureHooked && deleteHooked)) {
+        // Untracked blocks still work: their Apply takes the device re-read path.
+        HookLogImportant("DX8: state-block tracking partial vtable=%p begin/end=%d create=%d capture=%d delete=%d",
+                         vtable, beginHooked ? 1 : 0, createHooked ? 1 : 0, captureHooked ? 1 : 0,
+                         deleteHooked ? 1 : 0);
+    }
+}
+
+}  // namespace
+
 void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
 
 
@@ -123,6 +235,7 @@ void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
                 dx8_hook_oD3D8ApplyStateBlock = original;
         }
     }
+    InstallD3D8StateBlockTrackingHooks(record, vtable);
     dx8_hook_g_DX8HooksInitialized = record->setHooked && record->getHooked;
     HookLog("DX8: Sampler hooks reconciled for vtable=%p", vtable);
 
@@ -429,7 +542,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device,  D
         const D3D8GetTextureStageState_t getState =
             record ? record->getState.load(std::memory_order_acquire) : dx8_hook_oD3D8GetTextureStageState;
         ce::legacy_d3d_sampler_state::ReconcileAfterExternalStateChange(
-            ce::legacy_d3d_sampler_state::Api::D3D8, device,
+            ce::legacy_d3d_sampler_state::Api::D3D8, device, dx8_hook_Token,
             reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(setState),
             reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(getState), QueryD3D8MaxAnisotropy);
     }

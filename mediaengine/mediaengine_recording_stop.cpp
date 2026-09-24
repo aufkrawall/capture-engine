@@ -119,6 +119,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 if (src.syncResampler)
                     src.syncResampler->Reset();
             }
+            LatchAudioOverrunLossForStop();
             bool audioOutputPublished = false;
             if (audioOnlyFmtCtx) {
                 audioOnlyTrailerSucceeded = av_write_trailer(audioOnlyFmtCtx) >= 0;
@@ -496,6 +497,9 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             }
         }
 
+        // The loop below clears the per-source loss counters; latch them first.
+        LatchAudioOverrunLossForStop();
+
         // Stop all audio sources
         for (auto& src : audioSources) {
             if (src.capture) {
@@ -634,7 +638,9 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             videoOutputPublished = videoEnc->WasLastOutputPublished();
             const bool audioDeviceLost = AudioSourcesLostTheirDevice();
             const bool audioContentHoles = AudioTracksHaveContentHoles();
-            lastOutputDegraded = videoEnc->WasLastOutputDegraded() || audioDeviceLost || audioContentHoles;
+            const bool audioContentLost = AudioContentWasLost();
+            lastOutputDegraded =
+                videoEnc->WasLastOutputDegraded() || audioDeviceLost || audioContentHoles || audioContentLost;
         }
         return videoOutputPublished;
 

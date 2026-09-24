@@ -8,6 +8,17 @@
 
 #include "layer_overlay_internal.h"
 
+void MarkSubmissionSlotStranded(OverlayState& state, uint32_t slot) {
+    if (slot >= state.slotStranded.size() || state.slotStranded[slot] != 0) {
+        return;
+    }
+    state.slotStranded[slot] = 1;
+    ++state.strandedSlotCount;
+    LayerLog("Vulkan Layer: [Error] overlay submission slot %u is stranded (fence can never signal); %llu of %zu "
+             "slots stranded",
+             slot, static_cast<unsigned long long>(state.strandedSlotCount), state.fences.size());
+}
+
 // Render overlay using OverlayAdapter
 // fenceWaitUs returns the time spent waiting for fence (previous frame sync)
 namespace {
@@ -22,6 +33,9 @@ void PopSubmissionRingSlot(OverlayState& state, DeviceDispatch* disp) {
     disp->fp_vkFreeCommandBuffers(state.device, state.commandPool, 1, &state.commandBuffers.back());
     state.timestampWritten.pop_back();
     state.slotEverUsed.pop_back();
+    if (!state.slotStranded.empty()) {
+        state.slotStranded.pop_back();
+    }
     state.slotAcquireGeneration.pop_back();
     state.slotImageIndex.pop_back();
     state.semaphores.pop_back();
@@ -75,6 +89,7 @@ bool GrowSubmissionRing(OverlayState& state, DeviceDispatch* disp) {
     state.slotImageIndex.push_back(0);
     state.slotAcquireGeneration.push_back(0);
     state.slotEverUsed.push_back(0);
+    state.slotStranded.push_back(0);
     state.timestampWritten.push_back(false);
 
     if (state.computePresentInitialized && !AppendComputePresentSlot(state, disp)) {
@@ -253,7 +268,10 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
                       CustomOverlay::VulkanBackend::kFramePoolSize,
                   "the submission ring may not outgrow the overlay backend's per-frame buffer pool");
     const bool ringMayGrow = state.submissionRingMayGrow;
-    auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlot(
+    const auto isStranded = [&](uint32_t candidate) {
+        return candidate < state.slotStranded.size() && state.slotStranded[candidate] != 0;
+    };
+    auto slotChoice = ce::overlay_submit_queue_policy::ChooseSubmissionSlotAvoidingStranded(
         slotCount, state.nextSubmissionSlot,
         [&](uint32_t candidate) {
             const VkFence candidateFence = state.fences[candidate];
@@ -270,7 +288,19 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
                 candidate < state.slotAcquireGeneration.size() ? state.slotAcquireGeneration[candidate] : 0,
                 currentAcquireGeneration(candidate));
         },
-        ringMayGrow);
+        isStranded, ringMayGrow);
+    if (!slotChoice.valid && probeFailure == VK_SUCCESS) {
+        // Every slot is stranded: there is nothing CE could safely wait on.
+        static std::atomic<uint64_t> s_allStranded{0};
+        const uint64_t occurrences = s_allStranded.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (occurrences <= 8 || (occurrences & (occurrences - 1)) == 0) {
+            LayerLog("Vulkan Layer: every overlay submission slot is stranded (%llu); overlay skipped for this "
+                     "present (occurrence #%llu)",
+                     static_cast<unsigned long long>(state.strandedSlotCount),
+                     static_cast<unsigned long long>(occurrences));
+        }
+        return false;
+    }
     if (!slotChoice.valid || probeFailure != VK_SUCCESS) {
         if (probeFailure == VK_ERROR_DEVICE_LOST) {
             state.deviceLost = true;
@@ -285,9 +315,17 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         if (GrowSubmissionRing(state, disp)) {
             slotChoice.index = static_cast<uint32_t>(state.fences.size()) - 1;
         } else {
-            // Extending failed, so fall back on the old behaviour rather than
-            // dropping the overlay for this frame.
-            slotChoice.index = state.nextSubmissionSlot % static_cast<uint32_t>(state.fences.size());
+            // Extending failed, so fall back on bounded backpressure rather than
+            // dropping the overlay for this frame - on a slot that can still retire.
+            const auto fallback = ce::overlay_submit_queue_policy::ChooseSubmissionSlotAvoidingStranded(
+                static_cast<uint32_t>(state.fences.size()), state.nextSubmissionSlot,
+                [](uint32_t) { return false; }, isStranded, false);
+            if (!fallback.valid) {
+                LayerLog("Vulkan Layer: ring growth failed and every slot is stranded; overlay skipped for this "
+                         "present");
+                return false;
+            }
+            slotChoice.index = fallback.index;
             slotChoice.waitForCompletion = true;
         }
         slotChoice.growRing = false;
@@ -307,7 +345,25 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
                 state.fences.size(), submissionSlot, imageIndex, static_cast<unsigned long long>(waitNumber),
                 static_cast<unsigned long long>(state.submissionRingGrowths));
         }
-        fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        fenceResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE,
+                                               ce::overlay_submit_queue_policy::kSubmissionSlotBackpressureWaitBoundNs);
+        if (ce::overlay_submit_queue_policy::ClassifyBackpressureWait(static_cast<int>(fenceResult)) ==
+            ce::overlay_submit_queue_policy::BackpressureWaitOutcome::kSkipOverlayThisPresent) {
+            const uint64_t skips = ++state.submissionBackpressureSkips;
+            if (skips <= 8 || (skips & (skips - 1)) == 0) {
+                LayerLog(
+                    "Vulkan Layer: overlay submission slot %u still in flight after the %llu ms backpressure bound; "
+                    "overlay skipped for this present so the game's present thread is not held (skip #%llu)",
+                    submissionSlot,
+                    static_cast<unsigned long long>(
+                        ce::overlay_submit_queue_policy::kSubmissionSlotBackpressureWaitBoundNs / 1000000ull),
+                    static_cast<unsigned long long>(skips));
+            }
+            if (fenceWaitUs) {
+                *fenceWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fenceStartUs);
+            }
+            return false;
+        }
     }
     int64_t fenceEndUs = PerfLogger::GetQpcUs();
     if (fenceWaitUs) {
@@ -481,10 +537,27 @@ bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const Vk
         submitResult = disp->fp_vkQueueSubmit(submitQueue, 1, &submitInfo, fence);
     }
     if (submitResult != VK_SUCCESS) {
-        if (submitResult == VK_ERROR_DEVICE_LOST)
+        if (submitResult == VK_ERROR_DEVICE_LOST) {
             state.deviceLost = true;
-        LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (slot %u, image %u)", submitResult,
-                 submissionSlot, imageIndex);
+            LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (slot %u, image %u)", submitResult,
+                     submissionSlot, imageIndex);
+            return false;
+        }
+        // The fence was reset above and nothing will signal it now. Re-arm it with a
+        // fence-only submit (as the compute route does); if that fails too, the slot is
+        // stranded and never probed or waited on again.
+        bool reArmed = false;
+        {
+            ScopedBorrowedQueueSubmission rearmGuard(submitQueue);
+            reArmed = disp->fp_vkQueueSubmit(submitQueue, 0, nullptr, fence) == VK_SUCCESS;
+        }
+        const bool stranded = ce::overlay_submit_queue_policy::ResolveFailedSubmitSlotFate(reArmed) ==
+                              ce::overlay_submit_queue_policy::FailedSubmitSlotFate::kStranded;
+        if (stranded) {
+            MarkSubmissionSlotStranded(state, submissionSlot);
+        }
+        LayerLog("Vulkan Layer: QueueSubmit FAILED with result %d (slot %u, image %u); fence %s", submitResult,
+                 submissionSlot, imageIndex, stranded ? "could not be re-armed, slot stranded" : "re-armed");
         return false;
     }
     if (writeTimestamps) {

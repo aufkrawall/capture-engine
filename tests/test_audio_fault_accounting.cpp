@@ -288,3 +288,50 @@ TEST(AudioFaultAccounting, ContentHolesReachTheCompletionAsDegraded) {
     EXPECT_NE(config.find("AudioTracksHaveContentHoles()"), std::string::npos);
     EXPECT_NE(flush.find("contentHoles=%lld"), std::string::npos);
 }
+
+// Consumer-overrun losses (`[STOP AUDIO INGEST] starve=`) and a dead audio worker
+// kept every track length exact, so the completion said "saved" although captured
+// audio never reached the file. Both are latched and fold into the degraded result.
+TEST(RecordingAudioLossTest, OverrunLossOrWorkerDeathMarksTheRecordingDegraded) {
+    ce::audio::RecordingAudioLossEvidence evidence;
+    EXPECT_FALSE(ce::audio::IsRecordingAudioContentLost(evidence));
+    evidence.overrunLostSamples = 1;
+    EXPECT_TRUE(ce::audio::IsRecordingAudioContentLost(evidence));
+    evidence.overrunLostSamples = 0;
+    evidence.audioWorkerFailed = true;
+    EXPECT_TRUE(ce::audio::IsRecordingAudioContentLost(evidence));
+}
+
+TEST(RecordingAudioLossTest, IdleSourceSilenceIsNotLoss) {
+    // A source that produced no packets (idle render endpoint, app that never played)
+    // holds expected timeline silence: nothing was destroyed and the worker lived.
+    const ce::audio::RecordingAudioLossEvidence idle{};
+    EXPECT_FALSE(ce::audio::IsRecordingAudioContentLost(idle));
+}
+
+TEST(RecordingAudioLossTest, StopLatchesLossBeforeCountersResetAndBothOutputsUseIt) {
+    const auto root = std::filesystem::current_path();
+    const std::string stop = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_recording_stop.cpp");
+    const std::string config = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_config.cpp");
+    const std::string thread = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_audio_thread.cpp");
+    const std::string start = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_recording_start.cpp");
+    ASSERT_FALSE(stop.empty());
+    // Video path: latched before the per-source reset clears the counter.
+    const size_t reset = stop.find("src.timelineStarvationDropSamples = 0;");
+    ASSERT_NE(reset, std::string::npos);
+    const size_t videoLatch = stop.rfind("LatchAudioOverrunLossForStop();", reset);
+    ASSERT_NE(videoLatch, std::string::npos);
+    // Audio-only path: latched before the muxer cleanup takes the verdict.
+    const size_t audioOnlyLatch = stop.find("LatchAudioOverrunLossForStop();");
+    const size_t audioOnlyCleanup = stop.find("CleanupAudioOnlyMuxer();");
+    ASSERT_NE(audioOnlyCleanup, std::string::npos);
+    EXPECT_LT(audioOnlyLatch, audioOnlyCleanup);
+    EXPECT_NE(stop.find("|| audioContentLost;"), std::string::npos);
+    EXPECT_NE(config.find("audioDeviceLost || audioContentHoles || audioContentLost;"), std::string::npos);
+    // Worker death (or a worker that never started) is latched; each start clears it.
+    const size_t entry = thread.find("void MediaEngine::AudioThreadEntry()");
+    ASSERT_NE(entry, std::string::npos);
+    EXPECT_NE(thread.find("audioWorkerFailedThisRecording.store(true", entry), std::string::npos);
+    EXPECT_NE(start.find("audioWorkerFailedThisRecording.store(false"), std::string::npos);
+    EXPECT_NE(start.find("audioOverrunLostSamplesThisRecording = 0;"), std::string::npos);
+}

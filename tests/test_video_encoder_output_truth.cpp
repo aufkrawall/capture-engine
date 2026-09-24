@@ -74,7 +74,7 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     const std::filesystem::path engineSource = std::filesystem::current_path() / "mediaengine" / "mediaengine.cpp";
     const std::string engine = ce::test_source::ReadLogicalSource(engineSource);
     ASSERT_FALSE(engine.empty());
-    EXPECT_NE(engine.find("lastOutputDegraded = videoEnc->WasLastOutputDegraded()"), std::string::npos);
+    EXPECT_NE(engine.find("videoEnc->WasLastOutputDegraded() || audioDeviceLost"), std::string::npos);
     EXPECT_NE(engine.find("MEDIAENGINE_API bool MediaEngine_WasLastOutputDegraded()"), std::string::npos);
 }
 

@@ -239,8 +239,19 @@ bool AudioCapture::ResolveCaptureDevice() {
             std::wstring wideId(static_cast<size_t>(wideLen), L'\0');
             MultiByteToWideChar(CP_UTF8, 0, deviceId_.c_str(), -1, wideId.data(), wideLen);
             hr = pEnumerator->GetDevice(wideId.c_str(), &pDevice);
-            if (SUCCEEDED(hr)) {
-                DLL_Log("[AudioCapture] Using device by ID: %s", deviceId_.c_str());
+            if (SUCCEEDED(hr) && pDevice) {
+                // GetDevice also returns unplugged/disabled endpoints; activating one
+                // only fails later with a less useful error, so require ACTIVE here.
+                DWORD state = 0;
+                if (FAILED(pDevice->GetState(&state)) || state != DEVICE_STATE_ACTIVE) {
+                    DLL_Log("[AudioCapture] Device by ID is not active (state=0x%lx): %s",
+                            static_cast<unsigned long>(state), deviceId_.c_str());
+                    pDevice->Release();
+                    pDevice = nullptr;
+                    hr = E_FAIL;
+                } else {
+                    DLL_Log("[AudioCapture] Using device by ID: %s", deviceId_.c_str());
+                }
             }
         } else {
             hr = E_FAIL;
@@ -288,14 +299,18 @@ bool AudioCapture::ResolveCaptureDevice() {
             }
         }
 
-        // 3. If both failed, fall back to default endpoint
-        if (!pDevice) {
-            DLL_Log("[AudioCapture] Device '%s' not found by ID or name, falling back to default", deviceId_.c_str());
-            hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
+        // 3. The requested device is absent: never substitute the Windows default.
+        // The source waits for it (silence, reported degraded) and device arrival
+        // retries it (audio_recovery_policy.h, SelectCaptureEndpoint).
+        if (ce::audio::SelectCaptureEndpoint(true, pDevice != nullptr) ==
+            ce::audio::EndpointSelection::WaitForRequestedDevice) {
+            DLL_Log("[AudioCapture] Requested %s device '%s' is not available; waiting for it (no default fallback)",
+                    isLoopback_ ? "output" : "input", deviceId_.c_str());
+            return false;
         }
     }
     if (FAILED(hr) || !pDevice) {
-        DLL_Log("[AudioCapture] GetDefaultAudioEndpoint failed: 0x%x", hr);
+        DLL_Log("[AudioCapture] Endpoint resolution failed: 0x%x", hr);
         return false;
     }
     return true;

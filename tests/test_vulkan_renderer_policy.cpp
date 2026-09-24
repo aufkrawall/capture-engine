@@ -717,7 +717,7 @@ TEST(VulkanRendererPolicySourceTest, DeviceLossStopsOverlayWorkAndSkipsIdleWait)
         root / "hook" / "vulkan_layer" / "layer_overlay.cpp");
 
     const size_t earlyGate = render.find("if (state.deviceLost)");
-    const size_t slotProbe = render.find("ChooseSubmissionSlot(");
+    const size_t slotProbe = render.find("ChooseSubmissionSlotAvoidingStranded(");
     ASSERT_NE(earlyGate, std::string::npos);
     ASSERT_NE(slotProbe, std::string::npos);
     EXPECT_LT(earlyGate, slotProbe);
