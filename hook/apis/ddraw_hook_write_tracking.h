@@ -16,13 +16,13 @@
 // rectangle is unknown or the tracker could not retain an exact mark.
 enum class DirectDrawWriteRegion { None, Partial, Whole };
 
-// The access paired with a successful Unlock. DirectDraw normally permits one
-// lock at a time, but Deferred keeps nested/overlapping locks conservative and
-// presents only after the final one is released.
-enum class DirectDrawLockAccess { Unknown, Deferred, ReadOnly, Writable };
+// The access paired with an Unlock attempt. See
+// ce::ddraw_present_policy::CompleteSurfaceLockTrack for why every Unlock
+// attempt resolves the surface's whole track.
+using DirectDrawLockAccess = ce::ddraw_present_policy::SurfaceLockAccess;
 
 void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable);
-DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface);
+DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded);
 
 void MarkDirectDrawSurfaceWrite(IUnknown* surface, const RECT* rect, bool rectIsExact);
 bool DirectDrawSurfaceHasPendingWrite(IUnknown* surface);

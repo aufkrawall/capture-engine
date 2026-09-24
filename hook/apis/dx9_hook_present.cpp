@@ -194,6 +194,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 }
             }
         }
+        // The sampler slots serve forced AF, not the overlay, so their
+        // proof-of-life runs even when the overlay is skipped.
+        CheckD3D9SamplerHookDrift(vtable);
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
         const bool captureAfterOverlay = captureIncludeOverlay;
         const bool captureBeforeOverlay = !captureAfterOverlay;
@@ -491,6 +494,21 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
         dx9_hook_g_overlayDrawnBeforePresent = false;
         dx9_hook_g_overlayDrawnInPresentEndScene = false;
         dx9_hook_g_sawPresentNestedEndScene = false;
+    }
+
+    if (dx9_hook_g_PresentRecurse == 1) {
+        // A settled render loop is the first point at which "CE saw no sampler
+        // at all" means the overrides missed the game rather than that the game
+        // has not built its resources yet. Waiting for shutdown to say so is
+        // useless while playing (Strange Brigade DX12 session 20260921_175749:
+        // 10288 frames with forced AF configured and no sampler CE could
+        // reach, and nothing in the log until the process was gone). The
+        // threshold mirrors the DX12 settled-loop summary.
+        static uint64_t s_presentedFrames = 0;
+        if (++s_presentedFrames == 2000) {
+            HookLogImportant("DX9: Settled render loop reached (2000 presents) - sampler override summary follows");
+            ce::dx9_sampler_state::LogSummary();
+        }
     }
     dx9_hook_g_PresentRecurse--;
 }

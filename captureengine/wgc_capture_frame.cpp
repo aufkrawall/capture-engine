@@ -40,6 +40,16 @@ bool WGCCapture::Impl::DeliverSourceTexture(ID3D11Texture2D* texture,  const D3D
             LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
         }
 
+        // A delivered format family crossing the HDR boundary of the capture
+        // contract means the display's advanced-color state changed under this
+        // capture; confirm immediately instead of labeling frames with the
+        // stale captureIsHDR_ until the periodic probe runs.
+        if (ce::capture_retarget::SourceFormatFamilyContradictsHdrContract(
+                DxgiSourceFormatFamily(desc.Format), DxgiSourceFormatFamily(captureDxgiFormat_),
+                captureIsHDR_.load(std::memory_order_relaxed))) {
+            RequestHDRRecheckUrgent(desc.Format);
+        }
+
         ID3D11Texture2D* copiedTexture = nullptr;
         int64_t copyCompleteQpc = 0;
         WgcPoolSlotLease poolLease;

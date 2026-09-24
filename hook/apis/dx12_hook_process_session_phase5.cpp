@@ -80,6 +80,16 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 slTurnedOff, exactPrewarmedPostSLHandoffBackendPreservedThisPresent,
                 g_FGCompat.IsFSRFGApiActive(), dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
                 FAILED(transitionDeviceHr));
+        // One keep-live set shared by the cooldown, GPU-drain and reinit gates below. All four
+        // exceptions mean "this transition Present already rebuilt or preserved the overlay; do not
+        // drain, tear down, or cool it down". New keep-live exceptions must join THIS predicate
+        // instead of being listed at a single gate: the DLSS->FSR no-callback takeover was missing
+        // from the drain gate alone, so every such switch ran a blocking 200 ms GPU drain on the
+        // Present thread for an overlay state deliberately kept.
+        const bool keepOverlayLiveAcrossOuterOff = keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
+                                                  keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn ||
+                                                  keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery ||
+                                                  keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve;
         HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                          allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
 
@@ -89,10 +99,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 "DX12: [outer] SL FG ON after active PostSL — preserving active PostSL path "
                 "instead of re-entering transition cooldown");
         } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
-                   keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
-                   keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn ||
-                   keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery ||
-                   keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+                   keepOverlayLiveAcrossOuterOff) {
             dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
             dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
             HookLogImportant(
@@ -200,9 +207,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
 
             // Drain in-flight GPU work
             if (dx12_hook_g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&
-                !keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn &&
-                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery &&
-                !keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+                !keepOverlayLiveAcrossOuterOff) {
                 UINT64 lastVal = dx12_hook_g_State.currentFenceValue;
                 HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                 if (drainEvent) {
@@ -221,6 +226,10 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                     "DX12: [outer] FG->off — preserving exact confirmed PostSL proxy resources "
                     "(proxy=%p queue=%p; no drain/reinit/copy/wait)",
                     lastSuccessfulPostSLSwapchain, dx12_hook_g_PostSLLastWorkingQueue);
+            } else if (keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+                HookLogImportant(
+                    "DX12: [outer] FG->off — DLSS->FSR no-callback takeover keeps its freshly reinited overlay; "
+                    "skipping the FG->off GPU drain (no drain/reinit/copy/wait)");
             } else if (keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn) {
                 HookLogImportant(
                     "[OVERLAY VISIBILITY] First authoritative DLSS-off native Present keeps its newly rebuilt "
@@ -247,11 +256,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             // Tearing it down here is what produced the 60-present blank — keep it live.
             // EXCEPTION (FSR->off game-swapchain recovery): the recovery reinit already
             // rebuilt the RTVs on the game's own native swapchain; they are not stale.
-            if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover &&
-                !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&
-                !keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn &&
-                !keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery &&
-                !keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
+            if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossOuterOff &&
+                !preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {
                 HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                 dx12_hook_g_State.overlayInit = false;
                 CleanupRTVs();

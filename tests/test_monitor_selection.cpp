@@ -86,3 +86,17 @@ TEST(MonitorSelectionTest, StableIdsMatchCaseInsensitivelyAndListAsConfigValues)
     EXPECT_NE(list.find("bounds=1920,0 2560x1440"), std::string::npos);
     EXPECT_NE(list.find("monitor=id:\\\\?\\DISPLAY#Acme123#{Monitor-Guid}"), std::string::npos);
 }
+
+TEST(MonitorSelectionTest, GdiDeviceNamesMatchCaseInsensitivelyAndRejectsNulls) {
+    EXPECT_TRUE(monitor::GdiDeviceNamesMatch(L"\\\\.\\DISPLAY2", L"\\\\.\\display2"));
+    EXPECT_FALSE(monitor::GdiDeviceNamesMatch(L"\\\\.\\DISPLAY2", L"\\\\.\\DISPLAY3"));
+    EXPECT_FALSE(monitor::GdiDeviceNamesMatch(nullptr, L"\\\\.\\DISPLAY2"));
+    EXPECT_FALSE(monitor::GdiDeviceNamesMatch(L"\\\\.\\DISPLAY2", nullptr));
+}
+
+TEST(MonitorSelectionTest, SdrWhiteNitsClampToTheWindowsRange) {
+    EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(1000), 80.0f);
+    EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(2538), 203.04f);
+    EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(0), 80.0f);
+    EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(65535), 1000.0f);
+}

@@ -50,13 +50,20 @@ bool CanCommitPreparedEntryPatchLocked(size_t hookIndex) {
            memcmp(hook.target, hook.origBytes, static_cast<size_t>(hook.patchSize)) == 0;
 }
 
-bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex) {
+bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex, EntryPatchFailure* outFailure) {
+    if (outFailure) {
+        *outFailure = EntryPatchFailure{};
+    }
     if (!CanCommitPreparedEntryPatchLocked(hookIndex)) {
+        if (outFailure && hookIndex < g_hooks.size() && g_hooks[hookIndex].target) {
+            outFailure->issue = EntryPatchIssue::kBytesMismatch;
+            outFailure->target = g_hooks[hookIndex].target;
+        }
         return false;
     }
     HookEntry& hook = g_hooks[hookIndex];
     if (!WriteOwnedEntryPatchQuiesced(hook.target, hook.patchDestination, hook.patchSize, hook.origBytes,
-                                      hook.installedBytes)) {
+                                      hook.installedBytes, outFailure)) {
         return false;
     }
     hook.installed = true;
@@ -86,9 +93,11 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
 
     std::vector<size_t> hookIndices;
     std::vector<BatchEntryState> states;
+    std::vector<EntryPatchFailure> groupFailures;
     try {
         hookIndices.assign(count, kNoHookIndex);
         states.assign(count, BatchEntryState::kNotPrepared);
+        groupFailures.assign(count, EntryPatchFailure{});
     } catch (...) {
         HookLogImportant("InlineHook: Batch bookkeeping allocation failed; using independent transactions");
         return InstallPublishedIndividually(hooks, count);
@@ -149,7 +158,7 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
                     if (states[i] != BatchEntryState::kGroupEligible) {
                         continue;
                     }
-                    if (CommitPreparedEntryPatchQuiescedLocked(hookIndices[i])) {
+                    if (CommitPreparedEntryPatchQuiescedLocked(hookIndices[i], &groupFailures[i])) {
                         states[i] = BatchEntryState::kInstalled;
                         ++groupedCommitCount;
                     } else {
@@ -185,7 +194,7 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
                     if (states[i] != BatchEntryState::kGroupEligible) {
                         continue;
                     }
-                    if (CommitPreparedEntryPatchQuiescedLocked(hookIndices[i])) {
+                    if (CommitPreparedEntryPatchQuiescedLocked(hookIndices[i], &groupFailures[i])) {
                         states[i] = BatchEntryState::kInstalled;
                         ++groupedCommitCount;
                     } else {
@@ -193,6 +202,12 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
                     }
                 }
             }
+        }
+
+        // Group-commit failures were recorded while peers were suspended;
+        // report them only now, with every peer resumed (see EntryPatchFailure).
+        for (const auto& failure : groupFailures) {
+            ReportEntryPatchFailure(failure);
         }
 
         // A failed group snapshot or a thread executing one particular target

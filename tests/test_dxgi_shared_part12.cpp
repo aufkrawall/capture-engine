@@ -30,12 +30,23 @@ TEST(DXGISharedSourceTest, NativeFSRGameSwapchainRecoveryReinitKeepsOverlayLiveA
         text.find("nativeFSRGameSwapchainRecoveryReinitializedThisPresent", recoveryDecision);
     const size_t keepLiveDecision =
         text.find("ShouldKeepOverlayLiveAcrossNativeFSRGameSwapchainRecovery(", processFrame);
+    // The veto reaches the teardown through the shared keep-live set: the
+    // per-gate exception lists were consolidated there after one gate drifted
+    // out of sync with the others.
+    const size_t sharedKeepLiveSet = text.find("const bool keepOverlayLiveAcrossOuterOff =", keepLiveDecision);
+    const size_t sharedKeepLiveSetEnd = text.find(';', sharedKeepLiveSet);
     const size_t forceReinitGuard =
-        text.find("!keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery", processFrame);
+        text.find("if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossOuterOff &&", sharedKeepLiveSetEnd);
     ASSERT_NE(recoveryDecision, std::string::npos);
     ASSERT_NE(proofLatch, std::string::npos);
     ASSERT_NE(keepLiveDecision, std::string::npos);
+    ASSERT_NE(sharedKeepLiveSet, std::string::npos);
+    ASSERT_NE(sharedKeepLiveSetEnd, std::string::npos);
     ASSERT_NE(forceReinitGuard, std::string::npos);
+    EXPECT_NE(text.substr(sharedKeepLiveSet, sharedKeepLiveSetEnd - sharedKeepLiveSet)
+                  .find("keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery"),
+              std::string::npos)
+        << "the game-swapchain recovery exception must be part of the shared keep-live set";
     EXPECT_LT(recoveryDecision, keepLiveDecision);
     EXPECT_LT(keepLiveDecision, forceReinitGuard)
         << "the FSR->off game-swapchain recovery reinit must veto the late [outer] SL-FG-OFF teardown";
@@ -153,14 +164,24 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffPreserveKeepsOverlayLiveAcrossL
         text.find("exactPrewarmedPostSLHandoffBackendPreservedThisPresent = true", preserveDecision);
     const size_t keepLiveDecision =
         text.find("ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(", processFrame);
-    const size_t drainSkipGuard = text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve", processFrame);
-    const size_t forceReinitGuard =
-        text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve", drainSkipGuard + 1);
+    // The preserve exception gates both the GPU drain and the force reinit
+    // through the shared keep-live set (one exception list feeding all three
+    // outer-off gates).
+    const size_t sharedKeepLiveSet = text.find("const bool keepOverlayLiveAcrossOuterOff =", keepLiveDecision);
+    const size_t sharedKeepLiveSetEnd = text.find(';', sharedKeepLiveSet);
+    const size_t drainSkipGuard = text.find("!keepOverlayLiveAcrossOuterOff", sharedKeepLiveSetEnd);
+    const size_t forceReinitGuard = text.find("!keepOverlayLiveAcrossOuterOff", drainSkipGuard + 1);
     ASSERT_NE(preserveDecision, std::string::npos);
     ASSERT_NE(proofLatch, std::string::npos);
     ASSERT_NE(keepLiveDecision, std::string::npos);
+    ASSERT_NE(sharedKeepLiveSet, std::string::npos);
+    ASSERT_NE(sharedKeepLiveSetEnd, std::string::npos);
     ASSERT_NE(drainSkipGuard, std::string::npos);
     ASSERT_NE(forceReinitGuard, std::string::npos);
+    EXPECT_NE(text.substr(sharedKeepLiveSet, sharedKeepLiveSetEnd - sharedKeepLiveSet)
+                  .find("keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve"),
+              std::string::npos)
+        << "the prewarmed-handoff preserve exception must be part of the shared keep-live set";
     EXPECT_LT(preserveDecision, keepLiveDecision);
     EXPECT_LT(keepLiveDecision, forceReinitGuard)
         << "the FSR->DLSS prewarmed-handoff preserve must veto the late [outer] SL-FG-OFF teardown";

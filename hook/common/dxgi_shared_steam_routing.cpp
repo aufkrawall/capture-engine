@@ -332,37 +332,13 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
             "CE overlay may be disabled for this session.");
     }
 
-    // Check what Steam's legacy known callback slot contains after the init call.
-    // New Steam builds can use nearby slots too; the VEH log reports the exact
-    // dynamically resolved slot when it differs from this legacy address.
-    {
-        HMODULE steamMod = GetModuleHandleW(L"gameoverlayrenderer64.dll");
-        if (steamMod) {
-            void** steamCallbackPtr = (void**)((uintptr_t)steamMod + 0x1621d8);
-            if (IsReadableMemory(reinterpret_cast<const void*>(steamCallbackPtr), sizeof(void*))) {
-                void* callbackAfterInit = *steamCallbackPtr;
-                if (callbackAfterInit != nullptr && callbackAfterInit != (void*)SteamDummyRenderingCallback &&
-                    callbackAfterInit != (void*)presentBypass) {
-                    HookLogImportant(
-                        "AttemptSteamDX12OverlayInit: Steam legacy callback slot contains Steam-owned function %p "
-                        "(bypass=%p dummy=%p)",
-                        callbackAfterInit, (void*)presentBypass, (void*)SteamDummyRenderingCallback);
-                } else {
-                    HookLogImportant(
-                        "AttemptSteamDX12OverlayInit: Steam legacy callback slot is %s (%p) "
-                        "(bypass=%p dummy=%p)",
-                        callbackAfterInit == nullptr
-                            ? "NULL"
-                            : (callbackAfterInit == (void*)presentBypass ? "CE bypass" : "CE dummy"),
-                        callbackAfterInit, (void*)presentBypass, (void*)SteamDummyRenderingCallback);
-                }
-            } else {
-                HookLog("AttemptSteamDX12OverlayInit: Cannot read Steam callback pointer (not readable)");
-            }
-        } else {
-            HookLog("AttemptSteamDX12OverlayInit: gameoverlayrenderer64.dll not loaded");
-        }
-    }
+    // Steam's callback slot after the init call is only observable through the
+    // VEH, which resolves it from the faulting `mov reg,[slot]; call reg` and
+    // logs the exact slot. The former peek read a fixed RVA taken from one 2025
+    // x64 Steam build that newer builds have moved (RoboCop session
+    // 20260809_141705 resolved a different slot), so it reported - and could
+    // mislead into touching - an unrelated Steam global. See
+    // SteamOverlayInitVehHandler for the dynamically resolved slot.
 
     HookLogImportant(
         "AttemptSteamDX12OverlayInit: Steam overlay init completed (hr=0x%08X) — "

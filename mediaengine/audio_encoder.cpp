@@ -558,8 +558,6 @@ void AudioEncoder::Finish(bool flush) {
     fifoLogCounter = 0;
     frameLogCounter = 0;
     noPacketCount = 0;
-    wasDroppingSamples = false;
-    totalDroppedSamples = 0;
     totalAcceptedSamples = 0;
     // Clear any pending packets
     for (auto* pkt : pendingPackets) {

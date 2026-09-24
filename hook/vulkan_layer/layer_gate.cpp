@@ -107,13 +107,16 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     if (!pVersionStruct)
         return VK_ERROR_INITIALIZATION_FAILED;
 
-    char processName[MAX_PATH] = {};
-    ce::vulkan_layer_participation::GetCurrentProcessBaseName(processName, sizeof(processName));
+    wchar_t processName[MAX_PATH] = {};
+    ce::vulkan_layer_participation::GetCurrentProcessBaseNameWide(processName, _countof(processName));
+    // Matching is UTF-16 end to end; the log keeps a UTF-8 spelling.
+    char processNameUtf8[MAX_PATH * 4] = {};
+    ce::vulkan_layer_participation::GetCurrentProcessBaseName(processNameUtf8, sizeof(processNameUtf8));
     const ce::vulkan_layer_participation::Decision decision =
         ce::vulkan_layer_participation::DecideParticipation(processName);
     if (!decision.participate) {
         GateLog("Declined '%s' (hostPublished=%d eligibleByHost=%d listedTarget=%d); the full layer is not loaded",
-                processName, decision.hostPublished ? 1 : 0, decision.eligibleByHost ? 1 : 0,
+                processNameUtf8, decision.hostPublished ? 1 : 0, decision.eligibleByHost ? 1 : 0,
                 decision.listedTarget ? 1 : 0);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -121,24 +124,24 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     DWORD error = 0;
     HMODULE layer = LoadLayerBesideGate(&error);
     if (!layer) {
-        GateLog("Admitted '%s' but %ls could not be loaded (error=%lu); declining", processName, kLayerLibraryName,
+        GateLog("Admitted '%s' but %ls could not be loaded (error=%lu); declining", processNameUtf8, kLayerLibraryName,
                 error);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     auto negotiate = reinterpret_cast<PFN_vkNegotiateLoaderLayerInterfaceVersion>(
-        reinterpret_cast<void*>(GetProcAddress(layer, "vkNegotiateLoaderLayerInterfaceVersion")));
+        GetProcAddress(layer, "vkNegotiateLoaderLayerInterfaceVersion"));
     const VkResult result = negotiate ? negotiate(pVersionStruct) : VK_ERROR_INITIALIZATION_FAILED;
     if (result != VK_SUCCESS) {
         // The full layer declined (a host appeared and says otherwise) and did
         // not pin itself, so this reference is the last one.
         FreeLibrary(layer);
-        GateLog("Admitted '%s' but the full layer declined negotiation (result=%d)", processName,
+        GateLog("Admitted '%s' but the full layer declined negotiation (result=%d)", processNameUtf8,
                 static_cast<int>(result));
         return result;
     }
     // The full layer pinned itself on success; this reference is never
     // released, because the loader now holds the full layer's entry points.
-    GateLog("Admitted '%s' (hostPublished=%d eligibleByHost=%d listedTarget=%d); full layer negotiated", processName,
+    GateLog("Admitted '%s' (hostPublished=%d eligibleByHost=%d listedTarget=%d); full layer negotiated", processNameUtf8,
             decision.hostPublished ? 1 : 0, decision.eligibleByHost ? 1 : 0, decision.listedTarget ? 1 : 0);
     return VK_SUCCESS;
 }

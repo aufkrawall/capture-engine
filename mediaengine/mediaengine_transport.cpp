@@ -70,11 +70,16 @@ void MediaEngine::WritePacket(AVPacket* pkt) {
             if (writeResult >= 0) {
                 ++audioOnlyWrittenPackets;
             } else {
-                static std::atomic<uint32_t> s_audioOnlyWriteFailures{0};
-                const uint32_t failures = s_audioOnlyWriteFailures.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (failures <= 4 || (failures & (failures - 1)) == 0) {
+                ++audioOnlyWriteErrorCount;
+                if (audioOnlyWriteErrorCount <= 4 || (audioOnlyWriteErrorCount & (audioOnlyWriteErrorCount - 1)) == 0) {
                     DLL_Log("MediaEngine: ERROR audio-only packet write failed: %d (failure #%u, written=%llu)",
-                            writeResult, failures, static_cast<unsigned long long>(audioOnlyWrittenPackets));
+                            writeResult, static_cast<unsigned>(audioOnlyWriteErrorCount),
+                            static_cast<unsigned long long>(audioOnlyWrittenPackets));
+                }
+                // Sticky AVIO error: every later packet would be dropped as
+                // well, so stop at the first loss and keep the committed ones.
+                if (audioOnlyWriteErrorCount == 1 && sharedMemLayout) {
+                    sharedMemLayout->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
                 }
             }
         } else if (videoEnc) {

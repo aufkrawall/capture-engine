@@ -62,7 +62,7 @@ anchors that predate the split are approximate.
 - `common/`
   - Shared IPC, config, logging, ABI structs, and RAII helpers.
   - `shared_defs.h` - shared-memory facade; `shared_defs_detail/abi_constants_and_config.h`
-    owns the current ABI version (`57`).
+    owns the current ABI version (`63`).
   - `config.h/.cpp` + `config_load*.cpp` (`config_load_core/audio/overlay/misc/whitelist/ue5/streaming/face_camera.cpp`) -
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
@@ -260,7 +260,7 @@ anchors that predate the split are approximate.
 
 ## High-Risk / High-Value Files
 
-- `common/shared_defs.h` - shared-memory facade; the source-verified ABI version is `57` in
+- `common/shared_defs.h` - shared-memory facade; the source-verified ABI version is `63` in
   `common/shared_defs_detail/abi_constants_and_config.h`.
 - `captureengine/injection.cpp` + `injection_manager.cpp` + `injection_wmi_events.cpp` +
   `injection_inject.cpp` - ordered host-side startup/late injection, event-driven/polled process

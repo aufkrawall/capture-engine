@@ -1,5 +1,7 @@
 #include "test_config_shared.h"
 
+#include "../common/logging.h"
+
 TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     AppConfig config;
     // Use a non-existent absolute path to force default creation logic if
@@ -746,4 +748,40 @@ TEST_F(ConfigTest, FullscreenFocusBlackoutParsesGloballyAndFromProfile) {
         "Capture.black_when_no_fullscreen_focus=true\n");
     LoadConfig(tempConfigFile, config, "privacy-game.exe");
     EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
+}
+
+TEST_F(ConfigTest, UnknownCaptureMethodHotkeyAndLimiterModeWarnAndKeepDocumentedDefaults) {
+    // A capture_method typo used to normalize to "auto" with no diagnostic at
+    // all - and auto resolves to injected capture, so a user deliberately
+    // avoiding injection (anti-cheat) with a misspelled "wgc" silently GOT
+    // injection. Every silent-token fallback now names its key and value.
+    WriteConfig(
+        "[General]\n"
+        "capture_method=wgc2\n"
+        "[Hotkeys]\n"
+        "toggle_overlay=Ctrl+F99\n"
+        "[FpsLimiter]\n"
+        "general_limiter_mode=bogus\n");
+    const std::string logFile = MakeTestPath("test_config_warnings.log");
+    remove(logFile.c_str());
+    Log_Init(logFile, LogLevel::Debug);
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    Log_Shutdown();
+
+    EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_EQ(config.hotkeyToggleOverlay.vkey, 0);
+    EXPECT_EQ(config.fpsLimiter.generalLimiterMode, LimiterMode::kAuto);
+
+    const std::string log = ReadTextFile(logFile);
+    remove(logFile.c_str());
+    EXPECT_NE(log.find("[Capture] capture_method='wgc2' is invalid; using documented default 'auto'"),
+              std::string::npos)
+        << log;
+    EXPECT_NE(log.find("[Hotkeys] toggle_overlay='Ctrl+F99' is invalid; using documented default 'none'"),
+              std::string::npos)
+        << log;
+    EXPECT_NE(log.find("[FpsLimiter] general_limiter_mode='bogus' is invalid; using documented default 'auto'"),
+              std::string::npos)
+        << log;
 }

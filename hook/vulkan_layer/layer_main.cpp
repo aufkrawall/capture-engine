@@ -248,7 +248,8 @@ static bool PerformEarlyWhitelistCheck();
 // Decided once per process; see common/vulkan_layer_target_list.h. The gate
 // (layer_gate.cpp) made the same decision before loading this image. Deciding
 // again keeps this image correct on its own, and a host that appeared in
-// between is authoritative here as well.
+// between adds eligibility here as well - while never masking the persisted
+// list, so a target cannot be locked out by a host that has not caught up yet.
 static bool ShouldParticipateInThisProcess() {
     static std::atomic<int> s_decision{-1};
     const int cached = s_decision.load(std::memory_order_acquire);
@@ -256,7 +257,7 @@ static bool ShouldParticipateInThisProcess() {
         return cached != 0;
     const bool hostPublished = ce::vulkan_layer_participation::IsCompatibleHostPublished();
     const bool eligibleByHost = hostPublished && PerformEarlyWhitelistCheck();
-    const bool listed = !hostPublished && ce::vulkan_layer_participation::IsListedAsResidentTarget();
+    const bool listed = !eligibleByHost && ce::vulkan_layer_participation::IsListedAsResidentTarget();
     const bool participate = ce::vulkan_layer_targets::ShouldLayerParticipate(hostPublished, eligibleByHost, listed);
     s_decision.store(participate ? 1 : 0, std::memory_order_release);
     LayerEarlyLog("Participation decision: participate=%d hostPublished=%d eligibleByHost=%d listedTarget=%d",

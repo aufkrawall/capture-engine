@@ -201,6 +201,14 @@ static bool GetD3D9PresentAddresses(void** ppPresent, void** ppPresentEx, void**
 static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* device, const RECT* pSourceRect,
                                                          const RECT* pDestRect, HWND hDestWindowOverride,
                                                          const RGNDATA* pDirtyRegion) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 Present (inline)", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(oD3D9PresentTrampoline), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            oD3D9PresentTrampoline, device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion));
+    }
     static int entryLogCount = 0;
     if (entryLogCount < 5) {
         EarlyLog("DX9: DetourD3D9PresentInline called (device=%p, count=%d)", device, entryLogCount);
@@ -241,12 +249,21 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
         MaybeWaitForVSyncAfterPresent((int)presentUs);
     }
 
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* device, const RECT* pSourceRect,
                                                            const RECT* pDestRect, HWND hDestWindowOverride,
                                                            const RGNDATA* pDirtyRegion, DWORD dwFlags) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 PresentEx (inline)", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(oD3D9PresentExTrampoline), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            oD3D9PresentExTrampoline, device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags));
+    }
     static int entryLogCount = 0;
     if (entryLogCount < 5) {
         EarlyLog("DX9: DetourD3D9PresentExInline called (device=%p, flags=0x%X, count=%d)", device, dwFlags,
@@ -294,6 +311,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
         MaybeWaitForVSyncAfterPresent((int)presentUs);
     }
 
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 }
 
@@ -301,6 +319,15 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
                                                                   const RECT* pSourceRect, const RECT* pDestRect,
                                                                   HWND hDestWindowOverride, const RGNDATA* pDirtyRegion,
                                                                   DWORD dwFlags) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 SwapChain Present (inline)", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(oD3D9SwapChainPresentTrampoline), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            oD3D9SwapChainPresentTrampoline, swapChain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion,
+            dwFlags));
+    }
     static int entryLogCount = 0;
     if (entryLogCount < 5) {
         EarlyLog("DX9: DetourD3D9SwapChainPresentInline called (swap=%p, flags=0x%X, count=%d)", swapChain, dwFlags,
@@ -353,6 +380,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
         MaybeWaitForVSyncAfterPresent((int)presentUs);
     }
 
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 }
 

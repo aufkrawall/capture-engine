@@ -359,7 +359,7 @@ void VideoEncoder::Stop() {
             ClearOutputIoDeadline();
             if (trailerResult < 0) {
                 DLL_Log("[VideoEncoder] Sync Stop: ERROR av_write_trailer failed: %d", trailerResult);
-                RequestLiveOutputFailure("write_trailer", trailerResult);
+                RequestOutputFailure("write_trailer", trailerResult);
             }
             if (finalDurationUs > 0) {
                 LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
@@ -375,7 +375,7 @@ void VideoEncoder::Stop() {
                 ClearOutputIoDeadline();
                 if (closeResult < 0) {
                     DLL_Log("[VideoEncoder] Sync Stop: ERROR avio_closep failed: %d", closeResult);
-                    RequestLiveOutputFailure("close", closeResult);
+                    RequestOutputFailure("close", closeResult);
                 }
             }
             fileOpened = false;
@@ -451,7 +451,7 @@ void VideoEncoder::AsyncWriteLoop() {
                                                 writtenTimeBase, writtenTerminalDiscardSamples, writtenSampleRate);
                 }
                 if (ret < 0) {
-                    RequestLiveOutputFailure("write_packet", ret);
+                    RequestOutputFailure("write_packet", ret);
                     if (asyncWriteErrorCount++ < 10) {
                         char errbuf[AV_ERROR_MAX_STRING_SIZE];
                         av_strerror(ret, errbuf, sizeof(errbuf));
@@ -547,7 +547,7 @@ void VideoEncoder::AsyncWriteLoop() {
                         RecordWrittenPacketTimeline(flushedStreamIndex, flushedPts, flushedDts, flushedDuration,
                                                     flushedTimeBase, 0, 0);
                     } else {
-                        RequestLiveOutputFailure("flush_packet", flushWriteResult);
+                        RequestOutputFailure("flush_packet", flushWriteResult);
                     }
                     av_packet_unref(pkt);
                     flushedCount++;
@@ -571,7 +571,7 @@ void VideoEncoder::AsyncWriteLoop() {
                 ClearOutputIoDeadline();
                 if (trailerResult < 0) {
                     DLL_Log("[VideoEncoder] Async Finalize: ERROR av_write_trailer failed: %d", trailerResult);
-                    RequestLiveOutputFailure("write_trailer", trailerResult);
+                    RequestOutputFailure("write_trailer", trailerResult);
                 }
                 if (finalDurationUs > 0) {
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
@@ -606,7 +606,7 @@ void VideoEncoder::AsyncWriteLoop() {
                     ClearOutputIoDeadline();
                     if (closeResult < 0) {
                         DLL_Log("[VideoEncoder] Async Finalize: ERROR avio_closep failed: %d", closeResult);
-                        RequestLiveOutputFailure("close", closeResult);
+                        RequestOutputFailure("close", closeResult);
                     }
                 }
                 fileOpened = false;

@@ -366,11 +366,12 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             currentSwapchainQueue = dx12_hook_g_SwapchainQueue;
-            // Same submit-path evidence as the safe post-FSR bootstrap proof; read under the lock
-            // because it dereferences the queue CE's reference keeps alive.
+            // Submittable proof for THIS swapchain's queue only; read under the lock
+            // because it dereferences the queue CE's reference keeps alive. The global
+            // realECL pointer proves nothing about this queue and must not qualify a
+            // handoff queue CE has never submitted on.
             swapchainQueueSubmittable = currentSwapchainQueue != nullptr &&
-                                        (HasTrackedExecuteCommandListsOriginal(currentSwapchainQueue) ||
-                                         dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire) != nullptr);
+                                        HasTrackedExecuteCommandListsOriginal(currentSwapchainQueue);
         }
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         bool actualFGActive = IsActualFrameGenerationActive();
@@ -433,7 +434,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                 currentCommandQueue != nullptr && currentCommandQueue == dx12_hook_g_OriginalGameQueue,
-                commandQueueMatchesPrimaryGameQueue)) {
+                commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue)) {
             // Attribute as gated so any blank window here is a visible [OVERLAY COVERAGE] streak.
             NoteDX12OverlayCoverageGate("sl-teardown-queue-settle-defer");
             static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};

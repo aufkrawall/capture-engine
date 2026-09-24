@@ -450,6 +450,13 @@ inline constexpr ULONGLONG streamline_hook_kAuthoritativeFFXTakeoverGetStateSupp
 
 inline std::atomic<bool> streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 
+// Sustained-generation retire bound for the block above: consecutive GetState
+// samples whose DLSSGState generation evidence keeps advancing before the block
+// is retired as stale. GTA polls GetState roughly per frame, so 3 samples cannot
+// retire the block on a one-frame blip while a real GetState-only re-enable
+// recovers within ~3 frames.
+inline constexpr uint32_t streamline_hook_kGetStateOnlyBlockGenerationRetireSamples = 3;
+
 inline std::atomic<bool> streamline_hook_g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
 
 inline std::atomic<bool> streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions{false};
@@ -636,6 +643,9 @@ struct ReflexSignalLogState {
                                          const char* source);bool WasViewportRuntimeStateActive(uint32_t viewportKey);bool ShouldSuppressNewGetStateActivation();bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state);void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
                                 uint32_t capabilityMax, const char* source,
                                 bool clearAllViewportStatesForDisable = false);
+void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSucceeded, const slDLSSGState& state,
+                                                                    const slDLSSGOptions* options, bool viewportWasActive,
+                                                                    uint32_t viewportKey);
 
 template <typename T>
 struct StreamlineInlineHookPublication {

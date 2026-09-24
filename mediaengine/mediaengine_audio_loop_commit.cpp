@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 
+#include "audio_fault_accounting.h"
+
 bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
     constexpr int64_t kStartupFirstPacketGapCapSamples = AudioLoopState::kStartupFirstPacketGapCapSamples;
     constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = AudioLoopState::kStartupFirstPacketRebaseThresholdSamples;
@@ -113,15 +115,29 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         packetStartSamples += src.timelineResyncOffsetSamples;
                         const uint64_t ingestTick = GetTickCount64();
                         src.lastRealPacketIngestTick = ingestTick;
+                        // These two cursors are advanced by the pull thread and read here for
+                        // write-cursor pinning/gap suppression. Snapshot them under the leaf lock
+                        // so this cross-thread read cannot observe a torn/stale pair.
+                        int64_t encodedCursorSnapshot = 0;
+                        int64_t trackCursorSnapshot = 0;
+                        {
+                            std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                            if (srcIdx < encodedSamplesPerSource.size()) {
+                                encodedCursorSnapshot = encodedSamplesPerSource[srcIdx];
+                            }
+                            const auto trackCursorIt = trackTimelineSamples.find(src.track);
+                            trackCursorSnapshot =
+                                trackCursorIt != trackTimelineSamples.end() ? trackCursorIt->second : 0;
+                        }
                         if (srcIdx < encodedSamplesPerSource.size()) {
                             const int64_t encodedCursorSamples =
                                 ce::audio::ResolveSourceTimelineWriteCursor(
-                                    src.qpcAlignedWrittenSamples, encodedSamplesPerSource[srcIdx]);
+                                    src.qpcAlignedWrittenSamples, encodedCursorSnapshot);
                             // Ingest headroom: how far this packet's content still sits AHEAD of the
                             // already-exported cursor. Negative means the consumer overran the capture
                             // edge and the packet is about to be destroyed as timeline overlap. The
                             // pull side turns the worst observation into extra scheduling lookahead.
-                            PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx],
+                            PublishAudioIngestHeadroom(packetStartSamples - encodedCursorSnapshot,
                                                        targetFmt.sampleRate);
                             if (encodedCursorSamples > static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {
                                 const int64_t cursorAdvance =
@@ -172,7 +188,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         }
                         const auto lateJoin = ce::audio::ComputeLateAppSourceJoin(
                             src.sourceType == AudioConfig::AppAudio, firstTimelinePacket,
-                            firstPacketSawSyncPending, packetStartSamples, trackTimelineSamples[src.track],
+                            firstPacketSawSyncPending, packetStartSamples, trackCursorSnapshot,
                             targetFmt.sampleRate / 2, targetFmt.sampleRate / 100);
                         if (lateJoin.joinLive) {
                             if (lateJoin.joinCursorSamples >
@@ -193,7 +209,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                                 "suppressedGap=%lld preservedGap=%lld qpcStart=%llu",
                                 (int)srcIdx, src.track,
                                 src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
-                                (long long)packetStartSamples, (long long)trackTimelineSamples[src.track],
+                                (long long)packetStartSamples, (long long)trackCursorSnapshot,
                                 (long long)lateJoin.joinCursorSamples,
                                 (long long)lateJoin.suppressedGapSamples,
                                 (long long)lateJoin.preservedGapSamples,
@@ -289,9 +305,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         if (src.sourceType == AudioConfig::AppAudio) {
                             const uint64_t nowDiagTick = GetTickCount64();
                             if (nowDiagTick - src.lastAppPlaceDiagTick >= 1000) {
-                                const int64_t encodedCursor = srcIdx < encodedSamplesPerSource.size()
-                                                                  ? encodedSamplesPerSource[srcIdx]
-                                                                  : 0;
+                                const int64_t encodedCursor = encodedCursorSnapshot;
                                 const int64_t writeMinusEncoded =
                                     static_cast<int64_t>(src.qpcAlignedWrittenSamples) - encodedCursor;
                                 const size_t ringAvailSamples =

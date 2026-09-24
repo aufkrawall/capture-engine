@@ -1,5 +1,31 @@
 #include "media_main_internal.h"
 
+#include "../common/capture_retarget_policy.h"
+
+namespace {
+
+// Stable display identity of the window target's current monitor. Cached on
+// the session when a window target is primed so a mid-recording window loss
+// re-resolves to the same physical display instead of the kAuto chain.
+std::string ResolveWindowMonitorStableId(HWND targetWindow) {
+    ce::monitor_selection::ResolveRequest request;
+    request.selector.kind = ce::monitor_selection::SelectorKind::kWindow;
+    request.targetWindow = targetWindow;
+    const ce::monitor_selection::ResolveResult resolved = ce::monitor_selection::Resolve(request);
+    return resolved ? resolved.descriptor.stableId : std::string{};
+}
+
+// Confirmed capture-source loss is recorded as latched video-degraded truth and
+// published to the session and overlay health registers immediately.
+void RecordCaptureSourceLoss(const char* reason) {
+    ce::capture_retarget::RecordSourceLossHealth(
+        media_main_g_RecordingHealthFlags,
+        media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+    LogError("[RecordingSourceLoss] %s; recording health latched to degraded", reason);
+}
+
+}  // namespace
+
 std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targetWindow , uint32_t confirmedPid ,
                                    const std::string& confirmedProcessName) {
     uint32_t sourcePid = 0;
@@ -292,8 +318,12 @@ bool MediaProcessSession::primeWgcWindowTarget(HWND targetWindow, bool logPrimed
         PublishWgcCapture(std::move(capture), "window retarget");
         SetPreferredScreenGrab(true);
         currentCapturedWindow = targetWindow;
-        currentCapturedMonitorStableId.clear();
+        // Pin the window's display identity: on window-target loss the retarget
+        // must land on the same physical display, never on the kAuto chain.
+        currentCapturedMonitorStableId = ResolveWindowMonitorStableId(targetWindow);
         currentTargetPrefersInject = false;
+        LogInfo("[CaptureTarget] window target 0x%p pinned display id=%s for source-loss retarget", targetWindow,
+                currentCapturedMonitorStableId.empty() ? "<unresolved>" : currentCapturedMonitorStableId.c_str());
         if (logPrimed) {
             LogInfo("[Media] WGC target primed for window 0x%p", targetWindow);
         }
@@ -331,6 +361,12 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
     const std::string previousCapturedMonitorStableId = currentCapturedMonitorStableId;
     const bool previousTargetPrefersInject = currentTargetPrefersInject;
     const bool previousPreferredScreenGrab = IsPreferredScreenGrab();
+    // Confirmed death of the requested window source: whatever the replacement
+    // below resolves to, the committed output can no longer contain that source.
+    const bool requestedWindowSourceLost = previousCapturedWindow != NULL && !IsWindow(previousCapturedWindow);
+    if (restartActiveCapture && requestedWindowSourceLost) {
+        RecordCaptureSourceLoss("capture target window is gone");
+    }
     if (restartActiveCapture) {
         StopWgcCapturePipeline();
     }
@@ -361,23 +397,72 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
         request.preferMonitor = true;
     }
 
+    // Terminal truth for a failed in-recording retarget: a restored source
+    // keeps the recording running (degraded when the requested source was
+    // lost), a lost capture stops it through the normal stop path so the
+    // committed prefix is finalized as saved (degraded).
+    auto finishFailedRetarget = [&](bool rolledBack) {
+        switch (ce::capture_retarget::SelectSourceLossRecovery(restartActiveCapture, requestedWindowSourceLost,
+                                                              rolledBack)) {
+            case ce::capture_retarget::SourceLossRecovery::kStopDegraded:
+                RecordCaptureSourceLoss("capture replacement and rollback restart both failed");
+                LogError("[Media] WGC capture is gone; stopping the recording and keeping the captured prefix");
+                StopRecording();
+                break;
+            case ce::capture_retarget::SourceLossRecovery::kContinueDegraded:
+                RecordCaptureSourceLoss("capture replacement failed; recording continues on the rolled-back source");
+                break;
+            case ce::capture_retarget::SourceLossRecovery::kContinue:
+            case ce::capture_retarget::SourceLossRecovery::kNone:
+                break;
+        }
+    };
+
     bool primed = false;
     if (!request.preferMonitor && request.window) {
-        primed = primeWgcWindowTarget(request.window, true);
+        primed = primeWgcWindowTarget(request.window, true, false);
     }
     if (!primed) {
-        primed = primePinnedMonitorTarget(request.monitor, "runtime monitor retarget");
+        // Source-loss retarget composition: a recording resolved from a window
+        // target or an explicit selector must never fall through to the kAuto
+        // chain (target window -> foreground window -> primary): that would
+        // keep recording whatever the user is doing after the target died.
+        // Only auto-monitor targets may re-resolve automatically.
+        const ce::capture_retarget::TargetOrigin origin =
+            previousCapturedWindow != NULL
+                ? ce::capture_retarget::TargetOrigin::kWindowTarget
+                : (monitorSelectorIsExplicit(config.captureMonitor)
+                       ? ce::capture_retarget::TargetOrigin::kExplicitMonitor
+                       : ce::capture_retarget::TargetOrigin::kAutoMonitor);
+        const auto retargetSelector =
+            ce::capture_retarget::SelectSourceLossRetarget(origin, !previousCapturedMonitorStableId.empty());
+        switch (retargetSelector) {
+            case ce::capture_retarget::RetargetSelector::kPinnedMonitorId:
+                primed = primePinnedMonitorTarget(request.monitor, "runtime monitor retarget");
+                break;
+            case ce::capture_retarget::RetargetSelector::kAutoMonitor:
+                primed = primeConfiguredMonitorTarget(NULL, request.monitor, "auto", "runtime monitor retarget");
+                break;
+            case ce::capture_retarget::RetargetSelector::kStopRecording:
+                LogError(
+                    "[CaptureTarget] source-loss retarget has no pinned display identity (origin=%s); "
+                    "refusing automatic foreground/primary fallback",
+                    ce::capture_retarget::TargetOriginName(origin));
+                break;
+        }
     }
     if (!primed) {
         LogWarn("[Media] Failed to initialize queued WGC retarget; restoring previous source");
-        restorePreviousCapture("replacement initialization failed");
+        const bool rolledBack = restorePreviousCapture("replacement initialization failed");
+        finishFailedRetarget(rolledBack);
         return false;
     }
 
     if (restartActiveCapture) {
         if (!StartWgcRecordingCapture(config)) {
             LogError("[Media] Failed to start replacement WGC capture; restoring previous source");
-            restorePreviousCapture("replacement start failed");
+            const bool rolledBack = restorePreviousCapture("replacement start failed");
+            finishFailedRetarget(rolledBack);
             return false;
         }
         LogInfo("[Media] WGC capture restarted after retarget");

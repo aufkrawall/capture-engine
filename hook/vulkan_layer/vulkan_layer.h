@@ -281,6 +281,10 @@ public:
     VkQueue FindLastGameGraphicsSubmitQueue(VkDevice device);
     void NoteQueueSubmit(VkQueue queue);
     uint32_t GetLastSubmitThreadId(VkDevice device);
+    // GetTickCount64 of that submission, so a thread mismatch stops counting
+    // as async-present evidence once it goes stale
+    // (vulkan_present_thread_policy.h).
+    uint64_t GetLastSubmitTickMs(VkDevice device);
     uint32_t GetQueueLastSubmitThreadId(VkQueue queue);
 
     // One-shot present-topology learning. Which queue signals the semaphores a
@@ -429,6 +433,7 @@ private:
     // and consulted at lookup time, never captured from a fresh queue handle.
     std::unordered_map<const void*, VkDevice> m_DevicesByDispatchKey;
     std::unordered_map<VkDevice, uint32_t> m_DeviceLastSubmitThreadIds;
+    std::unordered_map<VkDevice, uint64_t> m_DeviceLastSubmitTicks;
     std::unordered_map<VkQueue, uint32_t> m_QueueLastSubmitThreadIds;
     std::unordered_map<VkDevice, VkQueue> m_DeviceLastGraphicsSubmitQueues;
     std::atomic<bool> m_LearnPresentTopology{true};

@@ -1,11 +1,12 @@
 /**
  * Inline Hook — shared engine state (internal)
  *
- * inline_hook.cpp, inline_hook_entry_patch.cpp, inline_hook_trampoline.cpp and
- * inline_hook_deep.cpp are parts of one hook engine: they share the hook tables,
- * the near-target trampoline pools and the instruction relocation helpers. The
- * state lives in inline_hook_trampoline.cpp and is reached only through this
- * header, which is not part of the public inline_hook.h contract.
+ * inline_hook.cpp, inline_hook_entry_patch.cpp, inline_hook_trampoline.cpp,
+ * inline_hook_deep.cpp and inline_hook_pristine_image.cpp are parts of one hook
+ * engine: they share the hook tables, the near-target trampoline pools and the
+ * instruction relocation helpers. The state lives in inline_hook_trampoline.cpp
+ * and is reached only through this header, which is not part of the public
+ * inline_hook.h contract.
  */
 
 #pragma once
@@ -60,14 +61,44 @@ extern uint8_t* g_trampolinePool;
 extern std::vector<uint8_t*> g_trampolinePools;
 extern size_t g_trampolineOffset;
 
+// Defined in inline_hook_pristine_image.cpp: read a function's unpatched bytes
+// from its module's image file with the image-base relocations applied, so deep
+// hooks and bypass trampolines can verify live code against what shipped.
+bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied);
+
 // Batch-install helpers. The caller owns g_hookMutex throughout preparation
 // and commit; failed published trampolines are retained under the same rule as
 // a failed individual InstallPublished call.
 bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex);
+
+// Why a WriteOwnedEntryPatchQuiesced attempt refused to write. Recorded into
+// the caller's struct instead of logged at the site: the write runs while every
+// peer thread is suspended, and the logger takes a lock a suspended peer may
+// hold - logging there can deadlock the process frozen mid-patch. Callers pass
+// the record to ReportEntryPatchFailure once the quiescence transaction has
+// released every peer.
+enum class EntryPatchIssue : uint8_t {
+    kNone,
+    kBytesMismatch,
+    kVirtualProtectFailed,
+    kJumpUnreachable,
+};
+
+struct EntryPatchFailure {
+    EntryPatchIssue issue = EntryPatchIssue::kNone;
+    void* target = nullptr;
+    DWORD error = 0;
+};
+
+// Rate-limited per issue. Never call while peer threads are suspended.
+void ReportEntryPatchFailure(const EntryPatchFailure& failure);
+
 // Caller must keep a ready ThreadQuiescence transaction alive for the entire
 // call and prove this exact target range safe against its captured contexts.
+// Records a failure reason into `outFailure` instead of logging (see above).
 bool WriteOwnedEntryPatchQuiesced(void* target, void* patchDestination, int patchSize,
-                                  const uint8_t* expectedBytes, uint8_t* installedBytes);
+                                  const uint8_t* expectedBytes, uint8_t* installedBytes,
+                                  EntryPatchFailure* outFailure);
 bool WriteOwnedEntryPatch(void* target, void* patchDestination, int patchSize,
                           const uint8_t* expectedBytes, uint8_t* installedBytes);
 // Defined in inline_hook_entry_patch.cpp with the two above: applying and
@@ -83,7 +114,9 @@ bool InstalledEntryBytesMatch(const HookEntry& hook);
 // InstalledEntryBytesMatch run through the restore policy: whether CE may revert.
 bool OwnsInstalledEntryBytes(const HookEntry& hook);
 bool CanCommitPreparedEntryPatchLocked(size_t hookIndex);
-bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex);
+// Records a failure reason into `outFailure` instead of logging - the caller
+// commits inside a ThreadQuiescence window (see EntryPatchFailure).
+bool CommitPreparedEntryPatchQuiescedLocked(size_t hookIndex, EntryPatchFailure* outFailure);
 bool CommitPreparedEntryPatchLocked(size_t hookIndex);
 
 // Commit one TRAMPOLINE_POOL_SIZE page, writable, with an all-invalid CFG
@@ -113,7 +146,10 @@ void ReleaseSealedTrampoline(void* trampoline);
 void RemoveAllDeepHooksLocked();
 
 // Emit an absolute (x64) or relative (x86) jump from 'dest' to 'target'.
-void WriteJump(uint8_t* dest, void* target);
+// False when no emitted displacement lands on 'target' (see
+// ce::hook_jump_policy); the caller must fail the install instead of leaving a
+// mis-aimed jump behind.
+bool WriteJump(uint8_t* dest, void* target);
 
 enum class ShortControlRelocationResult {
     kNotHandled,

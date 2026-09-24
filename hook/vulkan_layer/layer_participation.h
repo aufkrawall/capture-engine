@@ -20,14 +20,23 @@
 
 namespace ce::vulkan_layer_participation {
 
-// The executable's base name in the ANSI code page - the same spelling the host
-// whitelist and every other layer-side process-name comparison use.
+// The executable's base name in UTF-16 - the one name source every
+// participation match runs on. The host whitelist (UTF-8, converted once per
+// entry in common/vulkan_layer_target_list.h) and the persisted list (UTF-16)
+// both match against this spelling.
+void GetCurrentProcessBaseNameWide(wchar_t* out, size_t outSize);
+
+// The same name in UTF-8 - the spelling `g_ProcessName` and the log lines use.
+// Matching never compares these bytes: they make one round trip through
+// Utf8ToWide and are compared in UTF-16 like everything else.
 void GetCurrentProcessBaseName(char* out, size_t outSize);
 
-bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const char* processName);
+bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName);
 
 // Eligibility under a compatible published host: whitelisted by name, or the
-// direct child renderer of the published profile target / active source.
+// direct child renderer of the published profile target / active source. The
+// narrow overload accepts the UTF-8 spelling and converts it once.
+bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* processName, DWORD* inheritedParentPid);
 bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* processName, DWORD* inheritedParentPid);
 
 // True when a CaptureEngine host with this image's shared-memory layout has
@@ -50,6 +59,6 @@ struct Decision {
     DWORD inheritedParentPid = 0;
 };
 
-Decision DecideParticipation(const char* processName);
+Decision DecideParticipation(const wchar_t* processName);
 
 }  // namespace ce::vulkan_layer_participation

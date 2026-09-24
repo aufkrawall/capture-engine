@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "apis/streamline_ota_preferences.h"
+#include "common/child_inject_policy.h"
 #include "common/ngx_ota_runtime.h"
 #include "common/published_graphics_config.h"
 
@@ -63,13 +64,12 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // Use session-specific logs directory from DiscoveryInfo if available,
     // otherwise fall back to {captureEngineDir}/logs.
     std::string crashDir;
-    char dllPath[MAX_PATH] = {0};
-    if (GetModuleFileNameA(hinstDLL, dllPath, MAX_PATH)) {
-      std::filesystem::path hookPath(dllPath);
-      std::filesystem::path captureEngineDir = hookPath.parent_path();
+    wchar_t moduleDirW[MAX_PATH] = {0};
+    if (ce::child_inject_policy::GetHookModuleDirectoryW(hinstDLL, moduleDirW, MAX_PATH)) {
+      std::filesystem::path captureEngineDir(moduleDirW);
       // If we're in testapp directory, navigate to captureengine instead
-      if (captureEngineDir.filename() == "testapp") {
-        captureEngineDir = captureEngineDir.parent_path() / "captureengine";
+      if (captureEngineDir.filename() == L"testapp") {
+        captureEngineDir = captureEngineDir.parent_path() / L"captureengine";
       }
       // Set process name for crash logging
       SetCrashProcessName(fileName);
@@ -86,12 +86,20 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
         CloseHandle(hDisc);
       }
 
-      if (crashDir.empty())
-        crashDir = (captureEngineDir / "logs").string();
+      if (crashDir.empty()) {
+        const std::filesystem::path logsDir = captureEngineDir / L"logs";
+        CreateDirectoryW(logsDir.c_str(), NULL);
+        // The crash handler converts its directory from UTF-8 at the WER
+        // boundary, so the derived path is handed over in UTF-8 - a narrow
+        // conversion here would '?'-mangle non-ACP install paths twice.
+        crashDir = ce::child_inject_policy::NarrowFromWideUtf8(logsDir.c_str());
+      } else {
+        CreateDirectoryA(crashDir.c_str(), NULL);
+      }
     } else {
       crashDir = ".\\logs";
+      CreateDirectoryA(crashDir.c_str(), NULL);
     }
-    CreateDirectoryA(crashDir.c_str(), NULL);
     // DllMain runs under the loader lock: never stage installed symbols here.
     // The controller archives them into the session directory it owns.
     SetCrashDumpDirectory(crashDir, /*archiveInstalledSymbols=*/false);

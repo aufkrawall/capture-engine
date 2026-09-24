@@ -164,13 +164,19 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         if (!trampoline) {
             return false;
         }
-        WriteJump(trampoline, chainedEntry);
+        if (!WriteJump(trampoline, chainedEntry)) {
+            AbandonCurrentTrampoline();
+            return false;
+        }
 #ifdef _WIN64
         // A Detours/RTSS E9 trampoline can resume at target+5. Keep every byte
         // after that existing jump intact: put CE's absolute jump in the same
         // near RX page and claim only five bytes at the export entry.
         uint8_t* prependTarget = trampoline + TRAMPOLINE_ALIGNMENT;
-        WriteJump(prependTarget, detour);
+        if (!WriteJump(prependTarget, detour)) {
+            AbandonCurrentTrampoline();
+            return false;
+        }
         const int64_t relayDisplacement =
             static_cast<int64_t>(reinterpret_cast<uintptr_t>(prependTarget)) -
             static_cast<int64_t>(reinterpret_cast<uintptr_t>(target) +
@@ -407,7 +413,10 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     void* jumpTarget = (void*)(code + copySize);
     HookLog("InlineHook: Writing jump back from trampoline+%d to %p (original+%d)", trampolineOffset, jumpTarget,
             copySize);
-    WriteJump(trampoline + trampolineOffset, jumpTarget);
+    if (!WriteJump(trampoline + trampolineOffset, jumpTarget)) {
+        AbandonCurrentTrampoline();
+        return false;
+    }
     trampolineOffset += PATCH_SIZE;
 
     // If a CALL rel32→absolute was converted, its target pointer goes here

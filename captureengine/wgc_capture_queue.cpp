@@ -81,27 +81,33 @@ void WGCCapture::Impl::ResetStats() {
                 std::memory_order_relaxed);
             poolLeaseState_->releaseMismatchCount.store(0, std::memory_order_relaxed);
         }
-        std::fill(poolSlotLastWriteQpc_.begin(), poolSlotLastWriteQpc_.end(), 0);
-        lastCopyUs_.store(0, std::memory_order_relaxed);
-        lastPoolConvertUs_.store(0, std::memory_order_relaxed);
-        lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
-        lastDeliveredRawSourceQpc_.store(0, std::memory_order_relaxed);
-        lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
-        lastAssignedSourceQpc_.store(0, std::memory_order_relaxed);
-        lastObservedSourceQpc_ = 0;
-        smoothedSourceIntervalQpc_ = 0;
-        sourceIntervalSamples_ = 0;
-        sourceIntervalAccumUs_ = 0;
-        sourceJitterAccumUs_ = 0;
-        sourceJitterMaxUsValue_ = 0;
-        sourceToCopyLatencySamples_ = 0;
-        sourceToCopyLatencyAccumUs_ = 0;
-        sourceToCopyLatencyMaxUsValue_ = 0;
-        deliveredRateWindow_.Reset();
-        inputRateWindow_.Reset();
-        lastCapturedQPC_ = 0;
-        nextCaptureQPC_ = 0;
-        ApplyProducerInterval();
+        // Producer-path pool/timing bookkeeping is owned by frameProcessingMutex_
+        // (CopyFrameToPool, PreflightSourceFrame, DeliverSourceTexture); the
+        // reset must observe the same ownership or it races live capture.
+        {
+            std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
+            std::fill(poolSlotLastWriteQpc_.begin(), poolSlotLastWriteQpc_.end(), 0);
+            lastCopyUs_.store(0, std::memory_order_relaxed);
+            lastPoolConvertUs_.store(0, std::memory_order_relaxed);
+            lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
+            lastDeliveredRawSourceQpc_.store(0, std::memory_order_relaxed);
+            lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
+            lastAssignedSourceQpc_.store(0, std::memory_order_relaxed);
+            lastObservedSourceQpc_ = 0;
+            smoothedSourceIntervalQpc_ = 0;
+            sourceIntervalSamples_ = 0;
+            sourceIntervalAccumUs_ = 0;
+            sourceJitterAccumUs_ = 0;
+            sourceJitterMaxUsValue_ = 0;
+            sourceToCopyLatencySamples_ = 0;
+            sourceToCopyLatencyAccumUs_ = 0;
+            sourceToCopyLatencyMaxUsValue_ = 0;
+            deliveredRateWindow_.Reset();
+            inputRateWindow_.Reset();
+            lastCapturedQPC_ = 0;
+            nextCaptureQPC_ = 0;
+            ApplyProducerInterval();
+        }
         std::lock_guard<std::mutex> lock(frameMutex_);
         while (!pendingFrames_.empty()) {
             WGCCapturedFrame stale = std::move(pendingFrames_.front());

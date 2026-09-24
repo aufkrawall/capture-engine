@@ -229,9 +229,12 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
 
     if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
         AVDictionary* ioOptions = nullptr;
+        // Bound every blocking output operation on both paths (see
+        // ArmOutputIoDeadline): this is what turns a hung storage write into a
+        // reportable error instead of a writer thread wedged forever.
+        fmtCtx->interrupt_callback.callback = InterruptOutputIo;
+        fmtCtx->interrupt_callback.opaque = this;
         if (liveOutput) {
-            fmtCtx->interrupt_callback.callback = InterruptOutputIo;
-            fmtCtx->interrupt_callback.opaque = this;
             fmtCtx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
             fmtCtx->max_delay = 0;
             fmtCtx->max_interleave_delta = 100000;
@@ -247,7 +250,7 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
         }
 
         ArmOutputIoDeadline();
-        const AVIOInterruptCB* interruptCallback = liveOutput ? &fmtCtx->interrupt_callback : nullptr;
+        const AVIOInterruptCB* interruptCallback = &fmtCtx->interrupt_callback;
         const int openResult = avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE,
                                           interruptCallback, &ioOptions);
         ClearOutputIoDeadline();

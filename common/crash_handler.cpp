@@ -14,6 +14,7 @@
 #include <string>
 #include "crash_dump_policy.h"
 #include "crash_symbol_store.h"
+#include "log_privacy.h"
 #include "logging.h"
 #include "secure_dll_loading.h"
 
@@ -538,6 +539,18 @@ void TraceCrash(const char* msg) {
     if (!msg || !g_CrashTraceActive.load(std::memory_order_acquire)) {
         return;
     }
+    // crash.log is shared in support workflows, so it follows the same log
+    // privacy contract as every other funnel (log_privacy.h): the Windows
+    // account component of a user-profile path must be masked before the
+    // message reaches the file. The redaction runs on a fixed stack buffer and
+    // is length-preserving and in-place: `msg` is frequently a string literal,
+    // and the crash path must not allocate. Every current caller formats into a
+    // <= 512 byte buffer, so the bound only truncates hypothetical future
+    // messages.
+    char redacted[1024];
+    snprintf(redacted, sizeof(redacted), "%s", msg);
+    ce::privacy::RedactUserAccountComponents(redacted);
+
     ExceptionSafeLock lock(g_TraceCrashMutex, g_TraceCrashOwnerThread);
     std::string dumpDir;
     {
@@ -551,7 +564,7 @@ void TraceCrash(const char* msg) {
         SYSTEMTIME st;
         GetLocalTime(&st);
         fprintf(f, "[%02d:%02d:%02d.%03d][%s][%lu] %s\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                g_ProcessName, GetCurrentThreadId(), msg);
+                g_ProcessName, GetCurrentThreadId(), redacted);
         fclose(f);
     }
 }

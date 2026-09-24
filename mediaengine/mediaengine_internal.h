@@ -257,6 +257,12 @@ public:
     ce::capture_output::ReservedCaptureOutput audioOnlyOutputReservation;
     bool audioOnlyTrailerSucceeded = false;
     uint64_t audioOnlyWrittenPackets = 0;  // guarded by muxMutex
+    uint64_t audioOnlyWriteErrorCount = 0;  // guarded by muxMutex
+    // Latched at output finalize; queried by MediaEngine_WasLastOutputDegraded.
+    bool lastOutputDegraded = false;
+    bool WasLastOutputDegraded() const {
+        return lastOutputDegraded;
+    }
     std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 
     AppConfig config;

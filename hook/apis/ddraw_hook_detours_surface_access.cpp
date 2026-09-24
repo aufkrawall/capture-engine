@@ -118,15 +118,17 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4ReleaseDC(IDirectDrawSurface4* surface
 
 HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect) {
     const HRESULT hr = ddraw_hook_oDDSurface7Unlock(surface, rect);
-    const DirectDrawLockAccess access = SUCCEEDED(hr) ? CompleteDirectDrawSurfaceLock(surface)
-                                                      : DirectDrawLockAccess::Unknown;
+    // Tracking is resolved on every Unlock attempt, failed or not: leaked depth
+    // would defer DirectScanout presentations and the freeze-watchdog
+    // heartbeat for the rest of the session.
+    const DirectDrawLockAccess access = CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr));
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface) {
         auto& diag = ddraw_hook_g_PresentationDiagnostics;
         if (ddraw_hook_g_CaptureRecurse != 0) {
             // CE's own composite and capture locks pass through these hooks;
             // their unlock is not an application presentation.
             diag.reentrantPresentations.fetch_add(1, std::memory_order_relaxed);
-        } else if (access != DirectDrawLockAccess::ReadOnly && access != DirectDrawLockAccess::Deferred) {
+        } else if (access != DirectDrawLockAccess::ReadOnly) {
             diag.primaryUnlockPresentations.fetch_add(1, std::memory_order_relaxed);
             if (!DirectDrawSurfaceHasPendingWrite(surface))
                 MarkDirectDrawSurfaceWrite(surface, nullptr, false);
@@ -142,13 +144,15 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, L
 
 HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT rect) {
     const HRESULT hr = ddraw_hook_oDDSurface4Unlock(surface, rect);
-    const DirectDrawLockAccess access = SUCCEEDED(hr) ? CompleteDirectDrawSurfaceLock(surface)
-                                                      : DirectDrawLockAccess::Unknown;
+    // Tracking is resolved on every Unlock attempt, failed or not: leaked depth
+    // would defer DirectScanout presentations and the freeze-watchdog
+    // heartbeat for the rest of the session.
+    const DirectDrawLockAccess access = CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr));
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && surface && surface == ddraw_hook_g_PrimarySurface4) {
         auto& diag = ddraw_hook_g_PresentationDiagnostics;
         if (ddraw_hook_g_CaptureRecurse != 0) {
             diag.reentrantPresentations.fetch_add(1, std::memory_order_relaxed);
-        } else if (access != DirectDrawLockAccess::ReadOnly && access != DirectDrawLockAccess::Deferred) {
+        } else if (access != DirectDrawLockAccess::ReadOnly) {
             diag.primaryUnlockPresentations.fetch_add(1, std::memory_order_relaxed);
             if (!DirectDrawSurfaceHasPendingWrite(surface))
                 MarkDirectDrawSurfaceWrite(surface, nullptr, false);
@@ -188,14 +192,16 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surfac
     if (!record.unlock)
         return DDERR_GENERIC;
     const HRESULT hr = record.unlock(surface, surfaceData);
-    const DirectDrawLockAccess access = SUCCEEDED(hr) ? CompleteDirectDrawSurfaceLock(surface)
-                                                      : DirectDrawLockAccess::Unknown;
+    // Tracking is resolved on every Unlock attempt, failed or not: leaked depth
+    // would defer DirectScanout presentations and the freeze-watchdog
+    // heartbeat for the rest of the session.
+    const DirectDrawLockAccess access = CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr));
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ddraw_hook_g_DDrawBootstrapDepth == 0 &&
         SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
         auto& diag = ddraw_hook_g_PresentationDiagnostics;
         if (ddraw_hook_g_CaptureRecurse != 0) {
             diag.reentrantPresentations.fetch_add(1, std::memory_order_relaxed);
-        } else if (access != DirectDrawLockAccess::ReadOnly && access != DirectDrawLockAccess::Deferred) {
+        } else if (access != DirectDrawLockAccess::ReadOnly) {
             diag.primaryUnlockPresentations.fetch_add(1, std::memory_order_relaxed);
             if (!DirectDrawSurfaceHasPendingWrite(surface))
                 MarkDirectDrawSurfaceWrite(surface, nullptr, false);

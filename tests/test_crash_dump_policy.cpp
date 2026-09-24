@@ -436,6 +436,32 @@ TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
     EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(true, true));
 }
 
+// Anti-cheat integrity int3s and another hooking engine's patch races are
+// handled by their raiser, but every first-chance STATUS_BREAKPOINT used to
+// cost a full dump stall plus the process's one-dump budget. The first unowned
+// breakpoint of a run keeps the immediate dump - an escaped one can terminate
+// without reaching ExitProcess hooks - and the rest are recorded first.
+TEST(CrashDumpPolicyTest, UnownedBreakpointsDumpOnceThenRecordFirst) {
+    using Action = policy::FirstChanceAction;
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false, true), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false, false), Action::kRecordFault);
+
+    // The unhandled filter re-enters with forceDump: that dump is never lost to
+    // the budget, and a debugger's breakpoints stay ignored either way.
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, true, false, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true, true), Action::kIgnore);
+}
+
+// UE5 `ensure` is continuable and can re-fire every frame; uncapped, each one
+// wrote another assert_*.dmp at a full synchronous MiniDumpWriteDump stall.
+TEST(CrashDumpPolicyTest, QuickAssertDumpsAreBudgetedPerProcess) {
+    for (uint32_t written = 0; written < policy::kQuickAssertDumpPerProcessLimit; ++written) {
+        EXPECT_TRUE(policy::ShouldWriteQuickAssertDump(written));
+    }
+    EXPECT_FALSE(policy::ShouldWriteQuickAssertDump(policy::kQuickAssertDumpPerProcessLimit));
+    EXPECT_FALSE(policy::ShouldWriteQuickAssertDump(1000));
+}
+
 TEST(CrashDumpPolicyTest, ExtractPrintableMessageFindsTextAmongBinaryNoise) {
     // Mimics a thrown std::out_of_range object: vtable-ish pointers around an
     // inline (small-string) message.

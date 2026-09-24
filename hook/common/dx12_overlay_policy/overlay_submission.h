@@ -276,6 +276,19 @@ inline bool ShouldUsePresentInterposerOutputQueue(bool swapchainIsInterposerOutp
     return swapchainIsInterposerOutputChain && hasInterposerOutputQueue;
 }
 
+// Fail-closed companion to ShouldUsePresentInterposerOutputQueue. On a present interposer's
+// private output chain whose create queue CE never observed there is NO safe submit queue at
+// all: falling through to generic queue routing submits the overlay on a foreign queue and is
+// the founding cross-queue device removal of this class (DXGI_ERROR_ACCESS_DENIED 0x887A002B
+// followed by the game's null-deref crash, session 20260914_102700). Pass the Present through
+// untouched and keep the overlay on the application-facing chain instead - the DX12-side form
+// of the "no safe queue => fallback" rule of
+// ce::overlay_compat::ResolvePresentInterposerCompositeRoute.
+inline bool ShouldPassThroughPresentInterposerPrivateChainWithoutOverlayDraw(
+    bool swapchainIsInterposerOutputChain, bool hasInterposerOutputQueue) {
+    return swapchainIsInterposerOutputChain && !hasInterposerOutputQueue;
+}
+
 // The interposer owns its queue and may track submissions on it. CE's overlay must therefore enter
 // through the queue's live ExecuteCommandLists chain rather than the raw D3D12 function, exactly as
 // it already must for a native FSR FG queue: bypassing the runtime's own ECL hook is what makes the

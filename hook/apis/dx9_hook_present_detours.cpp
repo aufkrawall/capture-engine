@@ -1,10 +1,18 @@
 #include "dx9_hook_internal.h"
 
 
-HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* pSourceRect,  CONST RECT* pDestRect, 
+HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* pSourceRect,  CONST RECT* pDestRect,
                                                HWND hDestWindowOverride,  CONST RGNDATA* pDirtyRegion) {
 
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 Present", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(dx9_hook_oPresent), CE_PRESENT_RETURN_ADDRESS(), nullptr, dx9_hook_oPresent, device,
+            pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion));
+    }
     if (HookIsShuttingDown()) {
         return dx9_hook_oPresent ? dx9_hook_oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion)
                                  : D3DERR_INVALIDCALL;
@@ -40,14 +48,23 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* p
     if (topLevelPresent) {
         MaybeWaitForVSyncAfterPresent(presentUs);
     }
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 
 }
-HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST RECT* pSourceRect, 
-                                                 CONST RECT* pDestRect,  HWND hDestWindowOverride, 
+HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST RECT* pSourceRect,
+                                                 CONST RECT* pDestRect,  HWND hDestWindowOverride,
                                                  CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
 
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 PresentEx", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(dx9_hook_oPresentEx), CE_PRESENT_RETURN_ADDRESS(), nullptr, dx9_hook_oPresentEx,
+            device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags));
+    }
     if (HookIsShuttingDown()) {
         return dx9_hook_oPresentEx
                    ? dx9_hook_oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags)
@@ -91,14 +108,23 @@ HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST REC
     if (topLevelPresent) {
         MaybeWaitForVSyncAfterPresent(presentUs);
     }
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 
 }
-HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RECT* pSourceRect, 
-                                                   CONST RECT* pDestRect,  HWND hDestWindowOverride, 
+HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RECT* pSourceRect,
+                                                   CONST RECT* pDestRect,  HWND hDestWindowOverride,
                                                    CONST RGNDATA* pDirtyRegion,  DWORD dwFlags) {
 
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX9 SwapChain Present", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(dx9_hook_oPresentSwap), CE_PRESENT_RETURN_ADDRESS(), nullptr, dx9_hook_oPresentSwap,
+            swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags));
+    }
     if (HookIsShuttingDown()) {
         return dx9_hook_oPresentSwap
                    ? dx9_hook_oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags)
@@ -158,6 +184,7 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
         MaybeWaitForVSyncAfterPresent(presentUs);
     }
 
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 
 }

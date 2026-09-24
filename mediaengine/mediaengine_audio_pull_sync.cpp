@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 
+#include "audio_fault_accounting.h"
+
 bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const std::vector<size_t>& srcIndices) {
                 auto& isCfrRecording = s.isCfrRecording;
                 auto& isWgcCfrRecording = s.isWgcCfrRecording;
@@ -205,17 +207,35 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                     encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32, CHANNELS * 4,
                     true,  // float32
                     CHANNEL_MASK, audioChunkTimestampMs);
-                if (encodeResult.failed || encodeResult.acceptedSamples != samplesToEncode) {
+                // The chunk was consumed (erased from every source) before encode, so the
+                // timeline advance below must cover the FULL chunk even when the encoder
+                // accepted less. Shrinking it would make the next pull re-request this
+                // range and fill it with newer samples (content compression). Any
+                // genuinely lost tail is an explicit recorded hole, never a re-filled
+                // range. (The recording-end clamp also shortens acceptedSamples but is
+                // intentional and reports failed==false, so it is not a hole.)
+                // acceptedSamples and every encoder-side hole are counted at the codec
+                // rate, so map the consumed chunk to that rate with the same duration
+                // mapping the encoder uses to size hole silence.
+                const AVCodecContext* encoderCtx = encoder->GetCodecContext();
+                const int encoderSampleRate =
+                    encoderCtx != nullptr && encoderCtx->sample_rate > 0 ? encoderCtx->sample_rate : SAMPLE_RATE;
+                const int64_t chunkAtEncoderRate =
+                    ce::audio::ComputeOutputRateChunkSamples(samplesToEncode, SAMPLE_RATE, encoderSampleRate);
+                const int64_t lostTailSamples = ce::audio::ComputeConsumedChunkHoleSamples(
+                    chunkAtEncoderRate, encodeResult.acceptedSamples, encodeResult.failed);
+                if (encodeResult.failed) {
                     DLL_Log(
-                        "[PullAudio] ERROR: Track %d encoder acceptance mismatch: requested=%lld accepted=%lld "
-                        "submitted=%lld failed=%d cursor=%lld target=%lld",
+                        "[PullAudio] Track %d encoder fault: requested=%lld accepted=%lld submitted=%lld "
+                        "lostTail=%lld (recorded hole, not re-filled) cursor=%lld target=%lld",
                         track, static_cast<long long>(samplesToEncode),
                         static_cast<long long>(encodeResult.acceptedSamples),
-                        static_cast<long long>(encodeResult.submittedSamples), encodeResult.failed ? 1 : 0,
-                        static_cast<long long>(trackCursorSamples), static_cast<long long>(targetSamples));
+                        static_cast<long long>(encodeResult.submittedSamples),
+                        static_cast<long long>(lostTailSamples), static_cast<long long>(trackCursorSamples),
+                        static_cast<long long>(targetSamples));
+                    encoder->AccountContentHole(lostTailSamples);
                 }
-                samplesToEncode =
-                    encodeResult.failed ? 0 : std::min<int64_t>(samplesToEncode, encodeResult.acceptedSamples);
+                // samplesToEncode remains the full consumed chunk for the advance below.
 
                 if (srcIndices.size() > 1 && mixLogCounter++ % 5000 == 0) {
                     DLL_Log("[PullAudio] Mixed %d sources for track %d (%lld samples)", activeSources, track,
@@ -231,12 +251,16 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                     trackPartialSilenceSamples[track] += static_cast<uint64_t>(samplesToEncode);
                 }
             }
-            trackCursorSamples += samplesToEncode;
-
-            // Keep source counters aligned for source-local diagnostics, but the
-            // exported stream timeline is trackTimelineSamples[track].
-            for (size_t srcIdx : srcIndices) {
-                encodedSamplesPerSource[srcIdx] += samplesToEncode;
+            // Advance the track cursor by the full consumed chunk (already erased from
+            // sources before encode) so the next pull never re-requests this range.
+            {
+                std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                trackCursorSamples += samplesToEncode;
+                // Keep source counters aligned for source-local diagnostics, but the
+                // exported stream timeline is trackTimelineSamples[track].
+                for (size_t srcIdx : srcIndices) {
+                    encodedSamplesPerSource[srcIdx] += samplesToEncode;
+                }
             }
 
             // A/V SYNC MONITORING: Periodic check for drift detection and audio health.

@@ -36,25 +36,62 @@ void AccumulateMicroseconds(std::atomic<uint64_t>& total, std::atomic<uint32_t>&
 }
 
 // Canonical storage is 0xAARRGGBB, the layout the rasterizer already produces
-// and the native layout of a standard 32-bit DirectDraw surface. Reject an
-// unusual channel layout instead of silently writing swapped colours.
-bool IsRgb888(const DDPIXELFORMAT& format) {
-    return (format.dwFlags & DDPF_RGB) != 0 && format.dwRGBBitCount == 32 &&
-           format.dwRBitMask == 0x00FF0000u && format.dwGBitMask == 0x0000FF00u &&
-           format.dwBBitMask == 0x000000FFu;
+// and the native layout of a standard 32-bit DirectDraw surface. The formats
+// the composite can write are the policy table (ddraw_present_policy.h); an
+// unusual channel layout is rejected instead of silently writing swapped
+// colours.
+//
+// This toolchain's <ddraw.h> spells only DDPF_PALETTEINDEXED4/TO8; the plain
+// palettized flag (documented as DDPF_PALETTEINDEXED) is unnamed there.
+constexpr DWORD kDdpfPaletteIndexed = 0x00000020;
+
+policy::SurfacePixelFormat DescribePixelFormat(const DDPIXELFORMAT& format) {
+    policy::SurfacePixelFormat described;
+    described.rgb = (format.dwFlags & DDPF_RGB) != 0;
+    described.alphaPixels = (format.dwFlags & DDPF_ALPHAPIXELS) != 0;
+    described.paletteIndexed = (format.dwFlags & kDdpfPaletteIndexed) != 0;
+    described.bitCount = format.dwRGBBitCount;
+    described.redMask = format.dwRBitMask;
+    described.greenMask = format.dwGBitMask;
+    described.blueMask = format.dwBBitMask;
+    described.alphaMask = format.dwRGBAlphaBitMask;
+    return described;
 }
 
-bool IsRgb565(const DDPIXELFORMAT& format) {
-    return (format.dwFlags & DDPF_RGB) != 0 && format.dwRGBBitCount == 16 &&
-           format.dwRBitMask == 0xF800u && format.dwGBitMask == 0x07E0u &&
-           format.dwBBitMask == 0x001Fu && format.dwRGBAlphaBitMask == 0;
+// The palette snapshot the current composite pass expands indices through.
+// Taken fresh per pass: caching it would need invalidation on both SetPalette
+// and IDirectDrawPalette::SetEntries (an 8-bit palette fade mutates entries
+// with no SetPalette call anywhere), and one GetEntries per pass is nothing
+// against the surface lock the pass already takes. What the pass writes back is
+// recorded as what the next pass expands it to, so a palette change between
+// passes reads as application-modified and self-corrects.
+uint32_t FetchSurfacePalette(IDirectDrawSurface7* surface, uint32_t* palette, uint32_t capacity) {
+    if (!surface || !palette || capacity == 0)
+        return 0;
+    IDirectDrawPalette* object = nullptr;
+    if (FAILED(surface->GetPalette(&object)) || !object)
+        return 0;
+    PALETTEENTRY entries[256] = {};
+    const HRESULT hr = object->GetEntries(0, 0, 256, entries);
+    object->Release();
+    if (FAILED(hr))
+        return 0;
+    const uint32_t count = capacity < 256u ? capacity : 256u;
+    for (uint32_t i = 0; i < count; ++i) {
+        palette[i] = 0xFF000000u | (static_cast<uint32_t>(entries[i].peRed) << 16) |
+                     (static_cast<uint32_t>(entries[i].peGreen) << 8) | static_cast<uint32_t>(entries[i].peBlue);
+    }
+    return count;
 }
 
-bool IsRgb555(const DDPIXELFORMAT& format) {
-    return (format.dwFlags & DDPF_RGB) != 0 &&
-           (format.dwRGBBitCount == 15 || format.dwRGBBitCount == 16) &&
-           format.dwRBitMask == 0x7C00u && format.dwGBitMask == 0x03E0u &&
-           format.dwBBitMask == 0x001Fu && format.dwRGBAlphaBitMask == 0;
+uint8_t QuantizeToPalette(uint32_t color, const uint32_t* palette, uint32_t paletteCount,
+                          std::unordered_map<uint32_t, uint8_t>& cache) {
+    const auto cached = cache.find(color);
+    if (cached != cache.end())
+        return cached->second;
+    const uint8_t index = static_cast<uint8_t>(policy::NearestPaletteIndex(color, palette, paletteCount));
+    cache.emplace(color, index);
+    return index;
 }
 
 DDrawCapture::DDrawCompositeState::SurfaceState* FindSurfaceState(
@@ -128,7 +165,8 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
                           IDirectDrawSurface7* surface, const Rect& writeRegion, const Rect& dirty,
                           const std::vector<uint32_t>& sprite, bool restoreOnly,
                           bool preserveNativeOverlayState, std::vector<uint32_t>& rowScratch,
-                          std::vector<uint16_t>& packedRowScratch) {
+                          std::vector<uint16_t>& packedRowScratch, std::vector<uint8_t>& byteRowScratch,
+                          std::unordered_map<uint32_t, uint8_t>& paletteQuantizeCache) {
     const uint32_t regionWidth = static_cast<uint32_t>(writeRegion.right - writeRegion.left);
     const uint32_t dirtyWidth = static_cast<uint32_t>(dirty.right - dirty.left);
     const uint32_t dirtyHeight = static_cast<uint32_t>(dirty.bottom - dirty.top);
@@ -165,9 +203,8 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
     const uint32_t* spriteRow = sprite.empty() ? nullptr : sprite.data();
     uint8_t* base = static_cast<uint8_t*>(desc.lpSurface);
     const uint32_t bits = desc.ddpfPixelFormat.dwRGBBitCount;
-    const bool is888 = IsRgb888(desc.ddpfPixelFormat);
-    const bool is565 = IsRgb565(desc.ddpfPixelFormat);
-    const bool is555 = IsRgb555(desc.ddpfPixelFormat);
+    const policy::SurfaceEncoding encoding =
+        policy::ClassifySurfacePixelFormat(DescribePixelFormat(desc.ddpfPixelFormat));
     bool wrote = false;
 
     // A locked DirectDraw surface is video memory. Reading it one pixel at a
@@ -180,23 +217,41 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
     // sequential and leaves the result identical. A 16-bit surface copies the
     // packed row the same way and expands and repacks it in cached memory - the
     // conversion is not a reason to touch video memory per pixel.
-    const bool writableFormat = is888 || is565 || is555;
-    const bool packedFormat = is565 || is555;
+    const bool direct888 = encoding == policy::SurfaceEncoding::Rgb888;
+    const bool is565 = encoding == policy::SurfaceEncoding::Rgb565;
+    const bool packed16 = is565 || encoding == policy::SurfaceEncoding::Rgb555;
+    const bool rgb24 = encoding == policy::SurfaceEncoding::Rgb24;
+    const bool palette8 = encoding == policy::SurfaceEncoding::Palette8;
+    const uint32_t bytesPerPixel =
+        direct888 ? 4u : packed16 ? 2u : rgb24 ? 3u : palette8 ? 1u : 0u;
+    // A palettized surface is written through the palette it displays with;
+    // without one there is no colour CE could write.
+    uint32_t palette[256] = {};
+    const uint32_t paletteCount = palette8 ? FetchSurfacePalette(surface, palette, 256u) : 0u;
+    const bool writableFormat = bytesPerPixel != 0 && (!palette8 || paletteCount != 0);
     if (writableFormat) {
         try {
             rowScratch.resize(dirtyWidth);
-            if (packedFormat)
+            if (packed16)
                 packedRowScratch.resize(dirtyWidth);
+            if (rgb24 || palette8)
+                byteRowScratch.resize(static_cast<size_t>(dirtyWidth) * bytesPerPixel);
+            if (palette8)
+                paletteQuantizeCache.clear();
         } catch (...) {
             rowScratch.clear();
             packedRowScratch.clear();
+            byteRowScratch.clear();
+            paletteQuantizeCache.clear();
         }
     }
 
-    if (writableFormat && rowScratch.size() == dirtyWidth &&
-        (!packedFormat || packedRowScratch.size() == dirtyWidth)) {
+    const bool scratchReady =
+        rowScratch.size() == dirtyWidth && (!packed16 || packedRowScratch.size() == dirtyWidth) &&
+        (!(rgb24 || palette8) || byteRowScratch.size() == static_cast<size_t>(dirtyWidth) * bytesPerPixel);
+    if (writableFormat && scratchReady) {
         const int32_t pitch = desc.lPitch;
-        const size_t rowBytes = static_cast<size_t>(dirtyWidth) * (is888 ? 4u : 2u);
+        const size_t rowBytes = static_cast<size_t>(dirtyWidth) * bytesPerPixel;
         for (uint32_t y = 0; y < dirtyHeight; ++y) {
             const uint32_t regionY = static_cast<uint32_t>(dirty.top + static_cast<int>(y)) -
                                      static_cast<uint32_t>(writeRegion.top);
@@ -205,13 +260,25 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
             uint8_t* row = base + static_cast<ptrdiff_t>(y) * pitch;
             const uint32_t* spritePixels = spriteRow ? spriteRow + rowIndex : nullptr;
 
-            if (is888) {
+            if (direct888) {
                 memcpy(rowScratch.data(), row, rowBytes);
-            } else {
+            } else if (packed16) {
                 memcpy(packedRowScratch.data(), row, rowBytes);
                 for (uint32_t x = 0; x < dirtyWidth; ++x) {
                     rowScratch[x] = is565 ? policy::ExpandRgb565(packedRowScratch[x])
                                           : policy::ExpandRgb555(packedRowScratch[x]);
+                }
+            } else if (rgb24) {
+                memcpy(byteRowScratch.data(), row, rowBytes);
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    uint32_t packed = 0;
+                    memcpy(&packed, byteRowScratch.data() + static_cast<size_t>(x) * 3u, 3u);
+                    rowScratch[x] = policy::ExpandRgb24(packed);
+                }
+            } else {
+                memcpy(byteRowScratch.data(), row, rowBytes);
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    rowScratch[x] = policy::ExpandPaletteIndex(byteRowScratch[x], palette, paletteCount);
                 }
             }
 
@@ -219,9 +286,9 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
                                          entry.backdrop.data() + rowIndex, entry.lastComposite.data() + rowIndex,
                                          entry.valid, restoreOnly);
 
-            if (is888) {
+            if (direct888) {
                 memcpy(row, rowScratch.data(), rowBytes);
-            } else {
+            } else if (packed16) {
                 for (uint32_t x = 0; x < dirtyWidth; ++x) {
                     const uint16_t packed =
                         is565 ? policy::PackRgb565(rowScratch[x]) : policy::PackRgb555(rowScratch[x]);
@@ -233,6 +300,28 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
                         is565 ? policy::ExpandRgb565(packed) : policy::ExpandRgb555(packed);
                 }
                 memcpy(row, packedRowScratch.data(), rowBytes);
+            } else if (rgb24) {
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    const uint32_t packed = policy::PackRgb24(rowScratch[x]);
+                    uint8_t* pixel = byteRowScratch.data() + static_cast<size_t>(x) * 3u;
+                    pixel[0] = static_cast<uint8_t>(packed);
+                    pixel[1] = static_cast<uint8_t>(packed >> 8);
+                    pixel[2] = static_cast<uint8_t>(packed >> 16);
+                    entry.lastComposite[rowIndex + x] = policy::ExpandRgb24(packed);
+                }
+                memcpy(row, byteRowScratch.data(), rowBytes);
+            } else {
+                for (uint32_t x = 0; x < dirtyWidth; ++x) {
+                    const uint8_t packed =
+                        QuantizeToPalette(rowScratch[x], palette, paletteCount, paletteQuantizeCache);
+                    byteRowScratch[x] = packed;
+                    // Same proof rule as 16-bit: record exactly what the next
+                    // lock expands this index to, so a palette change between
+                    // passes reads as application-modified.
+                    entry.lastComposite[rowIndex + x] =
+                        policy::ExpandPaletteIndex(packed, palette, paletteCount);
+                }
+                memcpy(row, byteRowScratch.data(), rowBytes);
             }
         }
         wrote = true;
@@ -255,6 +344,9 @@ bool WriteCompositeRegion(DDrawCapture::DDrawCompositeState::SurfaceState& entry
             if (writableFormat) {
                 HookLogImportant(
                     "DDraw: Overlay composite could not stage a %u-pixel row for the presented surface", dirtyWidth);
+            } else if (palette8) {
+                HookLogImportant("DDraw: Overlay composite cannot write the %u-bit palettized surface (no palette)",
+                                 bits);
             } else {
                 HookLogImportant("DDraw: Overlay composite cannot write a %u-bit presented surface", bits);
             }
@@ -421,7 +513,8 @@ bool DDrawCapture::CompositeOverlaySprite(IDirectDrawSurface7* surface, const Re
 
     const int64_t writeStartUs = PerfLogger::GetQpcUs();
     const bool wrote = WriteCompositeRegion(*entry, surface, writeRegion, dirty, state.spriteCache.composed, false,
-                                            repairExistingNative, state.rowScratch, state.packedRowScratch);
+                                            repairExistingNative, state.rowScratch, state.packedRowScratch,
+                                            state.byteRowScratch, state.paletteQuantizeCache);
     const int64_t writeUs = PerfLogger::GetQpcUs() - writeStartUs;
     if (!wrote) {
         diagnostics.compositeWriteFailed.fetch_add(1, std::memory_order_relaxed);
@@ -456,7 +549,8 @@ bool DDrawCapture::RestoreCompositeRegion(IDirectDrawSurface7* surface) {
     ddraw_hook_g_PresentationDiagnostics.compositeFullWrites.fetch_add(1, std::memory_order_relaxed);
     const int64_t writeStartUs = PerfLogger::GetQpcUs();
     const bool wrote = WriteCompositeRegion(*entry, surface, region, region, std::vector<uint32_t>(), true, false,
-                                            compositeState->rowScratch, compositeState->packedRowScratch);
+                                            compositeState->rowScratch, compositeState->packedRowScratch,
+                                            compositeState->byteRowScratch, compositeState->paletteQuantizeCache);
     if (!wrote)
         return false;
     AccumulateMicroseconds(ddraw_hook_g_PresentationDiagnostics.writeMicrosecondsTotal,
@@ -516,6 +610,9 @@ void DDrawCapture::ReleaseCompositeRegionResources() {
     compositeState->rowScratch.shrink_to_fit();
     compositeState->packedRowScratch.clear();
     compositeState->packedRowScratch.shrink_to_fit();
+    compositeState->byteRowScratch.clear();
+    compositeState->byteRowScratch.shrink_to_fit();
+    compositeState->paletteQuantizeCache.clear();
     compositeState->surfaces.clear();
     compositeState->surfaces.shrink_to_fit();
 }

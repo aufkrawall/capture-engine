@@ -87,6 +87,25 @@ void WGCCapture::Impl::RequestHDRRecheckIfDue() {
 
 }
 
+
+#endif
+
+
+#if HAS_WGC
+
+void WGCCapture::Impl::RequestHDRRecheckUrgent(DXGI_FORMAT deliveredFormat) {
+
+        hdrRecheckUrgent_.store(true, std::memory_order_relaxed);
+        hdrRecheckPending_.store(true, std::memory_order_relaxed);
+        static std::atomic<uint32_t> contradictionLogCount{0};
+        const uint32_t logCount = contradictionLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 4) {
+            LogWarn("[WGC] Source format %s contradicts the %s capture contract; requesting an immediate HDR recheck",
+                    DxgiFormatName(deliveredFormat), captureIsHDR_.load(std::memory_order_relaxed) ? "HDR" : "SDR");
+        }
+
+}
+
 #endif
 
 
@@ -94,13 +113,14 @@ void WGCCapture::Impl::RequestHDRRecheckIfDue() {
 
 void WGCCapture::Impl::MaybePerformDeferredHDRRecheck() {
 
-        if (!hdrRecheckPending_.exchange(false, std::memory_order_relaxed)) {
+        const bool urgent = hdrRecheckUrgent_.exchange(false, std::memory_order_relaxed);
+        if (!hdrRecheckPending_.exchange(false, std::memory_order_relaxed) && !urgent) {
             return;
         }
 
         const ULONGLONG now = GetTickCount64();
         const ULONGLONG lastCheckTick = lastHDRCheckTick_.load(std::memory_order_relaxed);
-        if (now - lastCheckTick < 2000) {
+        if (!urgent && now - lastCheckTick < 2000) {
             return;
         }
 

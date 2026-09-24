@@ -657,7 +657,8 @@ TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructive
     const size_t exportedCursor = source.find("ce::audio::ResolveSourceTimelineWriteCursor(", cursorGuard);
     ASSERT_NE(cursorGuard, std::string::npos);
     ASSERT_NE(exportedCursor, std::string::npos);
-    EXPECT_LT(exportedCursor, cursorGuard + 500);
+    // The cross-thread cursor snapshot block sits between the guard and the pinned use.
+    EXPECT_LT(exportedCursor, cursorGuard + 800);
     EXPECT_EQ(source.substr(cursorGuard, exportedCursor - cursorGuard).find("AudioConfig::AppAudio"),
               std::string::npos);
 }
@@ -673,7 +674,7 @@ TEST(AudioCaptureSourceTest, LateLiveSourceHoldsThePullAndDeepensTheIngestReserv
     // attributes destroyed audio.
     const std::string commit = ReadSource("mediaengine_audio_loop_commit.cpp");
     ASSERT_FALSE(commit.empty());
-    EXPECT_NE(commit.find("PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx]"),
+    EXPECT_NE(commit.find("PublishAudioIngestHeadroom(packetStartSamples - encodedCursorSnapshot,"),
               std::string::npos);
     EXPECT_NE(commit.find("ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples"), std::string::npos);
     EXPECT_NE(commit.find("packetStartSamples += src.timelineResyncOffsetSamples;"), std::string::npos);

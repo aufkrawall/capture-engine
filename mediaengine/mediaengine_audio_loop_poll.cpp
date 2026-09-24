@@ -67,6 +67,8 @@ bool MediaEngine::TrySelectSharedStartupRebase(AudioLoopState& s, bool finalStop
 
 #include "mediaengine_internal.h"
 
+#include "audio_fault_accounting.h"
+
 bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
     auto& sourceTimestamps = s.sourceTimestamps;
     auto& sourceLoggedPreStartDrop = s.sourceLoggedPreStartDrop;
@@ -336,6 +338,14 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                 src.startupSyntheticRingSamples = 0;
                 src.startupGapProtectionSamples = 0;
                 src.packetBoundaryFadeInSamplesRemaining = 0;
+                // Diagnostics read of a pull-thread-owned cursor: snapshot it under the
+                // leaf lock (see audio_fault_accounting.h).
+                int64_t trackCursorSnapshot = 0;
+                {
+                    std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                    const auto trackCursorIt = trackTimelineSamples.find(src.track);
+                    trackCursorSnapshot = trackCursorIt != trackTimelineSamples.end() ? trackCursorIt->second : 0;
+                }
                 DLL_Log(
                     "[AudioEpoch] Capture owner accepted acknowledged transition src=%zu track=%d type=%d "
                     "process=%s epoch=%llu->%llu requested=%llu acknowledged=%llu trackCursor=%lld "
@@ -345,7 +355,7 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                     static_cast<unsigned long long>(previousCaptureEpoch),
                     static_cast<unsigned long long>(packet.captureEpoch),
                     static_cast<unsigned long long>(requested), static_cast<unsigned long long>(acknowledged),
-                    static_cast<long long>(trackTimelineSamples[src.track]),
+                    static_cast<long long>(trackCursorSnapshot),
                     static_cast<unsigned long long>(src.qpcAlignedWrittenSamples),
                     src.bootstrapComplete ? 1 : 0);
             }

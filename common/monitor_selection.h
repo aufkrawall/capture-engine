@@ -68,6 +68,12 @@ struct ResolveResult {
 
 bool TryParseSelector(std::string_view value, Selector& selector);
 bool IsExplicitSelector(const Selector& selector);
+
+// Color-identity helpers for per-display HDR/SDR queries: bind a DISPLAYCONFIG
+// query to one specific monitor's GDI device name (never the primary display),
+// and map Windows' SDR white level to nits.
+bool GdiDeviceNamesMatch(const wchar_t* lhs, const wchar_t* rhs);
+float SdrWhiteNitsFromLevel(uint32_t sdrWhiteLevel);
 CandidateChoice ChooseCandidate(SelectorKind kind, const CandidateHandles& candidates);
 std::vector<MonitorDescriptor> EnumerateActiveMonitors();
 const MonitorDescriptor* FindByStableId(const std::vector<MonitorDescriptor>& monitors, std::string_view stableId);

@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -43,9 +45,15 @@ struct NullCallFault {
 // have had Steam's memory patched.
 TEST(SteamNullCallbackRecoveryTest, HandlerIgnoresFaultsOutsideAnArmedGuard) {
     NullCallFault fault;
-    const CONTEXT before = fault.context;
+    // CONTEXT has padding and no unique object representation, so snapshot and
+    // compare raw bytes instead of the struct; the fixture value-initializes it
+    // whole, padding included, which makes the comparison deterministic.
+    std::array<unsigned char, sizeof(CONTEXT)> before{};
+    std::memcpy(before.data(), &fault.context, before.size());
     EXPECT_EQ(DXGIShared::SteamOverlayInitVehHandler(&fault.pointers), EXCEPTION_CONTINUE_SEARCH);
-    EXPECT_EQ(memcmp(&before, &fault.context, sizeof(CONTEXT)), 0) << "an unarmed thread's context must not change";
+    std::array<unsigned char, sizeof(CONTEXT)> after{};
+    std::memcpy(after.data(), &fault.context, after.size());
+    EXPECT_EQ(before, after) << "an unarmed thread's context must not change";
 }
 
 TEST(SteamNullCallbackRecoveryTest, GuardArmsOnlyItsOwnThreadAndDisarmsOnExit) {

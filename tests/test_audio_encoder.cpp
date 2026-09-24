@@ -117,6 +117,44 @@ TEST_F(AudioEncoderTest, PcmAcceptsFinalBatchLongerThanFiveSeconds) {
     encoder.Stop();
 }
 
+TEST_F(AudioEncoderTest, SubFrameBatchesAccumulateAcrossCallsWithoutTruncation) {
+    AudioConfig config;
+    config.codec = "aac";
+    config.bitrate = 128;
+    config.sampleRate = "48000";
+    config.outputChannels = 2;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    encoder.SetStreamIndex(1);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
+
+    // Batches smaller than one codec frame must accumulate in the FIFO across calls
+    // so fault accounting can never hide a truncation inside an ordinary short
+    // batch (it assumes accepted == chunk unless the result is failed).
+    constexpr int kBatchSamples = 240;
+    constexpr int kBatchCount = 40;
+    int64_t acceptedTotal = 0;
+    for (int batch = 0; batch < kBatchCount; ++batch) {
+        std::vector<float> samples(static_cast<size_t>(kBatchSamples) * 2u, 0.0f);
+        const auto result = encoder.EncodeSamples(reinterpret_cast<const uint8_t*>(samples.data()),
+                                                  static_cast<int>(samples.size() * sizeof(float)), 2, 48000, 32, 32, 8,
+                                                  true, config.outputChannelMask, 0);
+        EXPECT_FALSE(result.failed);
+        acceptedTotal += result.acceptedSamples;
+    }
+    const int64_t totalSamples = static_cast<int64_t>(kBatchSamples) * kBatchCount;
+    EXPECT_EQ(acceptedTotal, totalSamples);
+
+    // Only whole frames have been framed so far; the sub-frame remainder is still
+    // queued and must stay counted as accepted input, not be lost.
+    const int64_t frameSize = encoder.GetCodecContext()->frame_size;
+    ASSERT_GT(frameSize, 0);
+    EXPECT_EQ(encoder.GetSamplesCount(), (totalSamples / frameSize) * frameSize);
+    encoder.Stop();
+    EXPECT_EQ(encoder.GetFinalizationReport().inputTimelineSamples, totalSamples);
+}
+
 TEST_F(AudioEncoderTest, PcmBitDepthOverridesSelectConcreteEncoders) {
     AudioConfig config;
     config.codec = "pcm";

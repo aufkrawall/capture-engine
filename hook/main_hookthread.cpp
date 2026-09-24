@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/child_inject_policy.h"
 #include "common/overlay_gpu_timing.h"
 #include "common/pacing_trace.h"
 #include "common/custom_overlay_dx12.h"
@@ -75,10 +76,13 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // Load Local Config (to support per-app overrides) EARLY
   {
-    char dllPath[MAX_PATH];
-    GetModuleFileNameA(g_hModule, dllPath, MAX_PATH);
-    std::string pathString = dllPath;
-    std::string dir = pathString.substr(0, pathString.find_last_of("\\/"));
+    wchar_t moduleDirW[MAX_PATH] = {0};
+    ce::child_inject_policy::GetHookModuleDirectoryW(g_hModule, moduleDirW, MAX_PATH);
+    // config.ini is opened through common/config's CreateFileA-based reader,
+    // which is ANSI-only, so this boundary converts CP_ACP. Consumers with a
+    // wide API (the wrapper DLL load below) use moduleDirW directly instead of
+    // inheriting a '?'-mangled derivation.
+    std::string dir = ce::child_inject_policy::NarrowFromWideAcp(moduleDirW);
     std::string configPath = dir + "\\config.ini";
 
     EnsureLocalConfigAllocated();
@@ -174,17 +178,18 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 #ifdef ENABLE_D3D12_WRAPPER
       if (hasGraphicsAPI) {
 #ifdef _WIN64
-        std::string wrapperDll = dir + "\\d3d12_wrappers.dll";
+        std::wstring wrapperDll = std::wstring(moduleDirW) + L"\\d3d12_wrappers.dll";
 #else
-        std::string wrapperDll = dir + "\\d3d12_wrappers_x86.dll";
+        std::wstring wrapperDll = std::wstring(moduleDirW) + L"\\d3d12_wrappers_x86.dll";
 #endif
         UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-        HMODULE hWrapper = LoadLibraryA(wrapperDll.c_str());
+        HMODULE hWrapper = LoadLibraryW(wrapperDll.c_str());
         SetErrorMode(oldMode);
 
         if (!hWrapper) {
           EarlyLog("HookThread: Failed to load wrapper DLL from %s, Err=%d",
-                   wrapperDll.c_str(), GetLastError());
+                   ce::child_inject_policy::NarrowFromWideAcp(wrapperDll.c_str()).c_str(),
+                   GetLastError());
         } else {
           EarlyLog("HookThread: Loaded wrapper DLL at %p", hWrapper);
         }

@@ -1,5 +1,6 @@
 #include "media_main_internal.h"
 
+#include "../common/capture_retarget_policy.h"
 #include "../common/live_stream_config.h"
 
 int MediaProcessSession::Run(const AppConfig& initialConfig) {
@@ -325,6 +326,16 @@ void MediaProcessSession::applyWgcOptions(WGCCapture* capture) {
 int MediaProcessMain(const AppConfig& initialConfig) {
     return MediaProcessSession().Run(initialConfig);
 }
+// Re-assert latched source-loss truth into the health registers before
+// finalization: the encoder thread's shutdown publications run inside
+// StopRecording and would otherwise erase it, letting the manifest and the
+// completion notification claim a clean save for a recording whose source died.
+static void PublishLatchedSourceLossBeforeFinalization() {
+    ce::capture_retarget::PublishLatchedSourceLossHealth(
+        media_main_g_RecordingHealthFlags,
+        media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+}
+
 bool StartRecording(const AppConfig& config) {
     if (media_main_g_Recording)
         return true;
@@ -332,6 +343,7 @@ bool StartRecording(const AppConfig& config) {
     media_main_g_LiveStreamRecording.store(false, std::memory_order_release);
     media_main_g_PrivacyFailClosedStopRequested.store(false, std::memory_order_release);
     ResetRecordingHealthPublication();
+    ce::capture_retarget::ResetSourceLossHealth();
     LogInfo("[Media] Starting recording...");
 
     timeBeginPeriod(1);
@@ -555,6 +567,7 @@ void StopRecording() {
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
         const bool outputSaved = MediaEngine_StopRecording(false);
+        PublishLatchedSourceLossBeforeFinalization();
         CompleteRecordingFinalization(false, outputSaved);
 
         if (media_main_g_pSharedMem) {
@@ -634,6 +647,7 @@ void StopRecording() {
     }
 
     const bool outputSaved = MediaEngine_StopRecording(cancelBeforeLive);
+    PublishLatchedSourceLossBeforeFinalization();
     CompleteRecordingFinalization(cancelBeforeLive, outputSaved);
     if (MediaEngine_ReleaseEncoderTextures) {
         MediaEngine_ReleaseEncoderTextures();

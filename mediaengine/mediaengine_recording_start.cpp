@@ -392,6 +392,8 @@ bool MediaEngine::StartRecording() {
             }
         }
 
+        lastOutputDegraded = false;
+        audioOnlyWriteErrorCount = 0;
         recording = true;
         return true;
 
@@ -447,6 +449,8 @@ void MediaEngine::CancelUncommittedVideoRecording() {
         timingModeFrozenForSession = false;
         activeScreenGrab = false;
 
+        lastOutputDegraded = false;
+        audioOnlyWriteErrorCount = 0;
         if (videoEnc) {
             videoEnc->Cancel();
         }

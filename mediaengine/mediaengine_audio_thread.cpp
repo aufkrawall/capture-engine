@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 
+#include "audio_fault_accounting.h"
+
 
 size_t MediaEngine::StopAudioCaptureSources(bool discardPendingPackets) {
 
@@ -37,8 +39,15 @@ MediaEngine::FinalSourceCatchupStatus MediaEngine::GetFinalCfrSourceCatchupStatu
         const int64_t targetSamples = ce::audio::ComputeDurationUsToSamples(targetUs, kStopSampleRate);
         for (const auto& kv : cachedTrackToSources) {
             const int track = kv.first;
-            const auto trackIt = trackTimelineSamples.find(track);
-            const int64_t trackCursorSamples = trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
+            // The pull thread advances trackTimelineSamples while this runs (also from
+            // inside the audioDrainMutex-coupled stop wait), so snapshot the cursor
+            // under the leaf lock like the audio worker does.
+            int64_t trackCursorSamples = 0;
+            {
+                std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                const auto trackIt = trackTimelineSamples.find(track);
+                trackCursorSamples = trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
+            }
             const int64_t requestedSamples = targetSamples - trackCursorSamples;
             if (requestedSamples <= 0) {
                 continue;

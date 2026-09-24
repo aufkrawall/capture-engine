@@ -317,6 +317,45 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
     }
 
 }
+void CheckD3D9SamplerHookDrift(uintptr_t* vtable) {
+
+
+    if (HookIsShuttingDown() || !vtable)
+        return;
+
+    // Proof-of-life for the sampler slots. They install one-way at device setup
+    // while another overlay can re-patch them at any time, and forced AF plus
+    // the logical sampler shadow go dead the moment they drift. The per-Present
+    // EndScene check is the same proof for its slot; the D3D7 restore-safe gate
+    // (ddraw_hook_texture_bindings.cpp) refuses to trust a shadow whose
+    // interception never installed. Re-hooking on drift is deliberately not
+    // done here: the drifted-to owner would become CE's saved original and
+    // calling it is the mutual-hook cycle class (see ddraw_hook_present_reentry.cpp).
+    std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
+    for (const auto& record : dx9_hook_g_D3D9SamplerVTables) {
+        if (record->vtable != vtable)
+            continue;
+        const bool setTextureDrifted =
+            record->setTextureHooked && (void*)vtable[65] != (void*)&DetourSetTexture;
+        const bool getSamplerDrifted =
+            record->getSamplerStateHooked && (void*)vtable[68] != (void*)&DetourGetSamplerState;
+        const bool setSamplerDrifted =
+            record->setSamplerStateHooked && (void*)vtable[69] != (void*)&DetourSetSamplerState;
+        if (!setTextureDrifted && !getSamplerDrifted && !setSamplerDrifted)
+            return;
+        static int samplerDriftLogCount = 0;
+        if (samplerDriftLogCount < 8) {
+            HookLogImportant(
+                "DX9: sampler hook drift detected setTexture=%d getSamplerState=%d setSamplerState=%d "
+                "(slot65=%p slot68=%p slot69=%p)",
+                setTextureDrifted ? 1 : 0, getSamplerDrifted ? 1 : 0, setSamplerDrifted ? 1 : 0, (void*)vtable[65],
+                (void*)vtable[68], (void*)vtable[69]);
+            samplerDriftLogCount++;
+        }
+        return;
+    }
+
+}
 void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device,  uintptr_t* deviceVTable) {
 
 

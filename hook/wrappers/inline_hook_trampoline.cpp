@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include "../common/hook_common.h"
+#include "../common/hook_jump_policy.h"
 
 namespace InlineHook {
 
@@ -62,7 +63,6 @@ uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
     return static_cast<uint8_t*>(allocation);
 }
 
-#ifdef _WIN64
 namespace {
 
 constexpr uintptr_t kTrampolineSearchWindow = 0x7FFF0000ULL;
@@ -91,18 +91,23 @@ uintptr_t ClosestPoolAddressInRegion(uintptr_t regionStart, uintptr_t regionEnd,
 }
 
 }  // namespace
-#endif
 
-// Allocate memory near the target (within ±2GB for x64).
+// Allocate memory near the target (within ±2GB).
 // Each trampoline gets a private read/write page while it is constructed. The
 // page is sealed execute/read before any target can reference it, which keeps
 // the allocation W^X and avoids changing protection under active callers.
 static uint8_t* AllocateTrampolinePool(void* nearAddr) {
-#ifdef _WIN64
-    // Try to allocate within ±2GB of target for RIP-relative fixups.
+    // Try to allocate within ±2GB of target. x64 needs it for RIP-relative
+    // fixups; x86 needs it so rewritten external short branches keep a true
+    // signed rel32 reach (unlike raw x86 E9 emission they cannot rely on
+    // address wraparound). The window addition can wrap the 32-bit address
+    // space on x86, so the high end clamps and a region ending at the top of
+    // the space stops the scan instead of wrapping it back to zero.
     uintptr_t target = (uintptr_t)nearAddr;
     uintptr_t low = target > kTrampolineSearchWindow ? target - kTrampolineSearchWindow : 0x10000ULL;
     uintptr_t high = target + kTrampolineSearchWindow;
+    if (high < target)
+        high = ~static_cast<uintptr_t>(0);
 
     // Prefer the free block closest to the target. Taking the first free block
     // above `low` instead lands roughly 2GB below the target, which pushes the
@@ -119,6 +124,8 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
 
         const uintptr_t regionStart = (uintptr_t)mbi.BaseAddress;
         const uintptr_t regionEnd = regionStart + mbi.RegionSize;
+        if (regionEnd <= regionStart)
+            break;
         if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
             const uintptr_t candidate = ClosestPoolAddressInRegion(regionStart, regionEnd, low, high, target);
             if (candidate != 0) {
@@ -143,17 +150,20 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
         if (VirtualQuery((void*)addr, &mbi, sizeof(mbi)) == 0)
             break;
 
+        const uintptr_t regionStart = (uintptr_t)mbi.BaseAddress;
+        const uintptr_t regionEnd = regionStart + mbi.RegionSize;
+        if (regionEnd <= regionStart)
+            break;
         if (mbi.State == MEM_FREE && mbi.RegionSize >= TRAMPOLINE_POOL_SIZE) {
             uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
-            if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
+            if (aligned >= addr && aligned + TRAMPOLINE_POOL_SIZE <= regionEnd) {
                 void* p = AllocateWritableTrampolinePage(reinterpret_cast<void*>(aligned));
                 if (p)
                     return (uint8_t*)p;
             }
         }
-        addr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        addr = regionEnd;
     }
-#endif
     // Fallback: allocate anywhere
     return AllocateWritableTrampolinePage(nullptr);
 }
@@ -334,7 +344,7 @@ void ReleaseSealedTrampoline(void* trampoline) {
 }
 
 // Write an absolute jump at 'dest' to 'target'
-void WriteJump(uint8_t* dest, void* target) {
+bool WriteJump(uint8_t* dest, void* target) {
 #ifdef _WIN64
     // CRITICAL ORDER: Write the 8-byte absolute target address FIRST, then the
     // 6-byte JMP [RIP+0] header. If a concurrent thread sees a partial JMP,
@@ -346,6 +356,7 @@ void WriteJump(uint8_t* dest, void* target) {
     const uint8_t jmpHeader[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
     memcpy(dest, jmpHeader, 6);
     HookLog("WriteJump: x64 JMP [RIP+0] -> %p at %p", target, dest);
+    return true;
 #else
     // E9 [4-byte relative offset]
     // CRITICAL ORDER: Write the displacement FIRST (as a 4-byte aligned write),
@@ -355,18 +366,22 @@ void WriteJump(uint8_t* dest, void* target) {
     // JMP rel32 means: RIP = (address of next instruction) + rel32
     // So: target = (dest + 5) + rel32
     // Therefore: rel32 = target - (dest + 5)
-    int32_t rel = (int32_t)((uintptr_t)target - (uintptr_t)(dest + 5));
+    // ce::hook_jump_policy computes that in 64-bit signed arithmetic and
+    // round-trips it through x86 E9 landing semantics, so the emission replaces
+    // the old truncating cast and the "Verification" log that could only ever
+    // agree with itself: a displacement that does not land is refused.
+    int32_t rel = 0;
+    if (!ce::hook_jump_policy::TryRel32Displacement(dest, target,
+                                                    ce::hook_jump_policy::Rel32Semantics::kWrapAddress32, &rel)) {
+        HookLogImportant("WriteJump: x86 JMP rel32 at %p cannot land on %p - refusing the jump", dest, target);
+        return false;
+    }
     memcpy(dest + 1, &rel, 4);
     MemoryBarrier();
     dest[0] = 0xE9;
     HookLog("WriteJump: x86 JMP rel32 -> %p at %p (rel=0x%08X, dest+5=%p)", target, dest, (unsigned)rel,
             (void*)(dest + 5));
-    // Verify: dest+5 + rel should equal target
-    uintptr_t verify = (uintptr_t)(dest + 5) + rel;
-    HookLog(
-        "WriteJump: Verification: dest+5(0x%p) + rel(0x%08X) = 0x%p "
-        "(expected %p)",
-        (void*)(dest + 5), (unsigned)rel, (void*)verify, target);
+    return true;
 #endif
 }
 
@@ -425,7 +440,8 @@ ShortControlRelocationResult TryRelocateExternalShortControlTransfer(
         }
 #ifdef _WIN64
         else if (is64bit) {
-            WriteJump(trampoline + *trampolineOffset, reinterpret_cast<void*>(absTarget));
+            if (!WriteJump(trampoline + *trampolineOffset, reinterpret_cast<void*>(absTarget)))
+                return ShortControlRelocationResult::kFailed;
             *trampolineOffset += PATCH_SIZE;
         }
 #endif
@@ -455,7 +471,8 @@ ShortControlRelocationResult TryRelocateExternalShortControlTransfer(
     else if (is64bit) {
         trampoline[*trampolineOffset] = static_cast<uint8_t>(0x70 | (condCode ^ 1u));
         trampoline[*trampolineOffset + 1] = static_cast<uint8_t>(PATCH_SIZE);
-        WriteJump(trampoline + *trampolineOffset + 2, reinterpret_cast<void*>(absTarget));
+        if (!WriteJump(trampoline + *trampolineOffset + 2, reinterpret_cast<void*>(absTarget)))
+            return ShortControlRelocationResult::kFailed;
         *trampolineOffset += 2 + PATCH_SIZE;
     }
 #endif

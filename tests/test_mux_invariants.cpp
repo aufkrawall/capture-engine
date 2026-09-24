@@ -37,12 +37,29 @@ TEST(MuxInvariantTest, BundledMatroskaMuxerRequiresAndReportsMicrosecondPrecisio
 TEST(MuxInvariantTest, VideoOutputPublishesOnlyCommittedVideo) {
     EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 1), VideoOutputDisposition::kPublish);
     EXPECT_EQ(SelectVideoOutputDisposition(true, 0, 0, 16667, 1),
-              VideoOutputDisposition::kDiscardCancelled);
-    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 0, 1), VideoOutputDisposition::kDiscardNoVideo);
+              VideoOutputDisposition::kPublishAfterCancel);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 0, 1), VideoOutputDisposition::kPublishAfterFinalizeFailure);
     EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 0), VideoOutputDisposition::kDiscardNoVideo);
     EXPECT_TRUE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kPublish));
     EXPECT_FALSE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kDiscardCancelled));
     EXPECT_FALSE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kDiscardNoVideo));
+}
+
+// Regression: a cancellation after live output (and the one-packet HDR metadata
+// failure that used to mark the whole session cancelled) deleted recordings
+// with hours of committed packets. Committed video survives every exit path;
+// only a recording with exactly zero committed video packets is deleted.
+TEST(MuxInvariantTest, CommittedVideoSurvivesEveryNonEmptyExitPath) {
+    constexpr int64_t kTwoHoursUs = 2LL * 60 * 60 * 1000000;
+    EXPECT_EQ(SelectVideoOutputDisposition(true, 0, 0, kTwoHoursUs, 432000),
+              VideoOutputDisposition::kPublishAfterCancel);
+    EXPECT_EQ(SelectVideoOutputDisposition(true, -1, -1, kTwoHoursUs, 432000),
+              VideoOutputDisposition::kPublishAfterCancel);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 0, 432000),
+              VideoOutputDisposition::kPublishAfterFinalizeFailure);
+    EXPECT_TRUE(ce::mux::ShouldPublishVideoOutput(VideoOutputDisposition::kPublishAfterCancel));
+    EXPECT_STREQ(ce::mux::VideoOutputDispositionToString(VideoOutputDisposition::kPublishAfterCancel),
+                 "publish-after-cancel");
 }
 
 // Regression: av_write_trailer returns the AVIOContext's sticky error, so one
@@ -59,10 +76,11 @@ TEST(MuxInvariantTest, FinalizeFailureKeepsCommittedVideo) {
                  "publish-after-finalize-failure");
 
     // Without committed video there is nothing to save, finalize failure or not;
-    // cancellation still wins over everything.
+    // with committed video a cancellation keeps the file (CommittedVideoSurvives
+    // EveryNonEmptyExitPath pins the full matrix).
     EXPECT_EQ(SelectVideoOutputDisposition(false, -1, -1, 16667, 0), VideoOutputDisposition::kDiscardNoVideo);
     EXPECT_EQ(SelectVideoOutputDisposition(true, -1, -1, kTwoHoursUs, 432000),
-              VideoOutputDisposition::kDiscardCancelled);
+              VideoOutputDisposition::kPublishAfterCancel);
 }
 
 TEST(MuxInvariantTest, AudioOnlyFinalizeFailureKeepsCommittedPackets) {

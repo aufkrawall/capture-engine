@@ -429,23 +429,19 @@ TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTrans
     const size_t drainGuard =
         text.find("if (dx12_hook_g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&",
                   outerOff);
-    const size_t drainNativeReturnGuard =
-        text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve)", drainGuard);
+    const size_t drainKeepLiveGuard = text.find("!keepOverlayLiveAcrossOuterOff)", drainGuard);
     const size_t reinitBranch =
-        text.find("if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover",
-                  drainGuard);
-    const size_t reinitGuard = text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", reinitBranch);
-    const size_t reinitNativeReturnGuard =
-        text.find("!keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {", reinitGuard);
+        text.find("if (dx12_hook_g_State.overlayInit && !keepOverlayLiveAcrossOuterOff &&", drainGuard);
+    const size_t reinitProxyGuard =
+        text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {", reinitBranch);
     ASSERT_NE(drainGuard, std::string::npos);
-    ASSERT_NE(drainNativeReturnGuard, std::string::npos);
+    ASSERT_NE(drainKeepLiveGuard, std::string::npos);
     ASSERT_NE(reinitBranch, std::string::npos);
-    ASSERT_NE(reinitGuard, std::string::npos);
-    ASSERT_NE(reinitNativeReturnGuard, std::string::npos);
-    EXPECT_LT(drainNativeReturnGuard - drainGuard, static_cast<size_t>(380));
-    EXPECT_LT(reinitNativeReturnGuard - reinitBranch, static_cast<size_t>(520));
+    ASSERT_NE(reinitProxyGuard, std::string::npos);
+    EXPECT_LT(drainKeepLiveGuard - drainGuard, static_cast<size_t>(380));
+    EXPECT_LT(reinitProxyGuard - reinitBranch, static_cast<size_t>(520));
     EXPECT_LT(drainGuard, coverageGate);
-    EXPECT_LT(reinitGuard, coverageGate);
+    EXPECT_LT(reinitProxyGuard, coverageGate);
 }
 
 TEST(DXGISharedTest, PostSLKeepAliveRenderRequiresLiveStreamlineStack) {

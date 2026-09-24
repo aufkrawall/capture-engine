@@ -1,5 +1,7 @@
 #include "dx8_hook_internal.h"
 
+#include "../common/present_reentry_guard.h"
+
 #include <cstddef>
 
 // GetDeviceCaps writes a D3DCAPS8. D3DCAPS9 has the same prefix through
@@ -217,11 +219,19 @@ IDirect3D8* WINAPI DetourDirect3DCreate8(UINT dx8_hook_sdkVersion) {
 }
 
 
-HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const RECT* pSourceRect, 
-                                                   const RECT* pDestRect,  HWND hDestWindowOverride, 
+HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const RECT* pSourceRect,
+                                                   const RECT* pDestRect,  HWND hDestWindowOverride,
                                                    const RGNDATA* dx8_hook_pDirtyRegion) {
 
 
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"DX8 Present", D3D_OK};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<HRESULT>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(dx8_hook_oD3D8Present), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            dx8_hook_oD3D8Present, device, pSourceRect, pDestRect, hDestWindowOverride, dx8_hook_pDirtyRegion));
+    }
     if (HookIsShuttingDown())
         return dx8_hook_oD3D8Present
                    ? dx8_hook_oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride,
@@ -294,6 +304,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
     g_SharedFpsLimiter.Apply();
 
+    reentryScope.RecordResult(static_cast<long>(hr));
     return hr;
 
 }

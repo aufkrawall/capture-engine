@@ -133,6 +133,22 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
         return false;
     }
 
+    // The state is per device while swapchains are not. The first swapchain to
+    // present owns the pass; any other live swapchain is left unfiltered
+    // instead of rebuilding the whole pipeline per present (see
+    // MustSkipUnownedSwapchain). The destroy hook and `oldSwapchain` retirement
+    // re-arm the choice.
+    if (ce::vulkan_sharpen_route::MustSkipUnownedSwapchain(state.initialized, SharpenSwapchainKey(state.swapchain),
+                                                           SharpenSwapchainKey(swapchain))) {
+        static std::atomic<int> s_foreignSwapchainLogCount{0};
+        const int logCount = s_foreignSwapchainLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 5 || (logCount % 600) == 0) {
+            LayerLog("Vulkan Layer: Sharpen skipped for swapchain %p - the pass is built over %p (#%d)", swapchain,
+                     state.swapchain, logCount + 1);
+        }
+        return false;
+    }
+
     ce::sharpen::Target target;
     // The Vulkan layer only ever sees the application's own swapchain; a present
     // interposer's private chain is a DXGI concept and never reaches here.
@@ -169,9 +185,15 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
                           : true;
 
     const ce::sharpen::Decision decision = ce::sharpen::Decide(request, target);
-    const bool routeRefused = decision.run && route == ce::vulkan_sharpen_route::Route::kNone;
-    const bool run = decision.run && !routeRefused;
-    const char* reason = routeRefused ? ce::vulkan_sharpen_route::RefusalReason(routeInput) : decision.reason;
+    // The overlay's runtime-eligibility floor, not just Decide's 32 px
+    // minimum: a tiny auxiliary swapchain must not build the full pipeline.
+    const bool belowFloor =
+        decision.run && !ce::vulkan_sharpen_route::MeetsMinimumTargetSize(target.width, target.height);
+    const bool routeRefused = decision.run && !belowFloor && route == ce::vulkan_sharpen_route::Route::kNone;
+    const bool run = decision.run && !routeRefused && !belowFloor;
+    const char* reason = belowFloor ? "target_below_320x180_floor"
+                         : routeRefused ? ce::vulkan_sharpen_route::RefusalReason(routeInput)
+                                        : decision.reason;
     if (state.logGate.ShouldLog(run, reason)) {
         LayerLog("Vulkan Layer: Sharpen %s reason=%s %ux%u fmt=%d srgbView=%d usage=0x%x param=%.3f route=%s "
                  "family=%u",
@@ -317,6 +339,9 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
         state.slotSubmitted[slotIndex] = ce::sharpen::SlotIsBusyAfter(ce::sharpen::SubmissionOutcome::kNotQueued);
         return false;
     }
+    // VkQueue is externally synchronized and this may be the game's own queue:
+    // take the same lock the layer's submit wrappers take for it.
+    ScopedBorrowedQueueSubmission sharpenSubmissionGuard(queue);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submit, state.fences[slotIndex]);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Layer: Sharpen submit failed (result=%d slot=%d image=%u)", submitResult, slot, imageIndex);

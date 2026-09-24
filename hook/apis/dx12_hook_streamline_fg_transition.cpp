@@ -1,3 +1,5 @@
+#include <wrl/client.h>
+
 #include "dx12_hook_internal.h"
 #include "dx12_hook_main_shared.h"
 
@@ -582,6 +584,15 @@ extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo(
         *outInfo = {};
     }
 
+    // The overlay fence lifetime is owned by InitOverlaySync/CleanupOverlay under
+    // this lock (release + recreate on reinit, clear/resize of the fenceValues
+    // accounting). Running the flush under the same lock keeps q->Signal and the
+    // accounting from racing that teardown — the raw-pointer ABA/use-after-free
+    // class UploadSlotGuardFenceBinding fixes with an owning reference. The
+    // ComPtr pin is the second half of that treatment: even a teardown path that
+    // misses the lock cannot free the fence out from under the Signal call.
+    std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);
+    Microsoft::WRL::ComPtr<ID3D12Fence> pinnedFence;
     UINT64 deferredVal = dx12_hook_g_deferredSignalValue.load(std::memory_order_acquire);
     if (outInfo) {
         outInfo->hadDeferredSignal = (deferredVal != 0);
@@ -595,6 +606,7 @@ extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo(
     if (deferredVal == 0 || !dx12_hook_g_State.fence) {
         return false;
     }
+    pinnedFence = dx12_hook_g_State.fence;
 
     // Use the queue that actually submitted the overlay ECL.  When FG runtimes
     // create swapchains with their own queue, this may differ from g_CommandQueue.
@@ -608,18 +620,35 @@ extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo(
         return false;
     }
 
-    HRESULT hr = q->Signal(dx12_hook_g_State.fence, deferredVal);
+    HRESULT hr = q->Signal(pinnedFence.Get(), deferredVal);
     if (outInfo) {
         outInfo->signalHr = hr;
         outInfo->signalSucceeded = SUCCEEDED(hr);
     }
     if (SUCCEEDED(hr)) {
         int allocIdx = dx12_hook_g_deferredSignalAllocIdx.load(std::memory_order_acquire);
-        dx12_hook_g_State.currentFenceValue = deferredVal;
+        if (ce::dx12_overlay_policy::ShouldCommitDeferredOverlayFenceSignalValue(
+                /*signalSucceeded=*/true, deferredVal, dx12_hook_g_State.currentFenceValue)) {
+            dx12_hook_g_State.currentFenceValue = deferredVal;
+        }
         if (allocIdx >= 0 && allocIdx < (int)dx12_hook_g_State.fenceValues.size())
             dx12_hook_g_State.fenceValues[allocIdx] = deferredVal;
         if (outInfo) {
-            outInfo->completedValue = dx12_hook_g_State.fence->GetCompletedValue();
+            outInfo->completedValue = pinnedFence->GetCompletedValue();
+        }
+    }
+    {
+        // Fence pointer + value on every deferred flush: if a teardown race ever
+        // corrupts the accounting, this identifies which fence lifetime the value
+        // belonged to.
+        static std::atomic<int> s_deferredSignalFlushLogCount{0};
+        const int logCount = s_deferredSignalFlushLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 12 || (logCount % 2048) == 0) {
+            HookLogImportant(
+                "DX12: Flushed deferred overlay fence signal (fence=%p value=%llu queue=%p hr=0x%08X "
+                "completed=%llu)",
+                pinnedFence.Get(), (unsigned long long)deferredVal, q, (unsigned)hr,
+                (unsigned long long)pinnedFence->GetCompletedValue());
         }
     }
     dx12_hook_g_deferredSignalValue.store(0, std::memory_order_release);

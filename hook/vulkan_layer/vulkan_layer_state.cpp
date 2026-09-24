@@ -111,6 +111,7 @@ void VulkanLayerState::UnregisterDevice(VkDevice device) {
         queueIt = m_Queues.erase(queueIt);
     }
     m_DeviceLastSubmitThreadIds.erase(device);
+    m_DeviceLastSubmitTicks.erase(device);
     m_DeviceLastGraphicsSubmitQueues.erase(device);
     // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - erase-by-value, order-independent
     for (auto keyIt = m_DevicesByDispatchKey.begin(); keyIt != m_DevicesByDispatchKey.end();) {
@@ -265,6 +266,7 @@ void VulkanLayerState::NoteQueueSubmit(VkQueue queue) {
         return;
     }
     m_DeviceLastSubmitThreadIds[queueIt->second] = GetCurrentThreadId();
+    m_DeviceLastSubmitTicks[queueIt->second] = GetTickCount64();
     m_QueueLastSubmitThreadIds[queue] = GetCurrentThreadId();
     // Only the game reaches this: CE's own overlay, capture, screenshot and
     // prerender submissions call the dispatch pointer directly and never come
@@ -599,6 +601,12 @@ uint32_t VulkanLayerState::GetLastSubmitThreadId(VkDevice device) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_DeviceLastSubmitThreadIds.find(device);
     return (it != m_DeviceLastSubmitThreadIds.end()) ? it->second : 0;
+}
+
+uint64_t VulkanLayerState::GetLastSubmitTickMs(VkDevice device) {
+    std::lock_guard<std::recursive_mutex> lock(m_Lock);
+    auto it = m_DeviceLastSubmitTicks.find(device);
+    return (it != m_DeviceLastSubmitTicks.end()) ? it->second : 0;
 }
 
 void VulkanLayerState::RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data) {

@@ -311,6 +311,18 @@ struct D3D12DeferredOverlaySignalFlushInfo {
     UINT64 completedValue = 0;
 };
 
+// Deferred-signal flush failure accounting. currentFenceValue is the value every
+// later overlay wait blocks on, so it may only hold a value the fence will
+// actually REACH: a failed Signal never reaches the fence, and committing its
+// value would leave currentFenceValue permanently ahead of the fence — every
+// subsequent wait then runs to its liveness timeout against an unreachable
+// value. Never rewind the accounting either; a stale/out-of-order deferred value
+// must not pull it below values already signaled.
+inline bool ShouldCommitDeferredOverlayFenceSignalValue(bool signalSucceeded, UINT64 deferredValue,
+                                                        UINT64 currentFenceValue) {
+    return signalSucceeded && deferredValue > currentFenceValue;
+}
+
 struct D3D12FocusLossOverlayFenceWaitContext {
     const char* presentName = nullptr;
     int callCount = 0;
@@ -494,12 +506,24 @@ inline bool ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineT
     bool actualFGActive, bool streamlineFGRunning, bool recentStreamlineTeardown, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool hasCommandQueue,
     bool commandQueueMatchesSwapchainQueue, bool commandQueueMatchesOriginalGameQueue,
-    bool commandQueueMatchesPrimaryGameQueue) {
+    bool commandQueueMatchesPrimaryGameQueue, bool freshStreamlineHandoffOnSubmittableQueue = false) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
 
     if (!recentStreamlineTeardown || !hasOriginalGameQueue) {
+        return false;
+    }
+
+    // FRESH STREAMLINE HANDOFF: the same exemption as
+    // ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit — both defers guard a
+    // DEPARTING runtime's leftover queue/command state, and an incoming runtime's
+    // just-created swapchain on a queue CE can submit on is the live present path.
+    // This gate keyed its defer on command tracking that the handoff has not
+    // populated yet (!hasCommandQueue), so without the exemption it deferred even
+    // while the other gate already exempted the handoff (Talos 20260923_233317
+    // recurrence: overlay gone until game close).
+    if (freshStreamlineHandoffOnSubmittableQueue) {
         return false;
     }
 

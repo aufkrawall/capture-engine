@@ -1,6 +1,8 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 
+#include "../common/capture_retarget_policy.h"
+
 void MediaEncoderSession::LoopHealth() {
         if (media_main_g_pSharedMem && GetTickCount() - lastHealthLog >= 1000) {
             auto& state = media_main_g_pSharedMem->runtimeState;
@@ -197,6 +199,9 @@ void MediaEncoderSession::LoopHealth() {
             const uint32_t previousRecordingHealthFlags = recordingHealthState.flags;
             recordingHealthState =
                 ce::capture_policy::UpdateRecordingHealth(recordingHealthState, recordingHealthObservation);
+            // Source-loss truth latched by the owner thread must survive health
+            // publications; UpdateRecordingHealth only preserves flags its own state carries.
+            recordingHealthState.flags = ce::capture_retarget::WithLatchedSourceLossHealth(recordingHealthState.flags);
             PublishRecordingHealth(recordingHealthState);
             constexpr uint32_t recordingHealthTransitionMask =
                 ce::capture_policy::kRecordingHealthCauseMask |

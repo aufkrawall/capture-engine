@@ -465,6 +465,45 @@ inline bool ShouldSuppressFreshGetStateActivationDuringUnsafePostFSRComeback(boo
     return runtimeStillInactive && blockUntilSafePostFSRBootstrapPath && !safePostFSRBootstrapPath;
 }
 
+// Bounding the persistent GetState-only reactivation block. The block is the
+// same unbounded-latch class as the retired 2026-09-03 protected-FFX startup
+// latch: a game that re-enables DLSS-G through GetState-visible state only
+// (options passed to slDLSSGGetState, no explicit slDLSSGSetOptions enable)
+// never clears it, so the overlay reports no/stale FG while frames generate and
+// the manual limiter runs at base cadence against generated output. The bound is
+// the generation evidence sl.dlss_g already publishes in DLSSGState: while
+// frames really generate, the inputs-completion fence value and the
+// frames-presented count advance sample over sample; in the documented
+// ON-but-not-interpolating state (session 20260702_094955: optionsMode=on,
+// presented==1, no fps gain) they freeze, and keeping the block there is
+// correct.
+inline bool IsDLSSGGenerationEvidenceAdvancing(bool hasPreviousSample, uint64_t previousFenceValue, uint64_t fenceValue,
+                                               uint32_t previousFramesPresented, uint32_t framesPresented) {
+    if (!hasPreviousSample) {
+        return false;
+    }
+    return fenceValue > previousFenceValue || framesPresented > previousFramesPresented;
+}
+
+inline uint32_t UpdateGetStateOnlyBlockGenerationEvidenceStreak(bool generationEvidenceAdvancing,
+                                                                uint32_t previousStreak) {
+    // A frozen sample resets the streak: the retire must reflect CURRENT
+    // generation, not an accumulated historical one.
+    return generationEvidenceAdvancing ? previousStreak + 1 : 0;
+}
+
+inline bool ShouldRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool blockArmed, bool callSucceeded,
+                                                                            bool optionsRequestActive,
+                                                                            bool hasRuntimeFenceEvidence,
+                                                                            uint32_t advancingSampleStreak,
+                                                                            uint32_t requiredAdvancingSamples) {
+    // Only a real ON request with observable runtime fence evidence retires the
+    // block; an idle/OFF runtime must leave the suppression in place until an
+    // explicit SetOptions enable (or FFX takeover/shutdown) clears it.
+    return blockArmed && callSucceeded && optionsRequestActive && hasRuntimeFenceEvidence &&
+           advancingSampleStreak >= requiredAdvancingSamples;
+}
+
 inline bool ShouldArmStartupTransitionWindowOnFreshActiveSignal(bool active, bool previousSignal) {
     // The startup transition window is only for fresh activation churn around a
     // real handoff/enable edge. Keeping it refreshed by every later active

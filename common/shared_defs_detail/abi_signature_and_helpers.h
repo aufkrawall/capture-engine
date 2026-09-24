@@ -56,6 +56,26 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, runtimeOverrideStatus));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, ngxOtaMode));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, ngxLogLevel));
+    // The inner struct sizes and the late field offsets close the
+    // padding-shaped holes the values above cannot see: SHARED_MEMORY_VERSION
+    // 60 added the DLSS FG driver-settings fields INTO existing tail padding
+    // with sizeof(SharedGraphicsConfig) unchanged, and only a MANUAL version
+    // bump caught that. Mixing these in means a future field added into
+    // padding (or one that reshuffles the sharpen / DLSS FG blocks) moves the
+    // signature too, so a forgotten SHARED_MEMORY_VERSION bump fails closed at
+    // discovery and shared-memory validation instead of silently misreading
+    // across builds.
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedGraphicsConfig));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(OverlayConfig));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGMode));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGFixedCount));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGDynamicMax));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGTargetFps));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenMode));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenColorSpace));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenReserved));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenStrength));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenIntensity));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));

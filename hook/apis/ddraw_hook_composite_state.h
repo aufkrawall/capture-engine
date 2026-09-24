@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "ddraw_hook_internal.h"
 #include "../common/overlay_cpu_raster.h"
 
@@ -47,8 +49,15 @@ struct DDrawCapture::DDrawCompositeState {
     // copies a row out of the locked surface, computes over it here and copies
     // it back, so neither video-memory stream is ever accessed pixel by pixel.
     // A 16-bit surface needs the packed row as well: it is copied whole, then
-    // expanded into and repacked out of `rowScratch`.
+    // expanded into and repacked out of `rowScratch`. 8-bit and 24-bit rows use
+    // `byteRowScratch` the same way (one and three bytes per pixel).
     std::vector<uint32_t> rowScratch;
     std::vector<uint16_t> packedRowScratch;
+    std::vector<uint8_t> byteRowScratch;
+    // Palette quantization memo for one composite pass: blended overlay colours
+    // repeat heavily and searching 256 entries per pixel would run on the
+    // application's render thread. The snapshot it answers from is refetched
+    // every pass, so the memo never outlives the palette it was built against.
+    std::unordered_map<uint32_t, uint8_t> paletteQuantizeCache;
     uint32_t useCounter = 0;
 };

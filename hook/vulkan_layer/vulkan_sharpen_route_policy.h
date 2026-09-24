@@ -82,6 +82,28 @@ constexpr bool MustRebuild(const Identity& built, const Identity& current) {
            built.queueFamily != current.queueFamily || built.route != current.route;
 }
 
+// The pass keeps ONE state per device while a device may own several live
+// swapchains. A present of a swapchain the state was not built over must skip
+// the pass entirely: feeding it to MustRebuild instead destroyed and rebuilt
+// the whole pipeline on every present of the second chain - on the present
+// thread, with up to kSharpenSlotCount one-second fence waits in the teardown.
+// The first swapchain to present owns the pass; the destroy hook (or an
+// `oldSwapchain` retirement) releases the state and re-arms the choice, which
+// is also what keeps a handle-reusing recreate honest.
+constexpr bool MustSkipUnownedSwapchain(bool stateInitialized, uint64_t builtSwapchain, uint64_t presentSwapchain) {
+    return stateInitialized && builtSwapchain != presentSwapchain;
+}
+
+// The overlay's runtime-eligibility floor, applied to the filter as well.
+// Decide's own minimum is only 32 px; below this floor a swapchain is a tiny
+// auxiliary surface and must not build the full pipeline for it.
+constexpr uint32_t kMinimumTargetWidth = 320;
+constexpr uint32_t kMinimumTargetHeight = 180;
+
+constexpr bool MeetsMinimumTargetSize(uint32_t width, uint32_t height) {
+    return width >= kMinimumTargetWidth && height >= kMinimumTargetHeight;
+}
+
 inline const char* RouteName(Route route) {
     switch (route) {
         case Route::kGraphics:

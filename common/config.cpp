@@ -12,7 +12,7 @@ std::string Trim(const std::string& s, const char* chars ) {
     return res;
 }
 
-std::string NormalizeCaptureMethod(const std::string& val) {
+std::string NormalizeCaptureMethod(const std::string& val, const char* section) {
     std::string normalized = Trim(val);
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -34,6 +34,18 @@ std::string NormalizeCaptureMethod(const std::string& val) {
         return "none";
     }
 
+    if (normalized == "auto") {
+        return "auto";
+    }
+
+    // A typo here is not cosmetic: "auto" resolves to injected capture, so a
+    // user who deliberately avoided injection (anti-cheat) with a misspelled
+    // "wgc" would silently GET injection. The same honesty rule the profile
+    // video_capture key follows (ParseApplicationVideoCapture) applies.
+    // Empty stays silent - it means "not configured", never a mistyped token.
+    if (!normalized.empty()) {
+        LogInvalidConfigBoundary(section ? section : "Capture", "capture_method", val, "auto");
+    }
     return "auto";
 }
 
@@ -60,6 +72,36 @@ bool IsAutoCaptureMethod(const std::string& val) {
 
 bool IsVideoCaptureDisabledMethod(const std::string& val) {
     return NormalizeCaptureMethod(val) == "none";
+}
+
+LimiterMode ParseLimiterMode(const std::string& val, const char* key) {
+    std::string normalized = val;
+    normalized.erase(0, normalized.find_first_not_of(" \t\r\n\""));
+    const size_t last = normalized.find_last_not_of(" \t\r\n\"");
+    if (last != std::string::npos) {
+        normalized.erase(last + 1);
+    } else {
+        normalized.clear();
+    }
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    if (normalized == "basic")
+        return LimiterMode::kBasic;
+    if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback")
+        return LimiterMode::kFGFallback;
+    if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" || normalized == "nvidia_reflex" ||
+        normalized == "nvidia-reflex")
+        return LimiterMode::kNative;
+    if (normalized == "auto")
+        return LimiterMode::kAuto;
+    // Unknown tokens used to fall through silently; a misspelled mode must say
+    // so instead of quietly pacing frames differently than the user asked.
+    // Empty stays silent - it means "not configured".
+    if (!normalized.empty()) {
+        LogInvalidConfigBoundary("FpsLimiter", key ? key : "limiter_mode", val, "auto");
+    }
+    return LimiterMode::kAuto;  // Default to auto
 }
 
 // Helper to parse bool
@@ -254,7 +296,7 @@ void CreateDefaultConfig(const std::string& path) {
 }
 
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")
-AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
+AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey, const char* fallbackName) {
     AppConfig::HotkeyConfig hk;
     if (val.empty())
         return hk;
@@ -364,6 +406,13 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
         hk.vkey = VK_DECIMAL;
     } else if (key == "DIVIDE" || key == "NUMDIV") {
         hk.vkey = VK_DIVIDE;
+    }
+
+    // A non-empty spelling that resolves to no key made the hotkey silently
+    // dead (or, for the mandatory start_stop key, silently F9). Say so.
+    if (hk.vkey == 0) {
+        LogInvalidConfigBoundary("Hotkeys", configKey ? configKey : "hotkey", val,
+                                 fallbackName ? fallbackName : "none");
     }
 
     return hk;

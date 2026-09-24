@@ -681,16 +681,22 @@ bool RenderComputePresentOverlay(OverlayState& state, DeviceDispatch* disp, cons
     computeSubmit.signalSemaphoreCount = 1;
     computeSubmit.pSignalSemaphores = &signalSemaphore;
     const int64_t computeSubmitStartUs = phaseSampled ? PerfLogger::GetQpcUs() : 0;
-    if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence) != VK_SUCCESS) {
-        // The fence is disarmed and nothing will signal it. Re-arm it with a
-        // fence-only submit rather than retiring this slot permanently.
-        LayerLog("Vulkan Layer: compute-present composite submit FAILED (slot %u, image %u); re-arming its fence",
-                 submissionSlot, imageIndex);
-        if (disp->fp_vkQueueSubmit(presentQueue, 0, nullptr, fence) != VK_SUCCESS) {
-            LayerLog("Vulkan Layer: [Error] overlay submission slot %u is stranded; the ring is one slot shallower",
-                     submissionSlot);
+    {
+        // The present queue may be the game's own; VkQueue is externally
+        // synchronized, so hold the same lock the submit wrappers take for it.
+        ScopedBorrowedQueueSubmission compositeSubmissionGuard(presentQueue);
+        if (disp->fp_vkQueueSubmit(presentQueue, 1, &computeSubmit, fence) != VK_SUCCESS) {
+            // The fence is disarmed and nothing will signal it. Re-arm it with a
+            // fence-only submit rather than retiring this slot permanently.
+            LayerLog("Vulkan Layer: compute-present composite submit FAILED (slot %u, image %u); re-arming its fence",
+                     submissionSlot, imageIndex);
+            if (disp->fp_vkQueueSubmit(presentQueue, 0, nullptr, fence) != VK_SUCCESS) {
+                LayerLog(
+                    "Vulkan Layer: [Error] overlay submission slot %u is stranded; the ring is one slot shallower",
+                    submissionSlot);
+            }
+            return false;
         }
-        return false;
     }
     const uint64_t computeSubmitUs =
         phaseSampled ? static_cast<uint64_t>(PerfLogger::GetQpcUs() - computeSubmitStartUs) : 0;

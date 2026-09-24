@@ -86,6 +86,29 @@ const char* DxgiFormatName(DXGI_FORMAT format) {
 
 #if HAS_WGC
 
+ce::capture_retarget::SourceFormatFamily DxgiSourceFormatFamily(DXGI_FORMAT format) {
+
+
+    switch (format) {
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return ce::capture_retarget::SourceFormatFamily::kFloat16;
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            return ce::capture_retarget::SourceFormatFamily::kTenBit;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            return ce::capture_retarget::SourceFormatFamily::kEightBit;
+        default:
+            return ce::capture_retarget::SourceFormatFamily::kOther;
+    }
+
+}
+
+#endif
+
+#if HAS_WGC
+
 const char* WgcItemCreationMethodName(WgcItemCreationMethod method) {
 
 

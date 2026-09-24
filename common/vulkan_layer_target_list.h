@@ -53,6 +53,46 @@ inline std::wstring ToLowerAscii(std::wstring_view text) {
     return lower;
 }
 
+// The one charset conversion in process-name matching. The host publishes its
+// whitelist as UTF-8 (captureengine/inject_config_publication.cpp) while the
+// executable name and the persisted list are UTF-16, so every comparison runs
+// in UTF-16 off one GetModuleFileNameW name and only the published entries are
+// converted. The host path used to compare a GetModuleFileNameA (CP_ACP) name
+// against those UTF-8 bytes with _stricmp, so a non-ASCII executable name
+// matched the persisted list with CaptureEngine closed and failed the host
+// whitelist whenever CaptureEngine ran - the inverse of sane behavior.
+inline std::wstring Utf8ToWide(std::string_view utf8) {
+    if (utf8.empty())
+        return {};
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (needed <= 0)
+        return {};
+    std::wstring wide(static_cast<size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), needed);
+    return wide;
+}
+
+// Case-insensitive exact match of `processName` against a NUL-separated UTF-8
+// entry list (the host's published whitelist). Same traversal and folding rule
+// as IsProcessNameListed: the list ends at the first empty entry.
+inline bool IsProcessNameListedUtf8(std::string_view list, std::wstring_view processName) {
+    if (processName.empty())
+        return false;
+    const std::wstring wanted = ToLowerAscii(processName);
+    size_t start = 0;
+    while (start < list.size()) {
+        size_t end = list.find('\0', start);
+        if (end == std::string_view::npos)
+            end = list.size();
+        if (end == start)
+            return false;
+        if (ToLowerAscii(Utf8ToWide(list.substr(start, end - start))) == wanted)
+            return true;
+        start = end + 1;
+    }
+    return false;
+}
+
 // The REG_MULTI_SZ image: one lower-cased executable name per string, stable
 // order, no duplicates, terminated by an empty string.
 inline std::wstring SerializeTargetList(const std::vector<std::wstring>& names) {
@@ -97,11 +137,17 @@ inline bool IsProcessNameListed(std::wstring_view list, std::wstring_view proces
     return false;
 }
 
-// The participation decision at negotiation time. A running compatible host is
-// authoritative (its whitelist is current and knows about inherited renderer
-// processes); the persisted list only stands in while no host is published.
+// The participation decision at negotiation time. Either signal admits: a
+// running compatible host ADDS eligibility (its whitelist is current and knows
+// about inherited renderer processes), but it must never mask the persisted
+// list. A host that has not (yet) made the process eligible - a profile edit
+// mid-session, a CaptureEngine/game start-order race, the name encoding
+// mismatch above - used to lock a real target out for the process's whole life,
+// because the loader negotiates once per instance and a decline unloads the
+// gate. Admitting on a stale list entry costs at worst the pre-gate dormant
+// behavior; it never costs a target its overlay, capture or sharpen.
 inline bool ShouldLayerParticipate(bool compatibleHostPublished, bool eligibleByHost, bool listedAsTarget) {
-    return compatibleHostPublished ? eligibleByHost : listedAsTarget;
+    return (compatibleHostPublished && eligibleByHost) || listedAsTarget;
 }
 
 // Reads the persisted list. Returns false when the value is absent or

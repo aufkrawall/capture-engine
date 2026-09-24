@@ -67,11 +67,13 @@ TEST(VulkanLayerTargetListTest, RegistryRoundTripKeepsEveryName) {
 // Regression: the implicit layer entered EVERY Vulkan process on the machine and
 // stayed in its call chain as "passthrough", including titles whose profile says
 // dll_injection=never and anti-cheat-protected games. It now participates only
-// where CE may inject: by the running host's whitelist, or - with no host - by
-// the whitelist the injector persisted.
+// where CE may inject: by the running host's whitelist or by the whitelist the
+// injector persisted - and a running host never masks that persisted list, so a
+// target cannot be locked out of the layer for the process's whole life.
 TEST(VulkanLayerTargetListTest, ParticipationFollowsTheHostOrThePersistedWhitelist) {
     EXPECT_TRUE(targets::ShouldLayerParticipate(true, true, false));
-    EXPECT_FALSE(targets::ShouldLayerParticipate(true, false, true)) << "a running host is authoritative";
+    EXPECT_TRUE(targets::ShouldLayerParticipate(true, false, true))
+        << "host-published and listed-but-not-yet-eligible must still admit";
     EXPECT_TRUE(targets::ShouldLayerParticipate(false, false, true)) << "late injection for listed targets";
     EXPECT_FALSE(targets::ShouldLayerParticipate(false, false, false));
 }

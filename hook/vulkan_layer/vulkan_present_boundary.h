@@ -9,38 +9,11 @@
 
 #include "layer_main.h"  // LayerLog
 #include "vulkan_layer.h"
+#include "vulkan_present_thread_policy.h"
 
 #include "../common/fps_limiter.h"
 
 namespace ce::vulkan_present_boundary {
-
-// The route by which the layer proved that the application does not present
-// from the thread currently inside the present hook. Both routes move the
-// limiter boundary to vkAcquireNextImageKHR: pacing inside the present of a
-// split production/presentation topology (Portal with RTX Remix renders on a
-// graphics producer thread and presents from a non-graphics queue thread)
-// cannot throttle production, while the acquire boundary can.
-enum class AsyncRoute { kNone, kAcquireThreadMismatch, kSubmitThreadMismatch };
-
-inline const char* AsyncRouteName(AsyncRoute route) {
-    switch (route) {
-        case AsyncRoute::kAcquireThreadMismatch:
-            return "acquire-thread mismatch";
-        case AsyncRoute::kSubmitThreadMismatch:
-            return "submit-thread mismatch";
-        default:
-            return "none";
-    }
-}
-
-inline AsyncRoute DetectAcquireThreadMismatch(uint32_t acquireThreadId, uint64_t lastAcquireTickMs,
-                                              uint32_t currentThreadId, uint64_t nowTickMs) {
-    if (acquireThreadId != 0 && acquireThreadId != currentThreadId && lastAcquireTickMs != 0 &&
-        (nowTickMs - lastAcquireTickMs) < 2000ULL) {
-        return AsyncRoute::kAcquireThreadMismatch;
-    }
-    return AsyncRoute::kNone;
-}
 
 // Resolves async-present detection for the present hook and emits the
 // one-time, edge-triggered state-transition diagnostics for BOTH detection
@@ -69,7 +42,13 @@ inline bool ResolvePresentLimiterBoundary(SwapchainData* sd, VkDevice queueDevic
     }
     if (!asyncPresentDetected && queueDevice != VK_NULL_HANDLE) {
         const uint32_t lastSubmitThreadId = VulkanLayerState::Get().GetLastSubmitThreadId(queueDevice);
-        if (lastSubmitThreadId != 0 && lastSubmitThreadId != currentThreadId) {
+        const uint64_t lastSubmitTickMs = VulkanLayerState::Get().GetLastSubmitTickMs(queueDevice);
+        // The submit route keeps the acquire route's recency window: without
+        // it, one background-worker submit minutes ago latched async-present -
+        // and with it the limiter pacing plus the reserved-queue overlay route
+        // - for the rest of the session.
+        if (DetectSubmitThreadMismatch(lastSubmitThreadId, lastSubmitTickMs, currentThreadId, GetTickCount64()) !=
+            AsyncRoute::kNone) {
             asyncPresentDetected = true;
             if (sd) {
                 if (!sd->asyncPresentDetected.exchange(true, std::memory_order_acq_rel)) {

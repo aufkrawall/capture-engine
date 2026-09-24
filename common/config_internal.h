@@ -38,7 +38,7 @@
 
 std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()");
 
-std::string NormalizeCaptureMethod(const std::string& val);
+std::string NormalizeCaptureMethod(const std::string& val, const char* section);
 
 bool IsInjectCaptureMethod(const std::string& val);
 
@@ -74,10 +74,18 @@ void CreateDefaultConfig(const std::string& path);
 
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName);
 
-AppConfig::HotkeyConfig ParseHotkey(const std::string& val);
+AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey, const char* fallbackName);
 
 inline void LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,
                                      const std::string& fallback) {
+    // The suppression budget counts warnings that are actually written. A
+    // warning raised before Log_Init (the initial LoadConfig runs first) is
+    // dropped by LogWarn either way, and must not silently exhaust the budget
+    // of the logging-active phase - config reloads and the media child - behind
+    // it.
+    if (!Log_IsEnabled(LogLevel::Warn)) {
+        return;
+    }
     static std::atomic<uint32_t> logged{0};
     const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
     if (index < 64) {

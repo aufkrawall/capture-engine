@@ -2,6 +2,7 @@
 
 #include "../common/log_privacy.h"
 #include "../common/logging.h"
+#include "../common/monitor_selection.h"
 #include "../common/raii_helpers.h"
 #include "../common/reserved_capture_output.h"
 #include "../common/secure_dll_loading.h"
@@ -25,6 +26,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+// Captureengine-internal helper defined in media_main_window.cpp (same binary).
+HWND GetMainWindowForProcess(DWORD pid);
 
 namespace {
 
@@ -258,7 +262,29 @@ void ResetScreenshotRequestState(SharedMemoryLayout* sharedMemory) {
            sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
 }
 
-bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreenshot& screenshot) {
+// The desktop readback paths (WGC monitor item / GDI) capture this display.
+HMONITOR ResolveDesktopCaptureMonitor() {
+    return MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+}
+
+// The hook captures the injected source's output, which lives on the source
+// window's display: HDR state and SDR paper white must be queried there.
+HMONITOR ResolveHookSourceMonitor(uint32_t sourcePid) {
+    if (sourcePid == 0)
+        return nullptr;
+    HWND sourceWindow = GetMainWindowForProcess(sourcePid);
+    return sourceWindow ? MonitorFromWindow(sourceWindow, MONITOR_DEFAULTTONEAREST) : nullptr;
+}
+
+bool IsHdrMonitor(HMONITOR monitor) {
+    DXGI_OUTPUT_DESC1 description{};
+    return WGCCapture::QueryOutputDesc1ForMonitor(monitor, description) &&
+           WGCCapture::IsHdrOutputColorSpace(description.ColorSpace);
+}
+
+bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreenshot& screenshot,
+                       HMONITOR& sourceMonitor) {
+    sourceMonitor = nullptr;
     HandleGuard discovery(OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY));
     if (!discovery.Get())
         return false;
@@ -297,6 +323,7 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
         ResetScreenshotRequestState(sharedMemory);
         return false;
     }
+    sourceMonitor = ResolveHookSourceMonitor(sourcePid);
 
     const auto currentStatus = static_cast<ScreenshotRequestStatus>(
         sharedMemory->runtimeState.screenshotStatus.load(std::memory_order_acquire));
@@ -372,19 +399,19 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
 }
 
 bool IsHdrDesktop() {
-    HMONITOR monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-    DXGI_OUTPUT_DESC1 description{};
-    return WGCCapture::QueryOutputDesc1ForMonitor(monitor, description) &&
-           WGCCapture::IsHdrOutputColorSpace(description.ColorSpace);
+    return IsHdrMonitor(ResolveDesktopCaptureMonitor());
 }
 
-float QueryPrimarySdrWhiteNits() {
+float QuerySdrWhiteNits(HMONITOR monitor) {
+    // Tone-map calibration must use the SDR content brightness of the display
+    // the captured content lives on; it differs per monitor in HDR setups.
     constexpr float kFallbackNits = 203.0f;
-    HMONITOR monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
     MONITORINFOEXW monitorInfo{};
     monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo))
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo)) {
+        LogWarn("[Screenshot] Windows SDR white-level query unavailable; using %.1f-nit fallback", kFallbackNits);
         return kFallbackNits;
+    }
 
     for (int attempt = 0; attempt < 3; ++attempt) {
         UINT32 pathCount = 0;
@@ -408,7 +435,7 @@ float QueryPrimarySdrWhiteNits() {
             sourceName.header.adapterId = path.sourceInfo.adapterId;
             sourceName.header.id = path.sourceInfo.id;
             if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS ||
-                lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
+                !ce::monitor_selection::GdiDeviceNamesMatch(sourceName.viewGdiDeviceName, monitorInfo.szDevice)) {
                 continue;
             }
             // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
@@ -418,10 +445,10 @@ float QueryPrimarySdrWhiteNits() {
             whiteLevel.header.adapterId = path.targetInfo.adapterId;
             whiteLevel.header.id = path.targetInfo.id;
             if (DisplayConfigGetDeviceInfo(&whiteLevel.header) == ERROR_SUCCESS && whiteLevel.SDRWhiteLevel != 0) {
-                const float nits = std::clamp(static_cast<float>(whiteLevel.SDRWhiteLevel) * (80.0f / 1000.0f),
-                                              80.0f, 1000.0f);
-                LogInfo("[Screenshot] Windows SDR white level: raw=%lu nits=%.1f",
-                        static_cast<unsigned long>(whiteLevel.SDRWhiteLevel), nits);
+                const float nits = ce::monitor_selection::SdrWhiteNitsFromLevel(whiteLevel.SDRWhiteLevel);
+                LogInfo("[Screenshot] Windows SDR white level: raw=%lu nits=%.1f monitor=%s",
+                        static_cast<unsigned long>(whiteLevel.SDRWhiteLevel), nits,
+                        WideToUtf8(monitorInfo.szDevice).c_str());
                 return nits;
             }
             break;
@@ -432,7 +459,8 @@ float QueryPrimarySdrWhiteNits() {
     return kFallbackNits;
 }
 
-bool TryWgcScreenshot(RawScreenshot& screenshot) {
+bool TryWgcScreenshot(RawScreenshot& screenshot, HMONITOR& capturedMonitor) {
+    capturedMonitor = nullptr;
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
@@ -449,6 +477,8 @@ bool TryWgcScreenshot(RawScreenshot& screenshot) {
     bool captured = false;
     WGCCapture wgc;
     if (wgc.Init(device) && wgc.StartCapture()) {
+        HWND targetWindow = nullptr;
+        wgc.GetTargetIdentity(&targetWindow, &capturedMonitor);
         HANDLE event = wgc.GetFrameArrivedEvent();
         if (event && WaitForSingleObject(event, 2000) == WAIT_OBJECT_0) {
             WGCCapturedFrame frame;
@@ -561,13 +591,19 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
     RawScreenshot screenshot;
     ScreenshotPublication published;
     const ScreenshotOutputColorSpace outputColorSpace = ResolveOutputColorSpace(colorSpace);
+    const HMONITOR desktopMonitor = ResolveDesktopCaptureMonitor();
     // Every policy but plain "auto" can tone-map, and only a measured Windows
-    // SDR white level makes that tone map match forced-SDR video.
-    const float sdrWhiteNits =
-        outputColorSpace == ScreenshotOutputColorSpace::PreserveSource ? 203.0f : QueryPrimarySdrWhiteNits();
+    // SDR white level of the CAPTURED display makes that tone map match
+    // forced-SDR video ("SDR content brightness" is per monitor). "auto"
+    // preserves the source encoding and needs no measured calibration.
+    constexpr float kPreservedSourcePaperWhiteNits = 203.0f;
+    const bool toneMap = outputColorSpace != ScreenshotOutputColorSpace::PreserveSource;
     LogInfo("[Screenshot] Output color policy: requested=%s resolved=%s", colorSpace.c_str(),
             DescribeOutputColorSpace(outputColorSpace));
-    if (TryHookScreenshot(outputDirectory, screenshot)) {
+    HMONITOR hookSourceMonitor = nullptr;
+    if (TryHookScreenshot(outputDirectory, screenshot, hookSourceMonitor)) {
+        const float sdrWhiteNits = toneMap ? QuerySdrWhiteNits(hookSourceMonitor ? hookSourceMonitor : desktopMonitor)
+                                           : kPreservedSourcePaperWhiteNits;
         if (SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
             LogPublication("hook", published);
             return true;
@@ -580,16 +616,21 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
 
     if (IsHdrDesktop()) {
         LogInfo("[Screenshot] HDR desktop detected; using WGC readback");
-        if (TryWgcScreenshot(screenshot) &&
-            SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
-            LogPublication("WGC", published);
-            return true;
+        HMONITOR wgcMonitor = nullptr;
+        if (TryWgcScreenshot(screenshot, wgcMonitor)) {
+            const float sdrWhiteNits = toneMap ? QuerySdrWhiteNits(wgcMonitor ? wgcMonitor : desktopMonitor)
+                                               : kPreservedSourcePaperWhiteNits;
+            if (SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
+                LogPublication("WGC", published);
+                return true;
+            }
         }
         LogPublication("WGC", published);
         LogError("[Screenshot] HDR WGC capture failed; refusing to publish a clipped SDR fallback");
         return false;
     }
 
+    const float sdrWhiteNits = toneMap ? QuerySdrWhiteNits(desktopMonitor) : kPreservedSourcePaperWhiteNits;
     if (!TakeGdiScreenshot(screenshot) ||
         !SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
         LogPublication("GDI", published);

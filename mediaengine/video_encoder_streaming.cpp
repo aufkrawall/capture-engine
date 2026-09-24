@@ -4,9 +4,20 @@ std::string VideoEncoder::OutputTargetForLog() const {
     return liveOutput ? "<live-stream-endpoint>" : ce::privacy::CollapsePathForLog(outputFilename);
 }
 
+namespace {
+// A live stream that cannot write for 5 s has lost its bounded-latency
+// contract. A local file gets longer - a slow disk can legitimately stall on a
+// large keyframe flush - but never unbounded: a hung write (dead network share,
+// dying disk) must not wedge the writer thread forever, because Stop() gives up
+// waiting for finalize and the unpublished staging file would never reach the
+// user.
+constexpr uint64_t kLiveOutputIoTimeoutMs = 5000;
+constexpr uint64_t kLocalOutputIoTimeoutMs = 30000;
+}  // namespace
+
 void VideoEncoder::ArmOutputIoDeadline() {
-    if (liveOutput)
-        outputIoDeadlineMs.store(GetTickCount64() + 5000, std::memory_order_release);
+    outputIoDeadlineMs.store(GetTickCount64() + (liveOutput ? kLiveOutputIoTimeoutMs : kLocalOutputIoTimeoutMs),
+                             std::memory_order_release);
 }
 
 void VideoEncoder::ClearOutputIoDeadline() {
@@ -64,6 +75,36 @@ int VideoEncoder::WriteInterleavedPacket(AVPacket* packet) {
     if (liveOutput && result < 0)
         outputIoAbort.store(true, std::memory_order_release);
     return result;
+}
+
+void VideoEncoder::RequestOutputFailure(const char* operation, int errorCode) {
+    if (liveOutput) {
+        RequestLiveOutputFailure(operation, errorCode);
+    } else {
+        RequestLocalOutputFailure(operation, errorCode);
+    }
+}
+
+void VideoEncoder::RequestLocalOutputFailure(const char* operation, int errorCode) {
+    const uint32_t errors = muxOutputErrorCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (errors != 1) {
+        return;  // the stop was already requested; keep counting losses only
+    }
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(errorCode, errbuf, sizeof(errbuf));
+    DLL_Log(
+        "[VideoEncoder] ERROR: recording output operation=%s failed: %d (%s); the committed part of the file is "
+        "kept and the completion is reported as degraded%s",
+        operation ? operation : "unknown", errorCode, errbuf,
+        isStopping.load(std::memory_order_acquire) ? "" : " - stopping the recording now");
+    // FFmpeg's AVIO error is sticky (see ce::mux::SelectVideoOutputDisposition),
+    // so every later packet would be lost as well. End the recording at the
+    // first loss - the orderly stop finalizes and publishes what is committed -
+    // instead of silently dropping the rest of the session.
+    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
+        pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+    }
+    queueCV.notify_all();
 }
 
 void VideoEncoder::RequestLiveOutputFailure(const char* operation, int errorCode) {

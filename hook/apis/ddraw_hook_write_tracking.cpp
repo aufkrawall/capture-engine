@@ -41,8 +41,7 @@ WriteMark g_writeMarks[kMaxWriteMarks];
 
 struct ActiveLock {
     uintptr_t identity = 0;
-    uint32_t depth = 0;
-    bool writable = false;
+    policy::SurfaceLockTrack track;
 };
 
 ActiveLock g_activeLocks[kMaxActiveLocks];
@@ -99,7 +98,7 @@ void ClearMarkLocked(WriteMark& mark) {
 
 ActiveLock* FindActiveLockLocked(uintptr_t identity) {
     for (ActiveLock& active : g_activeLocks) {
-        if (active.depth != 0 && active.identity == identity)
+        if (active.track.depth != 0 && active.identity == identity)
             return &active;
     }
     return nullptr;
@@ -115,7 +114,7 @@ void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable) {
     ActiveLock* active = FindActiveLockLocked(identity);
     if (!active) {
         for (ActiveLock& candidate : g_activeLocks) {
-            if (candidate.depth == 0) {
+            if (candidate.track.depth == 0) {
                 active = &candidate;
                 active->identity = identity;
                 break;
@@ -125,11 +124,10 @@ void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable) {
     if (!active) {
         return;
     }
-    ++active->depth;
-    active->writable = active->writable || writable;
+    policy::BeginSurfaceLockTrack(active->track, writable);
 }
 
-DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface) {
+DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded) {
     if (!surface)
         return DirectDrawLockAccess::Unknown;
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
@@ -137,11 +135,7 @@ DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface) {
     ActiveLock* active = FindActiveLockLocked(identity);
     if (!active)
         return DirectDrawLockAccess::Unknown;
-    if (--active->depth != 0)
-        return DirectDrawLockAccess::Deferred;
-    const bool writable = active->writable;
-    *active = {};
-    return writable ? DirectDrawLockAccess::Writable : DirectDrawLockAccess::ReadOnly;
+    return policy::CompleteSurfaceLockTrack(active->track, unlockSucceeded);
 }
 
 void RegisterDirectDrawCompositeSurface(IUnknown* surface) {

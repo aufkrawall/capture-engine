@@ -1,5 +1,7 @@
 #include "streamline_hook_internal.h"
 
+#include "streamline_bridge_v1_abi.h"
+
 
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState& state,  const slDLSSGOptions* streamline_hook_options) {
 
@@ -25,6 +27,10 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
     const uint32_t viewportKey = GetViewportKey(viewport);
     const bool viewportWasActive = WasViewportRuntimeStateActive(viewportKey);
     const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
+    // Retire the persistent GetState-only suppression BEFORE evaluating it so a
+    // sustained-generation retire takes effect on this same poll.
+    MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(result == streamline_hook_kSlResultOk, state,
+                                                                  streamline_hook_options, viewportWasActive, viewportKey);
     const bool suppressNewActivation = ShouldSuppressNewGetStateActivation();
     if (result == streamline_hook_kSlResultOk && state.numFramesToGenerateMax > 0) {
         CacheCapabilityMax(viewportKey, state.numFramesToGenerateMax);
@@ -339,6 +345,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
         if (finalGeneratedFrames > 0 && finalGeneratedFrames != adjustedOptions.numFramesToGenerate) {
             adjustedOptions.numFramesToGenerate = finalGeneratedFrames;
             overrideApplied = true;
+            // The 1.x bridge maps this forced cadence through an unconfirmed
+            // field; keep the write attributable in session logs.
+            ce::streamline_bridge::WarnUnconfirmedDlssgCadenceWrite(finalGeneratedFrames);
         }
     }
 

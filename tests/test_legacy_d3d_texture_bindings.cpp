@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <filesystem>
+#include <string>
 
 #include "../hook/common/legacy_d3d_texture_bindings.h"
+#include "source_fragment_reader.h"
 
 // A Direct3D 7 state block stores the texture bound to each stage as a raw
 // surface pointer with no reference, so an application releasing a still-bound
@@ -233,4 +236,31 @@ TEST_F(LegacyD3DTextureBindingsTest, DestructionReleasesStillHeldBindings) {
     }
 
     EXPECT_TRUE(Destroyed(texture));
+}
+
+// Forced AF observability (the 2026-09-21 DX12 lesson): "CE saw no sampler at
+// all" is only diagnosable while the process is alive. The DX9 sampler slots
+// install one-way while another overlay can re-patch them at any time, so their
+// proof-of-life runs per Present and the summary reaches the log at a settled
+// render loop, not only at shutdown.
+TEST(LegacyD3D9SamplerDriftTest, SamplerHookDriftStaysObservablePerPresent) {
+    const std::filesystem::path root = std::filesystem::current_path();
+    const std::string family = ce::test_source::ReadLogicalSource(root / "hook/apis/dx9_hook.cpp");
+    ASSERT_FALSE(family.empty());
+    EXPECT_NE(family.find("CheckD3D9SamplerHookDrift(vtable)"), std::string::npos)
+        << "the sampler slots lost their per-Present proof-of-life check";
+    EXPECT_NE(family.find("s_presentedFrames == 2000"), std::string::npos)
+        << "the settled-loop sampler summary is gone";
+    EXPECT_NE(family.find("ce::dx9_sampler_state::LogSummary()"), std::string::npos);
+
+    // The proof compares the slots themselves - a latched "hooked once" flag
+    // cannot see another overlay re-patching them. Drift is reported, not
+    // re-hooked: the drifted-to owner would become CE's saved original and
+    // calling it is the mutual-hook cycle class.
+    const std::string detours = ce::test_source::ReadLogicalSource(root / "hook/apis/dx9_hook_state_detours.cpp");
+    ASSERT_FALSE(detours.empty());
+    EXPECT_NE(detours.find("(void*)vtable[65] != (void*)&DetourSetTexture"), std::string::npos);
+    EXPECT_NE(detours.find("(void*)vtable[68] != (void*)&DetourGetSamplerState"), std::string::npos);
+    EXPECT_NE(detours.find("(void*)vtable[69] != (void*)&DetourSetSamplerState"), std::string::npos);
+    EXPECT_NE(detours.find("sampler hook drift detected"), std::string::npos);
 }

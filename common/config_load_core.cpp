@@ -53,7 +53,7 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
         if (profileOverride == kMissingLiteralValue)
             profileOverride = ReadLiteralIniValue(path, profile.section, "capture_method", kMissingLiteralValue);
         if (profileOverride != kMissingLiteralValue)
-            profileCaptureMethod = NormalizeCaptureMethod(profileOverride);
+            profileCaptureMethod = NormalizeCaptureMethod(profileOverride, profile.section.c_str());
 
         ApplicationVideoCapture resolved = profile.videoCapture;
         const bool injectedVideoAllowed =
@@ -447,9 +447,11 @@ void LoadFpsLimiter(ConfigReader& reader, AppConfig& config) {
     config.fpsLimiter.captureSyncEnabled = reader.GetBool("FpsLimiter", "capture_sync_enabled", false);
     config.fpsLimiter.captureSyncMultiplier = reader.GetBoundedInt("FpsLimiter", "capture_sync_multiplier", 1, 1, 8);
     config.fpsLimiter.captureSyncLimiterMode =
-        ParseLimiterMode(reader.GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"));
+        ParseLimiterMode(reader.GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"),
+                         "capture_sync_limiter_mode");
     config.fpsLimiter.generalEnabled = reader.GetBool("FpsLimiter", "general_enabled", false);
     config.fpsLimiter.generalFps = reader.GetBoundedInt("FpsLimiter", "general_fps", 120, 1, 1000);
-    config.fpsLimiter.generalLimiterMode = ParseLimiterMode(reader.GetStr("FpsLimiter", "general_limiter_mode", "auto"));
+    config.fpsLimiter.generalLimiterMode =
+        ParseLimiterMode(reader.GetStr("FpsLimiter", "general_limiter_mode", "auto"), "general_limiter_mode");
 
 }

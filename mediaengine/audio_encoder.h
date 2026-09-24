@@ -55,10 +55,24 @@ public:
         uint64_t packetBytes = 0;
         uint64_t controlPacketCount = 0;
         uint64_t durationlessPacketCount = 0;
+        // Samples consumed from the caller's chunk that produced no coded output:
+        // terminal avcodec_send_frame failures, short FIFO reads, and caller-side
+        // chunk tails the encoder refused. Recorded as explicit timeline holes so
+        // lengths stay equal while the content loss stays visible.
+        int64_t contentHoleSamples = 0;
         bool drainReachedEof = false;
         bool protocolError = false;
     };
 
+    // acceptedSamples = samples taken into the encoder pipeline (resampled and
+    // written to the FIFO; still counted while queued for framing). submittedSamples
+    // = the samplesCount delta (samples framed for the codec, including samples
+    // consumed as recorded holes). The caller consumed a chunk before calling; it
+    // must advance its timeline cursor by that FULL chunk and treat any (chunk -
+    // acceptedSamples) shortfall on failure as a recorded hole - never re-request
+    // the consumed range. A failed result whose acceptedSamples still covers the
+    // chunk (e.g. a frame lost after FIFO intake) is NOT a caller-side hole: the
+    // encoder books those losses itself through AccountContentHole.
     struct EncodeResult {
         int64_t acceptedSamples = 0;
         int64_t submittedSamples = 0;
@@ -84,6 +98,14 @@ public:
     }
     void SetExpectedSourceSilenceSamples(int64_t samples) {
         finalizationReport.expectedSourceSilenceSamples = std::max<int64_t>(0, samples);
+    }
+    // Records caller-side chunk content that was consumed but unrecoverable, so
+    // unrecoverable loss is counted as explicit holes instead of silently
+    // re-filling the range (which would compress the timeline).
+    void AccountContentHole(int64_t samples) {
+        if (samples > 0) {
+            finalizationReport.contentHoleSamples += samples;
+        }
     }
 
     // Reinitialize with saved config (used after Stop() failed to reopen)
@@ -179,14 +201,18 @@ private:
     int outputChannels = 2;
     uint32_t outputChannelMask = 0;
 
-    // FIFO overflow tracking - drop NEWEST samples to maintain timeline continuity
-    bool wasDroppingSamples = false;
-    int64_t totalDroppedSamples = 0;
+    // Cumulative samples accepted into the FIFO (codec sample rate); feeds the
+    // finalization report's inputTimelineSamples.
     int64_t totalAcceptedSamples = 0;
     AudioCodecRuntimeContract runtimeContract;
     AudioFinalizationReport finalizationReport;
 
     void ApplyPacketDuration(AVPacket* pkt);
+    // Drains every available encoded packet through onPacket; returns packet count.
+    int ReceivePackets();
+    // Places a consumed-but-refused intake range (FIFO tail) as silence so every
+    // pending sample keeps its exact timeline position; see audio_fault_accounting.h.
+    void AppendSilenceHole(int64_t holeSamples);
     void Flush();
     void ReleaseCodecResources();
 };

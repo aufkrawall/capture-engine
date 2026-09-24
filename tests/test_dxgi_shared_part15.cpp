@@ -175,9 +175,12 @@ TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite)
 // its own queue, the game kept submitting on its primary queue and DLSS-G stayed ON-but-not-interpolating.
 // The queue-settle defer (a guard for a DEPARTING runtime's leftover queue) waited for cmdQ==scQ, which
 // never happens there, so the overlay stayed gone until the game closed. The INCOMING runtime's fresh
-// swapchain on a submittable queue must initialize the overlay immediately.
+// swapchain on a submittable queue must initialize the overlay immediately — at BOTH init-deferral gates
+// of the Phase3 block: the second gate keys its defer on command tracking the handoff has not populated
+// yet, so an exemption at the first gate alone just walks into the second one.
 TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSettle) {
     using ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit;
+    using ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown;
     // The exact failing state: FG inactive, runtime owns, cmdQ != scQ, fresh handoff on a submittable queue.
     EXPECT_FALSE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
         /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
@@ -188,7 +191,28 @@ TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSett
                                                                      /*hasCommandQueue=*/false, false, false, true));
     // Without the fresh handoff the departing-runtime guard is unchanged.
     EXPECT_TRUE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true, true, false, false,
-                                                                    /*freshHandoff=*/false));
+                                                                    /*freshStreamlineHandoffOnSubmittableQueue=*/false));
     EXPECT_TRUE(ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true, false, false, false,
-                                                                    /*freshHandoff=*/false));
+                                                                    /*freshStreamlineHandoffOnSubmittableQueue=*/false));
+
+    // Same handoff state at the SECOND gate: recent Streamline teardown grace is active (the
+    // transition's own late observer re-seeds it) and command tracking is empty — this deferred
+    // right past the gate-A exemption and kept the overlay gone.
+    EXPECT_FALSE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*recentStreamlineTeardown=*/true,
+        /*hasSwapchainQueue=*/true, /*hasOriginalGameQueue=*/true, /*hasPostSLLastWorkingQueue=*/true,
+        /*hasCommandQueue=*/false, /*commandQueueMatchesSwapchainQueue=*/false,
+        /*commandQueueMatchesOriginalGameQueue=*/false, /*commandQueueMatchesPrimaryGameQueue=*/false,
+        /*freshStreamlineHandoffOnSubmittableQueue=*/true));
+    // Command tracking populated but still on a non-matching queue: the exemption wins there too.
+    EXPECT_FALSE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, true, true, true, /*hasCommandQueue=*/true, false, false, false,
+        /*freshStreamlineHandoffOnSubmittableQueue=*/true));
+    // Without the exemption both states keep deferring (the Talos DEVICE_REMOVED settle guard).
+    EXPECT_TRUE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, true, true, true, /*hasCommandQueue=*/false, false, false, false,
+        /*freshStreamlineHandoffOnSubmittableQueue=*/false));
+    EXPECT_TRUE(ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
+        false, false, true, true, true, true, /*hasCommandQueue=*/true, false, false, false,
+        /*freshStreamlineHandoffOnSubmittableQueue=*/false));
 }

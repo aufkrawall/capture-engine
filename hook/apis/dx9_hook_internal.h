@@ -69,6 +69,8 @@ struct PresentTiming;
 
 #include "../common/perf_logger.h"
 
+#include "../common/present_reentry_guard.h"
+
 #include "../common/screenshot_hook.h"
 
 #include "../vulkan_layer/layer_main.h"
@@ -578,7 +580,7 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 
 HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect,
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
-                                                   const RGNDATA* pDirtyRegion, DWORD dwFlags);void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);void InstallD3D9SamplerHooks(uintptr_t* vtable);void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);bool IsMemoryReadable(const void* ptr, size_t size);
+                                                   const RGNDATA* pDirtyRegion, DWORD dwFlags);void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);void InstallD3D9SamplerHooks(uintptr_t* vtable);void CheckD3D9SamplerHookDrift(uintptr_t* vtable);void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);bool IsMemoryReadable(const void* ptr, size_t size);
 
 // Scan process memory for existing IDirect3DDevice9 objects
 // This is needed when we inject AFTER the game has already created its device

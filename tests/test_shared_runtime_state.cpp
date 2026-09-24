@@ -2,6 +2,8 @@
 
 #include <cwchar>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <unordered_map>
 
 #include "../common/config.h"
@@ -10,6 +12,7 @@
 #include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
 #include "../captureengine/display_timing_policy.h"
+#include "source_fragment_reader.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
     CaptureState state;
@@ -484,6 +487,38 @@ TEST(SharedDefsTest, AbiSignatureCoversDiscoveryLayout) {
 
     uint32_t rolled = MixSharedMemoryAbiValue(0u, sizeof(DiscoveryInfo));
     EXPECT_NE(rolled, MixSharedMemoryAbiValue(0u, sizeof(DiscoveryInfo) + 4u));
+}
+
+// SHARED_MEMORY_VERSION 60 added the DLSS FG driver-settings fields into
+// existing SharedGraphicsConfig tail padding with `sizeof` unchanged - only the
+// manual version bump caught that, so a future padding-consuming field without
+// the bump would have been invisible to the signature and cross-build mixes
+// would silently misread. The padding-bearing struct sizes and the late field
+// offsets must therefore stay in the mix.
+TEST(SharedDefsTest, AbiSignatureMixesThePaddingBearingStructsAndLateFields) {
+    const std::string source = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "common" / "shared_defs_detail" / "abi_signature_and_helpers.h");
+    ASSERT_FALSE(source.empty());
+
+    const size_t signature = source.find("constexpr uint32_t ComputeSharedMemoryAbiSignature()");
+    ASSERT_NE(signature, std::string::npos);
+    const size_t signatureEnd = source.find("static constexpr uint32_t SHARED_MEMORY_ABI_SIGNATURE", signature);
+    ASSERT_NE(signatureEnd, std::string::npos);
+    const std::string body = source.substr(signature, signatureEnd - signature);
+
+    for (const char* component : {"sizeof(SharedGraphicsConfig)",
+                                  "sizeof(OverlayConfig)",
+                                  "offsetof(SharedGraphicsConfig, dlssFGMode)",
+                                  "offsetof(SharedGraphicsConfig, dlssFGFixedCount)",
+                                  "offsetof(SharedGraphicsConfig, dlssFGDynamicMax)",
+                                  "offsetof(SharedGraphicsConfig, dlssFGTargetFps)",
+                                  "offsetof(SharedGraphicsConfig, sharpenMode)",
+                                  "offsetof(SharedGraphicsConfig, sharpenColorSpace)",
+                                  "offsetof(SharedGraphicsConfig, sharpenReserved)",
+                                  "offsetof(SharedGraphicsConfig, sharpenStrength)",
+                                  "offsetof(SharedGraphicsConfig, sharpenIntensity)"}) {
+        EXPECT_NE(body.find(component), std::string::npos) << component;
+    }
 }
 
 TEST(SharedDefsTest, CapturePipelinePhaseStringCoversKnownAndUnknownValues) {

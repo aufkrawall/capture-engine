@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -134,6 +135,9 @@ struct V1ReflexConstants {
 // `sl1::DLSSGConstants`. mode@0 measured going 0 -> 1 exactly 68 ms before
 // `DLSS FG ACTIVATED` in the same session, which is what identifies it. The dword at +4 was
 // constantly 1 across every capture, matching 2.x `numFramesToGenerate`'s default of 1.
+// It is also the field `dlss_fg_factor` forces a cadence through, and a value transition -
+// the only valid identifier - has never been observed for it; its writes are warned about
+// (WarnUnconfirmedDlssgCadenceWrite below) so a wrongly-written cadence stays attributable.
 struct V1DLSSGConstants {
     uint32_t mode;
     uint32_t numFramesToGenerate;
@@ -142,3 +146,36 @@ struct V1DLSSGConstants {
 }  // namespace ce::streamline_bridge
 
 #endif  // x64
+
+// The diagnostic attached to the unconfirmed mapping above, deliberately outside the x64
+// guard: its writer compiles for the 32-bit build too (Streamline has no 32-bit runtime, so
+// the bridge never activates there).
+
+// Redeclared to keep this ABI mirror self-contained: hook/common/hook_common.h declares
+// this at global scope, streamline_bridge.h declares IsActive in the namespace below.
+void HookLogImportant(const char* fmt, ...);
+
+namespace ce::streamline_bridge {
+
+bool IsActive();
+
+// `dlss_fg_factor` forces a frame-generation cadence by writing
+// `DLSSGOptions::numFramesToGenerate`, and while this bridge translates, that cadence maps
+// through `V1DLSSGConstants`'s +4 field - the one piece of the bridge identified only by
+// "constantly 1 across every capture" rather than by a value transition. The feature stays
+// enabled; this warning is what makes a wrongly-written cadence attributable in the session
+// log. Rate-limited because the override runs on every slDLSSGSetOptions call.
+inline void WarnUnconfirmedDlssgCadenceWrite(uint32_t writtenValue) {
+    if (!IsActive())
+        return;
+    static std::atomic<int> s_logCount{0};
+    const int logCount = s_logCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 4 || (logCount % 600) == 0) {
+        HookLogImportant(
+            "Streamline bridge: dlss_fg_factor wrote DLSSG numFramesToGenerate=%u while bridged (#%d) - the 1.x "
+            "+4 field that carries it is identified by a constant 1 across captures, not a value transition",
+            writtenValue, logCount + 1);
+    }
+}
+
+}  // namespace ce::streamline_bridge

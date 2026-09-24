@@ -35,7 +35,7 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
     // Hotkeys
     // Parse hotkey strings like "F9", "Ctrl+Shift+F10", "Alt+Ctrl+R"
     std::string startStopKey = reader.GetStr("Hotkeys", "start_stop", "F9");
-    config.hotkeyStartStop = ParseHotkey(startStopKey);
+    config.hotkeyStartStop = ParseHotkey(startStopKey, "start_stop", "F9");
 
     // Ensure we have at least one hotkey - fallback to F9 if parsing failed
     if (config.hotkeyStartStop.vkey == 0) {
@@ -44,22 +44,24 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
 
     std::string toggleOverlayKey = reader.GetStr("Hotkeys", "toggle_overlay", "");
     if (!toggleOverlayKey.empty()) {
-        config.hotkeyToggleOverlay = ParseHotkey(toggleOverlayKey);
+        config.hotkeyToggleOverlay = ParseHotkey(toggleOverlayKey, "toggle_overlay", "none");
     }
 
     std::string screenshotKey = reader.GetStr("Hotkeys", "screenshot", "");
     if (!screenshotKey.empty()) {
-        config.hotkeyScreenshot = ParseHotkey(screenshotKey);
+        config.hotkeyScreenshot = ParseHotkey(screenshotKey, "screenshot", "none");
     }
 
     std::string audioOnlyKey = reader.GetStr("Hotkeys", "audio_only", "");
     if (!audioOnlyKey.empty()) {
-        config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey);
+        config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey, "audio_only", "none");
     }
 
+    // A broken optional hotkey stays disabled (there is no code fallback here),
+    // so "none" is what the warning has to name.
     std::string benchmarkKey = reader.GetStr("Hotkeys", "benchmark", "CTRL+7");
     if (!benchmarkKey.empty()) {
-        config.hotkeyBenchmark = ParseHotkey(benchmarkKey);
+        config.hotkeyBenchmark = ParseHotkey(benchmarkKey, "benchmark", "none");
     }
 
     // Benchmark configuration

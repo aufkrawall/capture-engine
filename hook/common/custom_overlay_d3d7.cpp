@@ -105,7 +105,13 @@ bool D3D7Backend::CreateFontSurface(int width, int height, const uint8_t* pixels
 
     DDSURFACEDESC2 locked = {};
     locked.dwSize = sizeof(locked);
-    hr = surface->Lock(nullptr, &locked, DDLOCK_WAIT | DDLOCK_WRITEONLY | DDLOCK_SURFACEMEMORYPTR, nullptr);
+    // DDLOCK_NOSYSLOCK is not negotiable here: this runs on the application's
+    // render thread inside its Flip, and without the flag a DDLOCK_WAIT lock
+    // takes the Win16 lock in a process that also hosts other overlays (the
+    // Gothic II session 20260916_005504 hang class). A rejected lock fails the
+    // atlas upload and the caller falls back to the CPU composite.
+    hr = surface->Lock(nullptr, &locked,
+                       DDLOCK_WAIT | DDLOCK_WRITEONLY | DDLOCK_SURFACEMEMORYPTR | DDLOCK_NOSYSLOCK, nullptr);
     if (FAILED(hr) || !locked.lpSurface) {
         HookLogImportant("[Overlay] D3D7: font atlas lock failed (hr=0x%08X)", static_cast<unsigned>(hr));
         surface->Release();

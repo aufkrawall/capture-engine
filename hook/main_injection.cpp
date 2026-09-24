@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "common/child_inject_policy.h"
 #include "common/ngx_ota_runtime.h"
 
 // Installs (or re-installs) CE's kernel32 loader and process-creation hooks
@@ -59,13 +60,22 @@ void InstallKernel32LoaderHooks(const char *phase) {
     OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
 }
 
-static DWORD WINAPI ChildInjectWorker(LPVOID param) {
-  auto p = std::unique_ptr<ChildInjectParams>(
-      static_cast<ChildInjectParams *>(param));
+// Worker-thread request. The path is UTF-16 because the remote load is
+// LoadLibraryW: an ANSI path turns every install-path character outside the
+// system code page into '?' before it ever reaches the child.
+struct ChildInjectRequest {
+  HANDLE hProcess;
+  HANDLE hThread;
+  wchar_t dllPath[MAX_PATH];
+};
 
-  SIZE_T pathLen = strlen(p->dllPath) + 1;
+static DWORD WINAPI ChildInjectWorker(LPVOID param) {
+  auto p = std::unique_ptr<ChildInjectRequest>(
+      static_cast<ChildInjectRequest *>(param));
+
+  SIZE_T pathBytes = (wcslen(p->dllPath) + 1) * sizeof(wchar_t);
   LPVOID pRemote =
-      VirtualAllocEx(p->hProcess, NULL, pathLen, MEM_COMMIT, PAGE_READWRITE);
+      VirtualAllocEx(p->hProcess, NULL, pathBytes, MEM_COMMIT, PAGE_READWRITE);
   if (!pRemote) {
     HookLog("[ChildInject] VirtualAllocEx failed: %d", GetLastError());
     ResumeThread(p->hThread);
@@ -74,7 +84,7 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
     return 1;
   }
 
-  if (!WriteProcessMemory(p->hProcess, pRemote, p->dllPath, pathLen, NULL)) {
+  if (!WriteProcessMemory(p->hProcess, pRemote, p->dllPath, pathBytes, NULL)) {
     HookLog("[ChildInject] WriteProcessMemory failed: %d", GetLastError());
     VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
     ResumeThread(p->hThread);
@@ -84,22 +94,51 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   }
 
   LPVOID pLoadLib =
-      (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
+      (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryW");
   HANDLE hRemote = CreateRemoteThread(
       p->hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLib, pRemote, 0, NULL);
-  if (hRemote) {
-    WaitForSingleObject(hRemote, 5000);
-    CloseHandle(hRemote);
-    HookLog("[ChildInject] Injected into child process.");
-  } else {
+  if (!hRemote) {
     HookLog("[ChildInject] CreateRemoteThread failed: %d", GetLastError());
+    VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
+    ResumeThread(p->hThread);
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    return 1;
+  }
+
+  // A remote LoadLibraryW that has not finished can still be reading the path:
+  // CE's own DllMain holds the loader lock for hundreds of milliseconds. Like
+  // captureengine/injection_inject.cpp, a timed-out wait retains the remote
+  // buffer for the child's lifetime instead of freeing it under a live reader,
+  // and is reported as pending rather than as a completed injection.
+  const DWORD waitResult = WaitForSingleObject(hRemote, 5000);
+  if (waitResult != WAIT_OBJECT_0) {
+    HookLog("[ChildInject] Remote LoadLibraryW still pending (wait=%lu error=%lu); "
+            "retaining the remote path buffer until process exit",
+            (unsigned long)waitResult, GetLastError());
+    CloseHandle(hRemote);
+    ResumeThread(p->hThread);
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    return 0;
+  }
+
+  DWORD remoteModule = 0;
+  const BOOL gotExitCode = GetExitCodeThread(hRemote, &remoteModule);
+  CloseHandle(hRemote);
+  if (gotExitCode && remoteModule != 0) {
+    HookLog("[ChildInject] Injected into child process.");
+  } else if (gotExitCode) {
+    HookLog("[ChildInject] LoadLibraryW failed in child process (module=0).");
+  } else {
+    HookLog("[ChildInject] GetExitCodeThread failed: %d", GetLastError());
   }
 
   VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
   ResumeThread(p->hThread);
   CloseHandle(p->hProcess);
   CloseHandle(p->hThread);
-  return 0;
+  return (gotExitCode && remoteModule != 0) ? 0 : 1;
 }
 
 void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
@@ -120,8 +159,12 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     return;
   }
 
-  auto p = std::make_unique<ChildInjectParams>();
-  GetModuleFileNameA(g_hModule, p->dllPath, MAX_PATH);
+  auto p = std::make_unique<ChildInjectRequest>();
+  if (!ce::child_inject_policy::GetHookModulePathW(g_hModule, p->dllPath, MAX_PATH)) {
+    HookLog("[ChildInject] Could not resolve hook DLL path: %d", GetLastError());
+    ResumeThread(hThread);
+    return;
+  }
 
   // Duplicate handles so the worker thread owns them
   HANDLE hCurrent = GetCurrentProcess();
@@ -151,15 +194,19 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
 // Helper: Check if executable should be injected into.
 // Only injects if the process name is on the discovery-memory whitelist.
 // The skip list provides a safety backstop for common non-game processes.
+// `exePath` is the resolved program path (ce::child_inject_policy::ProgramPath):
+// lpApplicationName verbatim, or the command line's first token with quotes
+// stripped and arguments cut off. Comparing the substring after the last slash
+// of the raw string kept the arguments and closing quote of a
+// `CreateProcessW(NULL, "\"C:\\Games\\foo\\game.exe\" -dx12")` launch in the
+// name, so the common launch shape failed both the .exe-suffix and whitelist
+// tests and early in-process child injection never fired for it.
 bool ShouldInjectChild(const char *exePath) {
   if (!exePath)
     return false;
 
   // Extract filename from path
-  std::string path(exePath);
-  size_t lastSlash = path.find_last_of("\\/");
-  std::string filename =
-      (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+  std::string filename(ce::child_inject_policy::FileNameOfPath(exePath));
 
   // Convert to lowercase
   std::string lowerName;
@@ -286,7 +333,8 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   // cannot distinguish "CE never saw it" from "the mode allows it".
   ce::ngx_ota::NoteUpdaterLaunchAllowed(exePath);
 
-  bool shouldInject = ShouldInjectChild(exePath);
+  bool shouldInject =
+      ShouldInjectChild(std::string(ce::child_inject_policy::ProgramPath(lpApp, lpCmd)).c_str());
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
   BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,
@@ -337,14 +385,23 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
   // larger than MAX_PATH: when lpApplicationName is null the argument is a full
   // command line, which routinely exceeds 260 characters, and a conversion that
   // does not fit silently yields an empty name - which reads as "not
-  // whitelisted" rather than as a failure.
+  // whitelisted" rather than as a failure. Which of the two arrived decides how
+  // the program is resolved: lpApplicationName is a path (spaces are legal and
+  // unquoted), only a command line needs its first token parsed. The UTF-8
+  // conversion is ASCII-transparent for that quote/whitespace parse.
   char exePath[2048] = {0};
-  if (lpApp)
+  const char *applicationPath = nullptr;
+  const char *commandLine = nullptr;
+  if (lpApp) {
     WideCharToMultiByte(CP_UTF8, 0, lpApp, -1, exePath, sizeof(exePath), NULL, NULL);
-  else if (lpCmd)
+    applicationPath = exePath;
+  } else if (lpCmd) {
     WideCharToMultiByte(CP_UTF8, 0, lpCmd, -1, exePath, sizeof(exePath), NULL, NULL);
+    commandLine = exePath;
+  }
 
-  bool shouldInject = ShouldInjectChild(exePath);
+  bool shouldInject =
+      ShouldInjectChild(std::string(ce::child_inject_policy::ProgramPath(applicationPath, commandLine)).c_str());
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
   BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,

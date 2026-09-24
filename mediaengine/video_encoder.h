@@ -76,6 +76,15 @@ public:
     bool WasLastOutputPublished() const {
         return outputPublished.load(std::memory_order_acquire);
     }
+    // True when the finalized output lost content or metadata: mux write
+    // failures, dropped encoded packets, dropped HDR metadata packets, or an
+    // incomplete CFR packet grid. Drives the honest "saved (degraded)"
+    // completion instead of a clean-save claim over a holey file.
+    bool WasLastOutputDegraded() const {
+        return muxOutputErrorCount.load(std::memory_order_acquire) > 0 ||
+               hdrMetadataDropCount.load(std::memory_order_acquire) > 0 ||
+               cfrCoverageIncomplete.load(std::memory_order_acquire);
+    }
 
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);
@@ -178,7 +187,7 @@ private:
     void ResetPacketTimelineDiagnostics();
     void RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration, AVRational timeBase,
                                      uint32_t terminalDiscardSamples, int sampleRate);
-    void LogPacketTimelineSummary(int64_t finalDurationUs) const;
+    void LogPacketTimelineSummary(int64_t finalDurationUs);
     uint64_t GetWrittenVideoPacketCount() const;
     bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
     bool NormalizeHdrPacketIfNeeded(AVPacket* packet);
@@ -190,7 +199,9 @@ private:
     void ClearOutputIoDeadline();
     void ConfigureLiveMuxTimestampOffset();
     int WriteInterleavedPacket(AVPacket* packet);
+    void RequestOutputFailure(const char* operation, int errorCode);
     void RequestLiveOutputFailure(const char* operation, int errorCode);
+    void RequestLocalOutputFailure(const char* operation, int errorCode);
     size_t ActiveQueueLimitBytes() const;
     static int InterruptOutputIo(void* opaque);
     // EncodeFrame phase helpers (keep EncodeFrame itself a semantic unit).
@@ -245,6 +256,9 @@ private:
     bool hdrPacketMetadataLogged = false;
     std::atomic<bool> discardOutputRequested{false};
     std::atomic<bool> outputPublished{false};
+    std::atomic<uint32_t> muxOutputErrorCount{0};
+    std::atomic<uint32_t> hdrMetadataDropCount{0};
+    std::atomic<bool> cfrCoverageIncomplete{false};
     bool liveOutput = false;
     std::atomic<bool> liveOutputFailed{false};
     std::atomic<bool> outputIoAbort{false};

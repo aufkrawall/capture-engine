@@ -144,29 +144,10 @@ enum class LimiterMode : uint32_t {
     kAuto = 3,        // Auto: try native → FG fallback → basic (picks best available)
 };
 
-inline LimiterMode ParseLimiterMode(const std::string& val) {
-    std::string normalized = val;
-    normalized.erase(0, normalized.find_first_not_of(" \t\r\n\""));
-    const size_t last = normalized.find_last_not_of(" \t\r\n\"");
-    if (last != std::string::npos) {
-        normalized.erase(last + 1);
-    } else {
-        normalized.clear();
-    }
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-    if (normalized == "basic")
-        return LimiterMode::kBasic;
-    if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback")
-        return LimiterMode::kFGFallback;
-    if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" || normalized == "nvidia_reflex" ||
-        normalized == "nvidia-reflex")
-        return LimiterMode::kNative;
-    if (normalized == "auto")
-        return LimiterMode::kAuto;
-    return LimiterMode::kAuto;  // Default to auto
-}
+// An unrecognized (non-empty) mode logs through LogInvalidConfigBoundary and
+// falls back to auto; `key` names the FpsLimiter key being parsed so the
+// warning can point at it. Defined in config.cpp where that logger is visible.
+LimiterMode ParseLimiterMode(const std::string& val, const char* key = "limiter_mode");
 
 struct FpsLimiterConfig {
     // Capture-Synced Limiter (active during recording)
@@ -769,7 +750,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 // Legacy explicit-WGC aliases ("screengrab", "framegrab") normalize to "wgc".
 // DXGI Desktop Duplication aliases ("desktop_dup", "duplication",
 // "dxgi_duplication") normalize to "dxgi_dup".
-std::string NormalizeCaptureMethod(const std::string& val);
+// An unrecognized (non-empty) value logs through LogInvalidConfigBoundary and
+// falls back to "auto"; `section` names where the value came from so a profile
+// override typo is attributed to its own profile. "auto" and empty are always
+// accepted silently (empty = not configured).
+std::string NormalizeCaptureMethod(const std::string& val, const char* section = "Capture");
 bool IsInjectCaptureMethod(const std::string& val);
 bool IsWgcCaptureMethod(const std::string& val);
 bool IsDxgiDupCaptureMethod(const std::string& val);
@@ -789,4 +774,10 @@ int ParseDlssFGFactor(const std::string& val);
 uint8_t ParseDlssFGMode(const std::string& val);
 uint8_t ParseDlssFGCount(const std::string& val);
 uint16_t ParseDlssFGTargetFps(const std::string& val);
-AppConfig::HotkeyConfig ParseHotkey(const std::string& val);  // e.g., "Ctrl+Shift+F9"
+// e.g., "Ctrl+Shift+F9". A non-empty value that resolves to no key logs through
+// LogInvalidConfigBoundary and returns vkey 0; `configKey`/`fallbackName` name
+// the config key and its documented default so the warning matches what the
+// caller does next (the mandatory start_stop hotkey, for example, falls back
+// to F9).
+AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey = "hotkey",
+                                    const char* fallbackName = "none");

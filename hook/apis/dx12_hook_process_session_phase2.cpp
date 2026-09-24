@@ -482,8 +482,9 @@ gameQueue = nullptr;
         dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
         GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
     ID3D12CommandQueue* const interposerOutputQueue = DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
-    if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(
-            DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain), interposerOutputQueue != nullptr)) {
+    const bool interposerPrivateChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
+    if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(interposerPrivateChain,
+                                                                      interposerOutputQueue != nullptr)) {
         // pSwapChain is the present interposer's own output chain (NVIDIA Smooth Motion), so its
         // backbuffers belong to the queue that created it. This is the same rule as the FSR
         // swapchain queue below, and the game queue here is exactly the cross-queue access that
@@ -499,6 +500,24 @@ gameQueue = nullptr;
                 dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), (void*)g_CommandQueue.load(),
                 logCount + 1);
         }
+    } else if (ce::dx12_overlay_policy::ShouldPassThroughPresentInterposerPrivateChainWithoutOverlayDraw(
+                   interposerPrivateChain, interposerOutputQueue != nullptr)) {
+        // FAIL CLOSED: the interposer's private chain without its recorded create queue has no
+        // safe submit queue. Falling through to generic queue routing picks a game/foreign queue
+        // for its backbuffers - the founding 0x887A002B device removal of this class (session
+        // 20260914_102700). Forward the Present untouched; the overlay stays on the
+        // application-facing chain.
+        static std::atomic<int> s_interposerNoQueueSkipLogCount{0};
+        const int logCount = s_interposerNoQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 10 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: ProcessFrame — present interposer output chain %p has no recorded create queue; "
+                "SKIPPING overlay draw fail-closed (origGame=%p primaryQ=%p cmdQ=%p) #%d",
+                pSwapChain, dx12_hook_g_OriginalGameQueue,
+                dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), (void*)g_CommandQueue.load(),
+                logCount + 1);
+        }
+        return ProcessFrameFlow::kReturn;
     } else if (protectedOfficialFFXStartupOverlayOnly) {
         static std::atomic<int> s_protectedOfficialFFXStartupGpuQuietLogCount{0};
         const int logCount = s_protectedOfficialFFXStartupGpuQuietLogCount.fetch_add(1, std::memory_order_relaxed);

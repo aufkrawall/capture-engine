@@ -1,5 +1,7 @@
 #include "opengl_hook_internal.h"
 
+#include "../common/present_reentry_guard.h"
+
 static GLsizei ParseGLMSAA(const char* msaa) {
     if (strcmp(msaa, "2x") == 0)
         return 2;
@@ -560,6 +562,14 @@ static void SwapEnd(HDC hdc) {
 
 // Hook: SwapBuffers (GDI32)
 BOOL WINAPI DetourSwapBuffers(HDC hdc) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"GL SwapBuffers", TRUE};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<BOOL>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(opengl_hook_oSwapBuffers), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            opengl_hook_oSwapBuffers, hdc));
+    }
     if (HookIsShuttingDown())
         return opengl_hook_oSwapBuffers ? opengl_hook_oSwapBuffers(hdc) : FALSE;
     SwapBegin(hdc);
@@ -573,6 +583,14 @@ BOOL WINAPI DetourSwapBuffers(HDC hdc) {
 
 // Hook: wglSwapBuffers
 BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"GL wglSwapBuffers", TRUE};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<BOOL>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(opengl_hook_oWglSwapBuffers), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            opengl_hook_oWglSwapBuffers, hdc));
+    }
     if (HookIsShuttingDown())
         return opengl_hook_oWglSwapBuffers ? opengl_hook_oWglSwapBuffers(hdc) : FALSE;
     SwapBegin(hdc);
@@ -583,6 +601,14 @@ BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
 
 // Hook: wglSwapLayerBuffers
 BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - non-throwing constructor; only registers this entry's thread-state slot
+    static const ce::present_reentry::PresentReentryFamily reentryFamily{"GL wglSwapLayerBuffers", TRUE};
+    ce::present_reentry::PresentReentryScope reentryScope(reentryFamily);
+    if (reentryScope.IsReentrant()) {
+        return static_cast<BOOL>(reentryScope.AnswerNestedPresentation(
+            reinterpret_cast<void*>(opengl_hook_oWglSwapLayerBuffers), CE_PRESENT_RETURN_ADDRESS(), nullptr,
+            opengl_hook_oWglSwapLayerBuffers, hdc, fuPlanes));
+    }
     if (HookIsShuttingDown())
         return opengl_hook_oWglSwapLayerBuffers ? opengl_hook_oWglSwapLayerBuffers(hdc, fuPlanes) : FALSE;
     SwapBegin(hdc);

@@ -387,7 +387,15 @@ void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& heal
 
 void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const bool liveStream = media_main_g_LiveStreamRecording.exchange(false, std::memory_order_acq_rel);
-    const uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
+    uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
+    // Mux-level output loss (write failures, dropped packets or metadata,
+    // incomplete CFR coverage) never passes through the capacity-health
+    // classifier. Fold it into the same "video degraded" truth so the manifest
+    // and the completion notification cannot claim a clean save over a file
+    // with holes in it.
+    if (MediaEngine_WasLastOutputDegraded && MediaEngine_WasLastOutputDegraded()) {
+        healthFlags |= ce::capture_policy::kRecordingHealthFlagVideoDegraded;
+    }
     const uint32_t currentDebtMs = media_main_g_RecordingTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t peakDebtMs = media_main_g_RecordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t capacityAttributedDebtMs =

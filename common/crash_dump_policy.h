@@ -43,6 +43,18 @@ inline constexpr MINIDUMP_TYPE kQuickAssertDumpType = static_cast<MINIDUMP_TYPE>
     MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpWithProcessThreadData |
     MiniDumpWithFullMemoryInfo | MiniDumpIgnoreInaccessibleMemory);
 
+// UE5 `ensure` is continuable and can fire in a storm (once per call site, and
+// some titles re-ensure every frame). Each assert dump costs the whole process
+// a synchronous MiniDumpWriteDump stall - the same ~61.6 s family as the rich
+// path when a foreign overlay hooks the loader/version APIs - and uncapped it
+// wrote another assert_*.dmp per ensure. The first few are worth keeping; after
+// that the event is logged to crash.log only.
+inline constexpr uint32_t kQuickAssertDumpPerProcessLimit = 3;
+
+inline bool ShouldWriteQuickAssertDump(uint32_t quickAssertDumpsAlreadyWritten) {
+    return quickAssertDumpsAlreadyWritten < kQuickAssertDumpPerProcessLimit;
+}
+
 inline constexpr MINIDUMP_TYPE kRichFreezeDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
     MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo |
@@ -536,7 +548,8 @@ enum class FirstChanceAction : uint8_t {
     kQuickAssertDump,  // UE5 ensure(): the small synchronous assert dump
 };
 
-inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent) {
+inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent,
+                                                      bool breakpointDumpBudgetRemaining = true) {
     if (forceDump) {
         return FirstChanceAction::kDumpNow;
     }
@@ -551,9 +564,21 @@ inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump
         case kUe5EnsureExceptionCode:
             return FirstChanceAction::kQuickAssertDump;
         case static_cast<DWORD>(EXCEPTION_BREAKPOINT):
-            // An escaped breakpoint can end the process without a recorded
-            // context, so it keeps its immediate dump unless a debugger owns it.
-            return debuggerPresent ? FirstChanceAction::kIgnore : FirstChanceAction::kDumpNow;
+            // An unhandled STATUS_BREAKPOINT can end the process without a
+            // recorded context - it can terminate without reaching the
+            // ExitProcess/NtTerminateProcess hooks, and the pre-termination path
+            // special-cases kBreakpointExceptionExitCode only for exits it can
+            // see - so the FIRST unowned breakpoint of a run keeps its immediate
+            // dump. But most first-chance breakpoints are NOT escaped asserts:
+            // anti-cheat integrity int3s and another hooking engine's patch
+            // races are handled by their raiser, and each of those used to cost
+            // a full dump stall plus the process's one-dump budget. Later
+            // breakpoints are therefore recorded first (kRecordFault) and still
+            // produce a dump if the process actually dies of one.
+            if (debuggerPresent) {
+                return FirstChanceAction::kIgnore;
+            }
+            return breakpointDumpBudgetRemaining ? FirstChanceAction::kDumpNow : FirstChanceAction::kRecordFault;
         default:
             break;
     }
@@ -578,10 +603,19 @@ inline bool ShouldPreferExternalCrashDumpHelper(bool foreignOverlayLoaded, bool 
     return foreignOverlayLoaded && externalHelperAvailable;
 }
 
+// How many first-chance STATUS_BREAKPOINT exceptions may dump immediately
+// before the rest are record-first. One is enough to keep the escaped-breakpoint
+// rationale honest while stopping a handled-int3 storm from stalling the process
+// once per breakpoint.
+inline constexpr uint32_t kBreakpointImmediateDumpBudget = 1;
+
 inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {
     // Without a debugger, an unhandled STATUS_BREAKPOINT can terminate the
     // process without reaching ExitProcess/NtTerminateProcess hooks. Capture it
-    // immediately; only debugger-owned breakpoints stay benign.
+    // immediately; only debugger-owned breakpoints stay benign. Immediate
+    // capture is budgeted to kBreakpointImmediateDumpBudget per run (see
+    // ClassifyFirstChanceException): a foreign runtime's handled int3s are the
+    // common case in a hooked process and must not each consume a dump stall.
     return !forceDump && debuggerPresent;
 }
 

@@ -14,7 +14,6 @@
 #include "inline_hook_internal.h"
 #include "inline_hook_lde.h"
 #include "inline_hook_policy.h"
-#include "inline_hook_pristine_image.h"
 #include "hook_patch_transaction.h"
 
 #include <windows.h>
@@ -45,63 +44,6 @@ namespace InlineHook {
 // wrapper function with the same calling convention as the original. A full
 // trampoline is built containing the complete original prolog, allowing the
 // wrapper to call through to the real function and capture the return value.
-
-// Read original (unpatched) function bytes from the DLL file and apply the
-// module's image-base relocations so absolute operands match the loaded image.
-static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied) {
-    if (relocationsApplied)
-        *relocationsApplied = 0;
-    HMODULE hMod = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCSTR)funcAddr, &hMod) ||
-        !hMod) {
-        return false;
-    }
-
-    char modPath[MAX_PATH];
-    if (!GetModuleFileNameA(hMod, modPath, MAX_PATH))
-        return false;
-
-    const uintptr_t rva = (uintptr_t)funcAddr - (uintptr_t)hMod;
-    if (rva > MAXDWORD || count <= 0)
-        return false;
-
-    HANDLE hFile =
-        CreateFileA(modPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE)
-        return false;
-
-    LARGE_INTEGER fileSize = {};
-    constexpr LONGLONG kMaxPristineImageBytes = 512LL * 1024LL * 1024LL;
-    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0 || fileSize.QuadPart > kMaxPristineImageBytes) {
-        CloseHandle(hFile);
-        return false;
-    }
-    std::vector<uint8_t> fileBytes(static_cast<size_t>(fileSize.QuadPart));
-    size_t totalRead = 0;
-    while (totalRead < fileBytes.size()) {
-        DWORD bytesRead = 0;
-        const DWORD request = static_cast<DWORD>(fileBytes.size() - totalRead);
-        if (!ReadFile(hFile, fileBytes.data() + totalRead, request, &bytesRead, nullptr) || bytesRead == 0) {
-            CloseHandle(hFile);
-            return false;
-        }
-        totalRead += bytesRead;
-    }
-    CloseHandle(hFile);
-
-    const auto result = ce::inline_hook_pristine_image::ReadRelocatedImageBytes(
-        fileBytes.data(), fileBytes.size(), reinterpret_cast<uintptr_t>(hMod), static_cast<DWORD>(rva), outBuf,
-        static_cast<size_t>(count));
-    if (!result.Succeeded()) {
-        HookLogImportant("PristineImage: Refusing original bytes for %p (%s)", funcAddr,
-                         ce::inline_hook_pristine_image::ImageBytesIssueName(result.issue));
-        return false;
-    }
-    if (relocationsApplied)
-        *relocationsApplied = result.relocationsApplied;
-    return true;
-}
 
 struct VerifiedResumeOffset {
     int resumeOffset = 0;
@@ -768,7 +710,12 @@ void* CreateBypassTrampoline(void* target) {
     void* jumpTarget = (void*)((uint8_t*)target + resumeOffset);
     HookLog("BypassTrampoline: Writing JMP back from trampoline+%d to %p (target+%d)", trampolineOffset, jumpTarget,
             resumeOffset);
-    WriteJump(trampoline + trampolineOffset, jumpTarget);
+    if (!WriteJump(trampoline + trampolineOffset, jumpTarget)) {
+        HookLog("BypassTrampoline: JMP back from trampoline+%d to %p cannot land - abandoning", trampolineOffset,
+                jumpTarget);
+        AbandonCurrentTrampoline();
+        return nullptr;
+    }
     trampolineOffset += PATCH_SIZE;
 
     // Patch pending absolute CALL if needed

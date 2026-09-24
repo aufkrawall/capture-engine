@@ -533,6 +533,92 @@ bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state) {
 }
 
 
+void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSucceeded, const slDLSSGState& state,
+                                                                    const slDLSSGOptions* options, bool viewportWasActive,
+                                                                    uint32_t viewportKey) {
+
+    // Evidence tracker for the sustained-generation retire of the persistent
+    // GetState-only reactivation block (see
+    // ShouldRetireGetStateOnlyReactivationBlockForSustainedGeneration). GetState
+    // runs on the game's polling thread(s); relaxed atomics mirror the DLSSG
+    // health monitor and a lost sample only delays the retire by one poll.
+    static std::atomic<bool> s_hasPreviousSample{false};
+    static std::atomic<uint64_t> s_previousFenceValue{0};
+    static std::atomic<uint32_t> s_previousFramesPresented{0};
+    static std::atomic<uint32_t> s_advancingSampleStreak{0};
+    static std::atomic<uint64_t> s_suppressedPresentCount{0};
+
+    const bool blockArmed =
+        streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
+    if (!blockArmed) {
+        // Reset while disarmed so evidence from a previous armed epoch cannot
+        // retire a freshly re-armed block on its first poll.
+        s_hasPreviousSample.store(false, std::memory_order_relaxed);
+        s_previousFenceValue.store(0, std::memory_order_relaxed);
+        s_previousFramesPresented.store(0, std::memory_order_relaxed);
+        s_advancingSampleStreak.store(0, std::memory_order_relaxed);
+        s_suppressedPresentCount.store(0, std::memory_order_relaxed);
+        return;
+    }
+
+    const bool optionsRequestActive =
+        options != nullptr && ce::streamline_runtime_policy::IsDLSSGModeEnabled(options->mode);
+    const bool hasRuntimeFenceEvidence = HasDLSSGRuntimeFenceEvidence(state);
+    const bool hasSample = s_hasPreviousSample.load(std::memory_order_relaxed);
+    const uint64_t previousFenceValue = s_previousFenceValue.load(std::memory_order_relaxed);
+    const uint32_t previousFramesPresented = s_previousFramesPresented.load(std::memory_order_relaxed);
+    s_previousFenceValue.store(state.lastPresentInputsProcessingCompletionFenceValue, std::memory_order_relaxed);
+    s_previousFramesPresented.store(state.numFramesActuallyPresented, std::memory_order_relaxed);
+    s_hasPreviousSample.store(true, std::memory_order_relaxed);
+
+    const bool evidenceAdvancing =
+        callSucceeded && optionsRequestActive && hasRuntimeFenceEvidence &&
+        ce::streamline_runtime_policy::IsDLSSGGenerationEvidenceAdvancing(
+            hasSample, previousFenceValue, state.lastPresentInputsProcessingCompletionFenceValue,
+            previousFramesPresented, state.numFramesActuallyPresented);
+    const uint32_t streak = ce::streamline_runtime_policy::UpdateGetStateOnlyBlockGenerationEvidenceStreak(
+        evidenceAdvancing, s_advancingSampleStreak.load(std::memory_order_relaxed));
+    s_advancingSampleStreak.store(streak, std::memory_order_relaxed);
+
+    if (ce::streamline_runtime_policy::ShouldRetireGetStateOnlyReactivationBlockForSustainedGeneration(
+            /*blockArmed=*/true, callSucceeded, optionsRequestActive, hasRuntimeFenceEvidence, streak,
+            streamline_hook_kGetStateOnlyBlockGenerationRetireSamples)) {
+        const bool wasBlocking = streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(
+            false, std::memory_order_acq_rel);
+        if (wasBlocking) {
+            HookLogImportant(
+                "Streamline Hook: Retired persistent GetState-only DLSS FG suppression on sustained generation "
+                "evidence (viewport=%u advancingStreak=%u fenceValue=%llu presented=%u) — the runtime generates "
+                "frames without an explicit slDLSSGSetOptions enable",
+                viewportKey, streak, (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                state.numFramesActuallyPresented);
+        }
+        s_suppressedPresentCount.store(0, std::memory_order_relaxed);
+        return;
+    }
+
+    const bool freshActivationAttempt = callSucceeded && optionsRequestActive && !viewportWasActive;
+    const bool persistentBlockSuppressing =
+        freshActivationAttempt &&
+        ce::streamline_runtime_policy::ShouldSuppressFreshGetStateActivationWhileRuntimeInactive(
+            /*persistentSetOptionsBlock=*/true, DXGIShared::IsStreamlineStartupTransitionWindowActive(),
+            g_FGCompat.GetRuntimeMode());
+    if (persistentBlockSuppressing) {
+        const uint64_t suppressedPresents =
+            s_suppressedPresentCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (suppressedPresents < 8 || (suppressedPresents % 512) == 0) {
+            HookLogImportant(
+                "Streamline Hook: GetState-only activation suppressed for %llu presents (viewport=%u mode=%u "
+                "fenceValue=%llu presented=%u advancingStreak=%u)",
+                (unsigned long long)suppressedPresents, viewportKey, options->mode,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                state.numFramesActuallyPresented, streak);
+        }
+    }
+
+}
+
+
 void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multiplier,  uint32_t generatedFrames, 
                                 uint32_t capabilityMax,  const char* source, 
                                 bool clearAllViewportStatesForDisable) {

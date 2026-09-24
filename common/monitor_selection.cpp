@@ -225,6 +225,19 @@ bool IsExplicitSelector(const Selector& selector) {
     return selector.kind != SelectorKind::kAuto;
 }
 
+bool GdiDeviceNamesMatch(const wchar_t* lhs, const wchar_t* rhs) {
+    if (!lhs || !rhs) {
+        return false;
+    }
+    return LowerWide(lhs) == LowerWide(rhs);
+}
+
+float SdrWhiteNitsFromLevel(uint32_t sdrWhiteLevel) {
+    // DISPLAYCONFIG_SDR_WHITE_LEVEL is expressed in 80-nit / 1000 units and is
+    // only meaningful inside the Windows SDR content brightness range.
+    return std::clamp(static_cast<float>(sdrWhiteLevel) * (80.0f / 1000.0f), 80.0f, 1000.0f);
+}
+
 CandidateChoice ChooseCandidate(SelectorKind kind, const CandidateHandles& candidates) {
     switch (kind) {
         case SelectorKind::kAuto:

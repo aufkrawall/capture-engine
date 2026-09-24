@@ -135,6 +135,11 @@ MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo) {
     return mediaengine_g_Engine ? mediaengine_g_Engine->StopRecording(cancelUncommittedVideo) : false;
 }
 
+MEDIAENGINE_API bool MediaEngine_WasLastOutputDegraded() {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    return mediaengine_g_Engine ? mediaengine_g_Engine->WasLastOutputDegraded() : false;
+}
+
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine)

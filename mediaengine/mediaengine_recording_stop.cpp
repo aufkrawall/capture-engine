@@ -632,6 +632,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
         if (videoEnc) {
             videoEnc->Stop();
             videoOutputPublished = videoEnc->WasLastOutputPublished();
+            lastOutputDegraded = videoEnc->WasLastOutputDegraded();
         }
         return videoOutputPublished;
 

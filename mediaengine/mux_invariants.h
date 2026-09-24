@@ -19,28 +19,37 @@ enum class VideoOutputDisposition : uint8_t {
     kPublish = 0,
     kDiscardCancelled,
     kDiscardNoVideo,
-    // The trailer or the final close reported an error, but committed video
-    // packets are already on disk. The recording is kept: see below.
+    // The trailer or the final close reported an error (or the duration
+    // accounting broke), but committed video packets are already on disk. The
+    // recording is kept: see below.
     kPublishAfterFinalizeFailure,
+    // Cancellation arrived after video packets were already on disk. Kept for
+    // the same reason as finalize failures: committed content is never deleted.
+    kPublishAfterCancel,
 };
 
-// A failed trailer or close never discards committed video. FFmpeg's
+// Committed video packets are never deleted, whatever the exit path. FFmpeg's
 // av_write_trailer returns the AVIOContext's sticky error, so a single
 // transient write failure anywhere in a multi-hour recording - or a full disk
-// while the final cues are written - used to delete the entire file. Everything
-// written before that point is still playable (Matroska without cues seeks
+// while the final cues are written - used to delete the entire file. A
+// cancellation after live output (and a one-packet HDR metadata failure that
+// used to mark the whole session cancelled) had the same effect. Everything
+// written before the fault is still playable (Matroska without cues seeks
 // slower, but plays and remuxes), and deleting it is the one outcome the user
-// can never recover from.
+// can never recover from. Disc deletion therefore requires exactly zero
+// committed video packets.
 inline VideoOutputDisposition SelectVideoOutputDisposition(bool cancellationRequested, int trailerResult,
                                                            int closeResult, int64_t finalDurationUs,
                                                            uint64_t writtenVideoPackets) {
+    if (writtenVideoPackets == 0) {
+        // Without committed video there is nothing to save, cancel or not.
+        return cancellationRequested ? VideoOutputDisposition::kDiscardCancelled
+                                     : VideoOutputDisposition::kDiscardNoVideo;
+    }
     if (cancellationRequested) {
-        return VideoOutputDisposition::kDiscardCancelled;
+        return VideoOutputDisposition::kPublishAfterCancel;
     }
-    if (finalDurationUs <= 0 || writtenVideoPackets == 0) {
-        return VideoOutputDisposition::kDiscardNoVideo;
-    }
-    if (trailerResult < 0 || closeResult < 0) {
+    if (trailerResult < 0 || closeResult < 0 || finalDurationUs <= 0) {
         return VideoOutputDisposition::kPublishAfterFinalizeFailure;
     }
     return VideoOutputDisposition::kPublish;
@@ -48,7 +57,8 @@ inline VideoOutputDisposition SelectVideoOutputDisposition(bool cancellationRequ
 
 inline bool ShouldPublishVideoOutput(VideoOutputDisposition disposition) {
     return disposition == VideoOutputDisposition::kPublish ||
-           disposition == VideoOutputDisposition::kPublishAfterFinalizeFailure;
+           disposition == VideoOutputDisposition::kPublishAfterFinalizeFailure ||
+           disposition == VideoOutputDisposition::kPublishAfterCancel;
 }
 
 // Audio-only recordings follow the same rule: once packets are committed, a
@@ -67,6 +77,8 @@ inline const char* VideoOutputDispositionToString(VideoOutputDisposition disposi
             return "cancelled-before-live";
         case VideoOutputDisposition::kPublishAfterFinalizeFailure:
             return "publish-after-finalize-failure";
+        case VideoOutputDisposition::kPublishAfterCancel:
+            return "publish-after-cancel";
         case VideoOutputDisposition::kDiscardNoVideo:
             return "no-video-packets";
     }

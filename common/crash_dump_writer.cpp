@@ -12,6 +12,7 @@
 #include <string>
 
 #include "crash_dump_policy.h"
+#include "log_privacy.h"
 #include "secure_dll_loading.h"
 
 // Everything MiniDumpWriteDump needs, owned independently of the crashing thread.
@@ -50,6 +51,13 @@ struct DumpParams {
 };
 
 static DumpParams g_DumpParamsSlot;
+
+// Per-run dump budgets (see ce::crash_dump_policy): one immediate first-chance
+// breakpoint dump, and kQuickAssertDumpPerProcessLimit UE5 ensure() assert
+// dumps. Both are consumed before classification/creation so concurrent storms
+// cannot observe the budget as unconsumed.
+static std::atomic<uint32_t> g_BreakpointImmediateDumps{0};
+static std::atomic<uint32_t> g_QuickAssertDumpsWritten{0};
 
 // Worker thread to write minidump safely away from the crashed stack
 DWORD WINAPI DumpWorker(LPVOID lpParam) {
@@ -117,10 +125,17 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         return 0;
     }
 
+    // crash.log is shared with support like every other log, so the dump paths
+    // it names keep their correlatable file names without the private directory
+    // layout (log_privacy.h). The full paths are still what every file
+    // operation below uses.
+    const std::string displayTempDumpPath = ce::privacy::CollapsePathForLog(tempDumpPath);
+    const std::string displayDumpPath = ce::privacy::CollapsePathForLog(dumpPath);
+
     TraceCrash("Creating in-progress dump file...");
-    TraceCrash(tempDumpPath);
+    TraceCrash(displayTempDumpPath.c_str());
     TraceCrash("Final dump path after successful write:");
-    TraceCrash(dumpPath);
+    TraceCrash(displayDumpPath.c_str());
 
     // Ensure directory exists with proper error checking
     if (CreateDirectoryA(dumpDir.c_str(), NULL)) {
@@ -231,7 +246,8 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
             snprintf(errPath, sizeof(errPath), "%s\\crash_error.txt", dumpDir.c_str());
             FILE* f = fopen(errPath, "w");
             if (f) {
-                fprintf(f, "MiniDumpWriteDump failed. Error: %lu (0x%08lX)\nDump Path: %s\n", err, err, dumpPath);
+                fprintf(f, "MiniDumpWriteDump failed. Error: %lu (0x%08lX)\nDump Path: %s\n", err, err,
+                        displayDumpPath.c_str());
                 fclose(f);
             }
         }
@@ -286,8 +302,17 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Nothing above this line may allocate, lock or write a file: it runs for
     // every exception the host raises, including the thousands a managed or
     // JIT runtime handles itself. See ClassifyFirstChanceException.
-    const auto action =
-        ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, IsDebuggerPresent() != FALSE);
+    const bool debuggerPresent = IsDebuggerPresent() != FALSE;
+    // The per-run breakpoint budget is consumed before classification, so two
+    // concurrent int3 storms cannot both observe it as unconsumed.
+    bool breakpointDumpBudgetRemaining = true;
+    if (code == static_cast<DWORD>(EXCEPTION_BREAKPOINT) && !forceDump && !debuggerPresent) {
+        breakpointDumpBudgetRemaining =
+            g_BreakpointImmediateDumps.fetch_add(1, std::memory_order_acq_rel) <
+            ce::crash_dump_policy::kBreakpointImmediateDumpBudget;
+    }
+    const auto action = ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, debuggerPresent,
+                                                                            breakpointDumpBudgetRemaining);
     switch (action) {
         case ce::crash_dump_policy::FirstChanceAction::kIgnore:
             return EXCEPTION_CONTINUE_SEARCH;
@@ -308,7 +333,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     ActivateCrashTrace();
 
     if (code == EXCEPTION_BREAKPOINT && !forceDump) {
-        TraceCrash("Breakpoint exception is dump-worthy because no debugger is attached");
+        TraceCrash("Breakpoint exception dumped immediately: no debugger is attached and this run's "
+                   "immediate-breakpoint-dump budget was unconsumed");
     }
     if (forceDump) {
         const auto stats = ce::crash_first_chance::GetStatistics();
@@ -357,16 +383,51 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             TraceCrash(loc);
         }
 
+        // An ensure is continuable and some titles re-fire it every frame, so
+        // this path is budgeted: beyond the per-process limit the event is only
+        // logged instead of stalling the process for another MiniDumpWriteDump.
+        const uint32_t quickAssertDumpsWritten = g_QuickAssertDumpsWritten.fetch_add(1, std::memory_order_acq_rel);
+        if (!ce::crash_dump_policy::ShouldWriteQuickAssertDump(quickAssertDumpsWritten)) {
+            TraceCrash("Quick assert dump suppressed - the per-process assert dump limit is reached");
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char dumpFileName[MAX_PATH];
+        snprintf(dumpFileName, sizeof(dumpFileName), "assert_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp", st.wYear,
+                 st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentProcessId());
+        char dumpPath[MAX_PATH];
+        snprintf(dumpPath, sizeof(dumpPath), "%s\\%s", dumpDir.c_str(), dumpFileName);
+
+        // The same foreign-overlay rule as the rich dump path above: an
+        // in-process MiniDumpWriteDump walks every loaded module's version
+        // resources through the overlay's loader/version hooks while every
+        // other thread is suspended (the measured ~61.6 s family). Prefer the
+        // external helper, and never run that walk with a foreign overlay
+        // loaded - no assert dump is worth a frozen game.
+        const bool foreignOverlayLoaded = IsForeignOverlayLoadedForCrashDump();
+        if (ce::crash_dump_policy::ShouldPreferExternalCrashDumpHelper(foreignOverlayLoaded,
+                                                                       HasExternalCrashDumpCapture())) {
+            TraceCrash("Foreign overlay loaded - capturing quick assert dump with the external helper");
+            ExternalDumpException exception;
+            exception.pointers = pExceptionPointers;
+            exception.threadId = GetCurrentThreadId();
+            if (CaptureCrashDumpWithExternalHelper(dumpFileName, false, &exception)) {
+                TraceCrash("External helper captured the quick assert dump");
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+            TraceCrash("External helper quick assert dump failed");
+        }
+        if (!ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(foreignOverlayLoaded)) {
+            TraceCrash("Skipping in-process quick assert dump - dbghelp module enumeration can hang against foreign "
+                       "overlay hooks and would suspend every thread meanwhile");
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
         // Quick inline dump: richer than MiniDumpNormal, but still synchronous and
         // lightweight enough for assert/terminate paths.
         if (g_pMiniDumpWriteDump) {
-            SYSTEMTIME st;
-            GetLocalTime(&st);
-            char dumpPath[MAX_PATH];
-            snprintf(dumpPath, sizeof(dumpPath), "%s\\assert_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
-                     dumpDir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-                     GetCurrentProcessId());
-
             HANDLE hFile = CreateFileA(dumpPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                        FILE_ATTRIBUTE_NORMAL, NULL);
             if (hFile != INVALID_HANDLE_VALUE) {
@@ -379,7 +440,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                                          ce::crash_dump_policy::kQuickAssertDumpType, &mdei, NULL, NULL)) {
                     TraceCrash("Quick assert dump written");
                     char msg[256];
-                    snprintf(msg, sizeof(msg), "Assert dump: %s", dumpPath);
+                    snprintf(msg, sizeof(msg), "Assert dump: %s", ce::privacy::CollapsePathForLog(dumpPath).c_str());
                     TraceCrash(msg);
                 }
                 CloseHandle(hFile);
@@ -584,6 +645,10 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     TraceCrash("Handler finished - Returning EXCEPTION_CONTINUE_SEARCH");
     return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG WINAPI CrashHandlerExceptionFilterForTesting(EXCEPTION_POINTERS* pExceptionPointers) {
+    return CrashHandlerExceptionFilter(pExceptionPointers);
 }
 
 static bool g_CrashHandlerInstalled = false;

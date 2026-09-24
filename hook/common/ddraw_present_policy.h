@@ -426,6 +426,93 @@ inline uint32_t ExpandRgb555(uint16_t value) {
            (((green << 3) | (green >> 2)) << 8) | ((blue << 3) | (blue >> 2));
 }
 
+// The surface layouts the CPU overlay composite knows how to write. 8-bit
+// palettized is the late-90s DirectDraw fullscreen mode and 24-bit the cheap
+// true-color one; YUV and every channel layout outside this table stay
+// rejected - the composite never guesses at channel layouts.
+enum class SurfaceEncoding { Unsupported, Rgb888, Rgb24, Rgb565, Rgb555, Palette8 };
+
+// A DirectDraw pixel format reduced to the fields the format policy reads
+// (DDPIXELFORMAT's flags and masks, nothing else).
+struct SurfacePixelFormat {
+    bool rgb = false;
+    bool alphaPixels = false;
+    bool paletteIndexed = false;
+    uint32_t bitCount = 0;
+    uint32_t redMask = 0;
+    uint32_t greenMask = 0;
+    uint32_t blueMask = 0;
+    uint32_t alphaMask = 0;
+};
+
+inline SurfaceEncoding ClassifySurfacePixelFormat(const SurfacePixelFormat& format) {
+    // A palettized surface's masks are meaningless and 4-bit has no composite
+    // path at all.
+    if (format.paletteIndexed)
+        return format.bitCount == 8 ? SurfaceEncoding::Palette8 : SurfaceEncoding::Unsupported;
+    if (!format.rgb)
+        return SurfaceEncoding::Unsupported;
+    const bool standardRgbMasks = format.redMask == 0x00FF0000u && format.greenMask == 0x0000FF00u &&
+                                  format.blueMask == 0x000000FFu;
+    if (format.bitCount == 32 && standardRgbMasks)
+        return SurfaceEncoding::Rgb888;
+    if (format.bitCount == 24 && standardRgbMasks)
+        return SurfaceEncoding::Rgb24;
+    if (format.bitCount == 16 && format.redMask == 0xF800u && format.greenMask == 0x07E0u &&
+        format.blueMask == 0x001Fu && format.alphaMask == 0)
+        return SurfaceEncoding::Rgb565;
+    if ((format.bitCount == 15 || format.bitCount == 16) && format.redMask == 0x7C00u &&
+        format.greenMask == 0x03E0u && format.blueMask == 0x001Fu && format.alphaMask == 0)
+        return SurfaceEncoding::Rgb555;
+    return SurfaceEncoding::Unsupported;
+}
+
+// 24-bit surfaces carry the standard 0x00RRGGBB masks over BGR bytes, so the
+// packed low three bytes and the canonical value are the same number and the
+// conversion is a mask in both directions.
+inline uint32_t ExpandRgb24(uint32_t packedBgr) {
+    return 0xFF000000u | (packedBgr & 0x00FFFFFFu);
+}
+
+inline uint32_t PackRgb24(uint32_t color) {
+    return color & 0x00FFFFFFu;
+}
+
+// Palettized expansion through a palette snapshot and the contraction back.
+// `palette` holds 0xFFrrggbb entries as fetched from
+// IDirectDrawPalette::GetEntries. Everything derives from the snapshot passed
+// in - nothing is kept between calls - so a snapshot taken after the
+// application changed its palette (SetPalette, or SetEntries during a palette
+// fade) can never leave stale colours behind.
+inline uint32_t ExpandPaletteIndex(uint32_t index, const uint32_t* palette, uint32_t paletteSize) {
+    if (!palette || index >= paletteSize)
+        return 0xFF000000u;
+    return palette[index] | 0xFF000000u;
+}
+
+// The palette index whose entry is nearest in RGB. Exact hits win, so the
+// application's own pixels round-trip through expansion and contraction
+// unchanged; the first entry wins among equal colours, which keeps the choice
+// deterministic.
+inline uint32_t NearestPaletteIndex(uint32_t color, const uint32_t* palette, uint32_t paletteSize) {
+    uint32_t bestIndex = 0;
+    uint32_t bestDistance = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < paletteSize; ++i) {
+        const uint32_t entry = palette[i] | 0xFF000000u;
+        const int red = static_cast<int>((color >> 16) & 0xFFu) - static_cast<int>((entry >> 16) & 0xFFu);
+        const int green = static_cast<int>((color >> 8) & 0xFFu) - static_cast<int>((entry >> 8) & 0xFFu);
+        const int blue = static_cast<int>(color & 0xFFu) - static_cast<int>(entry & 0xFFu);
+        const uint32_t distance = static_cast<uint32_t>(red * red + green * green + blue * blue);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+            if (distance == 0)
+                break;
+        }
+    }
+    return bestIndex;
+}
+
 // Whether a function's first bytes are an unconditional jump of the shape an
 // injector writes over an entry point: a five-byte `E9 rel32` or a fourteen-byte
 // `FF 25` indirect jump. This is what CE's own InlineHook writes, what Steam's
@@ -459,6 +546,43 @@ inline bool EntryLooksInlinePatched(const unsigned char* bytes, size_t count) {
 inline bool NestedPresentationMayRunRealImplementation(int nestedLevel, bool bypassAvailable,
                                                        bool bypassAlreadyUsedOnThread) {
     return nestedLevel == 1 && bypassAvailable && !bypassAlreadyUsedOnThread;
+}
+
+// The access an Unlock attempt reports for the application's surface writes.
+// Unknown is the conservative answer: CE could not tell what happened, so the
+// presentation path must assume the surface changed.
+enum class SurfaceLockAccess { Unknown, ReadOnly, Writable };
+
+// One tracked surface lock. `depth` counts Lock attempts not yet resolved by an
+// Unlock attempt and `writable` whether any holder may write.
+struct SurfaceLockTrack {
+    uint32_t depth = 0;
+    bool writable = false;
+};
+
+inline void BeginSurfaceLockTrack(SurfaceLockTrack& track, bool writable) {
+    ++track.depth;
+    track.writable = track.writable || writable;
+}
+
+// Resolves a surface's lock tracking at an Unlock attempt.
+//
+// DirectDraw permits one lock at a time, so every Unlock attempt resolves the
+// surface's whole track. Anything less leaks depth: a failed Unlock left
+// `depth > 0` forever, and an application Lock/Unlock imbalance on a driver
+// that accepted overlapping locks did the same - and `--depth != 0` then
+// deferred DirectScanout presentations and the freeze-watchdog heartbeat for
+// the rest of the session (Gothic II class: the overlay and the watchdog both
+// go silent while the game runs on). A failed Unlock reports Unknown because
+// DirectDraw's lock state is unknowable after it; a successful one reports what
+// the tracked holders may have written.
+inline SurfaceLockAccess CompleteSurfaceLockTrack(SurfaceLockTrack& track, bool unlockSucceeded) {
+    const bool tracked = track.depth != 0;
+    const bool writable = track.writable;
+    track = {};
+    if (!tracked || !unlockSucceeded)
+        return SurfaceLockAccess::Unknown;
+    return writable ? SurfaceLockAccess::Writable : SurfaceLockAccess::ReadOnly;
 }
 
 // One row of the CPU composite, over pixels that have already been read out of

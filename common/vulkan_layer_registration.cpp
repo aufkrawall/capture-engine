@@ -3,7 +3,6 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cwctype>
 #include <fstream>
 #include <string>
@@ -13,11 +12,11 @@
 
 #include "build_identity.h"
 #include "logging.h"
+#include "vulkan_layer_registration_registry.h"
 
 namespace ce::vulkan_layer {
 namespace {
 
-constexpr wchar_t kImplicitLayersKey[] = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
 constexpr wchar_t kManifest64Name[] = L"VK_LAYER_CE_overlay.json";
 constexpr wchar_t kLibrary64Name[] = L"VK_LAYER_CE_overlay.dll";
 constexpr wchar_t kLayer64Name[] = L"VK_LAYER_CE_overlay";
@@ -28,62 +27,6 @@ constexpr wchar_t kGate64Name[] = L"VK_LAYER_CE_gate.dll";
 constexpr wchar_t kGate32Name[] = L"VK_LAYER_CE_gate_x86.dll";
 constexpr wchar_t kLegacyManifestName[] = L"VK_LAYER_CAPTURE_overlay.json";
 constexpr wchar_t kStagingSubdirectory[] = L"CaptureEngine\\vulkan_layers";
-
-struct RegistryLocation {
-    RegistryRoot root;
-    RegistryView view;
-};
-
-class RegistryKeyGuard {
-public:
-    RegistryKeyGuard() = default;
-    ~RegistryKeyGuard() { Reset(); }
-    RegistryKeyGuard(const RegistryKeyGuard&) = delete;
-    RegistryKeyGuard& operator=(const RegistryKeyGuard&) = delete;
-    RegistryKeyGuard(RegistryKeyGuard&& other) noexcept : key_(other.key_) { other.key_ = nullptr; }
-    RegistryKeyGuard& operator=(RegistryKeyGuard&& other) noexcept {
-        if (this != &other) {
-            Reset();
-            key_ = other.key_;
-            other.key_ = nullptr;
-        }
-        return *this;
-    }
-
-    void Reset(HKEY key = nullptr) {
-        if (key_) RegCloseKey(key_);
-        key_ = key;
-    }
-
-    HKEY Get() const { return key_; }
-    HKEY* Put() {
-        Reset();
-        return &key_;
-    }
-
-private:
-    HKEY key_ = nullptr;
-};
-
-std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) {
-        return {};
-    }
-
-    const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (required <= 1) {
-        return {};
-    }
-
-    std::string result(required, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), required, nullptr, nullptr);
-    result.pop_back();
-    return result;
-}
-
-std::string PathToUtf8(const std::filesystem::path& path) {
-    return WideToUtf8(path.wstring());
-}
 
 std::wstring ToLower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -113,24 +56,6 @@ private:
     HANDLE handle_ = nullptr;
 };
 
-std::string FormatWindowsError(DWORD error) {
-    char* message = nullptr;
-    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-    const DWORD length = FormatMessageA(flags, nullptr, error, 0, reinterpret_cast<LPSTR>(&message), 0, nullptr);
-    if (length == 0 || message == nullptr) {
-        return std::to_string(error);
-    }
-
-    std::string result(message, length);
-    LocalFree(message);
-
-    while (!result.empty() && (result.back() == '\r' || result.back() == '\n' ||
-                               std::isspace(static_cast<unsigned char>(result.back())))) {
-        result.pop_back();
-    }
-    return result;
-}
-
 bool IsRegularFile(const std::filesystem::path& path) {
     std::error_code ec;
     return std::filesystem::is_regular_file(path, ec);
@@ -152,44 +77,6 @@ LayerManifest BuildManifest(const std::filesystem::path& baseDir, const std::fil
     manifest.gateExists = IsRegularFile(manifest.sourceGatePath);
     manifest.manifestExists = manifest.libraryExists || IsRegularFile(manifest.sourceManifestPath);
     return manifest;
-}
-
-REGSAM GetViewFlags(RegistryView view) {
-    switch (view) {
-        case RegistryView::Registry32:
-            return KEY_WOW64_32KEY;
-        case RegistryView::Registry64:
-            return KEY_WOW64_64KEY;
-        case RegistryView::Default:
-        default:
-            return 0;
-    }
-}
-
-HKEY GetRootHandle(RegistryRoot root) {
-    return root == RegistryRoot::LocalMachine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
-}
-
-std::string DescribeLocation(const RegistryLocation& location) {
-    return std::string(ToString(location.root)) + "/" + ToString(location.view);
-}
-
-LONG OpenRegistryKey(const RegistryLocation& location, REGSAM access, bool create, RegistryKeyGuard* outKey) {
-    HKEY rawKey = nullptr;
-    const REGSAM sam = access | GetViewFlags(location.view);
-    LONG result = ERROR_SUCCESS;
-
-    if (create) {
-        result = RegCreateKeyExW(GetRootHandle(location.root), kImplicitLayersKey, 0, nullptr, REG_OPTION_NON_VOLATILE,
-                                 sam, nullptr, &rawKey, nullptr);
-    } else {
-        result = RegOpenKeyExW(GetRootHandle(location.root), kImplicitLayersKey, 0, sam, &rawKey);
-    }
-
-    if (result == ERROR_SUCCESS) {
-        outKey->Reset(rawKey);
-    }
-    return result;
 }
 
 std::vector<std::wstring> EnumerateRegistryValueNames(HKEY key) {
@@ -264,24 +151,6 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
     return targets;
 }
 
-bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* reason,
-                         const RegistryLocation& location) {
-    const LONG result = RegDeleteValueW(key, valueName.c_str());
-    if (result == ERROR_SUCCESS) {
-        LogInfo("[VulkanReg] Removed %s entry from %s: %s", reason, DescribeLocation(location).c_str(),
-                WideToUtf8(valueName).c_str());
-        return true;
-    }
-    if (result == ERROR_FILE_NOT_FOUND) {
-        return true;
-    }
-
-    LogError("[VulkanReg] Failed to remove %s entry from %s: %s (error=%ld, %s)", reason,
-             DescribeLocation(location).c_str(), WideToUtf8(valueName).c_str(), result,
-             FormatWindowsError(result).c_str());
-    return false;
-}
-
 bool DeleteRegistryTarget(const RegistryTarget& target) {
     if (target.manifests.empty()) {
         return true;
@@ -302,40 +171,6 @@ bool DeleteRegistryTarget(const RegistryTarget& target) {
     bool success = true;
     for (const LayerManifest& manifest : target.manifests) {
         success &= DeleteRegistryValue(key.Get(), manifest.manifestPath.wstring(), "owned manifest", location);
-    }
-
-    return success;
-}
-
-bool WriteRegistryTarget(const RegistryTarget& target) {
-    if (target.manifests.empty()) {
-        return true;
-    }
-
-    RegistryKeyGuard key;
-    const RegistryLocation location{target.root, target.view};
-    const LONG openResult = OpenRegistryKey(location, KEY_SET_VALUE, true, &key);
-    if (openResult != ERROR_SUCCESS) {
-        LogError("[VulkanReg] Failed to open %s for registration (error=%ld, %s)", DescribeLocation(location).c_str(),
-                 openResult, FormatWindowsError(openResult).c_str());
-        return false;
-    }
-
-    bool success = true;
-    for (const LayerManifest& manifest : target.manifests) {
-        const DWORD enabled = 0;
-        const std::wstring valueName = manifest.manifestPath.wstring();
-        const LONG setResult = RegSetValueExW(key.Get(), valueName.c_str(), 0, REG_DWORD,
-                                              reinterpret_cast<const BYTE*>(&enabled), sizeof(enabled));
-        if (setResult == ERROR_SUCCESS) {
-            LogInfo("[VulkanReg] Registered %s in %s", PathToUtf8(manifest.manifestPath).c_str(),
-                    DescribeLocation(location).c_str());
-        } else {
-            LogError("[VulkanReg] Failed to register %s in %s (error=%ld, %s)",
-                     PathToUtf8(manifest.manifestPath).c_str(), DescribeLocation(location).c_str(), setResult,
-                     FormatWindowsError(setResult).c_str());
-            success = false;
-        }
     }
 
     return success;
@@ -644,19 +479,29 @@ static bool WriteStagedManifest(const LayerManifest& manifest) {
 }
 
 static bool StagePlanArtifacts(const RegistrationPlan& plan) {
-    if (plan.stagingDir.empty() || plan.stagingDir == plan.baseDir) {
+    if (plan.stagingDir.empty()) {
         return true;
     }
 
-    std::error_code ec;
-    std::filesystem::create_directories(plan.stagingDir, ec);
-    if (ec) {
-        LogError("[VulkanReg] Failed to create staging directory %s (error=%d, %s)",
-                 PathToUtf8(plan.stagingDir).c_str(), ec.value(), ec.message().c_str());
-        return false;
+    // With stagingDir == baseDir - the env-root fallback BuildRegistrationPlan
+    // falls back to - the generated manifest still has to be written, right
+    // over the checked-in VK_LAYER_CE_overlay.json if one is present there:
+    // that manifest names the FULL layer, and registering it maps the 1.5 MB
+    // layer and its imports into every Vulkan process on the machine again,
+    // which is the exposure the negotiation gate exists to remove. The
+    // generated manifest is also the only one this path gets: nothing else
+    // writes one when no staging directory is in play.
+    bool success = true;
+    if (plan.stagingDir != plan.baseDir) {
+        std::error_code ec;
+        std::filesystem::create_directories(plan.stagingDir, ec);
+        if (ec) {
+            LogError("[VulkanReg] Failed to create staging directory %s (error=%d, %s)",
+                     PathToUtf8(plan.stagingDir).c_str(), ec.value(), ec.message().c_str());
+            return false;
+        }
     }
 
-    bool success = true;
     for (const auto& manifest : plan.manifests) {
         if (!manifest.IsUsable()) {
             continue;

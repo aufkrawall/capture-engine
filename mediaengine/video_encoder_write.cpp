@@ -10,8 +10,14 @@ bool VideoEncoder::NormalizeHdrPacketIfNeeded(AVPacket* packet) {
     if (result < 0) {
         char error[AV_ERROR_MAX_STRING_SIZE] = {};
         av_strerror(result, error, sizeof(error));
-        DLL_Log("[HDR Metadata] ERROR: Failed to normalize packet-carried sequence header: %d (%s)", result, error);
-        discardOutputRequested.store(true, std::memory_order_release);
+        // Drop only this packet and record the loss. The session-level discard
+        // flag is never set here: one unnormalizable metadata packet must not
+        // delete a recording's committed frames (see ce::mux disposition).
+        DLL_Log(
+            "[HDR Metadata] ERROR: Failed to normalize packet-carried sequence header: %d (%s); dropping this "
+            "packet, output will report as degraded",
+            result, error);
+        hdrMetadataDropCount.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (result > 0 && !hdrPacketMetadataLogged) {
@@ -335,12 +341,15 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             RequestLiveOutputFailure("queue_budget", AVERROR_BUFFER_TOO_SMALL);
             return;
         }
-        UpdateAtomicPeak(peakQueueBytes, SaturatingToUint32(currentQueueBytes.load(std::memory_order_relaxed)));
+        UpdateAtomicPeak(peakQueueBytes, static_cast<size_t>(currentQueueBytes.load(std::memory_order_relaxed)));
         UpdateAtomicPeak(peakQueuePackets, currentQueuePackets.load(std::memory_order_relaxed));
         PublishRuntimeState();
         queueCV.notify_one();
-    } else if (liveOutput) {
-        RequestLiveOutputFailure("clone_packet", AVERROR(ENOMEM));
+    } else {
+        // Never drop an encoded packet silently: the PTS grid already advanced
+        // past it, so the loss would surface as an unattributed hole. Record it
+        // and end the session cleanly instead of corrupting the rest.
+        RequestOutputFailure("clone_packet", AVERROR(ENOMEM));
     }
 }
 
