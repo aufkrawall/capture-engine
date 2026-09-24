@@ -85,6 +85,25 @@ inline bool FreezeIsExplainedByApplicationDialog(bool haveDialog, bool criticalD
     return haveDialog && !criticalDialog && dialogThreadId != 0 && dialogThreadId == monitoredThreadId;
 }
 
+// Whether a process exit is the end of an application's own error report.
+//
+// A title that reports a fatal error in a modal box on its render thread and
+// quits once the user confirms it leaves no fault, no crash-like exit code and
+// no freeze: Gothic II session 20260924_233030 closed its `Error-Message` box
+// after under three seconds and called ExitProcess(0), so neither the dialog
+// dump (five-second delay, stale heartbeat) nor the pre-termination dump (exit
+// code 0) fired. What does identify it is that the render loop never presented
+// again after the dialog appeared: every presentation CE observes advances the
+// heartbeat, so the heartbeat recorded when the dialog was first seen is still
+// the current one at exit. A dialog the game dismisses and plays on from moves
+// the heartbeat on the next frame and no longer qualifies. Whether the dialog
+// is still on screen at exit is deliberately not part of it - the watchdog
+// polls, and the box closes moments before ExitProcess.
+inline bool TerminationFollowsRenderThreadDialog(bool renderThreadDialogSeen, uint64_t heartbeatWhenSeen,
+                                                 uint64_t currentHeartbeat) {
+    return renderThreadDialogSeen && currentHeartbeat == heartbeatWhenSeen;
+}
+
 // Which thread a freeze dump must capture when nothing has claimed the
 // monitored render thread. A present that is still in flight is a thread stuck
 // inside CE's own hook, so its stack is the freeze - DOOM Eternal
@@ -220,10 +239,20 @@ public:
     void RequestImmediateDump(const std::string& reason, DWORD preferredThreadId = 0,
                               bool stackOnly = false);
 
+    // True when the monitored render thread showed a modal dialog and nothing
+    // has been presented since (see TerminationFollowsRenderThreadDialog).
+    bool TerminationFollowsRenderThreadDialog() const {
+        const bool seen = renderThreadDialogSeen_.load(std::memory_order_acquire);
+        return ce::freeze_watchdog_policy::TerminationFollowsRenderThreadDialog(
+            seen, renderThreadDialogHeartbeat_.load(std::memory_order_acquire),
+            lastHeartbeat_.load(std::memory_order_acquire));
+    }
+
 private:
     enum class RenderLoopSource { D3DPresent, VulkanLayerPresent };
     enum class VulkanPresentState { Inactive, Idle, InFlight };
     void NoteRenderLoopObserved(RenderLoopSource source);
+    void NoteRenderThreadDialog(HWND dialog, DWORD dialogThreadId, const std::string& description);
     VulkanPresentState GetVulkanPresentState() const;
     bool HasLiveRenderLoopEvidence() const;
     void PollCrossApiPresentLiveness();
@@ -248,6 +277,10 @@ private:
     // IsFrozen() is const and rate-limits its own diagnostic.
     mutable std::atomic<bool> loggedMissingRenderLoop_{false};
     std::atomic<uint64_t> lastHeartbeat_{0};
+    // Heartbeat value when a render-thread dialog was last recorded; written
+    // before the flag, read after it.
+    std::atomic<uint64_t> renderThreadDialogHeartbeat_{0};
+    std::atomic<bool> renderThreadDialogSeen_{false};
     std::atomic<uint64_t> startupTime_{0};
     std::atomic<double> timeoutSeconds_{5.0};
     std::atomic<DWORD> monitoredThreadId_{0};

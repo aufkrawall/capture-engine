@@ -20,6 +20,7 @@
 #include "crash_dump_policy.h"
 #include "crash_handler.h"
 #include "hook_common.h"
+#include "window_text_safe.h"
 
 // Defined in dx12_hook.cpp. Emits DRED breadcrumbs + page-fault info if the D3D12
 // device is removed/hung, so a device-hung freeze dump is accompanied by the exact
@@ -299,4 +300,26 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
         OutputDebugStringA(logMsg);
         HookLogImportant("FreezeWatchdog: Dump creation failed at %s (error=%lu)", dumpPath.c_str(), err);
     }
+}
+
+// Evidence for the pre-termination dump rather than a dump itself: the render
+// thread went into a modal dialog, so an exit before its next presentation is
+// the application's own error report (TerminationFollowsRenderThreadDialog).
+// Re-recorded only when the render loop presented in between, which keeps the
+// once-per-dialog log line and the body text read off the 500 ms poll.
+void FreezeWatchdog::NoteRenderThreadDialog(HWND dialog, DWORD dialogThreadId, const std::string& description) {
+    const uint64_t heartbeat = lastHeartbeat_.load(std::memory_order_acquire);
+    if (renderThreadDialogSeen_.load(std::memory_order_acquire) &&
+        renderThreadDialogHeartbeat_.load(std::memory_order_acquire) == heartbeat) {
+        return;
+    }
+    renderThreadDialogHeartbeat_.store(heartbeat, std::memory_order_release);
+    renderThreadDialogSeen_.store(true, std::memory_order_release);
+
+    char body[768] = {};
+    ce::window_text::ReadDialogBodyTextBounded(dialog, body, static_cast<int>(sizeof(body)));
+    HookLogImportant(
+        "FreezeWatchdog: Render thread tid=%lu is running %s's modal loop; a process exit before its next "
+        "presentation is captured as the application's own error report. Dialog text: '%s'",
+        dialogThreadId, description.c_str(), body[0] != '\0' ? body : "<none readable>");
 }

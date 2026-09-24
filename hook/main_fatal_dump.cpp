@@ -3,6 +3,7 @@
 #include "apis/dx12_hook_internal.h"
 #include "../common/ansi_path.h"
 #include "../common/crash_first_chance.h"
+#include "common/freeze_watchdog.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
 
@@ -497,9 +498,11 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       targetIsCurrentProcess && !alreadyAttempted && ce::crash_first_chance::IsCurrentThreadInsideExceptionDispatch();
   const bool followsUnresolvedFault =
       ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault(exitCode, insideExceptionDispatch, pendingFault);
+  const bool followsRenderThreadDialog =
+      targetIsCurrentProcess && g_RenderWatchdog.TerminationFollowsRenderThreadDialog();
   if (!ce::crash_dump_policy::ShouldCapturePreTerminationDump(targetIsCurrentProcess, exitCode, alreadyAttempted,
                                                               frameGenerationRuntimeActiveOrRecent, origin,
-                                                              followsUnresolvedFault)) {
+                                                              followsUnresolvedFault, followsRenderThreadDialog)) {
     // Only the FG fallback can suppress a dump the old policy would have taken,
     // so record that decision once instead of leaving a silent gap.
     if (targetIsCurrentProcess && !alreadyAttempted && frameGenerationRuntimeActiveOrRecent && exitCode != 0 &&
@@ -536,6 +539,12 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   } else if (followsUnresolvedFault) {
     HookLogImportant("FatalExitDump: Termination requested from inside exception dispatch (source=%s code=0x%08lX)",
                      source ? source : "unknown", static_cast<unsigned long>(exitCode));
+  }
+  if (followsRenderThreadDialog) {
+    HookLogImportant(
+        "FatalExitDump: Termination follows a modal dialog on the render thread with no presentation since - "
+        "treating it as the application's own error report (source=%s code=0x%08lX)",
+        source ? source : "unknown", static_cast<unsigned long>(exitCode));
   }
   if (!contextRecord) {
     RtlCaptureContext(&capturedContext);

@@ -56,4 +56,6 @@ private:
 // instead of accidentally waiting for the following refresh as well.
 void InstallDirectDrawWaitForVerticalBlankHook(IUnknown* directDraw, const char* reason);
 
-void ResetDirectDrawPresentationOverrides();
+// Returns how many application objects (queued presentation surfaces and the
+// DirectDraw owner) CE stopped referencing, for the chain-boundary diagnostic.
+uint32_t ResetDirectDrawPresentationOverrides();

@@ -414,6 +414,22 @@ IDirect3DDevice7* AcquireLegacyD3D7Device() {
 
 }
 
+bool ReleaseTrackedLegacyD3D7Device() {
+    IDirect3DDevice7* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
+        device = ddraw_hook_g_D3D7Device.exchange(nullptr, std::memory_order_acq_rel);
+    }
+    if (!device)
+        return false;
+    // Outside the lock on purpose: this is normally the device's last
+    // reference, and Direct3D tears its render target down through the very
+    // DirectDraw interfaces CE hooks. Readers that already acquired the device
+    // hold their own references; nobody can acquire it any more.
+    device->Release();
+    return true;
+}
+
 bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
     auto& capture = ddraw_hook_g_DDrawCapture;
     std::lock_guard<std::recursive_mutex> captureLock(capture.captureMutex);

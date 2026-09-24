@@ -155,16 +155,20 @@ uint32_t SaturatingMicroseconds(int64_t elapsed) {
     return static_cast<uint32_t>((std::min)(elapsed, maximum));
 }
 
-void ReleasePending(PendingPresentation& pending) {
-    if (pending.surface)
+bool ReleasePending(PendingPresentation& pending) {
+    const bool held = pending.surface != nullptr;
+    if (held)
         pending.surface->Release();
     pending = {};
+    return held;
 }
 
-void ClearPendingLocked(PresentationOverrideState& state) {
+uint32_t ClearPendingLocked(PresentationOverrideState& state) {
+    uint32_t released = 0;
     for (auto& pending : state.pending)
-        ReleasePending(pending);
+        released += ReleasePending(pending) ? 1u : 0u;
     state.submissionIndex = 0;
+    return released;
 }
 
 HRESULT QueryCompletion(IDirectDrawSurface7* surface, policy::PresentOperation operation) {
@@ -508,15 +512,18 @@ void InstallDirectDrawWaitForVerticalBlankHook(IUnknown* directDraw, const char*
                      reason ? reason : "unknown", VTableHook::StatusToString(status));
 }
 
-void ResetDirectDrawPresentationOverrides() {
+uint32_t ResetDirectDrawPresentationOverrides() {
     g_applicationVblankWaitPending = false;
     g_applicationVblankWaitGeneration = 0;
     auto& state = OverrideState();
     std::lock_guard<std::recursive_mutex> lock(state.mutex);
-    ClearPendingLocked(state);
+    // A queued presentation holds the surface it presented - for a Flip, the
+    // application's primary itself - until the next one retires it.
+    uint32_t released = ClearPendingLocked(state);
     if (state.directDrawOwner) {
         state.directDrawOwner->Release();
         state.directDrawOwner = nullptr;
+        ++released;
     }
     state.queueDepth = -1;
     state.publishedQueueDepth.store(-1, std::memory_order_release);
@@ -525,4 +532,5 @@ void ResetDirectDrawPresentationOverrides() {
     state.configVersion = std::numeric_limits<uint32_t>::max();
     ++state.generation;
     state.publishedGeneration.store(state.generation, std::memory_order_release);
+    return released;
 }

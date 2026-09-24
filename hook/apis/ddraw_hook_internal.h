@@ -372,6 +372,11 @@ void TrackLegacyD3D7Device(IDirect3DDevice7* device);
 // Returns the tracked device with a reference the caller must release.
 IDirect3DDevice7* AcquireLegacyD3D7Device();
 
+// Drops CE's tracking reference. The device holds its render target, so while
+// CE tracks it the application's whole flip chain stays alive. False when no
+// device was tracked; the application's next EndScene tracks it again.
+bool ReleaseTrackedLegacyD3D7Device();
+
 // CE's own calls into the legacy Direct3D device must not travel through the
 // forced-filtering interception: that layer caches what it believes the
 // application asked for, and the overlay's sampler and render states are not
@@ -405,7 +410,27 @@ IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* pr
 bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7* nativeDevice);
 
 bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight);
-void ResetDirectDrawPresentationStateForPrimaryChange();
+
+// What a chain reset stopped referencing, for its diagnostic.
+struct DirectDrawChainReferenceRelease {
+    uint32_t presentationReferences = 0;
+    bool nativeSidecar = false;
+    bool d3d7Device = false;
+
+    bool Any() const {
+        return presentationReferences != 0 || nativeSidecar || d3d7Device;
+    }
+};
+
+DirectDrawChainReferenceRelease ResetDirectDrawPresentationStateForPrimaryChange();
+
+// Runs before an application primary-surface creation is forwarded (see
+// ddraw_chain_lifetime_policy.h): every CE reference that could keep the
+// previous chain alive goes first, so DirectDraw can actually destroy it.
+void ReleaseDirectDrawChainBeforePrimaryCreation(const char* api);
+
+// Logs a rejected application primary creation with its decoded HRESULT.
+void LogApplicationPrimaryCreationFailure(const char* api, HRESULT hr, uint32_t ordinal);
 bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device);
 bool DrawNativeLegacyD3DOverlayAtEndScene(void* device);
 
@@ -418,7 +443,8 @@ void CompleteNativeLegacyD3DOverlayRepair(IUnknown* surface,
                                           const ce::ddraw_present_policy::Rect& repairedRect);
 void ClearNativeLegacyD3DOverlayState(IUnknown* surface);
 void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool flipSwapsSurfaceMemory);
-void ReleaseNativeLegacyD3DOverlay();
+// True when a primed sidecar - and with it a device reference - was released.
+bool ReleaseNativeLegacyD3DOverlay();
 
 // Ownership of the application's Direct3D 7 texture bindings
 // (`ddraw_hook_texture_bindings.cpp`). A `D3DSBT_ALL` state block records them

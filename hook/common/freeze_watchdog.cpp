@@ -612,6 +612,11 @@ void FreezeWatchdog::WatchdogThread() {
             healthyDialogSuppressionLogged = false;
             freezeDumpSuppressionLogged = false;
         }
+        if (hasDialog && ce::freeze_watchdog_policy::FreezeIsExplainedByApplicationDialog(
+                             true, dialogDescription.find("ERR_GFX_STATE") != std::string::npos,
+                             dialogInfo.threadId, monitoredThreadId_.load(std::memory_order_acquire))) {
+            NoteRenderThreadDialog(dialogInfo.hwnd, dialogInfo.threadId, dialogDescription);
+        }
 
         if (now - lastLogTime > 10'000'000) {
             lastLogTime = now;

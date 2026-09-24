@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cstring>
+
 // Reading a window title from inside the window's own process.
 //
 // GetWindowText() is only cheap for windows owned by ANOTHER process, where
@@ -54,6 +56,72 @@ inline void ReadWindowTitleBounded(HWND hwnd, char* buffer, int bufferChars,
         return;
     }
     buffer[bufferChars - 1] = '\0';
+}
+
+// Appends `text` to the NUL-terminated `buffer`, separating entries with " | "
+// and flattening line breaks, so a multi-line message stays one log line.
+// Truncates at the buffer's end. Pure, so it is testable without a window.
+inline void AppendDialogTextFragment(char* buffer, int bufferChars, const char* text) {
+    if (!buffer || bufferChars <= 0 || !text || text[0] == '\0') {
+        return;
+    }
+    int length = 0;
+    while (length < bufferChars - 1 && buffer[length] != '\0') {
+        ++length;
+    }
+    if (length != 0) {
+        for (const char* separator = " | "; *separator != '\0' && length < bufferChars - 1; ++separator) {
+            buffer[length++] = *separator;
+        }
+    }
+    bool previousWasBreak = false;
+    for (const char* cursor = text; *cursor != '\0' && length < bufferChars - 1; ++cursor) {
+        const bool lineBreak = *cursor == '\r' || *cursor == '\n';
+        if (lineBreak && previousWasBreak) {
+            continue;
+        }
+        buffer[length++] = lineBreak ? ' ' : *cursor;
+        previousWasBreak = lineBreak;
+    }
+    buffer[length] = '\0';
+}
+
+struct DialogBodyTextContext {
+    char* buffer = nullptr;
+    int bufferChars = 0;
+    UINT timeoutMs = kDefaultWindowTextTimeoutMs;
+};
+
+inline BOOL CALLBACK CollectDialogBodyTextProc(HWND child, LPARAM lParam) {
+    auto* context = reinterpret_cast<DialogBodyTextContext*>(lParam);
+    char className[32] = {};
+    if (!context || !GetClassNameA(child, className, static_cast<int>(sizeof(className)))) {
+        return TRUE;
+    }
+    // A message box keeps its text in a Static, a custom error dialog often in
+    // a read-only Edit. Buttons only say "OK".
+    if (_stricmp(className, "Static") != 0 && _stricmp(className, "Edit") != 0) {
+        return TRUE;
+    }
+    char text[512] = {};
+    ReadWindowTitleBounded(child, text, static_cast<int>(sizeof(text)), context->timeoutMs);
+    AppendDialogTextFragment(context->buffer, context->bufferChars, text);
+    return TRUE;
+}
+
+// The message a dialog shows, read from its Static and Edit children with the
+// same bounded send as the title. Empty when the dialog has no readable text.
+inline void ReadDialogBodyTextBounded(HWND dialog, char* buffer, int bufferChars,
+                                      UINT timeoutMs = kDefaultWindowTextTimeoutMs) {
+    if (!buffer || bufferChars <= 0) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (!dialog || !IsWindow(dialog)) {
+        return;
+    }
+    DialogBodyTextContext context{buffer, bufferChars, timeoutMs};
+    EnumChildWindows(dialog, CollectDialogBodyTextProc, reinterpret_cast<LPARAM>(&context));
 }
 
 }  // namespace ce::window_text

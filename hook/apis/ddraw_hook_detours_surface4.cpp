@@ -2,6 +2,7 @@
 
 #include "ddraw_hook_blit_classification.h"
 #include "ddraw_hook_present_overrides.h"
+#include "../common/ddraw_chain_lifetime_policy.h"
 
 // The DirectDraw 4 generation's detours: IDirectDraw4::CreateSurface and the
 // IDirectDrawSurface4 presentation paths. They ask the shared classification in
@@ -40,16 +41,18 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis,  D
         if (it != ddraw_hook_g_DDraw4CreateSurfaceOriginals.end())
             original = it->second;
     }
+    const bool applicationPrimary = ce::ddraw_chain_lifetime::ShouldReleaseChainBeforeCreation(
+        IsPrimarySurfaceDesc(pDesc), ddraw_hook_g_DDrawBootstrapDepth, HookIsShuttingDown());
+    if (applicationPrimary)
+        ReleaseDirectDrawChainBeforePrimaryCreation("DirectDraw4");
     HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
     if (logCreate) {
         HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p ordinal=%u", hr,
                 (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr, createOrdinal);
     }
+    if (applicationPrimary && FAILED(hr))
+        LogApplicationPrimaryCreationFailure("DirectDraw4", hr, createOrdinal);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
-            ResetDirectDrawPresentationStateForPrimaryChange();
-            ddraw_hook_g_PrimarySurface = nullptr;
-        }
         AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
         InstallSurfaceHooksForSurface4(*ppSurface, "CreateSurface4");
         if (IsPrimarySurfaceDesc(pDesc)) {

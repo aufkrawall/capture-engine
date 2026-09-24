@@ -188,6 +188,12 @@ HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device) {
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
         record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);
+    // A primary creation drops CE's device reference (see
+    // ReleaseDirectDrawChainBeforePrimaryCreation). Every rendered frame ends
+    // here, so the next one tracks the device again even in a title that never
+    // touches SetTextureStageState after its first frame. Lock-free when
+    // unchanged.
+    TrackLegacyD3D7Device(static_cast<IDirect3DDevice7*>(ddraw_hook_device));
     // The application is still inside its own scene here. Drawing before the
     // one real EndScene avoids the synthetic scene boundary that confused the
     // co-resident Steam overlay, while keeping every overlay pixel on the GPU.

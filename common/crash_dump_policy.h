@@ -459,10 +459,16 @@ inline bool IsTerminationFollowingUnresolvedFault(DWORD exitCode, bool insideExc
     return exitCode != 0 && (insideExceptionDispatch || unresolvedFaultPending);
 }
 
+// `terminationFollowsApplicationErrorDialog`: the render thread showed a modal
+// dialog and never presented again before this exit (see the freeze
+// watchdog's TerminationFollowsRenderThreadDialog). That is the one case where
+// exit code 0 is not a clean quit - it is how a title ends after reporting its
+// own fatal error - so it qualifies whatever the code.
 inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD exitCode, bool alreadyAttempted,
                                             bool frameGenerationRuntimeActiveOrRecent = false,
                                             TerminationOrigin origin = TerminationOrigin::kUnknown,
-                                            bool terminationFollowsUnresolvedFault = false) {
+                                            bool terminationFollowsUnresolvedFault = false,
+                                            bool terminationFollowsApplicationErrorDialog = false) {
     // STATUS_PROCESS_IS_TERMINATING is the runtime's own "the process is
     // already exiting" sentinel; it never represents a genuine abnormal exit,
     // so it must also skip the active-FG fallback below.
@@ -470,7 +476,8 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
         exitCode == kProcessIsTerminatingExitCode) {
         return false;
     }
-    if (IsCrashLikeProcessExitCode(exitCode) || terminationFollowsUnresolvedFault) {
+    if (IsCrashLikeProcessExitCode(exitCode) || terminationFollowsUnresolvedFault ||
+        terminationFollowsApplicationErrorDialog) {
         return true;
     }
     if (!frameGenerationRuntimeActiveOrRecent || exitCode == 0) {

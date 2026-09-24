@@ -2,6 +2,7 @@
 
 #include "ddraw_hook_blit_classification.h"
 #include "ddraw_hook_present_overrides.h"
+#include "../common/ddraw_chain_lifetime_policy.h"
 
 using namespace ce::ddraw_detours;
 
@@ -32,13 +33,15 @@ HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis
     const uint32_t createOrdinal =
         ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
     const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
+    const bool applicationPrimary = ce::ddraw_chain_lifetime::ShouldReleaseChainBeforeCreation(
+        IsPrimarySurfaceDesc(pDesc), ddraw_hook_g_DDrawBootstrapDepth, HookIsShuttingDown());
+    const char* api = ce::graphics_api_identity::DirectDrawLabel(record.version);
+    if (applicationPrimary)
+        ReleaseDirectDrawChainBeforePrimaryCreation(api);
     const HRESULT hr = record.createSurface(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter);
+    if (applicationPrimary && FAILED(hr))
+        LogApplicationPrimaryCreationFailure(api, hr, createOrdinal);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
-            ResetDirectDrawPresentationStateForPrimaryChange();
-            ddraw_hook_g_PrimarySurface = nullptr;
-            ddraw_hook_g_PrimarySurface4 = nullptr;
-        }
         AssociateDirectDrawSurface(*ppSurface, record.version);
         InstallSurfaceHooksForLegacySurface(*ppSurface, ce::graphics_api_identity::DirectDrawLabel(record.version));
         if (ddraw_hook_g_DDrawBootstrapDepth == 0 && logCreate) {
@@ -231,16 +234,18 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis,  D
         if (it != ddraw_hook_g_DDraw7CreateSurfaceOriginals.end())
             original = it->second;
     }
+    const bool applicationPrimary = ce::ddraw_chain_lifetime::ShouldReleaseChainBeforeCreation(
+        IsPrimarySurfaceDesc(pDesc), ddraw_hook_g_DDrawBootstrapDepth, HookIsShuttingDown());
+    if (applicationPrimary)
+        ReleaseDirectDrawChainBeforePrimaryCreation("DirectDraw7");
     HRESULT hr = original ? original(pThis, pDesc, ppSurface, ddraw_hook_pUnkOuter) : DDERR_GENERIC;
     if (logCreate) {
         HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p ordinal=%u", hr,
                 (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr, createOrdinal);
     }
+    if (applicationPrimary && FAILED(hr))
+        LogApplicationPrimaryCreationFailure("DirectDraw7", hr, createOrdinal);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppSurface && *ppSurface) {
-        if (ddraw_hook_g_DDrawBootstrapDepth == 0 && IsPrimarySurfaceDesc(pDesc)) {
-            ResetDirectDrawPresentationStateForPrimaryChange();
-            ddraw_hook_g_PrimarySurface4 = nullptr;
-        }
         AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
         InstallSurfaceHooksForSurface(*ppSurface, "CreateSurface");
         if (IsPrimarySurfaceDesc(pDesc)) {

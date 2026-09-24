@@ -1,8 +1,10 @@
 #include "ddraw_hook_internal.h"
 
 #include "ddraw_hook_present_overrides.h"
+#include "../common/ddraw_chain_lifetime_policy.h"
 
 #include <array>
+#include <atomic>
 
 // The native Direct3D 7 renderer is an auxiliary backend. The adapter itself
 // stays on the headless CPU backend so a loading screen that switches from
@@ -178,16 +180,53 @@ bool EnsureOverlayRouteBackend(DDrawOverlayRoute requiredRoute, IDirect3DDevice7
     return true;
 }
 
-void ResetDirectDrawPresentationStateForPrimaryChange() {
+DirectDrawChainReferenceRelease ResetDirectDrawPresentationStateForPrimaryChange() {
     // Surface identities are raw COM identities by design; retaining a
     // reference would keep an obsolete fullscreen chain alive. Drop every
     // byte-derived proof at a primary-chain boundary so allocator address reuse
     // can never make a new surface look like an old composite.
+    DirectDrawChainReferenceRelease released;
     ddraw_hook_g_DDrawCapture.ReleaseOverlayResources();
-    ReleaseNativeLegacyD3DOverlay();
-    ResetDirectDrawPresentationOverrides();
+    released.nativeSidecar = ReleaseNativeLegacyD3DOverlay();
+    released.presentationReferences = ResetDirectDrawPresentationOverrides();
     ddraw_hook_g_ScanoutWritesSinceFlip.store(0, std::memory_order_relaxed);
     ddraw_hook_g_OverlayRoute = DDrawOverlayRoute::Undecided;
+    return released;
+}
+
+void ReleaseDirectDrawChainBeforePrimaryCreation(const char* api) {
+    DirectDrawChainReferenceRelease released = ResetDirectDrawPresentationStateForPrimaryChange();
+    // Only here, not in every reset: a runtime primary noticed mid-stream does
+    // not mean the application let go of its device. The tracked device keeps
+    // its render target - the old chain's back buffer - alive on its own.
+    released.d3d7Device = ReleaseTrackedLegacyD3D7Device();
+    // Raw identities of a chain that may now be destroyed; an address DirectDraw
+    // hands out again must not be mistaken for the old primary.
+    ddraw_hook_g_PrimarySurface = nullptr;
+    ddraw_hook_g_PrimarySurface4 = nullptr;
+    if (released.Any()) {
+        HookLogImportant(
+            "DDraw: Released CE's references into the previous presentation chain before the application's %s "
+            "primary creation (presentationRefs=%u nativeSidecar=%d d3d7Device=%d)",
+            api ? api : "unknown", released.presentationReferences, released.nativeSidecar ? 1 : 0,
+            released.d3d7Device ? 1 : 0);
+    } else {
+        HookLog("DDraw: %s primary creation - CE held no references into a previous chain", api ? api : "unknown");
+    }
+}
+
+void LogApplicationPrimaryCreationFailure(const char* api, HRESULT hr, uint32_t ordinal) {
+    // Rare by nature and the last thing before an application's own fatal
+    // error box, so every one is worth a line; the bound only stops a title
+    // that retries forever from flooding the log.
+    static std::atomic<uint32_t> failures{0};
+    const uint32_t failure = failures.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (failure > 16 && (failure & (failure - 1)) != 0)
+        return;
+    HookLogImportant("DDraw: Application %s primary creation FAILED hr=0x%08X (%s) ordinal=%u failure=%u",
+                     api ? api : "unknown", static_cast<unsigned>(hr),
+                     ce::ddraw_chain_lifetime::DescribePrimaryCreationFailure(static_cast<uint32_t>(hr)), ordinal,
+                     failure);
 }
 
 bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
@@ -396,11 +435,13 @@ void PublishNativeLegacyD3DOverlay(IUnknown* source, IUnknown* destination, bool
     destinationState->lastUse = ++g_nativeOverlay.useCounter;
 }
 
-void ReleaseNativeLegacyD3DOverlay() {
+bool ReleaseNativeLegacyD3DOverlay() {
     std::lock_guard<std::mutex> lock(g_nativeOverlay.mutex);
     LegacyD3DInternalScope internalScope;
+    const bool hadBackend = g_nativeOverlay.backend != nullptr;
     g_nativeOverlay.backend.reset();
     g_nativeOverlay.surfaces = {};
     g_nativeOverlay.useCounter = 0;
     ClearNativeBackendFailureLocked();
+    return hadBackend;
 }
