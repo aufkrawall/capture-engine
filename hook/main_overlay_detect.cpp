@@ -147,11 +147,11 @@ void RefreshThirdPartyOverlayIdentityCache() {
       const bool isReshade = GetProcAddress(retained, "ReShadeVersion") != nullptr ||
                              GetProcAddress(retained, "ReShadeRegisterAddon") != nullptr ||
                              GetProcAddress(retained, "ReShadeUnregisterAddon") != nullptr ||
-                             (proxyCandidate && DllVersionStringContains(path, "ReShade"));
+                             (proxyCandidate && ModuleVersionStringContains(retained, "ReShade"));
       const bool isSpecialK = GetProcAddress(retained, "SK_GetDLL") != nullptr ||
                               GetProcAddress(retained, "SK_Inject_GetRecord") != nullptr ||
-                              (proxyCandidate && DllVersionStringContains(path, "Special K"));
-      const bool isOptiScaler = proxyCandidate && DllVersionStringContains(path, "OptiScaler");
+                              (proxyCandidate && ModuleVersionStringContains(retained, "Special K"));
+      const bool isOptiScaler = proxyCandidate && ModuleVersionStringContains(retained, "OptiScaler");
       if (isReshade || isSpecialK || isOptiScaler) {
         if (identifiedPathCount < ce::overlay_compat::kIdentifiedOverlayPathSlotCount) {
           auto& identified = identifiedPaths[identifiedPathCount++];

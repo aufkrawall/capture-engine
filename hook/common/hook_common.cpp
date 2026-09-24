@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mutex>
 #include <unordered_map>
+#include "../../common/ansi_path.h"
 #include "../../common/log_privacy.h"
 #include "../../common/shared_defs.h"
 #include "fps_limiter.h"
@@ -125,17 +126,13 @@ bool GetSessionLogsDirectory(char* outDir, size_t outDirLen) {
             return false;
         }
 
-        char modulePath[MAX_PATH];
-        DWORD n = GetModuleFileNameA(hMod, modulePath, MAX_PATH);
-        if (n == 0 || n >= MAX_PATH)
+        // Derived in UTF-16: GetModuleFileNameA '?'-mangles an install folder
+        // outside the code page and every log file then failed to open.
+        const std::string moduleDir = ce::ansi_path::ModuleDirectoryAnsi(hMod);
+        if (moduleDir.empty())
             return false;
 
-        char* lastSlash = strrchr(modulePath, '\\');
-        if (!lastSlash)
-            return false;
-        *lastSlash = '\0';
-
-        int written = snprintf(logDir, sizeof(logDir), "%s\\logs", modulePath);
+        int written = snprintf(logDir, sizeof(logDir), "%s\\logs", moduleDir.c_str());
         if (written <= 0 || written >= (int)sizeof(logDir))
             return false;
     }

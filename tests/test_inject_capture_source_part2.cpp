@@ -34,11 +34,11 @@ TEST(InjectLifecycleSourceTest, RenamedThirdPartyProxyIdentityUsesStableProjectM
 
     EXPECT_NE(source.find("GetProcAddress(retained, \"ReShadeVersion\")"), std::string::npos);
     EXPECT_NE(source.find("GetProcAddress(retained, \"ReShadeRegisterAddon\")"), std::string::npos);
-    EXPECT_NE(source.find("DllVersionStringContains(path, \"ReShade\")"), std::string::npos);
+    EXPECT_NE(source.find("ModuleVersionStringContains(retained, \"ReShade\")"), std::string::npos);
     EXPECT_NE(source.find("GetProcAddress(retained, \"SK_GetDLL\")"), std::string::npos);
     EXPECT_NE(source.find("GetProcAddress(retained, \"SK_Inject_GetRecord\")"), std::string::npos);
-    EXPECT_NE(source.find("DllVersionStringContains(path, \"Special K\")"), std::string::npos);
-    EXPECT_NE(source.find("DllVersionStringContains(path, \"OptiScaler\")"), std::string::npos);
+    EXPECT_NE(source.find("ModuleVersionStringContains(retained, \"Special K\")"), std::string::npos);
+    EXPECT_NE(source.find("ModuleVersionStringContains(retained, \"OptiScaler\")"), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTableOwners) {

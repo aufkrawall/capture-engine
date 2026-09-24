@@ -211,10 +211,9 @@ inline Generation LiveGenerationFromLoadedInterposer() {
     }
     Generation generation = Generation::Unknown;
     if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
-        char path[MAX_PATH] = {};
-        if (GetModuleFileNameA(interposer, path, MAX_PATH) != 0) {
-            generation = GenerationFromMajorVersion(DllFileMajorVersion(path));
-        }
+        // Read through the module handle: a '?'-mangled GetModuleFileNameA path
+        // of a game folder outside the code page names no file.
+        generation = GenerationFromMajorVersion(ModuleFileMajorVersion(interposer));
     }
     if (generation == Generation::Unknown) {
         return generation;

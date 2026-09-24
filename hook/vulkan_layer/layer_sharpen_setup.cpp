@@ -7,7 +7,7 @@
 // swapchain generation and destroyed with it.
 
 std::mutex layer_sharpen_g_StateMutex;
-std::unordered_map<VkDevice, SharpenState> layer_sharpen_g_States;
+ce::vulkan_sharpen_registry::Registry<SharpenState, VkDevice> layer_sharpen_g_Registry;
 std::vector<DeferredSharpenSemaphores> layer_sharpen_g_DeferredSemaphores;
 
 namespace {
@@ -429,6 +429,21 @@ ce::vulkan_sharpen_route::Identity SharpenStateIdentity(const SharpenState& stat
     identity.queueFamily = state.queueFamily;
     identity.route = state.route;
     return identity;
+}
+
+bool SharpenStateSubmissionsRetired(const SharpenState& state, DeviceDispatch* disp) {
+    if (!disp || state.device == VK_NULL_HANDLE) {
+        return true;
+    }
+    // Only VK_TIMEOUT means "still in flight": after a lost device nothing will
+    // ever signal, and the teardown's own waits return at once.
+    for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
+        if (state.fences[slot] != VK_NULL_HANDLE && state.slotSubmitted[slot] &&
+            disp->fp_vkWaitForFences(state.device, 1, &state.fences[slot], VK_TRUE, 0) == VK_TIMEOUT) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {

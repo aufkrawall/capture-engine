@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "apis/streamline_ota_preferences.h"
+#include "../common/path_utils.h"
 #include "common/child_inject_policy.h"
 #include "common/ngx_ota_runtime.h"
 #include "common/published_graphics_config.h"
@@ -89,10 +90,16 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       if (crashDir.empty()) {
         const std::filesystem::path logsDir = captureEngineDir / L"logs";
         CreateDirectoryW(logsDir.c_str(), NULL);
-        // The crash handler converts its directory from UTF-8 at the WER
-        // boundary, so the derived path is handed over in UTF-8 - a narrow
-        // conversion here would '?'-mangle non-ACP install paths twice.
-        crashDir = ce::child_inject_policy::NarrowFromWideUtf8(logsDir.c_str());
+        // Every crash-directory consumer (the dump writer's CreateFileA, the
+        // external dump helper's command line, DiscoveryInfo.logsPath from the
+        // host) speaks code-page text. A UTF-8 string here was read back as
+        // code-page text, so an install below a non-ASCII folder wrote its
+        // dumps nowhere. AnsiCompatiblePath falls back to the 8.3 name.
+        bool crashDirExact = true;
+        crashDir = ce::path::AnsiCompatiblePath(logsDir.wstring(), &crashDirExact);
+        if (!crashDirExact) {
+          crashDir = ".\\logs";
+        }
       } else {
         CreateDirectoryA(crashDir.c_str(), NULL);
       }

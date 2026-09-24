@@ -231,7 +231,7 @@ bool InitializeV2Runtime(HMODULE v2Interposer, const std::string& runtimeDir) {
     GetModuleFileNameA(nullptr, hostPath, MAX_PATH);
     uint32_t hostMajor = 0, hostMinor = 0, hostPatch = 0;
     const bool haveHostVersion =
-        DllFileVersionParts(hostPath, &hostMajor, &hostMinor, &hostPatch);
+        ModuleFileVersionParts(GetModuleHandleW(nullptr), &hostMajor, &hostMinor, &hostPatch);
     const std::string engineVersion = haveHostVersion
                                           ? StreamlineEngineVersion(hostMajor, hostMinor, hostPatch, 0)
                                           : std::string("unknown");
@@ -292,11 +292,7 @@ api::Generation ProcessGeneration() {
     if (!interposer) {
         return api::Generation::Unknown;
     }
-    char path[MAX_PATH] = {};
-    if (GetModuleFileNameA(interposer, path, MAX_PATH) == 0) {
-        return api::Generation::Unknown;
-    }
-    return api::GenerationFromMajorVersion(DllFileMajorVersion(path));
+    return api::GenerationFromMajorVersion(ModuleFileMajorVersion(interposer));
 }
 
 std::vector<LegacyNgxFeatureModule> CaptureLegacyNgxFeatureModules() {
@@ -463,7 +459,7 @@ void LogStreamlineModuleInventory(const char* when) {
             continue;
         }
         uint32_t major = 0, minor = 0, patch = 0;
-        DllFileVersionParts(path, &major, &minor, &patch);
+        ModuleFileVersionParts(module, &major, &minor, &patch);
         HookLogImportant("Streamline bridge inventory (%s): %s %u.%u.%u resident from %s", when, name, major, minor,
                          patch, path);
     }
@@ -476,7 +472,7 @@ void LogStreamlineModuleInventory(const char* when) {
                 continue;
             }
             uint32_t major = 0, minor = 0, patch = 0;
-            DllFileVersionParts(path, &major, &minor, &patch);
+            ModuleFileVersionParts(module, &major, &minor, &patch);
             HookLogImportant("Streamline bridge inventory (%s): %s %u.%u.%u resident from %s (module=%p)",
                              when, ce::graphics_runtime::ModuleFileName(path), major, minor, patch, path,
                              reinterpret_cast<void*>(module));

@@ -6,6 +6,7 @@
 #include "common/ngx_ota_policy.h"
 #include "common/ngx_ota_runtime.h"
 #include "common/published_graphics_config.h"
+#include "../common/ansi_path.h"
 #include "common/dll_utils.h"
 #include "common/streamline_api_generation.h"
 
@@ -521,23 +522,15 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
 // once: the executable's own folder cannot change while the process runs.
 bool StreamlineShipsWithApplication() {
   static const bool shipped = [] {
-    char modulePath[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) {
+    // UTF-16: a game folder outside the code page came back '?'-mangled from
+    // GetModuleFileNameA, so a Streamline title there was taken for one that
+    // does not ship Streamline.
+    const std::wstring directory = ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(nullptr));
+    if (directory.empty()) {
       return false;
     }
-    char *lastSlash = nullptr;
-    for (char *cursor = modulePath; *cursor; ++cursor) {
-      if (*cursor == '\\' || *cursor == '/') {
-        lastSlash = cursor;
-      }
-    }
-    if (!lastSlash) {
-      return false;
-    }
-    *lastSlash = '\0';
-    const std::string candidate = std::string(modulePath) + "\\sl.interposer.dll";
-    return GetFileAttributesA(candidate.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const std::wstring candidate = directory + L"\\sl.interposer.dll";
+    return GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES;
   }();
   return shipped;
 }

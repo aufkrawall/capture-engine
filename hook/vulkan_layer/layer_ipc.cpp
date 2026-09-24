@@ -10,6 +10,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include "../../common/ansi_path.h"
 #include "../common/ipc_client.h"
 #include "../common/perf_logger.h"
 #include "../common/vulkan_renderer_policy.h"
@@ -242,13 +243,12 @@ bool LayerIPC_Init() {
 
             // Fallback to game directory if discovery path not available
             if (!pathFound) {
-                char gameDir[MAX_PATH];
-                GetModuleFileNameA(NULL, gameDir, MAX_PATH);
-                char* lastSlash = strrchr(gameDir, '\\');
-                if (lastSlash) {
-                    *lastSlash = '\0';
+                // A game folder outside the code page came back '?'-mangled
+                // from GetModuleFileNameA; derive it in UTF-16 instead.
+                const std::string gameDir = ce::ansi_path::ModuleDirectoryAnsi(nullptr);
+                if (!gameDir.empty()) {
                     char logsDir[MAX_PATH];
-                    snprintf(logsDir, sizeof(logsDir), "%s\\logs", gameDir);
+                    snprintf(logsDir, sizeof(logsDir), "%s\\logs", gameDir.c_str());
                     CreateDirectoryA(logsDir, nullptr);
                     snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%lu.csv", logsDir, GetCurrentProcessId());
                     LayerLog("[Hook] PerfLogger: Using fallback logs path: %s", logsDir);

@@ -4,9 +4,12 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <mutex>
 #include <vector>
 
+#include "config_ini_reader.h"
 #include "logging.h"
 
 namespace ce::config_text {
@@ -109,17 +112,20 @@ std::string Utf8ToCodePage(std::string_view utf8, unsigned codePage, bool* lossy
 
 namespace {
 
-struct FileEncodingCache {
+// The parsed form of the last config file read, keyed by its path, write time
+// and size. A config load asks for a few hundred values; the file is read and
+// parsed once per change, not once per value.
+struct ConfigDocumentCache {
     std::mutex mutex;
     std::string path;
     FILETIME lastWrite = {};
     uint64_t size = 0;
-    bool utf8 = false;
     bool valid = false;
+    std::shared_ptr<const IniDocument> utf8Document;  // null for an ANSI (or unreadable) file
 };
 
-FileEncodingCache& Cache() {
-    static FileEncodingCache cache;
+ConfigDocumentCache& Cache() {
+    static ConfigDocumentCache cache;
     return cache;
 }
 
@@ -145,58 +151,117 @@ bool ReadWholeFile(const std::string& path, std::string* bytes) {
     return ok;
 }
 
-bool IsUtf8ConfigFile(const std::string& path) {
+// The parsed document when `path` is a UTF-8 file, null when it is ANSI text
+// (which keeps the profile API and its exact legacy semantics).
+std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path) {
     WIN32_FILE_ATTRIBUTE_DATA attributes = {};
     if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &attributes)) {
-        return false;
+        return nullptr;
     }
     const uint64_t size = (static_cast<uint64_t>(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
-    FileEncodingCache& cache = Cache();
+    ConfigDocumentCache& cache = Cache();
     std::lock_guard<std::mutex> lock(cache.mutex);
     if (cache.valid && cache.path == path && cache.size == size &&
         CompareFileTime(&cache.lastWrite, &attributes.ftLastWriteTime) == 0) {
-        return cache.utf8;
+        return cache.utf8Document;
     }
     std::string bytes;
     if (!ReadWholeFile(path, &bytes)) {
-        return false;
+        return nullptr;
     }
     cache.path = path;
     cache.lastWrite = attributes.ftLastWriteTime;
     cache.size = size;
-    cache.utf8 = IsUtf8ConfigText(bytes);
+    cache.utf8Document =
+        IsUtf8ConfigText(bytes) ? std::make_shared<const IniDocument>(ParseUtf8Ini(bytes)) : nullptr;
     cache.valid = true;
-    return cache.utf8;
+    return cache.utf8Document;
+}
+
+void NoteLossyValue(unsigned codePage) {
+    static std::atomic<uint32_t> s_lossyLogs{0};
+    if (s_lossyLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
+        LogWarn(
+            "Config: a setting contains characters the Windows code page (%u) cannot represent; they were "
+            "replaced with '?'. Paths and names with such characters are not supported yet",
+            codePage);
+    }
+}
+
+// What GetPrivateProfileString does to a default: trailing blanks go.
+std::string ProfileDefault(const char* defaultValue) {
+    std::string value = defaultValue ? defaultValue : "";
+    while (!value.empty() && value.back() == ' ') {
+        value.pop_back();
+    }
+    return value;
 }
 
 }  // namespace
 
-std::string ConfigValueToNative(const std::string& path, std::string value) {
-    if (!ContainsNonAscii(value) || !IsValidUtf8(value)) {
-        return value;
-    }
-    const UINT activeCodePage = GetACP();
-    if (activeCodePage == CP_UTF8 || !IsUtf8ConfigFile(path)) {
-        return value;
-    }
-    bool lossy = false;
-    std::string native = Utf8ToCodePage(value, activeCodePage, &lossy);
-    if (lossy) {
-        static std::atomic<uint32_t> s_lossyLogs{0};
-        if (s_lossyLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
-            LogWarn(
-                "Config: a setting contains characters the Windows code page (%u) cannot represent; they were "
-                "replaced with '?'. Paths and names with such characters are not supported yet",
-                static_cast<unsigned>(activeCodePage));
+std::string ReadIniValueForCodePage(const std::string& path, const char* section, const char* key,
+                                    const char* defaultValue, unsigned codePage) {
+    if (const std::shared_ptr<const IniDocument> document = Utf8DocumentFor(path)) {
+        std::string value;
+        bool lossy = false;
+        if (!LookupIniValue(*document, section ? section : "", key ? key : "", codePage, &value, &lossy)) {
+            return ProfileDefault(defaultValue);
         }
+        if (lossy) {
+            NoteLossyValue(codePage);
+        }
+        // The profile API answers through a 4096-byte buffer; so did every caller.
+        constexpr size_t kProfileValueLimit = 4095;
+        if (value.size() > kProfileValueLimit) {
+            value.resize(kProfileValueLimit);
+        }
+        return value;
     }
-    return native;
+    char buffer[4096];
+    GetPrivateProfileStringA(section, key, defaultValue, buffer, sizeof(buffer), path.c_str());
+    return buffer;
 }
 
 std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue) {
-    char buffer[4096];
-    GetPrivateProfileStringA(section, key, defaultValue, buffer, sizeof(buffer), path.c_str());
-    return ConfigValueToNative(path, buffer);
+    return ReadIniValueForCodePage(path, section, key, defaultValue, GetACP());
+}
+
+std::vector<std::string> ReadIniSectionNames(const std::string& path) {
+    if (const std::shared_ptr<const IniDocument> document = Utf8DocumentFor(path)) {
+        return IniSectionNames(*document, GetACP());
+    }
+    std::vector<char> names(4096, '\0');
+    DWORD copied = 0;
+    for (;;) {
+        copied = GetPrivateProfileSectionNamesA(names.data(), static_cast<DWORD>(names.size()), path.c_str());
+        if (copied < names.size() - 2 || names.size() >= 1024 * 1024)
+            break;
+        names.assign(names.size() * 2, '\0');
+    }
+    std::vector<std::string> sections;
+    for (const char* current = names.data(); current && *current; current += strlen(current) + 1) {
+        sections.emplace_back(current);
+    }
+    return sections;
+}
+
+bool ReadIniSectionLines(const std::string& path, const std::string& section, std::vector<std::string>* lines) {
+    if (const std::shared_ptr<const IniDocument> document = Utf8DocumentFor(path)) {
+        return IniSectionLines(*document, section, GetACP(), lines);
+    }
+    std::vector<char> buffer(4096, '\0');
+    const DWORD chars =
+        GetPrivateProfileSectionA(section.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()), path.c_str());
+    if (chars == 0 || chars >= buffer.size() - 2) {
+        return false;
+    }
+    if (lines) {
+        lines->clear();
+        for (const char* p = buffer.data(); *p; p += strlen(p) + 1) {
+            lines->emplace_back(p);
+        }
+    }
+    return true;
 }
 
 }  // namespace ce::config_text

@@ -254,13 +254,23 @@ TEST(LegacyD3D9SamplerDriftTest, SamplerHookDriftStaysObservablePerPresent) {
     EXPECT_NE(family.find("ce::dx9_sampler_state::LogSummary()"), std::string::npos);
 
     // The proof compares the slots themselves - a latched "hooked once" flag
-    // cannot see another overlay re-patching them. Drift is reported, not
-    // re-hooked: the drifted-to owner would become CE's saved original and
-    // calling it is the mutual-hook cycle class.
+    // cannot see another overlay re-patching them. A stable drift is answered
+    // below the slot's new owner (a body hook on d3d9's own implementation),
+    // never by writing the slot back: the drifted-to owner would become CE's
+    // saved original and calling it is the mutual-hook cycle class.
     const std::string detours = ce::test_source::ReadLogicalSource(root / "hook/apis/dx9_hook_state_detours.cpp");
     ASSERT_FALSE(detours.empty());
-    EXPECT_NE(detours.find("(void*)vtable[65] != (void*)&DetourSetTexture"), std::string::npos);
-    EXPECT_NE(detours.find("(void*)vtable[68] != (void*)&DetourGetSamplerState"), std::string::npos);
-    EXPECT_NE(detours.find("(void*)vtable[69] != (void*)&DetourSetSamplerState"), std::string::npos);
-    EXPECT_NE(detours.find("sampler hook drift detected"), std::string::npos);
+    const size_t drift = detours.find("void CheckD3D9SamplerHookDrift(uintptr_t* vtable)");
+    ASSERT_NE(drift, std::string::npos);
+    const std::string driftBody = detours.substr(drift, detours.find("void EnsureD3D9StateBlockPrototypes(", drift) - drift);
+    EXPECT_NE(driftBody.find("reinterpret_cast<const void*>(&DetourSetTexture)"), std::string::npos);
+    EXPECT_NE(driftBody.find("reinterpret_cast<const void*>(&DetourGetSamplerState)"), std::string::npos);
+    EXPECT_NE(driftBody.find("reinterpret_cast<const void*>(&DetourSetSamplerState)"), std::string::npos);
+    EXPECT_NE(driftBody.find("current != detours[slot]"), std::string::npos);
+    EXPECT_NE(driftBody.find("sampler hook drift detected"), std::string::npos);
+    EXPECT_NE(driftBody.find("ce::dx9_sampler_rearm::Observe("), std::string::npos);
+    EXPECT_NE(driftBody.find("ArmD3D9SamplerBodyHook("), std::string::npos);
+    EXPECT_EQ(driftBody.find("VTableHook::Create("), std::string::npos) << "the drifted slot is never written back";
+    // The arm runs outside the vtable mutex (the body patch suspends threads).
+    EXPECT_LT(driftBody.rfind("std::lock_guard"), driftBody.find("ArmD3D9SamplerBodyHook("));
 }

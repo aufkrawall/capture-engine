@@ -82,17 +82,9 @@ constexpr bool MustRebuild(const Identity& built, const Identity& current) {
            built.queueFamily != current.queueFamily || built.route != current.route;
 }
 
-// The pass keeps ONE state per device while a device may own several live
-// swapchains. A present of a swapchain the state was not built over must skip
-// the pass entirely: feeding it to MustRebuild instead destroyed and rebuilt
-// the whole pipeline on every present of the second chain - on the present
-// thread, with up to kSharpenSlotCount one-second fence waits in the teardown.
-// The first swapchain to present owns the pass; the destroy hook (or an
-// `oldSwapchain` retirement) releases the state and re-arms the choice, which
-// is also what keeps a handle-reusing recreate honest.
-constexpr bool MustSkipUnownedSwapchain(bool stateInitialized, uint64_t builtSwapchain, uint64_t presentSwapchain) {
-    return stateInitialized && builtSwapchain != presentSwapchain;
-}
+// Each swapchain owns its own state (vulkan_sharpen_state_registry.h), so the
+// swapchain field only ever differs for a handle the driver reused after a
+// destroy that did not reach CE - rebuilding is then the safe answer.
 
 // The overlay's runtime-eligibility floor, applied to the filter as well.
 // Decide's own minimum is only 32 px; below this floor a swapchain is a tiny

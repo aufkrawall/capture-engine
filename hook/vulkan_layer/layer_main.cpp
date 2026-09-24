@@ -9,26 +9,27 @@
 #include <cstring>
 #include <filesystem>
 
+#include "../../common/ansi_path.h"
 #include "../../common/log_privacy.h"
 #include "../../common/vulkan_layer_target_list.h"
 #include "layer_participation.h"
 
 #include <atomic>
 
-// Get the directory where this DLL is located
+// Get the directory where this DLL is located, as an ANSI-API path. Derived in
+// UTF-16: GetModuleFileNameA '?'-mangled an install folder outside the code
+// page, and the layer's fallback logs then went nowhere.
 static std::string GetLayerDllDirectory() {
-    char dllPath[MAX_PATH];
     HMODULE hModule = NULL;
 
     // Get handle to this DLL
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        (LPCSTR)&GetLayerDllDirectory, &hModule);
 
-    if (hModule && GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
-        std::string path(dllPath);
-        size_t lastSlash = path.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            return path.substr(0, lastSlash);
+    if (hModule) {
+        const std::string directory = ce::ansi_path::ModuleDirectoryAnsi(hModule);
+        if (!directory.empty()) {
+            return directory;
         }
     }
     return ".";

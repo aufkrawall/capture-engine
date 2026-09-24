@@ -1,5 +1,7 @@
 #include "main_internal.h"
 
+#include "../common/config_text_encoding.h"
+
 namespace {
 std::string TrimCommandWhitespace(const std::string& value) {
     const size_t start = value.find_first_not_of(" \t\r\n");
@@ -200,14 +202,14 @@ bool TryParseInt(std::string_view val, int minVal, int maxVal, int& out) {
 
 PseudoOverlayConfig ParseProfileDesktopOverlayOverrides(const std::string& path, const std::string& section,
                                                         const PseudoOverlayConfig& base) {
-    char buffer[4096];
-    const DWORD chars = GetPrivateProfileSectionA(section.c_str(), buffer, sizeof(buffer), path.c_str());
-    if (chars == 0 || chars >= sizeof(buffer) - 2)
+    // A UTF-8 config.ini (with a profile named after a non-ASCII process) must
+    // resolve through the same reader as every other setting.
+    std::vector<std::string> sectionLines;
+    if (!ce::config_text::ReadIniSectionLines(path, section, &sectionLines))
         return base;
 
     PseudoOverlayConfig cfg = base;
-    for (const char* p = buffer; *p; p += strlen(p) + 1) {
-        std::string line(p);
+    for (const std::string& line : sectionLines) {
         size_t eq = line.find('=');
         if (eq == std::string::npos)
             continue;

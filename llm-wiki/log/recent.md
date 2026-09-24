@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-24 - Deferred audit items: D3D9 state blocks, sampler re-arm, multi-swapchain sharpen, ANSI paths, DBCS config
+
+The five items deferred by audits 2/3, fixed in code. Incremental gate green at 0.1.6799; no hardware run.
+
+- **D3D9 "S6" state-block restore** - `cross-api-forced-af.md`: Apply reconciled from pre-Apply logical values and
+  undid the block (plus a default-reset on the first Apply without an override, and recording taken as applied).
+  Per-block snapshots, Capture + BeginStateBlock hooks, merge-then-reconcile. `dx9_sampler_state.cpp` split 792 ->
+  710 + `dx9_sampler_state_blocks.cpp`.
+- **Sampler slot drift** - re-armed once, 120 presents after a stable drift, with an inline body hook on d3d9's own
+  implementation; the slot is never rewritten and the foreign handler never called.
+- **Vulkan sharpen per swapchain** - `post-processing-sharpen.md`: registry keyed by (device, swapchain); rebuild
+  and `off` retire states and reap them by zero-timeout fence polls; destroy takes live + retired.
+- **ANSI paths** - `configuration.md` inventory. Real breakage found: the crash-dump fallback dir was UTF-8 into
+  CreateFileA consumers; the dump helper was never found below non-ACP folders; DXVK/ReShade/Streamline version
+  probes read '?' paths; `AnsiCompatiblePath` returned "" with CP_UTF8 as ACP.
+- **DBCS config** - verified lossy (932/936/949/950); `config_ini_reader` parses UTF-8 files from bytes, locked by a
+  differential test against the real API. UTF-8 BOM no longer hides the first section. Fuzz harness drives the
+  reader directly (seed `utf8_dbcs_profile.ini`).
+
+Open: hardware runs - a state-block-heavy D3D9 title with forced AF (and a D3D9 overlay that re-hooks samplers),
+a Vulkan title with two swapchains and a live `sharpen` toggle, an install/game below a non-ASCII folder (crash dump,
+DXVK detection), a Japanese/Chinese/Korean Windows with a UTF-8 config. D3D6-8 state blocks keep the old
+refresh path.
+
 ### 2026-09-24 - Third risk audit: ten findings plus audit-2 leftovers
 
 Read-only audit, then targeted fixes (no restructuring). Unit gate green; no hardware run for any of them.
@@ -20,8 +44,8 @@ Read-only audit, then targeted fixes (no restructuring). Unit gate green; no har
   `[AudioFinalization]` and the degraded completion; checked-in `VK_LAYER_CE_overlay*.json` name the gate.
 
 Open: hardware runs (HDR toggle while recording, window resize while recording, OpenGL title with the overlay,
-default-output switch and mic plug-in while recording, a TDR); S6 state-block restore, sampler re-hook on drift and
-multi-swapchain Vulkan sharpen remain deferred from audit 2.
+default-output switch and mic plug-in while recording, a TDR). The audit-2 deferrals (S6 state-block restore, sampler
+re-hook on drift, multi-swapchain Vulkan sharpen) were fixed in the entry above.
 
 ### 2026-09-24 - Review follow-up to the second risk audit (3cfe8272)
 

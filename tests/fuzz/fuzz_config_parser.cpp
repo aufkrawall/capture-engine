@@ -2,7 +2,10 @@
 //
 // Target: LoadConfig(), which parses an untrusted .ini file off disk
 // (common/config.cpp). LoadConfig takes a path rather than a buffer, so each
-// iteration materialises the fuzz input into a private temp file.
+// iteration materialises the fuzz input into a private temp file. The UTF-8
+// INI reader (common/config_ini_reader.cpp) is also driven directly on the raw
+// bytes: LoadConfig only reaches it for input that is valid UTF-8 or carries a
+// BOM, and the grammar must hold for every byte sequence.
 //
 // Built and run by build.py --run-fuzz; see llm-wiki/fuzzing.md.
 
@@ -11,8 +14,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "../../common/config.h"
+#include "../../common/config_ini_reader.h"
 
 namespace {
 
@@ -50,6 +56,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     AppConfig config;
     LoadConfig(path, config);
+
+    const std::string_view bytes(reinterpret_cast<const char*>(data), size);
+    const ce::config_text::IniDocument document = ce::config_text::ParseUtf8Ini(bytes);
+    for (const std::string& name : ce::config_text::IniSectionNames(document, 932)) {
+        std::vector<std::string> lines;
+        ce::config_text::IniSectionLines(document, name, 932, &lines);
+        std::string value;
+        ce::config_text::LookupIniValue(document, name, "output_dir", 932, &value);
+    }
 
     return 0;
 }

@@ -203,17 +203,17 @@ bool IsRenamedThirdPartyProxyLoadedForTool(ce::third_party_load::Tool tool) {
                         matches = GetProcAddress(retained, "ReShadeVersion") != nullptr ||
                                   GetProcAddress(retained, "ReShadeRegisterAddon") != nullptr ||
                                   GetProcAddress(retained, "ReShadeUnregisterAddon") != nullptr ||
-                                  DllVersionStringContains(path, "ReShade");
+                                  ModuleVersionStringContains(retained, "ReShade");
                         break;
                     case ce::third_party_load::Tool::kSpecialK:
                         matches = GetProcAddress(retained, "SK_GetDLL") != nullptr ||
                                   GetProcAddress(retained, "SK_Inject_GetRecord") != nullptr ||
-                                  DllVersionStringContains(path, "Special K");
+                                  ModuleVersionStringContains(retained, "Special K");
                         break;
                     case ce::third_party_load::Tool::kOptiScaler:
                         // OptiScaler has no stable export marker; the version
                         // resource is the same evidence the identity scan uses.
-                        matches = DllVersionStringContains(path, "OptiScaler");
+                        matches = ModuleVersionStringContains(retained, "OptiScaler");
                         break;
                     default:
                         break;

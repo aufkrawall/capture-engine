@@ -1,6 +1,6 @@
 # Post-Processing Sharpen (FidelityFX CAS / RCAS)
 
-Last cross-checked: 2026-09-20 (initial implementation, plus the DX12 teardown re-entrancy fix; no hardware run yet)
+Last cross-checked: 2026-09-24 (per-swapchain Vulkan states with non-blocking retirement; no hardware run yet)
 
 Primary sources:
 - `common/sharpen_policy.h`
@@ -260,6 +260,32 @@ The pass obeys the overlay's two lifetime rules
   after the driver's destroy (`overlay_present_semaphore_lifetime::MayDestroy`);
   `CleanupSharpen` drains everything at device teardown. A live switch to `off`
   defers the same way.
+
+### Vulkan: one state per swapchain (2026-09-24)
+
+`vulkan_sharpen_state_registry.h` keeps a state per (device, swapchain) plus a
+list of retired states. Until then the state was per device: a second live
+swapchain either rebuilt the whole pipeline on every present (up to three 1 s
+fence waits on the present thread) or, after the audit-2 fix
+(`MustSkipUnownedSwapchain`, now removed), went unfiltered. Now:
+
+- every swapchain that passes the 320x180 floor gets its own pipeline, source
+  copy and command ring (`Sharpen ready for swapchain %p` per chain);
+- a state that must go while its swapchain lives - `MustRebuild` (family, route,
+  format, extent, image count) or `sharpen=off` - is **retired**, not destroyed:
+  `SharpenPresentedFrame` reaps retired states at its start once
+  `SharpenStateSubmissionsRetired` (zero-timeout fence poll) says every
+  submission signalled. No `DestroySharpenState` runs on the present path
+  (source-policy test);
+- `ReleaseSharpenForSwapchain` takes the live **and** retired states of that
+  swapchain (all hold views of its images) and destroys them with the bounded
+  wait before the driver's destroy; `CleanupSharpen` takes everything of the
+  device. Present-wait semaphores keep going to the deferred store.
+
+Diagnostics: `Sharpen rebuilding ... the old state is retired`, `Released retired
+sharpen state of swapchain %p`, `Sharpen disabled - N state(s) retired`,
+`Releasing N sharpen state(s) built over swapchain %p`. Hardware-unvalidated;
+multi-window Vulkan titles and a live `sharpen` toggle are the checks.
 
 ### Vulkan compute route (present from compute)
 

@@ -1,6 +1,6 @@
 # Cross-API Forced Anisotropic Filtering
 
-Last cross-checked: 2026-09-15 (legacy AF/mip decisions and SDK ABI constants are covered)
+Last cross-checked: 2026-09-24 (D3D9 state-block snapshots and below-the-slot sampler re-arm; no hardware run)
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
@@ -41,8 +41,9 @@ that material textures received the intended AF effect, performance was good, an
 - **D3D9 late injection:** getter/resource bootstrap is attempted once per sampler, never on every draw or repeatedly
   after a pure-device getter failure. New/reset devices start from documented defaults. Present performs only a cached
   configuration-version check after initialization; a real config change reconciles tracked state and restores logical
-  state when the override is disabled. Per-vtable Create/EndStateBlock interception covers state blocks created before
-  and after injection; Apply performs one bounded getter refresh of physical state and then reapplies the policy.
+  state when the override is disabled. Per-vtable Create/Begin/EndStateBlock and Capture interception gives every block
+  created after injection a snapshot that Apply merges before reconciling (no getter refresh); a block created before
+  injection takes one bounded getter refresh that adopts changed values as logical (see the state-block section).
 - **D3D8/D3D7/D3D6:** a shared event-driven texture-stage-state owner provides the same logical/physical split and
   bounded one-time bootstrap. Returned DX6/7/8 device classes retain originals per vtable instead of assuming the
   bootstrap HAL class. D3D6/7 refresh config at EndScene and D3D8 at Present with a version fast path; D3D7/8
@@ -66,11 +67,35 @@ that material textures received the intended AF effect, performance was good, an
   device feature, clamps to physical limits, and transactionally retries rejected modified descriptors. See
   `dx12-forced-af.md` and `graphics-overrides-and-frame-pacing.md`.
 
+## D3D9 state blocks and slot drift (2026-09-24)
+
+- **The "S6" defect** (audit-2 label, origin not recorded; derived from code): Apply re-read the physical state and
+  reconciled from the logical values held *before* the Apply, so every tracked state the block set (address, filters,
+  LOD bias, MAXMIPLEVEL) was written back to its old value. Without an override the first Apply before the first
+  Present reset all samplers to the D3D defaults the shadow was seeded with. Set* calls between Begin/EndStateBlock
+  (recorded, not applied by D3D9) were taken as applied.
+- **Fix** - `dx9_state_block_sampler_policy.h` + `dx9_sampler_state_blocks.cpp`: every block created through CE's
+  hooks carries a snapshot (logical + physical + texture metadata per covered sampler). CreateStateBlock(type)/Capture
+  (state-block vtable slot 4, now hooked) copy the shadow; BeginStateBlock (device slot 60, now hooked) starts a
+  recording in which Set* go into the snapshot unforced and never touch the shadow or a config reconcile. Apply
+  merges the snapshot FIRST, then reconciles only covered samplers - no getter re-read. Blocks CE never saw fall back
+  to the re-read and adopt changed values as logical. Inactive override: Apply does nothing. Coverage: ALL = samplers
+  + textures, PIXELSTATE = samplers, VERTEXSTATE = none tracked. Snapshots are dropped at Reset; 2048 per device cap.
+- **Slot drift re-arm** - `dx9_sampler_rearm_policy.h` + `dx9_hook_sampler_rearm.cpp`: a drifted SetTexture/
+  GetSamplerState/SetSamplerState slot that stays on one foreign value for 120 presents gets ONE inline body hook on
+  the implementation CE saved at install (only if that lies in the vtable owner's module). CE never rewrites the slot
+  and never calls the foreign handler; every CE "original" of that implementation is retargeted to the trampoline
+  (records, globals, later records via `TranslateD3D9SamplerOriginal`). `D3D9SamplerProcessingScope` makes nested
+  body-detour hits pass straight through (no double processing, no re-entry into the shadow mutex).
+- Logs: `State block %p applied from its snapshot`, `applied without a snapshot`, `sampler slot %d stayed on %p ...
+  re-arming below it`, `re-armed below the foreign slot owner`, refusal/failure lines; summary counters
+  `trackedStateBlockApplies`, `recordedStateBlocks`.
+
 ## Performance and diagnostics
 
 - D3D10, D3D12, and Vulkan have no bind/draw work after sampler creation.
 - D3D9 and D3D6-8 do constant-size bookkeeping only on mutable state/config events. Driver getters are bootstrap-only
-  except for a bounded state-block Apply refresh; config hashes are computed only when the shared config version
+  except for a bounded Apply refresh of a block created before injection; config hashes are computed only when the shared config version
   changes; companion writes are skipped when the physical value is already correct.
 - OpenGL has no draw interception. Bind interception queries an object only once per context/config/object generation;
   parameter/storage mutation events reconcile directly, and an already-correct filter or anisotropy value skips the
@@ -101,10 +126,9 @@ that material textures received the intended AF effect, performance was good, an
 
 - Native runtime validation is still required for D3D10, classic/Ex D3D9, D3D8, D3D7, D3D6, and representative OpenGL
   core/DSA/shared-context applications on both x86 and x64. Source and policy tests do not prove vendor-driver behavior.
-- State-block-heavy legacy games still need native validation. Apply reconciliation deliberately preserves the
-  current tracked logical state while refreshing the physical state; exact logical `Get*State` emulation for an older
-  partial state block would require recording per-block logical masks/snapshots and remains a stale-risk separate from
-  reliably keeping the configured physical filter override active.
+- D3D6-8 state blocks still use the refresh-and-reconcile path (`legacy_d3d_sampler_state`), which reconciles from
+  the pre-Apply logical state; the D3D9 snapshot design below has not been ported to them (open).
+- State-block-heavy D3D9 games and a co-resident overlay that re-patches the sampler slots need a native run.
 - D3D10 samplers created before a late injection cannot be enumerated or safely replaced without retaining a bind-time
   indirection. Creation-time interception is the intentional zero-steady-state-overhead tradeoff.
 - OpenGL extension function pointers are driver/context supplied. Multi-ICD or unusual context migration remains a

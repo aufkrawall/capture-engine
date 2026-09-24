@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-09-24 (third risk audit: source-change handling in `recording-output-paths.md`, endpoint following in `multi-audio-capture.md`, config encoding/reload in `configuration.md`, GL state ownership in `overlay-rendering.md`); 2026-09-23 (reliability audit entries cross-checked against code and regression coverage; crash capture, output publication, IPC, injection, and Vulkan layer membership updates; the no-host Vulkan target list now lives in the registry, see `dx12-injection-bootstrap.md`).
+Last cross-checked: 2026-09-24 (audit deferrals: D3D9 state blocks + sampler re-arm in `cross-api-forced-af.md`, per-swapchain Vulkan sharpen in `post-processing-sharpen.md`, UTF-8/DBCS config reader and ANSI path inventory in `configuration.md`); 2026-09-24 (third risk audit: source-change handling in `recording-output-paths.md`, endpoint following in `multi-audio-capture.md`, config encoding/reload in `configuration.md`, GL state ownership in `overlay-rendering.md`); 2026-09-23 (reliability audit entries cross-checked against code and regression coverage; crash capture, output publication, IPC, injection, and Vulkan layer membership updates; the no-host Vulkan target list now lives in the registry, see `dx12-injection-bootstrap.md`).
 
 Primary sources:
 - `AGENTS.md`

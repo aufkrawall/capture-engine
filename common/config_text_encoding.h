@@ -13,11 +13,13 @@
 //
 // Values read from a UTF-8 config are converted to the active code page at the
 // read boundary. An ANSI-saved config (whose non-ASCII bytes are not valid
-// UTF-8) is left exactly as before. Section names are not converted: they are
-// passed back to the same profile API, which must see the file's own bytes.
+// UTF-8) is left exactly as before. Section and key names travel in the active
+// code page too: the ones ReadIniSectionNames returns are what ReadIniValue
+// expects back.
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ce::config_text {
 
@@ -34,11 +36,18 @@ bool IsUtf8ConfigText(std::string_view fileBytes);
 // become '?'; *lossy reports whether that happened.
 std::string Utf8ToCodePage(std::string_view utf8, unsigned codePage, bool* lossy = nullptr);
 
-// The value as the ANSI-based consumers expect it. Reads (and caches, by file
-// time and size) whether `path` is a UTF-8 file.
-std::string ConfigValueToNative(const std::string& path, std::string value);
-
-// GetPrivateProfileStringA plus ConfigValueToNative.
+// GetPrivateProfileStringA semantics, answered in the active code page. A UTF-8
+// file (cached parse, keyed by file time and size) is read from its own bytes
+// by config_ini_reader: the profile API's CP_ACP round trip is lossless only on
+// single-byte code pages and mangles UTF-8 on Japanese, Chinese and Korean
+// systems. An ANSI file still goes through the profile API unchanged.
 std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue);
+// ReadIniValue with the code page injected (tests force a DBCS code page).
+std::string ReadIniValueForCodePage(const std::string& path, const char* section, const char* key,
+                                    const char* defaultValue, unsigned codePage);
+// GetPrivateProfileSectionNamesA / GetPrivateProfileSectionA equivalents over
+// the same UTF-8-aware path.
+std::vector<std::string> ReadIniSectionNames(const std::string& path);
+bool ReadIniSectionLines(const std::string& path, const std::string& section, std::vector<std::string>* lines);
 
 }  // namespace ce::config_text

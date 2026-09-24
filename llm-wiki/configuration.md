@@ -206,12 +206,28 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 ## Text encoding and hot reload (2026-09-24)
 
-- Values are read through `ce::config_text::ReadIniValue` (`common/config_text_encoding.*`): when `config.ini` is
-  UTF-8 (BOM, or non-ASCII bytes that are all valid UTF-8), values are converted to the active code page, which is
-  what every consumer expects. ANSI-saved files are untouched. Section names stay raw (they are fed back to the
-  profile API). On DBCS code pages the ANSI profile API may already mangle UTF-8 bytes - stale-risk, unverified.
+- Values are read through `ce::config_text::ReadIniValue` (`common/config_text_encoding.*`). A UTF-8 `config.ini`
+  (BOM, or non-ASCII bytes that are all valid UTF-8) is parsed from its own bytes by `common/config_ini_reader.*`
+  (cached per path/write time/size) and answered in the active code page; an ANSI file still goes through
+  `GetPrivateProfileStringA`. Verified 2026-09-24: kernel32's A profile API decodes and re-encodes with CP_ACP, which
+  is lossless on 1252 but loses UTF-8 on 932/936/949/950 ("日本語テスト" on 932, "ゲーム" on 936). Section and key
+  arguments and `ReadIniSectionNames`/`ReadIniSectionLines` results are code-page text; comparisons are
+  case-insensitive in UTF-16 (`CompareStringOrdinal`).
+- The reader's grammar was measured against the real API and is locked by a differential test
+  (`tests/test_config_ini_reader.cpp`): CR LF/LF/lone CR, space/tab trimming (also of requested names), `;` comments
+  (`#` is not), `[name` up to the first `]`, first section of a name only, first key wins, keyless lines listed by
+  the section read but not found as keys, a matching `"`/`'` pair stripped on lookup, default trailing blanks
+  stripped. One deliberate difference: a UTF-8 BOM is skipped (the API hid the first section behind it). Note: the
+  API writes into its name arguments when trimming them - never pass it read-only literals with trailing blanks.
 - The controller reloads only after the file identity (write time + size) is stable across two checks and never an
   empty/missing file (`common/config_reload_policy.h`); checks run every 250 ms while a change settles, else 1 s.
 - Install folders the code page cannot express resolve through `ce::path::AnsiCompatiblePath` (exact ANSI or the 8.3
-  short name) in the host (`main_entry.cpp`) and the hook (`main_hookthread.cpp`). Other `GetModuleFileNameA` users
-  in the hook remain ANSI (stale-risk).
+  short name), now header-only in `common/ansi_path.h` (`ce::ansi_path::CompatiblePath`, `ModuleDirectoryAnsi`,
+  `ModuleFileNameAnsi`, `ModulePathW`) so the Vulkan layer can use it; CP_UTF8 as ACP no longer returns "".
+- Hook `GetModuleFileNameA` inventory (2026-09-24): converted where the path is opened or derived - crash-dump
+  fallback dir (was UTF-8 into ANSI consumers), external dump helper path, `GetSessionLogsDirectory` fallback, Vulkan
+  layer DLL/game dirs, `ce_dx12_dred`/`ce_dx12_debug_layer`/`ce_dx12_trace` flag files, `StreamlineShipsWithApplication`,
+  and every version-resource probe (`dll_utils.h` is wide; `Module*` HMODULE forms for DXVK, ReShade/Special K/
+  OptiScaler, Streamline generation/inventory; the layer's private copy was removed). Deliberately left narrow:
+  base-name attribution/logging (file names are ASCII), System32-prefix checks (ASCII system dir), config-sourced
+  override paths (already code-page text). `tests/test_ansi_path_lookups.cpp` guards the converted sites.

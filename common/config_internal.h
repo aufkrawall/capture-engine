@@ -256,20 +256,7 @@ inline std::string Lowercase(std::string value) {
 }
 
 inline std::vector<std::string> EnumerateIniSections(const std::string& path) {
-    std::vector<char> names(4096, '\0');
-    DWORD copied = 0;
-    for (;;) {
-        copied = GetPrivateProfileSectionNamesA(names.data(), static_cast<DWORD>(names.size()), path.c_str());
-        if (copied < names.size() - 2 || names.size() >= 1024 * 1024)
-            break;
-        names.assign(names.size() * 2, '\0');
-    }
-
-    std::vector<std::string> sections;
-    for (const char* current = names.data(); current && *current; current += strlen(current) + 1) {
-        sections.emplace_back(current);
-    }
-    return sections;
+    return ce::config_text::ReadIniSectionNames(path);
 }
 
 inline std::string ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,

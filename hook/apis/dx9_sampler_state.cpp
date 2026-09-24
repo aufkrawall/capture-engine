@@ -7,48 +7,22 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "../../common/mip_mapping_policy.h"
 #include "../common/sampler_override_utils.h"
+#include "dx9_sampler_state_internal.h"
 #include "hook_common.h"
 #include "lod_helper.h"
 
 namespace ce::dx9_sampler_state {
+
+using detail::DeviceState;
+using detail::FindExistingDevice;
+using detail::FindOrCreateDevice;
+
 namespace {
-
-constexpr size_t kSamplerCount = 21;
-constexpr size_t kStateCount = 9;
-constexpr std::array<D3DSAMPLERSTATETYPE, kStateCount> kTrackedTypes = {
-    D3DSAMP_ADDRESSU,  D3DSAMP_ADDRESSV,      D3DSAMP_ADDRESSW,    D3DSAMP_MAGFILTER,     D3DSAMP_MINFILTER,
-    D3DSAMP_MIPFILTER, D3DSAMP_MIPMAPLODBIAS, D3DSAMP_MAXMIPLEVEL, D3DSAMP_MAXANISOTROPY,
-};
-
-struct SamplerState {
-    std::array<DWORD, kStateCount> logical = {
-        D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, 0, 0, 1,
-    };
-    std::array<DWORD, kStateCount> physical = logical;
-    UINT textureMipLevels = 0;
-    bool textureBound = false;
-    bool textureUsesAddressW = false;
-    bool textureSupportsAnisotropy = false;
-    bool initialized = false;
-    bool bootstrapAttempted = false;
-};
-
-struct DeviceState {
-    IDirect3DDevice9* device = nullptr;
-    std::mutex mutex;
-    std::array<SamplerState, kSamplerCount> samplers;
-    UINT maxAnisotropy = 1;
-    DWORD textureFilterCaps = 0;
-    DWORD cubeTextureFilterCaps = 0;
-    DWORD volumeTextureFilterCaps = 0;
-    std::atomic<uint64_t> configHash{0};
-    std::atomic<uint32_t> configVersion{0xFFFFFFFFu};
-    std::atomic<bool> overrideActive{false};
-};
 
 std::mutex g_registryMutex;
 std::vector<std::unique_ptr<DeviceState>> g_devices;
@@ -57,6 +31,7 @@ std::atomic<uint64_t> g_driverWrites{0};
 std::atomic<uint64_t> g_bootstrapQueries{0};
 std::atomic<uint64_t> g_configChanges{0};
 std::atomic<uint64_t> g_externalResyncs{0};
+std::atomic<uint64_t> g_trackedStateBlockApplies{0};
 std::atomic<int> g_transitionLogCount{0};
 std::atomic<int> g_failureLogCount{0};
 std::atomic<int> g_bootstrapFailureLogCount{0};
@@ -92,6 +67,10 @@ bool HasSamplerOverride(const GraphicsConfig& gfx) {
            (!gfx.mipMapping.empty() && gfx.mipMapping != "default") || HasConfiguredMipBias(gfx) ||
            gfx.forceMipBiasClamp || (gfx.sgssaa && !gfx.disableAutoMipBias);
 }
+
+}  // namespace
+
+namespace detail {
 
 DeviceState* FindOrCreateDevice(IDirect3DDevice9* device) {
     if (t_cachedDevice == device && t_cachedState) {
@@ -138,6 +117,10 @@ DeviceState* FindExistingDevice(IDirect3DDevice9* device) {
     }
     return nullptr;
 }
+
+}  // namespace detail
+
+namespace {
 
 void ResetSampler(SamplerState& state, bool defaultsAreKnown) {
     state = SamplerState{};
@@ -389,6 +372,9 @@ bool ReconcileSampler(IDirect3DDevice9* device, DWORD sampler, SamplerState& sta
 }
 
 void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, GetSamplerStateFn getState) {
+    // Writes made now would be recorded into the block, not applied.
+    if (deviceState.recording.load(std::memory_order_relaxed))
+        return;
     const uint32_t version = GetActiveGraphicsConfigVersion();
     if (deviceState.configVersion.load(std::memory_order_relaxed) == version &&
         deviceState.configHash.load(std::memory_order_relaxed) != 0) {
@@ -452,9 +438,12 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
         deviceState->cubeTextureFilterCaps = caps.CubeTextureFilterCaps;
         deviceState->volumeTextureFilterCaps = caps.VolumeTextureFilterCaps;
     }
+    const bool tracking = HasSamplerOverride(GetActiveGraphicsConfigCached());
     for (SamplerState& sampler : deviceState->samplers) {
-        ResetSampler(sampler, true);
+        ResetSampler(sampler, tracking);
     }
+    deviceState->stateBlocks.clear();
+    deviceState->recording.store(false, std::memory_order_relaxed);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
@@ -471,11 +460,22 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     const GraphicsConfig& fastConfig = GetActiveGraphicsConfigCached();
     const bool overrideConfigured = HasSamplerOverride(fastConfig);
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
-    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))) {
+    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
+                         !deviceState->recording.load(std::memory_order_acquire))) {
         return setState(device, sampler, type, value);
     }
 
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    if (deviceState->recording.load(std::memory_order_relaxed)) {
+        // Recorded, not applied: the block gets the application's own value and
+        // the shadow stays what the device really holds. The Apply forces it.
+        const HRESULT recordHr = setState(device, sampler, type, value);
+        if (SUCCEEDED(recordHr)) {
+            RecordSamplerState(deviceState->recordingSnapshot, static_cast<size_t>(samplerIndex),
+                               static_cast<size_t>(stateIndex), value);
+        }
+        return recordHr;
+    }
     RefreshConfigLocked(*deviceState, setState, getState);
     if (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))
         return setState(device, sampler, type, value);
@@ -542,11 +542,21 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     const bool overrideConfigured = HasSamplerOverride(gfx);
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
-    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))) {
+    if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
+                         !deviceState->recording.load(std::memory_order_acquire))) {
         return setTexture(device, stage, texture);
     }
 
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    if (deviceState->recording.load(std::memory_order_relaxed)) {
+        const HRESULT recordHr = setTexture(device, stage, texture);
+        if (SUCCEEDED(recordHr)) {
+            SamplerState recorded;
+            UpdateTextureMetadata(*deviceState, recorded, texture);
+            RecordTexture(deviceState->recordingSnapshot, static_cast<size_t>(samplerIndex), recorded);
+        }
+        return recordHr;
+    }
     RefreshConfigLocked(*deviceState, setState, getState);
     if (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))
         return setTexture(device, stage, texture);
@@ -581,20 +591,61 @@ void RefreshConfiguration(IDirect3DDevice9* device, SetSamplerStateFn setState, 
     RefreshConfigLocked(*deviceState, setState, getState);
 }
 
-void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, SetSamplerStateFn setState,
+void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, const void* stateBlock, SetSamplerStateFn setState,
                                        GetSamplerStateFn getState) {
     if (!device || !setState || !getState)
         return;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    DeviceState* deviceState = HasSamplerOverride(gfx) ? FindOrCreateDevice(device) : FindExistingDevice(device);
+    const bool overrideConfigured = HasSamplerOverride(gfx);
+    DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState)
         return;
 
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    // Nothing is forced and nothing is tracked: the block's state is the
+    // application's, and there is no shadow to correct.
+    if (deviceState->recording.load(std::memory_order_relaxed) ||
+        (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
+        return;
+
+    const auto tracked = stateBlock ? deviceState->stateBlocks.find(stateBlock) : deviceState->stateBlocks.end();
+    if (tracked != deviceState->stateBlocks.end()) {
+        // Merge FIRST: a reconcile against the pre-Apply shadow is exactly the
+        // write that used to undo the block.
+        const uint32_t covered = ApplyStateBlockToShadow(*tracked->second, deviceState->samplers);
+        bool reconciled = true;
+        for (size_t i = 0; i < deviceState->samplers.size(); ++i) {
+            if ((covered & (1u << i)) == 0)
+                continue;
+            SamplerState& sampler = deviceState->samplers[i];
+            const DWORD samplerIndex = DenormalizeSampler(i);
+            if (!BootstrapSampler(*deviceState, samplerIndex, sampler, getState))
+                continue;
+            reconciled =
+                ReconcileSampler(device, samplerIndex, sampler, gfx, deviceState->maxAnisotropy, setState) && reconciled;
+        }
+        RefreshConfigLocked(*deviceState, setState, getState);
+        if (!reconciled) {
+            deviceState->configHash.store(0, std::memory_order_relaxed);
+            deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
+        }
+        const uint64_t applies = g_trackedStateBlockApplies.fetch_add(1, std::memory_order_relaxed);
+        if (applies < 4) {
+            HookLogImportant("DX9: State block %p applied from its snapshot (samplers=0x%06X, no driver re-read)",
+                             stateBlock, covered);
+        }
+        return;
+    }
+
     bool complete = true;
     for (size_t i = 0; i < deviceState->samplers.size(); ++i) {
         SamplerState& sampler = deviceState->samplers[i];
+        const bool wasInitialized = sampler.initialized;
+        const SamplerStateValues previousPhysical = sampler.physical;
         complete = RefreshPhysicalSamplerState(*deviceState, DenormalizeSampler(i), sampler, getState) && complete;
+        // An unseen block's values are the application's own: keep them.
+        if (wasInitialized && sampler.initialized)
+            AdoptExternalPhysical(sampler, previousPhysical);
     }
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
@@ -603,7 +654,11 @@ void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, SetSamplerState
         deviceState->configHash.store(0, std::memory_order_relaxed);
         deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     }
-    g_externalResyncs.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t resyncs = g_externalResyncs.fetch_add(1, std::memory_order_relaxed);
+    if (resyncs < 4) {
+        HookLogImportant("DX9: State block %p applied without a snapshot (created before CE saw it); device re-read",
+                         stateBlock);
+    }
 }
 
 void InvalidateDevice(IDirect3DDevice9* device) {
@@ -625,9 +680,15 @@ void ResetDevice(IDirect3DDevice9* device) {
     }
     DeviceState* deviceState = FindOrCreateDevice(device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
+    const bool tracking = HasSamplerOverride(GetActiveGraphicsConfigCached());
     for (SamplerState& sampler : deviceState->samplers) {
-        ResetSampler(sampler, true);
+        ResetSampler(sampler, tracking);
     }
+    // A classic device releases every state block before Reset; an Ex device's
+    // survive it but restore pre-Reset values, so their snapshots are dropped
+    // too and they take the re-read path.
+    deviceState->stateBlocks.clear();
+    deviceState->recording.store(false, std::memory_order_relaxed);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
@@ -636,12 +697,14 @@ void ResetDevice(IDirect3DDevice9* device) {
 void LogSummary() {
     HookLog(
         "DX9: Sampler override summary reconciliations=%llu driverWrites=%llu bootstrapQueries=%llu "
-        "configChanges=%llu externalResyncs=%llu",
+        "configChanges=%llu externalResyncs=%llu trackedStateBlockApplies=%llu recordedStateBlocks=%llu",
         static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_bootstrapQueries.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_configChanges.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(g_externalResyncs.load(std::memory_order_relaxed)));
+        static_cast<unsigned long long>(g_externalResyncs.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_trackedStateBlockApplies.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(detail::RecordedStateBlockCount()));
 }
 
 }  // namespace ce::dx9_sampler_state

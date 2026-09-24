@@ -10,6 +10,7 @@
 #include <cstring>
 #include <vector>
 
+#include "../../common/ansi_path.h"
 #include "dx12_overlay_policy.h"
 #include "hook_common.h"
 #include "../../common/secure_dll_loading.h"
@@ -83,20 +84,14 @@ bool ReadHookDirFlagFile(const char* fileName, char* out, size_t outSize) {
         !self) {
         return false;
     }
-    char path[MAX_PATH] = {};
-    DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
+    // UTF-16 end to end: an install folder outside the code page came back
+    // '?'-mangled from GetModuleFileNameA and no flag file was ever found.
+    const std::wstring directory = ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(self));
+    if (directory.empty() || !fileName) {
         return false;
     }
-    for (DWORD i = len; i > 0; --i) {
-        if (path[i - 1] == '\\' || path[i - 1] == '/') {
-            path[i] = '\0';
-            break;
-        }
-    }
-    char flagPath[MAX_PATH] = {};
-    _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%s%s", path, fileName);
-    HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    const std::wstring flagPath = directory + L"\\" + ce::ansi_path::AnsiToWide(fileName);
+    HANDLE h = CreateFileW(flagPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         return false;
@@ -539,31 +534,9 @@ CE_DRED_KEEP int DebugLayerLevel() {
         // inject model (the user just creates the file; no launch-context juggling).
         // File "ce_dx12_debug_layer" in installed\captureengine\: empty/"1" -> level 1,
         // first char "2" -> level 2.
-        HMODULE self = nullptr;
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               reinterpret_cast<LPCSTR>(&IsEnabled), &self) &&
-            self) {
-            char path[MAX_PATH] = {};
-            DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
-            if (len > 0 && len < MAX_PATH) {
-                for (DWORD i = len; i > 0; --i) {
-                    if (path[i - 1] == '\\' || path[i - 1] == '/') {
-                        path[i] = '\0';
-                        break;
-                    }
-                }
-                char flagPath[MAX_PATH] = {};
-                _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%sce_dx12_debug_layer", path);
-                HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (h != INVALID_HANDLE_VALUE) {
-                    char c = '1';
-                    DWORD rd = 0;
-                    ReadFile(h, &c, 1, &rd, nullptr);
-                    CloseHandle(h);
-                    return (c == '2') ? 2 : 1;
-                }
-            }
+        char flag[16] = {};
+        if (ReadHookDirFlagFile("ce_dx12_debug_layer", flag, sizeof(flag))) {
+            return flag[0] == '2' ? 2 : 1;
         }
         return 0;
     }();

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <mutex>
-#include <unordered_map>
 #include <vector>
 
 #include "../../common/sharpen_policy.h"
@@ -11,6 +10,7 @@
 #include "layer_sharpen.h"
 #include "vulkan_layer.h"
 #include "vulkan_sharpen_route_policy.h"
+#include "vulkan_sharpen_state_registry.h"
 
 // Shared state between the sharpen pass's lifecycle unit
 // (layer_sharpen_setup.cpp) and its per-present recording unit
@@ -103,7 +103,9 @@ struct DeferredSharpenSemaphores {
 };
 
 extern std::mutex layer_sharpen_g_StateMutex;
-extern std::unordered_map<VkDevice, SharpenState> layer_sharpen_g_States;
+// One state per (device, swapchain), plus the retired ones awaiting their
+// fences. Guarded by layer_sharpen_g_StateMutex.
+extern ce::vulkan_sharpen_registry::Registry<SharpenState, VkDevice> layer_sharpen_g_Registry;
 // Guarded by layer_sharpen_g_StateMutex.
 extern std::vector<DeferredSharpenSemaphores> layer_sharpen_g_DeferredSemaphores;
 
@@ -134,3 +136,7 @@ void RecordSharpenCompute(SharpenState& state, DeviceDispatch* disp, VkCommandBu
                           uint32_t imageIndex, VkPipeline pipeline, const ce::sharpen::ShaderConstants& constants);
 
 void DestroySharpenState(SharpenState& state, DeviceDispatch* disp);
+
+// True when every submission `state` made has signalled its fence, i.e. a
+// DestroySharpenState now would not wait. Never blocks.
+bool SharpenStateSubmissionsRetired(const SharpenState& state, DeviceDispatch* disp);

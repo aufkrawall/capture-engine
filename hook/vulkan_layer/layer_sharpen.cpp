@@ -2,7 +2,6 @@
 
 #include "../common/sharpen_constants.h"
 #include "../common/sharpen_gpu_timeline.h"
-#include "overlay_swapchain_lifetime_policy.h"
 #include "vulkan_formatless_storage.h"
 #include "vulkan_presentation_color.h"
 
@@ -89,6 +88,26 @@ int AcquireSlot(SharpenState& state, DeviceDispatch* disp) {
     return -1;
 }
 
+// Destroys the retired states on `device` whose submissions have all signalled.
+// Caller holds layer_sharpen_g_StateMutex. Never blocks: a state still in
+// flight stays retired until a later present finds it done.
+void ReapRetiredSharpenStatesLocked(VkDevice device, DeviceDispatch* disp) {
+    if (layer_sharpen_g_Registry.RetiredCount(device) == 0)
+        return;
+    std::vector<SharpenState> ready = layer_sharpen_g_Registry.TakeReadyRetired(
+        device, [disp](const SharpenState& retired) { return SharpenStateSubmissionsRetired(retired, disp); });
+    for (SharpenState& retired : ready) {
+        LayerLog("Vulkan Layer: Released retired sharpen state of swapchain %p (%ux%u route=%s)", retired.swapchain,
+                 retired.extent.width, retired.extent.height, ce::vulkan_sharpen_route::RouteName(retired.route));
+        DestroySharpenState(retired, disp);
+    }
+}
+
+bool SubmitSharpenPass(SharpenState& state, DeviceDispatch* disp, VkQueue queue, VkImage image, uint32_t imageIndex,
+                       VkExtent2D extent, const ce::sharpen::Request& request, const ce::sharpen::Decision& decision,
+                       const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount,
+                       VkSemaphore* signaledSemaphore);
+
 }  // namespace
 
 bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage image,
@@ -113,7 +132,7 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (!lock.owns_lock())
         return false;
 
-    // The dispatch table first: operator[] would otherwise insert a state entry
+    // The dispatch table first: Live() would otherwise insert a state entry
     // for a device this function is about to refuse, and nothing ever erases it -
     // CleanupSharpen for that device has already run by the time its dispatch
     // table is gone.
@@ -121,33 +140,27 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (!disp)
         return false;
 
-    SharpenState& state = layer_sharpen_g_States[device];
+    // States retired earlier (filter switched off, or rebuilt) are destroyed
+    // once their own submissions have signalled - never waited for here.
+    ReapRetiredSharpenStatesLocked(device, disp);
 
     if (request.mode == ce::sharpen::Mode::Off) {
         // Switching the feature off hands its resources back rather than
         // leaving a full-frame image and a swapchain's worth of views resident.
-        if (state.initialized) {
-            DestroySharpenState(state, disp);
-            LayerLog("Vulkan Layer: Sharpen disabled - resources released");
+        // Retired, not destroyed: the last frames' submissions may still read
+        // them, and waiting for those here would stall the game's present.
+        const size_t live = layer_sharpen_g_Registry.LiveCount(device);
+        if (live > 0) {
+            layer_sharpen_g_Registry.RetireAll(device);
+            LayerLog("Vulkan Layer: Sharpen disabled - %zu state(s) retired, released once their submissions finish",
+                     live);
         }
         return false;
     }
 
-    // The state is per device while swapchains are not. The first swapchain to
-    // present owns the pass; any other live swapchain is left unfiltered
-    // instead of rebuilding the whole pipeline per present (see
-    // MustSkipUnownedSwapchain). The destroy hook and `oldSwapchain` retirement
-    // re-arm the choice.
-    if (ce::vulkan_sharpen_route::MustSkipUnownedSwapchain(state.initialized, SharpenSwapchainKey(state.swapchain),
-                                                           SharpenSwapchainKey(swapchain))) {
-        static std::atomic<int> s_foreignSwapchainLogCount{0};
-        const int logCount = s_foreignSwapchainLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 5 || (logCount % 600) == 0) {
-            LayerLog("Vulkan Layer: Sharpen skipped for swapchain %p - the pass is built over %p (#%d)", swapchain,
-                     state.swapchain, logCount + 1);
-        }
-        return false;
-    }
+    // Each swapchain owns its own state: a second live swapchain on the same
+    // device is filtered too, and its presents never touch the first one's.
+    SharpenState& state = layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain));
 
     ce::sharpen::Target target;
     // The Vulkan layer only ever sees the application's own swapchain; a present
@@ -215,18 +228,32 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     current.imageCount = imageCount;
     current.queueFamily = queueFamily;
     current.route = route;
+    SharpenState* active = &state;
     if (state.initialized && ce::vulkan_sharpen_route::MustRebuild(SharpenStateIdentity(state), current)) {
-        LayerLog("Vulkan Layer: Sharpen rebuilding (swapchain %p family %u -> %u route %s -> %s)", swapchain,
-                 state.queueFamily, queueFamily, ce::vulkan_sharpen_route::RouteName(state.route),
+        LayerLog("Vulkan Layer: Sharpen rebuilding (swapchain %p family %u -> %u route %s -> %s) - the old state "
+                 "is retired until its submissions finish",
+                 swapchain, state.queueFamily, queueFamily, ce::vulkan_sharpen_route::RouteName(state.route),
                  ce::vulkan_sharpen_route::RouteName(route));
-        DestroySharpenState(state, disp);
+        // `state` is moved out by the retirement; continue on the fresh one.
+        layer_sharpen_g_Registry.Retire(device, SharpenSwapchainKey(swapchain));
+        active = &layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain));
     }
-    if (!state.initialized) {
-        if (!InitializeSharpenState(state, disp, device, swapchain, format, extent, queueFamily, route, imageCount,
+    if (!active->initialized) {
+        if (!InitializeSharpenState(*active, disp, device, swapchain, format, extent, queueFamily, route, imageCount,
                                     images)) {
             return false;
         }
     }
+    return SubmitSharpenPass(*active, disp, queue, image, imageIndex, extent, request, decision, waitSemaphores,
+                             waitSemaphoreCount, signaledSemaphore);
+}
+
+namespace {
+
+bool SubmitSharpenPass(SharpenState& state, DeviceDispatch* disp, VkQueue queue, VkImage image, uint32_t imageIndex,
+                       VkExtent2D extent, const ce::sharpen::Request& request, const ce::sharpen::Decision& decision,
+                       const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount,
+                       VkSemaphore* signaledSemaphore) {
     if (imageIndex >= state.imageViews.size() || imageIndex >= state.imageSemaphores.size())
         return false;
 
@@ -358,13 +385,13 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     return true;
 }
 
+}  // namespace
+
 void CleanupSharpen(VkDevice device) {
     std::lock_guard<std::mutex> lock(layer_sharpen_g_StateMutex);
-    auto it = layer_sharpen_g_States.find(device);
-    if (it != layer_sharpen_g_States.end()) {
-        DestroySharpenState(it->second, VulkanLayerState::Get().GetDeviceDispatch(device));
-        layer_sharpen_g_States.erase(it);
-    }
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    for (SharpenState& state : layer_sharpen_g_Registry.TakeForDevice(device))
+        DestroySharpenState(state, disp);
     // Every swapchain on the device is gone before the device is, so no
     // present can still be waiting on any deferred semaphore.
     DrainDeferredSharpenSemaphoresLocked(device, VK_NULL_HANDLE, true);
@@ -372,22 +399,23 @@ void CleanupSharpen(VkDevice device) {
 
 void ReleaseSharpenForSwapchain(VkDevice device, VkSwapchainKHR swapchain) {
     std::lock_guard<std::mutex> lock(layer_sharpen_g_StateMutex);
-    auto it = layer_sharpen_g_States.find(device);
-    if (it == layer_sharpen_g_States.end())
-        return;
-    // Same decision as the overlay's: only the state built over this swapchain
-    // goes. A driver may hand the next swapchain the same handle (DOOM Eternal
-    // `20260922_235937` did), so a state kept past the destroy would pass the
-    // present-time generation check and draw through views of freed images.
-    ce::overlay_swapchain_lifetime::Input input = {};
-    input.overlayStateExists = it->second.initialized;
-    input.overlayStateSwapchain = SharpenSwapchainKey(it->second.swapchain);
-    input.destroyedSwapchain = SharpenSwapchainKey(swapchain);
-    if (!ce::overlay_swapchain_lifetime::Decide(input).release)
-        return;
-    LayerLog("Vulkan Layer: Releasing sharpen state built over swapchain %p before the driver destroys it", swapchain);
-    DestroySharpenState(it->second, VulkanLayerState::Get().GetDeviceDispatch(device));
-    layer_sharpen_g_States.erase(it);
+    // Every state built over this swapchain goes - the live one and any retired
+    // ones still waiting for their fences, since all of them hold views of its
+    // images. A driver may hand the next swapchain the same handle (DOOM
+    // Eternal `20260922_235937` did), so a state kept past the destroy would be
+    // found by the new swapchain's presents and draw through views of freed
+    // images. Waiting is correct here: the images die with the swapchain.
+    std::vector<SharpenState> states = layer_sharpen_g_Registry.TakeForSwapchain(device, SharpenSwapchainKey(swapchain));
+    size_t built = 0;
+    for (const SharpenState& state : states)
+        built += state.initialized ? 1 : 0;
+    if (built > 0) {
+        LayerLog("Vulkan Layer: Releasing %zu sharpen state(s) built over swapchain %p before the driver destroys it",
+                 built, swapchain);
+    }
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    for (SharpenState& state : states)
+        DestroySharpenState(state, disp);
 }
 
 void DestroyDeferredSharpenSemaphores(VkDevice device, VkSwapchainKHR swapchain) {

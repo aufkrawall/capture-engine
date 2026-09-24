@@ -4,6 +4,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "ansi_path.h"
+
 #include <algorithm>
 #include <cwctype>
 #include <vector>
@@ -172,55 +174,8 @@ MappedDriveResolution ResolveMappedDrivePath(const std::filesystem::path& path) 
     return result;
 }
 
-namespace {
-
-bool TryNarrowAcpExactly(const std::wstring& wide, std::string* narrow) {
-    narrow->clear();
-    if (wide.empty()) {
-        return true;
-    }
-    BOOL usedDefault = FALSE;
-    const int needed = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.c_str(), static_cast<int>(wide.size()),
-                                           nullptr, 0, nullptr, &usedDefault);
-    if (needed <= 0) {
-        return false;
-    }
-    narrow->assign(static_cast<size_t>(needed), '\0');
-    usedDefault = FALSE;
-    WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide.c_str(), static_cast<int>(wide.size()), narrow->data(),
-                        needed, nullptr, &usedDefault);
-    return usedDefault == FALSE;
-}
-
-}  // namespace
-
 std::string AnsiCompatiblePath(const std::wstring& widePath, bool* exact) {
-    std::string narrow;
-    if (TryNarrowAcpExactly(widePath, &narrow)) {
-        if (exact) {
-            *exact = true;
-        }
-        return narrow;
-    }
-    const DWORD shortLength = GetShortPathNameW(widePath.c_str(), nullptr, 0);
-    if (shortLength > 0) {
-        std::wstring shortPath(static_cast<size_t>(shortLength), L'\0');
-        const DWORD written = GetShortPathNameW(widePath.c_str(), shortPath.data(), shortLength);
-        if (written > 0 && written < shortLength) {
-            shortPath.resize(written);
-            std::string shortNarrow;
-            if (TryNarrowAcpExactly(shortPath, &shortNarrow)) {
-                if (exact) {
-                    *exact = true;
-                }
-                return shortNarrow;
-            }
-        }
-    }
-    if (exact) {
-        *exact = false;
-    }
-    return narrow;
+    return ce::ansi_path::CompatiblePath(widePath, exact);
 }
 
 }  // namespace ce::path

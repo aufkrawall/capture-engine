@@ -12,6 +12,7 @@ struct PresentTiming;
 
 #include "dx9_hook.h"
 
+#include "dx9_sampler_rearm_policy.h"
 #include "dx9_sampler_state.h"
 
 #include <d3d11_4.h>
@@ -116,7 +117,11 @@ typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DW
 
 typedef HRESULT(STDMETHODCALLTYPE* CreateStateBlock_t)(IDirect3DDevice9*, D3DSTATEBLOCKTYPE, IDirect3DStateBlock9**);
 
+typedef HRESULT(STDMETHODCALLTYPE* BeginStateBlock_t)(IDirect3DDevice9*);
+
 typedef HRESULT(STDMETHODCALLTYPE* EndStateBlock_t)(IDirect3DDevice9*, IDirect3DStateBlock9**);
+
+typedef HRESULT(STDMETHODCALLTYPE* StateBlockCapture_t)(IDirect3DStateBlock9*);
 
 typedef HRESULT(STDMETHODCALLTYPE* StateBlockApply_t)(IDirect3DStateBlock9*);
 
@@ -213,13 +218,29 @@ struct D3D9SamplerVTableRecord {
     std::atomic<GetSamplerState_t> getSamplerState{nullptr};
     std::atomic<SetSamplerState_t> setSamplerState{nullptr};
     std::atomic<CreateStateBlock_t> createStateBlock{nullptr};
+    std::atomic<BeginStateBlock_t> beginStateBlock{nullptr};
     std::atomic<EndStateBlock_t> endStateBlock{nullptr};
     bool setTextureHooked = false;
     bool getSamplerStateHooked = false;
     bool setSamplerStateHooked = false;
     bool createStateBlockHooked = false;
+    bool beginStateBlockHooked = false;
     bool endStateBlockHooked = false;
     bool stateBlockPrototypesCreated = false;
+    // The implementations the three sampler slots held when CE hooked them
+    // (the targets of a below-the-slot re-arm, dx9_sampler_rearm_policy.h),
+    // and what each slot has drifted to since. Guarded by the vtable mutex.
+    void* pristine[3] = {};
+    // Whether pristine[i] lies in the module that owns the vtable (not foreign code).
+    bool pristineOwned[3] = {};
+    ce::dx9_sampler_rearm::SlotWatch slotWatch[3];
+};
+
+// The three sampler slots, as indices into pristine/slotWatch.
+enum D3D9SamplerSlot : int {
+    kD3D9SamplerSlotSetTexture = 0,
+    kD3D9SamplerSlotGetSamplerState = 1,
+    kD3D9SamplerSlotSetSamplerState = 2,
 };
 
 struct D3D9SamplerCallbacks {
@@ -228,11 +249,13 @@ struct D3D9SamplerCallbacks {
     SetSamplerState_t setSamplerState = nullptr;
     CreateStateBlock_t createStateBlock = nullptr;
     EndStateBlock_t endStateBlock = nullptr;
+    BeginStateBlock_t beginStateBlock = nullptr;
 };
 
 struct D3D9StateBlockVTableRecord {
     uintptr_t* vtable = nullptr;
     StateBlockApply_t apply = nullptr;
+    StateBlockCapture_t capture = nullptr;
 };
 
 inline std::mutex dx9_hook_g_D3D9SamplerVTableMutex;
@@ -242,6 +265,19 @@ inline std::vector<std::unique_ptr<D3D9SamplerVTableRecord>> dx9_hook_g_D3D9Samp
 inline std::mutex dx9_hook_g_D3D9StateBlockVTableMutex;
 
 inline std::vector<D3D9StateBlockVTableRecord> dx9_hook_g_D3D9StateBlockVTables;
+
+// Non-zero while this thread is inside CE's sampler processing (a vtable or a
+// body detour, or a state-block reconcile). A body detour reached from there is
+// CE's own call and passes straight to the trampoline: processing it again
+// would re-enter the sampler shadow's non-recursive mutex.
+inline thread_local int dx9_hook_t_SamplerProcessingDepth = 0;
+
+struct D3D9SamplerProcessingScope {
+    D3D9SamplerProcessingScope() { ++dx9_hook_t_SamplerProcessingDepth; }
+    ~D3D9SamplerProcessingScope() { --dx9_hook_t_SamplerProcessingDepth; }
+    D3D9SamplerProcessingScope(const D3D9SamplerProcessingScope&) = delete;
+    D3D9SamplerProcessingScope& operator=(const D3D9SamplerProcessingScope&) = delete;
+};
 
 inline thread_local uintptr_t* dx9_hook_t_D3D9SamplerVTable = nullptr;
 
@@ -324,6 +360,15 @@ HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DST
 HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock);
 
 HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock);
+
+HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device);
+
+HRESULT STDMETHODCALLTYPE DetourStateBlockCapture(IDirect3DStateBlock9* stateBlock);
+
+// Below-the-slot re-arm (dx9_hook_sampler_rearm.cpp). The body hook targets are
+// translated to their trampolines wherever CE would otherwise call them.
+void* TranslateD3D9SamplerOriginal(void* original);
+bool ArmD3D9SamplerBodyHook(D3D9SamplerSlot slot, void* pristine);
 
 void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);const char* D3D9FormatName(D3DFORMAT format);D3DMULTISAMPLE_TYPE ParseD3D9MSAA(const char* msaa);void ApplyMSAAOverride(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE deviceType, D3DPRESENT_PARAMETERS* pp);
 

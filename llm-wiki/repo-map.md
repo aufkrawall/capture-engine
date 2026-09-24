@@ -67,6 +67,8 @@ anchors that predate the split are approximate.
     config model, loader, and themed section loaders (`ConfigReader`); `config_load_ue5.cpp` owns the
     whole `[UE5]` vocabulary, while `live_stream_config.*` and `config_load_streaming.cpp` own the
     fail-closed RTMP/RTMPS profile and `face_camera_config.h` owns face-camera parsing/layout policy.
+    Values arrive through `config_text_encoding.*`; a UTF-8 file is parsed by `config_ini_reader.*`
+    (profile-API grammar, see `configuration.md`). `ansi_path.h` derives ANSI-API paths from UTF-16.
   - `process_ipc.h/.cpp` + `process_ipc_client.cpp` - private IPC channels.
   - `crash_handler.cpp` + `crash_dump_writer.cpp` (vectored/unhandled filters, dump worker) +
     `crash_first_chance.{h,cpp}` (first-chance fault records, dispatch detection, continue handler) +
@@ -145,7 +147,9 @@ anchors that predate the split are approximate.
       gdi,ring,lifecycle}.cpp`, `dx9_hook_present.cpp` (present begin/end
       stages), `dx9_hook_present_detours.cpp`, `dx9_hook_state_detours.cpp`,
       `dx9_hook_device.cpp` (creation + hook install), `dx9_hook_pacing.cpp`,
-      `dx9_hook_overlay.cpp`, `dx9_hook_helpers.cpp`, `dx9_hook_sampler_state.cpp`.
+      `dx9_hook_overlay.cpp`, `dx9_hook_helpers.cpp`, `dx9_hook_sampler_rearm.cpp` (below-the-slot
+      sampler re-arm, `dx9_sampler_rearm_policy.h`); the sampler shadow is `dx9_sampler_state.cpp` +
+      `dx9_sampler_state_blocks.cpp` (+ `_internal.h`, `dx9_state_block_sampler_policy.h`).
     - DX8: `dx8_hook_capture_{lifecycle,init,frame,copy}.cpp`, `dx8_hook_detours.cpp`,
       `dx8_hook_helpers.cpp`, `dx8_hook_internal.h`.
     - DDraw: `ddraw_hook_capture_{lifecycle,init,frame}.cpp`, `ddraw_hook_capture.cpp` (presentation
@@ -268,7 +272,8 @@ anchors that predate the split are approximate.
   acknowledgement.
 - `captureengine/inject_lifecycle.cpp` + `hook/main_host_lifecycle.cpp` +
   `hook/vulkan_layer/layer_sharpen.cpp` (per-present recording) +
-  `layer_sharpen_setup.cpp` (per-swapchain lifecycle) + `layer_sharpen_state.h` -
+  `layer_sharpen_setup.cpp` (per-swapchain lifecycle) + `layer_sharpen_state.h` +
+  `vulkan_sharpen_state_registry.h` (one state per swapchain, non-blocking retirement) -
   the Vulkan half of the CAS/RCAS post-processing pass; see
   `post-processing-sharpen.md`. The cross-API policy, constants and D3D
   renderers are `common/sharpen_policy.h` and `hook/common/sharpen_*`. Two

@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "apis/dx12_hook_internal.h"
+#include "../common/ansi_path.h"
 #include "../common/crash_first_chance.h"
 
 std::atomic<MiniDumpWriteDump_t> g_OriginalMiniDumpWriteDump{nullptr};
@@ -212,13 +213,16 @@ std::string QuoteCommandLineArgument(const std::string& value) {
 }
 
 std::filesystem::path GetInstalledCaptureEnginePath() {
-  char modulePath[MAX_PATH] = {};
-  if (!GetModuleFileNameA(g_hModule, modulePath, static_cast<DWORD>(sizeof(modulePath)))) {
+  // The helper is launched through CreateProcessA and handed code-page text,
+  // so the folder must be expressible there. GetModuleFileNameA '?'-mangled an
+  // install below a non-ASCII folder and no helper dump was ever taken;
+  // ModuleDirectoryAnsi derives it in UTF-16 and falls back to the 8.3 name.
+  bool exact = false;
+  const std::string baseDir = ce::ansi_path::ModuleDirectoryAnsi(g_hModule, &exact);
+  if (baseDir.empty() || !exact) {
     return {};
   }
-
-  std::filesystem::path baseDir = std::filesystem::path(modulePath).parent_path();
-  return baseDir / "captureengine.exe";
+  return std::filesystem::path(baseDir + "\\captureengine.exe");
 }
 
 ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(

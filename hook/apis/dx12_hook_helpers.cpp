@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include "../../common/ansi_path.h"
+
 
 DX12Context GetDX12PrerenderContext(bool preferOriginalGameQueue, bool* usesOriginalGameQueue, ID3D12CommandQueue** currentQueueSnapshot) {
 std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
@@ -305,18 +307,12 @@ static const bool s_enabled = []() -> bool {
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            reinterpret_cast<LPCSTR>(&Dx12TraceEnabled), &self) &&
         self) {
-        char path[MAX_PATH] = {};
-        DWORD len = GetModuleFileNameA(self, path, MAX_PATH);
-        if (len > 0 && len < MAX_PATH) {
-            for (DWORD i = len; i > 0; --i) {
-                if (path[i - 1] == '\\' || path[i - 1] == '/') {
-                    path[i] = '\0';
-                    break;
-                }
-            }
-            char flagPath[MAX_PATH] = {};
-            _snprintf_s(flagPath, sizeof(flagPath), _TRUNCATE, "%sce_dx12_trace", path);
-            HANDLE h = CreateFileA(flagPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        // UTF-16: GetModuleFileNameA '?'-mangles an install folder outside the
+        // code page, and the flag file was then never found.
+        const std::wstring directory = ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(self));
+        if (!directory.empty()) {
+            const std::wstring flagPath = directory + L"\\ce_dx12_trace";
+            HANDLE h = CreateFileW(flagPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (h != INVALID_HANDLE_VALUE) {
                 CloseHandle(h);

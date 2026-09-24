@@ -422,9 +422,10 @@ void RegisterWithWER() {
         typedef HRESULT(WINAPI * PFN_WerRegisterFile)(PCWSTR, DWORD, DWORD);
         auto pfnWerRegisterFile = (PFN_WerRegisterFile)GetProcAddress(hWer, "WerRegisterFile");
         if (pfnWerRegisterFile) {
-            // Register our dump directory as a file to include in WER reports
+            // Register our dump directory as a file to include in WER reports.
+            // The dump directory is code-page text, like every other consumer's.
             wchar_t dumpDirW[MAX_PATH];
-            MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
+            MultiByteToWideChar(CP_ACP, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
             pfnWerRegisterFile(dumpDirW, 1 /*WER_FILE_ANOTHER*/, 0);
         }
 
@@ -434,7 +435,7 @@ void RegisterWithWER() {
         auto pfnWerAddNamedDumpStore = (PFN_WerAddNamedDumpStore)GetProcAddress(hWer, "WerAddNamedDumpStore");
         if (pfnWerAddNamedDumpStore) {
             wchar_t dumpDirW[MAX_PATH];
-            MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
+            MultiByteToWideChar(CP_ACP, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
             pfnWerAddNamedDumpStore(L"CaptureEngine", dumpDirW);
         }
     }

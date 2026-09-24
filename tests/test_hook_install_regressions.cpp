@@ -266,8 +266,15 @@ TEST(HookInstallRegressionTest, HookModulePathsAreDerivedAsUtf16) {
     ASSERT_FALSE(crashSetup.empty());
     EXPECT_NE(crashSetup.find("GetHookModuleDirectoryW"), std::string::npos);
     EXPECT_NE(crashSetup.find("CreateDirectoryW"), std::string::npos);
-    // The crash handler converts its directory from UTF-8 at the WER boundary.
-    EXPECT_NE(crashSetup.find("NarrowFromWideUtf8"), std::string::npos);
+    // Every crash-directory consumer (CreateFileA in the dump writer, the
+    // external helper's command line, DiscoveryInfo.logsPath) reads code-page
+    // text; a UTF-8 directory sent the dumps of a non-ASCII install nowhere.
+    EXPECT_NE(crashSetup.find("ce::path::AnsiCompatiblePath(logsDir.wstring()"), std::string::npos);
+    EXPECT_EQ(crashSetup.find("NarrowFromWideUtf8"), std::string::npos);
+    const std::string crashHandler = ReadSource("common/crash_handler.cpp");
+    ASSERT_FALSE(crashHandler.empty());
+    EXPECT_EQ(crashHandler.find("MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage()"), std::string::npos);
+    EXPECT_NE(crashHandler.find("MultiByteToWideChar(CP_ACP, 0, CrashDumpDirectoryStorage()"), std::string::npos);
 
     const std::string pristineRead =
         FunctionBody(pristineUnit, "bool ReadOrigBytesFromDisk(", "}  // namespace InlineHook");

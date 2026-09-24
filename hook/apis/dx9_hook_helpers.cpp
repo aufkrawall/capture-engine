@@ -21,7 +21,14 @@ D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
     }
 
     if (!record) {
-        return {dx9_hook_oSetTexture, dx9_hook_oGetSamplerState, dx9_hook_oSetSamplerState, nullptr, nullptr};
+        // A body-hooked implementation is only ever called through its
+        // trampoline (dx9_sampler_rearm_policy.h).
+        return {reinterpret_cast<SetTexture_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetTexture))),
+                reinterpret_cast<GetSamplerState_t>(
+                    TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oGetSamplerState))),
+                reinterpret_cast<SetSamplerState_t>(
+                    TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetSamplerState))),
+                nullptr, nullptr, nullptr};
     }
     return {
         record->setTexture.load(std::memory_order_acquire),
@@ -29,6 +36,7 @@ D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
         record->setSamplerState.load(std::memory_order_acquire),
         record->createStateBlock.load(std::memory_order_acquire),
         record->endStateBlock.load(std::memory_order_acquire),
+        record->beginStateBlock.load(std::memory_order_acquire),
     };
 
 }
