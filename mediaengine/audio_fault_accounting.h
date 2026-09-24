@@ -32,13 +32,16 @@ namespace ce::audio {
 // only when the encode FAILED; a shortfall with failed == false is the intentional
 // recording-end clamp and must not be counted as loss. acceptedSamples is what really
 // entered the encoder pipeline (resampler + FIFO intake): samples merely queued in the
-// FIFO still count as accepted because they are placed later, not lost.
-inline int64_t ComputeConsumedChunkHoleSamples(int64_t consumedChunkSamples, int64_t acceptedSamples, bool failed) {
+// FIFO still count as accepted because they are placed later, not lost. trimmedSamples
+// is the part the encoder deliberately dropped past the recording end: a failure raised
+// by a later frame of the same call must not turn that intentional clamp into loss.
+inline int64_t ComputeConsumedChunkHoleSamples(int64_t consumedChunkSamples, int64_t acceptedSamples, bool failed,
+                                               int64_t trimmedSamples = 0) {
     if (!failed || consumedChunkSamples <= 0) {
         return 0;
     }
-    const int64_t accepted = std::clamp<int64_t>(acceptedSamples, 0, consumedChunkSamples);
-    return consumedChunkSamples - accepted;
+    const int64_t accounted = std::max<int64_t>(0, acceptedSamples) + std::max<int64_t>(0, trimmedSamples);
+    return consumedChunkSamples - std::min(accounted, consumedChunkSamples);
 }
 
 // Maps a consumed chunk between sample rates through the same duration round trip

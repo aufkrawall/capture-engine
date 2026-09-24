@@ -205,6 +205,7 @@ void VideoEncoder::BeginDeferredRecording() {
     muxOutputErrorCount.store(0, std::memory_order_relaxed);
     hdrMetadataDropCount.store(0, std::memory_order_relaxed);
     cfrCoverageIncomplete.store(false, std::memory_order_relaxed);
+    lastStopFinalizeTimedOut.store(false, std::memory_order_relaxed);
     liveOutputFailed.store(false, std::memory_order_relaxed);
     outputIoAbort.store(false, std::memory_order_relaxed);
     outputIoDeadlineMs.store(0, std::memory_order_relaxed);

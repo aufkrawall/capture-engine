@@ -41,11 +41,27 @@ TEST(CaptureRetargetPolicyTest, FailedRollbackStopsTheRecordingDegraded) {
     EXPECT_EQ(SelectSourceLossRecovery(true, true, false), SourceLossRecovery::kStopDegraded);
 }
 
-TEST(CaptureRetargetPolicyTest, RestoredSourceContinuesWithHonestDegradedTruth) {
-    EXPECT_EQ(SelectSourceLossRecovery(true, true, true), SourceLossRecovery::kContinueDegraded);
+TEST(CaptureRetargetPolicyTest, RestoredSourceContinuesOnlyWhenTheRequestedSourceIsAlive) {
     EXPECT_EQ(SelectSourceLossRecovery(true, false, true), SourceLossRecovery::kContinue);
     EXPECT_EQ(SelectSourceLossRecovery(false, true, true), SourceLossRecovery::kNone);
     EXPECT_EQ(SelectSourceLossRecovery(false, true, false), SourceLossRecovery::kNone);
+}
+
+// Regression: a window-target recording whose window died and whose replacement
+// was refused (kStopRecording) or failed rolled back onto the dead window's
+// capture. A restart of that capture can succeed and then deliver no frames, so
+// the recording kept running frozen instead of stopping. A live recording never
+// rolls back onto a lost source, and losing it always stops degraded.
+TEST(CaptureRetargetPolicyTest, LiveRecordingNeverRollsBackOntoALostSource) {
+    EXPECT_FALSE(ShouldRollBackFailedRetarget(true, true));
+    EXPECT_TRUE(ShouldRollBackFailedRetarget(true, false));
+    EXPECT_TRUE(ShouldRollBackFailedRetarget(false, true));
+    EXPECT_TRUE(ShouldRollBackFailedRetarget(false, false));
+
+    // Whatever a rollback would have reported, a lost source stops the recording.
+    EXPECT_EQ(SelectSourceLossRecovery(true, true, true), SourceLossRecovery::kStopDegraded);
+    EXPECT_EQ(SelectSourceLossRecovery(true, true, false), SourceLossRecovery::kStopDegraded);
+    EXPECT_EQ(SelectSourceLossRetarget(TargetOrigin::kWindowTarget, false), RetargetSelector::kStopRecording);
 }
 
 // Regression: source-loss truth must survive later recording-health

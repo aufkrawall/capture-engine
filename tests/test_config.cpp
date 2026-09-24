@@ -778,6 +778,14 @@ TEST_F(ConfigTest, UnknownCaptureMethodHotkeyAndLimiterModeWarnAndKeepDocumented
     EXPECT_NE(log.find("[Capture] capture_method='wgc2' is invalid; using documented default 'auto'"),
               std::string::npos)
         << log;
+    // One typo, one warning: the loader reads capture_method twice (literal
+    // and reader value), and the classification predicates never log.
+    size_t captureWarnings = 0;
+    for (size_t at = log.find("capture_method='wgc2'"); at != std::string::npos;
+         at = log.find("capture_method='wgc2'", at + 1)) {
+        ++captureWarnings;
+    }
+    EXPECT_EQ(captureWarnings, 1u) << log;
     EXPECT_NE(log.find("[Hotkeys] toggle_overlay='Ctrl+F99' is invalid; using documented default 'none'"),
               std::string::npos)
         << log;

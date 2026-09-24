@@ -1,5 +1,37 @@
 # llm-wiki Log
 
+### 2026-09-24 - Review follow-up to the second risk audit (3cfe8272)
+
+A code review of 3cfe8272 found ten issues; eight changed code, two needed no change. Unit gate
+green; no hardware run.
+
+- **Breakpoints are recorded first, with no immediate dump.** The one-dump budget was spent by the
+  first handled int3, and that dump also latched `g_DumpSuccessfullyWritten`, so a later real
+  crash got no dump (`crash_dump_policy.h`; budget constant removed).
+- **Retarget never rolls back onto a dead window** during a live recording
+  (`ShouldRollBackFailedRetarget`). A lost source always stops degraded; `kContinueDegraded` is
+  removed. The `kStopRecording` selector previously fell into that rollback.
+- **Audio:** `EncodeResult::trimmedSamples` reports the part of a chunk the recording-end clamp
+  dropped, so a failure later in the same call can't count the clamp as a content hole.
+  Silence for a refused chunk after a resampler failure is bounded to the recording end
+  (`PlaceRefusedChunkHole`).
+- **Video output truth:** a Stop that times out on finalize reports the output as degraded
+  (`IsFinalizedOutputDegraded`). An expired output I/O deadline now breaks a write that is
+  already blocked, via `CancelSynchronousIo` on the writer thread (it registers its own handle,
+  and deadline arm/clear is ordered by `outputIoCancelMutex`). FFmpeg's interrupt callback
+  only refuses the next transfer.
+- **DirectDraw lock tracking is per lock** (`SurfaceLockKey`: the rect for v4/v7, the returned
+  surface pointer for the legacy interface). Several non-overlapping rect locks are legal, so an
+  Unlock returns `Deferred` while other locks are still held. Anti-leak rules are kept: an
+  overlapping Lock replaces the lock it overlaps, a failed or ambiguous Unlock resolves the whole
+  track, and capacity is bounded.
+- **Config:** a `capture_method` typo warns once. The `Is*CaptureMethod` predicates never log.
+- **No change needed:**
+  - Vulkan `listedTarget || hostEligible`: `PopulateWhitelistCache` rewrites the persisted list
+    from the same config on every publication, so the list can't be stale while a host runs.
+  - The DX12 deferred-signal flush under `dx12_hook_g_OverlayMutex`: no mutex holder waits on the
+    game's present thread, and narrowing the lock would reopen the fence-teardown race.
+
 ### 2026-09-24 - Second risk audit: output truth, injection paths, FG handoff, legacy/Vulkan/audio faults
 
 Follow-up audit of the remaining weak areas (targeted fixes, no big refactors). Eight areas landed;

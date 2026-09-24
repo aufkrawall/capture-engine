@@ -77,3 +77,51 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     EXPECT_NE(engine.find("lastOutputDegraded = videoEnc->WasLastOutputDegraded()"), std::string::npos);
     EXPECT_NE(engine.find("MEDIAENGINE_API bool MediaEngine_WasLastOutputDegraded()"), std::string::npos);
 }
+
+// Regression: FFmpeg's interrupt callback only refuses the NEXT transfer, so a
+// local write already blocked in the kernel (dead network share, dying disk)
+// still wedged the writer thread despite the "bounded" deadline. The writer
+// registers itself and an expired deadline is broken with CancelSynchronousIo
+// from the producer path and from Stop's finalize wait.
+TEST(VideoEncoderOutputTruthTest, ExpiredOutputIoIsCancelledNotOnlyRefusedNextTime) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t cancel = source.find("bool VideoEncoder::CancelExpiredOutputIo(");
+    ASSERT_NE(cancel, std::string::npos);
+    const size_t cancelEnd = source.find("\n}\n", cancel);
+    const std::string cancelBody = source.substr(cancel, cancelEnd - cancel);
+    EXPECT_NE(cancelBody.find("CancelSynchronousIo(outputIoThread)"), std::string::npos);
+    EXPECT_NE(cancelBody.find("std::lock_guard<std::mutex> lock(outputIoCancelMutex);"), std::string::npos)
+        << "the cancel must be ordered against deadline arm/clear so it only hits the expired operation";
+
+    // Arm and clear take the same lock as the cancel.
+    for (const char* fn : {"void VideoEncoder::ArmOutputIoDeadline()", "void VideoEncoder::ClearOutputIoDeadline()"}) {
+        const size_t begin = source.find(fn);
+        ASSERT_NE(begin, std::string::npos) << fn;
+        const std::string body = source.substr(begin, source.find("\n}\n", begin) - begin);
+        EXPECT_NE(body.find("outputIoCancelMutex"), std::string::npos) << fn;
+    }
+
+    const size_t writer = source.find("void VideoEncoder::AsyncWriteLoop()");
+    ASSERT_NE(writer, std::string::npos);
+    EXPECT_NE(source.find("RegisterOutputIoThread();", writer), std::string::npos);
+    EXPECT_NE(source.find("CancelExpiredOutputIo(\"write_frame\")"), std::string::npos);
+    EXPECT_NE(source.find("CancelExpiredOutputIo(\"stop\")"), std::string::npos);
+}
+
+// Regression: when Stop() gave up waiting for the writer, the degraded flag was
+// read before the trailer, close and CFR coverage check had run, so a later
+// failure could never reach the completion and a clean save was claimed.
+TEST(VideoEncoderOutputTruthTest, FinalizeTimeoutReportsTheOutputDegraded) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t timeout = source.find("writerFinalizeTimedOut.store(true, std::memory_order_release);");
+    ASSERT_NE(timeout, std::string::npos);
+    const size_t latch = source.find("lastStopFinalizeTimedOut.store(true", timeout);
+    ASSERT_NE(latch, std::string::npos);
+    EXPECT_LT(latch - timeout, 400u) << "the latch belongs to the timeout branch";
+    EXPECT_NE(source.find("lastStopFinalizeTimedOut.store(false"), std::string::npos)
+        << "each recording starts without the previous stop's verdict";
+}

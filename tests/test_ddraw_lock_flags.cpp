@@ -159,8 +159,8 @@ TEST(DDrawLockFlagsTest, EveryWaitLockFlagExpressionUnderHookKeepsNoSysLock) {
 // deferred every later DirectScanout presentation, and both the overlay and
 // the freeze-watchdog heartbeat went silent for the session while the game ran
 // on. An application Lock/Unlock imbalance on a driver that accepted
-// overlapping locks stuck the same way. DirectDraw permits one lock at a time,
-// so every Unlock attempt resolves the surface's whole track.
+// overlapping locks stuck the same way. A failed Unlock resolves the whole
+// track, and an overlapping Lock replaces the lock it overlaps.
 TEST(DDrawLockFlagsTest, AnUnlockAttemptAlwaysResolvesTheLockTracking) {
     namespace policy = ce::ddraw_present_policy;
     policy::SurfaceLockTrack track;
@@ -174,8 +174,9 @@ TEST(DDrawLockFlagsTest, AnUnlockAttemptAlwaysResolvesTheLockTracking) {
     policy::BeginSurfaceLockTrack(track, true);
     EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true), policy::SurfaceLockAccess::Writable);
 
-    // An unbalanced pair - two successful locks, one unlock - cannot leave
-    // depth behind either; the single Unlock resolves both holders.
+    // An unbalanced pair - two successful whole-surface locks, one unlock -
+    // cannot leave depth behind either: the second lock overlaps the first, so
+    // it proves the first holder gone and replaces it.
     policy::BeginSurfaceLockTrack(track, false);
     policy::BeginSurfaceLockTrack(track, true);
     EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true), policy::SurfaceLockAccess::Writable);
@@ -193,7 +194,7 @@ TEST(DDrawLockFlagsTest, AnUnlockAttemptAlwaysResolvesTheLockTracking) {
         std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours_surface_access.cpp";
     const std::string contents = ce::test_source::ReadFile(source);
     ASSERT_FALSE(contents.empty()) << source.string();
-    EXPECT_EQ(CountOccurrences(contents, "CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr))"), 3u)
+    EXPECT_EQ(CountOccurrences(contents, "CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr), "), 3u)
         << "an Unlock detour stopped resolving the lock tracking unconditionally";
     EXPECT_EQ(contents.find("SUCCEEDED(hr) ? CompleteDirectDrawSurfaceLock"), std::string::npos);
 }
@@ -294,4 +295,108 @@ TEST(DDrawLockFlagsTest, ANestedPresentationRunsTheRealImplementationThroughAByp
     ASSERT_FALSE(sharedContents.empty()) << shared.string();
     EXPECT_NE(sharedContents.find("NestedPresentationMayRunRealImplementation"), std::string::npos);
     EXPECT_NE(sharedContents.find("AcquireDirectDrawPresentEntryBypass"), std::string::npos);
+}
+
+// DirectDraw allows several simultaneous locks on non-overlapping rectangles,
+// which is why Unlock takes a rectangle. Resolving the whole track on the first
+// Unlock reported a primary-surface presentation while the application was
+// still writing its second rectangle, and the second Unlock then found nothing
+// tracked and reported a second presentation (Unknown).
+TEST(DDrawLockFlagsTest, RectangleLocksReleaseOneAtATime) {
+    namespace policy = ce::ddraw_present_policy;
+    auto rectKey = [](int left, int top, int right, int bottom) {
+        policy::SurfaceLockKey key;
+        key.hasRect = true;
+        key.rect = policy::Rect{left, top, right, bottom};
+        return key;
+    };
+    const policy::SurfaceLockKey topHalf = rectKey(0, 0, 640, 240);
+    const policy::SurfaceLockKey bottomHalf = rectKey(0, 240, 640, 480);
+
+    policy::SurfaceLockTrack track;
+    policy::BeginSurfaceLockTrack(track, true, topHalf);
+    policy::BeginSurfaceLockTrack(track, true, bottomHalf);
+    EXPECT_EQ(track.depth, 2u);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, topHalf), policy::SurfaceLockAccess::Deferred);
+    EXPECT_EQ(track.depth, 1u);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, bottomHalf), policy::SurfaceLockAccess::Writable);
+    EXPECT_EQ(track.depth, 0u);
+
+    // The last lock decides the access: a read-only holder released last with
+    // a writer released earlier still reports what that holder may have done.
+    policy::BeginSurfaceLockTrack(track, true, topHalf);
+    policy::BeginSurfaceLockTrack(track, false, bottomHalf);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, topHalf), policy::SurfaceLockAccess::Deferred);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, bottomHalf), policy::SurfaceLockAccess::ReadOnly);
+
+    // The original IDirectDrawSurface names the lock by the pointer Lock returned.
+    int topData = 0;
+    int bottomData = 0;
+    policy::SurfaceLockKey legacyTop = topHalf;
+    legacyTop.surfaceData = &topData;
+    policy::SurfaceLockKey legacyBottom = bottomHalf;
+    legacyBottom.surfaceData = &bottomData;
+    policy::BeginSurfaceLockTrack(track, true, legacyTop);
+    policy::BeginSurfaceLockTrack(track, true, legacyBottom);
+    policy::SurfaceLockKey unlockBottom;
+    unlockBottom.surfaceData = &bottomData;
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, unlockBottom), policy::SurfaceLockAccess::Deferred);
+    policy::SurfaceLockKey unlockTop;
+    unlockTop.surfaceData = &topData;
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, unlockTop), policy::SurfaceLockAccess::Writable);
+    EXPECT_EQ(track.depth, 0u);
+}
+
+// Anti-leak rules survive the per-lock bookkeeping: a single held lock is
+// released by any successful Unlock (legacy Unlock(NULL), a mismatched rect), an
+// Unlock that names nothing held while several are held resolves them all, and
+// a failed Unlock always resolves everything.
+TEST(DDrawLockFlagsTest, AmbiguousOrFailedUnlocksNeverLeaveDepthBehind) {
+    namespace policy = ce::ddraw_present_policy;
+    policy::SurfaceLockKey rectA;
+    rectA.hasRect = true;
+    rectA.rect = policy::Rect{0, 0, 100, 100};
+    policy::SurfaceLockKey rectB;
+    rectB.hasRect = true;
+    rectB.rect = policy::Rect{200, 200, 300, 300};
+    const policy::SurfaceLockKey whole;
+
+    policy::SurfaceLockTrack track;
+    policy::BeginSurfaceLockTrack(track, true, rectA);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, whole), policy::SurfaceLockAccess::Writable);
+    EXPECT_EQ(track.depth, 0u);
+
+    policy::BeginSurfaceLockTrack(track, false, rectA);
+    policy::BeginSurfaceLockTrack(track, true, rectB);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, whole), policy::SurfaceLockAccess::Writable);
+    EXPECT_EQ(track.depth, 0u);
+
+    policy::BeginSurfaceLockTrack(track, true, rectA);
+    policy::BeginSurfaceLockTrack(track, true, rectB);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, false, rectA), policy::SurfaceLockAccess::Unknown);
+    EXPECT_EQ(track.depth, 0u);
+
+    // A whole-surface lock overlaps every rectangle, so it replaces them all.
+    policy::BeginSurfaceLockTrack(track, false, rectA);
+    policy::BeginSurfaceLockTrack(track, false, rectB);
+    policy::BeginSurfaceLockTrack(track, true, whole);
+    EXPECT_EQ(track.depth, 1u);
+    EXPECT_EQ(policy::CompleteSurfaceLockTrack(track, true, whole), policy::SurfaceLockAccess::Writable);
+
+    // The capacity is bounded: an unbalanced stream of disjoint locks evicts the
+    // oldest instead of growing.
+    for (int i = 0; i < 20; ++i) {
+        policy::SurfaceLockKey key;
+        key.hasRect = true;
+        key.rect = policy::Rect{i * 10, 0, i * 10 + 5, 5};
+        policy::BeginSurfaceLockTrack(track, true, key);
+    }
+    EXPECT_EQ(track.depth, policy::SurfaceLockTrack::kMaxHeldLocks);
+
+    // Every Unlock detour skips a Deferred result as a presentation.
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours_surface_access.cpp";
+    const std::string contents = ce::test_source::ReadFile(source);
+    ASSERT_FALSE(contents.empty());
+    EXPECT_EQ(CountOccurrences(contents, "access != DirectDrawLockAccess::Deferred"), 3u);
 }

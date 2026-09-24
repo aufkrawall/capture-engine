@@ -190,3 +190,21 @@ TEST(MuxInvariantTest, PacketTimelineExcludesTerminalDiscardFromDecodedEndpoint)
     EXPECT_EQ(stats.lastEndUs, 16917333);
     EXPECT_EQ(stats.lastDecodedEndUs, 16916666);
 }
+
+TEST(MuxInvariantTest, OutputIoDeadlineExpiresOnlyWhileArmed) {
+    EXPECT_FALSE(ce::mux::IsOutputIoDeadlineExpired(0, 0));
+    EXPECT_FALSE(ce::mux::IsOutputIoDeadlineExpired(0, 123456));
+    EXPECT_FALSE(ce::mux::IsOutputIoDeadlineExpired(5000, 4999));
+    EXPECT_TRUE(ce::mux::IsOutputIoDeadlineExpired(5000, 5000));
+    EXPECT_TRUE(ce::mux::IsOutputIoDeadlineExpired(5000, 90000));
+}
+
+// A finalize Stop() stopped waiting for has an unknown outcome: it must never
+// be reported as a clean save.
+TEST(MuxInvariantTest, UnfinishedFinalizeIsReportedDegraded) {
+    EXPECT_FALSE(ce::mux::IsFinalizedOutputDegraded(0, 0, false, false));
+    EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(0, 0, false, true));
+    EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(1, 0, false, false));
+    EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(0, 1, false, false));
+    EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(0, 0, true, false));
+}

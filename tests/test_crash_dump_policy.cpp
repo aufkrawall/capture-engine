@@ -377,7 +377,6 @@ TEST(CrashDumpPolicyTest, InherentlyFatalCodesStillDumpImmediately) {
     EXPECT_EQ(policy::ClassifyFirstChanceException(0xC000041DUL, false, false), Action::kDumpNow);
     EXPECT_EQ(policy::ClassifyFirstChanceException(policy::kUe5EnsureExceptionCode, false, false),
               Action::kQuickAssertDump);
-    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false), Action::kDumpNow);
     EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true), Action::kIgnore);
 }
 
@@ -430,26 +429,24 @@ TEST(CrashDumpPolicyTest, CrashDumpsPreferTheExternalHelperWithForeignOverlaysLo
     EXPECT_FALSE(policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(true));
 }
 
-TEST(CrashDumpPolicyTest, BreakpointExceptionsDumpWhenNoDebuggerOwnsThem) {
-    EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(false, false));
-    EXPECT_TRUE(policy::ShouldSkipBreakpointExceptionDump(false, true));
-    EXPECT_FALSE(policy::ShouldSkipBreakpointExceptionDump(true, true));
-}
-
 // Anti-cheat integrity int3s and another hooking engine's patch races are
-// handled by their raiser, but every first-chance STATUS_BREAKPOINT used to
-// cost a full dump stall plus the process's one-dump budget. The first unowned
-// breakpoint of a run keeps the immediate dump - an escaped one can terminate
-// without reaching ExitProcess hooks - and the rest are recorded first.
-TEST(CrashDumpPolicyTest, UnownedBreakpointsDumpOnceThenRecordFirst) {
+// handled by their raiser. Dumping a first-chance STATUS_BREAKPOINT immediately
+// cost a dump stall and latched the process's one crash dump, so a real crash
+// after a handled int3 got none; a "first breakpoint only" budget was spent on
+// exactly those handled int3s. Every unowned breakpoint is recorded first; an
+// escaped one still dumps through the unhandled filter (forceDump) or the
+// termination that follows it.
+TEST(CrashDumpPolicyTest, UnownedBreakpointsAreAlwaysRecordedFirst) {
     using Action = policy::FirstChanceAction;
-    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false, true), Action::kDumpNow);
-    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false, false), Action::kRecordFault);
+    for (int occurrence = 0; occurrence < 3; ++occurrence) {
+        EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false), Action::kRecordFault)
+            << "occurrence " << occurrence;
+    }
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, true, false), Action::kDumpNow);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true), Action::kIgnore);
 
-    // The unhandled filter re-enters with forceDump: that dump is never lost to
-    // the budget, and a debugger's breakpoints stay ignored either way.
-    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, true, false, false), Action::kDumpNow);
-    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true, true), Action::kIgnore);
+    // The recorded breakpoint becomes a dump when the process dies of it.
+    EXPECT_TRUE(policy::IsCrashLikeProcessExitCode(policy::kBreakpointExceptionExitCode));
 }
 
 // UE5 `ensure` is continuable and can re-fire every frame; uncapped, each one

@@ -52,11 +52,9 @@ struct DumpParams {
 
 static DumpParams g_DumpParamsSlot;
 
-// Per-run dump budgets (see ce::crash_dump_policy): one immediate first-chance
-// breakpoint dump, and kQuickAssertDumpPerProcessLimit UE5 ensure() assert
-// dumps. Both are consumed before classification/creation so concurrent storms
-// cannot observe the budget as unconsumed.
-static std::atomic<uint32_t> g_BreakpointImmediateDumps{0};
+// Per-run UE5 ensure() assert dump budget (kQuickAssertDumpPerProcessLimit).
+// Consumed before dump creation so a concurrent storm cannot observe it as
+// unconsumed.
 static std::atomic<uint32_t> g_QuickAssertDumpsWritten{0};
 
 // Worker thread to write minidump safely away from the crashed stack
@@ -302,17 +300,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Nothing above this line may allocate, lock or write a file: it runs for
     // every exception the host raises, including the thousands a managed or
     // JIT runtime handles itself. See ClassifyFirstChanceException.
-    const bool debuggerPresent = IsDebuggerPresent() != FALSE;
-    // The per-run breakpoint budget is consumed before classification, so two
-    // concurrent int3 storms cannot both observe it as unconsumed.
-    bool breakpointDumpBudgetRemaining = true;
-    if (code == static_cast<DWORD>(EXCEPTION_BREAKPOINT) && !forceDump && !debuggerPresent) {
-        breakpointDumpBudgetRemaining =
-            g_BreakpointImmediateDumps.fetch_add(1, std::memory_order_acq_rel) <
-            ce::crash_dump_policy::kBreakpointImmediateDumpBudget;
-    }
-    const auto action = ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, debuggerPresent,
-                                                                            breakpointDumpBudgetRemaining);
+    const auto action =
+        ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, IsDebuggerPresent() != FALSE);
     switch (action) {
         case ce::crash_dump_policy::FirstChanceAction::kIgnore:
             return EXCEPTION_CONTINUE_SEARCH;
@@ -332,10 +321,6 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     ActivateCrashTrace();
 
-    if (code == EXCEPTION_BREAKPOINT && !forceDump) {
-        TraceCrash("Breakpoint exception dumped immediately: no debugger is attached and this run's "
-                   "immediate-breakpoint-dump budget was unconsumed");
-    }
     if (forceDump) {
         const auto stats = ce::crash_first_chance::GetStatistics();
         char statsMsg[192];

@@ -297,6 +297,10 @@ void VideoEncoder::Stop() {
             if (writerCompleted) {
                 break;
             }
+            // A finalize write blocked in the kernel past its deadline never
+            // returns to FFmpeg's interrupt check; break it so the writer can
+            // finish and publish the committed file.
+            CancelExpiredOutputIo("stop");
             const uint64_t elapsedMs = GetTickCount64() - waitStartMs;
             const uint32_t phase = writerFinalizePhase.load(std::memory_order_relaxed);
             if (elapsedMs >= kSlowFinalizeWarnMs &&
@@ -324,6 +328,10 @@ void VideoEncoder::Stop() {
                     static_cast<unsigned long long>(elapsedMs));
         } else {
             writerFinalizeTimedOut.store(true, std::memory_order_release);
+            // The writer still owns the trailer, close and CFR coverage check:
+            // the completion cannot claim a clean save it has not seen.
+            lastStopFinalizeTimedOut.store(true, std::memory_order_release);
+            CancelExpiredOutputIo("stop-timeout");
             const uint32_t timedOutPhase = writerFinalizePhase.load(std::memory_order_relaxed);
             // A live writer owns more than fmtCtx: the post-mux probe still
             // reads outputFilename and will perform CleanupResources on exit.
@@ -401,6 +409,11 @@ void VideoEncoder::Cancel() {
 // Async Packet Writer Loop
 void VideoEncoder::AsyncWriteLoop() {
     DLL_Log("[VideoEncoder] Async Writer Thread Started");
+    RegisterOutputIoThread();
+    struct OutputIoThreadRegistration {
+        VideoEncoder* encoder;
+        ~OutputIoThreadRegistration() { encoder->UnregisterOutputIoThread(); }
+    } outputIoThreadRegistration{this};
 
     while (writerRunning || isStopping) {
         std::unique_lock<std::mutex> lock(queueMutex);

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "../common/crash_dump_policy.h"
+#include "../common/crash_first_chance.h"
 #include "../common/crash_handler.h"
 #include "../common/log_privacy.h"
 #include "source_fragment_reader.h"
@@ -116,7 +117,7 @@ protected:
 // crash.log is shared in support workflows like every other log, so it follows
 // the same privacy contract (log_privacy.h): no Windows account component may
 // reach the file. Regression: crash.log was the one funnel that wrote messages
-// raw, so every crash session leaked C:\Users\<account>\... paths.
+// raw, so every crash session leaked C:\Users\<user>\... paths.
 TEST_F(CrashOutputTruthTest, TraceCrashMasksTheWindowsAccountComponent) {
     const std::string message =
         "Assert dump: C:\\Users\\SupportSecret\\AppData\\Local\\captureproject\\logs\\assert_20260924_1.dmp";
@@ -167,11 +168,11 @@ TEST_F(CrashOutputTruthTest, QuickAssertDumpsRespectTheForeignOverlayGuardAndPer
 }
 
 // Anti-cheat integrity int3s and another hooking engine's patch races are
-// handled by their raiser, but each first-chance STATUS_BREAKPOINT used to cost
-// a full CE dump stall and the process's one-dump budget. The first unowned
-// breakpoint of a run keeps its immediate dump (an escaped one can terminate
-// without reaching ExitProcess hooks); the rest are record-first.
-TEST_F(CrashOutputTruthTest, OnlyTheFirstUnownedBreakpointDumpsImmediately) {
+// handled by their raiser. A first-chance STATUS_BREAKPOINT therefore never
+// dumps immediately: that cost a dump stall and latched the process's one crash
+// dump, so the real crash after a handled int3 got none. An escaped breakpoint
+// dumps through the unhandled filter's forceDump re-entry instead.
+TEST_F(CrashOutputTruthTest, UnownedBreakpointsNeverDumpAtFirstChance) {
     if (IsDebuggerPresent()) {
         GTEST_SKIP() << "a debugger owns every breakpoint in this run";
     }
@@ -181,12 +182,26 @@ TEST_F(CrashOutputTruthTest, OnlyTheFirstUnownedBreakpointDumpsImmediately) {
         EXCEPTION_RECORD record = {};
         CONTEXT context = {};
         EXCEPTION_POINTERS pointers = MakeSyntheticException(record, context, EXCEPTION_BREAKPOINT);
+        // The recorder only hands a record back to the thread whose stack it
+        // faulted on, so the synthetic fault sits on this thread's stack.
+#ifdef _WIN64
+        context.Rsp = reinterpret_cast<DWORD64>(&record);
+#else
+        context.Esp = static_cast<DWORD>(reinterpret_cast<uintptr_t>(&record));
+#endif
         EXPECT_EQ(CrashHandlerExceptionFilterForTesting(&pointers), EXCEPTION_CONTINUE_SEARCH);
     }
 
+    // Recorded, not dumped: the thread's record is what a later termination
+    // would dump with. Forget it so no other test inherits it.
+    EXCEPTION_RECORD recorded = {};
+    CONTEXT recordedContext = {};
+    EXPECT_TRUE(ce::crash_first_chance::CopyFaultForCurrentThread(&recorded, &recordedContext));
+    EXPECT_EQ(recorded.ExceptionCode, static_cast<DWORD>(EXCEPTION_BREAKPOINT));
+    ce::crash_first_chance::ClearFaultForCurrentThread();
+
     const std::string log = ReadCrashLog(dir_);
-    EXPECT_EQ(CountOccurrences(log, "CRASH DETECTED - Handling exception"), 1u) << log;
-    EXPECT_EQ(CountOccurrences(log, "immediate-breakpoint-dump budget"), 1u) << log;
+    EXPECT_EQ(CountOccurrences(log, "CRASH DETECTED - Handling exception"), 0u) << log;
 }
 
 // The redaction must run inside TraceCrash itself: every call site funnels
@@ -240,9 +255,9 @@ TEST(CrashOutputTruthSourceTest, QuickAssertDumpBranchIsCappedAndGuardedBeforeIt
         << "the dump path crash.log names must not expose the private directory layout";
 }
 
-// Source side of the breakpoint budget: the per-run counter is consumed before
-// classification and the classifier is told about it.
-TEST(CrashOutputTruthSourceTest, BreakpointDumpBudgetIsConsumedByTheFilterBeforeClassification) {
+// Source side of the breakpoint policy: no per-run immediate-dump budget may
+// come back - the classifier alone decides, and it records breakpoints first.
+TEST(CrashOutputTruthSourceTest, BreakpointsCarryNoImmediateDumpBudget) {
     namespace fs = std::filesystem;
     const std::string writer =
         ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_dump_writer.cpp");
@@ -251,13 +266,13 @@ TEST(CrashOutputTruthSourceTest, BreakpointDumpBudgetIsConsumedByTheFilterBefore
     ASSERT_FALSE(writer.empty());
     ASSERT_FALSE(policyHeader.empty());
 
-    const size_t budget = writer.find("g_BreakpointImmediateDumps.fetch_add(");
-    const size_t classify = writer.find("ClassifyFirstChanceException(", budget);
-    ASSERT_NE(budget, std::string::npos);
-    ASSERT_NE(classify, std::string::npos) << "the budget must reach the classifier, not be applied after it";
-    EXPECT_NE(writer.find("kBreakpointImmediateDumpBudget"), std::string::npos);
-    EXPECT_NE(policyHeader.find("breakpointDumpBudgetRemaining ? FirstChanceAction::kDumpNow : "
-                                "FirstChanceAction::kRecordFault"),
-              std::string::npos)
-        << "later unowned breakpoints must be record-first";
+    EXPECT_EQ(writer.find("g_BreakpointImmediateDumps"), std::string::npos);
+    EXPECT_EQ(policyHeader.find("kBreakpointImmediateDumpBudget"), std::string::npos);
+    const size_t breakpointCase = policyHeader.find("case static_cast<DWORD>(EXCEPTION_BREAKPOINT):");
+    ASSERT_NE(breakpointCase, std::string::npos);
+    const size_t caseEnd = policyHeader.find("default:", breakpointCase);
+    ASSERT_NE(caseEnd, std::string::npos);
+    const std::string body = policyHeader.substr(breakpointCase, caseEnd - breakpointCase);
+    EXPECT_EQ(body.find("FirstChanceAction::kDumpNow"), std::string::npos)
+        << "a first-chance breakpoint must never dump immediately";
 }

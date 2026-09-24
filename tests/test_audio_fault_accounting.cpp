@@ -121,6 +121,18 @@ TEST(AudioFaultAccounting, ConsumedChunkHoleCountsOnlyFailedShortfalls) {
     EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(240, 0, true), 240);
 }
 
+// Regression: when a later frame of the same call failed, the intentional
+// recording-end clamp was counted as lost content (chunk - accepted). The part
+// trimmed past the video end is never a hole.
+TEST(AudioFaultAccounting, TrimmedTailIsNeverCountedAsAHole) {
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 200, true, 4600), 0);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 0, true, 4320), 480);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 100, true, 4600), 100);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 4800, true, 4800), 0);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 0, true, -3), 4800);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(4800, 0, false, 0), 0);
+}
+
 TEST(AudioFaultAccounting, ConsumedChunkHoleClampsOutOfRangeAcceptance) {
     EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(240, -7, true), 240);
     EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(240, 999, true), 0);
@@ -151,8 +163,12 @@ TEST(AudioFaultAccounting, RefusedIntakeIsPlacedAsAnExplicitPositionalHole) {
     // growth refusal, short FIFO write) is sized with the shared hole policy and
     // placed at its exact timeline position as FIFO-tail silence - without this,
     // later samples shift early by each hole while every length check stays green.
-    EXPECT_EQ(CountOccurrences(body, "ce::audio::ComputeConsumedChunkHoleSamples("), 4u);
-    EXPECT_EQ(CountOccurrences(body, "AppendSilenceHole("), 4u);
+    // The two FIFO paths size from the already end-clamped samplesToWrite; the two
+    // resampler paths go through PlaceRefusedChunkHole, which applies the same
+    // recording-end bound.
+    EXPECT_EQ(CountOccurrences(body, "ce::audio::ComputeConsumedChunkHoleSamples("), 2u);
+    EXPECT_EQ(CountOccurrences(body, "AppendSilenceHole("), 2u);
+    EXPECT_EQ(CountOccurrences(body, "PlaceRefusedChunkHole("), 2u);
     EXPECT_NE(body.find("ComputeConsumedChunkHoleSamples(samplesToWrite, std::max(ret, 0), true)"),
               std::string::npos);
 
@@ -160,7 +176,14 @@ TEST(AudioFaultAccounting, RefusedIntakeIsPlacedAsAnExplicitPositionalHole) {
     // the resample failure and must place its hole too.
     const size_t resamplerInitFailure = body.find("DLL_Log(\"[AudioEnc] Failed to init resampler\");");
     ASSERT_NE(resamplerInitFailure, std::string::npos);
-    EXPECT_NE(body.find("AppendSilenceHole(", resamplerInitFailure), std::string::npos);
+    EXPECT_NE(body.find("PlaceRefusedChunkHole(", resamplerInitFailure), std::string::npos);
+
+    // Both the end clamp and the refused-chunk silence use the one bound.
+    const std::string source = ReadAudioEncoderSource();
+    const size_t place = source.find("void AudioEncoder::PlaceRefusedChunkHole(");
+    ASSERT_NE(place, std::string::npos);
+    EXPECT_NE(source.find("SamplesAllowedBeforeRecordingEnd()", place), std::string::npos);
+    EXPECT_NE(body.find("const int64_t allowedSamples = SamplesAllowedBeforeRecordingEnd();"), std::string::npos);
 }
 
 TEST(AudioFaultAccounting, PullAdvancesTheTrackCursorOverTheFullConsumedChunk) {
@@ -173,6 +196,8 @@ TEST(AudioFaultAccounting, PullAdvancesTheTrackCursorOverTheFullConsumedChunk) {
     ASSERT_NE(advance, std::string::npos);
     EXPECT_LT(holePolicy, advance);
     EXPECT_NE(source.find("encoder->AccountContentHole(lostTailSamples);"), std::string::npos);
+    EXPECT_NE(source.find("encodeResult.trimmedSamples);"), std::string::npos)
+        << "the hole policy must subtract the samples the encoder trimmed at the recording end";
 
     // The hole policy runs on the consumed chunk mapped to the encoder's sample
     // rate (where acceptedSamples and every encoder-side hole are counted) via the

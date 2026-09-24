@@ -10,18 +10,71 @@ namespace {
 // large keyframe flush - but never unbounded: a hung write (dead network share,
 // dying disk) must not wedge the writer thread forever, because Stop() gives up
 // waiting for finalize and the unpublished staging file would never reach the
-// user.
+// user. FFmpeg's interrupt callback only refuses the next transfer; a write
+// already blocked in the kernel is broken by CancelExpiredOutputIo.
 constexpr uint64_t kLiveOutputIoTimeoutMs = 5000;
 constexpr uint64_t kLocalOutputIoTimeoutMs = 30000;
 }  // namespace
 
 void VideoEncoder::ArmOutputIoDeadline() {
+    std::lock_guard<std::mutex> lock(outputIoCancelMutex);
     outputIoDeadlineMs.store(GetTickCount64() + (liveOutput ? kLiveOutputIoTimeoutMs : kLocalOutputIoTimeoutMs),
                              std::memory_order_release);
 }
 
 void VideoEncoder::ClearOutputIoDeadline() {
+    std::lock_guard<std::mutex> lock(outputIoCancelMutex);
     outputIoDeadlineMs.store(0, std::memory_order_release);
+}
+
+void VideoEncoder::RegisterOutputIoThread() {
+    HANDLE self = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self, THREAD_TERMINATE, FALSE,
+                         0)) {
+        DLL_Log("[VideoEncoder] WARNING: writer thread handle unavailable (error=%lu); a hung output write cannot be "
+                "cancelled",
+                GetLastError());
+        return;
+    }
+    std::lock_guard<std::mutex> lock(outputIoCancelMutex);
+    if (outputIoThread) {
+        CloseHandle(outputIoThread);
+    }
+    outputIoThread = self;
+}
+
+void VideoEncoder::UnregisterOutputIoThread() {
+    std::lock_guard<std::mutex> lock(outputIoCancelMutex);
+    if (outputIoThread) {
+        CloseHandle(outputIoThread);
+        outputIoThread = nullptr;
+    }
+}
+
+bool VideoEncoder::CancelExpiredOutputIo(const char* context) {
+    // Lock-free pre-check: the common case (no write in flight, or one within
+    // its deadline) must not touch the mutex on the encoder's per-packet path.
+    if (!ce::mux::IsOutputIoDeadlineExpired(outputIoDeadlineMs.load(std::memory_order_acquire), GetTickCount64())) {
+        return false;
+    }
+    // Arm/Clear take the same lock, so the operation seen expired here is still
+    // the one in flight: the writer cannot finish it and start another in between.
+    std::lock_guard<std::mutex> lock(outputIoCancelMutex);
+    const uint64_t deadline = outputIoDeadlineMs.load(std::memory_order_acquire);
+    if (!outputIoThread || !ce::mux::IsOutputIoDeadlineExpired(deadline, GetTickCount64())) {
+        return false;
+    }
+    const BOOL cancelled = CancelSynchronousIo(outputIoThread);
+    const DWORD error = cancelled ? ERROR_SUCCESS : GetLastError();
+    static std::atomic<uint32_t> s_cancelLogCount{0};
+    const uint32_t logCount = s_cancelLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 8 || (logCount & (logCount + 1)) == 0) {
+        DLL_Log("[VideoEncoder] ERROR: output I/O exceeded its deadline by %llums (%s); CancelSynchronousIo=%d "
+                "error=%lu (#%u)",
+                static_cast<unsigned long long>(GetTickCount64() - deadline), context ? context : "unknown",
+                cancelled ? 1 : 0, error, logCount + 1);
+    }
+    return cancelled != FALSE;
 }
 
 void VideoEncoder::ConfigureLiveMuxTimestampOffset() {
@@ -64,8 +117,10 @@ int VideoEncoder::InterruptOutputIo(void* opaque) {
         return 0;
     if (encoder->outputIoAbort.load(std::memory_order_acquire))
         return 1;
-    const uint64_t deadline = encoder->outputIoDeadlineMs.load(std::memory_order_acquire);
-    return deadline != 0 && GetTickCount64() >= deadline ? 1 : 0;
+    return ce::mux::IsOutputIoDeadlineExpired(encoder->outputIoDeadlineMs.load(std::memory_order_acquire),
+                                              GetTickCount64())
+               ? 1
+               : 0;
 }
 
 int VideoEncoder::WriteInterleavedPacket(AVPacket* packet) {

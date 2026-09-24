@@ -52,12 +52,20 @@ constexpr RetargetSelector SelectSourceLossRetarget(TargetOrigin origin, bool pi
                                                 : RetargetSelector::kStopRecording;
 }
 
+// Whether a failed in-recording retarget may roll back onto the previous
+// capture. It may not when that capture is the requested window that died: the
+// rollback republishes the dead window's capture, whose restart can "succeed"
+// and then deliver no frames - a frozen recording under a healthy-looking
+// session, which is exactly what the kStopRecording selector refused to allow.
+constexpr bool ShouldRollBackFailedRetarget(bool recordingLive, bool requestedSourceLost) {
+    return !(recordingLive && requestedSourceLost);
+}
+
 // Terminal action after a failed capture retarget while a recording is live.
 enum class SourceLossRecovery : uint8_t {
-    kNone = 0,          // no recording was affected
-    kContinue,          // rollback restored a usable source; the recording is intact
-    kContinueDegraded,  // rollback restored a lost source; latch degraded and keep recording
-    kStopDegraded,      // capture is definitively gone; latch degraded and stop
+    kNone = 0,      // no recording was affected
+    kContinue,      // rollback restored a usable source; the recording is intact
+    kStopDegraded,  // capture is definitively gone; latch degraded and stop
 };
 
 constexpr SourceLossRecovery SelectSourceLossRecovery(bool recordingLive, bool requestedSourceLost,
@@ -65,12 +73,14 @@ constexpr SourceLossRecovery SelectSourceLossRecovery(bool recordingLive, bool r
     if (!recordingLive) {
         return SourceLossRecovery::kNone;
     }
-    if (!rollbackRestored) {
-        // The rollback restart itself failed: nothing is delivering frames any
-        // more, so the recording must stop through the normal stop path.
+    if (requestedSourceLost || !rollbackRestored) {
+        // Either the requested source is dead (no rollback onto it, see
+        // ShouldRollBackFailedRetarget) or the rollback restart itself failed:
+        // nothing usable is delivering frames any more, so the recording must
+        // stop through the normal stop path and keep the committed prefix.
         return SourceLossRecovery::kStopDegraded;
     }
-    return requestedSourceLost ? SourceLossRecovery::kContinueDegraded : SourceLossRecovery::kContinue;
+    return SourceLossRecovery::kContinue;
 }
 
 // Confirmed capture-source loss is always recorded as video-degraded truth:

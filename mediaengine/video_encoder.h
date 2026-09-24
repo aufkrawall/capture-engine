@@ -77,13 +77,15 @@ public:
         return outputPublished.load(std::memory_order_acquire);
     }
     // True when the finalized output lost content or metadata: mux write
-    // failures, dropped encoded packets, dropped HDR metadata packets, or an
-    // incomplete CFR packet grid. Drives the honest "saved (degraded)"
-    // completion instead of a clean-save claim over a holey file.
+    // failures, dropped encoded packets, dropped HDR metadata packets, an
+    // incomplete CFR packet grid, or a finalize Stop() stopped waiting for (its
+    // outcome is unknown). Drives the honest "saved (degraded)" completion
+    // instead of a clean-save claim over a holey file.
     bool WasLastOutputDegraded() const {
-        return muxOutputErrorCount.load(std::memory_order_acquire) > 0 ||
-               hdrMetadataDropCount.load(std::memory_order_acquire) > 0 ||
-               cfrCoverageIncomplete.load(std::memory_order_acquire);
+        return ce::mux::IsFinalizedOutputDegraded(muxOutputErrorCount.load(std::memory_order_acquire),
+                                                  hdrMetadataDropCount.load(std::memory_order_acquire),
+                                                  cfrCoverageIncomplete.load(std::memory_order_acquire),
+                                                  lastStopFinalizeTimedOut.load(std::memory_order_acquire));
     }
 
     // Set Adapter LUID (call before Start or EncodeFrame)
@@ -197,6 +199,13 @@ private:
     std::string OutputTargetForLog() const;
     void ArmOutputIoDeadline();
     void ClearOutputIoDeadline();
+    // The writer thread registers a handle to itself so another thread can
+    // break a blocking output write whose deadline passed (CancelSynchronousIo).
+    void RegisterOutputIoThread();
+    void UnregisterOutputIoThread();
+    // Cancels the writer thread's blocked synchronous output I/O once its
+    // deadline passed. Safe from any thread; a no-op while no deadline expired.
+    bool CancelExpiredOutputIo(const char* context);
     void ConfigureLiveMuxTimestampOffset();
     int WriteInterleavedPacket(AVPacket* packet);
     void RequestOutputFailure(const char* operation, int errorCode);
@@ -259,10 +268,15 @@ private:
     std::atomic<uint32_t> muxOutputErrorCount{0};
     std::atomic<uint32_t> hdrMetadataDropCount{0};
     std::atomic<bool> cfrCoverageIncomplete{false};
+    std::atomic<bool> lastStopFinalizeTimedOut{false};
     bool liveOutput = false;
     std::atomic<bool> liveOutputFailed{false};
     std::atomic<bool> outputIoAbort{false};
     std::atomic<uint64_t> outputIoDeadlineMs{0};
+    // Guards outputIoThread and orders deadline arm/clear against cancellation,
+    // so a cancel can only ever hit the operation whose deadline expired.
+    std::mutex outputIoCancelMutex;
+    HANDLE outputIoThread = nullptr;
     size_t liveQueueLimitBytes = 1024 * 1024;
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"

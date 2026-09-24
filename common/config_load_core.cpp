@@ -22,7 +22,8 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
     std::string globalCaptureMethod = ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
     if (globalCaptureMethod == kMissingLiteralValue)
         globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
-    globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod);
+    // Silent: config.captureMethod below reads the same key and reports a typo once.
+    globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod, nullptr);
     std::string globalCaptureMonitor = ReadLiteralIniValue(path, "Capture", "monitor", "auto");
     {
         ce::monitor_selection::Selector monitorSelector;

@@ -34,6 +34,9 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         return;
     if (liveOutput && liveOutputFailed.load(std::memory_order_acquire))
         return;
+    // The writer may be blocked in a kernel write whose deadline passed; only
+    // another thread can break it, and this is the one producing every packet.
+    CancelExpiredOutputIo("write_frame");
 
     if (!NormalizeHdrPacketIfNeeded(pkt)) {
         return;

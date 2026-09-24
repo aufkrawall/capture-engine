@@ -73,9 +73,13 @@ public:
     // the consumed range. A failed result whose acceptedSamples still covers the
     // chunk (e.g. a frame lost after FIFO intake) is NOT a caller-side hole: the
     // encoder books those losses itself through AccountContentHole.
+    // trimmedSamples = codec-rate samples of the chunk deliberately dropped at the
+    // recording-end boundary (the end clamp, also on a failed intake). They lie
+    // past the video end, so they are never a hole even when the result failed.
     struct EncodeResult {
         int64_t acceptedSamples = 0;
         int64_t submittedSamples = 0;
+        int64_t trimmedSamples = 0;
         bool failed = false;
     };
 
@@ -213,6 +217,14 @@ private:
     // Places a consumed-but-refused intake range (FIFO tail) as silence so every
     // pending sample keeps its exact timeline position; see audio_fault_accounting.h.
     void AppendSilenceHole(int64_t holeSamples);
+    // Codec-rate samples that may still enter the FIFO before the recording end,
+    // or -1 while no end is set. The one bound every intake path - accepted
+    // samples and refused-intake silence alike - is clamped to.
+    int64_t SamplesAllowedBeforeRecordingEnd() const;
+    // A resampler failure refused the whole consumed chunk: place the part that
+    // still lies before the recording end as a silence hole and report the rest
+    // as trimmed, so a failure on the final chunk cannot extend the track.
+    void PlaceRefusedChunkHole(int64_t chunkSamplesAtCodecRate, EncodeResult& result);
     void Flush();
     void ReleaseCodecResources();
 };

@@ -7,6 +7,7 @@
 #include <limits>
 #include <vector>
 #include "../mediaengine/audio_encoder.h"
+#include "../mediaengine/audio_fault_accounting.h"
 
 extern "C" {
 #include <libavutil/intreadwrite.h>
@@ -114,6 +115,68 @@ TEST_F(AudioEncoderTest, PcmAcceptsFinalBatchLongerThanFiveSeconds) {
     EXPECT_EQ(result.acceptedSamples, kSamples);
     EXPECT_EQ(result.submittedSamples, kSamples);
     EXPECT_EQ(encoder.GetSamplesCount(), kSamples);
+    encoder.Stop();
+}
+
+// Regression: a resampler failure on the chunk that crosses the recording end
+// placed the WHOLE consumed chunk as hole silence, bypassing the end clamp, and
+// the caller then booked the part past the video end as lost content. The hole
+// is bounded to the recording end and the remainder is reported as trimmed.
+TEST_F(AudioEncoderTest, RefusedChunkHoleIsBoundedToTheRecordingEnd) {
+    AudioConfig config;
+    config.codec = "pcm";
+    config.sampleRate = "48000";
+    config.outputChannels = 2;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    encoder.SetStreamIndex(1);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
+
+    constexpr int64_t kAllowedSamples = 480;  // 10 ms at 48 kHz
+    constexpr int kChunkSamples = 4800;
+    encoder.SetRecordingEndUs(10000);
+    std::vector<float> samples(static_cast<size_t>(kChunkSamples) * 2u, 0.0f);
+    // A zero-channel input format is refused by the resampler (swresample
+    // cannot build its layout), which is the refused-intake path under test.
+    const auto result = encoder.EncodeSamples(reinterpret_cast<const uint8_t*>(samples.data()),
+                                              static_cast<int>(samples.size() * sizeof(float)), 0, 48000, 32, 32, 8,
+                                              true, 0, 0);
+
+    EXPECT_TRUE(result.failed);
+    EXPECT_EQ(result.acceptedSamples, 0);
+    EXPECT_EQ(result.trimmedSamples, kChunkSamples - kAllowedSamples);
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(kChunkSamples, result.acceptedSamples, result.failed,
+                                                         result.trimmedSamples),
+              kAllowedSamples);
+    encoder.Stop();
+}
+
+TEST_F(AudioEncoderTest, EndClampReportsTrimmedSamplesThatAreNeverAHole) {
+    AudioConfig config;
+    config.codec = "pcm";
+    config.sampleRate = "48000";
+    config.outputChannels = 2;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    encoder.SetStreamIndex(1);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
+
+    constexpr int kChunkSamples = 4800;
+    encoder.SetRecordingEndUs(10000);
+    std::vector<float> samples(static_cast<size_t>(kChunkSamples) * 2u, 0.0f);
+    const auto result = encoder.EncodeSamples(reinterpret_cast<const uint8_t*>(samples.data()),
+                                              static_cast<int>(samples.size() * sizeof(float)), 2, 48000, 32, 32, 8,
+                                              true, config.outputChannelMask, 0);
+
+    EXPECT_FALSE(result.failed);
+    EXPECT_EQ(result.acceptedSamples, 480);
+    EXPECT_EQ(result.trimmedSamples, kChunkSamples - 480);
+    // Even if a later frame of the same call had failed, the clamp is not loss.
+    EXPECT_EQ(ce::audio::ComputeConsumedChunkHoleSamples(kChunkSamples, result.acceptedSamples, true,
+                                                         result.trimmedSamples),
+              0);
     encoder.Stop();
 }
 

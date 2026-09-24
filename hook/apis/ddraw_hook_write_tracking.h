@@ -21,8 +21,11 @@ enum class DirectDrawWriteRegion { None, Partial, Whole };
 // attempt resolves the surface's whole track.
 using DirectDrawLockAccess = ce::ddraw_present_policy::SurfaceLockAccess;
 
-void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable);
-DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded);
+// `key` names the lock: its rectangle for IDirectDrawSurface4/7, the surface
+// pointer Lock returned for the original IDirectDrawSurface.
+void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable, const ce::ddraw_present_policy::SurfaceLockKey& key);
+DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded,
+                                                   const ce::ddraw_present_policy::SurfaceLockKey& key);
 
 void MarkDirectDrawSurfaceWrite(IUnknown* surface, const RECT* rect, bool rectIsExact);
 bool DirectDrawSurfaceHasPendingWrite(IUnknown* surface);

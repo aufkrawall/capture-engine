@@ -550,38 +550,117 @@ inline bool NestedPresentationMayRunRealImplementation(int nestedLevel, bool byp
 
 // The access an Unlock attempt reports for the application's surface writes.
 // Unknown is the conservative answer: CE could not tell what happened, so the
-// presentation path must assume the surface changed.
-enum class SurfaceLockAccess { Unknown, ReadOnly, Writable };
+// presentation path must assume the surface changed. Deferred means other
+// locks on the surface are still held, so this Unlock is not a presentation.
+enum class SurfaceLockAccess { Unknown, Deferred, ReadOnly, Writable };
 
-// One tracked surface lock. `depth` counts Lock attempts not yet resolved by an
-// Unlock attempt and `writable` whether any holder may write.
-struct SurfaceLockTrack {
-    uint32_t depth = 0;
-    bool writable = false;
+// Which lock an Lock/Unlock call names. IDirectDrawSurface4/7 identify a lock
+// by its rectangle (none = the whole surface); the original IDirectDrawSurface
+// Unlock names it by the surface pointer Lock returned.
+struct SurfaceLockKey {
+    bool hasRect = false;
+    Rect rect = {};
+    const void* surfaceData = nullptr;
 };
 
-inline void BeginSurfaceLockTrack(SurfaceLockTrack& track, bool writable) {
-    ++track.depth;
-    track.writable = track.writable || writable;
+// The locks currently held on one surface. DirectDraw allows several
+// simultaneous locks on non-overlapping rectangles - which is why Unlock takes a
+// rectangle - so one Unlock releases one lock, not the whole surface.
+struct SurfaceLockTrack {
+    static constexpr uint32_t kMaxHeldLocks = 8;
+    struct HeldLock {
+        SurfaceLockKey key;
+        bool writable = false;
+    };
+    HeldLock held[kMaxHeldLocks] = {};
+    // Number of held locks.
+    uint32_t depth = 0;
+};
+
+namespace lock_track_detail {
+
+inline bool LockRegionsOverlap(const SurfaceLockKey& a, const SurfaceLockKey& b) {
+    return !a.hasRect || !b.hasRect || RectsIntersect(a.rect, b.rect);
 }
 
-// Resolves a surface's lock tracking at an Unlock attempt.
+inline bool LockKeyMatches(const SurfaceLockKey& held, const SurfaceLockKey& unlock) {
+    if (unlock.surfaceData)
+        return held.surfaceData == unlock.surfaceData;
+    if (!unlock.hasRect)
+        return !held.hasRect;
+    return held.hasRect && held.rect.left == unlock.rect.left && held.rect.top == unlock.rect.top &&
+           held.rect.right == unlock.rect.right && held.rect.bottom == unlock.rect.bottom;
+}
+
+inline void RemoveHeldLock(SurfaceLockTrack& track, uint32_t index) {
+    for (uint32_t i = index + 1; i < track.depth; ++i)
+        track.held[i - 1] = track.held[i];
+    --track.depth;
+    track.held[track.depth] = {};
+}
+
+}  // namespace lock_track_detail
+
+// Records a successful Lock. DirectDraw refuses an overlapping lock while the
+// earlier one is held, so an overlapping (or whole-surface) lock proves the
+// earlier holder is gone - an application Lock/Unlock imbalance, or a driver
+// that accepted it - and replaces it. That bounds the track to locks that can
+// genuinely coexist, so an imbalance cannot leave depth behind.
+inline void BeginSurfaceLockTrack(SurfaceLockTrack& track, bool writable, const SurfaceLockKey& key = {}) {
+    for (uint32_t i = 0; i < track.depth;) {
+        if (lock_track_detail::LockRegionsOverlap(track.held[i].key, key)) {
+            lock_track_detail::RemoveHeldLock(track, i);
+        } else {
+            ++i;
+        }
+    }
+    if (track.depth == SurfaceLockTrack::kMaxHeldLocks)
+        lock_track_detail::RemoveHeldLock(track, 0);
+    track.held[track.depth].key = key;
+    track.held[track.depth].writable = writable;
+    ++track.depth;
+}
+
+// Resolves an Unlock attempt against the surface's held locks.
 //
-// DirectDraw permits one lock at a time, so every Unlock attempt resolves the
-// surface's whole track. Anything less leaks depth: a failed Unlock left
-// `depth > 0` forever, and an application Lock/Unlock imbalance on a driver
-// that accepted overlapping locks did the same - and `--depth != 0` then
-// deferred DirectScanout presentations and the freeze-watchdog heartbeat for
-// the rest of the session (Gothic II class: the overlay and the watchdog both
-// go silent while the game runs on). A failed Unlock reports Unknown because
-// DirectDraw's lock state is unknowable after it; a successful one reports what
-// the tracked holders may have written.
-inline SurfaceLockAccess CompleteSurfaceLockTrack(SurfaceLockTrack& track, bool unlockSucceeded) {
-    const bool tracked = track.depth != 0;
-    const bool writable = track.writable;
-    track = {};
-    if (!tracked || !unlockSucceeded)
+// A failed Unlock resolves the whole track: DirectDraw's lock state is
+// unknowable after it, and leaked depth deferred DirectScanout presentations and
+// the freeze-watchdog heartbeat for the rest of the session (Gothic II class:
+// the overlay and the watchdog both go silent while the game runs on).
+// A successful one releases only the lock it names and reports Deferred while
+// other locks are still held, so a presentation never runs while the
+// application is still writing another rectangle. An Unlock that names no held
+// lock is ambiguous; it resolves everything rather than leaving depth behind.
+inline SurfaceLockAccess CompleteSurfaceLockTrack(SurfaceLockTrack& track, bool unlockSucceeded,
+                                                  const SurfaceLockKey& key = {}) {
+    if (track.depth == 0) {
+        track = {};
         return SurfaceLockAccess::Unknown;
+    }
+    if (!unlockSucceeded) {
+        track = {};
+        return SurfaceLockAccess::Unknown;
+    }
+    uint32_t match = track.depth;
+    for (uint32_t i = 0; i < track.depth; ++i) {
+        if (lock_track_detail::LockKeyMatches(track.held[i].key, key)) {
+            match = i;
+            break;
+        }
+    }
+    if (match == track.depth && track.depth == 1)
+        match = 0;
+    if (match == track.depth) {
+        bool anyWritable = false;
+        for (uint32_t i = 0; i < track.depth; ++i)
+            anyWritable = anyWritable || track.held[i].writable;
+        track = {};
+        return anyWritable ? SurfaceLockAccess::Writable : SurfaceLockAccess::ReadOnly;
+    }
+    const bool writable = track.held[match].writable;
+    lock_track_detail::RemoveHeldLock(track, match);
+    if (track.depth != 0)
+        return SurfaceLockAccess::Deferred;
     return writable ? SurfaceLockAccess::Writable : SurfaceLockAccess::ReadOnly;
 }
 

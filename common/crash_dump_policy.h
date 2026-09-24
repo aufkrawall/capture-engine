@@ -548,8 +548,7 @@ enum class FirstChanceAction : uint8_t {
     kQuickAssertDump,  // UE5 ensure(): the small synchronous assert dump
 };
 
-inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent,
-                                                      bool breakpointDumpBudgetRemaining = true) {
+inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent) {
     if (forceDump) {
         return FirstChanceAction::kDumpNow;
     }
@@ -564,21 +563,23 @@ inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump
         case kUe5EnsureExceptionCode:
             return FirstChanceAction::kQuickAssertDump;
         case static_cast<DWORD>(EXCEPTION_BREAKPOINT):
-            // An unhandled STATUS_BREAKPOINT can end the process without a
-            // recorded context - it can terminate without reaching the
-            // ExitProcess/NtTerminateProcess hooks, and the pre-termination path
-            // special-cases kBreakpointExceptionExitCode only for exits it can
-            // see - so the FIRST unowned breakpoint of a run keeps its immediate
-            // dump. But most first-chance breakpoints are NOT escaped asserts:
-            // anti-cheat integrity int3s and another hooking engine's patch
-            // races are handled by their raiser, and each of those used to cost
-            // a full dump stall plus the process's one-dump budget. Later
-            // breakpoints are therefore recorded first (kRecordFault) and still
-            // produce a dump if the process actually dies of one.
+            // A first-chance STATUS_BREAKPOINT is recorded first, exactly like a
+            // hardware fault. Most are NOT escaped asserts: anti-cheat integrity
+            // int3s and another hooking engine's patch races are handled by their
+            // raiser. Dumping one immediately cost a full dump stall AND latched
+            // the process's one crash dump (g_DumpSuccessfullyWritten), so the
+            // real crash that followed a handled int3 got no dump at all - and a
+            // "first breakpoint only" budget lands on exactly those handled int3s.
+            // An escaped breakpoint still produces its dump: the unhandled filter
+            // re-enters with forceDump, a termination inside its dispatch dumps
+            // with the recorded context (IsTerminationFollowingUnresolvedFault,
+            // kBreakpointExceptionExitCode is crash-like), and a route that
+            // bypasses every in-process hook is the Windows Error Reporting
+            // LocalDumps capture CE adopts (wer_dump_adoption.h).
             if (debuggerPresent) {
                 return FirstChanceAction::kIgnore;
             }
-            return breakpointDumpBudgetRemaining ? FirstChanceAction::kDumpNow : FirstChanceAction::kRecordFault;
+            return FirstChanceAction::kRecordFault;
         default:
             break;
     }
@@ -601,22 +602,6 @@ inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump
 // so prefer it whenever a foreign overlay is present.
 inline bool ShouldPreferExternalCrashDumpHelper(bool foreignOverlayLoaded, bool externalHelperAvailable) {
     return foreignOverlayLoaded && externalHelperAvailable;
-}
-
-// How many first-chance STATUS_BREAKPOINT exceptions may dump immediately
-// before the rest are record-first. One is enough to keep the escaped-breakpoint
-// rationale honest while stopping a handled-int3 storm from stalling the process
-// once per breakpoint.
-inline constexpr uint32_t kBreakpointImmediateDumpBudget = 1;
-
-inline bool ShouldSkipBreakpointExceptionDump(bool forceDump, bool debuggerPresent) {
-    // Without a debugger, an unhandled STATUS_BREAKPOINT can terminate the
-    // process without reaching ExitProcess/NtTerminateProcess hooks. Capture it
-    // immediately; only debugger-owned breakpoints stay benign. Immediate
-    // capture is budgeted to kBreakpointImmediateDumpBudget per run (see
-    // ClassifyFirstChanceException): a foreign runtime's handled int3s are the
-    // common case in a hooked process and must not each consume a dump stall.
-    return !forceDump && debuggerPresent;
 }
 
 // ---------------------------------------------------------------------------

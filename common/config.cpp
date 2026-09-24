@@ -12,7 +12,11 @@ std::string Trim(const std::string& s, const char* chars ) {
     return res;
 }
 
-std::string NormalizeCaptureMethod(const std::string& val, const char* section) {
+namespace {
+
+// The canonical capture_method token for `val`, or empty when `val` names none
+// (an empty value included). Pure: no diagnostics.
+std::string CanonicalCaptureMethod(const std::string& val) {
     std::string normalized = Trim(val);
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -37,41 +41,60 @@ std::string NormalizeCaptureMethod(const std::string& val, const char* section) 
     if (normalized == "auto") {
         return "auto";
     }
+    return {};
+}
 
+// Classification for the Is*CaptureMethod predicates: an unrecognized value
+// counts as "auto" exactly like NormalizeCaptureMethod, but a query is not a
+// config boundary and must never log (the loader already reported the value).
+std::string ClassifyCaptureMethod(const std::string& val) {
+    std::string canonical = CanonicalCaptureMethod(val);
+    return canonical.empty() ? std::string("auto") : canonical;
+}
+
+}  // namespace
+
+std::string NormalizeCaptureMethod(const std::string& val, const char* section) {
+    std::string canonical = CanonicalCaptureMethod(val);
+    if (!canonical.empty()) {
+        return canonical;
+    }
     // A typo here is not cosmetic: "auto" resolves to injected capture, so a
     // user who deliberately avoided injection (anti-cheat) with a misspelled
     // "wgc" would silently GET injection. The same honesty rule the profile
     // video_capture key follows (ParseApplicationVideoCapture) applies.
-    // Empty stays silent - it means "not configured", never a mistyped token.
-    if (!normalized.empty()) {
-        LogInvalidConfigBoundary(section ? section : "Capture", "capture_method", val, "auto");
+    // Empty stays silent - it means "not configured", never a mistyped token -
+    // and a null section normalizes silently for a value another read of the
+    // same key already reports.
+    if (section && !Trim(val).empty()) {
+        LogInvalidConfigBoundary(section, "capture_method", val, "auto");
     }
     return "auto";
 }
 
 bool IsInjectCaptureMethod(const std::string& val) {
-    return NormalizeCaptureMethod(val) == "inject";
+    return ClassifyCaptureMethod(val) == "inject";
 }
 
 bool IsWgcCaptureMethod(const std::string& val) {
-    return NormalizeCaptureMethod(val) == "wgc";
+    return ClassifyCaptureMethod(val) == "wgc";
 }
 
 bool IsDxgiDupCaptureMethod(const std::string& val) {
-    return NormalizeCaptureMethod(val) == "dxgi_dup";
+    return ClassifyCaptureMethod(val) == "dxgi_dup";
 }
 
 bool IsScreenGrabCaptureMethod(const std::string& val) {
-    const std::string normalized = NormalizeCaptureMethod(val);
+    const std::string normalized = ClassifyCaptureMethod(val);
     return normalized == "wgc" || normalized == "dxgi_dup";
 }
 
 bool IsAutoCaptureMethod(const std::string& val) {
-    return NormalizeCaptureMethod(val) == "auto";
+    return ClassifyCaptureMethod(val) == "auto";
 }
 
 bool IsVideoCaptureDisabledMethod(const std::string& val) {
-    return NormalizeCaptureMethod(val) == "none";
+    return ClassifyCaptureMethod(val) == "none";
 }
 
 LimiterMode ParseLimiterMode(const std::string& val, const char* key) {

@@ -106,7 +106,7 @@ ActiveLock* FindActiveLockLocked(uintptr_t identity) {
 
 }  // namespace
 
-void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable) {
+void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable, const policy::SurfaceLockKey& key) {
     if (!surface)
         return;
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
@@ -124,10 +124,11 @@ void BeginDirectDrawSurfaceLock(IUnknown* surface, bool writable) {
     if (!active) {
         return;
     }
-    policy::BeginSurfaceLockTrack(active->track, writable);
+    policy::BeginSurfaceLockTrack(active->track, writable, key);
 }
 
-DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded) {
+DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unlockSucceeded,
+                                                   const policy::SurfaceLockKey& key) {
     if (!surface)
         return DirectDrawLockAccess::Unknown;
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
@@ -135,7 +136,7 @@ DirectDrawLockAccess CompleteDirectDrawSurfaceLock(IUnknown* surface, bool unloc
     ActiveLock* active = FindActiveLockLocked(identity);
     if (!active)
         return DirectDrawLockAccess::Unknown;
-    return policy::CompleteSurfaceLockTrack(active->track, unlockSucceeded);
+    return policy::CompleteSurfaceLockTrack(active->track, unlockSucceeded, key);
 }
 
 void RegisterDirectDrawCompositeSurface(IUnknown* surface) {

@@ -55,6 +55,24 @@ inline VideoOutputDisposition SelectVideoOutputDisposition(bool cancellationRequ
     return VideoOutputDisposition::kPublish;
 }
 
+// An output I/O deadline (0 = no blocking output operation in flight) has
+// passed. The one expiry rule shared by FFmpeg's interrupt callback, which can
+// only refuse the NEXT transfer, and the synchronous-I/O cancellation that
+// breaks a write already blocked in the kernel (a dead network share or a
+// dying disk never returns to FFmpeg's interrupt check on its own).
+inline bool IsOutputIoDeadlineExpired(uint64_t deadlineMs, uint64_t nowMs) {
+    return deadlineMs != 0 && nowMs >= deadlineMs;
+}
+
+// Whether the last finalized output must be reported as degraded. A writer
+// that had not finished finalizing when Stop() gave up owns the trailer, close
+// and CFR coverage check that would report a loss; their outcome is unknown at
+// completion time, so a clean-save claim would be a guess.
+inline bool IsFinalizedOutputDegraded(uint32_t muxOutputErrors, uint32_t hdrMetadataDrops,
+                                      bool cfrCoverageIncomplete, bool finalizeTimedOut) {
+    return muxOutputErrors > 0 || hdrMetadataDrops > 0 || cfrCoverageIncomplete || finalizeTimedOut;
+}
+
 inline bool ShouldPublishVideoOutput(VideoOutputDisposition disposition) {
     return disposition == VideoOutputDisposition::kPublish ||
            disposition == VideoOutputDisposition::kPublishAfterFinalizeFailure ||

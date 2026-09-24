@@ -753,7 +753,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 // An unrecognized (non-empty) value logs through LogInvalidConfigBoundary and
 // falls back to "auto"; `section` names where the value came from so a profile
 // override typo is attributed to its own profile. "auto" and empty are always
-// accepted silently (empty = not configured).
+// accepted silently (empty = not configured), and a null `section` normalizes
+// silently for a value another read of the same key already reports. The
+// Is*CaptureMethod predicates below never log.
 std::string NormalizeCaptureMethod(const std::string& val, const char* section = "Capture");
 bool IsInjectCaptureMethod(const std::string& val);
 bool IsWgcCaptureMethod(const std::string& val);

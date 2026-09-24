@@ -397,20 +397,29 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
         request.preferMonitor = true;
     }
 
-    // Terminal truth for a failed in-recording retarget: a restored source
-    // keeps the recording running (degraded when the requested source was
-    // lost), a lost capture stops it through the normal stop path so the
-    // committed prefix is finalized as saved (degraded).
-    auto finishFailedRetarget = [&](bool rolledBack) {
+    // Terminal truth for a failed in-recording retarget: a restored live source
+    // keeps the recording running, while a lost capture - including a requested
+    // window that died, which is never rolled back onto - stops it through the
+    // normal stop path so the committed prefix is finalized as saved (degraded).
+    auto failRetarget = [&](const char* failureReason) {
+        bool rolledBack = false;
+        if (ce::capture_retarget::ShouldRollBackFailedRetarget(restartActiveCapture, requestedWindowSourceLost)) {
+            rolledBack = restorePreviousCapture(failureReason);
+        } else {
+            LogError("[Media] WGC retarget failed (%s) after the captured window 0x%p died; not rolling back onto "
+                     "the dead source",
+                     failureReason, previousCapturedWindow);
+        }
         switch (ce::capture_retarget::SelectSourceLossRecovery(restartActiveCapture, requestedWindowSourceLost,
                                                               rolledBack)) {
             case ce::capture_retarget::SourceLossRecovery::kStopDegraded:
-                RecordCaptureSourceLoss("capture replacement and rollback restart both failed");
+                // A lost window was latched on entry; only a failed rollback of a
+                // live source still has to record the loss.
+                if (!requestedWindowSourceLost) {
+                    RecordCaptureSourceLoss("capture replacement and rollback restart both failed");
+                }
                 LogError("[Media] WGC capture is gone; stopping the recording and keeping the captured prefix");
                 StopRecording();
-                break;
-            case ce::capture_retarget::SourceLossRecovery::kContinueDegraded:
-                RecordCaptureSourceLoss("capture replacement failed; recording continues on the rolled-back source");
                 break;
             case ce::capture_retarget::SourceLossRecovery::kContinue:
             case ce::capture_retarget::SourceLossRecovery::kNone:
@@ -452,17 +461,15 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
         }
     }
     if (!primed) {
-        LogWarn("[Media] Failed to initialize queued WGC retarget; restoring previous source");
-        const bool rolledBack = restorePreviousCapture("replacement initialization failed");
-        finishFailedRetarget(rolledBack);
+        LogWarn("[Media] Failed to initialize queued WGC retarget");
+        failRetarget("replacement initialization failed");
         return false;
     }
 
     if (restartActiveCapture) {
         if (!StartWgcRecordingCapture(config)) {
-            LogError("[Media] Failed to start replacement WGC capture; restoring previous source");
-            const bool rolledBack = restorePreviousCapture("replacement start failed");
-            finishFailedRetarget(rolledBack);
+            LogError("[Media] Failed to start replacement WGC capture");
+            failRetarget("replacement start failed");
             return false;
         }
         LogInfo("[Media] WGC capture restarted after retarget");

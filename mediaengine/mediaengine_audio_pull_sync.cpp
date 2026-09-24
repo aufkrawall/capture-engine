@@ -212,8 +212,9 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 // accepted less. Shrinking it would make the next pull re-request this
                 // range and fill it with newer samples (content compression). Any
                 // genuinely lost tail is an explicit recorded hole, never a re-filled
-                // range. (The recording-end clamp also shortens acceptedSamples but is
-                // intentional and reports failed==false, so it is not a hole.)
+                // range. The recording-end clamp also shortens acceptedSamples; it is
+                // intentional and reported as trimmedSamples, so it is never a hole -
+                // not even when a later frame of the same call failed.
                 // acceptedSamples and every encoder-side hole are counted at the codec
                 // rate, so map the consumed chunk to that rate with the same duration
                 // mapping the encoder uses to size hole silence.
@@ -223,13 +224,15 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 const int64_t chunkAtEncoderRate =
                     ce::audio::ComputeOutputRateChunkSamples(samplesToEncode, SAMPLE_RATE, encoderSampleRate);
                 const int64_t lostTailSamples = ce::audio::ComputeConsumedChunkHoleSamples(
-                    chunkAtEncoderRate, encodeResult.acceptedSamples, encodeResult.failed);
+                    chunkAtEncoderRate, encodeResult.acceptedSamples, encodeResult.failed,
+                    encodeResult.trimmedSamples);
                 if (encodeResult.failed) {
                     DLL_Log(
-                        "[PullAudio] Track %d encoder fault: requested=%lld accepted=%lld submitted=%lld "
-                        "lostTail=%lld (recorded hole, not re-filled) cursor=%lld target=%lld",
+                        "[PullAudio] Track %d encoder fault: requested=%lld accepted=%lld trimmed=%lld "
+                        "submitted=%lld lostTail=%lld (recorded hole, not re-filled) cursor=%lld target=%lld",
                         track, static_cast<long long>(samplesToEncode),
                         static_cast<long long>(encodeResult.acceptedSamples),
+                        static_cast<long long>(encodeResult.trimmedSamples),
                         static_cast<long long>(encodeResult.submittedSamples),
                         static_cast<long long>(lostTailSamples), static_cast<long long>(trackCursorSamples),
                         static_cast<long long>(targetSamples));

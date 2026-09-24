@@ -44,7 +44,9 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
     // Check against recordingEndUs (using microsecond precision)
     int64_t timestampUs = timestamp * 1000;
     if (recordingEndUs > 0 && timestampUs > recordingEndUs) {
-        // Recording has ended, discard this audio data
+        // Recording has ended, discard this audio data (trimmed, never a hole)
+        result.trimmedSamples = ce::audio::ComputeOutputRateChunkSamples(blockAlign > 0 ? sizeBytes / blockAlign : 0,
+                                                                         sampleRate, codecCtx->sample_rate);
         return result;
     }
 
@@ -88,8 +90,8 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
             // failure below so every later sample keeps its exact position. The hole
             // count is booked by the caller (acceptedSamples stays 0 here).
             const int64_t inputSamples = blockAlign > 0 ? sizeBytes / blockAlign : 0;
-            AppendSilenceHole(ce::audio::ComputeConsumedChunkHoleSamples(
-                ce::audio::ComputeOutputRateChunkSamples(inputSamples, sampleRate, codecCtx->sample_rate), 0, true));
+            PlaceRefusedChunkHole(
+                ce::audio::ComputeOutputRateChunkSamples(inputSamples, sampleRate, codecCtx->sample_rate), result);
             return result;
         }
 
@@ -112,8 +114,8 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
         // The size is the input chunk mapped to the codec rate (the swr state is
         // unknown after the failure).
         const int64_t inputSamples = blockAlign > 0 ? sizeBytes / blockAlign : 0;
-        AppendSilenceHole(ce::audio::ComputeConsumedChunkHoleSamples(
-            ce::audio::ComputeOutputRateChunkSamples(inputSamples, sampleRate, codecCtx->sample_rate), 0, true));
+        PlaceRefusedChunkHole(
+            ce::audio::ComputeOutputRateChunkSamples(inputSamples, sampleRate, codecCtx->sample_rate), result);
         return result;
     }
 
@@ -139,11 +141,10 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
     int currentFifoSize = av_audio_fifo_size(audioFifo);
     int samplesToWrite = convertedSamples;
 
-    if (recordingEndUs > 0 && recordingStartUs >= 0 && recordingEndUs >= recordingStartUs) {
-        const int64_t durationUs = recordingEndUs - recordingStartUs;
-        const int64_t maxSamples = ce::audio::ComputeDurationUsToSamples(durationUs, codecCtx->sample_rate);
-        const int64_t allowedSamples =
-            ce::audio::ComputeAudioSamplesAllowedBeforeEnd(maxSamples, samplesCount, currentFifoSize);
+    const int64_t allowedSamples = SamplesAllowedBeforeRecordingEnd();
+    if (allowedSamples >= 0) {
+        const int64_t maxSamples =
+            ce::audio::ComputeDurationUsToSamples(recordingEndUs - recordingStartUs, codecCtx->sample_rate);
         if (allowedSamples <= 0) {
             static int endDropLogCount = 0;
             if (endDropLogCount++ < 5) {
@@ -153,6 +154,7 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
                     convertedSamples, (long long)samplesCount, currentFifoSize, (long long)maxSamples);
             }
             AudioResampler::FreeOutputBuffer(resampledData);
+            result.trimmedSamples = convertedSamples;
             return result;
         }
         if (samplesToWrite > allowedSamples) {
@@ -162,6 +164,7 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
                 samplesToWrite, (long long)allowedSamples, (long long)samplesCount, currentFifoSize,
                 (long long)maxSamples);
             samplesToWrite = static_cast<int>(std::min<int64_t>(allowedSamples, INT_MAX));
+            result.trimmedSamples = convertedSamples - samplesToWrite;
         }
     }
 
@@ -403,6 +406,29 @@ int AudioEncoder::ReceivePackets() {
         av_packet_free(&pkt);
     }
     return pktCount;
+}
+
+int64_t AudioEncoder::SamplesAllowedBeforeRecordingEnd() const {
+    if (!codecCtx || codecCtx->sample_rate <= 0 || recordingEndUs <= 0 || recordingStartUs < 0 ||
+        recordingEndUs < recordingStartUs) {
+        return -1;
+    }
+    const int64_t maxSamples =
+        ce::audio::ComputeDurationUsToSamples(recordingEndUs - recordingStartUs, codecCtx->sample_rate);
+    return ce::audio::ComputeAudioSamplesAllowedBeforeEnd(maxSamples, samplesCount,
+                                                          audioFifo ? av_audio_fifo_size(audioFifo) : 0);
+}
+
+void AudioEncoder::PlaceRefusedChunkHole(int64_t chunkSamplesAtCodecRate, EncodeResult& result) {
+    const int64_t chunkSamples = std::max<int64_t>(0, chunkSamplesAtCodecRate);
+    const int64_t allowed = SamplesAllowedBeforeRecordingEnd();
+    const int64_t placed = allowed >= 0 ? std::min(chunkSamples, allowed) : chunkSamples;
+    result.trimmedSamples = chunkSamples - placed;
+    if (result.trimmedSamples > 0) {
+        DLL_Log("[AudioEnc] Refused chunk crosses the recording end: placing %lld hole samples, trimming %lld",
+                (long long)placed, (long long)result.trimmedSamples);
+    }
+    AppendSilenceHole(ce::audio::ComputeConsumedChunkHoleSamples(placed, 0, true));
 }
 
 void AudioEncoder::AppendSilenceHole(int64_t holeSamples) {
