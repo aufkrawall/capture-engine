@@ -8,7 +8,10 @@
 - Fix: `ffxCreateContext` entry breakpoint armed from the load notification (Rip redirect into the detour, guarded
   forward) plus configure-time adoption of unseen contexts. See `frame-generation/guardrails.md`
   (create-observation invariant). Older GTA run `gtaslowfsrfgtodlssfg` did observe creates and the full teardown, so
-  GTA now takes an already exercised path. Hardware run pending.
+  GTA now takes an already exercised path.
+- VALIDATED in GTA `20260925_172935` (0.1.6815): 12/12 creates via the breakpoint, every FSR close ran the full
+  teardown (menu-only sessions retired the startup latch through the swapchain-context destroy), zero adoptions,
+  no crash; user reports everything working.
 
 ### 2026-09-25 - Talos menu FSR FG -> off -> DLSS FG hid the overlay for good (`20260925_061003`, 0.1.6813)
 

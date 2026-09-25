@@ -290,7 +290,11 @@ This page records current guardrails and tested transition families for no-FG, D
   `Frame Generation context CREATED`, and on close `FSR Frame Generation DEACTIVATED (all contexts destroyed)`.
   `Adopted DX12 frame-generation context` means the breakpoint missed a create; `Non-FG Context destroyed` for an FSR
   FG session is the regression. Units: `tests/test_ffx_api_parsing.cpp` (`UnobservedContext*`),
-  `tests/test_ffx_create_observation_source.cpp`. Hardware run pending. Stale-risk: the substitute exits added for
+  `tests/test_ffx_create_observation_source.cpp`. VALIDATED in GTA `20260925_172935` (0.1.6815): six FSR sessions,
+  all 12 creates caught through the breakpoint on the game thread before the slot rescan, every close reached
+  `DEACTIVATED (all contexts destroyed)`, both menu-only sessions retired the startup latch via the destroyed
+  swapchain context, zero adoptions, clean exit. The one `Refusing to arm` / `Dropped ... unloaded target` pair at
+  startup is GTA's load-and-unload probe of the runtime and is expected. Stale-risk: the substitute exits added for
   the missing teardown (6f672146, b856d249, 84ebabdf) stay as defense in depth; the `ffxConfigure` breakpoint still
   arms on a raw address without the create path's module/export proof.
 - **CURRENT FFX UI PUBLICATION INVARIANT (2026-07-11):** `RegisterUiResource` interception is transactional. Target/substitute preparation occurs before the provider call, but the cache and substitute re-registration descriptor are committed only after `FFX_API_RETURN_OK`; failure/stale sequence preserves the prior known-good generation. Substitute reuse requires matching COM device identity, geometry, format, and exact initial resource state (COMMON/PRESENT is valid numeric zero). A re-registration failure means the active draw is not proven consumed and must not publish proxy-driver coverage. Present-hook replacement/teardown keeps the real-present fallback active until a successful prework, quiesces new prework, and drains entered detours before releasing renderer state.
