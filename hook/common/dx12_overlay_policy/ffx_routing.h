@@ -406,6 +406,20 @@ inline bool ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(bool freshAuthoritati
            !streamlineFGRunning && overlayWasLive && isDX12Swapchain;
 }
 
+// "The overlay was live on the retiring route" for the prewarm above. The normal-route backend is only one of
+// CE's routes: while native FSR FG presents through AMD's present callback, the overlay draws through the FFX
+// callback adapter and the normal-route swapchain state is deliberately left uninitialized. Judging liveness by
+// that state alone skipped the prewarm after FSR FG had been enabled, and since the prewarmed identity is the
+// only ownership proof that ends the post-FSR recovery, the new Streamline proxy stayed GPU-quiet until exit
+// (Talos menu, FSR FG on -> off -> DLSS FG with DLSS-G never generating, session 20260925_061003). The overlay
+// covering the latest accounted Present is route-independent evidence. A live normal-route state that the
+// handoff preserved instead of retiring must never be overwritten by the prewarm.
+inline bool WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(bool liveNormalRouteStatePreserved,
+                                                                  bool normalRouteBackendWasLive,
+                                                                  bool overlayCoveredLatestPresent) {
+    return !liveNormalRouteStatePreserved && (normalRouteBackendWasLive || overlayCoveredLatestPresent);
+}
+
 inline bool ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
     bool exactPrewarmedSwapchainProof, bool overlayInit, bool syncInit, bool hasRTVHeap, bool hasCommandList,
     bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool queueCaptureMatchesSwapchain, bool fsrFGApiActive,

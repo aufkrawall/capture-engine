@@ -459,7 +459,7 @@ if (clearLastWorking) {
 }
 
 bool overlayWasLive = false;
-bool overlaySwapchainStateRetired = false;
+bool liveNormalRouteStatePreserved = false;
 if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
     std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);
     overlayWasLive = dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && g_OverlayAdapter.IsInitialized();
@@ -471,6 +471,7 @@ if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
             dx12_hook_s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), dx12_hook_g_HadFSRFGPhase,
             dx12_hook_g_OriginalGameQueue != nullptr);
     if (preserveLiveOverlayDuringHandoff) {
+        liveNormalRouteStatePreserved = true;
         dx12_hook_g_State.cachedSwapChain = nullptr;
         dx12_hook_g_State.cachedSC3 = nullptr;
         HookLogImportant(
@@ -487,14 +488,28 @@ if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
         dx12_hook_g_State.syncInit = false;
         dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
         CleanupRTVs();
-        overlaySwapchainStateRetired = true;
         HookLogImportant(
             "DX12: Fresh authoritative Streamline handoff invalidated PostSL swapchain resources while "
             "preserving the warm device-scoped backend (source=%s newScQueue=%p prevScQueue=%p live=%d)",
             context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue, overlayWasLive ? 1 : 0);
     }
 }
-return overlayWasLive && overlaySwapchainStateRetired;
+// Native FSR's present-callback route draws through its own adapter and leaves the normal-route state above
+// uninitialized, so the retiring route's liveness also comes from the coverage accounting.
+const DX12OverlayCoverageSnapshot coverage = GetOverlayCoverageSnapshot();
+const bool overlayCoveredLatestPresent = coverage.totalPresents > 0 && coverage.currentStreak == 0;
+const bool retiringRouteLive = ce::dx12_overlay_policy::WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(
+    liveNormalRouteStatePreserved, overlayWasLive, overlayCoveredLatestPresent);
+if (retiringRouteLive && !overlayWasLive) {
+    const uint32_t lastRoute = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+    HookLogImportant(
+        "[OVERLAY VISIBILITY] Fresh authoritative Streamline handoff: overlay was live on the retiring %s route "
+        "outside the normal-route backend (source=%s newScQueue=%p presents=%llu uncovered=%llu) — prewarm eligible",
+        DX12OverlayRenderRouteName(lastRoute), context ? context : "unknown", newSwapchainQueue,
+        static_cast<unsigned long long>(coverage.totalPresents),
+        static_cast<unsigned long long>(coverage.uncoveredPresents));
+}
+return retiringRouteLive;
 }
 
 

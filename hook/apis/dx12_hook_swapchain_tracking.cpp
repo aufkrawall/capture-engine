@@ -166,13 +166,13 @@ if (SUCCEEDED(qiHr) && pQueue) {
             DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
                                                             "DX12: fresh authoritative Streamline handoff");
         }
-        const bool retiredLiveOverlayState = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
+        const bool retiringRouteOverlayLive = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
             context, pQueue, currentSwapchainQueue, currentOriginalGameQueue);
         const bool hadSuccessfulPostSLPhase = dx12_hook_g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire);
         const bool prewarmPostSL = ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(
             freshAuthoritativeStreamlineHandoff, dx12_hook_g_HadFSRFGPhase, hadSuccessfulPostSLPhase,
             DXGIShared::DoesFGRuntimeOwnSwapchain(),
-            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiredLiveOverlayState,
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiringRouteOverlayLive,
             IsDX12Swapchain(pSwapChain));
         dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
         if (prewarmPostSL) {
@@ -184,6 +184,17 @@ if (SUCCEEDED(qiHr) && pQueue) {
                     "(swapchain=%p queue=%p hadFSR=%d priorPostSL=%d)",
                     pSwapChain, pQueue, dx12_hook_g_HadFSRFGPhase ? 1 : 0, hadSuccessfulPostSLPhase ? 1 : 0);
             }
+        } else if (dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire)) {
+            // Without the prewarmed identity nothing proves this proxy's queue ownership, so the post-FSR
+            // recovery keeps it GPU-quiet until another proof arrives. Name the missing input.
+            HookLogImportant(
+                "[OVERLAY VISIBILITY] Fresh authoritative Streamline handoff NOT prewarmed while post-FSR recovery "
+                "is pending — the proxy stays GPU-quiet until ownership is proven (swapchain=%p queue=%p "
+                "hadFSR=%d priorPostSL=%d runtimeOwns=%d slFG=%d retiringOverlayLive=%d dx12=%d)",
+                pSwapChain, pQueue, dx12_hook_g_HadFSRFGPhase ? 1 : 0, hadSuccessfulPostSLPhase ? 1 : 0,
+                DXGIShared::DoesFGRuntimeOwnSwapchain() ? 1 : 0,
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0,
+                retiringRouteOverlayLive ? 1 : 0, IsDX12Swapchain(pSwapChain) ? 1 : 0);
         }
         DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
         DXGIShared::ArmStreamlineStartupTransitionWindow();

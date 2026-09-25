@@ -400,3 +400,73 @@ TEST(DXGISharedSourceTest, GameSwapchainReturnRetiresProtectedFFXStartupBeforeIt
     ASSERT_NE(clearFn, std::string::npos);
     EXPECT_NE(arm.find("dx12_hook_g_ProtectedOfficialFFXStartupHwnd.store(nullptr", clearFn), std::string::npos);
 }
+
+// Talos menu, FSR FG on -> off -> DLSS FG with DLSS-G never generating (session 20260925_061003).
+// While native FSR presented through AMD's callback, the overlay drew through the FFX callback
+// adapter and the normal-route state stayed uninitialized, so the fresh Streamline proxy was judged
+// "overlay not live" and never prewarmed. The prewarmed identity is the only proof that ends the
+// post-FSR recovery there, and the proxy stayed GPU-quiet until exit.
+TEST(DXGISharedTest, FreshStreamlineHandoffCountsOverlayLiveOnNativeFSRCallbackRoute) {
+    using ce::dx12_overlay_policy::WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff;
+
+    // The session state: no normal-route state, the overlay covered the latest Present.
+    EXPECT_TRUE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(false, false, true));
+    // The pre-existing case: a live normal-route backend retired by the handoff.
+    EXPECT_TRUE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(false, true, false));
+    EXPECT_TRUE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(false, true, true));
+    // Neither route shows a live overlay.
+    EXPECT_FALSE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(false, false, false));
+    // A live normal-route state the handoff preserved must never be overwritten by the prewarm.
+    EXPECT_FALSE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(true, true, true));
+    EXPECT_FALSE(WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(true, false, true));
+}
+
+TEST(DXGISharedTest, NativeFSRCallbackRetiringRouteEndsPostFSRRecoveryOnTheFreshProxy) {
+    using ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute;
+    using ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnSwapchainChange;
+    using ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff;
+    using ce::dx12_overlay_policy::WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff;
+    using Route = ce::dx12_overlay_policy::InactiveDLSSPresentRoute;
+
+    const bool retiringRouteLive = WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(false, false, true);
+    // Fresh sl.dlss_g proxy after an FSR phase, runtime-owned, DLSS-G not running, DX12.
+    const bool prewarmed =
+        ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, true, true, false, retiringRouteLive, true);
+    ASSERT_TRUE(prewarmed);
+    // Recovery pending, no original-queue proof, no keep-alive, no PostSL callback or queue.
+    EXPECT_EQ(DecideInactiveDLSSPresentRoute(true, false, false, false, false, false, false, false, prewarmed),
+              Route::kNormal);
+    EXPECT_TRUE(ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(true, false, prewarmed));
+}
+
+TEST(DXGISharedSourceTest, FreshStreamlineHandoffJudgesRetiringOverlayByCoverage) {
+    namespace fs = std::filesystem;
+    const fs::path route = fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_route.cpp";
+    const fs::path tracking = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp";
+    ASSERT_TRUE(fs::exists(route));
+    ASSERT_TRUE(fs::exists(tracking));
+    const std::string text = ce::test_source::ReadLogicalSource(route);
+    const std::string capture = ce::test_source::ReadLogicalSource(tracking);
+
+    const size_t fn = text.find("bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(");
+    ASSERT_NE(fn, std::string::npos);
+    const size_t fnEnd = text.find("void PublishPostSLRouteRetirementForNormalSwapchainReturn(", fn);
+    ASSERT_NE(fnEnd, std::string::npos);
+    const size_t snapshot = text.find("GetOverlayCoverageSnapshot()", fn);
+    const size_t decision = text.find("WasOverlayLiveOnRetiringRouteAtFreshStreamlineHandoff(", fn);
+    const size_t result = text.find("return retiringRouteLive;", fn);
+    ASSERT_NE(snapshot, std::string::npos);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(result, std::string::npos);
+    EXPECT_LT(snapshot, decision);
+    EXPECT_LT(decision, result);
+    EXPECT_LT(result, fnEnd);
+
+    // The handoff feeds that liveness into the prewarm decision and names a skipped prewarm.
+    const size_t handoff = capture.find("InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(");
+    const size_t prewarmDecision = capture.find("ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(", handoff);
+    const size_t skipped = capture.find("Fresh authoritative Streamline handoff NOT prewarmed", prewarmDecision);
+    ASSERT_NE(handoff, std::string::npos);
+    ASSERT_NE(prewarmDecision, std::string::npos);
+    EXPECT_NE(skipped, std::string::npos);
+}

@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-25 - Talos menu FSR FG -> off -> DLSS FG hid the overlay for good (`20260925_061003`, 0.1.6813)
+
+- Logs: `installed/captureengine/logs/talosoverlaydisappearedinmenu`, complete sequence coverage (0 missing).
+- 06:11:13 FSR FG enabled on the native app-callback route; 06:11:17 disabled; 06:11:23 FFX context destroyed and
+  sl.dlss_g created a fresh proxy (same COM address). No prewarm, no `slDLSSGSetOptions`, DLSS-G never generated;
+  every Present logged `Inactive-DLSS Present has no exact queue-ownership proof` until exit.
+- Cause: the prewarm's "retiring overlay live" input read only the normal-route backend, which native FSR's callback
+  route leaves uninitialized. The 06:10:50 FSR->DLSS handoff worked because FSR never got past protected startup there.
+- Fix: coverage-based liveness plus a skipped-prewarm diagnostic (`frame-generation/guardrails.md`, recovery-latch
+  invariant). Talos run pending.
+
 ### 2026-09-25 - GTA menu FSR FG -> all off hid the overlay for good (`20260925_054901`, 0.1.6812)
 
 - The b856d249 latch fix held: `Ended post-FSR non-FG recovery on proven normal return inside the FG-transition guard` fired.
