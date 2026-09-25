@@ -115,6 +115,11 @@ struct Diagnostics {
     float crossCheckMilliseconds = 0.0f;
     uint64_t markerReportsRejectedForOutputCadence = 0;
     uint64_t measurementEpochResets = 0;
+    // Queue seeds abandoned because conservation left the physically possible range
+    // (more than the maximum depth in flight, or more retired than presented): frames
+    // the generator discarded (FSR FG's warm-up after switching on) or displays the
+    // stream never delivered. The single-frame hold stands until the next seed.
+    uint64_t queueDepthCountsRejected = 0;
 };
 
 struct NativeFrameReport {

@@ -169,7 +169,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%s appQueue=%u "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
-                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu",
+                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
                         static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
                         static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
@@ -200,7 +200,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedTotalLatency),
                         static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
                         static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
-                        static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions));
+                        static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions),
+                        static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected));
                     if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
                         HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",
                                          ce::system_latency::SourceLogLabel(latencyDiagnostics.crossCheckSource),

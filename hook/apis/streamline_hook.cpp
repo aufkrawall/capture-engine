@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "../common/overlay_compat.h"
 
 namespace StreamlineHook {
 ExternalOverlayPresentGuard::ExternalOverlayPresentGuard() {
@@ -69,7 +70,30 @@ void Init() {
 
     // HookThread context (no loader lock): feature resolution may pin the queried modules to
     // close the DLSS->FSR teardown race (crash 20260812_042259).
-    const bool foundModule = ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true);
+    //
+    // The module half (a Toolhelp module snapshot, which walks the loader list under the
+    // loader lock, plus per-module install) can only find something new after a module load or
+    // unload, so it reruns only then; it ran every second for the whole session before
+    // (GTA 20260925_233000). The feature half still runs every pass: a feature can become
+    // resolvable after slInit/slSetD3DDevice with no module load in between. Without loader
+    // notifications the module set is unobservable and the scan stays periodic.
+    static bool s_scanCommitted = false;
+    static uint64_t s_scannedModuleSet = 0;
+    static bool s_scanFoundModule = false;
+    const bool moduleSetObservable = ce::overlay_compat::module_address_cache::IsEnabled();
+    const uint64_t moduleSetGeneration = ce::overlay_compat::module_address_cache::ModuleSetGeneration();
+    bool foundModule = false;
+    if (moduleSetObservable && s_scanCommitted && s_scannedModuleSet == moduleSetGeneration) {
+        foundModule = s_scanFoundModule;
+        ResolveStreamlineFeatureHooks(/*pinFeatureResolution=*/true);
+    } else {
+        bool snapshotCompleted = false;
+        foundModule = ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true, &snapshotCompleted);
+        // A failed or truncated snapshot proves nothing about the module set; retry next pass.
+        s_scanCommitted = snapshotCompleted;
+        s_scannedModuleSet = moduleSetGeneration;
+        s_scanFoundModule = foundModule;
+    }
 
     if (!foundModule) {
         if (!streamline_hook_g_NoModulesLogged.exchange(true, std::memory_order_acq_rel)) {

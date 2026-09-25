@@ -244,6 +244,11 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Guard rails: the step back never goes below one (so a measurement failure is exactly the previous behaviour),
   never above `kMaximumQueueDepth` = 8, and is trimmed while the stepped anchor is older than the correlator's
   250 ms interval bound. Published as `appQueue=` in the chain line - `0` means not measurable, never "empty".
+- **A generator can discard frames, which breaks conservation in the dangerous direction.** GTA FSR FG
+  (`20260925_233000`) shows no display for ~500 ms after switch-on while the game presents 25-35 frames; the count
+  pinned at 8 and the published latency read 110-150 ms all session. `RejectImpossibleQueueCountLocked` now latches
+  the seed unmeasurable once the count exceeds `kMaximumQueueDepth + 1` (the newest frame in transit) or displays
+  over-retire by more than one frame; counted as `queueCountRejects=` in the chain line.
 - **The DLSS-G marker cross-check is the regression test.** Under Reflex the depth must measure 2 (one queued frame
   plus the interpolation hold), which reproduces the previous step exactly, so a published DLSS FG value that moves
   means the count is wrong.

@@ -114,6 +114,7 @@ public:
         displays_.Push(screenTimeUs);
         displayPresentStarts_.Push(presentStartTimeUs);
         ++displaysSinceQueueSeed_;
+        RejectImpossibleQueueCountLocked();
         ++displaysObserved_;
         if (presentStartTimeUs > 0)
             ++displaysWithAssociation_;
@@ -226,6 +227,7 @@ public:
         diagnostics.markerCadenceTrusted = markerCadenceTrusted_;
         diagnostics.markerReportsRejectedForOutputCadence = markerReportsRejectedForOutputCadence_;
         diagnostics.measurementEpochResets = measurementEpochResets_;
+        diagnostics.queueDepthCountsRejected = queueDepthCountsRejected_;
         return diagnostics;
     }
 
@@ -344,7 +346,32 @@ private:
         if (applicationPresentsSinceQueueSeed_ <= retired)
             return 0;
         const uint64_t inFlight = applicationPresentsSinceQueueSeed_ - retired;
+        // The clamp only trims the frame in transit (RejectImpossibleQueueCountLocked
+        // abandons anything beyond it).
         return static_cast<size_t>((std::min)(inFlight, static_cast<uint64_t>(kMaximumQueueDepth)));
+    }
+
+    // Conservation only holds while every application frame reaches the screen
+    // fgMultiplier times. FSR FG violates that right after switching on: GTA
+    // (session 20260925_233000) presented 25-35 frames during a ~500 ms stretch
+    // with no display at all, the count saturated at the cap, and the published
+    // latency read ~110-150 ms for the rest of the session instead of ~30 ms. A
+    // count outside the physically possible range can never come back into it,
+    // so it is abandoned until the next known-empty seed. One frame of slack on
+    // each side: the newest frame is presented before the older frame's outputs
+    // are counted (so a full queue transiently reads one deeper), and a runtime
+    // present of the frame before the seed can retire one frame too many.
+    void RejectImpossibleQueueCountLocked() {
+        if (!queueDepthMeasurable_)
+            return;
+        const int fgMultiplier = (std::max)(fgMultiplier_.load(std::memory_order_relaxed), 1);
+        const uint64_t retired = displaysSinceQueueSeed_ / static_cast<uint64_t>(fgMultiplier);
+        const bool tooDeep = applicationPresentsSinceQueueSeed_ > retired + kMaximumQueueDepth + 1;
+        const bool overRetired = retired > applicationPresentsSinceQueueSeed_ + 1;
+        if (!tooDeep && !overRetired)
+            return;
+        queueDepthMeasurable_ = false;
+        ++queueDepthCountsRejected_;
     }
 
     // Index in applicationPresents_ of the application frame whose simulation produced
@@ -433,6 +460,7 @@ private:
 
         applicationPresents_.Push(presentTimeUs);
         ++applicationPresentsSinceQueueSeed_;
+        RejectImpossibleQueueCountLocked();
         applicationAnchors_.Push(anchorUs);
         applicationAnchorKinds_.Push(static_cast<int64_t>(anchorKind));
     }
@@ -679,6 +707,7 @@ private:
     bool markerCadenceTrusted_ = true;
     uint64_t markerReportsRejectedForOutputCadence_ = 0;
     uint64_t measurementEpochResets_ = 0;
+    uint64_t queueDepthCountsRejected_ = 0;
 };
 
 }  // namespace ce::system_latency

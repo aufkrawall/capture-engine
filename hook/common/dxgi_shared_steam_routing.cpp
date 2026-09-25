@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_hook_target_memo.h"
 
 namespace DXGIShared {
 // Detect if SL has hooked the Present function with an E9 JMP or FF 25
@@ -73,6 +74,14 @@ void DetectSLPresentHook() {
     }
 
     void* hookTarget = isE9 ? ResolveE9JmpTarget((void*)dxgi_shared_oPresent) : ResolveFF25JmpTarget((void*)dxgi_shared_oPresent);
+    // A verdict against this exact target stands until a module loads or unloads (present_hook_target_memo.h);
+    // without loader notifications the module set is not observable and every call re-resolves.
+    static ce::present_hook_target::RejectedTargetMemo s_rejectedTarget;
+    const bool moduleSetObservable = ce::overlay_compat::module_address_cache::IsEnabled();
+    const uint64_t moduleSetGeneration = ce::overlay_compat::module_address_cache::ModuleSetGeneration();
+    if (moduleSetObservable && s_rejectedTarget.IsKnownRejected(hookTarget, moduleSetGeneration)) {
+        return;
+    }
     char hookTargetModulePath[MAX_PATH] = {};
     HMODULE hookTargetModule = nullptr;
     const bool hookTargetResolved =
@@ -91,6 +100,16 @@ void DetectSLPresentHook() {
                 isE9 ? "E9" : "FF25", dxgi_shared_oPresent, hookTarget, hookTargetResolved ? 1 : 0,
                 hookTargetModulePath[0] ? hookTargetModulePath : "unknown", hookTargetFromCaptureHook ? 1 : 0,
                 hookTargetFromStreamline ? 1 : 0, rejectedLogCount);
+        }
+        if (moduleSetObservable) {
+            s_rejectedTarget.RememberRejected(hookTarget, moduleSetGeneration);
+            static std::atomic<uint32_t> s_memoLogCount{0};
+            if (s_memoLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLogImportant(
+                    "DetectSLPresentHook: remembering rejected target=%p until the module set changes "
+                    "(moduleSet=%llu) - later Presents skip its module lookup",
+                    hookTarget, static_cast<unsigned long long>(moduleSetGeneration));
+            }
         }
         return;
     }

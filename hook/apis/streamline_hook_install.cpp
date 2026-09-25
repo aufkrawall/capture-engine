@@ -631,8 +631,10 @@ bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot,  MODULEENTRY32& firstEn
 }
 
 
-bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
-
+bool ScanLoadedStreamlineModules(bool pinFeatureResolution, bool* snapshotCompleted) {
+    if (snapshotCompleted) {
+        *snapshotCompleted = false;
+    }
 
     HANDLE snapshot = INVALID_HANDLE_VALUE;
     MODULEENTRY32 entry = {};
@@ -675,7 +677,31 @@ bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
 
     const DWORD iterationError = GetLastError();
     CloseHandle(snapshot);
+    if (snapshotCompleted) {
+        *snapshotCompleted = iterationError == ERROR_SUCCESS || iterationError == ERROR_NO_MORE_FILES;
+    }
 
+    ResolveStreamlineFeatureHooks(pinFeatureResolution);
+
+    if (attempts > 1 && !streamline_hook_g_ModuleSnapshotRetrySuccessLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: Loaded-module snapshot recovered after transient retry (attempts=%d modules=%zu "
+            "hooked=%zu)",
+            attempts, streamlineModuleCount, hookedModuleCount);
+    }
+    if (iterationError != ERROR_SUCCESS && iterationError != ERROR_NO_MORE_FILES &&
+        !streamline_hook_g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: Loaded-module enumeration ended unexpectedly for feature hooks error=%lu "
+            "(modules=%zu hooked=%zu)",
+            static_cast<unsigned long>(iterationError), streamlineModuleCount, hookedModuleCount);
+    }
+    return foundModule;
+}
+
+// The feature-function half of the loaded-module scan, callable without re-enumerating modules: a feature
+// can become resolvable after slInit/slSetD3DDevice with no module load in between.
+void ResolveStreamlineFeatureHooks(bool pinFeatureResolution) {
     // Late-inject / runtime retry: proactively resolve the DLSS-G, Reflex, and PCL
     // feature functions through the interposer now that every Streamline
     // module is loaded and the runtime is stable (no loader lock). The startup
@@ -720,18 +746,4 @@ bool ScanLoadedStreamlineModules(bool pinFeatureResolution) {
         }
     }
 
-    if (attempts > 1 && !streamline_hook_g_ModuleSnapshotRetrySuccessLogged.exchange(true, std::memory_order_acq_rel)) {
-        HookLogImportant(
-            "Streamline Hook: Loaded-module snapshot recovered after transient retry (attempts=%d modules=%zu "
-            "hooked=%zu)",
-            attempts, streamlineModuleCount, hookedModuleCount);
-    }
-    if (iterationError != ERROR_SUCCESS && iterationError != ERROR_NO_MORE_FILES &&
-        !streamline_hook_g_ModuleSnapshotFailureLogged.exchange(true, std::memory_order_acq_rel)) {
-        HookLogImportant(
-            "Streamline Hook: Loaded-module enumeration ended unexpectedly for feature hooks error=%lu "
-            "(modules=%zu hooked=%zu)",
-            static_cast<unsigned long>(iterationError), streamlineModuleCount, hookedModuleCount);
-    }
-    return foundModule;
 }

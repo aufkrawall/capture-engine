@@ -44,23 +44,28 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
     ASSERT_FALSE(text.empty());
     ASSERT_FALSE(headerText.empty());
 
-    const size_t scanStart = text.find("bool ScanLoadedStreamlineModules(bool pinFeatureResolution)");
+    const size_t scanStart = text.find("bool ScanLoadedStreamlineModules(bool pinFeatureResolution, bool* snapshotCompleted)");
     ASSERT_NE(scanStart, std::string::npos);
     const size_t snapshotClose = text.find("CloseHandle(snapshot);", scanStart);
     ASSERT_NE(snapshotClose, std::string::npos);
-    const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks(pinFeatureResolution)", snapshotClose);
-    const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks(pinFeatureResolution)", snapshotClose);
-    const size_t pclResolve = text.find("TryResolvePCLFeatureHook(pinFeatureResolution)", snapshotClose);
+    const size_t scanEnd = text.find("\n}\n", snapshotClose);
+    ASSERT_NE(scanEnd, std::string::npos);
+    const size_t resolveCall = text.find("ResolveStreamlineFeatureHooks(pinFeatureResolution);", snapshotClose);
+    // Resolution must run after the module snapshot is released (runtime
+    // stable, no loader lock) and inside the scan so late inject and the
+    // runtime retry path both benefit. The HookThread also calls the feature half
+    // on its own between module-set changes (StreamlineHook::Init).
+    ASSERT_NE(resolveCall, std::string::npos);
+    EXPECT_LT(resolveCall, scanEnd);
+    const size_t featureStart = text.find("void ResolveStreamlineFeatureHooks(bool pinFeatureResolution) {");
+    ASSERT_NE(featureStart, std::string::npos);
+    const size_t dlssgResolve = text.find("TryResolveDLSSGFeatureHooks(pinFeatureResolution)", featureStart);
+    const size_t reflexResolve = text.find("TryResolveReflexFeatureHooks(pinFeatureResolution)", featureStart);
+    const size_t pclResolve = text.find("TryResolvePCLFeatureHook(pinFeatureResolution)", featureStart);
     ASSERT_NE(dlssgResolve, std::string::npos);
     ASSERT_NE(reflexResolve, std::string::npos);
     ASSERT_NE(pclResolve, std::string::npos);
-    // Resolution must run after the module snapshot is released (runtime
-    // stable, no loader lock) and inside the scan so late inject and the
-    // runtime retry path both benefit.
-    EXPECT_LT(snapshotClose, dlssgResolve);
-    EXPECT_LT(snapshotClose, reflexResolve);
-    EXPECT_LT(snapshotClose, pclResolve);
-    EXPECT_NE(text.find("Resolved feature hooks after loaded-module scan", scanStart), std::string::npos);
+    EXPECT_NE(text.find("Resolved feature hooks after loaded-module scan", featureStart), std::string::npos);
     // Reflex SetConstants can be genuinely absent from a sl.reflex build; the
     // retry loop must bound the failed queries instead of re-scanning forever
     // (session 20260811_231851 logged endless 2.5s rescans).
@@ -162,7 +167,9 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
 
     // The HookThread's Init scan pins the queried modules; the runtime-activity retry path must
     // not (it can run under the loader lock where LoadLibrary is forbidden).
-    EXPECT_NE(hook.find("ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true)"), std::string::npos);
+    EXPECT_NE(hook.find("ScanLoadedStreamlineModules(/*pinFeatureResolution=*/true, &snapshotCompleted)"),
+              std::string::npos);
+    EXPECT_NE(hook.find("ResolveStreamlineFeatureHooks(/*pinFeatureResolution=*/true)"), std::string::npos);
     EXPECT_NE(resolve.find("foundModule = ScanLoadedStreamlineModules();"), std::string::npos);
 
     // The query guard pins EVERY loaded sl.* module (not only the feature plugin and the

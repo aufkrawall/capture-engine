@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA follow-up (0.1.6820 run): FG latency count, per-present lookups (0.1.6823)
+
+- Session `20260925_233000` (two GTA runs; run 2 with `dlss_sr_preset=M`, forced vsync at the FFX proxy,
+  `cpu_prerender_limit=1`). Previous fixes confirmed: FFX sweeps only at load/evidence (13 in 5 min, 64-85 ms
+  each), hook-thread `hooks` stage ~7-9 ms/s under FG (was ~115), no index-buffer re-creates.
+- PC latency under FSR FG read 110-155 ms with `appQueue=8` in both runs: FSR FG shows no display for ~500 ms
+  after switch-on while GTA presents 25-35 frames, the conservation count saturated and stepped the anchor back
+  7 frames all session. `RejectImpossibleQueueCountLocked` (`system_latency_metrics.h`) now latches the count
+  unmeasurable past `kMaximumQueueDepth + 1` (one frame in transit) or when displays over-retire by >1;
+  `queueCountRejects=` in the chain line. Earlier session read 33 ms only by chance (count drained to 0).
+- `DetectSLPresentHook` re-resolved a foreign E9 target outside any module on every Present (~145 module-cache
+  misses/s, 15k in 5 min). Memo `hook/common/present_hook_target_memo.h`, valid per module-set generation.
+- `StreamlineHook::Init` took a Toolhelp module snapshot (loader lock) every second; the module half now reruns
+  only on module-set change, feature resolution (`ResolveStreamlineFeatureHooks`) stays per pass.
+- Not CE overhead: run 2's ~5 ms `ProcessFrame innerOther` during the loading screen is the configured CPU
+  prerender limit waiting on the GPU. Run 2's even 6946 us flips are the vsync override, with ~6-13 ms
+  present-to-display queueing as the price.
+
 ### 2026-09-25 - GTA FSR FG "worse lows than RTSS": CE hot-path costs removed (0.1.6819)
 
 - Session `20260925_225006` (0.1.6818). Post-load 12.6 s stall is NVIDIA: inside original NGX
