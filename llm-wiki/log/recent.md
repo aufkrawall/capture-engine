@@ -14,7 +14,8 @@
   no crash; user reports everything working.
 - Follow-up: the same run showed the `ffxConfigure` breakpoint re-arming a just-unloaded startup image's address;
   FFX unload invalidation plus a cached export proof now guard every configure arm/restore (guardrails,
-  image-lifetime invariant). Hardware run pending.
+  image-lifetime invariant). VALIDATED in `20260925_174546`: probe unload disarmed the live configure byte, no stale
+  re-arm, 9/9 creates caught, 5/5 FSR closes ran the full teardown.
 
 ### 2026-09-25 - Talos menu FSR FG -> off -> DLSS FG hid the overlay for good (`20260925_061003`, 0.1.6813)
 
