@@ -12,6 +12,9 @@
 - VALIDATED in GTA `20260925_172935` (0.1.6815): 12/12 creates via the breakpoint, every FSR close ran the full
   teardown (menu-only sessions retired the startup latch through the swapchain-context destroy), zero adoptions,
   no crash; user reports everything working.
+- Follow-up: the same run showed the `ffxConfigure` breakpoint re-arming a just-unloaded startup image's address;
+  FFX unload invalidation plus a cached export proof now guard every configure arm/restore (guardrails,
+  image-lifetime invariant). Hardware run pending.
 
 ### 2026-09-25 - Talos menu FSR FG -> off -> DLSS FG hid the overlay for good (`20260925_061003`, 0.1.6813)
 

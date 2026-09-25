@@ -168,4 +168,70 @@ TEST(FFXCreateObservationSourceTest, AdoptedDX12FrameGenerationContextsFeedTheDe
     EXPECT_NE(adoption.find("ffx_hook_g_VulkanContextSet.insert(contextHandle)"), std::string::npos);
 }
 
+// GTA session 20260925_172935: the rescan re-armed the ffxConfigure breakpoint on the startup runtime's address
+// 80 ms after GTA had unloaded that image. Only the unmapped page stopped the write; an image mapped there next
+// would have received a 0xCC mid-code. Arming and restoring must prove the address is still the export.
+TEST(FFXCreateObservationSourceTest, ConfigureBreakpointProvesTheExportBeforeEveryWriteAndDeferral) {
+    const std::string install = ReadSource("hook/apis/ffx_hook_install.cpp");
+    ASSERT_FALSE(install.empty());
+
+    const std::string proof = Between(install, "static bool IsProvenLiveFfxConfigureExportLocked(", "\n}\n");
+    ASSERT_FALSE(proof.empty());
+    EXPECT_NE(proof.find("ffx_hook_g_FfxModuleUnloadGeneration.load("), std::string::npos)
+        << "a cached proof must expire with every FFX unload";
+    EXPECT_NE(proof.find("IsLiveFfxExportEntry(target, \"ffxConfigure\", nullptr)"), std::string::npos);
+
+    const std::string arm = Between(install, "bool ArmFfxConfigureBreakpoint(", "\n}\n");
+    ASSERT_FALSE(arm.empty());
+    const size_t disarmed = arm.find("ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.load(");
+    const size_t armProof = arm.find("IsProvenLiveFfxConfigureExportLocked(reinterpret_cast<void*>(target))");
+    const size_t deferral = arm.find("ffx_hook_g_FfxConfigureOriginalForwardDepth.load(");
+    const size_t write = arm.find("WriteFfxExportEntryByte(reinterpret_cast<void*>(target), 0xCC)");
+    ASSERT_NE(disarmed, std::string::npos);
+    ASSERT_NE(armProof, std::string::npos);
+    ASSERT_NE(deferral, std::string::npos);
+    ASSERT_NE(write, std::string::npos);
+    EXPECT_LT(disarmed, armProof) << "the permanently-disarmed fast path stays free";
+    EXPECT_LT(armProof, deferral) << "the deferred branch publishes the target as the callable original";
+    EXPECT_LT(armProof, write);
+
+    const std::string restore = Between(install, "void RestoreFfxConfigureBreakpointIfCurrent(", "\n}\n");
+    const size_t restoreProof = restore.find("IsProvenLiveFfxConfigureExportLocked(target)");
+    const size_t restoreWrite = restore.find("WriteFfxExportEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)");
+    ASSERT_NE(restoreProof, std::string::npos);
+    ASSERT_NE(restoreWrite, std::string::npos);
+    EXPECT_LT(restoreProof, restoreWrite);
+}
+
+TEST(FFXCreateObservationSourceTest, FFXRuntimeUnloadDisarmsBothBreakpointsFromTheLoaderNotification) {
+    const std::string notify = ReadSource("hook/main_overlay_detect.cpp");
+    const std::string api = ReadSource("hook/apis/ffx_hook_api.cpp");
+    const std::string breakpoint = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    ASSERT_FALSE(notify.empty());
+    ASSERT_FALSE(api.empty());
+    ASSERT_FALSE(breakpoint.empty());
+
+    const size_t unloadedBranch = notify.find("reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED");
+    const size_t dispatch = notify.find("FFXHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base)");
+    ASSERT_NE(unloadedBranch, std::string::npos);
+    ASSERT_NE(dispatch, std::string::npos);
+    EXPECT_LT(unloadedBranch, dispatch);
+
+    const std::string unload = Between(api, "void OnModuleUnloaded(", "\n}\n");
+    ASSERT_FALSE(unload.empty());
+    EXPECT_EQ(unload.find("lock_guard"), std::string::npos) << "runs under the loader lock";
+    EXPECT_NE(unload.find("ffx_hook_g_FfxModuleUnloadGeneration.fetch_add(1"), std::string::npos);
+    EXPECT_NE(unload.find("ffx_hook_g_ffxConfigureVehArmed.exchange(false"), std::string::npos);
+    EXPECT_NE(unload.find("InvalidateFfxCreateContextBreakpointForUnloadedImage(moduleBase, moduleSizeBytes)"),
+              std::string::npos);
+    // The configure target stays: the next install compares it to recognize a reload.
+    EXPECT_EQ(unload.find("ffx_hook_g_ffxConfigureTarget.store("), std::string::npos);
+
+    const std::string invalidate =
+        Between(breakpoint, "void InvalidateFfxCreateContextBreakpointForUnloadedImage(", "\n}\n");
+    ASSERT_FALSE(invalidate.empty());
+    EXPECT_EQ(invalidate.find("lock_guard"), std::string::npos);
+    EXPECT_NE(invalidate.find("g_CreateBreakpointArmed.exchange(false"), std::string::npos);
+}
+
 }  // namespace

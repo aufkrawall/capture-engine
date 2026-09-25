@@ -40,6 +40,11 @@ void Shutdown();
 void EnterDormant();
 void ReactivateResidentHooks();
 
+// Loader DLL-unload notification for FFX runtime modules (runs under the loader lock: atomics and light logging
+// only). An entry breakpoint whose target lies in the departing image is marked unarmed so no later arm or restore
+// can write into whatever maps at that address next; cached export proofs are invalidated.
+void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char* moduleBaseName);
+
 // FFX present-callback bridge storage uses a stable context key per configure call.
 void* GetPresentCallbackBridgeKey(void* context);
 
@@ -108,6 +113,16 @@ inline InlineDetourProbeResult ProbeExpectedInlineDetourInstalled(const void* ta
                        ? InlineDetourProbeState::kInstalledExpected
                        : InlineDetourProbeState::kMissingOrChanged;
     return result;
+}
+
+// Overflow-safe [base, base + size) containment for module-unload invalidation.
+inline bool IsAddressInImage(const void* address, const void* imageBase, size_t imageSize) {
+    if (!address || !imageBase || imageSize == 0) {
+        return false;
+    }
+    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(imageBase);
+    return value >= base && value - base < imageSize;
 }
 
 inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instructionPointer, const void* target) {

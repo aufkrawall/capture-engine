@@ -108,6 +108,11 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
       StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
     }
     RemixHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
+    // GTA V Enhanced unloads amd_fidelityfx_dx12.dll after every FSR session; CE's entry breakpoints must not
+    // outlive the image they were armed in (20260925_172935).
+    if (ce::overlay_compat::IsFFXFrameGenerationModulePath(base)) {
+      FFXHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
+    }
   }
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
   if (g_hCheckHooksEvent)

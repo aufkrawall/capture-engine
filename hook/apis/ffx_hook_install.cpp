@@ -350,6 +350,43 @@ bool WriteFfxExportEntryByte(void* target, uint8_t value) {
     return false;
 }
 
+bool IsLiveFfxExportEntry(void* target, const char* exportName, HMODULE* ownerOut) {
+    if (ownerOut) {
+        *ownerOut = nullptr;
+    }
+    HMODULE owner = nullptr;
+    if (!target || !exportName ||
+        !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(target), &owner) ||
+        !owner || reinterpret_cast<void*>(GetProcAddress(owner, exportName)) != target ||
+        !IsCommittedReadableCodeAddress(target)) {
+        return false;
+    }
+    if (ownerOut) {
+        *ownerOut = owner;
+    }
+    return true;
+}
+
+// The ffxConfigure breakpoint re-arms after every trapped call while it is active, so its export proof is cached
+// per target and FFX unload generation: steady re-arms cost nothing, and any runtime unload forces a new proof.
+// GTA session 20260925_172935 re-armed the startup runtime's address 80 ms after GTA had unloaded it; only the
+// page being unmapped stopped a write into whatever maps there next. Caller holds the breakpoint mutex.
+static bool IsProvenLiveFfxConfigureExportLocked(void* target) {
+    static void* s_provenTarget = nullptr;
+    static uint64_t s_provenGeneration = 0;
+    const uint64_t generation = ffx_hook_g_FfxModuleUnloadGeneration.load(std::memory_order_acquire);
+    if (target && target == s_provenTarget && generation == s_provenGeneration) {
+        return true;
+    }
+    if (!IsLiveFfxExportEntry(target, "ffxConfigure", nullptr)) {
+        return false;
+    }
+    s_provenTarget = target;
+    s_provenGeneration = generation;
+    return true;
+}
+
 void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_reason) {
 
 
@@ -359,7 +396,7 @@ void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_
         return;
     }
 
-    if (!IsCommittedReadableCodeAddress(target)) {
+    if (!IsProvenLiveFfxConfigureExportLocked(target)) {
         ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
         HookLogImportant("FFX Hook: Dropping stale VEH breakpoint state for unloaded ffxConfigure target %p (%s)",
                          target, ffx_hook_reason && ffx_hook_reason[0] ? ffx_hook_reason : "target changed");
@@ -397,6 +434,20 @@ bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_mod
         return false;
     }
 
+    // Before both branches: the deferred one also publishes the target as the callable original.
+    if (!IsProvenLiveFfxConfigureExportLocked(reinterpret_cast<void*>(target))) {
+        static std::atomic<uint32_t> s_refusedStaleArmLogCount{0};
+        const uint32_t logCount = s_refusedStaleArmLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(logCount, 10, 100)) {
+            HookLogImportant(
+                "FFX Hook: Refusing to arm VEH breakpoint: %p is no longer the ffxConfigure export of a loaded "
+                "module (%s reason=%s log=%u)",
+                reinterpret_cast<void*>(target), ffx_hook_moduleName ? ffx_hook_moduleName : "FFX",
+                ffx_hook_reason ? ffx_hook_reason : "unknown", logCount);
+        }
+        return false;
+    }
+
     if (ffx_hook_g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire) > 0) {
         ffx_hook_g_FfxConfigureDeferredRearmTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
         ffx_hook_g_FfxConfigureDeferredRearm.store(true, std::memory_order_release);
@@ -418,12 +469,6 @@ bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_mod
                 ffx_hook_g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire), logCount);
         }
         return true;
-    }
-
-    if (!IsCommittedReadableCodeAddress(reinterpret_cast<void*>(target))) {
-        HookLogImportant("FFX Hook: Refusing to arm VEH breakpoint for unreadable ffxConfigure target %p (%s)",
-                         reinterpret_cast<void*>(target), ffx_hook_moduleName ? ffx_hook_moduleName : "FFX");
-        return false;
     }
 
     void* previousTarget = ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire);

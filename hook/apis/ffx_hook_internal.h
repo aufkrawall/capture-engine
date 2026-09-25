@@ -218,6 +218,14 @@ void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* ffx_hook_r
 // Writes one entry byte of an FFX export; used by both protected-runtime entry breakpoints.
 bool WriteFfxExportEntryByte(void* target, uint8_t value);
 
+// Proof that `target` is still the named export of the image that maps it (no reference taken). A readable page
+// is not enough: after a runtime unload another image can map at the old address.
+bool IsLiveFfxExportEntry(void* target, const char* exportName, HMODULE* ownerOut);
+
+// Bumped by every FFX runtime unload (FFXHook::OnModuleUnloaded); a cached export proof is valid only for the
+// generation it was taken in.
+inline std::atomic<uint64_t> ffx_hook_g_FfxModuleUnloadGeneration{0};
+
 // --- ffxCreateContext entry breakpoint (ffx_hook_create_breakpoint.cpp) -----------------------------------
 // A client can resolve the FFX exports through a path CE does not route and call ffxCreateContext at once
 // after loading the runtime (GTA V Enhanced after every amd_fidelityfx_dx12.dll reload): the cached-slot rescan
@@ -228,6 +236,7 @@ bool ArmFfxCreateContextBreakpoint(HMODULE module, PfnFfxCreateContext target, c
 void SuspendFfxCreateContextBreakpoint(const char* ffx_hook_reason);
 void ResumeFfxCreateContextBreakpoint(const char* ffx_hook_reason);
 void ShutdownFfxCreateContextBreakpoint();
+void InvalidateFfxCreateContextBreakpointForUnloadedImage(const void* imageBase, size_t imageSize);
 ffxReturnCode_t CallFfxCreateContextOriginalGuarded(PfnFfxCreateContext originalCreate, ffxContext* ffx_hook_context,
                                                     ffxCreateContextDescHeader* ffx_hook_desc,
                                                     const ffxAllocationCallbacks* memCb);

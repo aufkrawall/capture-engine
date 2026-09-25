@@ -100,11 +100,7 @@ bool ArmPinnedCreateBreakpointLocked(void* target, const char* moduleName, const
 // could run a module unload (and the loader lock) under CE's mutex.
 bool IsLiveCreateContextExport(HMODULE expectedModule, void* target) {
     HMODULE owner = nullptr;
-    return target && expectedModule &&
-           GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              reinterpret_cast<LPCSTR>(target), &owner) &&
-           owner == expectedModule && reinterpret_cast<void*>(GetProcAddress(owner, "ffxCreateContext")) == target &&
-           IsCommittedReadableCodeAddress(target);
+    return expectedModule && IsLiveFfxExportEntry(target, "ffxCreateContext", &owner) && owner == expectedModule;
 }
 
 // Caller holds g_CreateBreakpointMutex. Returns false only when a live armed byte could not be removed.
@@ -282,6 +278,19 @@ void ResumeFfxCreateContextBreakpoint(const char* ffx_hook_reason) {
         g_CreateBreakpointSuspended.store(false, std::memory_order_release);
     }
     RearmCurrentCreateBreakpoint(ffx_hook_reason);
+}
+
+// Loader-lock context: atomics only. The target is kept so a reload can still be recognized as a retarget; with
+// the armed flag clear, nothing restores into the old address and the VEH treats an int3 there as foreign.
+void InvalidateFfxCreateContextBreakpointForUnloadedImage(const void* imageBase, size_t imageSize) {
+    void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
+    if (!FFXHook::detail::IsAddressInImage(target, imageBase, imageSize)) {
+        return;
+    }
+    const bool wasArmed = g_CreateBreakpointArmed.exchange(false, std::memory_order_acq_rel);
+    g_CreateBreakpointDeferredRearm.store(false, std::memory_order_release);
+    HookLog("FFX Hook: ffxCreateContext entry-breakpoint target %p left with its unloading image (wasArmed=%d)", target,
+            wasArmed ? 1 : 0);
 }
 
 void ShutdownFfxCreateContextBreakpoint() {

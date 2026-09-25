@@ -187,6 +187,30 @@ void ReactivateResidentHooks() {
     }
 }
 
+// Runs under the loader lock: atomics and light logging only, no CE mutex (a thread holding the breakpoint mutex
+// may itself be waiting for the loader). The configure target is kept, because the next install compares it to
+// tell a reload from a rescan; clearing the armed flag is what stops a restore into the old address, and the
+// generation bump makes the next arm prove the export again.
+void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char* moduleBaseName) {
+    if (!moduleBase || moduleSizeBytes == 0) {
+        return;
+    }
+    ffx_hook_g_FfxModuleUnloadGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+    void* configureTarget = ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (detail::IsAddressInImage(configureTarget, moduleBase, moduleSizeBytes)) {
+        const bool wasArmed = ffx_hook_g_ffxConfigureVehArmed.exchange(false, std::memory_order_acq_rel);
+        HookLog("FFX Hook: ffxConfigure breakpoint target %p left with unloading %s (wasArmed=%d)", configureTarget,
+                moduleBaseName ? moduleBaseName : "FFX module", wasArmed ? 1 : 0);
+    }
+    void* deferredTarget = ffx_hook_g_FfxConfigureDeferredRearmTarget.load(std::memory_order_acquire);
+    if (detail::IsAddressInImage(deferredTarget, moduleBase, moduleSizeBytes)) {
+        ffx_hook_g_FfxConfigureDeferredRearmTarget.compare_exchange_strong(deferredTarget, nullptr,
+                                                                           std::memory_order_acq_rel);
+    }
+    InvalidateFfxCreateContextBreakpointForUnloadedImage(moduleBase, moduleSizeBytes);
+}
+
 void Shutdown() {
     std::lock_guard<std::mutex> lock(ffx_hook_g_InitMutex);
 

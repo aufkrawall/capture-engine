@@ -245,6 +245,24 @@ TEST(FFXHookPolicyTest, EntryBreakpointHitAcceptsExceptionAddressOrAdvancedInstr
     EXPECT_FALSE(FFXHook::detail::IsEntryBreakpointHit(reinterpret_cast<const void*>(target), target + 1, nullptr));
 }
 
+// FFX runtime unload invalidation must match exactly the departing image and never wrap around the top of the
+// address space.
+TEST(FFXHookPolicyTest, AddressInImageMatchesOnlyTheDepartingImage) {
+    using FFXHook::detail::IsAddressInImage;
+    const auto* base = reinterpret_cast<const void*>(uintptr_t{0x259B0000});
+    const size_t size = 0x100000;
+    EXPECT_TRUE(IsAddressInImage(reinterpret_cast<const void*>(uintptr_t{0x259B1230}), base, size));
+    EXPECT_TRUE(IsAddressInImage(base, base, size));
+    EXPECT_FALSE(IsAddressInImage(reinterpret_cast<const void*>(uintptr_t{0x259B0000} + size), base, size));
+    EXPECT_FALSE(IsAddressInImage(reinterpret_cast<const void*>(uintptr_t{0x259AFFFF}), base, size));
+    EXPECT_FALSE(IsAddressInImage(nullptr, base, size));
+    EXPECT_FALSE(IsAddressInImage(base, nullptr, size));
+    EXPECT_FALSE(IsAddressInImage(base, base, 0));
+    const auto* top = reinterpret_cast<const void*>(~uintptr_t{0} - 0xFF);
+    EXPECT_TRUE(IsAddressInImage(reinterpret_cast<const void*>(~uintptr_t{0}), top, 0x100));
+    EXPECT_FALSE(IsAddressInImage(reinterpret_cast<const void*>(uintptr_t{0x10}), top, 0x100));
+}
+
 // Regression: a second thread trapping on the ffxConfigure int3 after the first
 // thread's handler had restored the byte and cleared the armed flag was
 // declined, reached the crash handler, and crashed the game as an unhandled
