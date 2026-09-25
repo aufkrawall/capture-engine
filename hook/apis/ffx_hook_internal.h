@@ -165,6 +165,10 @@ inline PfnFfxConfigure ffx_hook_g_Original_ffxConfigure = nullptr;
 
 inline thread_local PfnFfxConfigure ffx_hook_t_FfxConfigureOriginalOverride = nullptr;
 
+// Set by the ffxCreateContext entry-breakpoint handler immediately before it redirects the trapped call into
+// Hooked_ffxCreateContext on the same thread; consumed (and cleared) at the detour's entry.
+inline thread_local PfnFfxCreateContext ffx_hook_t_FfxCreateContextOriginalOverride = nullptr;
+
 inline std::atomic<bool> ffx_hook_g_ffxCreateContextInlineHooked{false};
 
 inline std::atomic<bool> ffx_hook_g_ffxDestroyContextInlineHooked{false};
@@ -210,6 +214,27 @@ inline std::atomic<void*> ffx_hook_g_FfxConfigureDeferredRearmTarget{nullptr};
 bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* ffx_hook_moduleName, const char* ffx_hook_reason);
 
 void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* ffx_hook_reason);
+
+// Writes one entry byte of an FFX export; used by both protected-runtime entry breakpoints.
+bool WriteFfxExportEntryByte(void* target, uint8_t value);
+
+// --- ffxCreateContext entry breakpoint (ffx_hook_create_breakpoint.cpp) -----------------------------------
+// A client can resolve the FFX exports through a path CE does not route and call ffxCreateContext at once
+// after loading the runtime (GTA V Enhanced after every amd_fidelityfx_dx12.dll reload): the cached-slot rescan
+// always arrives after that create. The breakpoint is armed on the loading thread before the load returns to the
+// client, and a trapped call is redirected into Hooked_ffxCreateContext rather than executed inside the handler.
+bool ArmFfxCreateContextBreakpoint(HMODULE module, PfnFfxCreateContext target, const char* ffx_hook_moduleName,
+                                   const char* ffx_hook_reason);
+void SuspendFfxCreateContextBreakpoint(const char* ffx_hook_reason);
+void ResumeFfxCreateContextBreakpoint(const char* ffx_hook_reason);
+void ShutdownFfxCreateContextBreakpoint();
+ffxReturnCode_t CallFfxCreateContextOriginalGuarded(PfnFfxCreateContext originalCreate, ffxContext* ffx_hook_context,
+                                                    ffxCreateContextDescHeader* ffx_hook_desc,
+                                                    const ffxAllocationCallbacks* memCb);
+
+// Tracks a context first seen at a successful ffxConfigure (ffx_hook_context_adoption.cpp).
+void AdoptUnobservedFFXContextFromConfigure(ffxContext contextHandle, ffxStructType_t configureType,
+                                            void* runtimeExport);
 
 ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* ffx_hook_context,
                                                        const ffxConfigureDescHeader* ffx_hook_desc);

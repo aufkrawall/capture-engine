@@ -165,10 +165,14 @@ void EnterDormant() {
     ffx_hook_g_FfxConfigureDeferredRearmTarget.store(nullptr, std::memory_order_release);
     RestoreFfxConfigureBreakpointIfCurrent(ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire),
                                            "capture host dormant");
+    SuspendFfxCreateContextBreakpoint("capture host dormant");
     FFXHook_ClearSubstituteUiReRegistration();
 }
 
 void ReactivateResidentHooks() {
+    if (ffx_hook_g_Initialized.load(std::memory_order_acquire)) {
+        ResumeFfxCreateContextBreakpoint("resident hook reactivation");
+    }
     if (!ffx_hook_g_Initialized.load(std::memory_order_acquire) ||
         ffx_hook_g_ffxConfigureInlineHooked.load(std::memory_order_acquire) ||
         ffx_hook_g_DurableCachedConfigureRouteActive.load(std::memory_order_acquire)) {
@@ -205,6 +209,8 @@ void Shutdown() {
 
     // Restore client-owned pre-resolved pointer slots before clearing original export addresses.
     ce::ffx_cached_pointer_router::Shutdown();
+    // Likewise the create entry byte: a trapped call resumes in Hooked_ffxCreateContext, which needs its original.
+    ShutdownFfxCreateContextBreakpoint();
 
     // Cleanup VEH breakpoint hook
     if (ffx_hook_g_ffxConfigureVehHandle) {

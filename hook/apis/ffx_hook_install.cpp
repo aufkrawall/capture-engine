@@ -138,6 +138,14 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
     const bool armProtectedConfigureBreakpoint =
         !allowInlineHooks && ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(ffx_hook_moduleName);
 
+    // Arm before this call (the module-load notification on the loading thread) returns to the client: a caller
+    // that resolved ffxCreateContext outside CE's routes calls it at once, before the cached-slot rescan below
+    // can reroute the pointer it stored. Later rescans only confirm the byte.
+    if (createCtx && armProtectedConfigureBreakpoint) {
+        ArmFfxCreateContextBreakpoint(hModule, createCtx, ffx_hook_moduleName,
+                                      firstSeenModule ? "module load" : "module rescan");
+    }
+
     if (!allowInlineHooks && allowIATHooks && ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(ffx_hook_moduleName) &&
         firstSeenModule) {
         HookLogImportant(
@@ -325,7 +333,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
 // normal route; WriteProcessMemory on the own process adjusts the protection
 // itself and is the fallback when another component changed the page. The
 // previous protection is restored rather than assumed.
-static bool WriteFfxConfigureEntryByte(void* target, uint8_t value) {
+bool WriteFfxExportEntryByte(void* target, uint8_t value) {
     DWORD oldProtect = 0;
     if (VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         *static_cast<volatile uint8_t*>(target) = value;
@@ -364,7 +372,7 @@ void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_
         return;
     }
 
-    if (!WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
+    if (!WriteFfxExportEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
         HookLogImportant("FFX Hook: Failed to restore stale VEH breakpoint at %p before retargeting (err=%lu)", target,
                          GetLastError());
         return;
@@ -442,7 +450,7 @@ bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_mod
     // (FFXHook::detail::ClassifyEntryBreakpoint).
     ffx_hook_g_ffxConfigureTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
     ffx_hook_g_ffxConfigureVehArmed.store(true, std::memory_order_release);
-    if (!WriteFfxConfigureEntryByte(reinterpret_cast<void*>(target), 0xCC)) {
+    if (!WriteFfxExportEntryByte(reinterpret_cast<void*>(target), 0xCC)) {
         ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
         return false;
     }
@@ -504,7 +512,7 @@ ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigur
             auto* targetByte = static_cast<uint8_t*>(target);
             if (*targetByte == 0xCC) {
 
-                if (WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
+                if (WriteFfxExportEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
                     ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
                     pausedBreakpoint = true;
 
@@ -594,7 +602,7 @@ LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    if (!WriteFfxConfigureEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
+    if (!WriteFfxExportEntryByte(target, ffx_hook_g_ffxConfigureOriginalFirstByte)) {
         // Resuming on an int3 that cannot be removed would trap again at once
         // and spin this thread forever. Fail visibly instead.
         ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);

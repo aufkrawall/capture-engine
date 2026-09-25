@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA FFX creates were never observed (`20260925_165708`, 0.1.6814)
+
+- User-validated overlay run in Talos and GTA; the remaining gap was structural. Three `amd_fidelityfx_dx12.dll`
+  reloads, zero `context CREATED`, all six destroys `Non-FG`; no `GetProcAddress: Intercepted FFX API` line at all.
+  The cached-slot rescan routed GTA's pointers ~16 ms (up to 1 s) after the create on every reload.
+- Fix: `ffxCreateContext` entry breakpoint armed from the load notification (Rip redirect into the detour, guarded
+  forward) plus configure-time adoption of unseen contexts. See `frame-generation/guardrails.md`
+  (create-observation invariant). Older GTA run `gtaslowfsrfgtodlssfg` did observe creates and the full teardown, so
+  GTA now takes an already exercised path. Hardware run pending.
+
 ### 2026-09-25 - Talos menu FSR FG -> off -> DLSS FG hid the overlay for good (`20260925_061003`, 0.1.6813)
 
 - Logs: `installed/captureengine/logs/talosoverlaydisappearedinmenu`, complete sequence coverage (0 missing).

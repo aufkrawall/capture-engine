@@ -499,7 +499,8 @@ TEST(InjectLifecycleSourceTest, DormantLoaderAndVendorHooksAreExactPassThrough) 
               std::string::npos);
     EXPECT_NE(streamlineDlssg.find("return originalSetOptions(viewport, streamline_hook_options)"),
               std::string::npos);
-    EXPECT_NE(ffx.find("return ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb)"),
+    EXPECT_NE(ffx.find("return CallFfxCreateContextOriginalGuarded(originalCreate, ffx_hook_context, ffx_hook_desc, "
+                       "memCb)"),
               std::string::npos);
     EXPECT_NE(ffx.find("return CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc)"),
               std::string::npos);

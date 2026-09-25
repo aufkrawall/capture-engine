@@ -183,7 +183,7 @@ anchors that predate the split are approximate.
       `streamline_hook_internal.h` + `streamline_inline_hook_batch.{h,cpp}` (one grouped
       quiescence for a module's core exports); `streamline_hook_pcl.cpp` captures the game's real
       SimulationStart/PresentStart PCL calls for D3D latency correlation without synthetic markers.
-    - FFX: `ffx_hook.cpp` + `ffx_hook_{context,install}.cpp` + `ffx_hook_internal.h`.
+    - FFX: `ffx_hook.cpp` + `ffx_hook_{api,context,install}.cpp` + `ffx_hook_internal.h`; `ffx_hook_create_breakpoint.cpp` (create entry breakpoint) and `ffx_hook_context_adoption.cpp` (configure-time tracking of unseen contexts); `ffx_cached_pointer_router.cpp` (pre-resolved client slots).
     - Vulkan layer: `layer_capture.cpp` (facade) + `layer_capture_{d3d11_interop,
       textures,state,frame,capture}.cpp` + `layer_capture_internal.h`;
       `vulkan_present_boundary.h` (header-only) owns the async-present route detection

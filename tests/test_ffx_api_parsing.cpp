@@ -257,6 +257,58 @@ TEST(FFXApiParsingTest, ProxyAndLegacyFFXModulesCanStillUseInlineExportHooks) {
     EXPECT_TRUE(ce::ffx_api::ShouldPatchFFXImportsForModule("fsr3mod.dll"));
 }
 
+// GTA session 20260925_165708: every ffxCreateContext was missed after each amd_fidelityfx_dx12.dll reload, so
+// all six destroys were "Non-FG" and the all-FG-contexts-destroyed teardown never ran. The first configure on an
+// unknown context must identify it from the packet's effect: FG configures (0x20002) on the FG context,
+// RegisterUiResource (0x30002) on the swapchain context.
+TEST(FFXApiParsingTest, UnobservedContextIsAdoptedFromItsFirstConfigureEffect) {
+    using ce::ffx_api::ClassifyUnobservedContextFromConfigure;
+
+    const auto fgContext = ClassifyUnobservedContextFromConfigure(ce::ffx_api::kConfigureDescTypeFrameGeneration, false);
+    EXPECT_TRUE(fgContext.adopt);
+    EXPECT_EQ(fgContext.effectId, ce::ffx_api::kEffectIdFrameGeneration);
+    EXPECT_FALSE(fgContext.vulkan);
+
+    const auto swapchainContext = ClassifyUnobservedContextFromConfigure(
+        ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12, false);
+    EXPECT_TRUE(swapchainContext.adopt);
+    EXPECT_EQ(swapchainContext.effectId, ce::ffx_api::kEffectIdFrameGenerationSwapchain);
+    EXPECT_FALSE(swapchainContext.vulkan);
+
+    // The DX12 swapchain effect names its backend; a Vulkan runtime module cannot turn it into Vulkan.
+    EXPECT_FALSE(ClassifyUnobservedContextFromConfigure(
+                     ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12, true)
+                     .vulkan);
+
+    // The generic FG effect takes its backend from the runtime that served the call.
+    const auto vulkanFgContext =
+        ClassifyUnobservedContextFromConfigure(ce::ffx_api::kConfigureDescTypeFrameGeneration, true);
+    EXPECT_TRUE(vulkanFgContext.adopt);
+    EXPECT_TRUE(vulkanFgContext.vulkan);
+
+    const auto vulkanSwapchain = ClassifyUnobservedContextFromConfigure(
+        ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGenerationSwapchainVulkan, 0x02u), false);
+    EXPECT_TRUE(vulkanSwapchain.adopt);
+    EXPECT_TRUE(vulkanSwapchain.vulkan);
+    EXPECT_EQ(vulkanSwapchain.effectId, ce::ffx_api::kEffectIdFrameGenerationSwapchainVulkan);
+}
+
+TEST(FFXApiParsingTest, UnobservedContextAdoptionIgnoresNonFrameGenerationConfigures) {
+    using ce::ffx_api::ClassifyUnobservedContextFromConfigure;
+    // Upscaler (effect 0x01) and effect-less global configures (debug/key-value) never name an FG context.
+    EXPECT_FALSE(ClassifyUnobservedContextFromConfigure(ce::ffx_api::MakeEffectSubId(0x00010000u, 0x02u), false).adopt);
+    EXPECT_FALSE(ClassifyUnobservedContextFromConfigure(0x00000004ull, false).adopt);
+    EXPECT_FALSE(ClassifyUnobservedContextFromConfigure(0, true).adopt);
+}
+
+TEST(FFXApiParsingTest, VulkanRuntimeModuleNamesAreRecognizedByFileName) {
+    EXPECT_TRUE(ce::ffx_api::IsVulkanFFXRuntimeModuleName("amd_fidelityfx_vk.dll"));
+    EXPECT_TRUE(ce::ffx_api::IsVulkanFFXRuntimeModuleName("C:\\Games\\X\\AMD_FidelityFX_FrameGeneration_VK.dll"));
+    EXPECT_FALSE(ce::ffx_api::IsVulkanFFXRuntimeModuleName("amd_fidelityfx_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::IsVulkanFFXRuntimeModuleName("D:\\vk_games\\amd_fidelityfx_dx12.dll"));
+    EXPECT_FALSE(ce::ffx_api::IsVulkanFFXRuntimeModuleName(nullptr));
+}
+
 TEST(FFXHookValidationTest, ProbeRecognizesExpectedInlineDetourSnapshot) {
 #ifdef _WIN64
     std::array<unsigned char, 14> snapshot{};

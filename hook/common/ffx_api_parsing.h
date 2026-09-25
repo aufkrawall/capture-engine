@@ -362,4 +362,38 @@ inline bool ShouldArmProtectedOfficialFFXConfigureBreakpoint(const char* moduleN
            ContainsAsciiInsensitive(fileName, "amd_fidelityfx_fg");
 }
 
+// amd_fidelityfx_vk.dll / amd_fidelityfx_framegeneration_vk.dll. Only a positively identified Vulkan runtime
+// changes the backend; everything else keeps the established DX12/legacy handling.
+inline bool IsVulkanFFXRuntimeModuleName(const char* moduleNameOrPath) {
+    const char* fileName = PathFileName(moduleNameOrPath);
+    return fileName && *fileName && ContainsAsciiInsensitive(fileName, "_vk.");
+}
+
+struct UnobservedContextAdoption {
+    bool adopt = false;
+    uint32_t effectId = 0;
+    bool vulkan = false;
+};
+
+// A client that resolves the FFX exports through a path CE cannot route (GTA V Enhanced resolves them without its
+// import table, then calls ffxCreateContext before any cached slot can be rerouted) creates contexts CE never saw.
+// Their destroy used to be classified "non-FG", so the all-FG-contexts-destroyed teardown never ran. The configure
+// packet type carries the effect the context belongs to, so the first successful configure on an unknown context
+// is enough to track it. Swapchain effects name their backend; the generic frame-generation effect takes it from
+// the runtime module that served the call.
+inline UnobservedContextAdoption ClassifyUnobservedContextFromConfigure(StructType configureType,
+                                                                       bool vulkanRuntimeModule) {
+    const uint32_t effectId = GetEffectId(configureType);
+    if (effectId == kEffectIdFrameGenerationSwapchainVulkan) {
+        return {true, effectId, true};
+    }
+    if (effectId == kEffectIdFrameGenerationSwapchain) {
+        return {true, effectId, false};
+    }
+    if (effectId == kEffectIdFrameGeneration) {
+        return {true, effectId, vulkanRuntimeModule};
+    }
+    return {};
+}
+
 }  // namespace ce::ffx_api

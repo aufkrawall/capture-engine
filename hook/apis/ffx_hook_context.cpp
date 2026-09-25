@@ -1,5 +1,6 @@
 #include "ffx_hook_internal.h"
 
+#include "../../common/log_meter.h"
 #include "../common/fg_cost_probe.h"
 #include "../common/performance_metrics.h"
 
@@ -51,12 +52,28 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
                                         const ffxAllocationCallbacks* memCb) {
 
 
-    if (!ffx_hook_g_Original_ffxCreateContext) {
+    // Non-null only when the entry breakpoint redirected this call here; that trapped export is the exact original.
+    const PfnFfxCreateContext breakpointOriginal = ffx_hook_t_FfxCreateContextOriginalOverride;
+    ffx_hook_t_FfxCreateContextOriginalOverride = nullptr;
+    const PfnFfxCreateContext originalCreate =
+        breakpointOriginal ? breakpointOriginal : ffx_hook_g_Original_ffxCreateContext;
+    if (!originalCreate) {
         HookLog("FFX Hook: ffxCreateContext called but original not set!");
         return 1;  // Error
     }
     if (HookIsShuttingDown())
-        return ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb);
+        return CallFfxCreateContextOriginalGuarded(originalCreate, ffx_hook_context, ffx_hook_desc, memCb);
+    if (breakpointOriginal) {
+        static std::atomic<uint32_t> s_breakpointRoutedCreateCount{0};
+        const uint32_t routed = s_breakpointRoutedCreateCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(routed, 20, 100)) {
+            HookLogImportant(
+                "FFX Hook: ffxCreateContext reached CE through its entry breakpoint (type=0x%llx tid=0x%04lX "
+                "count=%u) - the caller resolved the export through a route CE does not intercept",
+                static_cast<unsigned long long>(ffx_hook_desc ? ffx_hook_desc->type : 0), GetCurrentThreadId(),
+                routed);
+        }
+    }
 
     // Parse the swapchain creation descriptor before forwarding: the output pointer is populated by AMD, while
     // the exact game/presentation queue is an input. Direct proxy-backbuffer work is legal only on this queue.
@@ -68,7 +85,7 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
 
     const ULONGLONG createStartedMs = GetTickCount64();
     // Call original first
-    ffxReturnCode_t result = ffx_hook_g_Original_ffxCreateContext(ffx_hook_context, ffx_hook_desc, memCb);
+    ffxReturnCode_t result = CallFfxCreateContextOriginalGuarded(originalCreate, ffx_hook_context, ffx_hook_desc, memCb);
     if (parsedSwapChainCreate.recognized) {
         static std::atomic<unsigned> createCount{0};
         static std::atomic<unsigned> failedCreateCount{0};
@@ -99,7 +116,7 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
             // proxy backbuffer receives CE work on the descriptor game queue.
             void* runtimeAnchor = ffx_hook_g_ffxCreateContextTarget.load(std::memory_order_acquire);
             if (!runtimeAnchor) {
-                runtimeAnchor = reinterpret_cast<void*>(ffx_hook_g_Original_ffxCreateContext);
+                runtimeAnchor = reinterpret_cast<void*>(originalCreate);
             }
             DX12_TryInstallFFXProxyPresentHook(*parsedSwapChainCreate.swapChainOutput, runtimeAnchor,
                                                "ffxCreateContext(FrameGenerationSwapChain)");
@@ -295,9 +312,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     const ffxContext contextHandle = ffx_hook_context ? *ffx_hook_context : nullptr;
 
     bool isVulkanContext = false;
+    bool contextTracked = true;
     {
         std::lock_guard<std::mutex> lock(ffx_hook_g_ContextMapMutex);
         isVulkanContext = ffx_hook_g_VulkanContextSet.find(contextHandle) != ffx_hook_g_VulkanContextSet.end();
+        contextTracked = !contextHandle || ffx_hook_g_ContextTypeMap.find(contextHandle) != ffx_hook_g_ContextTypeMap.end();
     }
     if (isVulkanContext) {
         const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc);
@@ -319,7 +338,14 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     // accessing DX12 swapchain state (HDR, callback bridges) while SL's
     // critical initialization is still in progress.  Just forward the call.
     if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
-        return CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc);
+        const ffxReturnCode_t startupResult =
+            CallFfxConfigureOriginalGuarded(originalConfigure, ffx_hook_context, ffx_hook_desc);
+        // Passive bookkeeping only, like create tracking during the same window.
+        if (startupResult == ffx_hook_FFX_API_RETURN_OK && !contextTracked && ffx_hook_desc) {
+            AdoptUnobservedFFXContextFromConfigure(contextHandle, ffx_hook_desc->type,
+                                                   reinterpret_cast<void*>(originalConfigure));
+        }
+        return startupResult;
     }
 
     ce::ffx_api::ConfigureDescFrameGeneration localConfig = {};
@@ -488,6 +514,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     }
     if (result != ffx_hook_FFX_API_RETURN_OK || !ffx_hook_desc) {
         return result;
+    }
+    // Before the FG-configure filter below: the swapchain context is only ever configured with RegisterUiResource.
+    if (!contextTracked) {
+        AdoptUnobservedFFXContextFromConfigure(contextHandle, ffx_hook_desc->type,
+                                               reinterpret_cast<void*>(originalConfigure));
     }
 
     const auto parsed =
