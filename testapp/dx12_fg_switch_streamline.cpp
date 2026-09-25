@@ -111,15 +111,44 @@ void ApplyReflexMode(bool active, const char* reason) {
     }
 }
 
+bool BindStreamlineDevice(const char* reason) {
+    const char* why = reason ? reason : "unknown";
+    if (!dx12_fg_switch_test_g_SlInitialized || !dx12_fg_switch_test_g_SlSetD3DDevice || !g_Device) {
+        dx12_fg_switch_test_g_SlDeviceSet = false;
+        return false;
+    }
+    if (dx12_fg_switch_test_g_SlBoundDevice) {
+        // Streamline initializes its plugins on the first accepted device and
+        // refuses any later slSetD3DDevice with eErrorInvalidIntegration. Asking
+        // again after a renderer re-creation used to turn that refusal into a
+        // permanent "no DLSS" state for the rest of the session.
+        dx12_fg_switch_test_g_SlDeviceSet = dx12_fg_switch_test_g_SlBoundDevice.Get() == g_Device.Get();
+        static std::atomic<int> s_reuseLogCount{0};
+        if (!dx12_fg_switch_test_g_SlDeviceSet || s_reuseLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            testapp::Log("[FG-DIAG] Streamline device binding %s (%s) bound=%p current=%p\n",
+                         dx12_fg_switch_test_g_SlDeviceSet
+                             ? "reused; slSetD3DDevice is once per slInit"
+                             : "MISMATCH; Streamline stays bound to its first device until slShutdown",
+                         why, dx12_fg_switch_test_g_SlBoundDevice.Get(), g_Device.Get());
+        }
+        return dx12_fg_switch_test_g_SlDeviceSet;
+    }
+    sl::Result deviceResult = dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get());
+    dx12_fg_switch_test_g_SlDeviceSet = deviceResult == sl::Result::eOk;
+    if (dx12_fg_switch_test_g_SlDeviceSet) {
+        dx12_fg_switch_test_g_SlBoundDevice = g_Device;
+    }
+    testapp::Log("[FG-DIAG] slSetD3DDevice(%s) result=%d (%s) device=%p\n", why, static_cast<int>(deviceResult),
+                 SlResultName(deviceResult), g_Device.Get());
+    return dx12_fg_switch_test_g_SlDeviceSet;
+}
+
 bool TryInitDLSSFG() {
     if (!dx12_fg_switch_test_g_SlInitialized || !dx12_fg_switch_test_g_SlGetFeatureFunction) {
         return false;
     }
-    if (!dx12_fg_switch_test_g_SlDeviceSet && dx12_fg_switch_test_g_SlSetD3DDevice) {
-        sl::Result deviceResult = dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get());
-        dx12_fg_switch_test_g_SlDeviceSet = deviceResult == sl::Result::eOk;
-        testapp::Log("[FG-DIAG] slSetD3DDevice result=%d (%s)\n", static_cast<int>(deviceResult),
-                     SlResultName(deviceResult));
+    if (!dx12_fg_switch_test_g_SlDeviceSet) {
+        BindStreamlineDevice("DLSS feature init");
     }
     if (!dx12_fg_switch_test_g_SlDeviceSet) {
         testapp::Log("[FG-DIAG] Cannot resolve DLSS/Reflex feature functions before Streamline accepts the device\n");
@@ -421,6 +450,7 @@ void ShutdownStreamline() {
     dx12_fg_switch_test_g_SlD3D12CreateDevice = nullptr;
     dx12_fg_switch_test_g_SlInitialized = false;
     dx12_fg_switch_test_g_SlDeviceSet = false;
+    dx12_fg_switch_test_g_SlBoundDevice.Reset();
     dx12_fg_switch_test_g_DlssInitialized = false;
     dx12_fg_switch_test_g_ReflexLowLatencyActive = false;
     dx12_fg_switch_test_g_FrameTokenIndex = 0;

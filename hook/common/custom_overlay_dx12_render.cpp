@@ -137,7 +137,7 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     if (slot < 0)
         return;
     DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
-    if (!needsInlineCompletion && !WaitForSlotGpuComplete(slot)) {
+    if (!needsInlineCompletion && !IsUploadSlotReusable(slot)) {
         return;
     }
     if (vbSize > vertexBufferSize[slot]) {

@@ -249,3 +249,33 @@ TEST(SwapChainProbeLifetimeTest, StreamlineLifecyclePreservesRuntimeAcrossModeSw
     EXPECT_NE(swapchain.find("bool CreateSwapChainResources(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain"),
               std::string::npos);
 }
+
+// Session testappslowswitchtodlssfgstoppedworkingfromfsrfgtodlssfg: after DLSS -> FSR the renderer
+// re-created its device and asked Streamline to bind it again. slSetD3DDevice succeeds once per slInit
+// and returned eErrorInvalidIntegration (19), which the app recorded as "unbound" and then refused every
+// later FSR -> DLSS switch. Only BindStreamlineDevice may call it, and it must reuse an existing binding.
+TEST(SwapChainProbeLifetimeTest, StreamlineDeviceBindingIsRequestedOncePerStreamlineInit) {
+    const std::string streamline = ReadProjectSource("testapp/dx12_fg_switch_streamline.cpp");
+    ASSERT_FALSE(streamline.empty());
+    const char* callers[] = {"testapp/dx12_fg_switch_render.cpp", "testapp/dx12_fg_switch_swapchain.cpp",
+                             "testapp/dx12_fg_switch_test.cpp", "testapp/dx12_fg_switch_render_switch.cpp"};
+    for (const char* path : callers) {
+        const std::string source = ReadProjectSource(path);
+        ASSERT_FALSE(source.empty()) << path;
+        EXPECT_EQ(source.find("g_SlSetD3DDevice("), std::string::npos) << path;
+    }
+
+    const size_t bind = streamline.find("bool BindStreamlineDevice(const char* reason)");
+    ASSERT_NE(bind, std::string::npos);
+    const size_t bindEnd = streamline.find("\n}\n", bind);
+    ASSERT_NE(bindEnd, std::string::npos);
+    const std::string body = streamline.substr(bind, bindEnd - bind);
+    const size_t reuse = body.find("if (dx12_fg_switch_test_g_SlBoundDevice)");
+    const size_t call = body.find("dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get())");
+    ASSERT_NE(reuse, std::string::npos);
+    ASSERT_NE(call, std::string::npos);
+    EXPECT_LT(reuse, call);
+    EXPECT_NE(body.find("dx12_fg_switch_test_g_SlBoundDevice = g_Device"), std::string::npos);
+    EXPECT_EQ(streamline.find("g_SlSetD3DDevice(", bindEnd), std::string::npos);
+    EXPECT_NE(streamline.find("dx12_fg_switch_test_g_SlBoundDevice.Reset()"), std::string::npos);
+}

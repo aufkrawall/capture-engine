@@ -119,12 +119,7 @@ bool CreateBuffers();
 
 bool ResizeBuffer(ID3D12Resource*& buf, void*& ptr, size_t& curSize, size_t needed);
 
-bool WaitForSlotGpuComplete(int slot);
-
-    // Liveness bound for WaitForSlotGpuComplete (see comment there).  Must stay
-    // below the ~2s GPU TDR; a normal Alt+Tab mode-switch pause resumes the GPU
-    // in well under this, so the wait returns as soon as the slot is free.
-    static constexpr DWORD kSlotWaitTimeoutMs = 1000;
+bool IsUploadSlotReusable(int slot);
 
     static constexpr int kPoolSize = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount;
     static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
@@ -156,6 +151,7 @@ bool WaitForSlotGpuComplete(int slot);
     UINT64 slotFenceValue_[kPoolSize] = {};
     std::atomic<int> nextUploadSlot_{-1};
     int frameIdx_ = 0;
+    uint32_t inFlightSkipStreak_ = 0;
 };
 
 struct DX12OverlayState {

@@ -14,7 +14,7 @@
 
 namespace {
 
-using ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot;
+using ce::dx12_overlay_policy::IsOverlayUploadSlotInFlight;
 using ce::dx12_overlay_policy::UploadSlotGuardFenceBinding;
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
@@ -143,7 +143,7 @@ TEST(DX12UploadSlotGuardTest, StaleGuardsCannotWaitAcrossFenceLifetimeChange) {
     EXPECT_EQ(binding.GetFence(), fence2);
 
     for (int slot = 0; slot < kPoolSize; ++slot) {
-        EXPECT_FALSE(ShouldWaitForOverlayUploadSlot(slotGuard[slot], fence2->GetCompletedValue()));
+        EXPECT_FALSE(IsOverlayUploadSlotInFlight(slotGuard[slot], fence2->GetCompletedValue()));
     }
 
     binding.Reset();
@@ -258,6 +258,80 @@ TEST(DX12UploadSlotGuardTest, PostSLBindsUploadStorageToAllocatorAndItsExactSign
     const size_t firstNormalCoupling = normalRoute.find("SetDX12NextUploadSlot(idx)");
     ASSERT_NE(firstNormalCoupling, std::string::npos);
     EXPECT_NE(normalRoute.find("SetDX12NextUploadSlot(idx)", firstNormalCoupling + 1), std::string::npos);
+}
+
+std::string ExtractFunctionBody(const std::string& source, const std::string& signature) {
+    const size_t start = source.find(signature);
+    if (start == std::string::npos)
+        return {};
+    const size_t end = source.find("\n}\n", start);
+    return source.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+// Session gtaslowfsrfgtodlssfg (GTA V Enhanced, FSR FG -> DLSS FG): the incoming
+// Streamline swapchain queue did not retire CE's overlay work until DLSS-G started
+// generating, and each Present spent the full 1 s upload-slot wait on the game's
+// present thread (1 fps for 10 s). Neither backend may block on a slot again.
+TEST(DX12UploadSlotGuardTest, UploadSlotChecksNeverBlockThePresentThread) {
+    const std::string descFree = ExtractFunctionBody(ReadSource("hook/apis/dx12_hook_types_impl.cpp"),
+                                                     "bool DX12DescFreeBackend::IsUploadSlotReusable(int slot)");
+    const std::string textured = ExtractFunctionBody(ReadSource("hook/common/custom_overlay_dx12_buffers.cpp"),
+                                                     "bool DX12Backend::IsUploadSlotReusable(int slot)");
+    ASSERT_FALSE(descFree.empty());
+    ASSERT_FALSE(textured.empty());
+    for (const std::string* body : {&descFree, &textured}) {
+        EXPECT_NE(body->find("IsOverlayUploadSlotInFlight"), std::string::npos);
+        EXPECT_EQ(body->find("WaitForSingleObject"), std::string::npos);
+        EXPECT_EQ(body->find("SetEventOnCompletion"), std::string::npos);
+        EXPECT_NE(body->find("draw skipped this frame"), std::string::npos);
+        EXPECT_NE(body->find("retiring again after"), std::string::npos);
+    }
+    EXPECT_EQ(ReadSource("hook/apis/dx12_hook_types.h").find("kSlotWaitTimeoutMs"), std::string::npos);
+}
+
+// Models the GTA handoff: every CE submission lands on a queue that stops
+// retiring for many presents, then resumes. With the allocator-coupled ring the
+// overlay keeps drawing until the ring is full, skips (never blocks, never
+// stomps) while the queue owes completions, and draws again as soon as it retires.
+TEST(DX12UploadSlotGuardTest, StalledForeignQueueSkipsDrawsAndResumesWithoutStomping) {
+    namespace policy = ce::dx12_overlay_policy;
+    constexpr int kSlots = policy::kAllocatorCoupledUploadSlotCount;
+    constexpr int kStallBegin = 4;
+    constexpr int kStallEnd = 4 + 1440;  // ten seconds at 144 Hz
+    constexpr int kFrames = kStallEnd + 64;
+
+    std::array<uint64_t, kSlots> slotGuard{};
+    std::array<uint64_t, kSlots> slotSubmit{};
+    uint64_t currentFenceValue = 0;
+    uint64_t completed = 0;
+    int stomps = 0;
+    int skipped = 0;
+    int firstDrawAfterStall = -1;
+
+    for (int frame = 0; frame < kFrames; ++frame) {
+        const int slot = policy::ResolveAllocatorCoupledUploadSlot(frame % kSlots);
+        ASSERT_GE(slot, 0);
+        const bool stalled = frame >= kStallBegin && frame < kStallEnd;
+        if (!stalled)
+            completed = currentFenceValue;  // a retiring queue has finished all prior work
+        if (policy::IsOverlayUploadSlotInFlight(slotGuard[slot], completed)) {
+            ++skipped;
+            continue;
+        }
+        if (slotSubmit[slot] != 0 && completed < slotSubmit[slot])
+            ++stomps;
+        if (frame >= kStallEnd && firstDrawAfterStall < 0)
+            firstDrawAfterStall = frame;
+        slotGuard[slot] = policy::DecideOverlayUploadSlotGuardValue(false, true, currentFenceValue);
+        slotSubmit[slot] = ++currentFenceValue;
+    }
+
+    EXPECT_EQ(stomps, 0);
+    // Only the presents after the ring filled were skipped (one submission was
+    // already owed when the stall began); each cost the present thread nothing
+    // instead of the old one-second wait.
+    EXPECT_EQ(skipped, (kStallEnd - kStallBegin) - (kSlots - 1));
+    EXPECT_EQ(firstDrawAfterStall, kStallEnd);
 }
 
 }  // namespace

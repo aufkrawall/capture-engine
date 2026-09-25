@@ -285,6 +285,8 @@ void ApplyReflexMode(bool active, const char* reason);
 
 bool TryInitDLSSFG();
 
+bool BindStreamlineDevice(const char* reason);
+
 bool SetDLSSFGMode(bool enable);
 
 void PollDLSSFGState();
@@ -606,6 +608,12 @@ inline sl::ViewportHandle dx12_fg_switch_test_g_SlViewport(1);
 inline bool dx12_fg_switch_test_g_SlInitialized = false;
 
 inline bool dx12_fg_switch_test_g_SlDeviceSet = false;
+
+// The device Streamline accepted. slSetD3DDevice succeeds once per slInit (a
+// second call returns eErrorInvalidIntegration), so holding this reference keeps
+// D3D12CreateDevice returning the same device across renderer re-creation and
+// lets the binding be reused instead of re-requested.
+inline ComPtr<ID3D12Device> dx12_fg_switch_test_g_SlBoundDevice;
 
 inline bool dx12_fg_switch_test_g_DlssInitialized = false;
 

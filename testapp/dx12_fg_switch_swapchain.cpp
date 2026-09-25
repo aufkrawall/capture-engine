@@ -320,11 +320,8 @@ bool InitDX12(HWND hwnd, bool useFfxSwapChain, bool useStreamlineSwapChain, cons
         return false;
     }
     InitDxgiVideoMemoryQueryStressAdapter("initial device");
-    if (dx12_fg_switch_test_g_SlSetD3DDevice && dx12_fg_switch_test_g_SlInitialized) {
-        sl::Result deviceResult = dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get());
-        dx12_fg_switch_test_g_SlDeviceSet = deviceResult == sl::Result::eOk;
-        testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n", static_cast<int>(deviceResult),
-                     SlResultName(deviceResult));
+    if (dx12_fg_switch_test_g_SlInitialized) {
+        BindStreamlineDevice("before swapchain");
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};

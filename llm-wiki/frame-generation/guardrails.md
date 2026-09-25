@@ -283,6 +283,19 @@ This page records current guardrails and tested transition families for no-FG, D
   guards. Distinct from the 20260703_210021 AMD-suspend stall (same log signature but the fence NEVER advances
   there); here the new fence advances once per present yet can never reach the stale guard values. Tests:
   `tests/test_dx12_upload_slot_guard.cpp`. Do not reintroduce raw non-owning `slotFence` identity tracking.
+- **CURRENT UPLOAD-SLOT NEVER-BLOCKS INVARIANT (2026-09-25, session `gtaslowfsrfgtodlssfg`, GTA V Enhanced 0.1.6801):**
+  after an FSR FG -> DLSS FG switch CE initialized the overlay on the incoming Streamline swapchain queue (569d023e)
+  and submitted there, but that queue did not retire CE's work until DLSS-G started generating (fence `completed=0`
+  for 10 s, later `guard=2240 completed=1`). Each Present then spent the full 1 s slot wait on the game's present
+  thread: 1 FPS for ~10 s (`DescFree: slot N GPU-completion wait timed out (guard=1 completed=0)` +
+  `DetourPresent TOTAL SLOW ~1000ms`). `IsUploadSlotReusable` (both backends) now checks
+  `IsOverlayUploadSlotInFlight` without any wait and skips the draw for an in-flight slot - the same outcome the
+  timeout had, minus the stall; the ring is allocator-coupled, so a slot is only in flight after 16 unretired
+  submissions. Diagnostics: `... still in flight (... streak=N) — no GPU-completion wait on the present thread` and
+  `upload ring retiring again after N in-flight draw skip(s)`. Rule: CE never CPU-waits on the present thread for a
+  queue it cannot prove is retiring its work. OPEN: why CE's submissions on that Streamline queue stay unretired
+  (the overlay may be blank until they do) - needs a GTA run with this build; the 13 s first-DLSS stall in the
+  switch test app was NVIDIA's ComputeCache JIT, not CE.
 - **CURRENT POSTSL ALLOCATOR/UPLOAD OWNERSHIP INVARIANT (2026-09-13):** a supplied DLSS-G 4x capture showed the first `3` in the dynamic `33 ms` graph-ceiling label as a box while the adjacent identical `3` was correct. That per-instance split rules out an absent ASCII glyph or corrupt atlas entry. The x64 descriptor-free renderer instead rotated persistently mapped VB/IB uploads through four slots independently of PostSL's fence-selected command-allocator pool of up to 16 slots, and PostSL explicitly published upload guard zero. Four callbacks could therefore wrap and overwrite storage the GPU was still reading; a changed string or digit count made the mixed geometry visible. The ordinary allocator/upload lifetime now has one shared 16-slot constant, every normal and PostSL draw forces both descriptor-free and textured backends to the exact allocator index whose completion was proved before `Reset`, and PostSL records the exact `g_State.currentFenceValue + 1` that its submission subsequently signals on the submitting queue. The descriptor-free fallback is permitted only with a live fence and nonzero guard; otherwise it rate-limit logs and refuses the draw instead of guessing ownership. This adds no ECL, queue, copy, allocation, CPU wait, or GPU wait to the ready steady-state path; the existing guard observes the already-complete allocator lifetime. `DX12UploadSlotGuardTest` covers pool uniqueness, invalid indices, fail-closed fallback, backend dispatch, all normal/PostSL render sites, removal of the zero PostSL guard, and exact signal publication. Do not reintroduce an upload ring whose slot choice is independent of the command allocator that records it.
 
 ### Historical implementation facts (superseded where they conflict with the current 2026-07-11 invariants above)

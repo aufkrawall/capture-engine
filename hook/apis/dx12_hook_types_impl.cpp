@@ -137,9 +137,9 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
     }
     const int slot = coupledSlot >= 0 ? coupledSlot : frameIdx_++ % kPoolSize;
 
-    // If a caller published a slot guard, block until the GPU has finished
-    // the previous frame that used this ring slot before overwriting it.
-    if (!WaitForSlotGpuComplete(slot)) {
+    // If a caller published a slot guard, the GPU must have finished the
+    // previous frame that used this ring slot before it is overwritten.
+    if (!IsUploadSlotReusable(slot)) {
         return;
     }
 
@@ -474,45 +474,37 @@ bool DX12DescFreeBackend::ResizeBuffer(ID3D12Resource*& buf, void*& ptr, size_t&
     return true;
 }
 
-bool DX12DescFreeBackend::WaitForSlotGpuComplete(int slot) {
+bool DX12DescFreeBackend::IsUploadSlotReusable(int slot) {
     ID3D12Fence* slotFence = slotGuardBinding_.GetFence();
     if (!slotFence || slot < 0 || slot >= kPoolSize) {
         return true;
-
     }
     const UINT64 guardValue = slotFenceValue_[slot];
-    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, slotFence->GetCompletedValue())) {
+    const UINT64 completedValue = slotFence->GetCompletedValue();
+    if (!ce::dx12_overlay_policy::IsOverlayUploadSlotInFlight(guardValue, completedValue)) {
+        if (inFlightSkipStreak_ != 0) {
+            HookLogImportant("DescFree: upload ring retiring again after %u in-flight draw skip(s) (slot=%d "
+                             "guard=%llu completed=%llu)",
+                             inFlightSkipStreak_, slot, (unsigned long long)guardValue,
+                             (unsigned long long)completedValue);
+            inFlightSkipStreak_ = 0;
+        }
         return true;
     }
-    HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!eventHandle) {
-        return false;
+    // Never block the present thread here (see IsOverlayUploadSlotInFlight):
+    // the queue that owes this completion may belong to an FG runtime that is
+    // not retiring CE's work. Skipping the draw keeps the in-flight GPU reads
+    // intact exactly as a wait would.
+    ++inFlightSkipStreak_;
+    static std::atomic<int> s_slotInFlightLog{0};
+    const int logN = s_slotInFlightLog.fetch_add(1, std::memory_order_relaxed);
+    if (logN < 40 || (logN % 600) == 0) {
+        HookLogImportant(
+            "DescFree: slot %d still in flight (guard=%llu completed=%llu streak=%u) — no GPU-completion wait on "
+            "the present thread; overlay draw skipped this frame",
+            slot, (unsigned long long)guardValue, (unsigned long long)completedValue, inFlightSkipStreak_);
     }
-    bool completed = false;
-    if (SUCCEEDED(slotFence->SetEventOnCompletion(guardValue, eventHandle))) {
-        // The fence is the real synchronization that closes the CPU<->GPU
-        // UPLOAD-buffer data race.  The bounded timeout is purely a liveness
-        // safety net: a separate code path (FG transition / overlay reinit)
-        // may legitimately discard the pending Signal for this guard value,
-        // which would otherwise wedge the present thread forever.  On timeout
-        // we skip this overlay draw; reusing the slot would corrupt in-flight
-        // GPU reads and can turn a transient mode switch into DEVICE_HUNG.
-        const DWORD waitResult = WaitForSingleObject(eventHandle, kSlotWaitTimeoutMs);
-        completed = waitResult == WAIT_OBJECT_0;
-        if (!completed) {
-            static std::atomic<int> s_slotWaitTimeoutLog{0};
-            const int logN = s_slotWaitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
-            if (logN < 40 || (logN % 200) == 0) {
-                HookLogImportant(
-                    "DescFree: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — overlay upload ring "
-                    "draw skipped to avoid reusing in-flight GPU data",
-                    slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
-                    (unsigned long long)slotFence->GetCompletedValue());
-            }
-        }
-    }
-    CloseHandle(eventHandle);
-    return completed;
+    return false;
 }
 
 void DX12OverlayState::Cleanup() {

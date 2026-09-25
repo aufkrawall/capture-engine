@@ -13,7 +13,7 @@
 namespace CustomOverlay {
 
 
-bool DX12Backend::WaitForSlotGpuComplete(int slot) {
+bool DX12Backend::IsUploadSlotReusable(int slot) {
     if (slot >= 0 && slot < kMaxUploadSlots && inlineCompletions &&
         inlineSlots.Guard(static_cast<std::size_t>(slot)) != 0 &&
         inlineCompletions[slot] != inlineSlots.Guard(static_cast<std::size_t>(slot))) {
@@ -30,46 +30,32 @@ bool DX12Backend::WaitForSlotGpuComplete(int slot) {
     }
 
     const uint64_t guardValue = slotFenceValue[slot];
-    const uint64_t completedBefore = slotFence->GetCompletedValue();
-    if (!ce::dx12_overlay_policy::ShouldWaitForOverlayUploadSlot(guardValue, completedBefore)) {
+    const uint64_t completedValue = slotFence->GetCompletedValue();
+    if (!ce::dx12_overlay_policy::IsOverlayUploadSlotInFlight(guardValue, completedValue)) {
+        if (inFlightSkipStreak != 0) {
+            HookLogImportant("DX12 Overlay: slot %d upload ring retiring again after %u in-flight draw skip(s) "
+                             "(guard=%llu completed=%llu)",
+                             slot, inFlightSkipStreak, (unsigned long long)guardValue,
+                             (unsigned long long)completedValue);
+            inFlightSkipStreak = 0;
+        }
         return true;
     }
 
-    HANDLE eventHandle = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!eventHandle) {
-        return false;
+    // Never block the present thread on the slot (see IsOverlayUploadSlotInFlight):
+    // the queue owing this completion may belong to an FG runtime that is not
+    // retiring CE's work. Skipping the draw protects the in-flight reads just as
+    // a wait would.
+    ++inFlightSkipStreak;
+    static std::atomic<int> s_slotInFlightLog{0};
+    const int logN = s_slotInFlightLog.fetch_add(1, std::memory_order_relaxed);
+    if (logN < 40 || (logN % 600) == 0) {
+        HookLogImportant(
+            "DX12 Overlay: slot %d still in flight (guard=%llu completed=%llu streak=%u) — no GPU-completion wait "
+            "on the present thread; overlay draw skipped this frame",
+            slot, (unsigned long long)guardValue, (unsigned long long)completedValue, inFlightSkipStreak);
     }
-
-    bool completed = false;
-    if (SUCCEEDED(slotFence->SetEventOnCompletion(guardValue, eventHandle))) {
-        constexpr DWORD kSlotWaitTimeoutMs = 1000;
-        const DWORD waitResult = WaitForSingleObject(eventHandle, kSlotWaitTimeoutMs);
-        completed = waitResult == WAIT_OBJECT_0;
-        if (completed) {
-            static std::atomic<int> s_slotWaitCompleteLog{0};
-            const int logN = s_slotWaitCompleteLog.fetch_add(1, std::memory_order_relaxed);
-            if (logN < 20 || (logN % 200) == 0) {
-                HookLogImportant(
-                    "DX12 Overlay: slot %d GPU-completion wait completed (guard=%llu completedBefore=%llu "
-                    "completedAfter=%llu)",
-                    slot, (unsigned long long)guardValue, (unsigned long long)completedBefore,
-                    (unsigned long long)slotFence->GetCompletedValue());
-            }
-        } else {
-            static std::atomic<int> s_slotWaitTimeoutLog{0};
-            const int logN = s_slotWaitTimeoutLog.fetch_add(1, std::memory_order_relaxed);
-            if (logN < 40 || (logN % 200) == 0) {
-                HookLogImportant(
-                    "DX12 Overlay: slot %d GPU-completion wait %s (guard=%llu completed=%llu) — upload ring may be "
-                    "draw skipped to avoid reusing in-flight GPU data",
-                    slot, waitResult == WAIT_TIMEOUT ? "timed out" : "failed", (unsigned long long)guardValue,
-                    (unsigned long long)slotFence->GetCompletedValue());
-            }
-        }
-    }
-
-    CloseHandle(eventHandle);
-    return completed;
+    return false;
 }
 
 bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {

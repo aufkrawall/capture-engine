@@ -69,7 +69,7 @@ private:
     bool UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList);
     bool ResizeVertexBuffer(int slot, size_t requiredBytes);
     bool ResizeIndexBuffer(int slot, size_t requiredBytes);
-    bool WaitForSlotGpuComplete(int slot);
+    bool IsUploadSlotReusable(int slot);
     bool CreateInlineCompletionBuffer();
     int AcquireInlineUploadSlot();
     void MarkInlineUploadComplete(ID3D12GraphicsCommandList2* list, int slot);
@@ -102,6 +102,7 @@ private:
     ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding;
     uint64_t slotFenceValue[kFramePoolSize] = {};
     uint64_t nextSlotFenceValue = 0;
+    uint32_t inFlightSkipStreak = 0;
     std::atomic<int> frameIdx{0};
     std::atomic<int> nextForcedUploadSlot{-1};
     ce::dx12_overlay_policy::InlineUploadSlots<kMaxUploadSlots> inlineSlots;

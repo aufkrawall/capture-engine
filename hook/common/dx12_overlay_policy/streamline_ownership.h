@@ -396,11 +396,20 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool f
 //
 // DecideOverlayUploadSlotGuardValue() returns the overlay-fence value the GPU
 // must reach before the slot used this frame may be reused, or 0 to disable the
-// guard.  ShouldWaitForOverlayUploadSlot() decides whether the CPU must block
-// before reusing a slot, given that slot's recorded guard and the fence's
-// current completed value.  The fence is the real synchronization; pacing the
-// CPU to the GPU here keeps the overlay visible every frame (never hidden) while
-// preventing the upload-ring data race.
+// guard.  IsOverlayUploadSlotInFlight() decides whether the slot is still owned
+// by GPU work, given that slot's recorded guard and the fence's current
+// completed value.
+//
+// An in-flight slot skips this frame's overlay draw; the CPU never blocks on it.
+// The ring is coupled to the 16-allocator pool, so a slot is only still in
+// flight when the queue CE submitted to has stopped retiring CE's work for 16
+// presents. That queue is not always CE's to flush: after an FSR->DLSS switch
+// the incoming Streamline swapchain queue did not retire CE's submissions until
+// DLSS-G started generating, and a bounded CPU wait there cost the game's
+// present thread its full timeout on every frame (GTA V Enhanced ran at 1 fps
+// for 10 s, session gtaslowfsrfgtodlssfg). Skipping keeps the data race closed
+// exactly like the wait did, without handing a foreign queue's stall to the game.
+
 inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue) {
     // FG paths advance a separate completion fence (not the overlay fence) and
     // already synchronize per frame, so a guard keyed on the overlay fence would
@@ -412,7 +421,7 @@ inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlay
     return currentFenceValue + 1;
 }
 
-inline bool ShouldWaitForOverlayUploadSlot(uint64_t slotGuardFenceValue, uint64_t gpuCompletedFenceValue) {
+inline bool IsOverlayUploadSlotInFlight(uint64_t slotGuardFenceValue, uint64_t gpuCompletedFenceValue) {
     return slotGuardFenceValue != 0 && gpuCompletedFenceValue < slotGuardFenceValue;
 }
 

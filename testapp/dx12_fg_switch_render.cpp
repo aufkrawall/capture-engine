@@ -196,11 +196,8 @@ bool EnsureStreamlineReadyForDLSS(const char* reason) {
             return false;
         }
     }
-    if (!dx12_fg_switch_test_g_SlDeviceSet && dx12_fg_switch_test_g_SlSetD3DDevice && g_Device) {
-        sl::Result deviceResult = dx12_fg_switch_test_g_SlSetD3DDevice(g_Device.Get());
-        dx12_fg_switch_test_g_SlDeviceSet = deviceResult == sl::Result::eOk;
-        testapp::Log("[FG-DIAG] slSetD3DDevice(%s) result=%d (%s)\n", reason ? reason : "DLSS mode",
-                     static_cast<int>(deviceResult), SlResultName(deviceResult));
+    if (!dx12_fg_switch_test_g_SlDeviceSet) {
+        BindStreamlineDevice(reason ? reason : "DLSS mode");
     }
     if (!dx12_fg_switch_test_g_SlDeviceSet) {
         testapp::Log("[FG-DIAG] Streamline device binding unavailable for DLSS mode (%s) device=%p setFn=%p\n",

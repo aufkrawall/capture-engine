@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-09-25 - Slow FSR -> DLSS switches: one CE stall (fixed), one NVIDIA JIT, one test-app bug (fixed)
+
+- **GTA `gtaslowfsrfgtodlssfg` (0.1.6801)** - 1 FPS for ~10 s after the switch was CE: the upload-slot wait blocked
+  every Present for 1 s on a Streamline queue that did not retire CE's work. The wait is gone (see
+  `frame-generation/guardrails.md`, upload-slot never-blocks invariant). Open: why that queue never retired.
+- **Test app `testappslowswitchtodlssfgstoppedworkingfromfsrfgtodlssfg` (0.1.6803)** - the 13 s first DLSS switch
+  was inside NVIDIA's `CreateFeature`: GPU 0.5 %, one core busy, and `%APPDATA%\NVIDIA\ComputeCache` created 82
+  entries in exactly that window (cache at 1.02 GB, near the 1 GiB `CUDA_CACHE_MAXSIZE` default). Not CE.
+- **Test app DLSS never returned** - `InitDX12` re-called `slSetD3DDevice` after renderer re-creation; Streamline
+  accepts one device per slInit (`result=19`, "Plugins already initialized"). `BindStreamlineDevice` now holds the
+  accepted device and reuses the binding. Diagnostic: `Streamline device binding reused`.
+
 ### 2026-09-25 - Follow-up: pre-creation device release crashed Gothic II; device refs now end in the app's Release
 
 Session `20260924_235830` (0.1.6804, user alt-tab): Gothic II caught an AV in `D3DIM700` and showed its own

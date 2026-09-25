@@ -530,17 +530,17 @@ TEST(DXGISharedTest, OverlayUploadSlotGuardDisabledForFGAndMissingFence) {
     EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, false, 41u), 0u);
 }
 
-TEST(DXGISharedTest, OverlayUploadSlotWaitsOnlyWhenGpuBehindActiveGuard) {
+TEST(DXGISharedTest, OverlayUploadSlotInFlightOnlyWhenGpuBehindActiveGuard) {
     namespace pol = ce::dx12_overlay_policy;
-    // Guard 0 (disabled) -> never wait, regardless of completed value.
-    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(0u, 0u));
-    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(0u, 100u));
-    // GPU has reached or passed the guard -> no wait.
-    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(10u, 10u));
-    EXPECT_FALSE(pol::ShouldWaitForOverlayUploadSlot(10u, 11u));
-    // GPU still behind an active guard -> must wait (prevents the upload-ring stomp).
-    EXPECT_TRUE(pol::ShouldWaitForOverlayUploadSlot(10u, 9u));
-    EXPECT_TRUE(pol::ShouldWaitForOverlayUploadSlot(1u, 0u));
+    // Guard 0 (disabled) -> never in flight, regardless of completed value.
+    EXPECT_FALSE(pol::IsOverlayUploadSlotInFlight(0u, 0u));
+    EXPECT_FALSE(pol::IsOverlayUploadSlotInFlight(0u, 100u));
+    // GPU has reached or passed the guard -> reusable.
+    EXPECT_FALSE(pol::IsOverlayUploadSlotInFlight(10u, 10u));
+    EXPECT_FALSE(pol::IsOverlayUploadSlotInFlight(10u, 11u));
+    // GPU still behind an active guard -> in flight (skip the draw, never stomp).
+    EXPECT_TRUE(pol::IsOverlayUploadSlotInFlight(10u, 9u));
+    EXPECT_TRUE(pol::IsOverlayUploadSlotInFlight(1u, 0u));
 }
 
 TEST(DXGISharedTest, DescFreeFontUploadRecordsOnlyWhenPendingAndResourcesExist) {
@@ -583,22 +583,20 @@ TEST(DXGISharedTest, OverlayUploadRingGuardPreventsStompDuringGpuPause) {
             const bool gpuPaused = (frame >= 6 && frame < 22);
             const int slot = frame % kPoolSize;
 
-            // Backend honors the per-slot guard: block until the GPU reaches it.
-            if (useGuard && pol::ShouldWaitForOverlayUploadSlot(slotGuard[slot], gpuCompleted)) {
-                gpuCompleted = slotGuard[slot];
+            // Backend honors the per-slot guard: an in-flight slot skips this
+            // frame's draw (no write, no submit) instead of blocking.
+            if (!useGuard || !pol::IsOverlayUploadSlotInFlight(slotGuard[slot], gpuCompleted)) {
+                // Overwrite the slot now.  A stomp = the GPU had not finished the
+                // work that last used this slot.
+                if (slotSubmit[slot] != 0 && gpuCompleted < slotSubmit[slot]) {
+                    stomps++;
+                }
+                const uint64_t guard =
+                    useGuard ? pol::DecideOverlayUploadSlotGuardValue(false, true, currentFenceValue) : 0u;
+                currentFenceValue += 1;  // one overlay submit per drawn frame
+                slotSubmit[slot] = currentFenceValue;
+                slotGuard[slot] = guard;
             }
-
-            // Overwrite the slot now.  A stomp = the GPU had not finished the work
-            // that last used this slot.
-            if (slotSubmit[slot] != 0 && gpuCompleted < slotSubmit[slot]) {
-                stomps++;
-            }
-
-            const uint64_t guard =
-                useGuard ? pol::DecideOverlayUploadSlotGuardValue(false, true, currentFenceValue) : 0u;
-            currentFenceValue += 1;  // one overlay submit per frame
-            slotSubmit[slot] = currentFenceValue;
-            slotGuard[slot] = guard;
 
             if (!gpuPaused && gpuCompleted < currentFenceValue) {
                 gpuCompleted++;
