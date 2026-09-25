@@ -14,6 +14,12 @@
   overlay graph uses it. See `display-change-timing.md` (Refresh-bounded graph time) for the rule, the
   safety properties and the new `graphInterval`/`refreshBound` health fields. Hardware run pending: expect
   `refreshBound(bounded=~half the FG-on frames meanShiftUs=~3400)` and a flat graph.
+- VALIDATED `20260925_190800` (0.1.6817): published jaggedness 6410 us -> graph 38 us, p1/p50/p99 all
+  6900 us, 3-refresh transition hitch (20835 us) kept; `refreshBound(periodUs=6946 eligible=1095
+  bounded=1093 noBlank=0 meanShiftUs=2365 maxShiftUs=6721)`. Nearly every frame is bounded, not half:
+  the on-time flip type is also reported ~0.6 ms before its VSync blank, so the graph locks onto observed
+  blanks. Consequence: a real hitch after such a lock is drawn up to that lead (~0.6 ms) short and the next
+  frame as much longer - sub-refresh, never hidden.
 
 ### 2026-09-25 - GTA FFX creates were never observed (`20260925_165708`, 0.1.6814)
 

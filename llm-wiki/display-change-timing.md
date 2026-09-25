@@ -176,9 +176,11 @@ recording correlator and pacing traces keep the kernel time.
   and `refreshBound(periodUs eligible bounded noBlank meanShiftUs maxShiftUs)` for the busiest
   output. Pacing traces record the graph time in the display pair's `c` column. The ring sets
   `kDisplayTimingGraphTimeRefreshBounded` on moved samples. Shared-memory version 64.
-- **Open:** the relative phase of VSync DPC blanks and HSync MPO completions under this pattern was
-  not observed directly; if blanks sit between the two reports, the bound only half-flattens it and
-  `meanShiftUs` shows the smaller shift. Hardware run pending.
+- **Validated** `20260925_190800`: graph jaggedness 38 us against 6410 us published, `noBlank=0`,
+  `bounded` on almost every FG frame with `meanShiftUs=2365`: both flip types are reported before their
+  VSync blank (the on-time one by ~0.6 ms), so the graph follows the observed blanks. A real hitch right
+  after such a lock is therefore drawn short by that lead (sub-refresh) and the next frame long by the
+  same amount; it is never hidden.
 
 ### Metric integrity and concurrent publication
 
