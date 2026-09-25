@@ -54,14 +54,24 @@ inline bool ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(bool streamli
                                                                    fg_runtime::RuntimeMode runtimeMode,
                                                                    bool hasOriginalGameQueue,
                                                                    bool commandQueueUsesOriginalGameQueue,
-                                                                   bool isInterpolatedFrame) {
+                                                                   bool isInterpolatedFrame,
+                                                                   bool presentedSwapchainUsesOriginalGameQueue) {
     // A late Streamline-owned startup handoff can create a runtime-owned
     // swapchain/queue that never becomes the live non-FG Present path. If top-
     // level real-frame rendering keeps running on the original game queue while
     // Streamline never re-activates, the latched runtime-owned ownership and
     // captured runtime queue are stale and poison later startup/non-FG routing.
+    //
+    // Command traffic cannot tell the two cases apart: the game renders on its
+    // own queue in both. The discriminator is the queue of the swapchain being
+    // presented. When sl.dlss_g created that swapchain on its own queue, it IS
+    // the live Present path, and the cleanup's retarget to origGame put CE's
+    // backbuffer work on a queue that does not own those buffers: DEVICE_REMOVED
+    // one frame later (GTA V Enhanced FSR FG -> DLSS FG, session 20260925_050613).
+    // Only a presented swapchain proven to live on origGame makes the retarget valid.
     return !streamlineFGRunning && runtimeOwnsSwapchain && runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG &&
-           hasOriginalGameQueue && commandQueueUsesOriginalGameQueue && !isInterpolatedFrame;
+           hasOriginalGameQueue && commandQueueUsesOriginalGameQueue && !isInterpolatedFrame &&
+           presentedSwapchainUsesOriginalGameQueue;
 }
 
 inline bool ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterRealFrameRun(int realFrameRunLength) {

@@ -216,3 +216,47 @@ TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSett
         false, false, true, true, true, true, /*hasCommandQueue=*/true, false, false, false,
         /*freshStreamlineHandoffOnSubmittableQueue=*/false));
 }
+
+// GTA V Enhanced FSR FG -> DLSS FG (session 20260925_050613): sl.dlss_g created the new
+// swapchain on its own queue while the game kept rendering on origGame. The stale no-FG
+// cleanup read "command traffic on origGame" as "the runtime swapchain is not live",
+// retargeted CE's backbuffer work to origGame and the device was removed one frame later.
+TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGNeverTracksWhileItsSwapchainIsPresented) {
+    using ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun;
+    using ce::fg_runtime::RuntimeMode;
+
+    // The crash state: every other stale signal holds, but the presented
+    // swapchain lives on the runtime's queue.
+    EXPECT_FALSE(ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, RuntimeMode::kStreamlineNoFG, true, /*commandQueueUsesOriginalGameQueue=*/true, false,
+        /*presentedSwapchainUsesOriginalGameQueue=*/false));
+    // The case the cleanup exists for: the game presents its own swapchain on origGame.
+    EXPECT_TRUE(ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
+        false, true, RuntimeMode::kStreamlineNoFG, true, /*commandQueueUsesOriginalGameQueue=*/true, false,
+        /*presentedSwapchainUsesOriginalGameQueue=*/true));
+}
+
+// Same session: CE submitted its overlay on the Streamline swapchain's queue and deferred the
+// fence Signal, but the post-Present flush skipped every runtime-owned swapchain. The fence
+// never advanced, the upload ring reported all 16 slots in flight and the overlay stopped
+// drawing. Only AMD's native FSR presentation queue may skip the flush.
+TEST(DXGISharedTest, DeferredOverlaySignalFlushSkipsOnlyAMDNativeFSRPresentationQueue) {
+    using ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterHookedPresent;
+    using ce::fg_runtime::RuntimeMode;
+
+    // Streamline-owned swapchain, FG off or on: flush.
+    EXPECT_TRUE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, false, false, true,
+                                                                   RuntimeMode::kStreamlineNoFG));
+    EXPECT_TRUE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, false, false, true, RuntimeMode::kDLSSFG));
+    // Plain game swapchain: flush.
+    EXPECT_TRUE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, false, false, false, RuntimeMode::kOff));
+
+    // AMD's presentation queue in each of its three shapes: skip.
+    EXPECT_FALSE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, true, false, false, RuntimeMode::kOff));
+    EXPECT_FALSE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, false, true, true,
+                                                                    RuntimeMode::kStreamlineNoFG));
+    EXPECT_FALSE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(true, false, false, true, RuntimeMode::kFSRFG));
+
+    // Not a D3D12 swapchain: nothing to flush.
+    EXPECT_FALSE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(false, false, false, false, RuntimeMode::kOff));
+}

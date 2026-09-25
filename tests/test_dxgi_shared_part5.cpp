@@ -456,20 +456,20 @@ TEST(DXGISharedTest, HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun) {
 
 TEST(DXGISharedTest, TracksStaleRuntimeOwnedStreamlineNoFGOnlyOnRealFramesBackOnOriginalQueue) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+        true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false));
+        false, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, true, ce::fg_runtime::RuntimeMode::kDLSSFG, true, true, false));
+        false, true, ce::fg_runtime::RuntimeMode::kDLSSFG, true, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, true, false));
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, false, false));
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
-        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, true));
+        false, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, true, true, true));
 }
 
 TEST(DXGISharedTest, StaleRuntimeOwnedStreamlineNoFGRequiresLongRealFrameRunBeforeClearing) {

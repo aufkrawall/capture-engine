@@ -1,5 +1,28 @@
 #include "dxgi_shared_internal.h"
 
+void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, const char* presentName) {
+    const bool runtimeOwnsSwapchain = DXGIShared::DoesFGRuntimeOwnSwapchain();
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    if (!ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterHookedPresent(
+            isD3D12Swapchain, DX12_IsNativeFSRInternalNoCallbackCompositionActive(),
+            HookHasRuntimeOwnedNativeFGPresentPath(), runtimeOwnsSwapchain, runtimeMode)) {
+        return;
+    }
+    if (runtimeOwnsSwapchain) {
+        // The flush on a runtime-owned (Streamline) swapchain queue is what retires CE's overlay
+        // upload ring there; a missing line after an FG switch means the ring is starving again.
+        static std::atomic<int> s_runtimeOwnedFlushLogCount{0};
+        const int logCount = s_runtimeOwnedFlushLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 5 || (logCount % 4096) == 0) {
+            HookLogImportant(
+                "DetourPresent: Flushing deferred overlay fence Signal after %s on runtime-owned swapchain "
+                "(runtime=%s log=%d)",
+                presentName, ce::fg_runtime::GetRuntimeModeName(runtimeMode), logCount + 1);
+        }
+    }
+    InvokeDX12FlushDeferredSignal();
+}
+
 namespace DXGIShared {
 HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                   const PresentCallContext& ctx) {
@@ -538,13 +561,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
-    // Skip during runtime-owned native FG presentation (including no-callback FSR FG):
-    // the deferred Signal on the queue is an extra ID3D12CommandQueue::Signal on an
-    // AMD-tracked queue — exactly what stalls or desyncs presenter pacing / ffxQuery.
-    if (ctx.api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
-        !runtimeOwnedNativeFGPresent) {
-        InvokeDX12FlushDeferredSignal();
-    }
+    // Skipped only on AMD's native FSR presentation queue; see
+    // ShouldFlushDeferredOverlaySignalAfterHookedPresent.
+    FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12, "Present");
     if (ctx.api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode

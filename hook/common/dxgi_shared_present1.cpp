@@ -748,10 +748,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     // Flush deferred overlay fence Signal AFTER Present.
-    if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
-        !runtimeOwnedNativeFGPresent) {
-        InvokeDX12FlushDeferredSignal();
-    }
+    FlushDX12DeferredOverlaySignalAfterHookedPresent(api == APIType::D3D12, "Present1");
 
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();

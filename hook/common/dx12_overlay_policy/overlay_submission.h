@@ -55,6 +55,29 @@ inline bool ShouldFlushDeferredOverlaySignalAfterPresent(bool isD3D12Swapchain) 
     return isD3D12Swapchain;
 }
 
+// The hooked (vtable/inline) Present paths hold one exception: AMD's native FSR
+// presentation queue, where an extra Signal stalls or desyncs presenter pacing
+// and ffxQuery (cff7a507). That exception was keyed on ANY runtime-owned
+// swapchain, which also caught a Streamline-created one. CE submits its overlay
+// there and defers the Signal, so the Signal was never issued: the overlay fence
+// stayed at 0, every upload-ring slot read as in flight after 16 presents, the
+// overlay stopped drawing, and the 16 allocators recycled with no completion
+// proof (GTA V Enhanced FSR FG -> DLSS FG, sessions gtaslowfsrfgtodlssfg and
+// 20260925_050613). The Signal lands on the queue CE's own ECL just used.
+inline bool ShouldFlushDeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain,
+                                                               bool nativeFSRNoCallbackComposition,
+                                                               bool runtimeOwnedNativeFSRPresentPath,
+                                                               bool runtimeOwnsSwapchain,
+                                                               fg_runtime::RuntimeMode runtimeMode) {
+    if (!ShouldFlushDeferredOverlaySignalAfterPresent(isD3D12Swapchain)) {
+        return false;
+    }
+    const bool amdOwnedPresentationQueue =
+        nativeFSRNoCallbackComposition || runtimeOwnedNativeFSRPresentPath ||
+        (runtimeOwnsSwapchain && runtimeMode == fg_runtime::RuntimeMode::kFSRFG);
+    return !amdOwnedPresentationQueue;
+}
+
 inline bool ShouldDeferEarlyDX12TempSwapchainPresentHookInstall(bool d3d12DeviceCreated, bool thirdPartyOverlayLoaded) {
     // In no-wrapper builds we normally create a temp D3D12 device/swapchain to
     // install Present hooks eagerly. If a third-party overlay like Steam is

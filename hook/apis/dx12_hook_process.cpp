@@ -613,11 +613,33 @@ ID3D12CommandQueue* currentCommandQueueForStaleRuntimeOwnedCheck = nullptr;
     }
     currentCommandQueueForStaleRuntimeOwnedCheck = g_CommandQueue.load(std::memory_order_acquire);
 }
+// The presented swapchain's own queue decides whether the runtime-owned no-FG
+// swapchain is stale. Queried only in that runtime-owned, FG-off state; an
+// unreadable queue counts as "not on origGame", so nothing is retargeted.
+bool presentedSwapchainUsesOriginalGameQueue = false;
+if (!streamlineFGRunning && dx12_hook_g_FGRuntimeOwnsSwapchain && dx12_hook_g_OriginalGameQueue) {
+    ID3D12CommandQueue* presentedSwapchainQueue = nullptr;
+    if (SUCCEEDED(sc3->GetDevice(IID_PPV_ARGS(&presentedSwapchainQueue))) && presentedSwapchainQueue) {
+        presentedSwapchainUsesOriginalGameQueue = presentedSwapchainQueue == dx12_hook_g_OriginalGameQueue;
+        if (!presentedSwapchainUsesOriginalGameQueue &&
+            currentCommandQueueForStaleRuntimeOwnedCheck == dx12_hook_g_OriginalGameQueue) {
+            static std::atomic<int> s_liveRuntimeSwapchainLogCount{0};
+            const int logCount = s_liveRuntimeSwapchainLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 5 || (logCount % 1200) == 0) {
+                HookLogImportant(
+                    "DX12: Runtime-owned Streamline no-FG swapchain %p is the live Present path (its queue %p, "
+                    "origGame=%p scQueue=%p) — not stale although the game renders on origGame (log=%d)",
+                    sc3, presentedSwapchainQueue, dx12_hook_g_OriginalGameQueue, currentSwapchainQueue, logCount + 1);
+            }
+        }
+        presentedSwapchainQueue->Release();
+    }
+}
 const bool staleRuntimeOwnedStreamlineNoFGRun =
     ce::dx12_overlay_policy::ShouldTrackStaleRuntimeOwnedStreamlineNoFGRealFrameRun(
         streamlineFGRunning, dx12_hook_g_FGRuntimeOwnsSwapchain, g_FGCompat.GetRuntimeMode(), dx12_hook_g_OriginalGameQueue != nullptr,
         dx12_hook_g_OriginalGameQueue != nullptr && currentCommandQueueForStaleRuntimeOwnedCheck == dx12_hook_g_OriginalGameQueue,
-        isInterpolatedFrame);
+        isInterpolatedFrame, presentedSwapchainUsesOriginalGameQueue);
 int staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak = 0;
 if (staleRuntimeOwnedStreamlineNoFGRun) {
     staleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak =

@@ -119,6 +119,10 @@ void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 
 void InvokeDX12FlushDeferredSignal();
 
+// Flushes the deferred DX12 overlay fence Signal after a hooked Present unless
+// the presentation queue is AMD's native FSR queue (policy: overlay_submission.h).
+void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, const char* presentName);
+
 namespace DXGIShared {
 bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace);
 }

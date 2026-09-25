@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA FSR FG -> DLSS FG crash (`20260925_050613`, 0.1.6810): two CE defects
+
+- **Crash** - `ERR_GFX_STATE` after `DXGI: Device removed (hr=0x887A0005)`, one frame after `Clearing stale
+  runtime-owned Streamline no-FG swapchain after 120 consecutive real frames on origGame` restored
+  `g_SwapchainQueue` to origGame. The presented swapchain was sl.dlss_g's fresh one on its own queue; the game
+  renders on origGame regardless, so the heuristic's evidence was meaningless. It now also requires the presented
+  swapchain's own queue to be origGame. The dumps only show the game's `int 3` after its error box.
+- **Overlay hidden** - `DescFree: slot N still in flight (guard=1 completed=0)` from the 17th present on: the
+  deferred overlay fence Signal was never flushed on runtime-owned swapchains (cff7a507 widened an AMD-only skip).
+  This answers the OPEN "Streamline queue never retires CE's work" from `gtaslowfsrfgtodlssfg`: CE never signaled.
+- Not implicated: the 76eabdd3 explicit-startup takeover (no `slDLSSGSetOptions(ON)` arrived before the crash).
+  `FG: Multiplier changed 1 -> 4 (base=3.3, real=1)` right after the handoff is unexplained accounting noise.
+- Details: `frame-generation/guardrails.md` (deferred-signal flush + live runtime swapchain invariant).
+
 ### 2026-09-25 - Slow FSR -> DLSS switches: one CE stall (fixed), one NVIDIA JIT, one test-app bug (fixed)
 
 - **GTA `gtaslowfsrfgtodlssfg` (0.1.6801)** - 1 FPS for ~10 s after the switch was CE: the upload-slot wait blocked

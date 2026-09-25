@@ -306,9 +306,22 @@ This page records current guardrails and tested transition families for no-FG, D
   timeout had, minus the stall; the ring is allocator-coupled, so a slot is only in flight after 16 unretired
   submissions. Diagnostics: `... still in flight (... streak=N) — no GPU-completion wait on the present thread` and
   `upload ring retiring again after N in-flight draw skip(s)`. Rule: CE never CPU-waits on the present thread for a
-  queue it cannot prove is retiring its work. OPEN: why CE's submissions on that Streamline queue stay unretired
-  (the overlay may be blank until they do) - needs a GTA run with this build; the 13 s first-DLSS stall in the
-  switch test app was NVIDIA's ComputeCache JIT, not CE.
+  queue it cannot prove is retiring its work. The 13 s first-DLSS stall in the switch test app was NVIDIA's
+  ComputeCache JIT, not CE.
+- **CURRENT DEFERRED-SIGNAL FLUSH + LIVE RUNTIME SWAPCHAIN INVARIANT (2026-09-25, GTA `20260925_050613`, 0.1.6810):**
+  the "unretired Streamline queue" above was CE: the normal route defers its overlay fence Signal to after Present,
+  and cff7a507 skipped that flush on ANY runtime-owned swapchain, so on sl.dlss_g's no-FG swapchain the fence never
+  moved (`completed=0`), the ring starved after 16 presents and the overlay stopped drawing. The skip is now
+  `ShouldFlushDeferredOverlaySignalAfterHookedPresent`: only AMD's native FSR presentation queue (no-callback
+  composition, `HookHasRuntimeOwnedNativeFGPresentPath`, runtime-owned + `kFSRFG`). Diagnostic: `Flushing deferred
+  overlay fence Signal after Present on runtime-owned swapchain`. Same session, the crash: the stale runtime-owned
+  Streamline no-FG cleanup (120 real frames with `g_CommandQueue == origGame`) retargeted `g_SwapchainQueue` to
+  origGame while sl.dlss_g's swapchain, created on its own queue, was still the one presented; the next overlay
+  submit put backbuffer work on a queue that does not own those buffers and the device was removed
+  (`ERR_GFX_STATE`). The game renders on origGame in BOTH cases, so command traffic cannot discriminate; the
+  presented swapchain's own queue (`IDXGISwapChain::GetDevice(ID3D12CommandQueue)`) must equal origGame before the
+  run counts. Diagnostic: `Runtime-owned Streamline no-FG swapchain ... is the live Present path`. OPEN: GTA
+  FSR->DLSS hardware run on 0.1.6811+.
 - **CURRENT POSTSL ALLOCATOR/UPLOAD OWNERSHIP INVARIANT (2026-09-13):** a supplied DLSS-G 4x capture showed the first `3` in the dynamic `33 ms` graph-ceiling label as a box while the adjacent identical `3` was correct. That per-instance split rules out an absent ASCII glyph or corrupt atlas entry. The x64 descriptor-free renderer instead rotated persistently mapped VB/IB uploads through four slots independently of PostSL's fence-selected command-allocator pool of up to 16 slots, and PostSL explicitly published upload guard zero. Four callbacks could therefore wrap and overwrite storage the GPU was still reading; a changed string or digit count made the mixed geometry visible. The ordinary allocator/upload lifetime now has one shared 16-slot constant, every normal and PostSL draw forces both descriptor-free and textured backends to the exact allocator index whose completion was proved before `Reset`, and PostSL records the exact `g_State.currentFenceValue + 1` that its submission subsequently signals on the submitting queue. The descriptor-free fallback is permitted only with a live fence and nonzero guard; otherwise it rate-limit logs and refuses the draw instead of guessing ownership. This adds no ECL, queue, copy, allocation, CPU wait, or GPU wait to the ready steady-state path; the existing guard observes the already-complete allocator lifetime. `DX12UploadSlotGuardTest` covers pool uniqueness, invalid indices, fail-closed fallback, backend dispatch, all normal/PostSL render sites, removal of the zero PostSL guard, and exact signal publication. Do not reintroduce an upload ring whose slot choice is independent of the command allocator that records it.
 
 ### Historical implementation facts (superseded where they conflict with the current 2026-07-11 invariants above)
