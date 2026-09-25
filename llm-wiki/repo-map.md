@@ -297,7 +297,9 @@ anchors that predate the split are approximate.
 - `captureengine/display_timing_service.cpp` + `display_timing_etw.h` (provider identity and real-time
   session plumbing) + `display_timing_nvidia.h` (NVIDIA scheduled-flip announcements) +
   `display_timing_correlation.h` (Intel/AMD FrameType correlation) + `display_timing_policy.h`
-  (present/submission selection) + `display_timing_health.h` - the screen-change timestamp source behind
+  (present/submission selection) + `display_timing_publication.h` (per-output publication) +
+  `display_timing_refresh_bound.h` / `display_timing_refresh.{h,cpp}` (refresh-bounded graph time, display
+  periods) + `display_timing_health.h` - the screen-change timestamp source behind
   `[Overlay] frametime_source=display_change` and the Present-to-display half of the PC-latency row; see
   `display-change-timing.md` and `overlay-rendering.md`.
 - `captureengine/clr_interop.{h,cpp}` + `sensor_bridge_host.{h,cpp}` + `sensor_bridge_lhm.{h,cpp}` +

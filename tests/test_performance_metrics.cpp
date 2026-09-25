@@ -155,6 +155,29 @@ TEST_F(PerformanceMetricsTest, DisplayChangeTimingDrivesFrameTimeVariance) {
     EXPECT_NEAR(metrics.GetWindowStdDev(), 5000.0, 100.0);
 }
 
+// The graph draws the refresh-bounded time; a stream whose kernel times
+// alternate 3.5/10.4 ms but whose graph times are one refresh apart must read
+// as flat.
+TEST_F(PerformanceMetricsTest, DisplayGraphUsesRefreshBoundedGraphTime) {
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+
+    int64_t onBlankUs = 2000000;
+    timing.Publish(onBlankUs, 3000000);
+    for (int i = 0; i < 80; ++i) {
+        timing.Publish(onBlankUs + 3530, 3000001 + i * 2, 0, true, onBlankUs + 6945);
+        onBlankUs += 2 * 6945;
+        timing.Publish(onBlankUs, 3000002 + i * 2);
+    }
+
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3001000);
+
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_LT(metrics.GetWindowStdDev(), 10.0);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 144.0f, 1.0f);
+}
+
 TEST_F(PerformanceMetricsTest, DisplayChangePreferenceFallsBackWhenPublicationBecomesStale) {
     metrics.Update(1000000);
     metrics.Update(1010000);

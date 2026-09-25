@@ -5,6 +5,8 @@
 #include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
+#include "display_timing_publication.h"
+#include "display_timing_refresh.h"
 #include "display_timing_session_reclaim.h"
 #include "display_timing_startup.h"
 #include "display_timing_submissions.h"
@@ -24,7 +26,6 @@
 #include <iterator>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,9 @@ namespace {
 constexpr int64_t kTimestampReorderWindowUs = 24'000;
 constexpr uint64_t kHealthLogPeriodMs = 10'000;
 constexpr DWORD kTraceFlushPeriodMs = 8;
+// Display modes change rarely; a stale period only disables or narrows the
+// refresh bound, because every bound is also limited by an observed blank.
+constexpr uint64_t kRefreshPeriodQueryMs = 2'000;
 
 }  // namespace
 
@@ -54,6 +58,8 @@ public:
         QueryPerformanceFrequency(&frequency);
         qpcFrequency_ = frequency.QuadPart;
         nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
+        outputs_.SetQpcFrequency(qpcFrequency_);
+        RefreshDisplayPeriods();
         swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
         const ULONG status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
         if (status != ERROR_SUCCESS) {
@@ -94,7 +100,8 @@ public:
             }
         });
         flushThread_ = std::thread([this] { FlushLoop(); });
-        LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus timestampPolicy=event/no-grid)",
+        LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus "
+                "timestampPolicy=event/no-grid graphTime=refresh-bounded)",
                 kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs));
     }
 
@@ -108,7 +115,7 @@ public:
             });
             if (!retained && oldTarget.output) {
                 oldTarget.output->Reset(0, 0, DisplayTimingStatus::Unavailable);
-                lastPublishedByOutput_.erase(oldTarget.output);
+                outputs_.Forget(oldTarget.output);
             }
         }
 
@@ -120,7 +127,7 @@ public:
             if (!unchanged && target.output) {
                 target.output->Reset(target.sourcePid, target.rendererPid,
                                      startupStatus_.load(std::memory_order_acquire));
-                lastPublishedByOutput_.try_emplace(target.output);
+                outputs_.Track(target.output);
             }
         }
         targets_ = targets;
@@ -185,8 +192,14 @@ private:
             if ((header.EventDescriptor.Id == kRuntimePresentStart ||
                  header.EventDescriptor.Id == kRuntimeMpoPresentStart) &&
                 IsTrackedProcess(header.ProcessId)) {
+                // SyncInterval >= 1 is what makes a flip unable to tear; the
+                // refresh bound applies to nothing else.
+                uint32_t syncInterval = 0;
+                const int32_t presentSync = ReadProperty(event, L"SyncInterval", syncInterval)
+                                                ? static_cast<int32_t>(std::min<uint32_t>(syncInterval, 4))
+                                                : kUnknownSyncInterval;
                 submissions_.ObserveRuntimePresent(header.ProcessId, header.ThreadId,
-                                                   header.TimeStamp.QuadPart);
+                                                   header.TimeStamp.QuadPart, presentSync);
                 // The same frames the published series is built from, measured
                 // one stage earlier. Several tracked processes would interleave
                 // into one meaningless series, so the accumulator follows the
@@ -322,7 +335,8 @@ private:
             if (std::find(publishedPids.begin(), publishedPids.begin() + publishedCount, processId) ==
                 publishedPids.begin() + publishedCount) {
                 QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
-                               DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource);
+                               DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource,
+                               association->syncInterval >= 1);
                 ++completionsBySource_[static_cast<std::size_t>(source)];
                 latchIntervals_.Observe(
                     DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
@@ -445,7 +459,8 @@ private:
         if (!association)
             return;
         QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
-                       association->presentStartTimestamp, displaySource);
+                       association->presentStartTimestamp, displaySource,
+                       completionKind == DisplayCompletionKind::Sync && association->syncInterval >= 1);
         ++completionsBySource_[static_cast<std::size_t>(source)];
         if (erase)
             submissions_.Erase(submitSequence);
@@ -466,7 +481,7 @@ private:
 
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                         DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                        uint32_t displaySource = 0) {
+                        uint32_t displaySource = 0, bool synchronizedFlip = false) {
         if (timestamp <= 0)
             return;
         if (completionKind != DisplayCompletionKind::Unconditional) {
@@ -476,7 +491,7 @@ private:
             // causal/no-late-events guarantee).
             correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
                                        pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp,
-                                       displaySource);
+                                       displaySource, synchronizedFlip);
             ++queuedTimestamps_;
             return;
         }
@@ -511,8 +526,7 @@ private:
             if (!force && pending.timestamp > cutoff)
                 break;
             if (ShouldPublish(pending)) {
-                PublishTimestamp(pending.processId, pending.timestamp, publishUs,
-                                 pending.presentStartTimestamp, IsScreenTime(pending));
+                PublishPending(pending, publishUs);
                 if (pending.completionKind != DisplayCompletionKind::Unconditional) {
                     ++fallbackPublished_;
                     correlation_.CommitFallback(pending);
@@ -539,8 +553,7 @@ private:
         const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
         for (const auto& pending : pendingTimestamps_)
             if (ShouldPublish(pending))
-                PublishTimestamp(pending.processId, pending.timestamp, publishUs,
-                                 pending.presentStartTimestamp, IsScreenTime(pending));
+                PublishPending(pending, publishUs);
         pendingTimestamps_.clear();
     }
 
@@ -555,30 +568,33 @@ private:
         return pending.screenTimeResolved;
     }
 
-    void PublishTimestamp(uint32_t processId, int64_t timestamp, int64_t publishUs,
-                          int64_t presentStartTimestamp, bool screenTimeResolved) {
-        for (const auto& target : targets_) {
-            if (!target.output)
-                continue;
-            if (target.sourcePid != processId && target.rendererPid != processId)
-                continue;
-            const auto lastPublished = lastPublishedByOutput_.find(target.output);
-            if (lastPublished == lastPublishedByOutput_.end())
-                continue;
-            if (timestamp <= lastPublished->second.lastTimestamp) {
-                target.output->droppedTimestampCount.fetch_add(1, std::memory_order_relaxed);
-                ++regressedTimestamps_;
-                continue;
-            }
-            lastPublished->second.lastTimestamp = timestamp;
-            const int64_t screenTimeUs = DisplayTimingQpcToUs(timestamp, qpcFrequency_);
-            const int64_t presentStartTimeUs = DisplayTimingQpcToUs(presentStartTimestamp, qpcFrequency_);
-            lastPublished->second.intervals.Observe(screenTimeUs);
-            if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs)
-                lastPublished->second.presentToDisplay.Observe(screenTimeUs - presentStartTimeUs);
-            target.output->Publish(screenTimeUs, publishUs, presentStartTimeUs, screenTimeResolved);
-            ++publishedTimestamps_;
-        }
+    void PublishPending(const PendingTimestamp& pending, int64_t publishUs) {
+        DisplayTimingPublication sample;
+        sample.processId = pending.processId;
+        sample.timestampQpc = pending.timestamp;
+        sample.presentStartQpc = pending.presentStartTimestamp;
+        sample.screenTimeResolved = IsScreenTime(pending);
+        sample.synchronizedFlip =
+            pending.completionKind == DisplayCompletionKind::Sync && pending.synchronizedFlip;
+        sample.displaySource = pending.displaySource;
+        outputs_.Publish(
+            targets_, sample, publishUs, [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
+            [this](uint32_t source, int64_t from, int64_t until) {
+                return verticalBlanks_.FirstBlankInRange(source, from, until);
+            });
+    }
+
+    // Queried outside the lock: QueryDisplayConfig can take a while and the
+    // ETW callback must not wait on it. Logged only when the table changes.
+    void RefreshDisplayPeriods() {
+        const DisplayRefreshPeriods periods = QueryDisplayRefreshPeriods();
+        std::lock_guard<std::mutex> lock(mutex_);
+        lastRefreshQueryTime_ = GetTickCount64();
+        if (refreshPeriodsLogged_ && periods == refreshPeriods_)
+            return;
+        refreshPeriods_ = periods;
+        refreshPeriodsLogged_ = true;
+        LogDisplayRefreshPeriods(periods);
     }
 
     // Returns false while the window is not due, so the caller stays a one-liner.
@@ -594,9 +610,9 @@ private:
         health.presents = submissions_.observedPresents();
         health.associations = submissions_.observedAssociations();
         health.queued = queuedTimestamps_;
-        health.published = publishedTimestamps_;
+        health.published = outputs_.published();
         health.suppressed = suppressedTimestamps_;
-        health.regressed = regressedTimestamps_;
+        health.regressed = outputs_.regressed();
         health.payloadReceived = frameTypePayloadReceived_;
         health.payloadValid = frameTypePayloadValid_;
         health.payloadCorrelated = frameTypeCorrelated_;
@@ -629,23 +645,9 @@ private:
         return true;
     }
 
-    // The busiest output is the one the overlay is reading; averaging several
-    // would hide exactly the shape these statistics exist to expose.
     void SnapshotIntervals(DisplayTimingHealth& health) {
-        PublishedOutputState* busiest = nullptr;
-        for (auto& output : lastPublishedByOutput_) {
-            if (!busiest || output.second.intervals.count() > busiest->intervals.count())
-                busiest = &output.second;
-        }
-        if (busiest) {
-            SetPublishedIntervals(health, busiest->intervals);
-            SetPresentToDisplay(health, busiest->presentToDisplay);
-        }
+        outputs_.Snapshot(health);
         SetRuntimeIntervals(health, runtimeIntervals_);
-        for (auto& output : lastPublishedByOutput_) {
-            output.second.intervals.StartWindow();
-            output.second.presentToDisplay.StartWindow();
-        }
         runtimeIntervals_.StartWindow();
         blankIntervals_.StartWindow();
         latchIntervals_.StartWindow();
@@ -665,6 +667,8 @@ private:
             QueryPerformanceCounter(&now);
             DrainReady(now.QuadPart, false);
             LogHealthIfDue();
+            if (GetTickCount64() - lastRefreshQueryTime_ >= kRefreshPeriodQueryMs)
+                RefreshDisplayPeriods();
         }
     }
 
@@ -713,12 +717,6 @@ private:
     std::thread processThread_;
     std::thread flushThread_;
 
-    struct PublishedOutputState {
-        int64_t lastTimestamp = 0;
-        DisplayIntervalStats intervals;
-        DisplayDurationStats presentToDisplay;
-    };
-
     std::mutex mutex_;
     std::vector<DisplayTimingTarget> targets_;
     DisplaySubmissionTracker submissions_;
@@ -727,7 +725,10 @@ private:
     NvidiaFlipDelayTracker nvidiaFlips_;
     VerticalBlankClock verticalBlanks_;
     std::vector<PendingTimestamp> pendingTimestamps_;
-    std::unordered_map<SharedDisplayTiming*, PublishedOutputState> lastPublishedByOutput_;
+    DisplayTimingOutputs outputs_;
+    DisplayRefreshPeriods refreshPeriods_;
+    uint64_t lastRefreshQueryTime_ = 0;
+    bool refreshPeriodsLogged_ = false;
     DisplayIntervalStats runtimeIntervals_;
     uint32_t runtimeIntervalPid_ = 0;
     DisplayIntervalStats blankIntervals_;
@@ -738,9 +739,7 @@ private:
     uint64_t lastTraceLossLogTime_ = 0;
     uint64_t lastHealthLogTime_ = 0;
     uint64_t queuedTimestamps_ = 0;
-    uint64_t publishedTimestamps_ = 0;
     uint64_t suppressedTimestamps_ = 0;
-    uint64_t regressedTimestamps_ = 0;
     uint64_t frameTypePayloadReceived_ = 0;
     uint64_t frameTypePayloadValid_ = 0;
     uint64_t frameTypeCorrelated_ = 0;

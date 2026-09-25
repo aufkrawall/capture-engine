@@ -8,6 +8,10 @@
 // Diagnostic summary of reported vertical blanks. A periodic blank stream
 // does not identify which blank displayed a particular flip. Never snap,
 // extrapolate, or assign display-change timestamps from this estimate.
+// The only other use of blanks is FirstBlankInRange: an observed blank may
+// bound the graph time of a flip whose reported interval is physically
+// impossible (display_timing_refresh_bound.h); the published screen time is
+// never changed.
 struct BlankGrid {
     int64_t periodUs = 0;  // 0 when the observed gaps do not lie on one grid.
     int64_t anchor = 0;    // The newest observed blank; the grid runs through it.
@@ -41,6 +45,23 @@ public:
     int64_t PeriodUs(uint32_t displaySource) const {
         const Source* source = Find(displaySource);
         return source ? source->grid.periodUs : 0;
+    }
+
+    // The earliest retained blank actually observed on this display in
+    // [from, until], or 0. Nothing is extrapolated: a blank the driver did not
+    // report is not found.
+    int64_t FirstBlankInRange(uint32_t displaySource, int64_t from, int64_t until) const {
+        const Source* source = Find(displaySource);
+        if (!source || from > until)
+            return 0;
+        for (std::size_t i = 0; i < source->count; ++i) {
+            const int64_t blank = source->At(i);
+            if (blank > until)
+                return 0;
+            if (blank >= from)
+                return blank;
+        }
+        return 0;
     }
 
     uint64_t observedBlanks(uint32_t displaySource) const {

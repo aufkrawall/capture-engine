@@ -59,9 +59,14 @@ struct DisplayPendingFrameTypeFlip {
     uint8_t frameType = 0;
 };
 
+// SyncInterval of the runtime Present, or -1 when no runtime present carried
+// it (a kernel submission associated without one).
+inline constexpr int32_t kUnknownSyncInterval = -1;
+
 struct PendingRuntimePresent {
     uint32_t threadId = 0;
     int64_t timestamp = 0;
+    int32_t syncInterval = kUnknownSyncInterval;
 };
 
 struct SubmitAssociation {
@@ -69,6 +74,7 @@ struct SubmitAssociation {
     int64_t timestamp = 0;
     uint64_t associationId = 0;
     int64_t presentStartTimestamp = 0;
+    int32_t syncInterval = kUnknownSyncInterval;
 };
 
 struct PendingTimestamp {
@@ -83,6 +89,9 @@ struct PendingTimestamp {
     // periodicity is not evidence for moving a flip to another blank.
     uint32_t displaySource = 0;
     bool screenTimeResolved = true;
+    // A sync completion of a present that asked for SyncInterval >= 1, which
+    // cannot tear; see display_timing_refresh_bound.h.
+    bool synchronizedFlip = false;
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The
@@ -155,14 +164,15 @@ public:
 
     void QueueFallback(uint32_t processId, uint64_t associationId, int64_t timestamp,
                        DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order,
-                       int64_t presentStartTimestamp = 0, uint32_t displaySource = 0) {
+                       int64_t presentStartTimestamp = 0, uint32_t displaySource = 0,
+                       bool synchronizedFlip = false) {
         if (timestamp <= 0)
             return;
         auto& state = states_[associationId];
         if (state.timestamp == 0)
             state.timestamp = timestamp;
-        queue.push_back(
-            {processId, associationId, timestamp, kind, order++, presentStartTimestamp, displaySource});
+        queue.push_back({processId, associationId, timestamp, kind, order++, presentStartTimestamp, displaySource,
+                         true, synchronizedFlip});
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {

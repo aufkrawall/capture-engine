@@ -63,6 +63,27 @@ struct DisplayTimingHealth {
     int64_t publishedIntervalP50Us = 0;
     int64_t publishedIntervalP99Us = 0;
     int64_t publishedIntervalMaxUs = 0;
+    // What the overlay graph draws: the published series after the refresh
+    // bound (display_timing_refresh_bound.h). Equal to the published series
+    // unless refreshBound(bounded=...) is non-zero.
+    uint64_t graphIntervalCount = 0;
+    int64_t graphIntervalMeanUs = 0;
+    int64_t graphIntervalStdDevUs = 0;
+    int64_t graphIntervalJaggednessUs = 0;
+    int64_t graphIntervalP1Us = 0;
+    int64_t graphIntervalP50Us = 0;
+    int64_t graphIntervalP99Us = 0;
+    int64_t graphIntervalMaxUs = 0;
+    // Refresh bound over this window on the busiest output: the display's
+    // minimum period, transitions it could apply to, transitions it moved later
+    // and by how much, and impossible intervals it left alone for want of an
+    // observed blank.
+    int64_t refreshPeriodUs = 0;
+    uint64_t refreshBoundEligible = 0;
+    uint64_t refreshBoundApplied = 0;
+    uint64_t refreshBoundBlankMissing = 0;
+    int64_t refreshBoundShiftMeanUs = 0;
+    int64_t refreshBoundShiftMaxUs = 0;
     uint64_t runtimeIntervalCount = 0;
     int64_t runtimeIntervalMeanUs = 0;
     int64_t runtimeIntervalStdDevUs = 0;
@@ -109,6 +130,17 @@ inline void SetPublishedIntervals(DisplayTimingHealth& health, const DisplayInte
     health.publishedIntervalP50Us = stats.percentileUs(0.50);
     health.publishedIntervalP99Us = stats.percentileUs(0.99);
     health.publishedIntervalMaxUs = stats.maxUs();
+}
+
+inline void SetGraphIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
+    health.graphIntervalCount = stats.count();
+    health.graphIntervalMeanUs = stats.meanUs();
+    health.graphIntervalStdDevUs = stats.stdDevUs();
+    health.graphIntervalJaggednessUs = stats.jaggednessUs();
+    health.graphIntervalP1Us = stats.percentileUs(0.01);
+    health.graphIntervalP50Us = stats.percentileUs(0.50);
+    health.graphIntervalP99Us = stats.percentileUs(0.99);
+    health.graphIntervalMaxUs = stats.maxUs();
 }
 
 inline void SetLatchIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
@@ -164,7 +196,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "gaps(n=%llu meanUs=%lld p50Us=%lld p99Us=%lld maxUs=%lld)) "
         "latchInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "publishedInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld p1Us=%lld p50Us=%lld p99Us=%lld "
-        "maxUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
+        "maxUs=%lld) graphInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld p1Us=%lld p50Us=%lld "
+        "p99Us=%lld maxUs=%lld) refreshBound(periodUs=%lld eligible=%llu bounded=%llu noBlank=%llu "
+        "meanShiftUs=%lld maxShiftUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "presentToDisplay(n=%llu meanUs=%lld stddevUs=%lld minUs=%lld p50Us=%lld p95Us=%lld p99Us=%lld "
         "maxUs=%lld)",
         stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
@@ -186,7 +220,14 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         static_cast<long long>(health.publishedIntervalP1Us),
         static_cast<long long>(health.publishedIntervalP50Us),
         static_cast<long long>(health.publishedIntervalP99Us),
-        static_cast<long long>(health.publishedIntervalMaxUs), health.runtimeIntervalCount,
+        static_cast<long long>(health.publishedIntervalMaxUs), health.graphIntervalCount,
+        static_cast<long long>(health.graphIntervalMeanUs), static_cast<long long>(health.graphIntervalStdDevUs),
+        static_cast<long long>(health.graphIntervalJaggednessUs), static_cast<long long>(health.graphIntervalP1Us),
+        static_cast<long long>(health.graphIntervalP50Us), static_cast<long long>(health.graphIntervalP99Us),
+        static_cast<long long>(health.graphIntervalMaxUs), static_cast<long long>(health.refreshPeriodUs),
+        health.refreshBoundEligible, health.refreshBoundApplied, health.refreshBoundBlankMissing,
+        static_cast<long long>(health.refreshBoundShiftMeanUs), static_cast<long long>(health.refreshBoundShiftMaxUs),
+        health.runtimeIntervalCount,
         static_cast<long long>(health.runtimeIntervalMeanUs),
         static_cast<long long>(health.runtimeIntervalStdDevUs),
         static_cast<long long>(health.runtimeIntervalJaggednessUs), health.presentToDisplayCount,

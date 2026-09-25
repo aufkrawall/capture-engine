@@ -1,6 +1,7 @@
 # Display-change frame timing
 
-Last verified: 2026-09-09 (event timestamps, exact FSR pacing windows, the controlled
+Last verified: 2026-09-25 (refresh-bounded graph time from the dx12_fg_switch_test pacing trace
+`20260925_183820`; earlier: event timestamps, exact FSR pacing windows, the controlled
 `20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
 repeated same-scene validation of the final startup-isolation build remains pending)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
@@ -138,6 +139,46 @@ stream is unavailable, denied, failed, or two seconds stale.
 - This is OS/driver event timing, **not optical validation** of physical scanout. Driver scheduling/event
   semantics remain a limitation. Do not claim every observed difference is a physical panel hitch, or
   that smooth runtime presents disprove uneven displayed cadence.
+
+### Refresh-bounded graph time (2026-09-25)
+
+The published `screenTimeUs` stays the kernel event time above. The ring carries a second value,
+`graphTimeUs`, that only the overlay graph and its statistics (FPS, lows, variance, `pacing_health`
+`kDisplay`/`[FSRPacingHealth] disp`) read. Latency, present-to-display, callback-to-display, the
+recording correlator and pacing traces keep the kernel time.
+
+- **Why:** FSR FG 2x at the vsync ceiling in `dx12_fg_switch_test` (4K, `gpu_load=120`, 144 Hz G-Sync)
+  published flips alternating **3.53 / 10.36 ms**, deterministic to ~20 us, while AMD's presenter Presents
+  alternated 6844 / 7045 us (its pacer formula `avg/2 - variance*0.1 - 0.1 ms` with the app locked at
+  72.0 fps) and all were `sync=1 flags=0`. With FIFO nothing is dropped, no scanout is shorter than
+  6.945 ms, and the mean was exactly 6.945 ms, so every real interval was 6.945 ms: the kernel reports
+  one frame of each pair when the driver takes it, not when it is scanned out. RTSS draws the same
+  pattern because it reads the same events. Talos does not show it.
+- **Rule** (`captureengine/display_timing_refresh_bound.h`): only for a kernel **Sync** completion of a
+  runtime Present with `SyncInterval >= 1` (read from the DXGI `Present_Start` event and carried
+  through `SubmitAssociation::syncInterval`), when the report is more than `period/16` sooner than one
+  display period after the previous graph time. The graph time then becomes
+  `max(report, min(previous + period, first observed blank >= report - min(500 us, period/8)))`.
+  Blanks are searched after the previous graph time only. No observed blank = no change
+  (`noBlank`).
+- **Safety properties** (all unit-tested in `tests/test_display_timing_refresh_bound.cpp`): never earlier
+  than the kernel time; intervals of a period or longer untouched (repeated frames, hitches, VRR below
+  the ceiling); tearing/`sync=0`, immediate flips, FrameType payloads, Vulkan/non-DXGI (no runtime
+  present, sync unknown) and an unknown period are untouched; a late-reported anchor carries no delay
+  forward because the next report sits on an observed blank; a stale larger period (mode switch)
+  cannot stretch frames past observed blanks.
+- **Period** (`display_timing_refresh.{h,cpp}`): the active path's mode refresh rate from
+  `QueryDisplayConfig` per VidPn source id (under VRR that is the ceiling; measured blank gaps are
+  not, they follow the frame rate below it). An id two adapters drive at different rates gets no
+  period. Re-queried every 2 s on the flush thread; logged once per change as
+  `[DisplayTiming] Display minimum refresh periods`.
+- **Diagnostics:** the sensor health line adds `graphInterval(...)` next to `publishedInterval(...)`
+  and `refreshBound(periodUs eligible bounded noBlank meanShiftUs maxShiftUs)` for the busiest
+  output. Pacing traces record the graph time in the display pair's `c` column. The ring sets
+  `kDisplayTimingGraphTimeRefreshBounded` on moved samples. Shared-memory version 64.
+- **Open:** the relative phase of VSync DPC blanks and HSync MPO completions under this pattern was
+  not observed directly; if blanks sit between the two reports, the bound only half-flattens it and
+  `meanShiftUs` shows the smaller shift. Hardware run pending.
 
 ### Metric integrity and concurrent publication
 

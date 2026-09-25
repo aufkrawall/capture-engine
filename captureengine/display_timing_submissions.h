@@ -21,11 +21,12 @@ public:
     // submission is dropped by age in PruneBefore.
     static constexpr std::size_t kMaxPendingPresentsPerProcess = 16;
 
-    void ObserveRuntimePresent(uint32_t processId, uint32_t threadId, int64_t timestamp) {
+    void ObserveRuntimePresent(uint32_t processId, uint32_t threadId, int64_t timestamp,
+                               int32_t syncInterval = kUnknownSyncInterval) {
         auto& pending = pendingPresents_[processId];
         if (pending.size() >= kMaxPendingPresentsPerProcess)
             pending.pop_front();
-        pending.push_back({threadId, timestamp});
+        pending.push_back({threadId, timestamp, syncInterval});
         ++observedPresents_;
     }
 
@@ -48,8 +49,8 @@ public:
             const std::size_t selected =
                 SelectDisplaySubmissionPresent(pendingThreadIds.data(), pendingCount, threadId);
             if (selected != kNoPendingDisplayPresent) {
-                associations_[submitSequence].push_back(
-                    {processId, timestamp, nextAssociationId_++, pending[selected].timestamp});
+                associations_[submitSequence].push_back({processId, timestamp, nextAssociationId_++,
+                                                         pending[selected].timestamp, pending[selected].syncInterval});
                 pending.erase(pending.begin() +
                               static_cast<std::deque<PendingRuntimePresent>::difference_type>(selected));
                 if (pending.empty())

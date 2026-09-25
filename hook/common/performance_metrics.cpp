@@ -300,7 +300,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         int64_t screenTimeUs = 0;
         int64_t presentStartTimeUs = 0;
         bool screenTimeResolved = false;
-        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved))
+        int64_t graphTimeUs = 0;
+        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved, graphTimeUs))
             break;
         // A reset restarts sequence numbers. Even a coherent sample read must
         // belong to the generation whose cursor/history we are consuming.
@@ -308,7 +309,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
             return;
         m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
         ce::pacing_trace::Record(ce::pacing_trace::Kind::DisplayPair, m_nextDisplaySequence, nullptr,
-            presentStartTimeUs, generationBefore, 0, screenTimeResolved ? 1u : 0u, screenTimeUs);
+            presentStartTimeUs, generationBefore, graphTimeUs, screenTimeResolved ? 1u : 0u, screenTimeUs);
         const uint64_t fsrTag = m_fsrPacingTag.load(std::memory_order_acquire);
         if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs) {
             ce::pacing_health::Observe(ce::pacing_health::Channel::kPresentToDisplay,
@@ -334,7 +335,11 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // *interval* that cannot be trusted, and a stream that starts resolving
         // again must not have to refill its history first.
         m_displayScreenTimeCadence.Observe(screenTimeResolved);
-        UpdateSeries(m_display, screenTimeUs);
+        // The graph and its statistics draw the refresh-bounded time: equal to
+        // the kernel's unless that reported a synchronized flip sooner than the
+        // panel can show one. Latency, pacing health and traces above keep the
+        // kernel time.
+        UpdateSeries(m_display, graphTimeUs > 0 ? graphTimeUs : screenTimeUs);
         ++m_nextDisplaySequence;
     }
     m_displayScreenTimePermille.store(m_displayScreenTimeCadence.permille(), std::memory_order_relaxed);

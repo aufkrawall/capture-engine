@@ -92,6 +92,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedDisplayTiming));
     hash = MixSharedMemoryAbiValue(hash, sizeof(DisplayTimingSample));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DisplayTimingSample, presentStartTimeUs));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(DisplayTimingSample, graphTimeUs));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, writeSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, publicationGeneration));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, sourcePid));
