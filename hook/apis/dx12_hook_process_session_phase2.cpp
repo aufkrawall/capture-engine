@@ -19,6 +19,9 @@ if (processLogicalSwapchainReplacement) {
         dx12_hook_g_ExactGameSwapchainRecoverySwapchain.compare_exchange_strong(
             expectedSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
     }
+    // The prewarmed identity is consumed below; end the recovery now so every
+    // later Present of this swapchain stays off the GPU-quiet gate.
+    EndPostFSRNonFGRecoveryOnProvenSwapchainChange(false, exactPrewarmedPostSLHandoffSwapchainProof);
     if (exactPostDLSSOffNormalReturnSwapchainProof) {
         // One-shot consume at the TOP of the replacement handler: an ABA-equal pointer plus a
         // still-armed proof used to reprocess the replacement on EVERY present (the old consume
@@ -277,6 +280,12 @@ if (processLogicalSwapchainReplacement) {
 
                         currentSwapchainQueue == dx12_hook_g_PostSLLastWorkingQueue,
                     swapchainChangeDeviceRemoved);
+            // The unguarded branch below ends the recovery in order with PostSL
+            // retirement; a guarded change only defers the reinit, so a proven
+            // normal return has to end it here.
+            if (guardSwapchainReinit) {
+                EndPostFSRNonFGRecoveryOnProvenSwapchainChange(postFSRNormalRouteOwnershipProven, false);
+            }
             if (guardSwapchainReinit &&
                 (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
                  immediateReinitAfterAuthoritativeDLSSOffNormalReturn ||

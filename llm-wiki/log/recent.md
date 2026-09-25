@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA menu DLSS FG toggles hid the overlay for good (`20260925_052251`, 0.1.6811)
+
+- **Cause** - the post-FSR recovery latch (armed by the 05:25 DLSS OFF after FSR history) survived a proven normal return at
+  05:34:36 because that swapchain change took the recent-FG cooldown branch. At 05:34:42 the menu toggle created a fresh
+  Streamline swapchain on sl.dlss_g's queue while GTA kept sending `slDLSSGSetOptions(OFF)`; the stale latch held every Present
+  GPU-quiet (`Inactive-DLSS Present has no exact queue-ownership proof`, 2700+ times) until exit. The same shape at 05:25:35
+  worked only because the latch was not set yet (`First exact prewarmed PostSL handoff Present preserved`).
+- **Fix** - end the latch on a proven return in the guarded branch and on the exact prewarmed Streamline handoff; the gate
+  passes that exact handoff. See `frame-generation/guardrails.md` (recovery-latch lifetime invariant). Hardware run pending.
+- Still visible in the log: CE suppresses GTA's menu OFF calls as startup-protected churn (`suppressCount` in the tens of
+  thousands). Harmless here (Streamline already OFF), but it is noise worth revisiting.
+
 ### 2026-09-25 - GTA FSR FG -> DLSS FG crash (`20260925_050613`, 0.1.6810): two CE defects
 
 - **Crash** - `ERR_GFX_STATE` after `DXGI: Device removed (hr=0x887A0005)`, one frame after `Clearing stale

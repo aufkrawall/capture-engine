@@ -118,6 +118,23 @@ inline bool ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(bool endi
            swapchainQueueMatchesOriginalGameQueue && currentSwapchainMatchesCapturedQueue;
 }
 
+inline bool ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(bool postFSRNonFGRecoveryPending,
+                                                           bool normalRouteOwnershipProven,
+                                                           bool exactPrewarmedStreamlineHandoff) {
+    // The recovery latch exists only to keep an unproven swapchain GPU-quiet
+    // (and to force offscreen compositing) until ownership is re-established.
+    // Two swapchain lifetimes end it at their first Present, whichever reinit
+    // branch then handles the change:
+    //  - a proven normal return (original-queue capture or remembered identity),
+    //    even when the change lands inside the recent-FG cooldown window;
+    //  - a fresh authoritative Streamline swapchain whose own queue was captured
+    //    at creation and prewarmed. GTA recreates that swapchain on a DLSS FG
+    //    toggle while its menu keeps DLSS-G OFF, so no PostSL callback ever
+    //    proves it; waiting for original-queue proof kept the overlay hidden
+    //    until exit (session 20260925_052251).
+    return postFSRNonFGRecoveryPending && (normalRouteOwnershipProven || exactPrewarmedStreamlineHandoff);
+}
+
 inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
     bool postFSRNonFGRecovery, bool recentStreamlineTeardown,
     bool postSLLastWorkingQueueStillActiveDuringRecentTeardown) {

@@ -260,3 +260,74 @@ TEST(DXGISharedTest, DeferredOverlaySignalFlushSkipsOnlyAMDNativeFSRPresentation
     // Not a D3D12 swapchain: nothing to flush.
     EXPECT_FALSE(ShouldFlushDeferredOverlaySignalAfterHookedPresent(false, false, false, false, RuntimeMode::kOff));
 }
+
+// GTA V Enhanced, DLSS FG toggled in the menu after FSR history (session 20260925_052251): the
+// post-FSR recovery latch survived a proven normal return because that swapchain change landed in
+// the recent-FG cooldown branch. The next DLSS FG toggle created a fresh Streamline swapchain on its
+// own queue while the menu kept DLSS-G OFF; the stale latch demanded original-queue proof it can
+// never have, and the overlay stayed GPU-quiet until the game was closed.
+TEST(DXGISharedTest, PostFSRRecoveryEndsOnProvenReturnOrExactPrewarmedStreamlineHandoff) {
+    using ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnSwapchainChange;
+
+    EXPECT_TRUE(ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(true, /*normalRouteOwnershipProven=*/true, false));
+    EXPECT_TRUE(ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(true, false, /*exactPrewarmedStreamlineHandoff=*/true));
+    // A bare pointer change proves nothing: the latch keeps an unknown swapchain quiet.
+    EXPECT_FALSE(ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(true, false, false));
+    // Nothing to end.
+    EXPECT_FALSE(ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(false, true, true));
+}
+
+TEST(DXGISharedTest, ExactPrewarmedStreamlineHandoffIsNotHeldQuietByStalePostFSRRecovery) {
+    using ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute;
+    using Route = ce::dx12_overlay_policy::InactiveDLSSPresentRoute;
+
+    // The session state: recovery pending, DLSS-G OFF, no original-queue proof, no keep-alive,
+    // no PostSL callback or queue, never presented through PostSL.
+    EXPECT_EQ(DecideInactiveDLSSPresentRoute(true, false, false, false, false, false, false, false,
+                                             /*currentSwapchainIsExactPrewarmedStreamlineHandoff=*/true),
+              Route::kNormal);
+    // Any other unknown swapchain in that state still waits for proof.
+    EXPECT_EQ(DecideInactiveDLSSPresentRoute(true, false, false, false, false, false, false, false,
+                                             /*currentSwapchainIsExactPrewarmedStreamlineHandoff=*/false),
+              Route::kAwaitNormalOwnershipProof);
+    // The exact confirmed PostSL proxy keeps its keep-alive route.
+    EXPECT_EQ(DecideInactiveDLSSPresentRoute(true, false, false, false, true, true, true, true, false),
+              Route::kConfirmedPostSLKeepAlive);
+}
+
+TEST(DXGISharedSourceTest, SwapchainChangeEndsPostFSRRecoveryBeforeConsumingProofOrCoolingDown) {
+    namespace fs = std::filesystem;
+    const fs::path phase1 = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase1.cpp";
+    const fs::path phase2 = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp";
+    ASSERT_TRUE(fs::exists(phase1));
+    ASSERT_TRUE(fs::exists(phase2));
+    const std::string gate = ce::test_source::ReadLogicalSource(phase1);
+    const std::string text = ce::test_source::ReadLogicalSource(phase2);
+    ASSERT_FALSE(gate.empty());
+    ASSERT_FALSE(text.empty());
+
+    // The GPU-quiet gate must see the prewarmed identity before it decides.
+    const size_t prewarmedLoad = gate.find("dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(");
+    const size_t gateDecision = gate.find("DecideInactiveDLSSPresentRoute(");
+    ASSERT_NE(prewarmedLoad, std::string::npos);
+    ASSERT_NE(gateDecision, std::string::npos);
+    EXPECT_LT(prewarmedLoad, gateDecision);
+    EXPECT_NE(gate.find("exactPrewarmedStreamlineHandoff);", gateDecision), std::string::npos);
+
+    // The prewarmed handoff ends the recovery before its one-shot identity is consumed.
+    const size_t handoffEnd =
+        text.find("EndPostFSRNonFGRecoveryOnProvenSwapchainChange(false, exactPrewarmedPostSLHandoffSwapchainProof);");
+    const size_t proofConsumed = text.find("dx12_hook_g_PrewarmedPostSLHandoffSwapchain.compare_exchange_strong(");
+    ASSERT_NE(handoffEnd, std::string::npos);
+    ASSERT_NE(proofConsumed, std::string::npos);
+    EXPECT_LT(handoffEnd, proofConsumed);
+
+    // A guarded change ends a proven recovery before either cooldown/reinit branch runs.
+    const size_t guardedEnd =
+        text.find("EndPostFSRNonFGRecoveryOnProvenSwapchainChange(postFSRNormalRouteOwnershipProven, false);");
+    ASSERT_NE(guardedEnd, std::string::npos);
+    const size_t immediateBranch = text.find("if (guardSwapchainReinit &&", guardedEnd);
+    const size_t cooldownBranch = text.find("} else if (guardSwapchainReinit) {", guardedEnd);
+    EXPECT_NE(immediateBranch, std::string::npos);
+    EXPECT_NE(cooldownBranch, std::string::npos);
+}

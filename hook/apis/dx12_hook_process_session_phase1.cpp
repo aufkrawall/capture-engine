@@ -364,10 +364,14 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) == &PostSLOverlayRenderGated;
         const bool hasPostSLRenderQueue =
             recoveryPostSLLastWorkingQueue != nullptr || recoveryPostSLLockedQueue != nullptr;
+        const bool exactPrewarmedStreamlineHandoff =
+            pSwapChain != nullptr &&
+            dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain;
         const auto recoveryRoute = ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
             true, actualFGActive, streamlineFGRunning, postFSRNormalRouteOwnershipProven, postSLKeepAliveArmed,
             postSLCallbackReady, hasPostSLRenderQueue,
-            lastSuccessfulPostSLSwapchain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain);
+            lastSuccessfulPostSLSwapchain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain,
+            exactPrewarmedStreamlineHandoff);
         if (recoveryRoute == ce::dx12_overlay_policy::InactiveDLSSPresentRoute::kConfirmedPostSLKeepAlive) {
             const bool preRoutingKeepAliveAlreadySubmitted = DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn();
             const bool shouldSubmitKeepAlive =
@@ -556,4 +560,40 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
         exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||
             exactGameSwapchainRecoverySwapchainProof);
     return ProcessFrameFlow::kContinue;
+}
+
+// Ends the post-FSR non-FG recovery at the first Present of a swapchain whose
+// queue ownership is exactly proven. A latch that outlives that boundary keeps
+// the slow offscreen composite and holds the next runtime-owned swapchain on
+// the GPU-quiet gate for as long as DLSS-G stays OFF (session 20260925_052251:
+// the overlay stayed hidden in GTA's menu until exit).
+void FrameProcessSession::EndPostFSRNonFGRecoveryOnProvenSwapchainChange(bool normalRouteOwnershipProven,
+                                                                          bool exactPrewarmedStreamlineHandoff) {
+    if (!ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnSwapchainChange(
+            dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire),
+            normalRouteOwnershipProven, exactPrewarmedStreamlineHandoff)) {
+        return;
+    }
+    dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);
+    // Same topology boundary as the clean non-FG return: the departed queue
+    // must not become the baseline of a new heuristic FSR epoch.
+    RequestFGDetectionHeuristicReset();
+    if (g_FGCompat.IsHeuristicFSRFGActive()) {
+        g_FGCompat.SetHeuristicFSRFGActive(false);
+    }
+    ID3D12CommandQueue* swapchainQueue = nullptr;
+    ID3D12CommandQueue* originalGameQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        swapchainQueue = dx12_hook_g_SwapchainQueue;
+        originalGameQueue = dx12_hook_g_OriginalGameQueue;
+    }
+    HookLogImportant(
+        "[OVERLAY VISIBILITY] Ended post-FSR non-FG recovery on %s (sc=%p scQueue=%p origGame=%p "
+        "rememberedProof=%d explicitQueueProof=%d fgRecentFrames=%d slFG=%d)",
+        exactPrewarmedStreamlineHandoff ? "exact prewarmed Streamline handoff swapchain"
+                                        : "proven normal return inside the FG-transition guard",
+        pSwapChain, swapchainQueue, originalGameQueue, postFSRNormalRouteRememberedSwapchainProof ? 1 : 0,
+        postFSRNormalRouteExplicitQueueProof ? 1 : 0, dx12_hook_g_FramesSinceFGActive,
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
 }

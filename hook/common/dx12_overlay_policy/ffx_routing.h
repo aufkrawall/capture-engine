@@ -157,8 +157,17 @@ inline bool IsPostFSRNormalRouteOwnershipProven(bool hasSwapchainQueue, bool has
 inline InactiveDLSSPresentRoute DecideInactiveDLSSPresentRoute(
     bool routeProtectionPending, bool actualFGActive, bool streamlineFGRunning, bool normalRouteOwnershipProven,
     bool postSLKeepAliveArmed, bool postSLCallbackReady, bool hasPostSLRenderQueue,
-    bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+    bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain,
+    bool currentSwapchainIsExactPrewarmedStreamlineHandoff = false) {
     if (!routeProtectionPending || actualFGActive || streamlineFGRunning || normalRouteOwnershipProven) {
+        return InactiveDLSSPresentRoute::kNormal;
+    }
+
+    // A fresh authoritative Streamline swapchain was captured on its own queue
+    // at creation and its backend prewarmed for exactly that identity. That is
+    // ownership proof for the swapchain's own queue; the swapchain-change
+    // handler consumes it and ends the stale recovery epoch.
+    if (currentSwapchainIsExactPrewarmedStreamlineHandoff) {
         return InactiveDLSSPresentRoute::kNormal;
     }
 

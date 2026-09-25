@@ -181,6 +181,8 @@ public:
 
 
     ProcessFrameFlow Phase1();
+    void EndPostFSRNonFGRecoveryOnProvenSwapchainChange(bool normalRouteOwnershipProven,
+                                                        bool exactPrewarmedStreamlineHandoff);
     ProcessFrameFlow Phase2();
     ProcessFrameFlow Phase3();
     ProcessFrameFlow Phase4();
