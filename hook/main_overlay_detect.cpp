@@ -7,6 +7,13 @@ static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
 static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
                                                     PCLDR_DLL_NOTIFICATION_DATA data,
                                                     PVOID /*context*/) {
+  // Before any early return: a cached address->module identity must never outlive its image.
+  // The module-set generation also gates the FFX module rescan (ffx_module_rescan_policy.h).
+  if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
+    ce::overlay_compat::module_address_cache::NoteModuleUnloaded();
+  } else if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
+    ce::overlay_compat::module_address_cache::NoteModuleLoaded();
+  }
   if (!data || !data->BaseDllName || !data->BaseDllName->Buffer ||
       data->BaseDllName->Length == 0) {
     return;
@@ -217,7 +224,11 @@ void InitializeThirdPartyOverlayDetection() {
     const NTSTATUS status =
         registerFn(0, &OverlayDllNotificationCallback, nullptr, &g_DllNotificationCookie);
     if (status == 0) {
-      HookLog("Third-party overlay detection: LdrRegisterDllNotification active (cookie=%p)",
+      // Every unload now reaches NoteModuleUnloaded, which is what makes cached module
+      // identity safe to serve on the Present/ECL paths.
+      ce::overlay_compat::module_address_cache::Enable();
+      HookLog("Third-party overlay detection: LdrRegisterDllNotification active (cookie=%p); "
+              "loader-free module identity cache enabled",
               g_DllNotificationCookie);
     } else {
       HookLog("Third-party overlay detection: LdrRegisterDllNotification FAILED (0x%lX) — "

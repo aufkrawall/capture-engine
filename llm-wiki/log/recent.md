@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA FSR FG "worse lows than RTSS": CE hot-path costs removed (0.1.6819)
+
+- Session `20260925_225006` (0.1.6818). Post-load 12.6 s stall is NVIDIA: inside original NGX
+  `CreateFeature(ID=1)`, ComputeCache JIT (cache 994 MB vs 1 GiB CUDA default). Lows: CE's 1%/0.1% low is
+  mean-of-worst over 5 s (`performance_metrics.cpp`), percentile on the same data reads ~7 fps higher; flips
+  alternate ~4.8/8.2 ms at 146 fps output on a 144 Hz panel while AMD presents evenly. Metric definition
+  deliberately unchanged (user decision).
+- Fixed CE costs: (1) `ffx_hook_InstallHooksForModule` repeated 3x `PatchIATAllModules` +
+  `ffx_cached_pointer_router::Refresh` (lock cmpxchg over GTA's 39 MB `.data`) every second, ~115 ms/s;
+  now gated by `hook/common/ffx_module_rescan_policy.h` (runtime image, module-set generation, unrouted-call
+  evidence from the create breakpoint / configure VEH) and the scan reads plainly. (2) Present/ECL caller
+  classification called `GetModuleFileNameA` (loader lock) per call; now
+  `overlay_compat_detail/module_address_cache.h`, invalidated by the LdrRegisterDllNotification unload
+  callback, disabled without it. `[HookThreadStages]` reports `moduleIdCache(hits misses)`. (3) Overlay
+  renderer init: font atlas cached per (font,size,scale); DX12 upload ring is one arena
+  (`dx12_overlay_policy/upload_slot_arena.h`), index budget 3:1 (FG graph needed 16.5 KB > old 16 KB).
+- Not done / open: CE still owns ~80 us per AMD presenter-thread Present (detour minus forward) plus the
+  topmost overlay record per output frame; needs `HookCpuCostMeasurementEnabled` data to attribute. Two
+  DX12 backends are still built at FSR FG start (owner-queue renderer + topmost adapter), now cheap.
+  Hardware run pending: expect `FFX Hook: import/cached-slot sweep ... reason=` lines only at load/evidence,
+  `hooks(avg=...)` in `[HookThreadStages]` back near pre-FSR levels, no `ResizeIndexBuffer` at FG start.
+
 ### 2026-09-25 - Video/audio/sync audit: rational CFR grid, cross-pull track fades (0.1.6818)
 
 - Audit of the CFR/audio/mux path found no broken invariant in encoder PTS, hole accounting, finalization,

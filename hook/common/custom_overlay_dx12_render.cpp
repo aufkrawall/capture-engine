@@ -211,13 +211,13 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     currentCmdList->RSSetScissorRects(1, &scissor);
 
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
-    vbv.BufferLocation = vertexBuffer[slot]->GetGPUVirtualAddress();
+    vbv.BufferLocation = vertexBufferGpu[slot];
     vbv.SizeInBytes = (UINT)vbSize;
     vbv.StrideInBytes = sizeof(DrawVertex);
     currentCmdList->IASetVertexBuffers(0, 1, &vbv);
 
     D3D12_INDEX_BUFFER_VIEW ibv = {};
-    ibv.BufferLocation = indexBuffer[slot]->GetGPUVirtualAddress();
+    ibv.BufferLocation = indexBufferGpu[slot];
     ibv.SizeInBytes = (UINT)ibSize;
     ibv.Format = DXGI_FORMAT_R16_UINT;
     currentCmdList->IASetIndexBuffer(&ibv);

@@ -267,18 +267,17 @@ if (!codeAddress) {
     return false;
 }
 
+// Loader-free once the unload notification is live (module_address_cache.h): this runs on the
+// ECL and swapchain paths, where a loader-lock wait stalls the game behind any concurrent DLL load.
 HMODULE callerModule = nullptr;
-if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                        reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+if (!ce::overlay_compat::module_address_cache::Lookup(codeAddress, &callerModule, modulePathOut, modulePathOutCount,
+                                                      nullptr) ||
     !callerModule) {
     return false;
 }
 
 if (moduleHandleOut) {
     *moduleHandleOut = callerModule;
-}
-if (modulePathOut && modulePathOutCount > 0) {
-    GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount));
 }
 return true;
 }

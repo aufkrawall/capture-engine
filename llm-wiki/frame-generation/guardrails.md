@@ -274,8 +274,10 @@ This page records current guardrails and tested transition families for no-FG, D
   (`hook/apis/ffx_hook_context.cpp`, `Hooked_ffxDestroyContext`) nor the protected-startup retirement for a destroyed
   swapchain context runs. GTA session `20260925_165708` missed every `ffxCreateContext` for three FSR sessions: GTA
   resolves the exports without its import table (no `GetProcAddress: Intercepted FFX API` line), reloads
-  `amd_fidelityfx_dx12.dll` per session and creates at once, so the once-a-second cached-slot rescan always routed
-  the stored pointers after the create (16:59:05.356 create, .372 `Routed 3 pre-resolved ...`). Two routes now close
+  `amd_fidelityfx_dx12.dll` per session and creates at once, so the cached-slot rescan always routed
+  the stored pointers after the create (16:59:05.356 create, .372 `Routed 3 pre-resolved ...`). Since 0.1.6819 that
+  rescan (and the IAT walks) runs only on a new runtime image, a module-set change or an unrouted call trapped by
+  either breakpoint (`hook/common/ffx_module_rescan_policy.h`), no longer every second. Two routes now close
   it. (1) `hook/apis/ffx_hook_create_breakpoint.cpp` arms an int3 on the export from `ffx_hook_InstallHooksForModule`,
   which the module-load notification runs on the loading thread before the load returns; arming pins the module and
   proves the address is still its `ffxCreateContext` export. The handler redirects `Rip` into

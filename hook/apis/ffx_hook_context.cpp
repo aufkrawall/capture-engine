@@ -64,6 +64,7 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
     if (HookIsShuttingDown())
         return CallFfxCreateContextOriginalGuarded(originalCreate, ffx_hook_context, ffx_hook_desc, memCb);
     if (breakpointOriginal) {
+        ffx_hook_g_UnroutedCallEvidence.fetch_add(1, std::memory_order_acq_rel);
         static std::atomic<uint32_t> s_breakpointRoutedCreateCount{0};
         const uint32_t routed = s_breakpointRoutedCreateCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (ce::log_meter::ShouldLogCadence(routed, 20, 100)) {

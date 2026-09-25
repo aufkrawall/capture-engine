@@ -138,8 +138,10 @@ size_t RouteWritableRange(std::uint8_t* begin, std::uint8_t* end, HMODULE ownerM
         if (memory.State == MEM_COMMIT && IsWritableProtection(memory.Protect)) {
             for (; cursor + sizeof(void*) <= scanEnd; cursor += sizeof(void*)) {
                 auto** slot = reinterpret_cast<void**>(cursor);
-                void* current =
-                    InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), nullptr, nullptr);
+                // A plain aligned load is atomic for a pointer. The former read-via-lock-cmpxchg wrote back every
+                // slot, taking exclusive ownership of each cache line of the client's live globals (39 MB in GTA)
+                // and dirtying every page; only a match needs the interlocked exchange below.
+                void* current = *reinterpret_cast<void* const volatile*>(slot);
                 const int routeIndex = detail::FindMatchingRoute(current, routes, routeCount);
                 if (routeIndex < 0) {
                     continue;

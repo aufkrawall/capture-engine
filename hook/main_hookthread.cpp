@@ -514,7 +514,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     "config(n=%llu avg=%lluu max=%lluu) deferred(n=%llu avg=%lluu max=%lluu) "
                     "hooks(n=%llu avg=%lluu max=%lluu) present(n=%llu avg=%lluu max=%lluu) "
                     "retire(n=%llu avg=%lluu max=%lluu) ue5(n=%llu avg=%lluu max=%lluu) "
-                    "ipc(n=%llu avg=%lluu max=%lluu)",
+                    "ipc(n=%llu avg=%lluu max=%lluu) moduleIdCache(enabled=%d hits=%llu misses=%llu)",
                     static_cast<unsigned long long>(snapshot->passes),
                     static_cast<unsigned long long>(snapshot->totalUs / snapshot->passes),
                     static_cast<unsigned long long>(snapshot->maxUs),
@@ -539,7 +539,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     static_cast<unsigned long long>(ue5.maxUs),
                     static_cast<unsigned long long>(ipc.calls),
                     static_cast<unsigned long long>(ce::AverageHookThreadStageUs(ipc)),
-                    static_cast<unsigned long long>(ipc.maxUs));
+                    static_cast<unsigned long long>(ipc.maxUs),
+                    ce::overlay_compat::module_address_cache::IsEnabled() ? 1 : 0,
+                    static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Hits()),
+                    static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Misses()));
             }
         }
     } passCost{PerfLogger::GetQpcUs(), 0, s_hookThreadStageCostWindow};

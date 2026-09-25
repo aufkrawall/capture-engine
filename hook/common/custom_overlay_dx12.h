@@ -15,6 +15,7 @@
 #include "custom_overlay.h"
 #include "dx12_overlay_policy/upload_slot_guard.h"
 #include "dx12_overlay_policy/inline_upload_slots.h"
+#include "dx12_overlay_policy/upload_slot_arena.h"
 
 namespace CustomOverlay {
 
@@ -93,10 +94,15 @@ private:
     // The ordinary fence/allocator ring stays at 16. Callback uploads may
     // grow without waiting when those slots are still in flight.
     static constexpr int kMaxUploadSlots = 128;
+    // The ring's initial VB/IB regions share one upload-heap allocation (slotArena); vertexBuffer/indexBuffer
+    // hold only per-slot replacements created when a slot outgrows its region. Draws bind the GPU addresses.
+    ComPtr<ID3D12Resource> slotArena;
     ComPtr<ID3D12Resource> vertexBuffer[kMaxUploadSlots];
     ComPtr<ID3D12Resource> indexBuffer[kMaxUploadSlots];
     void* vertexBufferPtr[kMaxUploadSlots] = {};
     void* indexBufferPtr[kMaxUploadSlots] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS vertexBufferGpu[kMaxUploadSlots] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS indexBufferGpu[kMaxUploadSlots] = {};
     size_t vertexBufferSize[kMaxUploadSlots] = {};
     size_t indexBufferSize[kMaxUploadSlots] = {};
     ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding;

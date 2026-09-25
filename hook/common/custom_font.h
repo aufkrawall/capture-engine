@@ -71,8 +71,13 @@ public:
     // Calculate text dimensions
     void CalcTextSize(const char* text, float* outWidth, float* outHeight) const;
 
+    // Process-wide count of atlases rasterized with GDI; cache hits do not add to it.
+    static uint32_t RasterizedAtlasCount();
+
 private:
     void BuildGlyphSpans();
+    // Shares the finished atlas with later renderers (see the cache in custom_font.cpp).
+    void PublishSnapshot(const char* fontName, int fontSize, float scale) const;
 
     std::vector<uint8_t> textureData;  // RGBA pixel data
     int textureWidth = 0;

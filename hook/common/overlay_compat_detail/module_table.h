@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "../window_text_safe.h"
+#include "module_address_cache.h"
 
 // Tracked third-party overlay module table and loader-free detection state.
 
@@ -423,9 +424,11 @@ inline bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modul
         return false;
     }
 
+    // Served from the loader-free module identity cache once the unload notification is live
+    // (see module_address_cache.h); callers on the Present/ECL paths never wait on the loader lock.
     HMODULE callerModule = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule) ||
+    bool hasPath = false;
+    if (!module_address_cache::Lookup(codeAddress, &callerModule, modulePathOut, modulePathOutCount, &hasPath) ||
         !callerModule) {
         return false;
     }
@@ -433,11 +436,9 @@ inline bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modul
     if (moduleOut) {
         *moduleOut = callerModule;
     }
-    if (modulePathOut && modulePathOutCount > 0) {
-        if (GetModuleFileNameA(callerModule, modulePathOut, static_cast<DWORD>(modulePathOutCount)) == 0) {
-            modulePathOut[0] = '\0';
-            return false;
-        }
+    if (modulePathOut && modulePathOutCount > 0 && !hasPath) {
+        modulePathOut[0] = '\0';
+        return false;
     }
 
     return true;
@@ -465,13 +466,21 @@ inline bool IsFFXFrameGenerationModuleHandle(HMODULE moduleHandle, char* moduleP
 
 inline bool IsCodeAddressFromFFXFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
                                                       size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    // One cached resolution yields the path. Asking the loader for it again by handle would put
+    // GetModuleFileNameA (loader lock) back on the Present path.
+    char modulePath[MAX_PATH] = {};
     HMODULE callerModule = nullptr;
-    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePath, sizeof(modulePath), &callerModule) ||
         !callerModule) {
         return false;
     }
-
-    return IsFFXFrameGenerationModuleHandle(callerModule, modulePathOut, modulePathOutCount);
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, modulePath, _TRUNCATE);
+    }
+    return IsFFXFrameGenerationModulePath(modulePath);
 }
 
 inline bool HasFFXFrameGenerationModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
@@ -497,13 +506,20 @@ inline bool HasFFXFrameGenerationModuleInStack(char* modulePathOut = nullptr, si
 
 inline bool IsCodeAddressFromStreamlineFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
                                                              size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    // Classify a local copy, so a caller that passes no buffer still gets a real answer.
+    char modulePath[MAX_PATH] = {};
     HMODULE callerModule = nullptr;
-    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePathOut, modulePathOutCount, &callerModule) ||
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePath, sizeof(modulePath), &callerModule) ||
         !callerModule) {
         return false;
     }
-
-    return IsStreamlineFrameGenerationModulePath(modulePathOut);
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, modulePath, _TRUNCATE);
+    }
+    return IsStreamlineFrameGenerationModulePath(modulePath);
 }
 
 inline bool HasStreamlineFrameGenerationModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {

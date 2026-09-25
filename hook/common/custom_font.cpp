@@ -6,9 +6,53 @@
 
 #include "custom_font.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <memory>
+#include <mutex>
 
 namespace CustomOverlay {
+
+namespace {
+
+// A rasterized atlas depends only on (font, size, DPI scale). Rendering it is ~4 ms of GDI work, and
+// CE builds a renderer per route: GTA's FSR FG start built two on AMD's presenter thread inside one
+// ExecuteCommandLists (session 20260925_225006). Later renderers copy the finished atlas instead.
+struct AtlasSnapshot {
+    std::string fontName;
+    int fontSize = 0;
+    float dpiScale = 1.0f;
+    std::vector<uint8_t> textureData;
+    int textureWidth = 0;
+    int textureHeight = 0;
+    int lineHeight = 0;
+    Glyph glyphs[128] = {};
+    std::vector<GlyphSpan> glyphSpans[128];
+};
+
+std::atomic<uint32_t> g_RasterizedAtlasCount{0};
+
+std::mutex& AtlasCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::vector<std::shared_ptr<const AtlasSnapshot>>& AtlasCache() {
+    static std::vector<std::shared_ptr<const AtlasSnapshot>> cache;
+    return cache;
+}
+
+std::shared_ptr<const AtlasSnapshot> FindAtlasSnapshot(const char* fontName, int fontSize, float scale) {
+    std::lock_guard<std::mutex> lock(AtlasCacheMutex());
+    for (const auto& snapshot : AtlasCache()) {
+        if (snapshot->fontSize == fontSize && snapshot->dpiScale == scale && snapshot->fontName == fontName) {
+            return snapshot;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
 
 FontAtlas::FontAtlas() {
     memset(glyphs, 0, sizeof(glyphs));
@@ -21,6 +65,22 @@ FontAtlas::~FontAtlas() {
 bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     if (initialized)
         return true;
+    if (!fontName)
+        return false;
+
+    if (const auto snapshot = FindAtlasSnapshot(fontName, fontSize, scale)) {
+        textureData = snapshot->textureData;
+        textureWidth = snapshot->textureWidth;
+        textureHeight = snapshot->textureHeight;
+        lineHeight = snapshot->lineHeight;
+        dpiScale = snapshot->dpiScale;
+        memcpy(glyphs, snapshot->glyphs, sizeof(glyphs));
+        for (int c = 0; c < 128; ++c) {
+            glyphSpans[c] = snapshot->glyphSpans[c];
+        }
+        initialized = true;
+        return true;
+    }
 
     memset(glyphs, 0, sizeof(glyphs));
     for (auto& spans : glyphSpans) {
@@ -207,7 +267,35 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     DeleteDC(hdc);
 
     initialized = true;
+    g_RasterizedAtlasCount.fetch_add(1, std::memory_order_relaxed);
+    PublishSnapshot(fontName, fontSize, scale);
     return true;
+}
+
+uint32_t FontAtlas::RasterizedAtlasCount() {
+    return g_RasterizedAtlasCount.load(std::memory_order_relaxed);
+}
+
+void FontAtlas::PublishSnapshot(const char* fontName, int fontSize, float scale) const {
+    auto snapshot = std::make_shared<AtlasSnapshot>();
+    snapshot->fontName = fontName;
+    snapshot->fontSize = fontSize;
+    snapshot->dpiScale = scale;
+    snapshot->textureData = textureData;
+    snapshot->textureWidth = textureWidth;
+    snapshot->textureHeight = textureHeight;
+    snapshot->lineHeight = lineHeight;
+    memcpy(snapshot->glyphs, glyphs, sizeof(glyphs));
+    for (int c = 0; c < 128; ++c) {
+        snapshot->glyphSpans[c] = glyphSpans[c];
+    }
+    std::lock_guard<std::mutex> lock(AtlasCacheMutex());
+    for (const auto& existing : AtlasCache()) {
+        if (existing->fontSize == fontSize && existing->dpiScale == scale && existing->fontName == fontName) {
+            return;
+        }
+    }
+    AtlasCache().push_back(std::move(snapshot));
 }
 
 void FontAtlas::Shutdown() {

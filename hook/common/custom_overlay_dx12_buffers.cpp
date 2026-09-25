@@ -67,7 +67,8 @@ bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    size_t newSize = std::max(vertexBufferSize[slot], 4096 * sizeof(DrawVertex));
+    size_t newSize =
+        std::max(vertexBufferSize[slot], ce::dx12_overlay_policy::kInitialUploadSlotVertices * sizeof(DrawVertex));
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
@@ -106,11 +107,13 @@ bool DX12Backend::ResizeVertexBuffer(int slot, size_t requiredBytes) {
         HookLogImportant("DX12 Overlay: ResizeVertexBuffer Map failed (slot=%d hr=0x%08X)", slot, hr);
         return false;
     }
-    // Keep the old mapping usable if allocation or mapping fails.
+    // Keep the old mapping usable if allocation or mapping fails. An arena-backed slot owns no resource of
+    // its own; its region simply stays unused.
     if (vertexBuffer[slot] && vertexBufferPtr[slot])
         vertexBuffer[slot]->Unmap(0, nullptr);
     vertexBuffer[slot] = newBuffer;
     vertexBufferPtr[slot] = newPointer;
+    vertexBufferGpu[slot] = newBuffer->GetGPUVirtualAddress();
     vertexBufferSize[slot] = newSize;
     DX12_DEBUG_STEP("ResizeVertexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, vertexBufferPtr[slot]);
 
@@ -128,7 +131,8 @@ bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
         return false;
     }
 
-    size_t newSize = std::max(indexBufferSize[slot], 8192 * sizeof(uint16_t));
+    size_t newSize =
+        std::max(indexBufferSize[slot], ce::dx12_overlay_policy::kInitialUploadSlotIndices * sizeof(uint16_t));
     while (newSize < requiredBytes) {
         newSize *= 2;
     }
@@ -172,6 +176,7 @@ bool DX12Backend::ResizeIndexBuffer(int slot, size_t requiredBytes) {
         indexBuffer[slot]->Unmap(0, nullptr);
     indexBuffer[slot] = newBuffer;
     indexBufferPtr[slot] = newPointer;
+    indexBufferGpu[slot] = newBuffer->GetGPUVirtualAddress();
     indexBufferSize[slot] = newSize;
     DX12_DEBUG_STEP("ResizeIndexBuffer", "SUCCESS - new buffer[%d] mapped at %p", slot, indexBufferPtr[slot]);
 

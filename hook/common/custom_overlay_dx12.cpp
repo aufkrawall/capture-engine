@@ -107,6 +107,7 @@ void DX12Backend::Shutdown() {
             (void)vertexBuffer[i].Detach();
             (void)indexBuffer[i].Detach();
         }
+        (void)slotArena.Detach();
         (void)rootSignature.Detach();
         (void)pipelineState.Detach();
         (void)pipelineStateTexturedSdr.Detach();
@@ -134,14 +135,20 @@ void DX12Backend::Shutdown() {
     for (int i = 0; i < kMaxUploadSlots; i++) {
         if (vertexBuffer[i] && vertexBufferPtr[i]) {
             vertexBuffer[i]->Unmap(0, nullptr);
-            vertexBufferPtr[i] = nullptr;
         }
         if (indexBuffer[i] && indexBufferPtr[i]) {
             indexBuffer[i]->Unmap(0, nullptr);
-            indexBufferPtr[i] = nullptr;
         }
+        vertexBufferPtr[i] = nullptr;
+        indexBufferPtr[i] = nullptr;
+        vertexBufferGpu[i] = 0;
+        indexBufferGpu[i] = 0;
         vertexBuffer[i].Reset();
         indexBuffer[i].Reset();
+    }
+    if (slotArena) {
+        slotArena->Unmap(0, nullptr);
+        slotArena.Reset();
     }
 
     rootSignature.Reset();
@@ -322,9 +329,11 @@ bool DX12Backend::CreatePipelineState() {
 bool DX12Backend::CreateBuffers() {
     DX12_DEBUG_STEP("CreateBuffers", "START - creating %d buffer pool slots", kFramePoolSize);
 
-    const size_t initVBSize = 4096 * sizeof(DrawVertex);
-    const size_t initIBSize = 8192 * sizeof(uint16_t);
-    DX12_DEBUG_STEP("CreateBuffers", "Per-slot sizes: vertex=%zu bytes, index=%zu bytes", initVBSize, initIBSize);
+    const auto layout = ce::dx12_overlay_policy::MakeUploadSlotArenaLayout(
+        kFramePoolSize, ce::dx12_overlay_policy::kInitialUploadSlotVertices * sizeof(DrawVertex),
+        ce::dx12_overlay_policy::kInitialUploadSlotIndices * sizeof(uint16_t));
+    DX12_DEBUG_STEP("CreateBuffers", "Per-slot sizes: vertex=%zu bytes, index=%zu bytes, arena=%zu bytes",
+                    layout.vertexBytes, layout.indexBytes, layout.totalBytes);
 
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
@@ -332,51 +341,42 @@ bool DX12Backend::CreateBuffers() {
 
     D3D12_RESOURCE_DESC bufferDesc = {};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = layout.totalBytes;
     bufferDesc.Height = 1;
     bufferDesc.DepthOrArraySize = 1;
     bufferDesc.MipLevels = 1;
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
+    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&slotArena));
+    if (FAILED(hr)) {
+        HookLog("DX12 Overlay: CreateBuffers - upload slot arena (%zu bytes) creation failed, hr=0x%08X",
+                layout.totalBytes, hr);
+        return false;
+    }
     D3D12_RANGE readRange = {0, 0};
+    void* arenaCpu = nullptr;
+    hr = slotArena->Map(0, &readRange, &arenaCpu);
+    if (FAILED(hr) || !arenaCpu) {
+        HookLogImportant("DX12 Overlay: upload slot arena Map failed (hr=0x%08X)", hr);
+        slotArena.Reset();
+        return false;
+    }
+    const D3D12_GPU_VIRTUAL_ADDRESS arenaGpu = slotArena->GetGPUVirtualAddress();
+    auto* arenaBytes = static_cast<uint8_t*>(arenaCpu);
     for (int i = 0; i < kFramePoolSize; i++) {
-        vertexBufferSize[i] = initVBSize;
-        bufferDesc.Width = initVBSize;
-        HRESULT hr =
-            device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vertexBuffer[i]));
-        if (FAILED(hr)) {
-            HookLog(
-                "DX12 Overlay: CreateBuffers - Vertex buffer[%d] creation failed, "
-                "hr=0x%08X",
-                i, hr);
-            return false;
-        }
-        hr = vertexBuffer[i]->Map(0, &readRange, &vertexBufferPtr[i]);
-        if (FAILED(hr) || !vertexBufferPtr[i]) {
-            HookLogImportant("DX12 Overlay: initial vertex-buffer Map failed (slot=%d hr=0x%08X)", i, hr);
-            return false;
-        }
-
-        indexBufferSize[i] = initIBSize;
-        bufferDesc.Width = initIBSize;
-        hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indexBuffer[i]));
-        if (FAILED(hr)) {
-            HookLog(
-                "DX12 Overlay: CreateBuffers - Index buffer[%d] creation failed, "
-                "hr=0x%08X",
-                i, hr);
-            return false;
-        }
-        hr = indexBuffer[i]->Map(0, &readRange, &indexBufferPtr[i]);
-        if (FAILED(hr) || !indexBufferPtr[i]) {
-            HookLogImportant("DX12 Overlay: initial index-buffer Map failed (slot=%d hr=0x%08X)", i, hr);
-            return false;
-        }
+        const size_t slot = static_cast<size_t>(i);
+        vertexBufferPtr[i] = arenaBytes + layout.VertexOffset(slot);
+        vertexBufferGpu[i] = arenaGpu + layout.VertexOffset(slot);
+        vertexBufferSize[i] = layout.vertexBytes;
+        indexBufferPtr[i] = arenaBytes + layout.IndexOffset(slot);
+        indexBufferGpu[i] = arenaGpu + layout.IndexOffset(slot);
+        indexBufferSize[i] = layout.indexBytes;
     }
 
-    DX12_DEBUG_STEP("CreateBuffers", "SUCCESS - %d VB/IB pairs created and mapped", kFramePoolSize);
+    DX12_DEBUG_STEP("CreateBuffers", "SUCCESS - %d VB/IB slots carved from one %zu-byte arena", kFramePoolSize,
+                    layout.totalBytes);
     return CreateInlineCompletionBuffer();
 }
 

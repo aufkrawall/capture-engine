@@ -42,6 +42,8 @@
 
 #include "ffx_cached_pointer_router.h"
 
+#include "../common/ffx_module_rescan_policy.h"
+
 extern void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge);
 
 extern void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* ffx_hook_reason);
@@ -225,6 +227,26 @@ bool IsLiveFfxExportEntry(void* target, const char* exportName, HMODULE* ownerOu
 // Bumped by every FFX runtime unload (FFXHook::OnModuleUnloaded); a cached export proof is valid only for the
 // generation it was taken in.
 inline std::atomic<uint64_t> ffx_hook_g_FfxModuleUnloadGeneration{0};
+
+// Bumped whenever a client reaches an FFX export through a route CE does not intercept (create entry breakpoint,
+// ffxConfigure VEH). It is the evidence that a cached pointer slot or unpatched import exists, and it is what lets
+// the install pass skip its IAT walks and cached-slot scan otherwise (ffx_module_rescan_policy.h).
+inline std::atomic<uint64_t> ffx_hook_g_UnroutedCallEvidence{0};
+
+// One install pass's decision about its expensive half (ffx_hook_module_sweep.cpp).
+struct FfxModuleSweep {
+    HMODULE module = nullptr;
+    ce::ffx_module_rescan::Inputs inputs;
+    ce::ffx_module_rescan::Reason reason = ce::ffx_module_rescan::Reason::kNone;
+    LARGE_INTEGER start = {};
+    bool Run() const {
+        return reason != ce::ffx_module_rescan::Reason::kNone;
+    }
+};
+FfxModuleSweep ffx_hook_DecideModuleSweep(HMODULE module);
+// Commits the inputs the sweep covered and logs it; no-op when the pass skipped its sweep.
+void ffx_hook_CompleteModuleSweep(const FfxModuleSweep& sweep, const char* moduleName,
+                                  const ce::ffx_cached_pointer_router::RefreshResult& routes);
 
 // --- ffxCreateContext entry breakpoint (ffx_hook_create_breakpoint.cpp) -----------------------------------
 // A client can resolve the FFX exports through a path CE does not route and call ffxCreateContext at once

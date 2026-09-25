@@ -160,6 +160,11 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
             ffx_hook_moduleName);
     }
 
+    // The IAT walks and the cached-slot scan below are the expensive half of this pass; repeat them only when
+    // something they could find has changed (ffx_module_rescan_policy.h, ffx_hook_module_sweep.cpp).
+    const FfxModuleSweep sweep = ffx_hook_DecideModuleSweep(hModule);
+    const bool runSweeps = sweep.Run();
+
     // Install IAT hooks in loaded non-system/non-overlay modules to intercept calls to FFX functions.
     // Official AMD runtime DLLs are intentionally not inline-patched. Import-table routing is allowed because it
     // changes caller thunks instead of the AMD runtime code page and lets statically importing games expose the real
@@ -188,7 +193,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
             HookLog("FFX Hook: ffxCreateContext found at %p, hooking via %s (inline=%d)", createCtx,
                     allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
         }
-        if (allowIATHooks) {
+        if (allowIATHooks && runSweeps) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxCreateContext", (void*)Hooked_ffxCreateContext, &dummy);
         }
@@ -206,7 +211,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
             HookLog("FFX Hook: ffxDestroyContext found at %p, hooking via %s (inline=%d)", destroyCtx,
                     allowIATHooks ? "IAT/dynamic" : "dynamic-only", allowInlineHooks ? 1 : 0);
         }
-        if (allowIATHooks) {
+        if (allowIATHooks && runSweeps) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxDestroyContext", (void*)Hooked_ffxDestroyContext, &dummy);
         }
@@ -234,7 +239,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
                                   : (armProtectedConfigureBreakpoint ? "dynamic+VEH" : "dynamic-only"),
                     allowInlineHooks ? 1 : 0, armProtectedConfigureBreakpoint ? 1 : 0);
         }
-        if (allowIATHooks) {
+        if (allowIATHooks && runSweeps) {
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
         }
@@ -294,8 +299,11 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
         {"ffxDestroyContext", reinterpret_cast<void*>(destroyCtx), reinterpret_cast<void*>(Hooked_ffxDestroyContext)},
         {"ffxConfigure", reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure)},
     };
-    const auto cachedRouteResult =
-        ce::ffx_cached_pointer_router::Refresh(hModule, cachedRoutes, _countof(cachedRoutes));
+    ce::ffx_cached_pointer_router::RefreshResult cachedRouteResult;
+    if (runSweeps) {
+        cachedRouteResult = ce::ffx_cached_pointer_router::Refresh(hModule, cachedRoutes, _countof(cachedRoutes));
+    }
+    ffx_hook_CompleteModuleSweep(sweep, ffx_hook_moduleName, cachedRouteResult);
     constexpr std::uint64_t kConfigureRouteBit = std::uint64_t{1} << 2;
     if ((cachedRouteResult.routedRouteMask & kConfigureRouteBit) != 0) {
         // Once a durable client-owned ffxConfigure pointer routes through Hooked_ffxConfigure, the protected
@@ -658,6 +666,7 @@ LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     ffx_hook_g_ffxConfigureVehArmed.store(false, std::memory_order_release);
+    ffx_hook_g_UnroutedCallEvidence.fetch_add(1, std::memory_order_acq_rel);
 
     auto contextPtr = reinterpret_cast<ffxContext*>(
 #ifdef _WIN64

@@ -199,9 +199,10 @@ bool IsCodeAddressFromStreamlineModule(const void* codeAddress) {
         return false;
     }
 
+    // Per-Present caller classification: served from the loader-free module identity cache.
     HMODULE callerModule = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &callerModule)) {
+    if (!ce::overlay_compat::module_address_cache::Lookup(codeAddress, &callerModule, nullptr, 0, nullptr) ||
+        !callerModule) {
         return false;
     }
     return IsStreamlineModuleHandle(callerModule);

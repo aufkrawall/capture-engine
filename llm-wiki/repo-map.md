@@ -323,6 +323,10 @@ anchors that predate the split are approximate.
   policy helpers.
 - `hook/common/overlay_compat.h` + `overlay_compat_detail/module_table.h` - loader-free
   hot-path identity for third-party overlays/injects and FFX modules.
+  `overlay_compat_detail/module_address_cache.h` serves code-address -> module/path lookups
+  (`TryGetModulePathFromCodeAddress`) without the loader lock once `main_overlay_detect.cpp` has the
+  unload notification that invalidates it; it also carries the module-set generation that gates the
+  FFX import/cached-slot sweep (`hook/common/ffx_module_rescan_policy.h`).
 - `hook/wrappers/inline_hook*.cpp` + `hook_patch_transaction.*` + `vtable_hook.cpp` +
   `iat_hook*.cpp` - foreign-chain preservation, ownership-only removal, callable-original
   publication, and exact-byte single/group thread-quiesced inline patching. The live-code
