@@ -279,3 +279,26 @@ TEST(SwapChainProbeLifetimeTest, StreamlineDeviceBindingIsRequestedOncePerStream
     EXPECT_EQ(streamline.find("g_SlSetD3DDevice(", bindEnd), std::string::npos);
     EXPECT_NE(streamline.find("dx12_fg_switch_test_g_SlBoundDevice.Reset()"), std::string::npos);
 }
+
+// Session 20260925_042117 (DLSS -> OFF -> DLSS): the switch app tagged the native OFF swapchain's back
+// buffers as kBufferTypeBackbuffer. sl.dlss_g kept that swapchain (the dump shows it and all three back
+// buffers in sl.dlss_g-owned heap nodes after the app released everything), so Streamline's next swapchain
+// on the window failed with E_ACCESSDENIED. Only a back buffer Streamline presents may be tagged.
+TEST(SwapChainProbeLifetimeTest, StreamlineBackbufferTagOnlyForStreamlinePresentedSwapchain) {
+    const std::string streamline = ReadProjectSource("testapp/dx12_fg_switch_streamline.cpp");
+    const size_t submit = streamline.find("void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex)");
+    ASSERT_NE(submit, std::string::npos);
+    const size_t submitEnd = streamline.find("\n}\n", submit);
+    ASSERT_NE(submitEnd, std::string::npos);
+    const std::string body = streamline.substr(submit, submitEnd - submit);
+
+    const size_t gate = body.find("if (dx12_fg_switch_test_g_SwapChainUsesStreamline) {");
+    const size_t backbufferTag = body.find("sl::kBufferTypeBackbuffer");
+    ASSERT_NE(gate, std::string::npos);
+    ASSERT_NE(backbufferTag, std::string::npos);
+    EXPECT_LT(gate, backbufferTag);
+    EXPECT_EQ(body.find("sl::kBufferTypeBackbuffer", backbufferTag + 1), std::string::npos);
+    const size_t gateEnd = body.find("} else {", gate);
+    ASSERT_NE(gateEnd, std::string::npos);
+    EXPECT_LT(backbufferTag, gateEnd);
+}

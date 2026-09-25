@@ -387,9 +387,21 @@ void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) {
         sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, sl::eValidUntilPresent, &renderExtent),
         sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::eValidUntilPresent, &displayExtent),
         sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, sl::eValidUntilPresent, &displayExtent),
-        sl::ResourceTag(&backbuffer, sl::kBufferTypeBackbuffer, sl::eValidUntilPresent, &displayExtent),
     };
-    uint32_t tagCount = 5;
+    uint32_t tagCount = 4;
+    // Only a back buffer that Streamline itself presents may be tagged. sl.dlss_g records the
+    // swapchain behind every tagged back buffer and keeps it alive, so tagging the native OFF chain
+    // (or the FSR proxy) pinned that chain and Streamline's next swapchain on the window failed with
+    // E_ACCESSDENIED (session 20260925_042117: DLSS -> OFF -> DLSS).
+    if (dx12_fg_switch_test_g_SwapChainUsesStreamline) {
+        tags[tagCount++] = sl::ResourceTag(&backbuffer, sl::kBufferTypeBackbuffer, sl::eValidUntilPresent, &displayExtent);
+    } else {
+        static std::atomic<int> s_withheldBackbufferTagLogCount{0};
+        if (s_withheldBackbufferTagLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            testapp::Log("[FG-DIAG] Backbuffer tag withheld: the presenting swapchain %p is not Streamline's\n",
+                         g_SwapChain.Get());
+        }
+    }
     if (UpscalingActive()) {
         // DLSS SR input/output pair: the render-res scene color upscales into the display-res
         // hudless color (which then feeds FG + present-compose).

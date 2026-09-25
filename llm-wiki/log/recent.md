@@ -11,6 +11,12 @@
 - **Test app DLSS never returned** - `InitDX12` re-called `slSetD3DDevice` after renderer re-creation; Streamline
   accepts one device per slInit (`result=19`, "Plugins already initialized"). `BindStreamlineDevice` now holds the
   accepted device and reuses the binding. Diagnostic: `Streamline device binding reused`.
+- **Follow-up `20260925_042117` (0.1.6807, DLSS -> OFF -> DLSS)** - with the binding fixed the switch reached
+  Streamline's swapchain create and got `E_ACCESSDENIED` (CE recovery exhausted, `retained=0`). The dump's only
+  remaining pointer to the OFF back buffer sits in `sl_dlss_g`-surrounded heap nodes that also hold the other two
+  OFF back buffers and the OFF swapchain: the app had tagged the native chain's back buffer as
+  `kBufferTypeBackbuffer` every frame, and DLSS-G kept that chain. The app now tags the back buffer only while
+  Streamline's own swapchain presents (`Backbuffer tag withheld` otherwise). Not CE.
 
 ### 2026-09-25 - Follow-up: pre-creation device release crashed Gothic II; device refs now end in the app's Release
 
