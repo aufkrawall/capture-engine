@@ -236,9 +236,9 @@ void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
 const bool accountCoverage = ce::dx12_overlay_policy::ShouldAccountPostSLCallbackAsSeparatePresent(
     pSwapChain != nullptr, HookOverlayObserverOnlyEnabled(), dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent);
 const bool officialUiCoverage = ce::dx12_streamline_ui_overlay::HasActiveCoverage();
-auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage, officialUiCoverage]() {
+auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage, officialUiCoverage, pSwapChain]() {
     if (accountCoverage) {
-        AccountPresentForOverlayCoverage(officialUiCoverage, "PostSL");
+        AccountPresentForOverlayCoverage(officialUiCoverage, "PostSL", pSwapChain);
     }
 });
 

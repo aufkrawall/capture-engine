@@ -430,7 +430,8 @@ const char* DX12OverlayRenderRouteName(uint32_t route);
 void NoteDX12OverlayCoverageGate(const char* gate);
 DX12OverlayCoverageSnapshot GetOverlayCoverageSnapshot();
 
-void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source);
+void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source,
+                                      IDXGISwapChain* pSwapChain = nullptr);
 void LogOverlayCoverageSummary(const char* edge);
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route);
 void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr);

@@ -282,6 +282,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnk
     }
 
     HRESULT hr = dx12_hook_oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
+    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        DX12_NoteOverlayVisibilitySwapchainCreated(*ppSwapChain);
+    }
     if (Dx12TraceEnabled()) {
         char d[224];
         _snprintf_s(d, sizeof(d), _TRUNCATE,
@@ -330,6 +333,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pTh
     }
 
     HRESULT hr = dx12_hook_oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    if (SUCCEEDED(hr) && ppSC && *ppSC) {
+        DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);
+    }
     if (Dx12TraceEnabled()) {
         char d[224];
 

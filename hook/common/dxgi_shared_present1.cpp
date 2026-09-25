@@ -32,6 +32,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+    // See DetourPresent: one physical Present, one overlay-coverage verdict.
+    DX12_BeginOverlayPresentScope(pSwapChain);
+    auto overlayPresentScopeGuard = ce::make_scope_guard([]() { DX12_EndOverlayPresentScope(); });
 
     // The interposer's private output chain is not the application's, whatever API created it, so
     // how CE may draw there is resolved for every API here — see ExecutePresentCore.

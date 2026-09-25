@@ -382,8 +382,8 @@ const bool coverageInheritsFGComposedOverlay =
     (overlayBackendBoundToCurrentSwapchain &&
      (isInterpolatedFrame || (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(
                                                          std::memory_order_acquire) != nullptr)));
-auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay]() {
-    AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal");
+auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay, pSwapChain]() {
+    AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal", pSwapChain);
 });
 
 ID3D12CommandQueue* currentSwapchainQueue = nullptr;

@@ -457,6 +457,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // No bypass available - return S_OK to break recursion loop
         return S_OK;
     }
+    // Every overlay-coverage accounting call below (PostSL, ProcessFrameExternal, transport) belongs
+    // to this one physical Present and is judged once when the scope closes.
+    DX12_BeginOverlayPresentScope(pSwapChain);
+    auto overlayPresentScopeGuard = ce::make_scope_guard([]() { DX12_EndOverlayPresentScope(); });
 
     static std::atomic<int> s_entryCount{0};
     int entryNum = s_entryCount.fetch_add(1, std::memory_order_relaxed) + 1;

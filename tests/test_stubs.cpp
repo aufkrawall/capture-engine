@@ -106,6 +106,9 @@ bool InlineHook::IsInTrampolinePool(void*) {
 void DX12_InvalidateSwapchain() {}
 void DX12_ProcessFrameExternal(IDXGISwapChain*) {}
 void DX12_AccountOverlayTransportPresent(bool, const char*, const char*) {}
+void DX12_BeginOverlayPresentScope(IDXGISwapChain*) {}
+void DX12_EndOverlayPresentScope() {}
+void DX12_NoteOverlayVisibilitySwapchainCreated(IDXGISwapChain*) {}
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain*, const char*) {
     return false;
 }

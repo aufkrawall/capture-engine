@@ -17,6 +17,15 @@
   OFF back buffers and the OFF swapchain: the app had tagged the native chain's back buffer as
   `kBufferTypeBackbuffer` every frame, and DLSS-G kept that chain. The app now tags the back buffer only while
   Streamline's own swapchain presents (`Backbuffer tag withheld` otherwise). Not CE.
+- **Switch-spam overlay dropouts `20260925_043001` (0.1.6808) - diagnostics first.** Three "uncovered" windows
+  (516/734/94 ms) all sat on DLSS-G <-> FSR swapchain handoffs, but the coverage tracker counted one Present
+  once per accounting site (PostSL + ProcessFrameExternal inside the same DetourPresent), so a covered present's
+  second call read as uncovered. Real no-present gaps of 300-350 ms per switch (`heartbeat gap=319/351/353ms`)
+  are the app rebuilding its chain; hypothesis: the departing chain's final image lacked the overlay and stays on
+  screen for that gap. Now: `DX12_Begin/EndOverlayPresentScope` in DetourPresent/1 merge accounting per physical
+  Present (`mergedCalls=`), and `SwapchainPresentLedger` logs `[OVERLAY SWAPCHAIN HANDOFF] departing=...
+  lastPresent=drawn|inherited|MISSING endedWithoutOverlay=N -> arriving=... firstPresent=... noPresentGapMs=`
+  plus `overlay first reached swapchain ... after N present(s)`. Open: rerun switch spam and fix the named cases.
 
 ### 2026-09-25 - Follow-up: pre-creation device release crashed Gothic II; device refs now end in the app's Release
 

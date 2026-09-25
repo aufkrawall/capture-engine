@@ -92,6 +92,12 @@ extern DX12Hook* g_dx12HookInstance;
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const char* gate, const char* source);
+// One physical Present: accounting calls made between Begin and End merge into a single
+// coverage verdict. Only the outermost scope on a thread counts.
+void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain);
+void DX12_EndOverlayPresentScope();
+// Starts a new overlay-visibility lifetime for a swapchain (DXGI may reuse the address).
+void DX12_NoteOverlayVisibilitySwapchainCreated(IDXGISwapChain* pSwapChain);
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);

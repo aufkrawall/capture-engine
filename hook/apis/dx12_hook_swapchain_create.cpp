@@ -191,6 +191,9 @@ if (deferPresentHookRefreshForStreamlineHandoff) {
 
 HRESULT hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
+if (SUCCEEDED(hr) && ppSC && *ppSC) {
+    DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);
+}
 
 if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
     LogAccessDeniedSwapchainPinDiagnostics(hWnd, "inline-pre-cleanup");
