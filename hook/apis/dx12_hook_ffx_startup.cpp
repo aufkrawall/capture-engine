@@ -117,6 +117,7 @@ if (hadPending) {
 
 
 void ClearProtectedOfficialFFXStartupSwapchainPending(const char* reason) {
+dx12_hook_g_ProtectedOfficialFFXStartupHwnd.store(nullptr, std::memory_order_release);
 if (dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.exchange(false, std::memory_order_acq_rel)) {
     HookLogImportant("DX12: Cleared protected official FFX startup swapchain pass-through (%s)",
                      reason && reason[0] ? reason : "unknown");
@@ -353,6 +354,14 @@ g_FGCompat.SetFSRFGSupportPresent(true);
 g_FGCompat.SetFSRFGMultiplier(2);
 ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
 SetNativeFSRStartupConfigureArmingPending(true, "protected official FFX swapchain create");
+{
+    DXGI_SWAP_CHAIN_DESC protectedDesc = {};
+    HWND protectedHwnd = nullptr;
+    if (swapchain && SUCCEEDED(swapchain->GetDesc(&protectedDesc))) {
+        protectedHwnd = protectedDesc.OutputWindow;
+    }
+    dx12_hook_g_ProtectedOfficialFFXStartupHwnd.store(protectedHwnd, std::memory_order_release);
+}
 dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.store(true, std::memory_order_release);
 ArmProtectedOfficialFFXStartupProgressTracking("protected official FFX swapchain create");
 ResetAuthoritativeFSRRealFrameOnlyStreak();

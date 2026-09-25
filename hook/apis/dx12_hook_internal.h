@@ -176,6 +176,10 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable();
 void DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(const char* source);
 void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const char* source);
+void DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(const char* source, IDXGISwapChain* swapchain,
+                                                                  ID3D12CommandQueue* queue, bool gameCreatedSwapchain,
+                                                                  bool officialFFXRuntimeCreator,
+                                                                  bool createdOnOriginalGameQueue);
 
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source);
 

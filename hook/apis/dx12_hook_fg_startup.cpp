@@ -142,6 +142,37 @@ void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const
         source && source[0] ? source : "unknown");
     DX12_ClearNativeFSRStartupConfigureArming("official FFX FG swapchain context destroyed before enabled configure");
 }
+void DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(const char* source, IDXGISwapChain* swapchain,
+                                                                  ID3D12CommandQueue* queue, bool gameCreatedSwapchain,
+                                                                  bool officialFFXRuntimeCreator,
+                                                                  bool createdOnOriginalGameQueue) {
+    const bool pending = dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire);
+    if (!pending) {
+        return;
+    }
+    const HWND protectedHwnd = dx12_hook_g_ProtectedOfficialFFXStartupHwnd.load(std::memory_order_acquire);
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    const HWND hwnd = swapchain && SUCCEEDED(swapchain->GetDesc(&desc)) ? desc.OutputWindow : nullptr;
+    if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(
+            pending, gameCreatedSwapchain, officialFFXRuntimeCreator, createdOnOriginalGameQueue,
+            protectedHwnd != nullptr, hwnd != nullptr && hwnd == protectedHwnd)) {
+        if (gameCreatedSwapchain && !officialFFXRuntimeCreator) {
+            HookLogImportant(
+                "DX12: Game-created swapchain during protected official FFX startup did not retire it "
+                "(source=%s swapchain=%p queue=%p originalQueue=%d hwnd=%p protectedHwnd=%p)",
+                source && source[0] ? source : "unknown", swapchain, queue, createdOnOriginalGameQueue ? 1 : 0,
+                hwnd, protectedHwnd);
+        }
+        return;
+    }
+
+    HookLogImportant(
+        "[OVERLAY VISIBILITY] Game-created swapchain on the original queue replaced the protected official FFX "
+        "swapchain before its enabled ffxConfigure — retiring the provisional startup latch so CE overlay/queue "
+        "side effects resume (source=%s swapchain=%p queue=%p hwnd=%p protectedHwnd=%p)",
+        source && source[0] ? source : "unknown", swapchain, queue, hwnd, protectedHwnd);
+    DX12_ClearNativeFSRStartupConfigureArming("game-created original-queue swapchain replaced protected FFX startup");
+}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source) {
     if (!swapchain || !IsUsableStartupActivationSwapchainPointer(swapchain)) {
         return;

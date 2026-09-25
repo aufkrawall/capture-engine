@@ -331,3 +331,72 @@ TEST(DXGISharedSourceTest, SwapchainChangeEndsPostFSRRecoveryBeforeConsumingProo
     EXPECT_NE(immediateBranch, std::string::npos);
     EXPECT_NE(cooldownBranch, std::string::npos);
 }
+
+// GTA V Enhanced, FSR FG -> all FG off in the menu (session 20260925_054901): FSR FG never got an
+// enabled ffxConfigure in the menu, so its protected startup latch stayed armed. CE had missed GTA's
+// in-flight ffxCreateContext (the FFX module reloads per toggle), so the context destroys were
+// classified non-FG and the destroy exit never ran. The game then created its own swapchain on the
+// original queue and every Present of it stayed tracking-only until exit.
+TEST(DXGISharedTest, GameSwapchainReturnOnOriginalQueueRetiresProtectedFFXStartup) {
+    using ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn;
+
+    // The session state: same window, game-created, original queue.
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, true, false, true, true, true));
+    // Window unknown (latch armed from a queue capture): the original-queue game create still decides.
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, true, false, true, false, false));
+
+    // Nothing pending.
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(false, true, false, true, true, true));
+    // AMD's own nested swapchain create or a runtime/overlay create is not a game return.
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, false, false, true, true, true));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, true, true, true, true, true));
+    // A fresh queue proves nothing about the protected swapchain.
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, true, false, false, true, true));
+    // Another window can coexist with the protected FFX swapchain.
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(true, true, false, true, true, false));
+}
+
+TEST(DXGISharedSourceTest, GameSwapchainReturnRetiresProtectedFFXStartupBeforeItsFirstPresent) {
+    namespace fs = std::filesystem;
+    const fs::path tracking = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp";
+    const fs::path startup = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
+    const fs::path ffxStartup = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx_startup.cpp";
+    ASSERT_TRUE(fs::exists(tracking));
+    ASSERT_TRUE(fs::exists(startup));
+    ASSERT_TRUE(fs::exists(ffxStartup));
+    const std::string capture = ce::test_source::ReadLogicalSource(tracking);
+    const std::string retire = ce::test_source::ReadLogicalSource(startup);
+    const std::string arm = ce::test_source::ReadLogicalSource(ffxStartup);
+
+    // Swapchain creation retires the latch after the queue is published and before the Streamline
+    // handoff branch; the first Present of the replacement then takes the normal route.
+    const size_t capturedDecl = capture.find("void CaptureSwapchainQueueFromCreateDevice(");
+    const size_t setQueue = capture.find("DX12_SetSwapchainQueue(pQueue,", capturedDecl);
+    const size_t retireCall = capture.find("DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(", setQueue);
+    const size_t handoffBranch = capture.find("if (freshAuthoritativeStreamlineHandoff) {", setQueue);
+    ASSERT_NE(capturedDecl, std::string::npos);
+    ASSERT_NE(setQueue, std::string::npos);
+    ASSERT_NE(retireCall, std::string::npos);
+    ASSERT_NE(handoffBranch, std::string::npos);
+    EXPECT_LT(retireCall, handoffBranch);
+
+    const size_t helper = retire.find("void DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t decision = retire.find("ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(", helper);
+    const size_t clear = retire.find("DX12_ClearNativeFSRStartupConfigureArming(", decision);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(clear, std::string::npos);
+
+    // The protected window is recorded when the latch is armed from the FFX swapchain create, and
+    // forgotten whenever the latch is cleared.
+    const size_t armCreate = arm.find("bool HandleProtectedOfficialFFXStartupSwapchainCreate(");
+    const size_t hwndStore = arm.find("dx12_hook_g_ProtectedOfficialFFXStartupHwnd.store(protectedHwnd", armCreate);
+    const size_t pendingStore = arm.find("dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.store(true", armCreate);
+    ASSERT_NE(armCreate, std::string::npos);
+    ASSERT_NE(hwndStore, std::string::npos);
+    ASSERT_NE(pendingStore, std::string::npos);
+    EXPECT_LT(hwndStore, pendingStore);
+    const size_t clearFn = arm.find("void ClearProtectedOfficialFFXStartupSwapchainPending(");
+    ASSERT_NE(clearFn, std::string::npos);
+    EXPECT_NE(arm.find("dx12_hook_g_ProtectedOfficialFFXStartupHwnd.store(nullptr", clearFn), std::string::npos);
+}

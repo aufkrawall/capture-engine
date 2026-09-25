@@ -220,6 +220,7 @@ std::atomic<IDXGISwapChain*> dx12_hook_g_PrewarmedPostSLHandoffSwapchain{nullptr
 std::atomic<bool> dx12_hook_g_NativeFSRStartupConfigureArmingPending{false};
 
 std::atomic<bool> dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending{false};
+std::atomic<HWND> dx12_hook_g_ProtectedOfficialFFXStartupHwnd{nullptr};
 
 std::atomic<uint32_t> dx12_hook_g_ProtectedOfficialFFXStartupProcessFrameSkips{0};
 

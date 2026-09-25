@@ -754,4 +754,19 @@ inline bool ShouldRetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainConte
     return protectedOfficialFFXStartupPending && frameGenerationSwapchainContextDestroyed;
 }
 
+inline bool ShouldRetireProtectedOfficialFFXStartupForGameSwapchainReturn(bool protectedOfficialFFXStartupPending,
+                                                                          bool gameCreatedSwapchain,
+                                                                          bool officialFFXRuntimeCreator,
+                                                                          bool createdOnOriginalGameQueue,
+                                                                          bool protectedWindowKnown,
+                                                                          bool sameWindowAsProtectedSwapchain) {
+    // A window holds one flip-model swapchain, so a game-created swapchain on the original queue proves the
+    // protected FFX swapchain is already gone and no enabled ffxConfigure can follow for it. The context-destroy
+    // exit cannot see this when CE missed the in-flight ffxCreateContext (GTA reloads the FFX module per toggle):
+    // the destroy is classified non-FG and the latch quiesced the overlay until exit (20260925_054901).
+    // The one-swapchain-per-window argument only holds for the protected swapchain's own window.
+    return protectedOfficialFFXStartupPending && gameCreatedSwapchain && !officialFFXRuntimeCreator &&
+           createdOnOriginalGameQueue && (!protectedWindowKnown || sameWindowAsProtectedSwapchain);
+}
+
 }  // namespace ce::dx12_overlay_policy

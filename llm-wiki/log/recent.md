@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-09-25 - GTA menu FSR FG -> all off hid the overlay for good (`20260925_054901`, 0.1.6812)
+
+- The b856d249 latch fix held: `Ended post-FSR non-FG recovery on proven normal return inside the FG-transition guard` fired.
+- New cause: FSR FG in the menu only receives disabled `ffxConfigure`, so the protected FFX startup latch stays armed.
+  On FSR -> off, both FFX context destroys logged `Non-FG Context destroyed` (create missed after the module reload),
+  so no exit ran; the game's own original-queue swapchain stayed tracking-only until exit. Earlier FSR menu sessions
+  in the same log were rescued only by the next Streamline handoff. Fix: game-created original-queue swapchain in the
+  protected window retires the latch (`frame-generation/guardrails.md`). Hardware run pending.
+
 ### 2026-09-25 - GTA menu DLSS FG toggles hid the overlay for good (`20260925_052251`, 0.1.6811)
 
 - **Cause** - the post-FSR recovery latch (armed by the 05:25 DLSS OFF after FSR history) survived a proven normal return at

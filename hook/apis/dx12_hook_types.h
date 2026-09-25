@@ -490,6 +490,8 @@ extern std::atomic<IDXGISwapChain*> dx12_hook_g_PostDLSSOffAuthoritativeNormalRe
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_PrewarmedPostSLHandoffSwapchain;
 extern std::atomic<bool> dx12_hook_g_NativeFSRStartupConfigureArmingPending;
 extern std::atomic<bool> dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending;
+// Window of the protected FFX swapchain; null when the latch was armed without one.
+extern std::atomic<HWND> dx12_hook_g_ProtectedOfficialFFXStartupHwnd;
 extern std::atomic<uint32_t> dx12_hook_g_ProtectedOfficialFFXStartupProcessFrameSkips;
 extern std::atomic<uint32_t> dx12_hook_g_ProtectedOfficialFFXStartupECLPassThroughs;
 extern std::atomic<ULONGLONG> dx12_hook_g_ProtectedOfficialFFXStartupBeginMs;

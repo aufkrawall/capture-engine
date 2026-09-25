@@ -143,6 +143,12 @@ if (SUCCEEDED(qiHr) && pQueue) {
             RememberOriginalQueueSwapchainIdentity(pSwapChain, "CreateSwapChain original-queue association");
         }
     }
+    // Before the first Present of the replacement: the protected FFX startup
+    // otherwise keeps every Present of it tracking-only.
+    DX12_RetireProtectedOfficialFFXStartupForGameSwapchainReturn(
+        context, pSwapChain, pQueue, gameCreatedSwapchain,
+        captureEvidence.authoritativeFFXRuntimeCreator || captureEvidence.officialAMDFFXRuntimeCreator,
+        currentOriginalGameQueue != nullptr && pQueue == currentOriginalGameQueue);
     if (freshAuthoritativeStreamlineHandoff) {
         // Retire the provisional official FFX startup before anything below prewarms PostSL: while that
         // latch is armed every CE GPU side effect stays quiesced, so InitOverlaySync keeps the sync
