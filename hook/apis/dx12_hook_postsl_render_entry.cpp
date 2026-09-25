@@ -41,6 +41,11 @@ explicitEnablePureDLSSColdStartProof = ce::dx12_overlay_policy::HasExplicitEnabl
     dx12_hook_g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(),
     HasRetainedStreamlineStartupActivationSwapchain(),
     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
+const bool explicitPostFSRSafeBootstrapStartupProof =
+    ce::dx12_overlay_policy::HasExplicitPostFSRSafeBootstrapStartupProof(
+        dx12_hook_g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(), safePostFSRBootstrapPathForPostSL,
+        HasRetainedStreamlineStartupActivationSwapchain(),
+        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
 int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
 if ((callNum % 500) == 0) {
     int renders = s_postSLRenders.load(std::memory_order_relaxed);
@@ -137,13 +142,31 @@ bool exactNormalOverlayOriginalQueueSwapchainProof = false;
 }
 bool syntheticStartupActivatedThisCall = false;
 bool immediateSameQueueStartupTakeover = false;
+bool immediatePostFSRExplicitStartupTakeover = false;
 {
     immediateSameQueueStartupTakeover =
         sameQueuePureDLSSColdStartSafe && processFrameRecentlySeen && startupActivationPending;
+    immediatePostFSRExplicitStartupTakeover = !immediateSameQueueStartupTakeover &&
+                                              explicitPostFSRSafeBootstrapStartupProof && processFrameRecentlySeen &&
+                                              startupActivationPending;
     if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
             cachedSLFGActive, dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen,
-            useTopLevelHandoffWrapperProgress, sameQueuePureDLSSColdStartSafe)) {
+            useTopLevelHandoffWrapperProgress, sameQueuePureDLSSColdStartSafe,
+            explicitPostFSRSafeBootstrapStartupProof)) {
+        if (immediatePostFSRExplicitStartupTakeover) {
+            // Logged per activation (not once per process): each switch to DLSS FG after FSR takes this
+            // path, and the switch-spam validation needs every occurrence to line up with its handoff.
+            static std::atomic<int> s_postFSRExplicitTakeoverLogCount{0};
+            const int logCount = s_postFSRExplicitTakeoverLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 100 || (logCount % 50) == 0) {
+                HookLogImportant(
+                    "DX12: PostSL post-FSR explicit startup takeover — explicit slDLSSGSetOptions(ON) on the proven "
+                    "safe bootstrap path; drawing DLSS-G's exact startup outputs (real frames included) instead of "
+                    "waiting for ProcessFrame to go dormant (sc=%p normalDrawPending=%d #%d)",
+                    (void*)pSwapChain, normalRouteDrawPendingAtEntry ? 1 : 0, logCount);
+            }
+        }
         if (!dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.exchange(true, std::memory_order_acq_rel)) {
             if (immediateSameQueueStartupTakeover) {
                 HookLogImportant(
@@ -322,7 +345,8 @@ bool immediateSameQueueStartupTakeover = false;
         }
     }
 }
-if (syntheticStartupActivatedThisCall && immediateSameQueueStartupTakeover && normalRouteDrawPendingAtEntry) {
+if (syntheticStartupActivatedThisCall &&
+    (immediateSameQueueStartupTakeover || immediatePostFSRExplicitStartupTakeover) && normalRouteDrawPendingAtEntry) {
     // The normal route already covered this exact present. Leave PostSL
     // active for the next callback, but do not render twice during the
     // make-before-break boundary. PostSLOverlayRenderGated's scope guard

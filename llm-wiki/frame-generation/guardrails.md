@@ -283,6 +283,19 @@ This page records current guardrails and tested transition families for no-FG, D
   guards. Distinct from the 20260703_210021 AMD-suspend stall (same log signature but the fence NEVER advances
   there); here the new fence advances once per present yet can never reach the stale guard values. Tests:
   `tests/test_dx12_upload_slot_guard.cpp`. Do not reintroduce raw non-owning `slotFence` identity tracking.
+- **OFFICIAL UI TAG COVERS GENERATED FRAMES ONLY (2026-09-25, session `20260925_045043`, 0.1.6809):** DLSS-G
+  composites `UIColorAndAlpha` into generated frames; its real frames are the app's back buffer, which the tag reaches
+  only if the game composites that very texture (the switch app draws its HUD straight into the back buffer). Before
+  PostSL takes over, a post-FSR DLSS startup therefore showed the overlay on generated frames only (the July pixel probe
+  measured ~45 % on this seam). The takeover waited for ProcessFrame dormancy (100 ms), and the post-FSR eager
+  present-time `HandleDX12ProcessFrame` call - whose pre-SL draw is always suppressed during startup (`hadFSR`) -
+  kept refreshing `dx12_hook_g_LastProcessFrameTickMs`, so short DLSS phases never activated PostSL and ended on a
+  real frame without the overlay, held on screen by the 0.6-1 s switch pause (`[OVERLAY SWAPCHAIN HANDOFF]
+  lastPresent=inherited ... noPresentGapMs=661/888/1012`). `HasExplicitPostFSRSafeBootstrapStartupProof` (FSR history
+  + explicit `slDLSSGSetOptions(ON)` for this comeback + safe post-FSR bootstrap path + retained startup swapchain +
+  callback) now advances activation without dormancy; countdown and warmup already bypass for that path. GetState-only
+  activations (GTA) keep the dormant proof. Diagnostic: `PostSL post-FSR explicit startup takeover`. OPEN: hardware
+  validation on GTA FSR->DLSS and Talos FSR<->DLSS; the eager post-FSR ProcessFrame call is still inert.
 - **CURRENT UPLOAD-SLOT NEVER-BLOCKS INVARIANT (2026-09-25, session `gtaslowfsrfgtodlssfg`, GTA V Enhanced 0.1.6801):**
   after an FSR FG -> DLSS FG switch CE initialized the overlay on the incoming Streamline swapchain queue (569d023e)
   and submitted there, but that queue did not retire CE's work until DLSS-G started generating (fence `completed=0`

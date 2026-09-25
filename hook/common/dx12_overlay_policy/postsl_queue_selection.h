@@ -89,14 +89,18 @@ inline bool ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(bool hadFS
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
                                                        bool postSLActive, bool processFrameRecentlySeen,
                                                        bool useTopLevelHandoffWrapperProgress,
-                                                       bool sameQueuePureDLSSColdStartSafe = false) {
+                                                       bool sameQueuePureDLSSColdStartSafe = false,
+                                                       bool explicitPostFSRSafeBootstrapProof = false) {
     // A proven same-queue Streamline callback is the handoff event: PostSL can
     // take over immediately without waiting for the last ProcessFrame timestamp
     // to age out. The caller preserves make-before-break when the normal route
     // already drew in this present. Separate-queue startup retains the dormant
-    // proof because its early ECL is the documented GTA init-hang family.
+    // proof because its early ECL is the documented GTA init-hang family - except
+    // for an explicitly enabled post-FSR comeback on the proven safe bootstrap
+    // path (see HasExplicitPostFSRSafeBootstrapStartupProof).
     return startupActivationPending && streamlineFGRunning && !postSLActive &&
-           (!processFrameRecentlySeen || useTopLevelHandoffWrapperProgress || sameQueuePureDLSSColdStartSafe);
+           (!processFrameRecentlySeen || useTopLevelHandoffWrapperProgress || sameQueuePureDLSSColdStartSafe ||
+            explicitPostFSRSafeBootstrapProof);
 }
 
 inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool postSLActive, bool overlayInit,
@@ -636,6 +640,26 @@ inline bool HasExplicitEnablePureDLSSColdStartProof(bool hadFSRFGPhase, bool exp
                                                     bool postSLCallbackInstalled) {
     return !hadFSRFGPhase && explicitSetOptionsActivation && hasRetainedStartupActivationSwapchain &&
            postSLCallbackInstalled;
+}
+
+// Post-FSR counterpart of the explicit-enable cold-start proof. Until PostSL takes over, the startup
+// outputs of a DLSS-G comeback after FSR carry the overlay only through the official UIColorAndAlpha
+// tag, which DLSS-G composites into GENERATED frames only; its real frames are the application's own
+// back buffer, which the tag does not reach unless the game composites that very texture itself. The
+// activation used to wait for ProcessFrame to go dormant for 100 ms, and the post-FSR eager
+// present-time ProcessFrame call (whose pre-SL draw is suppressed during startup) kept refreshing that
+// timestamp, so a short DLSS phase ended on a real frame without the overlay and a switch pause held
+// it on screen for 0.6-1 s (session 20260925_045043). With an explicit slDLSSGSetOptions(ON) for this
+// comeback, the proven safe post-FSR bootstrap path (the same proof the dormant activation already
+// requires before rendering the first reactivation present), the retained startup swapchain and an
+// installed callback, the callback itself is the handoff proof. GetState-only activations (the GTA
+// startup-churn family) never qualify.
+inline bool HasExplicitPostFSRSafeBootstrapStartupProof(bool hadFSRFGPhase, bool explicitSetOptionsActivation,
+                                                        bool safePostFSRBootstrapPath,
+                                                        bool hasRetainedStartupActivationSwapchain,
+                                                        bool postSLCallbackInstalled) {
+    return hadFSRFGPhase && explicitSetOptionsActivation && safePostFSRBootstrapPath &&
+           hasRetainedStartupActivationSwapchain && postSLCallbackInstalled;
 }
 
 inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTopLevelHandoffWrapperProgress,

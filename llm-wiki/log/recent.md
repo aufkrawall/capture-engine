@@ -26,6 +26,10 @@
   Present (`mergedCalls=`), and `SwapchainPresentLedger` logs `[OVERLAY SWAPCHAIN HANDOFF] departing=...
   lastPresent=drawn|inherited|MISSING endedWithoutOverlay=N -> arriving=... firstPresent=... noPresentGapMs=`
   plus `overlay first reached swapchain ... after N present(s)`. Open: rerun switch spam and fix the named cases.
+- **Rerun `20260925_045043` (0.1.6809):** 22 handoffs, zero uncovered presents, every departing last / arriving first
+  present drawn or inherited. The dropouts are the `inherited` ones: post-FSR DLSS-G startup outputs covered only by
+  the official UI tag (generated frames only), ending before a 661/888/1012 ms switch pause. Fixed by the explicit
+  post-FSR startup takeover (see `frame-generation/guardrails.md`, "official UI tag covers generated frames only").
 
 ### 2026-09-25 - Follow-up: pre-creation device release crashed Gothic II; device refs now end in the app's Release
 
