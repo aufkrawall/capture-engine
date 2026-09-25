@@ -1,5 +1,47 @@
 #include "audio_encoder_internal.h"
 
+void AudioEncoder::DrainIntakeResamplerTail() {
+    if (!resampler || !resampler->IsReady() || !audioFifo) {
+        return;
+    }
+    int64_t drained = 0;
+    int64_t trimmed = 0;
+    constexpr int kMaxTailPasses = 8;
+    for (int pass = 0; pass < kMaxTailPasses; ++pass) {
+        uint8_t** tailData = nullptr;
+        int tailSamples = 0;
+        const AudioResampler::FlushResult flushResult = resampler->Flush(&tailData, &tailSamples);
+        if (flushResult != AudioResampler::FlushResult::Output || tailSamples <= 0) {
+            AudioResampler::FreeOutputBuffer(tailData);
+            if (flushResult == AudioResampler::FlushResult::Error) {
+                DLL_Log("[AudioEncoder] WARNING: intake resampler tail flush failed; end is silence-padded");
+            }
+            break;
+        }
+        const int64_t allowed = SamplesAllowedBeforeRecordingEnd();
+        const int toWrite =
+            allowed >= 0 ? static_cast<int>(std::min<int64_t>(tailSamples, std::max<int64_t>(allowed, 0))) : tailSamples;
+        const int written = toWrite > 0 ? av_audio_fifo_write(audioFifo, reinterpret_cast<void**>(tailData), toWrite) : 0;
+        AudioResampler::FreeOutputBuffer(tailData);
+        drained += std::max(written, 0);
+        trimmed += tailSamples - std::max(toWrite, 0);
+        if (written < toWrite) {
+            DLL_Log("[AudioEncoder] WARNING: intake resampler tail FIFO write failed (%d of %d); end is silence-padded",
+                    written, toWrite);
+            break;
+        }
+        if (toWrite < tailSamples) {
+            break;
+        }
+    }
+    if (drained > 0 || trimmed > 0) {
+        resampledSamplesTotal += drained;
+        totalAcceptedSamples += drained;
+        DLL_Log("[AudioEncoder] Drained intake resampler tail: stream=%d samples=%lld beyondEnd=%lld", streamIndex,
+                static_cast<long long>(drained), static_cast<long long>(trimmed));
+    }
+}
+
 void AudioEncoder::Flush() {
     if (!initDone || !codecCtx)
         return;
@@ -157,6 +199,11 @@ void AudioEncoder::Flush() {
         "[AudioEncoder] Post-duration: fixedFrameSize=%d canSendShortFrame=%d "
         "audioFifo=%p codecCtx=%p",
         fixedFrameSize, (int)canSendShortFrame, (void*)audioFifo, (void*)codecCtx);
+
+    // A rate-converting intake (48 kHz mix -> 44.1/96 kHz track) still holds its
+    // filter delay of real samples. Drain it before end padding so the final
+    // samples of the track are the captured audio rather than padded silence.
+    DrainIntakeResamplerTail();
 
     // Encode any remaining samples in FIFO and generate silence as needed (up
     // to the codec submission limit).

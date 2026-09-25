@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "packet_clamp_and_drift.h"
 
@@ -154,6 +155,42 @@ inline bool ShouldPreservePendingAudioPacketsForStartupSync(bool isWgcCfrRecordi
     return isWgcCfrRecording && wgcStartupExtraDelayQpc > 0;
 }
 
+// Steady-state packet placement corrections (outside the startup window). Each one
+// is a >=1 ms silence insertion or real-audio trim at a packet seam. A device clock
+// that runs apart from QPC produces them at a regular rate of the same sign; the
+// net correction per exported sample is that drift, which the stop summary reports
+// in ppm so a long recording shows whether drift reaches placement at all.
+struct SteadyPlacementCorrectionStats {
+    uint64_t gapEvents = 0;
+    uint64_t gapSamples = 0;
+    uint64_t overlapEvents = 0;
+    uint64_t overlapSamples = 0;
+};
+
+inline void ObserveSteadyPlacementCorrection(SteadyPlacementCorrectionStats& stats, int64_t gapSamples,
+                                             int64_t overlapSamples, bool steadyState) {
+    if (!steadyState) {
+        return;
+    }
+    if (gapSamples > 0) {
+        ++stats.gapEvents;
+        stats.gapSamples += static_cast<uint64_t>(gapSamples);
+    } else if (overlapSamples > 0) {
+        ++stats.overlapEvents;
+        stats.overlapSamples += static_cast<uint64_t>(overlapSamples);
+    }
+}
+
+// Positive: silence was inserted (device slower than QPC); negative: audio trimmed.
+inline double ComputePlacementClockMismatchPpm(const SteadyPlacementCorrectionStats& stats,
+                                               uint64_t timelineSamples) {
+    if (timelineSamples == 0) {
+        return 0.0;
+    }
+    const double net = static_cast<double>(stats.gapSamples) - static_cast<double>(stats.overlapSamples);
+    return net * 1000000.0 / static_cast<double>(timelineSamples);
+}
+
 inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     int64_t packetStartSamples, int64_t writtenTimelineSamples, int64_t steadyStateSlopSamples,
     int64_t startupWindowSamples, int64_t startupSlopSamples, int64_t startupOverlapTrimThresholdSamples) {
@@ -197,6 +234,51 @@ inline std::string AppAudioTrackIdentity(const std::string& processName, unsigne
         id = "pid:" + std::to_string(processId);
     }
     return id + "#" + std::to_string(track);
+}
+
+// Track-level linear fade-in (recording start, or resume after every source of the
+// track was silent). CFR pulls are one video frame long (400 samples at 120 fps),
+// shorter than the fade, so the ramp must continue across pulls: applying it to the
+// first pull only jumped the gain from ~0.17 straight to 1.0 at the next pull
+// boundary. `remaining` carries the ramp between calls; the first faded sample is 0.
+inline void ApplyTrackFadeIn(float* interleaved, size_t frames, int channels, int64_t& remaining,
+                                   int64_t fadeSamples) {
+    if (!interleaved || channels <= 0 || fadeSamples <= 0 || remaining <= 0) {
+        remaining = std::max<int64_t>(0, remaining);
+        return;
+    }
+    remaining = std::min(remaining, fadeSamples);
+    const int64_t faded = std::min<int64_t>(remaining, static_cast<int64_t>(frames));
+    const int64_t startPosition = fadeSamples - remaining;
+    for (int64_t s = 0; s < faded; ++s) {
+        const float gain = static_cast<float>(startPosition + s) / static_cast<float>(fadeSamples);
+        float* frame = interleaved + static_cast<size_t>(s) * static_cast<size_t>(channels);
+        for (int ch = 0; ch < channels; ++ch) {
+            frame[ch] *= gain;
+        }
+    }
+    remaining -= faded;
+}
+
+// Crossfade from the last emitted frame (`anchor`, one value per channel) into the
+// front of an interleaved backlog whose oldest samples were just discarded. The
+// first frame starts one step away from the anchor and the ramp reaches the
+// retained signal after `fadeFrames`. A missing anchor means silence was emitted.
+template <typename InterleavedContainer>
+inline void ApplyAnchoredCrossfadeIn(InterleavedContainer& interleaved, const std::vector<float>& anchor,
+                                     size_t channels, size_t fadeFrames) {
+    if (channels == 0 || fadeFrames == 0) {
+        return;
+    }
+    const size_t frames = std::min(fadeFrames, interleaved.size() / channels);
+    for (size_t s = 0; s < frames; ++s) {
+        const float alpha = static_cast<float>(s + 1) / static_cast<float>(fadeFrames);
+        for (size_t ch = 0; ch < channels; ++ch) {
+            const float start = ch < anchor.size() ? anchor[ch] : 0.0f;
+            float& sample = interleaved[s * channels + ch];
+            sample = start + (sample - start) * alpha;
+        }
+    }
 }
 
 inline void ApplySoftKneeLimiter(float* buffer, size_t count, float knee = 0.9f) {

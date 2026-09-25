@@ -122,6 +122,7 @@ private:
     bool captureSyncPhaseLockEnabled;
     int64_t captureSyncSourceIntervalTicks;
     LARGE_INTEGER nextSampleTime{};
+    int64_t nextSampleTimeRemainder = 0;  // Sub-tick carry of the exact rational wake grid
     HANDLE hTimer;
     double smoothedEncodeMs;
     ce::capture_policy::RecordingHealthState recordingHealthState{};
@@ -732,6 +733,7 @@ private:
                                    bool duplicateFromTimerRebaseReason, bool duplicateFromCatchupReason = false,
                                    bool duplicateFromCapacityPacerReason = false);
     void advanceWakeDeadlineForCatchupTick();
+    void advanceNextSampleTime();
     void emitCatchupRepeats(const InjectFrameLineage* duplicateLineage);
     uint32_t activeDelayRepeatClusterTicks();
     uint32_t currentDelayResidualAvgAbsUs();

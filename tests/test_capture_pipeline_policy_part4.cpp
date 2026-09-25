@@ -388,16 +388,18 @@ TEST(CapturePipelinePolicyTest, CfrRecoveryRepaysDebtWithoutSelfThrottlingItsWak
 }
 
 TEST(CapturePipelinePolicyTest, RecoveryOutputQpcStaysOnTheImmutableCfrGrid) {
-    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 0, 100, 77), 1000);
-    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 100, 77), 1300);
-    EXPECT_EQ(policy::GetNextCfrOutputQpc(0, 3, 100, 77), 77);
-    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 0, 77), 77);
-    EXPECT_EQ(policy::GetNextCfrOutputQpc(INT64_MAX - 10, 2, 10, 77), 77);
-    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 0, 100, 77), 1000);
-    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 100, 77), 1300);
-    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(0, 3, 100, 77), 77);
-    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 0, 77), 77);
-    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(INT64_MAX - 10, 2, 10, 77), 77);
+    // qpcFrequency 300 at 3 fps is an exact 100-tick stride.
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 0, 300, 3, 77), 1000);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 300, 3, 77), 1300);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(0, 3, 300, 3, 77), 77);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 0, 3, 77), 77);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 300, 0, 77), 77);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(INT64_MAX - 10, 2, 10, 1, 77), 77);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 0, 300, 3, 77), 1000);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 300, 3, 77), 1300);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(0, 3, 300, 3, 77), 77);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 0, 3, 77), 77);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(INT64_MAX - 10, 2, 10, 1, 77), 77);
 }
 
 TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndTargetCandidate) {

@@ -733,3 +733,50 @@ TEST(AudioEncoderContractTest, LosslessBitDepthAndSampleRateAreResolvedBeforeOpe
         localEncoder.Stop();
     }
 }
+
+// Regression: the 48 kHz mix is rate-converted inside the encoder for 44.1 kHz
+// tracks, and Flush never drained that converter. Its filter delay of real audio
+// was replaced by padded silence, so the track ended in a short digital dropout.
+TEST(AudioEncoderContractTest, RateConvertedTrackEndsOnRealAudioNotPaddedSilence) {
+    AudioEncoder localEncoder;
+    std::vector<uint8_t> payload;
+    AudioConfig config;
+    config.codec = "pcm";
+    config.sampleRate = "44100";
+    config.outputChannels = 2;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    ASSERT_TRUE(localEncoder.Init(config, [&payload](AVPacket* pkt) {
+        payload.insert(payload.end(), pkt->data, pkt->data + pkt->size);
+    }));
+    ASSERT_EQ(localEncoder.GetCodecContext()->codec_id, AV_CODEC_ID_PCM_S24LE);
+    localEncoder.SetStreamIndex(1);
+    ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, 1));
+
+    constexpr int kInputSamples = 4800;    // 100 ms at the 48 kHz mix rate
+    constexpr int kTargetSamples = 4410;  // the same 100 ms at 44.1 kHz
+    const std::vector<float> dc(static_cast<size_t>(kInputSamples) * 2u, 0.5f);
+    localEncoder.SetRecordingEndUs(100000);
+    const auto result =
+        localEncoder.EncodeSamples(reinterpret_cast<const uint8_t*>(dc.data()),
+                                   static_cast<int>(dc.size() * sizeof(float)), 2, 48000, 32, 32, 8, true,
+                                   config.outputChannelMask, 0);
+    ASSERT_FALSE(result.failed);
+    localEncoder.Stop();
+
+    const auto& report = localEncoder.GetFinalizationReport();
+    EXPECT_EQ(report.timelineTargetSamples, kTargetSamples);
+    EXPECT_FALSE(report.protocolError);
+    constexpr size_t kFrameBytes = 2u * 3u;
+    ASSERT_EQ(payload.size(), static_cast<size_t>(kTargetSamples) * kFrameBytes);
+    // Every one of the final frames still carries the DC signal; before the fix the
+    // last ~dozen frames were exact zeros.
+    constexpr size_t kTailFrames = 32;
+    for (size_t frame = kTargetSamples - kTailFrames; frame < static_cast<size_t>(kTargetSamples); ++frame) {
+        const uint8_t* bytes = payload.data() + frame * kFrameBytes;
+        const int32_t left = static_cast<int32_t>((static_cast<uint32_t>(bytes[0]) << 8) |
+                                                  (static_cast<uint32_t>(bytes[1]) << 16) |
+                                                  (static_cast<uint32_t>(bytes[2]) << 24)) >>
+                             8;
+        EXPECT_GT(left, (1 << 23) / 10) << "frame " << frame;
+    }
+}

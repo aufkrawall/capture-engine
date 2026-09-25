@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <algorithm>
 
+#include "../cfr_rational_grid.h"
 #include "cfr_scheduling.h"
 
 // Encoder capacity, inject CFR publication, and WGC startup reserve/timeline contracts.
@@ -26,19 +27,21 @@ inline double GetInjectCfrServiceMsPerOutputTick(double cycleMs, uint32_t output
     return cycleMs / static_cast<double>(outputTicks);
 }
 
-inline int64_t GetNextCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput, int64_t targetIntervalTicks,
-                                  int64_t fallbackQpc) {
-    if (liveStartQpc <= 0 || targetIntervalTicks <= 0 ||
-        liveTicksOutput > static_cast<uint64_t>((INT64_MAX - liveStartQpc) / targetIntervalTicks)) {
+// Position of the next immutable CFR output slot on the exact rational grid
+// (see cfr_rational_grid.h): floor(liveTicksOutput * qpcFrequency / fps) after
+// the live start, never liveTicksOutput * truncated interval.
+inline int64_t GetNextCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput, int64_t qpcFrequency, int fps,
+                                   int64_t fallbackQpc) {
+    if (liveStartQpc <= 0) {
         return fallbackQpc;
     }
 
-    return liveStartQpc + static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
+    return ce::cfr_grid::GetSlotQpc(liveStartQpc, liveTicksOutput, qpcFrequency, fps, fallbackQpc);
 }
 
-inline int64_t GetNextInjectCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput,
-                                         int64_t targetIntervalTicks, int64_t fallbackQpc) {
-    return GetNextCfrOutputQpc(liveStartQpc, liveTicksOutput, targetIntervalTicks, fallbackQpc);
+inline int64_t GetNextInjectCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput, int64_t qpcFrequency,
+                                         int fps, int64_t fallbackQpc) {
+    return GetNextCfrOutputQpc(liveStartQpc, liveTicksOutput, qpcFrequency, fps, fallbackQpc);
 }
 
 inline bool ShouldAdvanceWakeDeadlineForCfrCatchupTick(bool useScreenGrab, bool injectRecoveryActive) {

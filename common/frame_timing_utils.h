@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "cfr_rational_grid.h"
+
 inline int64_t AbsoluteTimestampDistance(int64_t lhs, int64_t rhs) {
     return (lhs >= rhs) ? (lhs - rhs) : (rhs - lhs);
 }
@@ -93,6 +95,19 @@ inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount
     }
 
     return gridStartQpc + (gridTickCount - 1) * targetIntervalTicks;
+}
+
+// ComputeIdealOutputQpc on the exact rational grid: tick 1 lies at gridStartQpc
+// and tick k at floor((k - 1) * qpcFrequency / fps) after it. The truncated
+// stride above drifts against the exact n/fps packet timeline (cfr_rational_grid.h).
+inline int64_t ComputeIdealOutputQpcOnRationalGrid(int64_t gridStartQpc, int64_t gridTickCount, int64_t qpcFrequency,
+                                                   int fps) {
+    if (gridStartQpc <= 0 || gridTickCount <= 0 || qpcFrequency <= 0 || fps <= 0) {
+        return gridStartQpc;
+    }
+
+    return ce::cfr_grid::GetSlotQpc(gridStartQpc, static_cast<uint64_t>(gridTickCount - 1), qpcFrequency, fps,
+                                    gridStartQpc);
 }
 
 inline int64_t ComputeDelayedContentGridStartQpc(int64_t gridStartQpc, int64_t contentDelayQpc) {

@@ -12,7 +12,8 @@ void MediaEncoderSession::LoopEncode() {
 
             const int64_t idealQpc =
                 (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                    ? ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks)
+                    ? ComputeIdealOutputQpcOnRationalGrid(encoderGridStartQpc, selectionGridTick, qpcFreq.QuadPart,
+                                                          config.video.fps)
                     : 0;
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;
@@ -519,7 +520,9 @@ void MediaEncoderSession::LoopEncode() {
                         encoderGridStartQpc = liveStartQpc.QuadPart - targetIntervalTicks;
                         // Continue from the immutable contract grid. Deferred initialization time
                         // is commit-lateness telemetry and never changes the selected content delay.
-                        nextSampleTime.QuadPart = liveStartQpc.QuadPart + targetIntervalTicks;
+                        nextSampleTime.QuadPart = liveStartQpc.QuadPart;
+                        nextSampleTimeRemainder = 0;
+                        advanceNextSampleTime();
                         LogInfo("[EncoderThread] Anchored CFR live timeline after first frame (contract grid kept)");
                     }
                     ++liveTicksOutput;

@@ -90,7 +90,8 @@ if (!config.video.useVFR) {
         const int64_t liveTargetQpc =
             scheduledOutputQpc > 0
                 ? scheduledOutputQpc
-                : ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks);
+                : ComputeIdealOutputQpcOnRationalGrid(encoderGridStartQpc, selectionGridTick, qpcFreq.QuadPart,
+                                                      config.video.fps);
         const int64_t basePlayoutTargetQpc =
             ComputeDelayedContentGridStartQpc(liveTargetQpc, avContentDelayQpc);
         const int64_t phaseReferenceQpc =

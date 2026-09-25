@@ -178,6 +178,77 @@ void MediaEngine::CaptureDropFadeAnchor(AudioSource& src,  int channels) {
 }
 
 
+// Fades that shape freshly resampled source output before it enters the
+// post-resample backlog: drop crossfade, packet-boundary fade-in and the
+// underrun recovery fade-in. Records whether a fade-in shaped this pull.
+void MediaEngine::ApplyResampledChunkFades(AudioSource& src, float* outFloats, int outSamples, int CHANNELS) {
+    constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
+    constexpr int64_t kRuntimeDropFadeSamples = AudioPullState::kRuntimeDropFadeSamples;
+    if (!outFloats || outSamples <= 0 || CHANNELS <= 0) {
+        return;
+    }
+    if (src.dropFadeSamplesRemaining > 0) {
+        // The ramp length must equal the armed length: every trim arms
+        // kRuntimeDropFadeSamples, and a longer divisor started the
+        // crossfade at 60% of the new signal instead of at the anchor.
+        const int kDropFadeSamples = static_cast<int>(kRuntimeDropFadeSamples);
+        src.dropFadeSamplesRemaining = std::min(src.dropFadeSamplesRemaining, kDropFadeSamples);
+        int blendSamples = std::min(src.dropFadeSamplesRemaining, outSamples);
+        int blendStart = kDropFadeSamples - src.dropFadeSamplesRemaining;
+        for (int s = 0; s < blendSamples; s++) {
+            float alpha = (float)(blendStart + s + 1) / kDropFadeSamples;
+            for (int ch = 0; ch < CHANNELS; ++ch) {
+                const size_t idx = static_cast<size_t>(s) * CHANNELS + ch;
+                const float anchor = GetDropFadeAnchor(src, ch);
+                outFloats[idx] = anchor + (outFloats[idx] - anchor) * alpha;
+            }
+        }
+        if (blendSamples > 0) {
+            src.dropFadeStart.assign(static_cast<size_t>(CHANNELS), 0.0f);
+            const size_t base = static_cast<size_t>(blendSamples - 1) * CHANNELS;
+            for (int ch = 0; ch < CHANNELS; ++ch) {
+                src.dropFadeStart[static_cast<size_t>(ch)] = outFloats[base + ch];
+            }
+            src.dropFadeStartL = src.dropFadeStart[0];
+            src.dropFadeStartR = CHANNELS > 1 ? src.dropFadeStart[1] : src.dropFadeStart[0];
+        }
+        src.dropFadeSamplesRemaining -= blendSamples;
+    }
+    if (src.packetBoundaryFadeInSamplesRemaining > 0) {
+        const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
+        for (int s = 0; s < blendSamples; ++s) {
+            const float alpha = ComputeRaisedCosineFade(
+                static_cast<size_t>(s),
+                static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
+            const size_t base = static_cast<size_t>(s) * CHANNELS;
+            for (int ch = 0; ch < CHANNELS; ++ch) {
+                outFloats[base + ch] *= alpha;
+            }
+        }
+        src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
+        src.fadeInAppliedThisPull = src.fadeInAppliedThisPull || blendSamples > 0;
+    }
+    if (src.pendingUnderrunRecoveryFade) {
+        src.underrunFadeSamplesRemaining = SAMPLE_RATE / 40;  // 25ms - smoother transitions
+        src.pendingUnderrunRecoveryFade = false;
+    }
+    if (src.underrunFadeSamplesRemaining > 0) {
+        const int kUnderrunFadeSamples = SAMPLE_RATE / 40;  // 25ms - smoother transitions
+        int blendSamples = std::min(src.underrunFadeSamplesRemaining, outSamples);
+        int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
+        for (int s = 0; s < blendSamples; s++) {
+            float alpha = (float)(blendStart + s + 1) / kUnderrunFadeSamples;
+            const size_t base = static_cast<size_t>(s) * CHANNELS;
+            for (int ch = 0; ch < CHANNELS; ++ch) {
+                outFloats[base + ch] *= alpha;
+            }
+        }
+        src.underrunFadeSamplesRemaining -= blendSamples;
+        src.fadeInAppliedThisPull = src.fadeInAppliedThisPull || blendSamples > 0;
+    }
+}
+
+
 float MediaEngine::GetDropFadeAnchor(const AudioSource& src,  int channel) {
 
 

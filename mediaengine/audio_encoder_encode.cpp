@@ -146,7 +146,6 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
         const int64_t maxSamples =
             ce::audio::ComputeDurationUsToSamples(recordingEndUs - recordingStartUs, codecCtx->sample_rate);
         if (allowedSamples <= 0) {
-            static int endDropLogCount = 0;
             if (endDropLogCount++ < 5) {
                 DLL_Log(
                     "[AudioEnc] End boundary reached: dropping %d samples before FIFO write "
@@ -467,7 +466,6 @@ void AudioEncoder::AppendSilenceHole(int64_t holeSamples) {
     if (av_audio_fifo_size(audioFifo) <= 0) {
         samplesCount += residual;
     } else {
-        static int residualHoleLogCount = 0;
         if (residualHoleLogCount++ < 10) {
             DLL_Log(
                 "[AudioEnc] ERROR: intake hole of %lld samples only silence-filled %d with %d samples still pending; "

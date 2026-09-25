@@ -201,6 +201,8 @@ private:
     int fifoLogCounter = 0;
     int frameLogCounter = 0;
     int noPacketCount = 0;
+    int endDropLogCount = 0;       // Per-recording gate for end-boundary drop logs
+    int residualHoleLogCount = 0;  // Per-recording gate for unplaceable-hole errors
     bool allowShortFinalFrame = true;
     int outputChannels = 2;
     uint32_t outputChannelMask = 0;
@@ -226,5 +228,7 @@ private:
     // as trimmed, so a failure on the final chunk cannot extend the track.
     void PlaceRefusedChunkHole(int64_t chunkSamplesAtCodecRate, EncodeResult& result);
     void Flush();
+    // Moves the intake rate converter's delayed tail into the FIFO, clamped to the end.
+    void DrainIntakeResamplerTail();
     void ReleaseCodecResources();
 };

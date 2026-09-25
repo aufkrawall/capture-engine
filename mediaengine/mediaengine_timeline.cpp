@@ -127,6 +127,8 @@ void MediaEngine::ResetAudioPullStateForRecording() {
         trackFullSilenceSamples.clear();
         trackPartialSilenceSamples.clear();
         trackWasSilent.clear();
+        trackFadeInSamplesRemaining.clear();
+        trackFadeInLengthSamples.clear();
         trackSilentSamples.clear();
         trackSilentChunks.clear();
         trackSilenceTransitions.clear();

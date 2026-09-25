@@ -289,6 +289,7 @@ void MediaEngine::ApplyAudioTimelineReset(uint64_t generation,  int64_t startQpc
             src.qpcAlignedWrittenSamples = 0;
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
+            src.steadyPlacement = {};
             src.startupRebasedGapSamples = 0;
             src.lateAppJoinSuppressedGapSamples = 0;
             src.lateAppJoinPreservedGapSamples = 0;

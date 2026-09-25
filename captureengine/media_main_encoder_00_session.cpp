@@ -130,6 +130,7 @@ bool MediaEncoderSession::Init() {
     captureSyncSourceIntervalTicks = ce::capture_policy::GetCfrCaptureSyncSourceIntervalQpc(
         targetIntervalTicks, captureSyncMultiplier);
     QueryPerformanceCounter(&nextSampleTime);
+    nextSampleTimeRemainder = 0;
 
     hTimer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!hTimer) {

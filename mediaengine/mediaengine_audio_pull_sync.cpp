@@ -83,6 +83,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
             if (activeSources == 0) {
                 wasSilent = trackWasSilent[track];
                 trackWasSilent[track] = true;
+                trackFadeInSamplesRemaining[track] = 0;
                 trackSilentSamples[track] += static_cast<uint64_t>(samplesToEncode);
                 trackSilentChunks[track]++;
                 nowTick = GetTickCount64();
@@ -132,6 +133,19 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                         trackAudioTargetMs, trackCursorSamples);
                     trackSilentSamples[track] = 0;
                     trackSilentChunks[track] = 0;
+                    // Every resuming source normally shapes its own seam (underrun recovery,
+                    // startup join, packet boundary). Stacking the track ramp on top produced
+                    // a squared, overly long fade; it is only the fallback for unshaped sources.
+                    bool sourceFadeApplied = false;
+                    for (size_t srcIdx : srcIndices) {
+                        sourceFadeApplied = sourceFadeApplied || audioSources[srcIdx].fadeInAppliedThisPull;
+                    }
+                    trackFadeInSamplesRemaining[track] = sourceFadeApplied ? 0 : SAMPLE_RATE / 20;
+                    trackFadeInLengthSamples[track] = SAMPLE_RATE / 20;
+                    if (sourceFadeApplied) {
+                        DLL_Log("[PullAudio] Track %d resume seam already faded per source; no track-level fade",
+                                track);
+                    }
                 }
                 trackWasSilent[track] = false;
                 if (activeSources < eligibleSources) {
@@ -170,18 +184,16 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                     audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
                     audioSources[firstSrcIdx].underrunFadeSamplesRemaining <= 0 &&
                     !audioSources[firstSrcIdx].pendingUnderrunRecoveryFade;
-                fadeSamples = applyTransitionFade ? SAMPLE_RATE / 20 : SAMPLE_RATE / 40;
-                fadeStart = applyTransitionFade ? 0 : trackPos;
-                if ((applyStartupTrackFade || applyTransitionFade) && fadeSamples > 0) {
-                    for (int64_t s = 0; s < samplesToEncode; s++) {
-                        int64_t global = fadeStart + s;
-                        float gain = (global >= fadeSamples) ? 1.0f : (float)global / (float)fadeSamples;
-                        size_t base = (size_t)s * CHANNELS;
-                        for (int ch = 0; ch < CHANNELS; ++ch) {
-                            mixBuffer[base + ch] *= gain;
-                        }
-                    }
+                fadeSamples = SAMPLE_RATE / 40;
+                fadeStart = trackPos;
+                if (applyStartupTrackFade && fadeSamples > 0) {
+                    trackFadeInSamplesRemaining[track] = fadeSamples;
+                    trackFadeInLengthSamples[track] = fadeSamples;
                 }
+                // Startup and resume ramps span as many pulls as they need: a settled
+                // CFR pull is one video frame, shorter than either ramp.
+                ce::audio::ApplyTrackFadeIn(mixBuffer.data(), static_cast<size_t>(samplesToEncode), CHANNELS,
+                                            trackFadeInSamplesRemaining[track], trackFadeInLengthSamples[track]);
             }
 
             // Always use a smooth soft-knee limiter so any residual discontinuity from

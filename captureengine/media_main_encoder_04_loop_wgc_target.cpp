@@ -8,7 +8,7 @@ void MediaEncoderSession::LoopWgcTarget() {
             // cursor sampling, and submission stay on the immutable CFR grid. Extra
             // held slots repay debt without duplicate QPC or postponing the next wake.
             scheduledOutputQpc = ce::capture_policy::GetNextCfrOutputQpc(
-                liveStartQpc.QuadPart, liveTicksOutput, targetIntervalTicks, scheduledSampleQpc);
+                liveStartQpc.QuadPart, liveTicksOutput, qpcFreq.QuadPart, config.video.fps, scheduledSampleQpc);
         }
 
         popped = false;
@@ -76,7 +76,8 @@ if (hasReserveFrame) {
 int64_t MediaEncoderSession::computeWgcSelectionTargetForTick(int64_t scheduledQpcForTick, int64_t selectionGridTickForTick, bool applyLiveDelay) {
 
 const int64_t fallbackTargetQpc =
-    ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
+    ComputeIdealOutputQpcOnRationalGrid(encoderGridStartQpc, selectionGridTickForTick, qpcFreq.QuadPart,
+                                        config.video.fps);
 // Uniform playout keeps its fixed delay through recovery; the legacy
 // reservoir may yield it. Keep target and application on one helper.
 const int64_t effectiveContentDelayQpc = getWgcEffectiveContentDelayQpc();

@@ -119,6 +119,7 @@ public:
         float dropFadeStartL = 0.0f;                    // Left sample anchor for drop transition
         float dropFadeStartR = 0.0f;                    // Right sample anchor for drop transition
         std::vector<float> dropFadeStart;               // Last full frame before a drop, one value per channel
+        std::vector<float> lastEmittedFrame;            // Last frame this source contributed to the mix (0 = silence)
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
         int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
@@ -137,6 +138,7 @@ public:
         uint64_t qpcAlignedWrittenSamples = 0;     // Timeline samples represented in the ring from packet QPC stitching
         uint64_t packetTimelineGapSamples = 0;     // Silence inserted to preserve packet-QPC continuity
         uint64_t packetTimelineOverlapSamples = 0;  // Packet-leading samples trimmed to avoid time overlap
+        ce::audio::SteadyPlacementCorrectionStats steadyPlacement;  // Post-startup seam corrections
         uint64_t startupRebasedGapSamples = 0;      // Persistent startup packet-QPC offset suppressed after sync reset
         uint64_t lateAppJoinSuppressedGapSamples = 0;  // First app packet gap suppressed to join live timeline
         uint64_t lateAppJoinPreservedGapSamples = 0;   // Small live-join cushion retained for click-free fade-in
@@ -151,6 +153,7 @@ public:
         bool sawSyncPendingPackets = false;        // App audio arrived before its post-anchor timeline opened
         bool startupRealAudioSeen = false;         // Real audio has been emitted for this source since sync reset
         bool pendingStartupJoinFade = false;       // Fade in real audio when a late source joins after startup silence
+        bool fadeInAppliedThisPull = false;        // A source-level fade-in shaped this pull's samples
         uint64_t pendingRetainedTrimSamples = 0;   // Aggregated ring-headroom trims since the last periodic log
         uint32_t pendingRetainedTrimEvents = 0;    // Aggregated ring-headroom trim events since the last periodic log
         uint64_t pendingLatencyTrimSamples = 0;    // Aggregated trim samples since the last periodic log
@@ -241,6 +244,7 @@ public:
         int priority = 10;
     };float ComputeRaisedCosineFade(size_t index, size_t totalSamples);void ApplyPacketBoundaryFadeIn(float* interleavedSamples, size_t sampleCount, size_t channels,
                                           size_t fadeSamples);uint32_t DefaultChannelMaskForChannels(int channels);int ParseAudioSampleRate(const AudioConfig& audioConfig);int AudioSourceLayoutPriority(AudioConfig::SourceType sourceType);TrackAudioFormat ProbeSourceTrackFormat(const AudioConfig& audioConfig);std::map<int, TrackAudioFormat> ResolveTrackAudioFormats(const AppConfig& appConfig);TrackAudioFormat GetTrackAudioFormat(int track) const;void CaptureDropFadeAnchor(AudioSource& src, int channels);float GetDropFadeAnchor(const AudioSource& src, int channel);
+    void ApplyResampledChunkFades(AudioSource& src, float* outFloats, int outSamples, int channels);
 
     // Per-track encoder with optional mixing (when multiple sources target same
     // track)
@@ -349,6 +353,8 @@ void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t pack
     std::map<int, uint64_t> trackPartialSilenceSamples;
 
     std::map<int, bool> trackWasSilent;
+    std::map<int, int64_t> trackFadeInSamplesRemaining;  // Track fade-in ramp carried across pulls
+    std::map<int, int64_t> trackFadeInLengthSamples;     // Length of the active track fade-in ramp
     std::map<int, uint64_t> trackSilentSamples;
     std::map<int, uint64_t> trackSilentChunks;
     std::map<int, uint64_t> trackSilenceTransitions;

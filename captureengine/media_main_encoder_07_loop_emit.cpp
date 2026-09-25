@@ -38,7 +38,7 @@ void MediaEncoderSession::LoopEmit() {
             // immutable CFR media grid. Keeping those clocks separate lets inject recovery submit an
             // overdue extra slot without postponing the next normal 120 Hz wake by another tick.
             scheduledOutputQpc = ce::capture_policy::GetNextInjectCfrOutputQpc(
-                liveStartQpc.QuadPart, liveTicksOutput, targetIntervalTicks, scheduledSampleQpc);
+                liveStartQpc.QuadPart, liveTicksOutput, qpcFreq.QuadPart, config.video.fps, scheduledSampleQpc);
         }
 
 
@@ -184,7 +184,7 @@ void MediaEncoderSession::advanceWakeDeadlineForCatchupTick() {
 
 if (ce::capture_policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(useScreenGrab,
                                                                    injectCfrRecoveryActive)) {
-    nextSampleTime.QuadPart += targetIntervalTicks;
+    advanceNextSampleTime();
 }
 
 }

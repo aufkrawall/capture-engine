@@ -31,10 +31,20 @@ bool MediaEngine::PullTrackEncodeSourcesB(AudioPullState& s, int track, size_t s
                                                   CHANNELS,
                                                   static_cast<size_t>(std::max<int64_t>(1, SAMPLE_RATE / 200)));
                         src.pendingStartupJoinFade = false;
+                        src.fadeInAppliedThisPull = true;
                     }
                     if (realCopiedSamples > 0) {
                         activeSources++;
                         src.startupRealAudioSeen = true;
+                    }
+                }
+                // The mix of this pull ends on the source's last copied frame, or on silence
+                // when the copy fell short; a later backlog cut crossfades from exactly there.
+                src.lastEmittedFrame.assign(static_cast<size_t>(CHANNELS), 0.0f);
+                if (toCopy == totalFloats && toCopy >= static_cast<size_t>(CHANNELS)) {
+                    const size_t lastFrame = toCopy - static_cast<size_t>(CHANNELS);
+                    for (int ch = 0; ch < CHANNELS; ++ch) {
+                        src.lastEmittedFrame[static_cast<size_t>(ch)] = srcData[lastFrame + static_cast<size_t>(ch)];
                     }
                 }
                 // Consume/drain diagnostics (throttled 1/s, app sources). If an app source has

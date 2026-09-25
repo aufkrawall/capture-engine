@@ -276,11 +276,21 @@ if (!media_main_g_Recording.load(std::memory_order_acquire)) {
         scheduledUntilQpc = drainStopQpc;
     }
 }
-const uint64_t elapsedTicks = static_cast<uint64_t>(scheduledUntilQpc - liveStartQpc.QuadPart) /
-                              static_cast<uint64_t>(targetIntervalTicks);
+const uint64_t elapsedTicks = ce::cfr_grid::GetSlotIndexAtOrBefore(scheduledUntilQpc - liveStartQpc.QuadPart,
+                                                                    qpcFreq.QuadPart, config.video.fps);
 liveTicksScheduled = ce::capture_policy::GetCfrScheduledTicksForEndpoint(
     elapsedTicks, liveTicksDiscardedByTimerRebase, wgcVisualDebtMaxExcessTicks);
 return ce::capture_policy::GetCfrOutputShortfallTicks(liveTicksScheduled, liveTicksOutput);
+
+}
+
+void MediaEncoderSession::advanceNextSampleTime() {
+
+// Wake deadlines follow the exact rational grid (cfr_rational_grid.h). A
+// truncated stride woke slightly faster than the immutable CFR slots, so the
+// emitted grid ran ahead of wall time by up to 28 ppm.
+nextSampleTime.QuadPart +=
+    ce::cfr_grid::NextSlotIntervalQpc(qpcFreq.QuadPart, config.video.fps, nextSampleTimeRemainder);
 
 }
 

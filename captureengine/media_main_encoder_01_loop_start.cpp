@@ -476,9 +476,9 @@ void MediaEncoderSession::LoopCatchup() {
                     encoderLateTickCount = SaturatingToUint32(lateTicks);
                 }
 
-                nextSampleTime.QuadPart += targetIntervalTicks;
+                advanceNextSampleTime();
             } else {
-                nextSampleTime.QuadPart += targetIntervalTicks;
+                advanceNextSampleTime();
                 cycleStartQpc = now;
             }
 
@@ -491,8 +491,12 @@ void MediaEncoderSession::LoopCatchup() {
                     (liveTicksOutput % 60 == 0) && outputShortfallTicks < 2) {
                     LARGE_INTEGER resyncNow;
                     QueryPerformanceCounter(&resyncNow);
+                    int64_t liveTicksOffsetQpc = 0;
                     const int64_t idealGridStart =
-                        resyncNow.QuadPart - static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
+                        ce::cfr_grid::TryGetSlotOffsetQpc(liveTicksOutput, qpcFreq.QuadPart, config.video.fps,
+                                                          &liveTicksOffsetQpc)
+                            ? resyncNow.QuadPart - liveTicksOffsetQpc
+                            : encoderGridStartQpc;
                     const int64_t driftTicks = (idealGridStart - encoderGridStartQpc) / targetIntervalTicks;
                     if (driftTicks >= 2 || driftTicks <= -2) {
                         encoderGridStartQpc = idealGridStart;
@@ -507,6 +511,7 @@ void MediaEncoderSession::LoopCatchup() {
                     activeScreenGrab, config.video.useVFR, recordingOutputLive);
                 if (!recordingOutputLive && now.QuadPart > nextSampleTime.QuadPart + targetIntervalTicks * 2) {
                     nextSampleTime = now;
+                    nextSampleTimeRemainder = 0;
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
                     static uint32_t s_lateTickLogCount = 0;
                     s_lateTickLogCount++;
@@ -518,8 +523,8 @@ void MediaEncoderSession::LoopCatchup() {
                     uint32_t droppedShortfallTicks = 0;
                     const bool discardTimerDebt = ce::capture_policy::ShouldDiscardCfrTimerRebaseDebt(activeScreenGrab);
                     if (discardTimerDebt && liveStartQpc.QuadPart > 0 && now.QuadPart > liveStartQpc.QuadPart) {
-                        const uint64_t elapsedTicks = static_cast<uint64_t>(now.QuadPart - liveStartQpc.QuadPart) /
-                                                      static_cast<uint64_t>(targetIntervalTicks);
+                        const uint64_t elapsedTicks = ce::cfr_grid::GetSlotIndexAtOrBefore(
+                            now.QuadPart - liveStartQpc.QuadPart, qpcFreq.QuadPart, config.video.fps);
                         droppedShortfallTicks = ce::capture_policy::GetCfrTimerRebaseDiscardTicks(
                             elapsedTicks, liveTicksDiscardedByTimerRebase, liveTicksOutput);
                     }
@@ -536,11 +541,13 @@ void MediaEncoderSession::LoopCatchup() {
                     }
                     // Reset nextSampleTime to current time + 1 tick interval
                     // so the timer wakes on time from now on.
-                    nextSampleTime.QuadPart = now.QuadPart + targetIntervalTicks;
+                    nextSampleTime = now;
+                    nextSampleTimeRemainder = 0;
+                    advanceNextSampleTime();
                 }
             } else {
                 cycleStartQpc = now;
-                nextSampleTime.QuadPart += targetIntervalTicks;
+                advanceNextSampleTime();
             }
         }
 }

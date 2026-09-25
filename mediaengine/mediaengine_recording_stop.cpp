@@ -467,6 +467,19 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                     (unsigned long long)src.catastrophicResyncSamples, src.catastrophicResyncEvents,
                     (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
+                // Seam corrections outside startup. A steady nonzero driftPpm with many
+                // events of one sign means the device clock runs apart from QPC and the
+                // drift is being absorbed as >=1 ms silence insertions or trims.
+                DLL_Log(
+                    "[STOP AUDIO PLACEMENT] Source %zu: track=%d gapEvents=%llu gapSamples=%llu overlapEvents=%llu "
+                    "overlapSamples=%llu driftPpm=%+.2f process=%s",
+                    i, src.track, (unsigned long long)src.steadyPlacement.gapEvents,
+                    (unsigned long long)src.steadyPlacement.gapSamples,
+                    (unsigned long long)src.steadyPlacement.overlapEvents,
+                    (unsigned long long)src.steadyPlacement.overlapSamples,
+                    ce::audio::ComputePlacementClockMismatchPpm(
+                        src.steadyPlacement, static_cast<uint64_t>(std::max<int64_t>(0, encodedSamplesPerSource[i]))),
+                    src.config.processName.empty() ? "-" : src.config.processName.c_str());
                 // Consumer-overrun evidence. `starve` counts real captured samples destroyed
                 // because the exported cursor ran past the live capture edge; a nonzero value
                 // means audio content was lost even though every track length still matches.
@@ -544,6 +557,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.qpcAlignedWrittenSamples = 0;
             src.packetTimelineGapSamples = 0;
             src.packetTimelineOverlapSamples = 0;
+            src.steadyPlacement = {};
             src.startupRebasedGapSamples = 0;
             src.lateAppJoinSuppressedGapSamples = 0;
             src.lateAppJoinPreservedGapSamples = 0;

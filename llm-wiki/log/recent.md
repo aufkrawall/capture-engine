@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-25 - Video/audio/sync audit: rational CFR grid, cross-pull track fades (0.1.6818)
+
+- Audit of the CFR/audio/mux path found no broken invariant in encoder PTS, hole accounting, finalization,
+  ring buffer or Matroska timing, but one long-duration sync defect: the CFR real-time grid strided
+  `qpcFrequency / fps` truncated (4-28 ppm fast). Fixed with `common/cfr_rational_grid.h`; see
+  `cfr-capture-sync.md` (Exact rational output grid). Hardware run pending: multi-hour 240 fps recording.
+- Audio: resume/startup track fades now span pulls; VFR drop crossfade length and backlog-trim seam fixed;
+  encoder intake resampler tail drained at flush (`test_audio_encoder.cpp` test fails without it: 16 zero
+  frames). New `[STOP AUDIO PLACEMENT]` diagnostic for the open device-clock-drift-at-placement question
+  (`multi-audio-capture.md`).
+- Left as-is (diagnostic only): process-static log gates in `media_main_encoder_*`; the session header sits
+  at the 800-line ceiling.
+
 ### 2026-09-25 - Fat FSR FG frame-time graph at the vsync cap: refresh-bounded graph time (0.1.6817)
 
 - Symptom: `dx12_fg_switch_test` (4K, `gpu_load=120`, vsync, 144 Hz G-Sync) drew a jagged display

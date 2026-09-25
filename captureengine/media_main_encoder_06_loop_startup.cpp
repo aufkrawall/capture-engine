@@ -360,6 +360,7 @@ if (hTimer) {
     }
 }
 QueryPerformanceCounter(&nextSampleTime);
+nextSampleTimeRemainder = 0;
 liveStartQpc.QuadPart = 0;  // Commit the pending start contract after the first successful encode.
 encoderGridStartQpc = nextSampleTime.QuadPart;
 // Inject warmup is causal and must discard stale queued work. WGC/DXGI,

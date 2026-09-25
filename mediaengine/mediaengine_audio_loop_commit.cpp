@@ -222,6 +222,10 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                                 targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
                         const size_t packetTimelineFadeSamples =
                             static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                        ce::audio::ObserveSteadyPlacementCorrection(
+                            src.steadyPlacement, timelineAdjustment.gapSamples, timelineAdjustment.overlapSamples,
+                            !firstTimelinePacket && !lateJoin.joinLive &&
+                                packetStartSamples >= (targetFmt.sampleRate * 150) / 1000);
                         if (timelineAdjustment.gapSamples > 0) {
                             // Defense-in-depth: bound the leading-silence gap to what the ring
                             // buffer can actually retain. WriteRetainNew drops the oldest samples

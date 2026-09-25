@@ -68,6 +68,7 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
 
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
+                src.fadeInAppliedThisPull = false;
 
                 isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
@@ -666,60 +667,7 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                             src.startupSyntheticPostSamples += syntheticPostSamples;
                             if (outSamples > 0 && resampledData && resampledData[0]) {
                                 float* outFloats = (float*)resampledData[0];
-                                if (src.dropFadeSamplesRemaining > 0) {
-                                    const int kDropFadeSamples = SAMPLE_RATE / 40;  // 25ms - smoother transitions
-                                    int blendSamples = std::min(src.dropFadeSamplesRemaining, outSamples);
-                                    int blendStart = kDropFadeSamples - src.dropFadeSamplesRemaining;
-                                    for (int s = 0; s < blendSamples; s++) {
-                                        float alpha = (float)(blendStart + s + 1) / kDropFadeSamples;
-                                        for (int ch = 0; ch < CHANNELS; ++ch) {
-                                            const size_t idx = static_cast<size_t>(s) * CHANNELS + ch;
-                                            const float anchor = GetDropFadeAnchor(src, ch);
-                                            outFloats[idx] = anchor + (outFloats[idx] - anchor) * alpha;
-                                        }
-                                    }
-                                    if (blendSamples > 0) {
-                                        src.dropFadeStart.assign(static_cast<size_t>(CHANNELS), 0.0f);
-                                        const size_t base = static_cast<size_t>(blendSamples - 1) * CHANNELS;
-                                        for (int ch = 0; ch < CHANNELS; ++ch) {
-                                            src.dropFadeStart[static_cast<size_t>(ch)] = outFloats[base + ch];
-                                        }
-                                        src.dropFadeStartL = src.dropFadeStart[0];
-                                        src.dropFadeStartR = CHANNELS > 1 ? src.dropFadeStart[1] : src.dropFadeStart[0];
-                                    }
-                                    src.dropFadeSamplesRemaining -= blendSamples;
-                                }
-                                if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-                                    const int blendSamples =
-                                        std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
-                                    for (int s = 0; s < blendSamples; ++s) {
-                                        const float alpha = ComputeRaisedCosineFade(
-                                            static_cast<size_t>(s),
-                                            static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
-                                        const size_t base = static_cast<size_t>(s) * CHANNELS;
-                                        for (int ch = 0; ch < CHANNELS; ++ch) {
-                                            outFloats[base + ch] *= alpha;
-                                        }
-                                    }
-                                    src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
-                                }
-                                if (src.pendingUnderrunRecoveryFade) {
-                                    src.underrunFadeSamplesRemaining = SAMPLE_RATE / 40;  // 25ms - smoother transitions
-                                    src.pendingUnderrunRecoveryFade = false;
-                                }
-                                if (src.underrunFadeSamplesRemaining > 0) {
-                                    const int kUnderrunFadeSamples = SAMPLE_RATE / 40;  // 25ms - smoother transitions
-                                    int blendSamples = std::min(src.underrunFadeSamplesRemaining, outSamples);
-                                    int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
-                                    for (int s = 0; s < blendSamples; s++) {
-                                        float alpha = (float)(blendStart + s + 1) / kUnderrunFadeSamples;
-                                        const size_t base = static_cast<size_t>(s) * CHANNELS;
-                                        for (int ch = 0; ch < CHANNELS; ++ch) {
-                                            outFloats[base + ch] *= alpha;
-                                        }
-                                    }
-                                    src.underrunFadeSamplesRemaining -= blendSamples;
-                                }
+                                ApplyResampledChunkFades(src, outFloats, outSamples, CHANNELS);
                                 int numFloats = outSamples * CHANNELS;
                                 src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats,
                                                               outFloats + numFloats);
@@ -766,9 +714,6 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                     ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples, excess / CHANNELS);
                     src.postResampleTrimSamples += excess / CHANNELS;
 
-                    CaptureDropFadeAnchor(src, CHANNELS);
-                    src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
-
                     if (dropLogCounter++ % 100 == 0) {
                         DLL_Log(
                             "[PullAudio] WARNING: Post-resample buffer trim - src %d dropping %zu samples (buffer=%zu "
@@ -778,6 +723,12 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                     }
                     src.postResampleBuffer.erase(src.postResampleBuffer.begin(),
                                                  src.postResampleBuffer.begin() + (std::ptrdiff_t)excess);
+                    // The cut sits at the FRONT of the retained backlog, right after the last
+                    // emitted frame. Crossfade that seam in place; arming the drop fade here
+                    // shaped samples appended at the back instead, leaving the cut untouched.
+                    ce::audio::ApplyAnchoredCrossfadeIn(src.postResampleBuffer, src.lastEmittedFrame,
+                                                        static_cast<size_t>(CHANNELS),
+                                                        static_cast<size_t>(kRuntimeDropFadeSamples));
                 } else if (src.postResampleBuffer.size() > MAX_POST_RESAMPLE_FLOATS && dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] WARNING: CFR post-resample backlog exceeded guard - src %d backlog=%zu cap=%zu. "
