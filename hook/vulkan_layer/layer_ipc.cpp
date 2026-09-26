@@ -416,6 +416,8 @@ void LayerIPC_StartHostLifecycleWatcher() {
 
 // Global texture count
 static uint32_t g_PublishedTextureCount = 2;
+// Stamped on every published frame; see SharedMemoryLayout::BeginTransportGeneration.
+static std::atomic<uint32_t> g_TransportGeneration{0};
 
 static void LogFrameRingFull(uint32_t writeIndex, uint32_t readIndex) {
     static std::atomic<uint32_t> fullCount{0};
@@ -433,11 +435,23 @@ static void LogPublishedFrame(uint32_t writeIndex, uint32_t readIndex, int32_t t
     }
 }
 
+void LayerIPC_BeginTransportGeneration() {
+    auto* mem = g_IPCClient.GetSharedMem();
+    if (!mem)
+        return;
+    // Must be visible before the handles it covers: a re-created texture or
+    // fence can reuse the numeric value of one that was just closed.
+    const uint32_t generation = static_cast<uint32_t>(mem->BeginTransportGeneration());
+    g_TransportGeneration.store(generation, std::memory_order_release);
+    LayerLog("Layer IPC: Began shared transport generation %u", generation);
+}
+
 // Update shared texture handles (called when swapchain created)
 void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;
+    LayerIPC_BeginTransportGeneration();
 
     g_PublishedTextureCount = (count > 0 && count <= SHARED_TEXTURE_SLOT_COUNT) ? count : 2;
 
@@ -558,6 +572,7 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
         ring.slots[slot].fenceValue = 0;
         ring.slots[slot].captureFlags = SHARED_FRAME_CAPTURE_NONE;
         ring.slots[slot].displayTimingGeneration = 0;
+        ring.slots[slot].transportGeneration = g_TransportGeneration.load(std::memory_order_acquire);
         ring.slots[slot].valid.store(1, std::memory_order_release);
     }
 
@@ -590,6 +605,7 @@ void LayerIPC_SetFence(HANDLE fenceHandle) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;
+    LayerIPC_BeginTransportGeneration();
     mem->SetFenceShareHandle((uint64_t)fenceHandle);
     LayerLog("Layer IPC: Set Fence Handle %p", fenceHandle);
 }
@@ -631,6 +647,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     ring.slots[slot].fenceValue = fenceValue;
     ring.slots[slot].captureFlags = metadata ? metadata->captureFlags : SHARED_FRAME_CAPTURE_NONE;
     ring.slots[slot].displayTimingGeneration = metadata ? metadata->displayTimingGeneration : 0;
+    ring.slots[slot].transportGeneration = g_TransportGeneration.load(std::memory_order_acquire);
     ring.slots[slot].valid.store(1, std::memory_order_release);
 
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);

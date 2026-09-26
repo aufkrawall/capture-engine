@@ -344,6 +344,9 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     cadenceCounters.RecordOutputScheduleError(signedOutputScheduleErrorUs);
                 }
 
+                if (!catchupFrame.isShmem && MediaEngine_SetInjectTransportGeneration) {
+                    MediaEngine_SetInjectTransportGeneration(catchupFrame.transportGeneration);
+                }
                 const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(
                     (uint64_t)catchupFrame.sharedHandle, (uint64_t)catchupFrame.fenceHandle,
                     catchupFrame.fenceValue, catchupFrame.timestamp, catchupFrame.luidLow,

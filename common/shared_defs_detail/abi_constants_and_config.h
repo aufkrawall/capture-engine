@@ -132,17 +132,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             audio-and-video-degraded completions (11-14). The layout is
 //             unchanged, but an older hook would drop those values and show no
 //             completion at all, so it must not open the mapping.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 65;
+// Version 66: the shared capture transport gained a generation counter and
+//             FrameSlot gained `transportGeneration`. A producer that re-creates
+//             its shared textures/fence can receive the handle values the closed
+//             ones had, so media can no longer identify a transport by handle
+//             value alone. FrameSlot grows to 56 bytes.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 66;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_65_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_66_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_65";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_66";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)

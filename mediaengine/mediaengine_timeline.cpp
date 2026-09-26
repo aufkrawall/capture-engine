@@ -83,13 +83,22 @@ bool MediaEngine::WasLastFrameDeferred() const {
 }
 
 
-int32_t MediaEngine::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue,
-                                                    uint32_t sourcePid) const {
+int32_t MediaEngine::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
+                                                    uint32_t transportGeneration) const {
 
 
         if (videoEnc)
-            return videoEnc->QueryInjectFrameCopyCompletion(fenceHandle, fenceValue, sourcePid);
+            return videoEnc->QueryInjectFrameCopyCompletion(fenceHandle, fenceValue, sourcePid, transportGeneration);
         return -1;
+
+}
+
+
+void MediaEngine::SetInjectTransportGeneration(uint32_t transportGeneration) {
+
+
+        if (videoEnc)
+            videoEnc->SetInjectTransportGeneration(transportGeneration);
 
 }
 

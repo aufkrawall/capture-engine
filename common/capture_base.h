@@ -165,6 +165,9 @@ public:
     // Ring buffer state
     std::atomic<int> writeIndex{0};
     uint64_t fenceValue = 0;
+    // Transport generation stamped on every published frame (see
+    // SharedMemoryLayout::BeginTransportGeneration).
+    std::atomic<uint32_t> publishedTransportGeneration{0};
 
     // Initialization state
     bool initialized = false;
@@ -256,6 +259,10 @@ public:
         if (!sharedMem)
             return;
 
+        // A new generation must be visible before any of its handles: a
+        // re-created texture or fence can reuse a closed handle's value.
+        publishedTransportGeneration.store(static_cast<uint32_t>(sharedMem->BeginTransportGeneration()),
+                                           std::memory_order_release);
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i].load(std::memory_order_relaxed));
         }
@@ -317,6 +324,7 @@ public:
         slot.sourcePid = GetCurrentProcessId();
         slot.captureFlags = SHARED_FRAME_CAPTURE_NONE;
         slot.displayTimingGeneration = 0;
+        slot.transportGeneration = publishedTransportGeneration.load(std::memory_order_acquire);
 
         slot.valid.store(1, std::memory_order_release);
 

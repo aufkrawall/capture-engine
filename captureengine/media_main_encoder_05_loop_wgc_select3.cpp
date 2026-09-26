@@ -247,7 +247,8 @@ if (!config.video.useVFR) {
             return InjectFrameCopyCompletion::kUnknown;
         }
         const int32_t completion = MediaEngine_QueryInjectFrameCopyCompletion(
-            reinterpret_cast<uint64_t>(candidate.fenceHandle), candidate.fenceValue, candidate.sourcePid);
+            reinterpret_cast<uint64_t>(candidate.fenceHandle), candidate.fenceValue, candidate.sourcePid,
+            candidate.transportGeneration);
         if (completion > 0) {
             return InjectFrameCopyCompletion::kComplete;
         }

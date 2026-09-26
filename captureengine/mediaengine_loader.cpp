@@ -29,6 +29,7 @@ MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs = nu
 MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs = nullptr;
 MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred = nullptr;
 MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
+MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration = nullptr;
 MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
 MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
 MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
@@ -107,6 +108,8 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_QueryInjectFrameCopyCompletion",
                        &MediaEngine_QueryInjectFrameCopyCompletion);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetInjectTransportGeneration",
+                       &MediaEngine_SetInjectTransportGeneration);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_Shutdown", &MediaEngine_Shutdown);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
@@ -161,6 +164,7 @@ void MediaEngine_Unload() {
     MediaEngine_GetLastFrameFenceWaitUs = nullptr;
     MediaEngine_WasLastFrameDeferred = nullptr;
     MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
+    MediaEngine_SetInjectTransportGeneration = nullptr;
     MediaEngine_Shutdown = nullptr;
     MediaEngine_SetSharedMem = nullptr;
     MediaEngine_LockD3D11 = nullptr;

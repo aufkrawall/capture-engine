@@ -1,4 +1,5 @@
 #include "media_main_internal.h"
+#include "../common/inject_transport_snapshot.h"
 
 void InjectCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[Inject Thread] Started (event-driven ingest with adaptive source-side pacing)");
@@ -224,6 +225,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
                     s_lastInjectTimestamp = slot.timestamp;
 
+                    qf.transportGeneration = slot.transportGeneration;
                     if (texIdx >= 100) {
                         qf.isShmem = true;
                         qf.shmemSlot = texIdx - 100;
@@ -233,8 +235,29 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     } else {
                         qf.isShmem = false;
                         qf.shmemSlot = 0;
+                        const bool useEncoderTextureFence =
+                            media_main_g_pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
+                        const ce::InjectTransportSnapshot transport = ce::ReadInjectTransportSnapshot(
+                            *media_main_g_pSharedMem, IsValidTextureIndex(texIdx) ? texIdx : 0,
+                            useEncoderTextureFence, slot.transportGeneration);
+                        if (!transport.consistent) {
+                            // The producer re-created its shared transport after publishing
+                            // this frame; the handles now in shared memory belong to the new
+                            // generation and may even reuse this frame's old handle values.
+                            static uint64_t s_staleTransportDrops = 0;
+                            ++s_staleTransportDrops;
+                            if (s_staleTransportDrops <= 16 || (s_staleTransportDrops % 1000) == 0) {
+                                LogInfo(
+                                    "[Inject Thread] Dropping frame=%u ring=%u from transport generation %u "
+                                    "(current=%llu): the producer re-created its shared textures/fence (drops=%llu)",
+                                    slot.frameIndex, localReadIndex, slot.transportGeneration,
+                                    static_cast<unsigned long long>(transport.generation),
+                                    static_cast<unsigned long long>(s_staleTransportDrops));
+                            }
+                            dropFrame = true;
+                        }
                         if (IsValidTextureIndex(texIdx)) {
-                            qf.sharedHandle = (HANDLE)media_main_g_pSharedMem->GetSharedHandle(texIdx);
+                            qf.sharedHandle = (HANDLE)transport.sharedHandle;
                             // Metered diagnostic: slot handles are allocated once
                             // per shared-memory setup and rarely change, yet this
                             // line used to fire on every ingested frame (~16
@@ -251,13 +274,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                 s_lastLoggedSharedHandle[texIdx] = handleValue;
                             }
                         } else {
-                            qf.sharedHandle = (HANDLE)media_main_g_pSharedMem->GetSharedHandle(0);
+                            qf.sharedHandle = (HANDLE)transport.sharedHandle;
                             LogDebug("[Inject Thread] Invalid texIdx=%d, using handle 0: %p", texIdx, qf.sharedHandle);
                         }
-                        const bool useEncoderTextureFence =
-                            media_main_g_pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
-                        qf.fenceHandle = useEncoderTextureFence ? (HANDLE)media_main_g_pSharedMem->encoderTextures.GetFenceHandle()
-                                                                : (HANDLE)media_main_g_pSharedMem->GetFenceShareHandle();
+                        qf.fenceHandle = (HANDLE)transport.fenceHandle;
                         qf.fenceValue = slot.fenceValue;
                     }
 

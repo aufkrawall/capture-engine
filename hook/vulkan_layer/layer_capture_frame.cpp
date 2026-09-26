@@ -441,6 +441,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     if (fenceToPublish) {
         if (mem) {
             if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                LayerIPC_BeginTransportGeneration();
                 mem->encoderTextures.SetFenceHandle((uint64_t)fenceToPublish);
                 LayerLog("Vulkan Layer: Published capture fence handle %p to encoderTextures", fenceToPublish);
             } else {
@@ -450,6 +451,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         }
     } else if (mem) {
         if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
+            LayerIPC_BeginTransportGeneration();
             mem->encoderTextures.SetFenceHandle(0);
         } else {
             LayerIPC_SetFence(nullptr);

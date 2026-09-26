@@ -118,9 +118,15 @@ public:
     void ResetRepeatFrameCache();
     bool WasLastFrameDeferred() const;
     // Non-blocking completion test for an inject frame's shared fence. Answers
-    // only from the fence the encode path already opened; it never duplicates or
-    // opens a handle. Returns 1 complete (or no fence), 0 pending, -1 unknown.
-    int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid) const;
+    // only from the fence the encode path already opened for the same transport
+    // generation; it never duplicates or opens a handle. Returns 1 complete (or
+    // no fence), 0 pending, -1 unknown.
+    int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
+                                           uint32_t transportGeneration) const;
+    // Declares the producer transport generation of the next inject frame. On a
+    // change the opened shared textures and fence are dropped: a re-created
+    // transport can reuse the numeric handle values the cache is keyed on.
+    void SetInjectTransportGeneration(uint32_t transportGeneration);
 
     // Stores the source's cursor state; while a resized source is being fitted
     // into the locked geometry, the composited state is mapped onto the fitted
@@ -344,6 +350,8 @@ private:
     // Octo-buffered support (8 textures to prevent overwrite race)
     ID3D11Texture2D* cachedSharedTextures[SHARED_TEXTURE_SLOT_COUNT] = {};
     HANDLE cachedTextureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};
+    // Producer transport generation the cached textures/fence were opened for.
+    uint32_t cachedTransportGeneration = 0;
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
     uint32_t cachedSourcePid = 0;

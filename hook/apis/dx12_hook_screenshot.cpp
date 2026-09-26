@@ -120,12 +120,26 @@ if (!capLock.owns_lock()) {
     return false;
 }
 ID3D12Device* captureDevice = g_Device.load(std::memory_order_acquire);
+// Initialize() closes the previous generation's shared handles right before
+// creating new ones, so the new handles can carry the old numeric values.
+// Guarded by dx12_hook_g_DX12CaptureMutex like the publication below.
+static uint32_t s_transportGeneration = 0;
+static SharedMemoryLayout* s_transportGenerationShm = nullptr;
+// A replacement host's mapping (possibly at the same address) starts at 0; the
+// handles below are republished into it every frame, under a generation of ours.
+bool newTransportGeneration = s_transportGenerationShm != shm ||
+                              static_cast<uint32_t>(shm->GetTransportGeneration()) != s_transportGeneration;
 if (!dx12_hook_g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain)) {
     if (!dx12_hook_g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain)) {
         return false;
     }
-    HookLogImportant("DX12: Shared capture initialized for swapchain generation sc=%p device=%p", pSwapChain,
-                     captureDevice);
+    newTransportGeneration = true;
+}
+if (newTransportGeneration) {
+    s_transportGeneration = static_cast<uint32_t>(shm->BeginTransportGeneration());
+    s_transportGenerationShm = shm;
+    HookLogImportant("DX12: Shared capture initialized for swapchain generation sc=%p device=%p transport=%u",
+                     pSwapChain, captureDevice, s_transportGeneration);
 }
 
 UINT bbIdx = 0;
@@ -170,6 +184,7 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
     slot.sourcePid = GetCurrentProcessId();
     slot.captureFlags = metadata ? metadata->captureFlags : SHARED_FRAME_CAPTURE_NONE;
     slot.displayTimingGeneration = metadata ? metadata->displayTimingGeneration : 0;
+    slot.transportGeneration = s_transportGeneration;
     std::atomic_thread_fence(std::memory_order_release);
     slot.valid.store(1, std::memory_order_release);
     shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);

@@ -399,7 +399,9 @@ void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t pack
     int injectFrameLogCount = 0;
     int screengrabFrameLogCount = 0;
     int silenceLogCounter = 0;
-    int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid) const;
+    int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
+                                           uint32_t transportGeneration) const;
+    void SetInjectTransportGeneration(uint32_t transportGeneration);
     int mixLogCounter = 0;int64_t GetLastVideoEncodeTimeUs() const;int64_t GetLastFrameFenceWaitUs() const;bool WasLastFrameDeferred() const;bool CanRepeatLastFrame();void ResetRepeatFrameCache();void ReleaseEncoderTextures();void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer);void SetSourcePrefers10BitHint(bool prefer10Bit);void SetCursorCompositionSuppressedHint(bool suppressed);void SetActiveScreenGrab(bool enabled);void SetAudioOnly(bool enabled);void InitAudioOnlyMuxer(const AppConfig* config);bool CleanupAudioOnlyMuxer();
 
     // Trusted System QPC Frequency

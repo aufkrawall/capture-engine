@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-26 - Shared capture transport generation (handle-value reuse)
+
+- Media keyed opened shared textures and the fence only by (source PID, handle value). DX12
+  `SharedCaptureD3D12::Initialize` -> `Reset()` closes the old handles right before `CreateSharedHandle` for the
+  new ones, so the NT handle table can hand back the same values: media would keep its opened OLD textures
+  (stale video) and its OLD fence (new values 1,2,.. read as complete). Same for Vulkan resize (texture cache
+  entries destroyed before re-creation) and CaptureBase re-init. Found by code reading; no session proves it.
+- Fix (SHARED_MEMORY_VERSION 66, FrameSlot 56 bytes): `SharedMemoryLayout::BeginTransportGeneration()` runs BEFORE
+  any handle store; producers stamp `FrameSlot::transportGeneration` (CaptureBase `PublishToSharedMemory`, DX12
+  on new capture generation or a mapping whose generation is not ours, Vulkan `LayerIPC_SetTextures/SetFence` +
+  `LayerIPC_BeginTransportGeneration` before `encoderTextures.SetFenceHandle`). Media ingest reads
+  gen/handles/gen (`common/inject_transport_snapshot.h`) and drops a frame whose stamp is not current (log
+  `Dropping frame=... from transport generation`); encoder `MediaEngine_SetInjectTransportGeneration` drops its
+  opened textures/fence on change (log `Inject transport generation a -> b`).
+- Invariant: only the stamping producer may begin a generation; media must never bump (it would strand every
+  later frame of a producer that publishes handles only at init).
+
 ### 2026-09-26 - Inject capture froze after alt-tab: fence reserve pinned the last ring lease
 
 - Session `logs/20260926_050614` (DOOM Eternal Vulkan, 0.1.6832): alt-tab at 05:08:00.6, game stopped

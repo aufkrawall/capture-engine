@@ -49,6 +49,8 @@ struct QueuedFrame {
             other.displayTimingSequence = 0;
             displayTimingGeneration = other.displayTimingGeneration;
             other.displayTimingGeneration = 0;
+            transportGeneration = other.transportGeneration;
+            other.transportGeneration = 0;
             captureFlags = other.captureFlags;
             other.captureFlags = SHARED_FRAME_CAPTURE_NONE;
             injectRingLease = std::move(other.injectRingLease);
@@ -110,6 +112,7 @@ struct QueuedFrame {
     int32_t textureIndex = -1;
     uint64_t displayTimingSequence = 0;
     uint32_t displayTimingGeneration = 0;
+    uint32_t transportGeneration = 0;  // shared texture/fence handle generation (inject)
     uint32_t captureFlags = SHARED_FRAME_CAPTURE_NONE;
     ce::InjectFrameRingLease injectRingLease;
     uint32_t wgcPoolSlot = std::numeric_limits<uint32_t>::max();

@@ -272,6 +272,7 @@ public:
 private:
     std::atomic<uint64_t> sharedHandles_[SHARED_TEXTURE_SLOT_COUNT]{};  // HANDLE cast to uint64_t
     std::atomic<uint64_t> fenceShareHandle_{0};
+    std::atomic<uint64_t> transportGeneration_{0};
     std::atomic<uint64_t> fenceValue_{0};
     std::atomic<int32_t> currentReadIndex_{0};
     std::atomic<int64_t> timestamp_{0};
@@ -302,6 +303,26 @@ public:
     }
     void SetFenceShareHandle(uint64_t val) {
         fenceShareHandle_.store(val, std::memory_order_release);
+    }
+
+    // Shared capture transport generation: one value per set of published
+    // texture/fence handles. A producer that re-creates its transport can be
+    // handed the numeric handle values of the ones it just closed, so the
+    // consumer must never identify a transport by handle value alone.
+    //
+    // Protocol (lock-free, seqlock-like):
+    //  - The producer calls BeginTransportGeneration() BEFORE storing the new
+    //    handles and stamps every frame it publishes afterwards with the value
+    //    returned (low 32 bits in FrameSlot::transportGeneration).
+    //  - The consumer reads the generation, then the handles, then the
+    //    generation again (all acquire) and uses the handles only when both
+    //    reads equal the frame's stamp. Observing any newer handle implies the
+    //    second read already sees the newer generation.
+    uint64_t GetTransportGeneration() const {
+        return transportGeneration_.load(std::memory_order_acquire);
+    }
+    uint64_t BeginTransportGeneration() {
+        return transportGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
     }
 
     uint64_t GetFenceValue() const {

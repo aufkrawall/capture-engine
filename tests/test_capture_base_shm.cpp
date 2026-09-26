@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "../common/capture_base.h"
+#include "../common/inject_transport_snapshot.h"
 
 namespace {
 
@@ -109,6 +110,66 @@ TEST(CaptureBaseShmTest, OutstandingSlotScanDetectsValidSlots) {
 
     EXPECT_TRUE(IsCaptureTextureSlotOutstanding(&shm, 0));
     EXPECT_FALSE(IsCaptureTextureSlotOutstanding(&shm, 1));
+}
+
+// A producer that re-creates its transport (DX12 swapchain recreation closes the
+// old shared handles right before creating new ones) can be handed the very same
+// numeric handle values. Frames published before the re-creation must not be read
+// with the new handles, and the handles alone cannot tell the generations apart.
+TEST(CaptureBaseShmTest, RepublishWithReusedHandleValuesStartsANewTransportGeneration) {
+    MockCapture capture;
+    capture.width = 1920;
+    capture.height = 1080;
+    capture.sharedTextureHandles[0].store(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x1A4)),
+                                          std::memory_order_relaxed);
+    capture.sharedFenceHandle.store(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x1B8)), std::memory_order_relaxed);
+
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    capture.PublishToSharedMemory(&shm);
+    ASSERT_TRUE(capture.SignalFrameReady(&shm, 0, 1000, 1));
+    const uint32_t oldFrameGeneration = shm.frameRing.slots[0].transportGeneration;
+    EXPECT_NE(oldFrameGeneration, 0u);
+
+    ce::InjectTransportSnapshot snapshot = ce::ReadInjectTransportSnapshot(shm, 0, false, oldFrameGeneration);
+    EXPECT_TRUE(snapshot.consistent);
+    EXPECT_EQ(snapshot.sharedHandle, 0x1A4u);
+    EXPECT_EQ(snapshot.fenceHandle, 0x1B8u);
+
+    // Re-created transport, identical handle values.
+    capture.PublishToSharedMemory(&shm);
+    snapshot = ce::ReadInjectTransportSnapshot(shm, 0, false, oldFrameGeneration);
+    EXPECT_FALSE(snapshot.consistent);
+    EXPECT_EQ(snapshot.sharedHandle, 0x1A4u);
+
+    ASSERT_TRUE(capture.SignalFrameReady(&shm, 0, 2000, 1));
+    const uint32_t newFrameGeneration = shm.frameRing.slots[1].transportGeneration;
+    EXPECT_NE(newFrameGeneration, oldFrameGeneration);
+    EXPECT_TRUE(ce::ReadInjectTransportSnapshot(shm, 0, false, newFrameGeneration).consistent);
+}
+
+TEST(CaptureBaseShmTest, TransportSnapshotRejectsAGenerationChangeBetweenItsReads) {
+    EXPECT_TRUE(ce::IsInjectTransportSnapshotConsistent(7, 7, 7));
+    EXPECT_FALSE(ce::IsInjectTransportSnapshotConsistent(7, 8, 7));
+    EXPECT_FALSE(ce::IsInjectTransportSnapshotConsistent(8, 8, 7));
+    // The stamp carries the low 32 bits of the generation.
+    EXPECT_TRUE(ce::IsInjectTransportSnapshotConsistent(0x100000005ull, 0x100000005ull, 5u));
+}
+
+TEST(CaptureBaseShmTest, TransportSnapshotReadsTheEncoderTextureFenceWhenAdopted) {
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    const uint32_t generation = static_cast<uint32_t>(shm.BeginTransportGeneration());
+    shm.SetSharedHandle(2, 0x300);
+    shm.SetFenceShareHandle(0x400);
+    shm.encoderTextures.SetFenceHandle(0x500);
+
+    const ce::InjectTransportSnapshot layerFence = ce::ReadInjectTransportSnapshot(shm, 2, false, generation);
+    const ce::InjectTransportSnapshot encoderFence = ce::ReadInjectTransportSnapshot(shm, 2, true, generation);
+    EXPECT_TRUE(layerFence.consistent);
+    EXPECT_EQ(layerFence.sharedHandle, 0x300u);
+    EXPECT_EQ(layerFence.fenceHandle, 0x400u);
+    EXPECT_EQ(encoderFence.fenceHandle, 0x500u);
 }
 
 TEST(CaptureBaseShmTest, VulkanProducerPoolsCoverTheFullSharedTextureLeaseSpace) {

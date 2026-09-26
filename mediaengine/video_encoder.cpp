@@ -305,14 +305,15 @@ bool VideoEncoder::WasLastFrameDeferred() const {
     return lastFrameDeferred.load(std::memory_order_relaxed);
 }
 
-int32_t VideoEncoder::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue,
-                                                     uint32_t sourcePid) const {
+int32_t VideoEncoder::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
+                                                     uint32_t transportGeneration) const {
     // Same rule as the encode path: a zero value or missing handle means the
     // producer published a frame that needs no GPU wait.
     if (fenceValue == 0 || !fenceHandle || fenceHandle == INVALID_HANDLE_VALUE) {
         return 1;
     }
-    if (!cachedD3D11Fence || sourcePid == 0 || sourcePid != cachedSourcePid || fenceHandle != cachedFenceHandle) {
+    if (!cachedD3D11Fence || sourcePid == 0 || sourcePid != cachedSourcePid || fenceHandle != cachedFenceHandle ||
+        transportGeneration != cachedTransportGeneration) {
         return -1;
     }
     const uint64_t completedValue = cachedD3D11Fence->GetCompletedValue();
@@ -320,4 +321,28 @@ int32_t VideoEncoder::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_
         return -1;  // device removed; let the encode path report it
     }
     return completedValue >= fenceValue ? 1 : 0;
+}
+
+void VideoEncoder::SetInjectTransportGeneration(uint32_t transportGeneration) {
+    if (transportGeneration == cachedTransportGeneration) {
+        return;
+    }
+    int releasedTextures = 0;
+    for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
+        if (cachedSharedTextures[i]) {
+            cachedSharedTextures[i]->Release();
+            cachedSharedTextures[i] = nullptr;
+            ++releasedTextures;
+        }
+        cachedTextureHandles[i] = nullptr;
+    }
+    const bool releasedFence = cachedD3D11Fence != nullptr;
+    if (cachedD3D11Fence) {
+        cachedD3D11Fence->Release();
+        cachedD3D11Fence = nullptr;
+    }
+    cachedFenceHandle = nullptr;
+    DLL_Log("[VideoEncoder] Inject transport generation %u -> %u: dropped %d opened texture(s)%s", cachedTransportGeneration,
+            transportGeneration, releasedTextures, releasedFence ? " and the opened fence" : "");
+    cachedTransportGeneration = transportGeneration;
 }

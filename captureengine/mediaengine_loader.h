@@ -45,7 +45,8 @@ typedef int64_t (*MediaEngine_GetLastFrameEncodeTimeUs_t)();
 typedef int64_t (*MediaEngine_GetLastFrameFenceWaitUs_t)();
 typedef bool (*MediaEngine_WasLastFrameDeferred_t)();
 typedef int32_t (*MediaEngine_QueryInjectFrameCopyCompletion_t)(uint64_t fenceHandle, uint64_t fenceValue,
-                                                                 uint32_t sourcePid);
+                                                                 uint32_t sourcePid, uint32_t transportGeneration);
+typedef void (*MediaEngine_SetInjectTransportGeneration_t)(uint32_t transportGeneration);
 typedef void (*MediaEngine_Shutdown_t)();
 typedef void (*MediaEngine_SetSharedMem_t)(void* pSharedMem, void* pShmem);
 typedef void (*MediaEngine_LockD3D11_t)();
@@ -82,6 +83,7 @@ extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTime
 extern MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs;
 extern MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred;
 extern MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion;
+extern MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration;
 extern MediaEngine_Shutdown_t MediaEngine_Shutdown;
 extern MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem;
 extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;

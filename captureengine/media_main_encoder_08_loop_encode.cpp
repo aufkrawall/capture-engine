@@ -66,6 +66,9 @@ void MediaEncoderSession::LoopEncode() {
                     cursorState = &scheduledCursorState;
                 }
                 if (frameToProcess->isInjectMode) {
+                    if (!frameToProcess->isShmem && MediaEngine_SetInjectTransportGeneration) {
+                        MediaEngine_SetInjectTransportGeneration(frameToProcess->transportGeneration);
+                    }
                     encodeSucceeded = MediaEngine_ProcessFrame(
                         (uint64_t)frameToProcess->sharedHandle, (uint64_t)frameToProcess->fenceHandle,
                         frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,

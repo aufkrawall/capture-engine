@@ -37,6 +37,9 @@ bool LayerBootstrapInheritedRendererHook();
 void LayerIPC_StartHostLifecycleWatcher();
 void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
 void LayerIPC_SetFence(HANDLE fenceHandle);
+// Starts a new shared transport generation; call before publishing any handle
+// that is not LayerIPC_SetTextures/LayerIPC_SetFence (those start one themselves).
+void LayerIPC_BeginTransportGeneration();
 void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_t timestampQpc = 0,
                                const FrameCaptureMetadata* metadata = nullptr);
 uint32_t VkFormatToDXGI(uint32_t vkFormat);

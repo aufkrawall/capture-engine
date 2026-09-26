@@ -283,13 +283,20 @@ MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
 }
 
 MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,
-                                                                   uint32_t sourcePid) {
+                                                                   uint32_t sourcePid, uint32_t transportGeneration) {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {
         return mediaengine_g_Engine->QueryInjectFrameCopyCompletion(reinterpret_cast<HANDLE>(fenceHandle), fenceValue,
-                                                                    sourcePid);
+                                                                    sourcePid, transportGeneration);
     }
     return -1;
+}
+
+MEDIAENGINE_API void MediaEngine_SetInjectTransportGeneration(uint32_t transportGeneration) {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    if (mediaengine_g_Engine) {
+        mediaengine_g_Engine->SetInjectTransportGeneration(transportGeneration);
+    }
 }
 
 // Shared D3D11 device for screengrab mode - ensures ScreenCapture and

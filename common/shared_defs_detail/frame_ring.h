@@ -43,6 +43,7 @@ struct alignas(8) FrameSlot {
     uint32_t sourcePid;                   // Source process ID (required for OpenProcess/DuplicateHandle)
     uint32_t captureFlags;                // SharedFrameCaptureFlags
     uint32_t displayTimingGeneration;     // Low 32 bits of the publication generation
+    uint32_t transportGeneration;         // Low 32 bits of the shared transport generation
     std::atomic<uint32_t> valid{0};       // 1 if slot has unread data, 0 if empty/consumed
 };
 
