@@ -50,8 +50,28 @@ inline bool IsRecordingCapacityDebtDominant(const RecordingHealthState& state) {
                 static_cast<uint64_t>(state.peakDebtMs) * 3u);
 }
 
+// Output-level degradation found at finalization, as recording-health flag bits:
+// video (mux/coverage loss) and audio (content that never reached the file) stay apart
+// so the user is told which track is affected.
+inline uint32_t ComposeOutputDegradedFlags(bool videoDegraded, bool audioDegraded) {
+    return (videoDegraded ? kRecordingHealthFlagVideoDegraded : 0u) |
+           (audioDegraded ? kRecordingHealthFlagAudioDegraded : 0u);
+}
+
+inline const char* GetRecordingDegradedScope(uint32_t flags) {
+    const bool video = HasRecordingHealthFlag(flags, kRecordingHealthFlagVideoDegraded);
+    const bool audio = HasRecordingHealthFlag(flags, kRecordingHealthFlagAudioDegraded);
+    if (video && audio) {
+        return "audio_and_video";
+    }
+    if (video) {
+        return "video";
+    }
+    return audio ? "audio" : "none";
+}
+
 inline const char* GetRecordingHealthStatus(uint32_t flags) {
-    if (HasRecordingHealthFlag(flags, kRecordingHealthFlagVideoDegraded)) {
+    if ((flags & kRecordingHealthDegradedMask) != 0) {
         return "degraded";
     }
     if (HasRecordingHealthFlag(flags, kRecordingHealthFlagRecovering)) {

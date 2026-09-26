@@ -11,8 +11,8 @@
 #include "../common/process_ipc.h"
 
 inline void FinalizeRecordingManifest(const std::string& mediaLogPath, bool canceled, bool outputSaved,
-                                      const char* healthStatus, const char* healthCause, uint32_t healthFlags,
-                                      uint32_t currentDebtMs, uint32_t peakDebtMs,
+                                      const char* healthStatus, const char* healthCause, const char* degradedScope,
+                                      uint32_t healthFlags, uint32_t currentDebtMs, uint32_t peakDebtMs,
                                       uint32_t capacityAttributedDebtMs) {
     if (g_RecordingId.empty() || mediaLogPath.empty()) {
         return;
@@ -33,6 +33,8 @@ inline void FinalizeRecordingManifest(const std::string& mediaLogPath, bool canc
              << "\n";
     manifest << "recording_health=" << (healthStatus ? healthStatus : "unknown") << "\n";
     manifest << "recording_health_cause=" << (healthCause ? healthCause : "unknown") << "\n";
+    // none | video | audio | audio_and_video: which track(s) lost content.
+    manifest << "recording_degraded=" << (degradedScope ? degradedScope : "unknown") << "\n";
     manifest << "recording_health_flags=" << healthFlags << "\n";
     manifest << "final_timeline_debt_ms=" << currentDebtMs << "\n";
     manifest << "peak_timeline_debt_ms=" << peakDebtMs << "\n";

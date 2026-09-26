@@ -225,17 +225,25 @@ bool ApplyProfile(const ProfileSettings& settings, VideoConfig* video, std::vect
 }
 
 OverlayNotificationType SelectOutputCompletionNotification(bool liveStream, bool canceled, bool outputPublished,
-                                                            bool degraded) {
+                                                            bool videoDegraded, bool audioDegraded) {
     if (canceled)
         return OverlayNotificationType::RecordingCanceled;
     if (liveStream) {
         if (!outputPublished)
             return OverlayNotificationType::StreamingFailed;
-        return degraded ? OverlayNotificationType::StreamingEndedDegraded : OverlayNotificationType::StreamingEnded;
+        if (videoDegraded && audioDegraded)
+            return OverlayNotificationType::StreamingEndedAudioVideoDegraded;
+        if (audioDegraded)
+            return OverlayNotificationType::StreamingEndedAudioDegraded;
+        return videoDegraded ? OverlayNotificationType::StreamingEndedDegraded : OverlayNotificationType::StreamingEnded;
     }
     if (!outputPublished)
         return OverlayNotificationType::RecordingFailed;
-    return degraded ? OverlayNotificationType::RecordingSavedDegraded : OverlayNotificationType::RecordingSaved;
+    if (videoDegraded && audioDegraded)
+        return OverlayNotificationType::RecordingSavedAudioVideoDegraded;
+    if (audioDegraded)
+        return OverlayNotificationType::RecordingSavedAudioDegraded;
+    return videoDegraded ? OverlayNotificationType::RecordingSavedDegraded : OverlayNotificationType::RecordingSaved;
 }
 
 bool IsSuccessfulSession(bool discardRequested, bool terminalFailure, int trailerResult, int closeResult,

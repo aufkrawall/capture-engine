@@ -388,13 +388,14 @@ void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& heal
 void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const bool liveStream = media_main_g_LiveStreamRecording.exchange(false, std::memory_order_acq_rel);
     uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
-    // Mux-level output loss (write failures, dropped packets or metadata,
-    // incomplete CFR coverage) never passes through the capacity-health
-    // classifier. Fold it into the same "video degraded" truth so the manifest
-    // and the completion notification cannot claim a clean save over a file
-    // with holes in it.
-    if (MediaEngine_WasLastOutputDegraded && MediaEngine_WasLastOutputDegraded()) {
-        healthFlags |= ce::capture_policy::kRecordingHealthFlagVideoDegraded;
+    // Output loss found at finalization never passes through the capacity-health
+    // classifier: mux-level video loss (write failures, dropped packets or
+    // metadata, incomplete CFR coverage) and audio that never reached the file.
+    // Fold each into its own degraded bit so the manifest and the completion
+    // notification cannot claim a clean save over a file with holes in it, and
+    // name the track that actually lost content.
+    if (MediaEngine_GetLastOutputDegradedFlags) {
+        healthFlags |= MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask;
     }
     const uint32_t currentDebtMs = media_main_g_RecordingTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t peakDebtMs = media_main_g_RecordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
@@ -402,14 +403,15 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
         media_main_g_RecordingCapacityAttributedDebtMs.load(std::memory_order_relaxed);
     const char* healthStatus = ce::capture_policy::GetRecordingHealthStatus(healthFlags);
     const char* healthCause = ce::capture_policy::GetRecordingHealthCause(healthFlags);
+    const char* degradedScope = ce::capture_policy::GetRecordingDegradedScope(healthFlags);
     LogInfo(
-        "[RECORDING FINALIZATION] mode=%s status=%s health=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
-        "capacityDebtMs=%u outputSaved=%d finalizationComplete=1 settingsChanged=0",
+        "[RECORDING FINALIZATION] mode=%s status=%s health=%s cause=%s degraded=%s flags=0x%X currentDebtMs=%u "
+        "peakDebtMs=%u capacityDebtMs=%u outputSaved=%d finalizationComplete=1 settingsChanged=0",
         liveStream ? "stream" : "recording",
         canceled ? "canceled" : (outputSaved ? "media_finalized" : "failed"), healthStatus, healthCause,
-        healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
+        degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
     FinalizeRecordingManifest(media_main_g_RecordingManifestLogPath, canceled, outputSaved, healthStatus, healthCause,
-                              healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs);
+                              degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs);
 
     if (!media_main_g_pSharedMem) {
         return;
@@ -423,10 +425,13 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
         return;
     }
 
-    const bool degraded = ce::capture_policy::HasRecordingHealthFlag(
+    const bool videoDegraded = ce::capture_policy::HasRecordingHealthFlag(
         healthFlags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
-    const OverlayNotificationType notification =
-        ce::live_stream::SelectOutputCompletionNotification(liveStream, canceled, outputSaved, degraded);
+    const bool audioDegraded = ce::capture_policy::HasRecordingHealthFlag(
+        healthFlags, ce::capture_policy::kRecordingHealthFlagAudioDegraded);
+    const bool degraded = videoDegraded || audioDegraded;
+    const OverlayNotificationType notification = ce::live_stream::SelectOutputCompletionNotification(
+        liveStream, canceled, outputSaved, videoDegraded, audioDegraded);
     state.notificationType.store(static_cast<uint32_t>(notification), std::memory_order_release);
     state.notificationExpiry.store(GetTickCount64() + ((degraded || !outputSaved) ? 7000ULL : 3000ULL),
                                    std::memory_order_release);

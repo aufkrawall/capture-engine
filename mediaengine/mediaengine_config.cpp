@@ -106,8 +106,17 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
         const bool audioDeviceLost = AudioSourcesLostTheirDevice();
         const bool audioContentHoles = AudioTracksHaveContentHoles();
         const bool audioContentLost = AudioContentWasLost();
-        lastOutputDegraded = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0 ||
-                             audioDeviceLost || audioContentHoles || audioContentLost;
+        // An audio-only file holds nothing but audio: its container failures degrade the audio.
+        const bool audioOnlyContainerLoss = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0;
+        lastOutputDegradedFlags = ce::capture_policy::ComposeOutputDegradedFlags(
+            false, audioOnlyContainerLoss || audioDeviceLost || audioContentHoles || audioContentLost);
+        if (lastOutputDegradedFlags != 0) {
+            DLL_Log("[OutputHealth] audio-only output degraded scope=%s (container=%d audioDeviceLost=%d "
+                    "audioHoles=%d audioLost=%d)",
+                    ce::capture_policy::GetRecordingDegradedScope(lastOutputDegradedFlags),
+                    audioOnlyContainerLoss ? 1 : 0, audioDeviceLost ? 1 : 0, audioContentHoles ? 1 : 0,
+                    audioContentLost ? 1 : 0);
+        }
         audioOnlyWriteErrorCount = 0;
         audioOnlyTrailerSucceeded = false;
         audioOnlyWrittenPackets = 0;

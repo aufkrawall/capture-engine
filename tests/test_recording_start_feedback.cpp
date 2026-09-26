@@ -156,18 +156,25 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationEnumsDistinguishAcce
     EXPECT_NE(source.find("RecordingSaved = 4"), std::string::npos);
     EXPECT_NE(source.find("RecordingSavedDegraded = 5"), std::string::npos);
     EXPECT_NE(source.find("RecordingFailed = 7"), std::string::npos);
+    EXPECT_NE(source.find("RecordingSavedAudioDegraded = 11"), std::string::npos);
+    EXPECT_NE(source.find("StreamingEndedAudioVideoDegraded = 14"), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay) {
     const std::string source = ReadSource("hook/common/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("\"Finalizing recording...\""), std::string::npos);
-    EXPECT_NE(source.find("\"Recording saved\""), std::string::npos);
-    EXPECT_NE(source.find("\"Recording saved - video degraded\""), std::string::npos);
-    EXPECT_NE(source.find("\"Recording failed\""), std::string::npos);
-    EXPECT_NE(source.find("\"Stream ended\""), std::string::npos);
-    EXPECT_NE(source.find("\"Stream ended - video degraded\""), std::string::npos);
-    EXPECT_NE(source.find("\"Stream failed\""), std::string::npos);
+    // Completion wording is shared with the pseudo overlay (see
+    // OutputCompletionNotificationTest for the texts themselves).
+    EXPECT_NE(source.find("ce::output_completion::DescribeOutputCompletion("), std::string::npos);
+    EXPECT_NE(source.find("ce::output_completion::kOutputCompletionNotificationTypes"), std::string::npos);
+    EXPECT_NE(source.find("ce::output_completion::IsRecordingFinalizationNotification("), std::string::npos);
+    EXPECT_EQ(source.find("\"Recording saved - video degraded\""), std::string::npos);
+
+    const std::string pseudo = ReadSource("captureengine/pseudo_overlay_render.cpp");
+    ASSERT_FALSE(pseudo.empty());
+    EXPECT_NE(pseudo.find("ce::output_completion::DescribeOutputCompletion("), std::string::npos);
+    EXPECT_EQ(pseudo.find("\"Recording saved - video degraded\""), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
@@ -206,6 +213,19 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinal
     EXPECT_NE(completionPolicy.find("OverlayNotificationType::RecordingFailed"), std::string::npos);
     EXPECT_NE(completionPolicy.find("OverlayNotificationType::StreamingEndedDegraded"), std::string::npos);
     EXPECT_NE(completionPolicy.find("OverlayNotificationType::StreamingFailed"), std::string::npos);
+    EXPECT_NE(completionPolicy.find("OverlayNotificationType::RecordingSavedAudioDegraded"), std::string::npos);
+    EXPECT_NE(completionPolicy.find("OverlayNotificationType::StreamingEndedAudioDegraded"), std::string::npos);
+
+    // The finalization folds each track's output loss into its own degraded bit and the
+    // manifest records which track(s) lost content.
+    const std::string finalization = ReadSource("captureengine/media_main_recording.cpp");
+    ASSERT_FALSE(finalization.empty());
+    EXPECT_NE(finalization.find("MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask"),
+              std::string::npos);
+    EXPECT_NE(finalization.find("kRecordingHealthFlagAudioDegraded"), std::string::npos);
+    const std::string manifest = ReadSource("captureengine/recording_manifest.h");
+    ASSERT_FALSE(manifest.empty());
+    EXPECT_NE(manifest.find("\"recording_degraded=\""), std::string::npos);
 
     const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
     ASSERT_FALSE(overlay.empty());

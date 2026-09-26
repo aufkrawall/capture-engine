@@ -35,7 +35,7 @@ typedef bool (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp
                                                 int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef bool (*MediaEngine_StopRecording_t)(bool cancelUncommittedVideo);
-typedef bool (*MediaEngine_WasLastOutputDegraded_t)();
+typedef uint32_t (*MediaEngine_GetLastOutputDegradedFlags_t)();
 typedef void (*MediaEngine_ReleaseEncoderTextures_t)();
 typedef ID3D11Device* (*MediaEngine_GetD3D11Device_t)();
 typedef void (*MediaEngine_ReleaseSharedD3D11Device_t)();
@@ -71,7 +71,7 @@ extern MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11;
 extern MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
-extern MediaEngine_WasLastOutputDegraded_t MediaEngine_WasLastOutputDegraded;
+extern MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags;
 extern MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures;
 extern MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device;
 extern MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device;

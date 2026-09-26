@@ -182,10 +182,15 @@ constexpr uint32_t kRecordingHealthFlagTimelineDebt = 1u << 2;
 constexpr uint32_t kRecordingHealthFlagRecovering = 1u << 3;
 constexpr uint32_t kRecordingHealthFlagVideoDegraded = 1u << 4;
 constexpr uint32_t kRecordingHealthFlagSevere = 1u << 5;
+// Audio content that never reached the file (lost device, encoder holes, capture
+// overrun, dead audio worker). Only known at finalization, so it never drives the
+// live "video degraded" warning.
+constexpr uint32_t kRecordingHealthFlagAudioDegraded = 1u << 6;
+constexpr uint32_t kRecordingHealthDegradedMask = kRecordingHealthFlagVideoDegraded | kRecordingHealthFlagAudioDegraded;
 constexpr uint32_t kRecordingHealthCauseMask =
     kRecordingHealthFlagEncoderPressureObserved | kRecordingHealthFlagMuxPressureObserved;
 constexpr uint32_t kRecordingHealthLatchedMask =
-    kRecordingHealthCauseMask | kRecordingHealthFlagVideoDegraded | kRecordingHealthFlagSevere;
+    kRecordingHealthCauseMask | kRecordingHealthDegradedMask | kRecordingHealthFlagSevere;
 constexpr uint32_t kRecordingHealthCausalDebtMs = 250;
 constexpr uint32_t kRecordingHealthDegradedDebtMs = 500;
 constexpr uint32_t kRecordingHealthSevereDebtMs = 2000;

@@ -186,3 +186,41 @@ TEST(VideoOutputFailureStreakTest, AFewSlowFailuresNeverCrossTheBoundAlone) {
     EXPECT_FALSE(ObserveVideoOutputAttempt(streak, false, false, 60000));
     EXPECT_FALSE(streak.stopRequested);
 }
+
+// Output loss found at finalization keeps video and audio apart: an audio-only loss used
+// to be folded into kRecordingHealthFlagVideoDegraded and announced as "video degraded".
+TEST(RecordingHealthPolicyTest, OutputDegradedFlagsKeepVideoAndAudioApart) {
+    EXPECT_EQ(policy::ComposeOutputDegradedFlags(false, false), 0u);
+    EXPECT_EQ(policy::ComposeOutputDegradedFlags(true, false), policy::kRecordingHealthFlagVideoDegraded);
+    EXPECT_EQ(policy::ComposeOutputDegradedFlags(false, true), policy::kRecordingHealthFlagAudioDegraded);
+    EXPECT_EQ(policy::ComposeOutputDegradedFlags(true, true), policy::kRecordingHealthDegradedMask);
+    EXPECT_NE(policy::kRecordingHealthFlagAudioDegraded, policy::kRecordingHealthFlagVideoDegraded);
+    EXPECT_EQ(policy::kRecordingHealthFlagAudioDegraded &
+                  (policy::kRecordingHealthCauseMask | policy::kRecordingHealthFlagTimelineDebt |
+                   policy::kRecordingHealthFlagRecovering | policy::kRecordingHealthFlagSevere),
+              0u);
+
+    EXPECT_STREQ(policy::GetRecordingDegradedScope(0u), "none");
+    EXPECT_STREQ(policy::GetRecordingDegradedScope(policy::kRecordingHealthFlagVideoDegraded), "video");
+    EXPECT_STREQ(policy::GetRecordingDegradedScope(policy::kRecordingHealthFlagAudioDegraded), "audio");
+    EXPECT_STREQ(policy::GetRecordingDegradedScope(policy::kRecordingHealthDegradedMask), "audio_and_video");
+}
+
+TEST(RecordingHealthPolicyTest, AudioOnlyLossIsReportedDegradedWithoutACapacityCause) {
+    const uint32_t flags = policy::kRecordingHealthFlagAudioDegraded;
+    EXPECT_STREQ(policy::GetRecordingHealthStatus(flags), "degraded");
+    EXPECT_STREQ(policy::GetRecordingHealthCause(flags), "none");
+    // The live warning is about video timeline debt; audio loss is only known at
+    // finalization and must never raise "Recording video degraded!".
+    EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0u, 0u, flags), policy::kOverlayWarningNone);
+}
+
+TEST(RecordingHealthPolicyTest, AudioDegradedSurvivesLiveHealthUpdates) {
+    policy::RecordingHealthState state;
+    state.flags = policy::kRecordingHealthFlagAudioDegraded;
+    state = policy::UpdateRecordingHealth(state, {/*videoLive=*/true, /*cfrEnabled=*/true,
+                                                   /*encoderPressure=*/false, /*muxPressure=*/false,
+                                                   /*timelineDebtMs=*/0});
+    EXPECT_TRUE(policy::HasRecordingHealthFlag(state.flags, policy::kRecordingHealthFlagAudioDegraded));
+    EXPECT_FALSE(policy::HasRecordingHealthFlag(state.flags, policy::kRecordingHealthFlagVideoDegraded));
+}

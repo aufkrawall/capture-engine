@@ -10,6 +10,8 @@
 
 #include "../common/process_identity.h"
 
+#include "../common/pseudo_overlay_completion.h"
+
 #include "../common/pseudo_overlay_dpi_policy.h"
 
 #include "../common/pseudo_overlay_profile_policy.h"
@@ -180,29 +182,6 @@ inline std::string FormatRecordingHealthMessage(uint32_t warningKind, uint32_t s
         std::snprintf(buffer, sizeof(buffer), "Encoder severely overloaded (%.1f/%ufps)", sustainFps, targetFps);
     }
     return buffer;
-}
-
-inline ce::pseudo_overlay::RecordingNotificationKind ToPseudoRecordingNotification(uint32_t notificationType) {
-    switch (static_cast<OverlayNotificationType>(notificationType)) {
-        case OverlayNotificationType::RecordingFinalizing:
-            return ce::pseudo_overlay::RecordingNotificationKind::Finalizing;
-        case OverlayNotificationType::RecordingSaved:
-            return ce::pseudo_overlay::RecordingNotificationKind::Saved;
-        case OverlayNotificationType::RecordingSavedDegraded:
-            return ce::pseudo_overlay::RecordingNotificationKind::SavedDegraded;
-        case OverlayNotificationType::RecordingCanceled:
-            return ce::pseudo_overlay::RecordingNotificationKind::Canceled;
-        case OverlayNotificationType::RecordingFailed:
-            return ce::pseudo_overlay::RecordingNotificationKind::Failed;
-        case OverlayNotificationType::StreamingEnded:
-            return ce::pseudo_overlay::RecordingNotificationKind::StreamEnded;
-        case OverlayNotificationType::StreamingEndedDegraded:
-            return ce::pseudo_overlay::RecordingNotificationKind::StreamEndedDegraded;
-        case OverlayNotificationType::StreamingFailed:
-            return ce::pseudo_overlay::RecordingNotificationKind::StreamFailed;
-        default:
-            return ce::pseudo_overlay::RecordingNotificationKind::None;
-    }
 }
 
 inline HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {

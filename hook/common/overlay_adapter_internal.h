@@ -4,6 +4,8 @@
 
 #include "../../common/capture_pipeline_policy.h"
 
+#include "../../common/output_completion_notification.h"
+
 #include "custom_font.h"
 
 #include "custom_overlay.h"

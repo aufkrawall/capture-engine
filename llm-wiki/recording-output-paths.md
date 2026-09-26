@@ -87,7 +87,11 @@ Limits:
 
 Audio: sources that ran without their endpoint (`AudioCapture::GetDeviceUnavailableEpisodes`) and tracks with
 `contentHoleSamples > 0` also mark the output degraded (`AudioSourcesLostTheirDevice`, `AudioTracksHaveContentHoles`),
-and so do consumer-overrun losses and a dead audio worker (`AudioContentWasLost`, audit 4). MP4/MOV decoded-endpoint
+and so do consumer-overrun losses and a dead audio worker (`AudioContentWasLost`, audit 4). Since 2026-09-26 video
+and audio loss stay separate: `MediaEngine_GetLastOutputDegradedFlags` returns `kRecordingHealthFlagVideoDegraded`
+(0x10) and/or `kRecordingHealthFlagAudioDegraded` (0x40); an audio-only file's container failures count as audio.
+`CompleteRecordingFinalization` folds them into the health flags, the manifest records
+`recording_degraded=none|video|audio|audio_and_video`, and the completion notification names the track. MP4/MOV decoded-endpoint
 coverage now exists next to Matroska in `tests/test_audio_mux_integration.cpp` (mp4: aac/alac/flac/opus; mov:
 aac/alac/pcm) - exact at 2026-09-24.
 Hardware validation of all of this is pending.

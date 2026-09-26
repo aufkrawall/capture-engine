@@ -6,6 +6,8 @@ class MediaEngine;
 
 #include "../common/capture_pipeline_policy.h"
 
+#include "../common/capture_policy/recording_health.h"
+
 #include "../common/logging.h"
 
 #include "../common/log_privacy.h"
@@ -266,10 +268,11 @@ public:
     bool audioOnlyTrailerSucceeded = false;
     uint64_t audioOnlyWrittenPackets = 0;  // guarded by muxMutex
     uint64_t audioOnlyWriteErrorCount = 0;  // guarded by muxMutex
-    // Latched at output finalize; queried by MediaEngine_WasLastOutputDegraded.
-    bool lastOutputDegraded = false;
-    bool WasLastOutputDegraded() const {
-        return lastOutputDegraded;
+    // Latched at output finalize as recording-health bits (kRecordingHealthFlagVideoDegraded /
+    // kRecordingHealthFlagAudioDegraded); queried by MediaEngine_GetLastOutputDegradedFlags.
+    uint32_t lastOutputDegradedFlags = 0;
+    uint32_t GetLastOutputDegradedFlags() const {
+        return lastOutputDegradedFlags;
     }
     std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 

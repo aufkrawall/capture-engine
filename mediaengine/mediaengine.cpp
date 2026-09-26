@@ -135,9 +135,11 @@ MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo) {
     return mediaengine_g_Engine ? mediaengine_g_Engine->StopRecording(cancelUncommittedVideo) : false;
 }
 
-MEDIAENGINE_API bool MediaEngine_WasLastOutputDegraded() {
+// Recording-health bits for the last finalized output: kRecordingHealthFlagVideoDegraded
+// and/or kRecordingHealthFlagAudioDegraded, 0 for a clean output.
+MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags() {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine ? mediaengine_g_Engine->WasLastOutputDegraded() : false;
+    return mediaengine_g_Engine ? mediaengine_g_Engine->GetLastOutputDegradedFlags() : 0u;
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {

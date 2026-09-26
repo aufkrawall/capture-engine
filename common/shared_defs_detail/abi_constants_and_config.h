@@ -128,17 +128,21 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 64: DisplayTimingSample gained `graphTimeUs`, the refresh-bounded
 //             time the overlay graph draws. It grows the sample, so an older
 //             peer must not open the mapping.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 64;
+// Version 65: OverlayNotificationType gained the audio-degraded and
+//             audio-and-video-degraded completions (11-14). The layout is
+//             unchanged, but an older hook would drop those values and show no
+//             completion at all, so it must not open the mapping.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 65;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_64_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_65_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_64";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_65";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -388,6 +392,12 @@ enum class OverlayNotificationType : uint32_t {
     StreamingEnded = 8,
     StreamingEndedDegraded = 9,
     StreamingFailed = 10,
+    // 5 and 9 above mean VIDEO degraded; audio-only and combined loss are separate so
+    // the user is told which track is affected (common/output_completion_notification.h).
+    RecordingSavedAudioDegraded = 11,
+    RecordingSavedAudioVideoDegraded = 12,
+    StreamingEndedAudioDegraded = 13,
+    StreamingEndedAudioVideoDegraded = 14,
 };
 
 enum class ScreenshotPixelFormat : uint32_t {

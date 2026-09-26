@@ -657,8 +657,15 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             const bool audioDeviceLost = AudioSourcesLostTheirDevice();
             const bool audioContentHoles = AudioTracksHaveContentHoles();
             const bool audioContentLost = AudioContentWasLost();
-            lastOutputDegraded =
-                videoEnc->WasLastOutputDegraded() || audioDeviceLost || audioContentHoles || audioContentLost;
+            lastOutputDegradedFlags = ce::capture_policy::ComposeOutputDegradedFlags(
+                videoEnc->WasLastOutputDegraded(), audioDeviceLost || audioContentHoles || audioContentLost);
+            if (lastOutputDegradedFlags != 0) {
+                DLL_Log("[OutputHealth] recording output degraded scope=%s (video=%d audioDeviceLost=%d "
+                        "audioHoles=%d audioLost=%d)",
+                        ce::capture_policy::GetRecordingDegradedScope(lastOutputDegradedFlags),
+                        videoEnc->WasLastOutputDegraded() ? 1 : 0, audioDeviceLost ? 1 : 0,
+                        audioContentHoles ? 1 : 0, audioContentLost ? 1 : 0);
+            }
         }
         return videoOutputPublished;
 

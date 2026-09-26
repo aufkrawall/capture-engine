@@ -113,16 +113,42 @@ TEST(LiveStreamConfigPolicyTest, QueueBudgetAllowsTwoSecondsButStaysBounded) {
 
 TEST(LiveStreamConfigPolicyTest, CompletionNotificationsDoNotClaimThatAStreamWasSavedToDisk) {
     using ce::live_stream::SelectOutputCompletionNotification;
-    EXPECT_EQ(SelectOutputCompletionNotification(false, false, true, false),
+    EXPECT_EQ(SelectOutputCompletionNotification(false, false, true, false, false),
               OverlayNotificationType::RecordingSaved);
-    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, false),
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, false, false),
               OverlayNotificationType::StreamingEnded);
-    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, true),
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, true, false),
               OverlayNotificationType::StreamingEndedDegraded);
-    EXPECT_EQ(SelectOutputCompletionNotification(true, false, false, false),
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, false, false, false),
               OverlayNotificationType::StreamingFailed);
-    EXPECT_EQ(SelectOutputCompletionNotification(true, true, false, false),
+    EXPECT_EQ(SelectOutputCompletionNotification(true, true, false, false, false),
               OverlayNotificationType::RecordingCanceled);
+}
+
+// Session 20260926_041008: an audio-only loss was announced as "Recording saved - video
+// degraded". The completion now names the track that lost content.
+TEST(LiveStreamConfigPolicyTest, DegradedCompletionNamesTheAffectedTrack) {
+    using ce::live_stream::SelectOutputCompletionNotification;
+    EXPECT_EQ(SelectOutputCompletionNotification(false, false, true, true, false),
+              OverlayNotificationType::RecordingSavedDegraded);
+    EXPECT_EQ(SelectOutputCompletionNotification(false, false, true, false, true),
+              OverlayNotificationType::RecordingSavedAudioDegraded);
+    EXPECT_EQ(SelectOutputCompletionNotification(false, false, true, true, true),
+              OverlayNotificationType::RecordingSavedAudioVideoDegraded);
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, false, true),
+              OverlayNotificationType::StreamingEndedAudioDegraded);
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, true, true, true),
+              OverlayNotificationType::StreamingEndedAudioVideoDegraded);
+}
+
+TEST(LiveStreamConfigPolicyTest, CancelAndFailureOutrankDegradedScope) {
+    using ce::live_stream::SelectOutputCompletionNotification;
+    EXPECT_EQ(SelectOutputCompletionNotification(false, true, true, true, true),
+              OverlayNotificationType::RecordingCanceled);
+    EXPECT_EQ(SelectOutputCompletionNotification(false, false, false, true, true),
+              OverlayNotificationType::RecordingFailed);
+    EXPECT_EQ(SelectOutputCompletionNotification(true, false, false, false, true),
+              OverlayNotificationType::StreamingFailed);
 }
 
 TEST(LiveStreamConfigPolicyTest, TerminalNetworkErrorsCannotBeReportedAsSuccessfulStreams) {

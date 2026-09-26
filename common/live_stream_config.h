@@ -37,8 +37,9 @@ bool BuildLiveStreamTarget(std::string_view server, std::string_view streamKey, 
 bool ApplyProfile(const ProfileSettings& settings, VideoConfig* video, std::vector<AudioConfig>* audioSources,
                   std::string* error);
 
+// The degraded completions name the affected track(s): video and audio loss are reported apart.
 OverlayNotificationType SelectOutputCompletionNotification(bool liveStream, bool canceled, bool outputPublished,
-                                                            bool degraded);
+                                                            bool videoDegraded, bool audioDegraded);
 
 bool IsSuccessfulSession(bool discardRequested, bool terminalFailure, int trailerResult, int closeResult,
                          int64_t finalDurationUs, uint64_t writtenVideoPackets);

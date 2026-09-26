@@ -326,8 +326,11 @@ TEST(RecordingAudioLossTest, StopLatchesLossBeforeCountersResetAndBothOutputsUse
     const size_t audioOnlyCleanup = stop.find("CleanupAudioOnlyMuxer();");
     ASSERT_NE(audioOnlyCleanup, std::string::npos);
     EXPECT_LT(audioOnlyLatch, audioOnlyCleanup);
-    EXPECT_NE(stop.find("|| audioContentLost;"), std::string::npos);
-    EXPECT_NE(config.find("audioDeviceLost || audioContentHoles || audioContentLost;"), std::string::npos);
+    // Both outputs fold every audio loss into the AUDIO degraded bit, never the video one.
+    EXPECT_NE(stop.find("videoEnc->WasLastOutputDegraded(), audioDeviceLost || audioContentHoles || audioContentLost);"),
+              std::string::npos);
+    EXPECT_NE(config.find("false, audioOnlyContainerLoss || audioDeviceLost || audioContentHoles || audioContentLost);"),
+              std::string::npos);
     // Worker death (or a worker that never started) is latched; each start clears it.
     const size_t entry = thread.find("void MediaEngine::AudioThreadEntry()");
     ASSERT_NE(entry, std::string::npos);

@@ -261,10 +261,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot saved!") + kShadowPad);
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot failed!") + kShadowPad);
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Finalizing recording...") + kShadowPad);
-            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Recording saved") + kShadowPad);
-            measuredWidth =
-                (std::max)(measuredWidth, MeasureTextWidth("Recording saved - video degraded") + kShadowPad);
-            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Recording failed") + kShadowPad);
+            for (const OverlayNotificationType completion : ce::output_completion::kOutputCompletionNotificationTypes) {
+                const char* text = ce::output_completion::DescribeOutputCompletion(completion).text;
+                measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(text) + kShadowPad);
+            }
         }
         if (rowBenchmarkTimer) {
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("BENCHMARK") + kShadowPad);
@@ -470,33 +470,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 notifText = "Finalizing recording...";
                 notifColor = Colors::LabelYellow;
                 break;
-            case static_cast<uint32_t>(OverlayNotificationType::RecordingSaved):
-                notifText = "Recording saved";
+            default: {
+                const auto completion = ce::output_completion::DescribeOutputCompletion(
+                    static_cast<OverlayNotificationType>(frameLayout.notificationType));
+                notifText = completion.text;
+                if (completion.warning) {
+                    notifColor = Colors::Red;
+                }
                 break;
-            case static_cast<uint32_t>(OverlayNotificationType::RecordingSavedDegraded):
-                notifText = "Recording saved - video degraded";
-                notifColor = Colors::Red;
-                break;
-            case static_cast<uint32_t>(OverlayNotificationType::RecordingCanceled):
-                notifText = "Recording canceled";
-                break;
-            case static_cast<uint32_t>(OverlayNotificationType::RecordingFailed):
-                notifText = "Recording failed";
-                notifColor = Colors::Red;
-                break;
-            case static_cast<uint32_t>(OverlayNotificationType::StreamingEnded):
-                notifText = "Stream ended";
-                break;
-            case static_cast<uint32_t>(OverlayNotificationType::StreamingEndedDegraded):
-                notifText = "Stream ended - video degraded";
-                notifColor = Colors::Red;
-                break;
-            case static_cast<uint32_t>(OverlayNotificationType::StreamingFailed):
-                notifText = "Stream failed";
-                notifColor = Colors::Red;
-                break;
-            default:
-                break;
+            }
         }
         if (notifText) {
             renderer->DrawTextWithShadow(labelCol, cursorY, notifText, notifColor, shadowColor);

@@ -15,6 +15,11 @@ enum class RecordingNotificationKind : uint8_t {
     StreamEnded,
     StreamEndedDegraded,
     StreamFailed,
+    // SavedDegraded / StreamEndedDegraded above are VIDEO degraded.
+    SavedAudioDegraded,
+    SavedAudioVideoDegraded,
+    StreamEndedAudioDegraded,
+    StreamEndedAudioVideoDegraded,
 };
 
 // Pure, Windows-free decision for whether the controller-side pseudo-overlay should have
@@ -66,6 +71,10 @@ enum class OverlayTextKind : uint8_t {
     StreamingEnded,
     StreamingEndedDegraded,
     StreamingFailed,
+    RecordingSavedAudioDegraded,
+    RecordingSavedAudioVideoDegraded,
+    StreamingEndedAudioDegraded,
+    StreamingEndedAudioVideoDegraded,
 };
 
 inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in) {
@@ -97,6 +106,14 @@ inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in
                 return OverlayTextKind::StreamingEndedDegraded;
             case RecordingNotificationKind::StreamFailed:
                 return OverlayTextKind::StreamingFailed;
+            case RecordingNotificationKind::SavedAudioDegraded:
+                return OverlayTextKind::RecordingSavedAudioDegraded;
+            case RecordingNotificationKind::SavedAudioVideoDegraded:
+                return OverlayTextKind::RecordingSavedAudioVideoDegraded;
+            case RecordingNotificationKind::StreamEndedAudioDegraded:
+                return OverlayTextKind::StreamingEndedAudioDegraded;
+            case RecordingNotificationKind::StreamEndedAudioVideoDegraded:
+                return OverlayTextKind::StreamingEndedAudioVideoDegraded;
             default:
                 break;
         }

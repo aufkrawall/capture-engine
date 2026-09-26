@@ -65,8 +65,8 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     ASSERT_FALSE(source.empty());
 
     // The coverage verdict is recorded before the report line is written; the
-    // consumer of the flag (MediaEngine::WasLastOutputDegraded, pinned below)
-    // turns it into the "saved (degraded)" completion.
+    // consumer of the flag (MediaEngine::GetLastOutputDegradedFlags, pinned below)
+    // turns it into the "saved - video degraded" completion.
     const size_t coverage = source.find("CFR artifact failed packet-continuity validation");
     ASSERT_NE(coverage, std::string::npos);
     EXPECT_LT(source.find("cfrCoverageIncomplete.store(true"), coverage);
@@ -74,8 +74,10 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     const std::filesystem::path engineSource = std::filesystem::current_path() / "mediaengine" / "mediaengine.cpp";
     const std::string engine = ce::test_source::ReadLogicalSource(engineSource);
     ASSERT_FALSE(engine.empty());
-    EXPECT_NE(engine.find("videoEnc->WasLastOutputDegraded() || audioDeviceLost"), std::string::npos);
-    EXPECT_NE(engine.find("MEDIAENGINE_API bool MediaEngine_WasLastOutputDegraded()"), std::string::npos);
+    // Video loss and audio loss stay separate bits so the user is told which track lost content.
+    EXPECT_NE(engine.find("videoEnc->WasLastOutputDegraded(), audioDeviceLost || audioContentHoles || audioContentLost"),
+              std::string::npos);
+    EXPECT_NE(engine.find("MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags()"), std::string::npos);
 }
 
 // Regression: FFmpeg's interrupt callback only refuses the NEXT transfer, so a

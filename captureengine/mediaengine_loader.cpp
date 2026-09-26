@@ -20,7 +20,7 @@ MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11 = nullptr;
 MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11 = nullptr;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
-MediaEngine_WasLastOutputDegraded_t MediaEngine_WasLastOutputDegraded = nullptr;
+MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags = nullptr;
 MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures = nullptr;
 MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device = nullptr;
 MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device = nullptr;
@@ -91,7 +91,8 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_WasLastOutputDegraded", &MediaEngine_WasLastOutputDegraded);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastOutputDegradedFlags",
+                       &MediaEngine_GetLastOutputDegradedFlags);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ReleaseEncoderTextures", &MediaEngine_ReleaseEncoderTextures);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetD3D11Device", &MediaEngine_GetD3D11Device);
     success &=
@@ -148,7 +149,7 @@ void MediaEngine_Unload() {
     MediaEngine_ProcessFrameD3D11 = nullptr;
     MediaEngine_StartRecording = nullptr;
     MediaEngine_StopRecording = nullptr;
-    MediaEngine_WasLastOutputDegraded = nullptr;
+    MediaEngine_GetLastOutputDegradedFlags = nullptr;
     MediaEngine_ReleaseEncoderTextures = nullptr;
     MediaEngine_GetD3D11Device = nullptr;
     MediaEngine_ReleaseSharedD3D11Device = nullptr;

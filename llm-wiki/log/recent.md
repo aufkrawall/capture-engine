@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-09-26 - Degraded completions name the track (audio vs video)
+
+- Every degraded save said "video degraded": mediaengine folded audio causes (lost device, content holes,
+  overrun loss, dead worker) into one `lastOutputDegraded` bool, which `CompleteRecordingFinalization` mapped to
+  `kRecordingHealthFlagVideoDegraded`.
+- Now `MediaEngine_GetLastOutputDegradedFlags` (replaces `MediaEngine_WasLastOutputDegraded`) returns video 0x10 /
+  new audio 0x40 (`kRecordingHealthFlagAudioDegraded`, latched, never drives the live warning). Manifest gains
+  `recording_degraded=`, the finalization log `degraded=`, mediaengine logs `[OutputHealth] ... scope=`.
+- `OverlayNotificationType` 11-14 (saved/stream-ended x audio/audio+video); 5/9 keep meaning video.
+  SHARED_MEMORY_VERSION 64->65 (layout unchanged, but an old hook would drop 11-14 silently).
+- Texts in one table (`common/output_completion_notification.h`) for hook and pseudo overlay; hook width list
+  iterates it. Found in passing: the hook's idle-only check was a numeric range 3..10 that would have let 11-14
+  cover an active recording; now `IsRecordingFinalizationNotification`.
+- Hardware check pending: an audio-only loss should show "Recording saved - audio degraded" in both overlays.
+
 ### 2026-09-26 - Session 20260926_041008: "degraded" was a driver re-delivery, not loss or overload
 
 - 4 min DXGI-dup recording (HotS), 0.1.6828 (includes 6c102592). Overlay: "Recording saved - video degraded",
@@ -14,8 +29,7 @@
   the `RecordingAudioLossEvidence` contract. Fix: `SplitFullyOverlappedPacket` — only the part behind the
   exported cursor is overrun/starvation (and can drive the last-resort resync); the rest is `dedup=` in
   `[STOP AUDIO INGEST]` plus a capped `Re-delivered source range de-duplicated` line. Analyzer regex accepts it.
-- Open: the notification says "video degraded" for any degraded save, including audio-only causes
-  (`kRecordingHealthFlagVideoDegraded` is the only bit). Needs its own flag + text; not done.
+- Follow-up done same day: audio loss now has its own bit and text (next entry).
 
 ### 2026-09-26 - Session 20260926_030958: rejected-timestamp burst loss, drain flapping, pre-live slow-loop noise
 

@@ -86,6 +86,8 @@ MEDIAENGINE_API bool MediaEngine_StartRecording();
 // Stop Recording (flush live output, or discard an uncommitted pre-live session)
 // Returns true only when a completed recording output was published.
 MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo);
+// Recording-health bits (video and/or audio degraded) of the last finalized output; 0 = clean.
+MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags();
 
 // Release preserved encoder textures (call after game exits to free VRAM)
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures();
