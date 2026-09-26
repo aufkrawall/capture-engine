@@ -335,6 +335,7 @@ void MediaEngine::ApplyAudioTimelineReset(uint64_t generation,  int64_t startQpc
             src.lastAppLatencyWarnTick = 0;
             src.appLatencyWarnActive = false;
             src.appAudioBacklogDrainInitialized = false;
+            src.appAudioDrainTargetHold.Reset();
             src.appAudioBacklogDrainActive = false;
             src.appAudioBacklogDrainReason =
                 static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::SourceBootstrapPending);
@@ -411,18 +412,18 @@ bool MediaEngine::AudioLoopInit(AudioLoopState& s) {
         std::string summary;
         std::set<std::string> appIdentities;
         for (size_t idx : kv.second) {
-            auto& s = audioSources[idx];
+            auto& source = audioSources[idx];
             std::string label;
-            if (s.sourceType == AudioConfig::AppAudio) {
-                const char* pn = s.config.processName.empty() ? "<pid>" : s.config.processName.c_str();
+            if (source.sourceType == AudioConfig::AppAudio) {
+                const char* pn = source.config.processName.empty() ? "<pid>" : source.config.processName.c_str();
                 label = std::string("app:") + pn;
-                if (!appIdentities.insert(AppAudioTrackKey(s.config, kv.first)).second) {
+                if (!appIdentities.insert(AppAudioTrackKey(source.config, kv.first)).second) {
                     DLL_Log(
                         "AudioLoop: WARNING - track %d has duplicate app-audio capture for '%s' - identical "
                         "streams will comb-filter when mixed",
                         kv.first, pn);
                 }
-            } else if (s.sourceType == AudioConfig::Microphone) {
+            } else if (source.sourceType == AudioConfig::Microphone) {
                 label = "mic";
             } else {
                 label = "system";

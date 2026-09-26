@@ -157,3 +157,17 @@ TEST(EncoderLoopStageCostTest, EveryLoopPhaseIsTimed) {
     }
     EXPECT_NE(run.find("ChargeCall("), std::string::npos);
 }
+
+// Pre-live passes are one-time startup work (the 20260926_030958 recording logged two 72-200 ms
+// "startup" passes before live output): INFO evidence only, WARN once the output is live.
+TEST(EncoderLoopStageCostTest, SlowIterationWarnsOnlyWhileLive) {
+    const std::string report = FunctionBody(ReadSessionSource(), "void ReportSlowEncoderIteration(");
+    ASSERT_FALSE(report.empty());
+    const size_t live = report.find("if (context.live) {");
+    ASSERT_NE(live, std::string::npos);
+    const size_t warn = report.find("LogWarn(", live);
+    const size_t info = report.find("LogInfo(", live);
+    ASSERT_NE(warn, std::string::npos);
+    ASSERT_NE(info, std::string::npos);
+    EXPECT_LT(warn, info);
+}

@@ -42,11 +42,6 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
     auto& MIN_POST_RESAMPLE_FLOATS = s.MIN_POST_RESAMPLE_FLOATS;
     auto& startupProtectedFloats = s.startupProtectedFloats;
     auto& MAX_POST_RESAMPLE_FLOATS = s.MAX_POST_RESAMPLE_FLOATS;
-    auto& nowTick = s.nowTick;
-    auto& it = s.it;
-    auto& overflowDropped = s.overflowDropped;
-    auto& categorizedLatencyTrim = s.categorizedLatencyTrim;
-    auto& uncategorizedLatencyTrim = s.uncategorizedLatencyTrim;
     auto& forceDrain = s.forceDrain;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
     constexpr int64_t kRuntimeMaxLeadSamples = AudioPullState::kRuntimeMaxLeadSamples;
@@ -144,11 +139,19 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                         std::max<int64_t>(targetLatencySamples,
                                           baseTargetLatencySamples +
                                               (effectiveSourceClockDriftLagMs * SAMPLE_RATE / 1000));
+                    // The backlog drain follows the lead target's peak over its own compensation window,
+                    // not the jittery live target (see TrailingPeakHold). Tier-1 keeps the raw lead.
+                    const int64_t appDrainTargetSamples =
+                        src.sourceType == AudioConfig::AppAudio
+                            ? src.appAudioDrainTargetHold.Observe(encodedSamplesPerSource[srcIdx],
+                                                                  expectedLeadSamplesForCorrection,
+                                                                  static_cast<int64_t>(SAMPLE_RATE) * 10)
+                            : expectedLeadSamplesForCorrection;
                     const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                         isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,
                         startupTimelineProtected, cfrTimelineRecoveryActive, appDrainBudgetSamples,
-                        expectedLeadSamplesForCorrection,
+                        appDrainTargetSamples,
                         kMinCompensationBufferSamples, static_cast<int64_t>(SAMPLE_RATE) * 10,
                         kAppAudioDrainMaxPitchPercent, kAppAudioDrainSlackSamples, kAppAudioDrainDeadbandSamples);
                     const double maxCompensationPercent =
@@ -343,7 +346,7 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                             const auto appAudioDrainDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                                 isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain,
                                 trackStartupSettled, startupTimelineProtected, cfrTimelineRecoveryActive,
-                                compensationBufferedSamples, expectedLead, kMinCompensationBufferSamples,
+                                compensationBufferedSamples, appDrainTargetSamples, kMinCompensationBufferSamples,
                                 static_cast<int64_t>(SAMPLE_RATE) * 10, kAppAudioDrainMaxPitchPercent,
                                 kAppAudioDrainSlackSamples, kAppAudioDrainDeadbandSamples);
                             const double activeMaxCompensationPercent =

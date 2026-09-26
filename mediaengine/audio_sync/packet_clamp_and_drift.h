@@ -262,6 +262,47 @@ inline CfrAppAudioBacklogDrainDecision ComputeCfrAppAudioBacklogDrainDecision(
     return decision;
 }
 
+// Target for the CFR app-audio backlog drain: the peak of the live lead target over a trailing
+// window on the source's own encoded timeline. The live target follows the measured screen-content
+// lag, which under a static or source-starved screen jumps by tens of ms several times a second.
+// The drain moves audio at most maxPitchPercent (5 ms per second at 0.5%), so it cannot follow
+// anything faster than its compensation window; fed the raw target it switched on and off 715
+// times in 4 minutes (session 20260926_030958, Heroes of the Storm), a 0.5% speed wobble that
+// corrected nothing. Holding the peak over that same window lets only a persistent excess drain.
+// Two half-window buckets: the held value covers the last half to full window. Clock rewinds
+// (a new epoch or recording) restart the hold.
+class TrailingPeakHold {
+public:
+    void Reset() { initialized_ = false; }
+
+    int64_t Observe(int64_t clockSamples, int64_t value, int64_t windowSamples) {
+        const int64_t bucketSamples = std::max<int64_t>(1, windowSamples / 2);
+        if (!initialized_ || clockSamples < bucketStart_) {
+            initialized_ = true;
+            bucketStart_ = clockSamples;
+            current_ = value;
+            previous_ = value;
+            return value;
+        }
+        const int64_t elapsed = clockSamples - bucketStart_;
+        if (elapsed >= bucketSamples) {
+            // Nothing was observed in a fully skipped bucket, so it holds no older peak.
+            previous_ = elapsed >= 2 * bucketSamples ? value : current_;
+            current_ = value;
+            bucketStart_ = clockSamples;
+        } else if (value > current_) {
+            current_ = value;
+        }
+        return std::max(previous_, current_);
+    }
+
+private:
+    bool initialized_ = false;
+    int64_t bucketStart_ = 0;
+    int64_t current_ = 0;
+    int64_t previous_ = 0;
+};
+
 inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, int64_t thresholdMs = 20) {
     if (sampleRate <= 0) {
         return false;

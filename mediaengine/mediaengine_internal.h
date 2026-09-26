@@ -196,6 +196,7 @@ public:
         uint64_t lastAppLatencyWarnTick = 0;  // throttle the elevated-latency warning
         bool appLatencyWarnActive = false;
         bool appAudioBacklogDrainInitialized = false;
+        ce::audio::TrailingPeakHold appAudioDrainTargetHold;  // drain target peak over its window
         bool appAudioBacklogDrainActive = false;
         uint32_t appAudioBacklogDrainReason =
             static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::SourceBootstrapPending);

@@ -602,6 +602,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.lastAppLatencyWarnTick = 0;
             src.appLatencyWarnActive = false;
             src.appAudioBacklogDrainInitialized = false;
+            src.appAudioDrainTargetHold.Reset();
             src.appAudioBacklogDrainActive = false;
             src.appAudioBacklogDrainReason =
                 static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::SourceBootstrapPending);

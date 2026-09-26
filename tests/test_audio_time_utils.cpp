@@ -167,3 +167,58 @@ TEST(AudioTimeUtilsTest, ParseSampleRateRejectsPartialNumbersStrictly) {
     EXPECT_EQ(ce::audio::ParseSampleRateOr("48000abc", 44100), 44100);
     EXPECT_EQ(ce::audio::ParseSampleRateOr("44100x", 96000), 96000);
 }
+
+// --- Rejected-timestamp substitution keeps contiguous audio contiguous ---
+
+// Session 20260926_030958: system-audio loopback resumed after a 27 s idle and the driver
+// stamped six 10 ms packets (1920 frames at 192 kHz) 27.5 s in the past. Each was replaced
+// by the read time; three were drained in one burst at the same instant, so they landed on
+// top of each other and the timeline placement discarded 10 ms of real audio as overlap.
+TEST(AudioTimeUtilsTest, RejectedTimestampBurstStaysContiguousAndNeverOverlaps) {
+    constexpr uint32_t kRate = 192000;
+    constexpr uint32_t kFrames = 1920;
+    constexpr uint64_t kPacket = 100000;  // 10 ms in 100-ns units
+    struct Read {
+        uint64_t now;
+        uint64_t devPos;
+    };
+    const Read reads[] = {{381016284989ULL, 19948800}, {381016733569ULL, 19950720}, {381016733782ULL, 19952640},
+                          {381016733877ULL, 19954560}, {381016833945ULL, 19956480}, {381017133387ULL, 19958400}};
+
+    ce::audio::CaptureQpcSubstitution substitution;
+    uint64_t previousEnd = 0;
+    for (const Read& read : reads) {
+        const uint64_t start = substitution.Substitute(read.now, read.devPos, kFrames, kRate);
+        EXPECT_GE(start, previousEnd) << "packet at devPos " << read.devPos << " overlaps its predecessor";
+        EXPECT_LE(start, read.now + ce::audio::kDefaultCaptureQpcFutureToleranceUnits);
+        previousEnd = start + kPacket;
+    }
+    // The burst of three drained at the same instant is laid out back to back.
+    ce::audio::CaptureQpcSubstitution burst;
+    const uint64_t first = burst.Substitute(reads[1].now, reads[1].devPos, kFrames, kRate);
+    EXPECT_EQ(burst.Substitute(reads[2].now, reads[2].devPos, kFrames, kRate), first + kPacket);
+    EXPECT_EQ(burst.Substitute(reads[3].now, reads[3].devPos, kFrames, kRate), first + 2 * kPacket);
+}
+
+TEST(AudioTimeUtilsTest, RejectedTimestampAfterAGapReanchorsToReadTime) {
+    ce::audio::CaptureQpcSubstitution substitution;
+    const uint64_t now = 381016284989ULL;
+    EXPECT_EQ(substitution.Substitute(now, 1000, 480, 48000), now - 100000);
+    // A device-position discontinuity is not contiguous audio: anchor to its own read time.
+    EXPECT_EQ(substitution.Substitute(now + 10, 999999, 480, 48000), now + 10 - 100000);
+    // After a trusted timestamp ends the episode, contiguity is not assumed either.
+    substitution.Reset();
+    EXPECT_EQ(substitution.Substitute(now + 20, 999999 + 480, 480, 48000), now + 20 - 100000);
+}
+
+TEST(AudioTimeUtilsTest, RejectedTimestampContinuationIsCappedAtTheFutureTolerance) {
+    ce::audio::CaptureQpcSubstitution substitution;
+    const uint64_t now = 381016284989ULL;
+    uint64_t devPos = 0;
+    uint64_t start = 0;
+    // A 3 s backlog drained at one instant: continuity would run 3 s into the future.
+    for (int packet = 0; packet < 300; ++packet, devPos += 480) {
+        start = substitution.Substitute(now, devPos, 480, 48000);
+    }
+    EXPECT_LE(start, now + ce::audio::kDefaultCaptureQpcFutureToleranceUnits);
+}

@@ -111,6 +111,41 @@ inline uint64_t SanitizeCaptureQpcPosition(uint64_t reportedQpc100ns, uint64_t n
     return reportedQpc100ns;
 }
 
+// Timestamp for a packet whose driver timestamp was rejected (out of domain or
+// AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR). The true capture time is unknowable; two
+// facts still bound it: the packet's content ended no later than the moment it was
+// read, and contiguous device positions are contiguous audio. Stamping every
+// rejected packet with the read time collapsed a burst drained back-to-back onto
+// one instant, so the timeline placement discarded all but one of them as overlap
+// (system audio resuming after a 27 s idle, session 20260926_030958: the loopback
+// driver stamped six packets 27.5 s in the past and 10 ms of real audio was lost).
+// A rejected packet therefore starts at read time minus its duration, but never
+// before the end of the previous rejected packet when their device positions are
+// contiguous, and never beyond the future tolerance. A trusted timestamp ends the
+// episode (Reset).
+struct CaptureQpcSubstitution {
+    bool active = false;
+    uint64_t nextStartQpc100ns = 0;
+    uint64_t nextDevicePosition = 0;
+
+    void Reset() { active = false; }
+
+    uint64_t Substitute(uint64_t nowQpc100ns, uint64_t devicePosition, uint32_t frames, uint32_t sampleRate,
+                        uint64_t futureToleranceUnits = kDefaultCaptureQpcFutureToleranceUnits) {
+        const uint64_t duration =
+            sampleRate != 0 ? static_cast<uint64_t>(frames) * kHundredNanosecondsPerSecond / sampleRate : 0;
+        uint64_t start = nowQpc100ns > duration ? nowQpc100ns - duration : 0;
+        if (active && devicePosition == nextDevicePosition && nextStartQpc100ns > start) {
+            const uint64_t latestStart = nowQpc100ns + futureToleranceUnits;
+            start = nextStartQpc100ns < latestStart ? nextStartQpc100ns : latestStart;
+        }
+        active = true;
+        nextStartQpc100ns = start + duration;
+        nextDevicePosition = devicePosition + frames;
+        return start;
+    }
+};
+
 // GetNextPacketSize and the immediately following GetBuffer describe the same
 // packet. Reject impossible driver output before using it for allocations or
 // pointer reads. A zero configuredBufferFrames means GetBufferSize telemetry was

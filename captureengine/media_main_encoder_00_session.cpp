@@ -63,23 +63,32 @@ void ReportSlowEncoderIteration(const ce::encoder_loop_cost::IterationCost& loop
     }
     const int64_t freq = context.qpcFreq;
     const auto phaseMs = [&](EncoderLoopPhase phase) { return QpcToMs(loopCost.PhaseQpc(phase), freq); };
-    LogWarn("[EncoderThread] Slow loop iteration: work=%.1fms dominant=%s cpu=%.1fms wakeLate=%.1fms "
-            "wait=%.1fms phases(start=%.1f pressure=%.1f catchup=%.1f wgcTarget=%.1f wgcSelect=%.1f "
-            "startup=%.1f emit=%.1f encode=%.1f health=%.1f) emitted=%llu lastEncode=%lldus lastFence=%lldus "
-            "live=%d frameInterval=%.2fms slowTotal=%llu suppressed=%llu suppressedWorst=%.1fms",
-            QpcToMs(workQpc, freq), ce::encoder_loop_cost::PhaseName(loopCost.DominantWorkPhase()),
-            static_cast<double>(threadCpu100ns) / 10000.0, QpcToMs(loopCost.WakeLateQpc(), freq),
-            phaseMs(EncoderLoopPhase::kTimerWait), phaseMs(EncoderLoopPhase::kStart),
-            phaseMs(EncoderLoopPhase::kPressure), phaseMs(EncoderLoopPhase::kCatchup),
-            phaseMs(EncoderLoopPhase::kWgcTarget), phaseMs(EncoderLoopPhase::kWgcSelect),
-            phaseMs(EncoderLoopPhase::kStartup), phaseMs(EncoderLoopPhase::kEmit), phaseMs(EncoderLoopPhase::kEncode),
-            phaseMs(EncoderLoopPhase::kHealth),
-            static_cast<unsigned long long>(context.emittedFrames),
-            static_cast<long long>(MediaEngine_GetLastFrameEncodeTimeUs ? MediaEngine_GetLastFrameEncodeTimeUs() : 0),
-            static_cast<long long>(MediaEngine_GetLastFrameFenceWaitUs ? MediaEngine_GetLastFrameFenceWaitUs() : 0),
-            context.live ? 1 : 0, QpcToMs(context.frameIntervalQpc, freq),
-            static_cast<unsigned long long>(decision.total), static_cast<unsigned long long>(decision.suppressed),
-            QpcToMs(decision.suppressedWorstQpc, freq));
+    // Before the recording is live the pass is one-time startup work (encoder prewarm, startup barrier) that
+    // shapes nothing in the file: keep it as INFO evidence, warn only once output is live.
+    char line[768];
+    snprintf(line, sizeof(line),
+             "[EncoderThread] Slow loop iteration: work=%.1fms dominant=%s cpu=%.1fms wakeLate=%.1fms "
+             "wait=%.1fms phases(start=%.1f pressure=%.1f catchup=%.1f wgcTarget=%.1f wgcSelect=%.1f "
+             "startup=%.1f emit=%.1f encode=%.1f health=%.1f) emitted=%llu lastEncode=%lldus lastFence=%lldus "
+             "live=%d frameInterval=%.2fms slowTotal=%llu suppressed=%llu suppressedWorst=%.1fms",
+             QpcToMs(workQpc, freq), ce::encoder_loop_cost::PhaseName(loopCost.DominantWorkPhase()),
+             static_cast<double>(threadCpu100ns) / 10000.0, QpcToMs(loopCost.WakeLateQpc(), freq),
+             phaseMs(EncoderLoopPhase::kTimerWait), phaseMs(EncoderLoopPhase::kStart),
+             phaseMs(EncoderLoopPhase::kPressure), phaseMs(EncoderLoopPhase::kCatchup),
+             phaseMs(EncoderLoopPhase::kWgcTarget), phaseMs(EncoderLoopPhase::kWgcSelect),
+             phaseMs(EncoderLoopPhase::kStartup), phaseMs(EncoderLoopPhase::kEmit), phaseMs(EncoderLoopPhase::kEncode),
+             phaseMs(EncoderLoopPhase::kHealth),
+             static_cast<unsigned long long>(context.emittedFrames),
+             static_cast<long long>(MediaEngine_GetLastFrameEncodeTimeUs ? MediaEngine_GetLastFrameEncodeTimeUs() : 0),
+             static_cast<long long>(MediaEngine_GetLastFrameFenceWaitUs ? MediaEngine_GetLastFrameFenceWaitUs() : 0),
+             context.live ? 1 : 0, QpcToMs(context.frameIntervalQpc, freq),
+             static_cast<unsigned long long>(decision.total), static_cast<unsigned long long>(decision.suppressed),
+             QpcToMs(decision.suppressedWorstQpc, freq));
+    if (context.live) {
+        LogWarn("%s", line);
+    } else {
+        LogInfo("%s", line);
+    }
 }
 
 }  // namespace

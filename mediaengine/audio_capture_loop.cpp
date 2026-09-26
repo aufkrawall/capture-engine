@@ -91,6 +91,8 @@ void AudioCapture::CaptureLoop() {
     int errCount = 0;             // Count GetNextPacketSize errors (reset each session)
     int loopCount = 0;            // Count packets seen (reset each session)
     int qpcSanitizeLogCount = 0;  // Throttle out-of-domain QPC warnings (reset each session)
+    ce::audio::CaptureQpcSubstitution qpcSubstitution;  // continuity across rejected driver timestamps
+    uint32_t qpcSubstitutedPackets = 0;                 // packets in the current rejected-timestamp episode
 
     // Cache QPC frequency once for converting the live performance counter into the
     // same 100-ns domain WASAPI reports its qpcPosition in, so we can validate it.
@@ -338,20 +340,34 @@ void AudioCapture::CaptureLoop() {
                     qpcFreq != 0 && QueryPerformanceCounter(&nowQpcLI) && nowQpcLI.QuadPart >= 0
                         ? ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(nowQpcLI.QuadPart), qpcFreq)
                         : 0;
-                const uint64_t sanitizedQpc = ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 && nowQpc100ns != 0)
-                                                  ? nowQpc100ns
-                                                  : ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns);
-                if (sanitizedQpc != qpcPosition) {
+                const bool timestampRejected =
+                    nowQpc100ns != 0 && ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 ||
+                                         ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns) != qpcPosition);
+                if (timestampRejected) {
+                    const bool contiguous =
+                        qpcSubstitution.active && devicePosition == qpcSubstitution.nextDevicePosition;
+                    const uint64_t substituteQpc = qpcSubstitution.Substitute(
+                        nowQpc100ns, devicePosition, numFramesAvailable, pwfx ? pwfx->nSamplesPerSec : 0);
+                    ++qpcSubstitutedPackets;
                     if (qpcSanitizeLogCount++ < 8) {
                         DLL_Log(
                             "[AudioCapture] WARNING: out-of-domain WASAPI qpcPosition=%llu substituted with "
-                            "nowQpc=%llu (devPos=%llu rate=%u loopback=%d) - driver reported an invalid capture "
-                            "timestamp%s",
-                            (unsigned long long)qpcPosition, (unsigned long long)nowQpc100ns,
-                            (unsigned long long)devicePosition, pwfx ? pwfx->nSamplesPerSec : 0, isLoopback_ ? 1 : 0,
+                            "%llu (now=%llu contiguous=%d devPos=%llu frames=%u rate=%u loopback=%d) - driver "
+                            "reported an invalid capture timestamp%s",
+                            (unsigned long long)qpcPosition, (unsigned long long)substituteQpc,
+                            (unsigned long long)nowQpc100ns, contiguous ? 1 : 0, (unsigned long long)devicePosition,
+                            numFramesAvailable, pwfx ? pwfx->nSamplesPerSec : 0, isLoopback_ ? 1 : 0,
                             (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 ? " (TIMESTAMP_ERROR)" : "");
                     }
-                    qpcPosition = sanitizedQpc;
+                    qpcPosition = substituteQpc;
+                } else if (qpcSubstitution.active) {
+                    DLL_Log(
+                        "[AudioCapture] Driver capture timestamps valid again after %u substituted packet(s) "
+                        "(loopback=%d devPos=%llu qpc=%llu substitutedEnd=%llu)",
+                        qpcSubstitutedPackets, isLoopback_ ? 1 : 0, (unsigned long long)devicePosition,
+                        (unsigned long long)qpcPosition, (unsigned long long)qpcSubstitution.nextStartQpc100ns);
+                    qpcSubstitution.Reset();
+                    qpcSubstitutedPackets = 0;
                 }
             }
 

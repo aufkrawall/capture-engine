@@ -44,6 +44,8 @@ void AppAudioCapture::CaptureLoop() {
     const uint64_t qpcFreq =
         QueryPerformanceFrequency(&qpcFreqLI) && qpcFreqLI.QuadPart > 0 ? static_cast<uint64_t>(qpcFreqLI.QuadPart) : 0;
     int qpcSanitizeLogCount = 0;
+    ce::audio::CaptureQpcSubstitution qpcSubstitution;  // continuity across rejected driver timestamps
+    uint32_t qpcSubstitutedPackets = 0;                 // packets in the current rejected-timestamp episode
 
     // --- Mid-recording stream recovery state (device-invalidation + silent stall) ---
     const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
@@ -360,19 +362,34 @@ void AppAudioCapture::CaptureLoop() {
                     qpcFreq != 0 && QueryPerformanceCounter(&nowQpcLI) && nowQpcLI.QuadPart >= 0
                         ? ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(nowQpcLI.QuadPart), qpcFreq)
                         : 0;
-                const uint64_t sanitizedQpc = ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 && nowQpc100ns != 0)
-                                                  ? nowQpc100ns
-                                                  : ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns);
-                if (sanitizedQpc != qpcPosition) {
+                const bool timestampRejected =
+                    nowQpc100ns != 0 && ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 ||
+                                         ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns) != qpcPosition);
+                if (timestampRejected) {
+                    const bool contiguous =
+                        qpcSubstitution.active && devicePosition == qpcSubstitution.nextDevicePosition;
+                    const uint64_t substituteQpc = qpcSubstitution.Substitute(
+                        nowQpc100ns, devicePosition, numFramesAvailable, pwfx ? pwfx->nSamplesPerSec : 0);
+                    ++qpcSubstitutedPackets;
                     if (qpcSanitizeLogCount++ < kErrLogCap) {
                         DLL_Log(
                             "[AppAudioCapture] WARNING: out-of-domain WASAPI qpcPosition=%llu substituted with "
-                            "nowQpc=%llu (PID=%lu frames=%u flags=0x%lx%s)",
-                            static_cast<unsigned long long>(qpcPosition), static_cast<unsigned long long>(nowQpc100ns),
-                            targetPID.load(), numFramesAvailable, flags,
+                            "%llu (now=%llu contiguous=%d PID=%lu frames=%u flags=0x%lx%s)",
+                            static_cast<unsigned long long>(qpcPosition), static_cast<unsigned long long>(substituteQpc),
+                            static_cast<unsigned long long>(nowQpc100ns), contiguous ? 1 : 0, targetPID.load(),
+                            numFramesAvailable, flags,
                             (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 ? " TIMESTAMP_ERROR" : "");
                     }
-                    qpcPosition = sanitizedQpc;
+                    qpcPosition = substituteQpc;
+                } else if (qpcSubstitution.active) {
+                    DLL_Log(
+                        "[AppAudioCapture] Driver capture timestamps valid again after %u substituted packet(s) "
+                        "(PID=%lu devPos=%llu qpc=%llu substitutedEnd=%llu)",
+                        qpcSubstitutedPackets, targetPID.load(), static_cast<unsigned long long>(devicePosition),
+                        static_cast<unsigned long long>(qpcPosition),
+                        static_cast<unsigned long long>(qpcSubstitution.nextStartQpc100ns));
+                    qpcSubstitution.Reset();
+                    qpcSubstitutedPackets = 0;
                 }
             }
 
