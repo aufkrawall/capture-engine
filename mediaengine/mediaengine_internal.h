@@ -167,8 +167,11 @@ public:
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         // Ingest starvation attribution. A packet whose whole timeline range falls behind the
         // already-exported cursor is real audio destroyed by consumer overrun, not a source gap.
+        // One that only overlaps this source's own unexported samples is a driver re-delivery.
         uint64_t lastRealPacketIngestTick = 0;       // Last tick a real packet was placed on the timeline
         uint64_t timelineStarvationDropSamples = 0;  // Real samples destroyed because the consumer ran ahead
+        uint64_t timelineDuplicateDropSamples = 0;   // Re-delivered samples de-duplicated (not loss)
+        uint32_t timelineDuplicateDropEvents = 0;
         uint64_t timelineStarvationBeganTick = 0;    // Start of the current fully-starved episode (0 = healthy)
         uint64_t lastTimelineStarvationWarnTick = 0;
         int64_t timelineResyncOffsetSamples = 0;       // Last-resort placement re-anchor after unrecoverable starvation
@@ -332,6 +335,7 @@ int64_t GetVideoElapsedMs() const;bool SessionUsesVfr() const;bool SessionUsesSc
     // re-anchor when the adaptive reservoir has already saturated. Re-anchoring costs a
     // one-time content skip on this source only; the alternative is permanent silence.
 void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t packetStartSamples,
+                                       int64_t exportedCursorSamples,
                                        int64_t overlapSamples, size_t retainedWriteSamples, int resampledSamples,
                                        int sampleRate, uint64_t nowTick);size_t DropOldestBufferedSamples(AudioSource& src, size_t samplesToDrop);void DiscardPendingAudioPackets();size_t StopAudioCaptureSources(bool discardPendingPackets);
 

@@ -348,6 +348,8 @@ void MediaEngine::ApplyAudioTimelineReset(uint64_t generation,  int64_t startQpc
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.lastRealPacketIngestTick = 0;
             src.timelineStarvationDropSamples = 0;
+            src.timelineDuplicateDropSamples = 0;
+            src.timelineDuplicateDropEvents = 0;
             src.timelineStarvationBeganTick = 0;
             src.lastTimelineStarvationWarnTick = 0;
             src.timelineResyncOffsetSamples = 0;

@@ -281,11 +281,12 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         }
 
                         // Consumer-overrun attribution. Losing the WHOLE packet to timeline overlap
-                        // is not a benign de-duplication: it is real captured audio destroyed because
-                        // the exported cursor ran past the capture edge. Both advance at wall rate, so
-                        // without intervention the deficit is permanent and the source stays silent
-                        // for the rest of the recording.
-                        ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples,
+                        // behind the exported cursor is real captured audio destroyed because the
+                        // consumer ran past the capture edge. Both advance at wall rate, so without
+                        // intervention the deficit is permanent and the source stays silent for the
+                        // rest of the recording. Overlap with this source's own unexported samples is
+                        // a driver re-delivery and is de-duplicated instead.
+                        ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples, encodedCursorSnapshot,
                                                       timelineAdjustment.overlapSamples, writeSamples,
                                                       outSamples, targetFmt.sampleRate, ingestTick);
 

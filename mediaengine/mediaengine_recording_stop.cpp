@@ -484,9 +484,10 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 // because the exported cursor ran past the live capture edge; a nonzero value
                 // means audio content was lost even though every track length still matches.
                 DLL_Log(
-                    "[STOP AUDIO INGEST] Source %zu: track=%d starve=%llu resync=%llu/%u reservoirPeakMs=%lld "
-                    "process=%s",
+                    "[STOP AUDIO INGEST] Source %zu: track=%d starve=%llu dedup=%llu/%u resync=%llu/%u "
+                    "reservoirPeakMs=%lld process=%s",
                     i, src.track, (unsigned long long)src.timelineStarvationDropSamples,
+                    (unsigned long long)src.timelineDuplicateDropSamples, src.timelineDuplicateDropEvents,
                     (unsigned long long)src.timelineResyncSuppressedSamples, src.timelineResyncEvents,
                     (long long)audioIngestReservoirPeakMs,
                     src.config.processName.empty() ? "-" : src.config.processName.c_str());
@@ -615,6 +616,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.lastRealPacketIngestTick = 0;
             src.timelineStarvationDropSamples = 0;
+            src.timelineDuplicateDropSamples = 0;
+            src.timelineDuplicateDropEvents = 0;
             src.timelineStarvationBeganTick = 0;
             src.lastTimelineStarvationWarnTick = 0;
             src.timelineResyncOffsetSamples = 0;

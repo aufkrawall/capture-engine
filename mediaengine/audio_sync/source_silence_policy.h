@@ -82,6 +82,29 @@ inline bool ShouldResyncStarvedLiveAudioSource(bool isCfrRecording, bool forceDr
            deficitSamples >= std::max<int64_t>(1, minDeficitSamples);
 }
 
+// A packet that lands wholly behind its source's write cursor is destroyed as timeline
+// overlap. Only the part that also sits behind the EXPORTED cursor is consumer overrun:
+// real audio lost because the pull ran past the capture edge. The rest overlaps samples
+// this source already delivered and that still wait in its ring, so the driver handed
+// over a range the timeline already holds (session 20260926_041008: the loopback engine
+// repeated one device position with DATA_DISCONTINUITY inside a rejected-timestamp
+// burst). Dropping that part is de-duplication; it neither loses content nor starves.
+struct FullyOverlappedPacketSplit {
+    int64_t overrunSamples = 0;
+    int64_t duplicateSamples = 0;
+};
+
+inline FullyOverlappedPacketSplit SplitFullyOverlappedPacket(int64_t packetStartSamples, int64_t packetSamples,
+                                                             int64_t exportedCursorSamples) {
+    FullyOverlappedPacketSplit split;
+    if (packetSamples <= 0) {
+        return split;
+    }
+    split.overrunSamples = std::clamp<int64_t>(exportedCursorSamples - packetStartSamples, 0, packetSamples);
+    split.duplicateSamples = packetSamples - split.overrunSamples;
+    return split;
+}
+
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,
                                                                 int64_t writtenTimelineSamples,
                                                                 int64_t slopSamples = 0) {

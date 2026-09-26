@@ -706,3 +706,18 @@ TEST(AudioCaptureSourceTest, LateLiveSourceHoldsThePullAndDeepensTheIngestReserv
     // The stop drain must never clear the reservoir; the retained lead would look like drift.
     EXPECT_NE(targets.find("if (!forceDrain) {\n            reservoirTick = pullTick;"), std::string::npos);
 }
+
+// Session 20260926_041008: a driver re-delivery ahead of the exported cursor was counted as
+// consumer-overrun loss. The attribution needs the exported cursor at the call site; the
+// write cursor alone cannot tell the two apart.
+TEST(AudioCaptureSourceTest, IngestStarvationAttributionReceivesTheExportedCursor) {
+    const std::string commit = ReadSource("mediaengine_audio_loop_commit.cpp");
+    ASSERT_FALSE(commit.empty());
+    EXPECT_NE(commit.find("ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples, encodedCursorSnapshot,"),
+              std::string::npos);
+    const std::string helpers = ReadSource("mediaengine_audio_helpers.cpp");
+    ASSERT_FALSE(helpers.empty());
+    EXPECT_NE(helpers.find("ce::audio::SplitFullyOverlappedPacket("), std::string::npos);
+    EXPECT_NE(helpers.find("src.timelineStarvationDropSamples += static_cast<uint64_t>(split.overrunSamples);"),
+              std::string::npos);
+}

@@ -443,6 +443,42 @@ TEST(AudioSyncUtilsTest, StarvedSourceResyncIsLastResortOnly) {
     EXPECT_TRUE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, true, 5000, deficit));
 }
 
+// Session 20260926_041008: inside a rejected-timestamp burst the loopback engine repeated
+// device position 16275840 with DATA_DISCONTINUITY. That 10 ms packet landed 19 ms behind
+// the source's own write cursor but ~300 ms AHEAD of the exported cursor. It was counted as
+// consumer-overrun loss and the recording was reported degraded.
+TEST(AudioSyncUtilsTest, FullyOverlappedPacketAheadOfExportIsDeduplicationNotLoss) {
+    const int64_t exported = 100000;
+    const auto split = ce::audio::SplitFullyOverlappedPacket(/*packetStart*/ exported + 14400, 480, exported);
+    EXPECT_EQ(split.overrunSamples, 0);
+    EXPECT_EQ(split.duplicateSamples, 480);
+}
+
+TEST(AudioSyncUtilsTest, FullyOverlappedPacketBehindExportIsOverrunLoss) {
+    const int64_t exported = 100000;
+    // Wholly behind the exported cursor: the consumer ran past the capture edge.
+    const auto behind = ce::audio::SplitFullyOverlappedPacket(exported - 960, 480, exported);
+    EXPECT_EQ(behind.overrunSamples, 480);
+    EXPECT_EQ(behind.duplicateSamples, 0);
+    // Ending exactly at the exported cursor is still entirely overrun.
+    const auto edge = ce::audio::SplitFullyOverlappedPacket(exported - 480, 480, exported);
+    EXPECT_EQ(edge.overrunSamples, 480);
+    EXPECT_EQ(edge.duplicateSamples, 0);
+    // Straddling it: only the exported part is lost, the rest is de-duplicated.
+    const auto straddle = ce::audio::SplitFullyOverlappedPacket(exported - 200, 480, exported);
+    EXPECT_EQ(straddle.overrunSamples, 200);
+    EXPECT_EQ(straddle.duplicateSamples, 280);
+}
+
+TEST(AudioSyncUtilsTest, FullyOverlappedPacketSplitHandlesDegenerateInput) {
+    EXPECT_EQ(ce::audio::SplitFullyOverlappedPacket(0, 0, 1000).overrunSamples, 0);
+    EXPECT_EQ(ce::audio::SplitFullyOverlappedPacket(0, -5, 1000).duplicateSamples, 0);
+    // Nothing exported yet (unknown cursor reported as negative): never overrun.
+    const auto unexported = ce::audio::SplitFullyOverlappedPacket(0, 480, -1);
+    EXPECT_EQ(unexported.overrunSamples, 0);
+    EXPECT_EQ(unexported.duplicateSamples, 480);
+}
+
 TEST(AudioSyncUtilsTest, ExpectedSilenceClearsAStaleRateCompensation) {
     // A started source that went silent (game closed) with a correction still armed.
     EXPECT_TRUE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, true, 480, true));

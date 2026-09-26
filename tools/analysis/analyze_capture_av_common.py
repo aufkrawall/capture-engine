@@ -429,8 +429,9 @@ STOP_AUDIO_LATENCY_RE = re.compile(
 # Consumer-overrun evidence. `starve` counts real captured samples destroyed because the
 # exported cursor ran past the live capture edge; the recording still reports exact track
 # lengths and perfect packet timing, so this is the only direct proof of the failure.
+# `dedup` (newer logs) is a driver re-delivering a range the source already wrote: not loss.
 STOP_AUDIO_INGEST_RE = re.compile(
-    r"\[STOP AUDIO INGEST\] Source (\d+): track=(\d+) starve=(\d+) resync=(\d+)/(\d+) "
+    r"\[STOP AUDIO INGEST\] Source (\d+): track=(\d+) starve=(\d+)(?: dedup=\d+/\d+)? resync=(\d+)/(\d+) "
     r"reservoirPeakMs=(-?\d+)(?: process=([^\s]+))?",
     re.IGNORECASE,
 )

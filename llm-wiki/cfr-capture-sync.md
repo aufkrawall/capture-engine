@@ -117,6 +117,8 @@ A deepened reservoir legitimately leaves the exported cursor leading the reduced
 
 Last resort only: if a live source is still fully overlap-trimmed for 1.5 s while the reservoir is already at its cap, `ShouldResyncStarvedLiveAudioSource` re-anchors that source's placement by the unrecoverable deficit. This costs that one source a single content skip so live audio resumes; track lengths, PTS, and every other source are untouched. It is logged as a WARNING and counted, and reaching it at all is a bug signature.
 
+Attribution of a fully overlap-trimmed packet (2026-09-26, `SplitFullyOverlappedPacket`): only the part that lies behind the EXPORTED cursor is consumer overrun (`starve=`, recording degraded, starvation timer, resync). The part that only overlaps the source's own not-yet-exported samples is a driver re-delivery of a range the timeline already holds (seen: WASAPI loopback repeating a device position with DATA_DISCONTINUITY inside a rejected-timestamp burst) and is counted as `dedup=` instead — dropping it is correct and not loss. The write cursor alone cannot tell the two apart.
+
 ### Warm-up cancellation and output commit (2026-07-19)
 
 The second recording hotkey is always accepted. `Idle -> Warmup -> Live` and `Warmup -> Cancelling` share one atomic phase transition, so a concurrent stop and first-live-frame decision have exactly one winner. A stop that wins before live disarms the encoder worker, discards queued/pre-anchor audio without flushing it into the mux, and asks `VideoEncoder` to cancel; a stop after live commits follows normal CFR drain and exact A/V finalization. The explicit `firstVideoFrameCommitted` state avoids treating a valid zero-valued timestamp as “no frame.”

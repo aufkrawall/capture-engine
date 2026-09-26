@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-26 - Session 20260926_041008: "degraded" was a driver re-delivery, not loss or overload
+
+- 4 min DXGI-dup recording (HotS), 0.1.6828 (includes 6c102592). Overlay: "Recording saved - video degraded",
+  `flags=0x10 cause=none`, debt 0, `backpressure=0 skipped=0`, CFR coverage complete, enc ~0.2 ms: NOT
+  encoder overload. Sole trigger: `overrunLostSamples=480` on src 0 (192 kHz system loopback).
+- Mechanism: loopback resumed after ~25 s idle with 10 out-of-domain QPCs (6c102592 chained them correctly,
+  `contiguous=1`), but the engine delivered devPos 16275840 TWICE, the second with DATA_DISCONTINUITY. The
+  repeat broke contiguity, re-anchored 10 ms early and was fully overlap-trimmed ~19 ms behind the write
+  cursor, i.e. ~300 ms AHEAD of the exported cursor. Timeline confirms it was extra content: the chain end
+  met the first valid QPC within 0.8 ms; keeping it would have forced a ~9 ms overlap trim there instead.
+- Bug: `ServiceSourceIngestStarvation` counted every fully destroyed packet as consumer overrun, violating
+  the `RecordingAudioLossEvidence` contract. Fix: `SplitFullyOverlappedPacket` — only the part behind the
+  exported cursor is overrun/starvation (and can drive the last-resort resync); the rest is `dedup=` in
+  `[STOP AUDIO INGEST]` plus a capped `Re-delivered source range de-duplicated` line. Analyzer regex accepts it.
+- Open: the notification says "video degraded" for any degraded save, including audio-only causes
+  (`kRecordingHealthFlagVideoDegraded` is the only bit). Needs its own flag + text; not done.
+
 ### 2026-09-26 - Session 20260926_030958: rejected-timestamp burst loss, drain flapping, pre-live slow-loop noise
 
 - 4 min DXGI-dup recording (HotS), 0.1.6826. Late-join fix verified (4 joins, `preservedGap`~15700,

@@ -290,8 +290,9 @@ void MediaEngine::PublishAudioIngestHeadroom(int64_t headroomSamples,  int sampl
 }
 
 
-void MediaEngine::ServiceSourceIngestStarvation(AudioSource& src,  size_t srcIdx,  int64_t packetStartSamples, 
-                                       int64_t overlapSamples,  size_t retainedWriteSamples,  int resampledSamples, 
+void MediaEngine::ServiceSourceIngestStarvation(AudioSource& src,  size_t srcIdx,  int64_t packetStartSamples,
+                                       int64_t exportedCursorSamples,
+                                       int64_t overlapSamples,  size_t retainedWriteSamples,  int resampledSamples,
                                        int sampleRate,  uint64_t nowTick) {
 
 
@@ -301,7 +302,27 @@ void MediaEngine::ServiceSourceIngestStarvation(AudioSource& src,  size_t srcIdx
             return;
         }
 
-        src.timelineStarvationDropSamples += static_cast<uint64_t>(resampledSamples);
+        const auto split =
+            ce::audio::SplitFullyOverlappedPacket(packetStartSamples, resampledSamples, exportedCursorSamples);
+        if (split.duplicateSamples > 0) {
+            src.timelineDuplicateDropSamples += static_cast<uint64_t>(split.duplicateSamples);
+            if (src.timelineDuplicateDropEvents++ < 8) {
+                DLL_Log(
+                    "[AudioLoop] Re-delivered source range de-duplicated src=%zu track=%d process=%s "
+                    "duplicate=%lld overrun=%lld samples packetStart=%lld written=%llu exported=%lld event=%u. "
+                    "The timeline already holds this range from the same source; not counted as lost audio.",
+                    srcIdx, src.track, src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                    (long long)split.duplicateSamples, (long long)split.overrunSamples, (long long)packetStartSamples,
+                    (unsigned long long)src.qpcAlignedWrittenSamples, (long long)exportedCursorSamples,
+                    src.timelineDuplicateDropEvents);
+            }
+        }
+        if (split.overrunSamples <= 0) {
+            src.timelineStarvationBeganTick = 0;
+            return;
+        }
+
+        src.timelineStarvationDropSamples += static_cast<uint64_t>(split.overrunSamples);
         if (src.timelineStarvationBeganTick == 0) {
             src.timelineStarvationBeganTick = nowTick;
         }

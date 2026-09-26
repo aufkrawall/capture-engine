@@ -39,11 +39,12 @@ if False:
         assert len(starvation["affected_sources"]) == 1
 
         # A healthy run reports the same line with zero destroyed samples and must stay clean,
-        # including when the adaptive reservoir legitimately deepened during the recording.
+        # including when the adaptive reservoir legitimately deepened during the recording and
+        # when a driver re-delivered a range the source already held (dedup is not loss).
         audio_ingest_healthy = make_session(
             "audio_ingest_healthy",
             media=(
-                "[STOP AUDIO INGEST] Source 0: track=1 starve=0 resync=0/0 reservoirPeakMs=95 process=-\n"
+                "[STOP AUDIO INGEST] Source 0: track=1 starve=0 dedup=480/1 resync=0/0 reservoirPeakMs=95 process=-\n"
                 "[STOP AUDIO INGEST] Source 1: track=2 starve=0 resync=0/0 reservoirPeakMs=95 process=-\n"
             ),
         )
