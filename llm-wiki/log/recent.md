@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-09-26 - Vulkan registration repair deleted both live HKCU entries on every start
+
+- `HKCU\Software` is shared between WOW64 views; `RepairOwnedRegistrations` pruned HKCU/64 and HKCU/32 as
+  separate keys, each retaining only its own architecture, so each pass deleted the other's live entry.
+  Log proof (`logs/20260926_044427`): both removals at .710, rewrites at .728 after staging.
+- Fix: `BuildRepairScopes` (public, unit-tested) — one HKCU scope (view Default, retains both), HKLM 64/32
+  per architecture when elevated. OS premise probed by a test. Hardware check: next CE start should log
+  `Owned-entry repair HKCU/shared: retaining 2 ..., pruning 0` and no `Removed superseded` lines.
+
 ### 2026-09-26 - Degraded completions name the track (audio vs video)
 
 - Every degraded save said "video degraded": mediaengine folded audio causes (lost device, content holes,

@@ -85,6 +85,20 @@ void LogRegistrationPlan(const RegistrationPlan& plan);
 std::vector<std::wstring> SelectStaleOwnedEntries(const std::vector<std::wstring>& existingValueNames,
                                                   const std::vector<std::wstring>& retainedValueNames);
 
+// One physical ImplicitLayers key the start-up repair prunes, the view it is
+// opened through, and the CE entries this instance keeps registered in it.
+struct RepairScope {
+    RegistryRoot root = RegistryRoot::CurrentUser;
+    RegistryView view = RegistryView::Default;
+    std::vector<std::wstring> retainedValueNames;
+};
+
+// Each physical key exactly once. HKCU\Software is shared by the 32-bit and
+// 64-bit registry views, so both HKCU install targets land in ONE key and its
+// scope retains both architectures' entries; HKLM\Software is redirected, so its
+// two views stay separate scopes that each retain only their own architecture.
+std::vector<RepairScope> BuildRepairScopes(const RegistrationPlan& plan);
+
 bool RepairOwnedRegistrations(const RegistrationPlan& plan);
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install);
 bool CleanupStaleStagingDirectories(const RegistrationPlan& plan);

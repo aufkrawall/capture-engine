@@ -49,9 +49,10 @@ public:
     VulkanLayerResidency() : plan_(BuildControllerVulkanRegistrationPlan()) {
         ce::vulkan_layer::LogRegistrationPlan(plan_);
         // Prune only superseded CE entries (previous install directories, wrong
-        // registry view, manifests no longer on disk) while leaving this
+        // HKLM registry view, manifests no longer on disk) while leaving this
         // instance's own entries in place, so the live registration is never
-        // momentarily absent for a title starting right now.
+        // momentarily absent for a title starting right now. The shared HKCU key
+        // holds both architectures' live entries (BuildRepairScopes).
         if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
             LogWarn("[Controller] Vulkan layer registration repair was incomplete");
         }

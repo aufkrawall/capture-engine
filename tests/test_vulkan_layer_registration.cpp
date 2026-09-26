@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <windows.h>
 
 #include <filesystem>
 #include <fstream>
@@ -287,22 +288,11 @@ TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritabl
     EXPECT_NE(text.find("VK_LAYER_CAPTURE_overlay.json"), std::string::npos);
     EXPECT_NE(text.find("IsOwnedManifestPath"), std::string::npos);
 
-    const size_t locations = text.find("BuildRepairLocations(const RegistrationPlan& plan)");
-    const size_t hkcu64 = text.find("RegistryRoot::CurrentUser, RegistryView::Registry64", locations);
-    const size_t hkcu32 = text.find("RegistryRoot::CurrentUser, RegistryView::Registry32", locations);
-    const size_t elevatedGate = text.find("if (plan.processElevated)", locations);
-    const size_t hklm64 = text.find("RegistryRoot::LocalMachine, RegistryView::Registry64", locations);
-    const size_t hklm32 = text.find("RegistryRoot::LocalMachine, RegistryView::Registry32", locations);
-    ASSERT_NE(locations, std::string::npos);
-    ASSERT_NE(hkcu64, std::string::npos);
-    ASSERT_NE(hkcu32, std::string::npos);
-    ASSERT_NE(elevatedGate, std::string::npos);
-    ASSERT_NE(hklm64, std::string::npos);
-    ASSERT_NE(hklm32, std::string::npos);
-    EXPECT_LT(hkcu64, elevatedGate);
-    EXPECT_LT(hkcu32, elevatedGate);
-    EXPECT_LT(elevatedGate, hklm64);
-    EXPECT_LT(elevatedGate, hklm32);
+    // Which keys are pruned, and what each retains, is covered behaviorally by
+    // the RepairScopes tests below; the repair must go through that policy.
+    const size_t repair = text.find("bool RepairOwnedRegistrations(const RegistrationPlan& plan)");
+    ASSERT_NE(repair, std::string::npos);
+    EXPECT_NE(text.find("BuildRepairScopes(plan)", repair), std::string::npos);
 
     const size_t deleteTarget = text.find("bool DeleteRegistryTarget(const RegistryTarget& target)");
     const size_t exactManifestLoop = text.find("for (const LayerManifest& manifest : target.manifests)", deleteTarget);
@@ -394,4 +384,137 @@ TEST(VulkanLayerRegistrationTest, StaleEntrySelectionRetainsLiveEntryCaseInsensi
     // Retaining the live entry instead of deleting and rewriting it is what keeps
     // the registration continuously readable by a concurrent vkCreateInstance.
     EXPECT_TRUE(ce::vulkan_layer::SelectStaleOwnedEntries(existing, retained).empty());
+}
+
+namespace {
+
+void TouchBothArchitectureLayerSources(const std::filesystem::path& baseDir) {
+    std::filesystem::create_directories(baseDir);
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay.json");
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay.dll");
+    TouchFile(baseDir / L"VK_LAYER_CE_gate.dll");
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay_x86.json");
+    TouchFile(baseDir / L"VK_LAYER_CE_overlay_x86.dll");
+    TouchFile(baseDir / L"VK_LAYER_CE_gate_x86.dll");
+}
+
+}  // namespace
+
+// HKCU\Software is shared by both registry views, so the x64 and x86 entries sit
+// in ONE key. Pruning each view against only its own architecture deleted both
+// live entries on every start (logs/20260926_044427: "Removed superseded CE
+// manifest entry from HKCU/64-bit: ...overlay_x86.json" and the mirror line for
+// HKCU/32-bit), leaving any Vulkan title that started in the gap without the layer.
+TEST(VulkanLayerRegistrationTest, RepairScopesPruneSharedHKCUKeyOnceRetainingBothArchitectures) {
+    const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_repair_hkcu";
+    const std::filesystem::path stagingDir = baseDir / "staging";
+    TouchBothArchitectureLayerSources(baseDir);
+
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false, stagingDir);
+    ASSERT_EQ(plan.installTargets.size(), 2u);
+
+    const auto scopes = ce::vulkan_layer::BuildRepairScopes(plan);
+    ASSERT_EQ(scopes.size(), 1u);
+    EXPECT_EQ(scopes[0].root, RegistryRoot::CurrentUser);
+    EXPECT_EQ(scopes[0].view, RegistryView::Default);
+
+    const std::wstring live64 = (stagingDir / L"VK_LAYER_CE_overlay.json").wstring();
+    const std::wstring live32 = (stagingDir / L"VK_LAYER_CE_overlay_x86.json").wstring();
+    const std::wstring superseded = L"C:\\Old\\b1\\VK_LAYER_CE_overlay_x86.json";
+    const std::vector<std::wstring> existing = {live64, live32, superseded};
+
+    const auto stale = ce::vulkan_layer::SelectStaleOwnedEntries(existing, scopes[0].retainedValueNames);
+    ASSERT_EQ(stale.size(), 1u);
+    EXPECT_EQ(stale[0], superseded);
+
+    std::filesystem::remove_all(baseDir);
+}
+
+// HKLM\Software IS redirected, so its views are separate keys: an x86 manifest in
+// the 64-bit view is a genuine wrong-view leftover and must still be pruned. The
+// all-users plan retains nothing in HKCU, so a previous per-user registration is
+// removed rather than shadowing the machine-wide one.
+TEST(VulkanLayerRegistrationTest, RepairScopesKeepRedirectedHKLMViewsPerArchitecture) {
+    const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_repair_hklm";
+    const std::filesystem::path stagingDir = baseDir / "staging";
+    TouchBothArchitectureLayerSources(baseDir);
+
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, true, stagingDir);
+    ASSERT_EQ(plan.effectiveMode, RegistrationMode::AllUsers);
+
+    const auto scopes = ce::vulkan_layer::BuildRepairScopes(plan);
+    ASSERT_EQ(scopes.size(), 3u);
+    const ce::vulkan_layer::RepairScope* hkcu = nullptr;
+    const ce::vulkan_layer::RepairScope* hklm64 = nullptr;
+    const ce::vulkan_layer::RepairScope* hklm32 = nullptr;
+    for (const auto& scope : scopes) {
+        if (scope.root == RegistryRoot::CurrentUser) hkcu = &scope;
+        if (scope.root == RegistryRoot::LocalMachine && scope.view == RegistryView::Registry64) hklm64 = &scope;
+        if (scope.root == RegistryRoot::LocalMachine && scope.view == RegistryView::Registry32) hklm32 = &scope;
+    }
+    ASSERT_NE(hkcu, nullptr);
+    ASSERT_NE(hklm64, nullptr);
+    ASSERT_NE(hklm32, nullptr);
+
+    const std::wstring live64 = (stagingDir / L"VK_LAYER_CE_overlay.json").wstring();
+    const std::wstring live32 = (stagingDir / L"VK_LAYER_CE_overlay_x86.json").wstring();
+    EXPECT_TRUE(hkcu->retainedValueNames.empty());
+    ASSERT_EQ(hklm64->retainedValueNames.size(), 1u);
+    ASSERT_EQ(hklm32->retainedValueNames.size(), 1u);
+    EXPECT_EQ(hklm64->retainedValueNames[0], live64);
+    EXPECT_EQ(hklm32->retainedValueNames[0], live32);
+
+    const auto stale64 = ce::vulkan_layer::SelectStaleOwnedEntries({live64, live32}, hklm64->retainedValueNames);
+    ASSERT_EQ(stale64.size(), 1u);
+    EXPECT_EQ(stale64[0], live32);
+
+    std::filesystem::remove_all(baseDir);
+}
+
+TEST(VulkanLayerRegistrationTest, RepairScopesSkipHKLMWithoutElevation) {
+    const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_repair_unelevated";
+    TouchBothArchitectureLayerSources(baseDir);
+
+    const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::Auto, false, baseDir / "staging");
+    const auto scopes = ce::vulkan_layer::BuildRepairScopes(plan);
+    ASSERT_EQ(scopes.size(), 1u);
+    EXPECT_EQ(scopes[0].root, RegistryRoot::CurrentUser);
+    EXPECT_EQ(scopes[0].retainedValueNames.size(), 2u);
+
+    std::filesystem::remove_all(baseDir);
+}
+
+// The premise behind the single HKCU scope, checked against the running OS: a
+// value written through the 64-bit view of HKCU\Software is visible through the
+// 32-bit view. If Windows ever redirected HKCU\Software, this fails and the
+// shared-view assumption in BuildRepairScopes must be revisited.
+TEST(VulkanLayerRegistrationTest, HKCUSoftwareIsSharedBetweenRegistryViews) {
+    constexpr wchar_t kProbeKey[] = L"SOFTWARE\\CaptureEngineTests\\VulkanRegViewShare";
+    constexpr wchar_t kProbeValue[] = L"probe";
+    RegDeleteTreeW(HKEY_CURRENT_USER, kProbeKey);
+
+    HKEY key64 = nullptr;
+    ASSERT_EQ(RegCreateKeyExW(HKEY_CURRENT_USER, kProbeKey, 0, nullptr, REG_OPTION_VOLATILE,
+                              KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key64, nullptr),
+              ERROR_SUCCESS);
+    const DWORD written = 0x5A;
+    EXPECT_EQ(RegSetValueExW(key64, kProbeValue, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&written),
+                             sizeof(written)),
+              ERROR_SUCCESS);
+    RegCloseKey(key64);
+
+    HKEY key32 = nullptr;
+    DWORD read = 0;
+    DWORD size = sizeof(read);
+    const LONG openResult = RegOpenKeyExW(HKEY_CURRENT_USER, kProbeKey, 0, KEY_QUERY_VALUE | KEY_WOW64_32KEY, &key32);
+    if (openResult == ERROR_SUCCESS) {
+        EXPECT_EQ(RegQueryValueExW(key32, kProbeValue, nullptr, nullptr, reinterpret_cast<BYTE*>(&read), &size),
+                  ERROR_SUCCESS);
+        RegCloseKey(key32);
+    }
+    RegDeleteTreeW(HKEY_CURRENT_USER, kProbeKey);
+    RegDeleteKeyW(HKEY_CURRENT_USER, L"SOFTWARE\\CaptureEngineTests");
+
+    ASSERT_EQ(openResult, ERROR_SUCCESS);
+    EXPECT_EQ(read, written);
 }

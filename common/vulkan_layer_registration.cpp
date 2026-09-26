@@ -106,35 +106,10 @@ std::vector<std::wstring> EnumerateRegistryValueNames(HKEY key) {
     return names;
 }
 
-std::vector<RegistryLocation> BuildRepairLocations(const RegistrationPlan& plan) {
-    std::vector<RegistryLocation> locations = {
-        {RegistryRoot::CurrentUser, RegistryView::Registry64},
-        {RegistryRoot::CurrentUser, RegistryView::Registry32},
-    };
-    if (plan.processElevated) {
-        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry64});
-        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry32});
-    }
-    return locations;
-}
-
-// The exact value names this instance keeps registered at one location. Pruning
-// everything else (instead of deleting all owned entries and rewriting them)
-// keeps the live registration continuously present: the Vulkan loader reads
-// ImplicitLayers inside vkCreateInstance, so a delete/rewrite window would drop
-// the layer from any title that happened to start during it.
-std::vector<std::wstring> BuildRetainedEntriesForLocation(const RegistrationPlan& plan,
-                                                          const RegistryLocation& location) {
-    std::vector<std::wstring> retained;
-    for (const RegistryTarget& target : plan.installTargets) {
-        if (target.root != location.root || target.view != location.view) {
-            continue;
-        }
-        for (const LayerManifest& manifest : target.manifests) {
-            retained.push_back(manifest.manifestPath.wstring());
-        }
-    }
-    return retained;
+// WOW64 redirects HKLM\Software (to Wow6432Node) but shares HKCU\Software, so
+// KEY_WOW64_32KEY and KEY_WOW64_64KEY open the same HKCU ImplicitLayers key.
+bool RootSharesRegistryViews(RegistryRoot root) {
+    return root == RegistryRoot::CurrentUser;
 }
 
 std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
@@ -352,9 +327,42 @@ std::vector<std::wstring> SelectStaleOwnedEntries(const std::vector<std::wstring
     return stale;
 }
 
+// The retained names are the exact values this instance keeps registered in each
+// physical key. Pruning everything else (instead of deleting all owned entries
+// and rewriting them) keeps the live registration continuously present: the
+// Vulkan loader reads ImplicitLayers inside vkCreateInstance, so a delete/rewrite
+// window would drop the layer from any title that happened to start during it.
+// Treating the two HKCU views as separate keys did exactly that on every start:
+// each view's pass classified the other architecture's live entry as a
+// wrong-view leftover and deleted it, and both stayed absent until
+// ApplyRegistrationPlan had staged the artifacts and rewritten them (~18 ms in
+// session logs/20260926_044427).
+std::vector<RepairScope> BuildRepairScopes(const RegistrationPlan& plan) {
+    std::vector<RepairScope> scopes = {{RegistryRoot::CurrentUser, RegistryView::Default, {}}};
+    if (plan.processElevated) {
+        scopes.push_back({RegistryRoot::LocalMachine, RegistryView::Registry64, {}});
+        scopes.push_back({RegistryRoot::LocalMachine, RegistryView::Registry32, {}});
+    }
+    for (RepairScope& scope : scopes) {
+        for (const RegistryTarget& target : plan.installTargets) {
+            if (target.root != scope.root) {
+                continue;
+            }
+            if (!RootSharesRegistryViews(scope.root) && target.view != scope.view) {
+                continue;
+            }
+            for (const LayerManifest& manifest : target.manifests) {
+                scope.retainedValueNames.push_back(manifest.manifestPath.wstring());
+            }
+        }
+    }
+    return scopes;
+}
+
 bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
     bool success = true;
-    for (const RegistryLocation& location : BuildRepairLocations(plan)) {
+    for (const RepairScope& scope : BuildRepairScopes(plan)) {
+        const RegistryLocation location{scope.root, scope.view};
         RegistryKeyGuard key;
         const LONG openResult = OpenRegistryKey(location, KEY_QUERY_VALUE | KEY_SET_VALUE, false, &key);
         if (openResult == ERROR_FILE_NOT_FOUND) {
@@ -367,9 +375,12 @@ bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
             continue;
         }
 
-        const std::vector<std::wstring> retained = BuildRetainedEntriesForLocation(plan, location);
-        for (const std::wstring& valueName :
-             SelectStaleOwnedEntries(EnumerateRegistryValueNames(key.Get()), retained)) {
+        const std::vector<std::wstring> stale =
+            SelectStaleOwnedEntries(EnumerateRegistryValueNames(key.Get()), scope.retainedValueNames);
+        LogInfo("[VulkanReg] Owned-entry repair %s: retaining %zu live CE entr%s, pruning %zu",
+                DescribeLocation(location).c_str(), scope.retainedValueNames.size(),
+                scope.retainedValueNames.size() == 1 ? "y" : "ies", stale.size());
+        for (const std::wstring& valueName : stale) {
             success &= DeleteRegistryValue(key.Get(), valueName, "superseded CE manifest", location);
         }
     }
