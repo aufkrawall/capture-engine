@@ -282,6 +282,16 @@ MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
     return false;
 }
 
+MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,
+                                                                   uint32_t sourcePid) {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    if (mediaengine_g_Engine) {
+        return mediaengine_g_Engine->QueryInjectFrameCopyCompletion(reinterpret_cast<HANDLE>(fenceHandle), fenceValue,
+                                                                    sourcePid);
+    }
+    return -1;
+}
+
 // Shared D3D11 device for screengrab mode - ensures ScreenCapture and
 // VideoEncoder use same device
 ID3D11Device* g_SharedD3D11Device = nullptr;

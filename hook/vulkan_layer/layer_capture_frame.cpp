@@ -74,7 +74,23 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         !generationSharedMem || generationSharedMem->frameRing.readIndex.load(std::memory_order_acquire) ==
                                     generationSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
     for (const auto& retired : layer_capture_g_RetiredCaptureStates) {
-        if (retired.device == device && (!retiredLeasesDrained || !CaptureStateCopiesComplete(retired, disp))) {
+        if (retired.device != device)
+            continue;
+        const bool retiredCopiesComplete = CaptureStateCopiesComplete(retired, disp);
+        if (!retiredLeasesDrained || !retiredCopiesComplete) {
+            // Every Present retries this; a lease media never returns would otherwise
+            // stall capture with no trace in the log.
+            static std::atomic<uint64_t> s_retiredDrainDeferrals{0};
+            const uint64_t deferrals = s_retiredDrainDeferrals.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (deferrals <= 12 || (deferrals % 1000) == 0) {
+                LayerLog(
+                    "Vulkan Layer: Deferring capture for swapchain %p until retired generation %p drains "
+                    "(ringRead=%u ringWrite=%u copiesComplete=%d deferral=%llu)",
+                    swapchain, retired.swapchain,
+                    generationSharedMem ? generationSharedMem->frameRing.readIndex.load(std::memory_order_acquire) : 0u,
+                    generationSharedMem ? generationSharedMem->frameRing.writeIndex.load(std::memory_order_acquire) : 0u,
+                    retiredCopiesComplete ? 1 : 0, static_cast<unsigned long long>(deferrals));
+            }
             return;
         }
     }

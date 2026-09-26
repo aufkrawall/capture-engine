@@ -251,6 +251,7 @@ private:
     uint64_t injectTargetHoldTotal;
     uint64_t injectTargetHoldWithCandidateTotal;
     uint64_t injectBufferCapTrimTotal;
+    uint64_t injectReserveReleaseTickTotal;
     uint32_t injectTargetResidualMaxUs;
     bool injectCfrRecoveryActive;
     bool injectEncoderServiceTooSlowCurrent;

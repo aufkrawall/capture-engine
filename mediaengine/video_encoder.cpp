@@ -304,3 +304,20 @@ void VideoEncoder::ResetRepeatFrameCache() {
 bool VideoEncoder::WasLastFrameDeferred() const {
     return lastFrameDeferred.load(std::memory_order_relaxed);
 }
+
+int32_t VideoEncoder::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue,
+                                                     uint32_t sourcePid) const {
+    // Same rule as the encode path: a zero value or missing handle means the
+    // producer published a frame that needs no GPU wait.
+    if (fenceValue == 0 || !fenceHandle || fenceHandle == INVALID_HANDLE_VALUE) {
+        return 1;
+    }
+    if (!cachedD3D11Fence || sourcePid == 0 || sourcePid != cachedSourcePid || fenceHandle != cachedFenceHandle) {
+        return -1;
+    }
+    const uint64_t completedValue = cachedD3D11Fence->GetCompletedValue();
+    if (completedValue == UINT64_MAX) {
+        return -1;  // device removed; let the encode path report it
+    }
+    return completedValue >= fenceValue ? 1 : 0;
+}

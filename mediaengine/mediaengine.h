@@ -117,6 +117,13 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
 // failure.
 MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred();
 
+// Non-blocking test of whether the producer's GPU copy for an inject frame has
+// finished, answered from the fence the encoder already opened for that frame
+// stream. Returns 1 complete (or no fence), 0 pending, -1 unknown (not opened
+// yet). Never duplicates or opens a handle.
+MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,
+                                                                   uint32_t sourcePid);
+
 // Measure (or load from process-memory cache) the default render endpoint's
 // render->loopback audio capture latency via a brief near-inaudible marker probe. On success
 // returns true and writes the latency in milliseconds to *outLatencyMs. `cacheDir` is accepted for

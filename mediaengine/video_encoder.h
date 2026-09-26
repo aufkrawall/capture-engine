@@ -117,6 +117,10 @@ public:
     // window/monitor while advancing the new source's CFR timeline.
     void ResetRepeatFrameCache();
     bool WasLastFrameDeferred() const;
+    // Non-blocking completion test for an inject frame's shared fence. Answers
+    // only from the fence the encode path already opened; it never duplicates or
+    // opens a handle. Returns 1 complete (or no fence), 0 pending, -1 unknown.
+    int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid) const;
 
     // Stores the source's cursor state; while a resized source is being fitted
     // into the locked geometry, the composited state is mapped onto the fitted

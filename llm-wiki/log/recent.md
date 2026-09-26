@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-09-26 - Inject capture froze after alt-tab: fence reserve pinned the last ring lease
+
+- Session `logs/20260926_050614` (DOOM Eternal Vulkan, 0.1.6832): alt-tab at 05:08:00.6, game stopped
+  presenting; refocus at 05:08:25.8 recreated the swapchain (same handle). Media `wIdx` stuck at 3849 to the
+  end; `IBuf=1`, `Duplicate frame=3847` every second, `holdWithCandidate=0`. The layer called
+  `InitializeCapture` on every present (10k times) and returned silently.
+- Deadlock: media's live CFR selector always withholds the newest buffered frame as "GPU/fence reserve"
+  (`GetMinBufferedInjectFrames` >= 1), so a stalled source leaves frame 3848 buffered with its ring lease.
+  The Vulkan layer (like DX11/DX9 `HasOutstandingCaptureFrameLeases`) retires a swapchain generation only
+  when `frameRing.readIndex == writeIndex`. Producer waits for the lease, media waits for a newer frame.
+- Fix: `ReleaseSettledInjectTailFrames` (source_state.h, unit-tested) runs only when no candidate is
+  selectable and releases the oldest reserve frames whose copy is complete or unknown (unknown goes to the
+  encoder's own non-blocking fence check); provably pending frames stay protected. Completion comes from new
+  `MediaEngine_QueryInjectFrameCopyCompletion`, answered from the encoder's cached fence only.
+- Diagnostics: `Fence reserve released ...` (rate-limited), `ReserveReleaseTicks=` at the end of
+  `[Inject CFR QUALITY SUMMARY]`, and the layer now logs `Deferring capture for swapchain ... until retired
+  generation ... drains (ringRead ringWrite copiesComplete)`.
+- Hardware check pending: alt-tab out/in during a DOOM recording; video must resume, no deferral flood.
+  Stale-risk: the layer's `InitializeCapture(...)`/contract lines still log on every deferred retry.
+
 ### 2026-09-26 - Vulkan registration repair deleted both live HKCU entries on every start
 
 - `HKCU\Software` is shared between WOW64 views; `RepairOwnedRegistrations` pruned HKCU/64 and HKCU/32 as

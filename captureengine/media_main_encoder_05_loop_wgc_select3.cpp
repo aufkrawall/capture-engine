@@ -81,7 +81,7 @@ if (!config.video.useVFR) {
     // content delay is a timestamp target below; treating it as additional protected
     // frames hides every useful candidate at normal queue depth and creates trim/repeat
     // churn even when the game supplies one fresh frame per CFR tick.
-    const size_t protectedInjectTailFrames =
+    size_t protectedInjectTailFrames =
         ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
     int64_t livePlayoutTargetQpc = 0;
     const int64_t leadToleranceQpc =
@@ -226,10 +226,54 @@ if (!config.video.useVFR) {
     // Remove only frames that can never be emitted again. Unlike the old wall-age trim,
     // this is relative to committed source lineage and cannot delete an intentional
     // delayed frame merely because the encoder thread is currently later than it.
-    while (eligibleInjectFrameCount() > 0 && !isFreshInjectCandidate(bufferedInjectFrames.front())) {
-        QueuedFrame obsolete = std::move(bufferedInjectFrames.front());
-        bufferedInjectFrames.pop_front();
-        recordInjectTargetDrop(obsolete);
+    auto dropObsoleteEligibleInjectFrames = [&]() {
+        while (eligibleInjectFrameCount() > 0 && !isFreshInjectCandidate(bufferedInjectFrames.front())) {
+            QueuedFrame obsolete = std::move(bufferedInjectFrames.front());
+            bufferedInjectFrames.pop_front();
+            recordInjectTargetDrop(obsolete);
+        }
+    };
+    dropObsoleteEligibleInjectFrames();
+
+    // A stalled or slow source can leave only fence-reserve frames buffered. Withholding
+    // one whose copy already finished pins its ring lease until a newer frame arrives, and
+    // a producer that recreates its swapchain during a stall waits for exactly that lease.
+    auto queryInjectFrameCopyCompletion = [](const QueuedFrame& candidate) {
+        using ce::capture_policy::InjectFrameCopyCompletion;
+        if (candidate.isShmem) {
+            return InjectFrameCopyCompletion::kComplete;  // CPU-published payload, no GPU copy
+        }
+        if (!MediaEngine_QueryInjectFrameCopyCompletion) {
+            return InjectFrameCopyCompletion::kUnknown;
+        }
+        const int32_t completion = MediaEngine_QueryInjectFrameCopyCompletion(
+            reinterpret_cast<uint64_t>(candidate.fenceHandle), candidate.fenceValue, candidate.sourcePid);
+        if (completion > 0) {
+            return InjectFrameCopyCompletion::kComplete;
+        }
+        return completion == 0 ? InjectFrameCopyCompletion::kPending : InjectFrameCopyCompletion::kUnknown;
+    };
+    const size_t reserveInjectTailFrames = protectedInjectTailFrames;
+    protectedInjectTailFrames = ce::capture_policy::ReleaseSettledInjectTailFrames(
+        bufferedInjectFrames.size(), protectedInjectTailFrames, [&](size_t index) {
+            return queryInjectFrameCopyCompletion(bufferedInjectFrames[index]);
+        });
+    if (protectedInjectTailFrames < reserveInjectTailFrames) {
+        const size_t releasedFrames = bufferedInjectFrames.size() - protectedInjectTailFrames;
+        ++injectReserveReleaseTickTotal;
+        const QueuedFrame& oldestReleased = bufferedInjectFrames.front();
+        static uint64_t s_reserveReleaseLogCount = 0;
+        ++s_reserveReleaseLogCount;
+        if (s_reserveReleaseLogCount <= 8 || (s_reserveReleaseLogCount % 600) == 0) {
+            LogInfo(
+                "[EncoderThread] Fence reserve released %zu settled inject frame(s): no other candidate "
+                "(buffered=%zu reserve=%zu) frame=%u ring=%u fence=%llu ts=%lld live=%d ticks=%llu",
+                releasedFrames, bufferedInjectFrames.size(), reserveInjectTailFrames, oldestReleased.frameIndex,
+                oldestReleased.ringIndex, static_cast<unsigned long long>(oldestReleased.fenceValue),
+                static_cast<long long>(oldestReleased.timestamp), recordingOutputLive ? 1 : 0,
+                static_cast<unsigned long long>(injectReserveReleaseTickTotal));
+        }
+        dropObsoleteEligibleInjectFrames();
     }
 
     if (!media_main_g_EncoderRunning && !bufferedInjectFrames.empty()) {

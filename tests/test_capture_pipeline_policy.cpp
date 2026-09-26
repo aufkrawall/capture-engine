@@ -173,6 +173,55 @@ TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowRes
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, true), 2u);
 }
 
+TEST(CapturePipelinePolicyTest, FenceReserveKeepsTailWhileAnotherCandidateIsSelectable) {
+    size_t queries = 0;
+    const size_t protectedTail = policy::ReleaseSettledInjectTailFrames(5, 1, [&](size_t) {
+        ++queries;
+        return policy::InjectFrameCopyCompletion::kComplete;
+    });
+    EXPECT_EQ(protectedTail, 1u);
+    EXPECT_EQ(queries, 0u);
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(0, 1, [](size_t) {
+                  return policy::InjectFrameCopyCompletion::kComplete;
+              }),
+              1u);
+}
+
+// DOOM Eternal alt-tab: the game stopped presenting, so the only buffered frame was the
+// live fence reserve (GetMinBufferedInjectFrames(1, true) == 1). It was withheld forever,
+// kept its ring lease, and the Vulkan layer could never retire the recreated swapchain.
+TEST(CapturePipelinePolicyTest, StalledSourceReleasesCompletedFenceReserveFrame) {
+    const size_t reserve = policy::GetMinBufferedInjectFrames(1, true);
+    ASSERT_EQ(reserve, 1u);
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(1, reserve, [](size_t) {
+                  return policy::InjectFrameCopyCompletion::kComplete;
+              }),
+              0u);
+}
+
+TEST(CapturePipelinePolicyTest, StalledSourceKeepsInFlightReserveFrameProtected) {
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(1, 1, [](size_t) {
+                  return policy::InjectFrameCopyCompletion::kPending;
+              }),
+              1u);
+}
+
+TEST(CapturePipelinePolicyTest, StalledSourceHandsUnknownCompletionToTheEncoderFenceCheck) {
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(1, 1, [](size_t) {
+                  return policy::InjectFrameCopyCompletion::kUnknown;
+              }),
+              0u);
+}
+
+TEST(CapturePipelinePolicyTest, FenceReserveReleasesOnlyTheOldestSettledPrefix) {
+    using Completion = policy::InjectFrameCopyCompletion;
+    const Completion states[] = {Completion::kComplete, Completion::kPending, Completion::kComplete};
+    // A larger warmup reserve than frames buffered still yields a suffix: everything from
+    // the first in-flight frame onward stays protected.
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(3, 4, [&](size_t index) { return states[index]; }), 2u);
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(3, 3, [&](size_t index) { return states[index]; }), 2u);
+}
+
 TEST(CapturePipelinePolicyTest, AutoCaptureUsesInjectOnlyForGameWhitelistMatches) {
     EXPECT_TRUE(policy::ShouldUseInjectCaptureForAutoTarget(true, false, false));
     EXPECT_FALSE(policy::ShouldUseInjectCaptureForAutoTarget(false, true, false));

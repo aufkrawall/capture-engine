@@ -83,6 +83,17 @@ bool MediaEngine::WasLastFrameDeferred() const {
 }
 
 
+int32_t MediaEngine::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue,
+                                                    uint32_t sourcePid) const {
+
+
+        if (videoEnc)
+            return videoEnc->QueryInjectFrameCopyCompletion(fenceHandle, fenceValue, sourcePid);
+        return -1;
+
+}
+
+
 bool MediaEngine::CanRepeatLastFrame() {
 
 

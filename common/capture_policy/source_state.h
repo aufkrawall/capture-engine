@@ -230,6 +230,44 @@ inline size_t GetMinBufferedInjectFrames(size_t injectReserveFrames, bool record
     return injectReserveFrames;
 }
 
+// Completion of the producer's GPU copy into an inject frame's shared texture,
+// as far as the media process can tell without blocking.
+enum class InjectFrameCopyCompletion : int32_t {
+    kUnknown = -1,  // the fence has not been opened by the encoder yet
+    kPending = 0,   // the copy is provably still in flight
+    kComplete = 1,  // the copy provably finished (or the frame carries no GPU fence)
+};
+
+// The protected inject tail is physical GPU/fence reserve only: it keeps the
+// selector off frames whose producer copy may still be in flight so the encoder
+// does not defer on them. When every buffered frame sits inside that reserve -
+// a stalled source, such as a game that stops presenting while unfocused - the
+// reserve protects nothing: no other candidate exists, and the withheld frame
+// keeps its frame-ring lease for as long as the stall lasts. The producer cannot
+// retire a swapchain generation while any lease is outstanding, so a stall that
+// ends in a swapchain recreation (alt-tab, mode change, resize) then deadlocks
+// capture: the producer waits for the lease, media waits for a newer frame.
+//
+// Returns the effective protected-tail size. While at least one candidate is
+// already selectable the reserve is returned unchanged and nothing is queried.
+// Otherwise the oldest frames are released in order until one is provably still
+// in flight; a frame whose completion is unknown is released too, because the
+// encoder's own fence check resolves it without blocking and, with no other
+// candidate, deferring on it costs nothing a withheld frame would not.
+template <typename CopyCompletionAt>
+inline size_t ReleaseSettledInjectTailFrames(size_t bufferedFrames, size_t protectedTailFrames,
+                                             CopyCompletionAt&& copyCompletionAt) {
+    if (bufferedFrames == 0 || protectedTailFrames < bufferedFrames) {
+        return protectedTailFrames;
+    }
+    size_t released = 0;
+    while (released < bufferedFrames &&
+           copyCompletionAt(released) != InjectFrameCopyCompletion::kPending) {
+        ++released;
+    }
+    return bufferedFrames - released;
+}
+
 inline bool IsEncoderStartupWindow(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
     if (!recordingOutputLive || nowTick < recordingLiveTick) {
         return true;
