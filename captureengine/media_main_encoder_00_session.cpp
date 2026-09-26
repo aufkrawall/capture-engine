@@ -2,95 +2,131 @@
 #include "media_main_encoder_session.h"
 
 void EncoderThreadFunc(const AppConfig& config) {
+    // Thread QoS must span the whole session, so it lives in the thread function. It used to
+    // be a local of MediaEncoderSession::Init(), which reverted the MMCSS registration the
+    // moment Init() returned: every recording loop ran at ordinary priority while the log
+    // still said "Thread QoS enabled".
+    DisableCurrentThreadPowerThrottling("EncoderThread");
+    ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH, "EncoderThread");
     MediaEncoderSession session(config);
     session.Run();
 }
+
+namespace {
+
+using EncoderLoopPhase = ce::encoder_loop_cost::Phase;
+
+struct EncoderLoopStep {
+    EncoderLoopPhase phase;
+    void (MediaEncoderSession::*run)();
+};
+
+int64_t CurrentQpc() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+
+// Kernel+user CPU time of the calling thread in 100 ns units (0 when unavailable).
+uint64_t CurrentThreadCpu100ns() {
+    FILETIME creation{}, exitTime{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &creation, &exitTime, &kernel, &user)) {
+        return 0;
+    }
+    const auto toU64 = [](const FILETIME& time) {
+        return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    return toU64(kernel) + toU64(user);
+}
+
+double QpcToMs(int64_t qpc, int64_t qpcFreq) {
+    return qpcFreq > 0 ? static_cast<double>(qpc) * 1000.0 / static_cast<double>(qpcFreq) : 0.0;
+}
+
+struct SlowIterationContext {
+    int64_t qpcFreq = 0;
+    int64_t frameIntervalQpc = 0;
+    uint64_t emittedFrames = 0;
+    bool live = false;
+};
+
+// One line per slow iteration (rate limited): the phase that held the thread, every phase's
+// share, and the thread's CPU time. cpu close to work means CE code was running; cpu near
+// zero means the thread was blocked (lock, GPU/driver call) or preempted.
+void ReportSlowEncoderIteration(const ce::encoder_loop_cost::IterationCost& loopCost,
+                                ce::encoder_loop_cost::SlowIterationLogGate& gate, uint64_t threadCpu100ns,
+                                const SlowIterationContext& context) {
+    const int64_t workQpc = loopCost.WorkQpc();
+    const auto decision = gate.Observe(GetTickCount64(), workQpc);
+    if (!decision.log) {
+        return;
+    }
+    const int64_t freq = context.qpcFreq;
+    const auto phaseMs = [&](EncoderLoopPhase phase) { return QpcToMs(loopCost.PhaseQpc(phase), freq); };
+    LogWarn("[EncoderThread] Slow loop iteration: work=%.1fms dominant=%s cpu=%.1fms wakeLate=%.1fms "
+            "wait=%.1fms phases(start=%.1f pressure=%.1f catchup=%.1f wgcTarget=%.1f wgcSelect=%.1f "
+            "startup=%.1f emit=%.1f encode=%.1f health=%.1f) emitted=%llu lastEncode=%lldus lastFence=%lldus "
+            "live=%d frameInterval=%.2fms slowTotal=%llu suppressed=%llu suppressedWorst=%.1fms",
+            QpcToMs(workQpc, freq), ce::encoder_loop_cost::PhaseName(loopCost.DominantWorkPhase()),
+            static_cast<double>(threadCpu100ns) / 10000.0, QpcToMs(loopCost.WakeLateQpc(), freq),
+            phaseMs(EncoderLoopPhase::kTimerWait), phaseMs(EncoderLoopPhase::kStart),
+            phaseMs(EncoderLoopPhase::kPressure), phaseMs(EncoderLoopPhase::kCatchup),
+            phaseMs(EncoderLoopPhase::kWgcTarget), phaseMs(EncoderLoopPhase::kWgcSelect),
+            phaseMs(EncoderLoopPhase::kStartup), phaseMs(EncoderLoopPhase::kEmit), phaseMs(EncoderLoopPhase::kEncode),
+            phaseMs(EncoderLoopPhase::kHealth),
+            static_cast<unsigned long long>(context.emittedFrames),
+            static_cast<long long>(MediaEngine_GetLastFrameEncodeTimeUs ? MediaEngine_GetLastFrameEncodeTimeUs() : 0),
+            static_cast<long long>(MediaEngine_GetLastFrameFenceWaitUs ? MediaEngine_GetLastFrameFenceWaitUs() : 0),
+            context.live ? 1 : 0, QpcToMs(context.frameIntervalQpc, freq),
+            static_cast<unsigned long long>(decision.total), static_cast<unsigned long long>(decision.suppressed),
+            QpcToMs(decision.suppressedWorstQpc, freq));
+}
+
+}  // namespace
 
 void MediaEncoderSession::Run() {
     if (!Init()) {
         return;
     }
-        while (media_main_g_EncoderRunning || media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || media_main_g_FrameQueue.Size() > 0 ||
-               !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
-        LoopStart();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
+    static constexpr EncoderLoopStep kSteps[] = {
+        {EncoderLoopPhase::kStart, &MediaEncoderSession::LoopStart},
+        {EncoderLoopPhase::kPressure, &MediaEncoderSession::LoopPressure},
+        {EncoderLoopPhase::kCatchup, &MediaEncoderSession::LoopCatchup},
+        {EncoderLoopPhase::kWgcTarget, &MediaEncoderSession::LoopWgcTarget},
+        {EncoderLoopPhase::kWgcSelect, &MediaEncoderSession::LoopWgcSelect},
+        {EncoderLoopPhase::kStartup, &MediaEncoderSession::LoopStartup},
+        {EncoderLoopPhase::kEmit, &MediaEncoderSession::LoopEmit},
+        {EncoderLoopPhase::kEncode, &MediaEncoderSession::LoopEncode},
+        {EncoderLoopPhase::kHealth, &MediaEncoderSession::LoopHealth},
+    };
+    ce::encoder_loop_cost::SlowIterationLogGate slowIterationGate;
+    while (media_main_g_EncoderRunning || media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) ||
+           media_main_g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
+        loopCost.Reset();
+        const uint64_t iterationCpuStart = CurrentThreadCpu100ns();
+        bool exitLoop = false;
+        for (const EncoderLoopStep& step : kSteps) {
+            const int64_t waitBefore = loopCost.TimerWaitQpc();
+            const int64_t stepStart = CurrentQpc();
+            (this->*step.run)();
+            loopCost.ChargeCall(step.phase, CurrentQpc() - stepStart, waitBefore);
+            if (continueMainLoop) {
+                continueMainLoop = false;
+                break;
+            }
+            if (breakMainLoop) {
+                breakMainLoop = false;
+                exitLoop = true;
+                break;
+            }
         }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
+        if (loopCost.IsSlow(targetIntervalTicks)) {
+            const SlowIterationContext context{qpcFreq.QuadPart, targetIntervalTicks,
+                                               liveTicksOutput - cycleLiveTicksOutputStart, recordingOutputLive};
+            ReportSlowEncoderIteration(loopCost, slowIterationGate, CurrentThreadCpu100ns() - iterationCpuStart,
+                                       context);
         }
-        LoopPressure();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopCatchup();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopWgcTarget();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopWgcSelect();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopStartup();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopEmit();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopEncode();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
-            break;
-        }
-        LoopHealth();
-        if (continueMainLoop) {
-            continueMainLoop = false;
-            continue;
-        }
-        if (breakMainLoop) {
-            breakMainLoop = false;
+        if (exitLoop) {
             break;
         }
     }
@@ -106,9 +142,6 @@ bool MediaEncoderSession::Init() {
         media_main_g_DxgiCursorTimelinePublished.store(0, std::memory_order_release);
     }
     media_main_g_InjectCursorTimeline.Clear();
-
-    DisableCurrentThreadPowerThrottling("EncoderThread");
-    ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH, "EncoderThread");
 
     media_main_g_FrameQueue.StartRecording();
     if (!TryArmCapturePipelineWarmup()) {

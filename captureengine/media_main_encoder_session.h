@@ -581,6 +581,7 @@ private:
     double injectResidualEstimateMs;
     double avContentDelayFrames;
     LARGE_INTEGER cycleStartQpc{};
+    ce::encoder_loop_cost::IterationCost loopCost{};
     uint64_t cycleLiveTicksOutputStart;
     uint32_t outputShortfallTicks;
     bool activeScreenGrab;
@@ -696,7 +697,7 @@ private:
     bool isWgcCapacityPressureActive();
     bool isWgcTrueSourceStarvedForCapacityPolicy();
     bool isWgcEncoderLimitedSmoothnessMode();
-    size_t pruneStaleWgcVisualDebt(int64_t liveNowQpc, const char* reason, bool allowDropAll,
+    size_t pruneStaleWgcVisualDebt(int64_t nowQpc, const char* reason, bool allowDropAll,
                                            int64_t immutableSelectionTargetQpc);
     void noteActivePathMismatchDiscard(bool frameIsInjectMode, const char* source);
     void discardActivePathMismatchFrame(QueuedFrame& mismatchedFrame, const char* source, bool queuedFrame);

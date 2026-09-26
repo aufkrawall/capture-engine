@@ -574,13 +574,14 @@ TEST(AudioSyncUtilsTest, EverySuccessfulWasapiReactivationStartsANewEpoch) {
 TEST(AudioSyncUtilsTest, RestartedAppAudioEpochReusesLateJoinInsteadOfMaterializingLongAbsence) {
     constexpr int64_t kRate = 48000;
     const bool firstTimelinePacketAfterEpochReset = ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2);
+    // The source last wrote at 1400 s; the 30 s absence behind the live edge is skipped.
     const auto join = ce::audio::ComputeLateAppSourceJoin(true, firstTimelinePacketAfterEpochReset, false, kRate * 1430,
-                                                          kRate * 1430, kRate / 2, kRate / 100);
+                                                          kRate * 1430, kRate * 1400, kRate / 2);
 
     ASSERT_TRUE(join.joinLive);
     EXPECT_EQ(join.joinCursorSamples, kRate * 1430);
     EXPECT_EQ(join.preservedGapSamples, 0);
-    EXPECT_EQ(join.suppressedGapSamples, kRate * 1430);
+    EXPECT_EQ(join.suppressedGapSamples, kRate * 30);
 }
 
 TEST(AudioSyncUtilsTest, PreStartAppAudioEvidenceBlocksOptionalStartupUntilPrimed) {
@@ -610,34 +611,6 @@ TEST(AudioSyncUtilsTest, PreStartAppAudioEvidenceBlocksOptionalStartupUntilPrime
         /*sourceBootstrapComplete*/ false, /*sourceTimelineValid*/ true, /*sourceIsPrimed*/ true,
         /*isAppAudioSource*/ true, /*bufferedRealSamples*/ 0, /*requiredRealSamples*/ 1200,
         /*sawPreStartPackets*/ true));
-}
-
-TEST(AudioSyncUtilsTest, LateAppSourceFirstPacketJoinsCurrentTrackCursor) {
-    const auto join =
-        ce::audio::ComputeLateAppSourceJoin(true, true, false, 48000 * 7, 48000 * 7 + 960, 48000 / 2, 480);
-
-    EXPECT_TRUE(join.joinLive);
-    EXPECT_EQ(join.joinCursorSamples, 48000 * 7 + 960);
-    EXPECT_EQ(join.preservedGapSamples, 0);
-    EXPECT_EQ(join.suppressedGapSamples, 48000 * 7);
-}
-
-TEST(AudioSyncUtilsTest, LateAppSourceCanPreserveSmallFadeCushion) {
-    const auto join = ce::audio::ComputeLateAppSourceJoin(true, true, false, 48000 * 7, 48000 * 6, 48000 / 2, 480);
-
-    EXPECT_TRUE(join.joinLive);
-    EXPECT_EQ(join.joinCursorSamples, 48000 * 7 - 480);
-    EXPECT_EQ(join.preservedGapSamples, 480);
-    EXPECT_EQ(join.suppressedGapSamples, 48000 * 7 - 480);
-}
-
-TEST(AudioSyncUtilsTest, LateAppSourceJoinLeavesStartupAndNonAppSourcesUnchanged) {
-    EXPECT_FALSE(
-        ce::audio::ComputeLateAppSourceJoin(false, true, false, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
-    EXPECT_FALSE(
-        ce::audio::ComputeLateAppSourceJoin(true, false, false, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
-    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, true, true, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
-    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, true, false, 1200, 1200, 48000 / 2, 480).joinLive);
 }
 
 TEST(AudioSyncUtilsTest, StopDrainRunsOnlyForVideoAudioSessions) {

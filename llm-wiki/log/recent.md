@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-09-26 - Session 20260926_012955 review: late app join early audio, encoder QoS scope, loop stage cost
+
+- Session: 5 DXGI-dup 4K120 AV1 recordings (HotS, Fortnite), longest r0002 34.5 min. All healthy: sample-exact
+  track lengths, complete CFR coverage, no trims/underruns. Two real defects plus one diagnostics gap found.
+- **Late app join discarded the CFR content-delay lead** (`ComputeLateAppSourceJoin`, 2026-06-14 design that
+  predates the active-delay reservoir). Fortnite joined r0002 at 28 min with `packetStart` 15675 samples ahead of
+  the track cursor; the join moved `qpcAlignedWrittenSamples` to `packetStart-480` without writing silence, so the
+  FIFO ring encoded it ~317 ms early (`[AppDiag] place writeMinusEncoded~15000` vs `ringAvail~500`,
+  appAudioDelay avg 68 ms vs target ~350). Tier-1 read the deficit as drift and pinned `compDelta=-240`
+  (-500 ppm, `sat=1`). r0003-r0005 (Fortnite already running at start) were normal. Fix: join cursor never
+  passes the live edge; the regular placement writes the lead as silence. `qjoin` now counts the absence skipped
+  from the source's pre-stitch write cursor (analyzer backlog rule keys on `qjoin>0`), `qjoinKeep` the lead.
+- **Stale tier-1 after an app went quiet**: HotS kept `compDelta=-240` for 7 min after closing because the drift
+  update is skipped below `kMinCompensationBufferSamples` and only unexpected underruns cleared it. Expected
+  timeline-silence padding now clears it (`ShouldClearRateCompensationForExpectedSilence`, logs once).
+- **Encoder thread MMCSS was reverted immediately**: `ScopedMmcssTask` lived in `MediaEncoderSession::Init()`
+  since the 2026-08-05 session split, so every loop since ran without "Pro Audio" while logging "Thread QoS
+  enabled". Moved to `EncoderThreadFunc`; source test guards it. Not proven to be the stall cause.
+- **Unexplained encoder stalls** (r0002 02:03:07-16 when Fortnite took focus at 85% CPU, r0004 02:28:03 at ~30%
+  CPU): `Timer skip-ahead` 150-620 ms, `Catchup budget exceeded ... elapsed=174ms`, capture delivery gap 164 ms at
+  the same instants, encode EMA 1-4 ms; CFR dropped visual debt (peak 1492 ms) = visible stutter, audio sync
+  held. New `[EncoderThread] Slow loop iteration` line (phase breakdown + thread CPU time) should name the phase
+  on the next run. Open: blocked vs preempted, and whether the MMCSS fix alone removes it.
+- Hardware runs pending: late-joining app (start a game mid-recording): `qjoinKeep` ~ content delay,
+  `writeMinusEncoded ~ ringAvail`, `compDelta=0`; and any `Slow loop iteration` lines.
+
 ### 2026-09-26 - Present detour stage cost: attributing CE's ~80 us on AMD's presenter thread
 
 - Goal: attribute the ~78-82 us mean (p99 ~140 us) CE owns per Present on AMD's FSR FG presenter thread

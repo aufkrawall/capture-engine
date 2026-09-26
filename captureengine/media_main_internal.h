@@ -92,6 +92,8 @@ class ScopedMmcssTask;
 
 #include "capture_cadence_diagnostics.h"
 
+#include "encoder_loop_stage_cost.h"
+
 #include "mediaengine_loader.h"
 
 #include "recording_manifest.h"

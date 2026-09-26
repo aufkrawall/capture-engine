@@ -5,13 +5,11 @@ bool MediaEngine::PullTrackEncodeSourcesC1(AudioPullState& s, int track, size_t 
     auto& CHANNELS = s.CHANNELS;
     auto& targetLatencySamples = s.targetLatencySamples;
     auto& realCopiedSamples = s.realCopiedSamples;
-    auto& it = s.it;
     auto& forceDrain = s.forceDrain;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
     constexpr int64_t kBaseTargetLatencySamples = AudioPullState::kBaseTargetLatencySamples;
     constexpr int64_t kAppAudioLatencyWarnExcessSamples = AudioPullState::kAppAudioLatencyWarnExcessSamples;
         auto& src = audioSources[srcIdx];
-        auto& trackCursorSamples = trackTimelineSamples[track];
                 if (src.sourceType == AudioConfig::AppAudio) {
                     const uint64_t nowConsumeTick = GetTickCount64();
                     const size_t rbAvailSamples = src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
@@ -144,7 +142,7 @@ bool MediaEngine::PullTrackEncodeSourcesC1(AudioPullState& s, int track, size_t 
                 }
     return true;
 }
-bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int track, size_t srcIdx) {
+bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int /*track*/, size_t srcIdx) {
     auto& CHANNELS = s.CHANNELS;
     auto& totalFloats = s.totalFloats;
     auto& mixBuffer = s.mixBuffer;
@@ -153,12 +151,9 @@ bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int track, size_t 
     auto& available = s.available;
     auto& toCopy = s.toCopy;
     auto& realCopiedSamples = s.realCopiedSamples;
-    auto& it = s.it;
-    auto& fadeStart = s.fadeStart;
     auto& forceDrain = s.forceDrain;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
         auto& src = audioSources[srcIdx];
-        auto& trackCursorSamples = trackTimelineSamples[track];
                 if (toCopy < totalFloats) {
                     // Underrun: apply a short fade-out on the last real samples
                     // before the silence boundary to prevent audible clicks.
@@ -166,9 +161,10 @@ bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int track, size_t 
                         constexpr int kFadeSamples = 8;  // ~0.17ms at 48kHz
                         int realSamples = static_cast<int>(toCopy / CHANNELS);
                         int fadeStart = std::max(0, realSamples - kFadeSamples);
-                        for (int s = fadeStart; s < realSamples; ++s) {
-                            float alpha = static_cast<float>(realSamples - s) / static_cast<float>(kFadeSamples + 1);
-                            const size_t base = static_cast<size_t>(s) * CHANNELS;
+                        for (int sample = fadeStart; sample < realSamples; ++sample) {
+                            float alpha =
+                                static_cast<float>(realSamples - sample) / static_cast<float>(kFadeSamples + 1);
+                            const size_t base = static_cast<size_t>(sample) * CHANNELS;
                             for (int ch = 0; ch < CHANNELS; ++ch) {
                                 srcData[base + ch] *= alpha;
                             }
@@ -206,6 +202,22 @@ bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int track, size_t 
                                 "ring buffer is being drained too fast",
                                 kTotalPadWarningSamples, (double)src.underrunPadSamples * 1000.0 / SAMPLE_RATE,
                                 (int)srcIdx);
+                        }
+                    } else if (ce::audio::ShouldClearRateCompensationForExpectedSilence(
+                                   startupPadding, expectedTimelineSilence, padSamples, src.rateCompActive) &&
+                               src.syncResampler && src.syncResampler->IsReady()) {
+                        if (swr_set_compensation(src.syncResampler->GetSwrContext(), 0, SAMPLE_RATE * 10) >= 0) {
+                            DLL_Log(
+                                "[PullAudio] Cleared stale rate compensation - src %d went silent (expected "
+                                "timeline silence) with compDelta=%d sat=%d; drift is re-measured once audio resumes",
+                                (int)srcIdx, src.currentRateDelta, src.targetRateSaturated ? 1 : 0);
+                            src.prevLeadSamples = 0;
+                            src.prevLeadSnapshotMs = 0;
+                            src.lastRateUpdateMs = 0;
+                            src.currentRateDelta = 0;
+                            src.targetRateDelta = 0;
+                            src.rateCompActive = false;
+                            src.targetRateSaturated = false;
                         }
                     }
                     // Expected timeline silence (for example a focused game's process loopback muting on

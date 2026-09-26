@@ -484,10 +484,18 @@ inline bool IsAppAudioCaptureEpochTransition(bool isAppAudioSource, uint64_t pre
     return isAppAudioSource && IsAudioCaptureEpochTransition(previousEpoch, packetEpoch);
 }
 
+// A process-loopback source whose first packet arrives after the recording has advanced
+// joins at the live edge (the current track cursor): the absence behind that edge is not
+// backfilled into this source's ring. The join never moves past the live edge. Under a CFR
+// active content delay a live packet is placed ahead of the track cursor by that delay, and
+// the regular timeline placement materializes the lead as silence. Jumping the write cursor
+// to the packet instead (the pre-2026-09-26 behavior) discarded the lead: the ring is a FIFO
+// read from the encoded cursor, so the late source was encoded one content delay early
+// (Fortnite joined 28 min into session 20260926_012955 r0002 and led the video by ~317 ms).
 inline LateAppSourceJoin ComputeLateAppSourceJoin(bool isAppAudioSource, bool firstTimelinePacket,
                                                   bool sawPreStartPackets, int64_t packetStartSamples,
-                                                  int64_t trackCursorSamples, int64_t lateJoinThresholdSamples,
-                                                  int64_t preservedCushionSamples) {
+                                                  int64_t trackCursorSamples, int64_t sourceWriteCursorSamples,
+                                                  int64_t lateJoinThresholdSamples) {
     LateAppSourceJoin result{};
     if (!isAppAudioSource || !firstTimelinePacket || sawPreStartPackets) {
         return result;
@@ -500,12 +508,13 @@ inline LateAppSourceJoin ComputeLateAppSourceJoin(bool isAppAudioSource, bool fi
         return result;
     }
 
-    const int64_t preservedCushion = std::clamp<int64_t>(preservedCushionSamples, 0, packetStart);
-    const int64_t liveCursor = std::max<int64_t>(trackCursor, packetStart - preservedCushion);
-    result.joinLive = liveCursor > 0;
-    result.joinCursorSamples = liveCursor;
-    result.preservedGapSamples = std::max<int64_t>(0, packetStart - liveCursor);
-    result.suppressedGapSamples = std::max<int64_t>(0, packetStart - result.preservedGapSamples);
+    const int64_t sourceWriteCursor = std::max<int64_t>(0, sourceWriteCursorSamples);
+    result.joinLive = true;
+    result.joinCursorSamples = std::max<int64_t>(trackCursor, sourceWriteCursor);
+    // Lead ahead of the live edge: kept, and written as silence by the timeline placement.
+    result.preservedGapSamples = std::max<int64_t>(0, packetStart - result.joinCursorSamples);
+    // Absence behind the live edge that this join skips instead of materializing.
+    result.suppressedGapSamples = std::max<int64_t>(0, result.joinCursorSamples - sourceWriteCursor);
     return result;
 }
 

@@ -451,12 +451,15 @@ void MediaEncoderSession::LoopCatchup() {
             QueryPerformanceCounter(&now);
             if (media_main_g_EncoderRunning) {
                 int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
+                const int64_t waitStartQpc = now.QuadPart;
                 if (waitTicks > 0) {
                     WaitUntilQpcTarget(hTimer, scheduledSampleQpc, qpcFreq.QuadPart);
                 }
 
                 QueryPerformanceCounter(&now);
                 cycleStartQpc = now;  // Start measuring encode processing after timer sleep
+                loopCost.Charge(ce::encoder_loop_cost::Phase::kTimerWait, now.QuadPart - waitStartQpc);
+                loopCost.NoteWakeLate(now.QuadPart - scheduledSampleQpc);
                 if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
                     encoderLateQpc = now.QuadPart - scheduledSampleQpc;
                     const uint32_t wakeLateUs = SaturatingToUint32(static_cast<uint64_t>(encoderLateQpc) * 1000000ull /
@@ -597,9 +600,9 @@ return ce::capture_policy::IsWgcEncoderLimitedSmoothnessMode(
 
 }
 
-size_t MediaEncoderSession::pruneStaleWgcVisualDebt(int64_t liveNowQpc, const char* reason, bool allowDropAll, int64_t immutableSelectionTargetQpc) {
+size_t MediaEncoderSession::pruneStaleWgcVisualDebt(int64_t nowQpc, const char* reason, bool allowDropAll, int64_t immutableSelectionTargetQpc) {
 
-if (wgcWarmupUntilQpc > 0 && liveNowQpc < wgcWarmupUntilQpc) {
+if (wgcWarmupUntilQpc > 0 && nowQpc < wgcWarmupUntilQpc) {
     return 0;
 }
 if (outputShortfallTicks > 0 && immutableSelectionTargetQpc <= 0) {
@@ -621,7 +624,7 @@ if (ce::capture_policy::ShouldProtectWgcStartupSmoothnessHistory(
 }
 const int64_t intentionalContentDelayQpc = getWgcEffectiveContentDelayQpc();
 const int64_t visualDebtFloorQpc = ce::capture_policy::GetWgcLiveVisualDebtFloorQpcForMode(
-    liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode,
+    nowQpc, targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode,
     intentionalContentDelayQpc);
 if (visualDebtFloorQpc <= 0) {
     return 0;
@@ -665,7 +668,7 @@ if (dropped > 0) {
             "gridTargetQpc=%lld liveNowQpc=%lld contentDelay=%lldus maxDebt=%lluus remaining=%zu shortfall=%u",
             reason ? reason : "unknown", encoderLimitedSmoothnessMode ? "encoder_limited" : "bounded_live",
             dropped, static_cast<long long>(visualDebtFloorQpc),
-            static_cast<long long>(immutableSelectionTargetQpc), static_cast<long long>(liveNowQpc),
+            static_cast<long long>(immutableSelectionTargetQpc), static_cast<long long>(nowQpc),
             static_cast<long long>(qpcToUs(intentionalContentDelayQpc)),
             static_cast<unsigned long long>(maxDebtUs), bufferedWgcFrames.size(), outputShortfallTicks);
         s_lastStaleWgcDebtLogTick = nowTick;

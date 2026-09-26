@@ -120,6 +120,10 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         // so this cross-thread read cannot observe a torn/stale pair.
                         int64_t encodedCursorSnapshot = 0;
                         int64_t trackCursorSnapshot = 0;
+                        // The source's own write position before stitching pins it to the encoded
+                        // cursor: a late live join reports the absence it skips against this.
+                        const int64_t sourceWriteCursorBeforeStitch =
+                            static_cast<int64_t>(src.qpcAlignedWrittenSamples);
                         {
                             std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
                             if (srcIdx < encodedSamplesPerSource.size()) {
@@ -189,7 +193,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         const auto lateJoin = ce::audio::ComputeLateAppSourceJoin(
                             src.sourceType == AudioConfig::AppAudio, firstTimelinePacket,
                             firstPacketSawSyncPending, packetStartSamples, trackCursorSnapshot,
-                            targetFmt.sampleRate / 2, targetFmt.sampleRate / 100);
+                            sourceWriteCursorBeforeStitch, targetFmt.sampleRate / 2);
                         if (lateJoin.joinLive) {
                             if (lateJoin.joinCursorSamples >
                                 static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {

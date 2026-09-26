@@ -442,3 +442,14 @@ TEST(AudioSyncUtilsTest, StarvedSourceResyncIsLastResortOnly) {
     // Only when the reservoir is exhausted and a live source is still fully starved.
     EXPECT_TRUE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, true, 5000, deficit));
 }
+
+TEST(AudioSyncUtilsTest, ExpectedSilenceClearsAStaleRateCompensation) {
+    // A started source that went silent (game closed) with a correction still armed.
+    EXPECT_TRUE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, true, 480, true));
+    // Nothing armed, nothing padded, or still bootstrapping: leave the resampler alone.
+    EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, true, 480, false));
+    EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, true, 0, true));
+    EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(true, true, 480, true));
+    // A real underrun is handled (and counted) by the underrun path, not this one.
+    EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, false, 480, true));
+}

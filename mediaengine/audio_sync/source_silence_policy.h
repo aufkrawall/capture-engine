@@ -118,6 +118,18 @@ inline int64_t ClampTimelineGapSamplesToCapacity(int64_t gapSamples, int64_t rin
     return std::min<int64_t>(gapSamples, ringCapacitySamples);
 }
 
+// A started source that pads expected timeline silence (its process stopped producing, or
+// its loopback muted) has no buffer to measure source-clock drift against, so the drift
+// update is skipped and whatever correction was armed before the silence stays in the
+// resampler. It measures nothing any more: left in place it resamples the first audio after
+// the source resumes and is reported as a saturated rate at stop (Heroes of the Storm held
+// -500 ppm for the last 7 minutes of session 20260926_012955 r0002 after the game closed).
+// Unexpected underruns already clear it on the underrun path.
+inline bool ShouldClearRateCompensationForExpectedSilence(bool startupPadding, bool expectedTimelineSilence,
+                                                          size_t padSamples, bool rateCompActive) {
+    return !startupPadding && expectedTimelineSilence && padSamples > 0 && rateCompActive;
+}
+
 inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples, bool sawSyncPendingPackets,
                                                      int64_t cappedStartupGapSamples, int64_t rebaseThresholdSamples) {
     if (!sawSyncPendingPackets) {
