@@ -382,6 +382,13 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    using ce::present_stage_cost::EnterStage;
+    using CostStage = ce::present_stage_cost::Stage;
+    // Declared first so it closes last: the trace span and every scope guard's teardown below
+    // are inside the accounted detour. Stages advance linearly along this function; nested
+    // regions and every forward open their own scope (present_stage_cost.h).
+    ce::present_stage_cost::DetourRecorder stageCost;
+    EnterStage(CostStage::kEntry);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour, pSwapChain, SyncInterval, Flags);
     ce::present_association::NotePresentEntry(PerfLogger::GetQpcUs());
     if (!pSwapChain)
@@ -448,11 +455,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (isReentrant) {
         // Re-entrant call - forward directly to bypass or return S_OK
         if (dxgi_shared_oPresentTrampoline) {
-            return dxgi_shared_oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(dxgi_shared_oPresentTrampoline, pSwapChain, SyncInterval, Flags);
 
         }
         if (dxgi_shared_oPresentBypass) {
-            return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
         }
         // No bypass available - return S_OK to break recursion loop
         return S_OK;
@@ -460,7 +467,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Every overlay-coverage accounting call below (PostSL, ProcessFrameExternal, transport) belongs
     // to this one physical Present and is judged once when the scope closes.
     DX12_BeginOverlayPresentScope(pSwapChain);
-    auto overlayPresentScopeGuard = ce::make_scope_guard([]() { DX12_EndOverlayPresentScope(); });
+    auto overlayPresentScopeGuard = ce::make_scope_guard([]() {
+        ce::present_stage_cost::StageScope postPresentStage(ce::present_stage_cost::Stage::kPostPresent);
+        DX12_EndOverlayPresentScope();
+    });
 
     static std::atomic<int> s_entryCount{0};
     int entryNum = s_entryCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -545,6 +555,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent")) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
+    EnterStage(CostStage::kKeepAlive);
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
     if (api == APIType::D3D12) {
@@ -552,6 +563,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                                                            "DXGIShared::DetourPresent pre-routing");
     }
 
+    EnterStage(CostStage::kContext);
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
@@ -569,7 +581,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     "active (depth=%d bypass=%p tid=0x%04X)",
                     bypassNum, dxgi_shared_s_externalOverlayPresentInvokeDepth, (void*)recursiveBypass, currentThreadId);
             }
-            return recursiveBypass(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(recursiveBypass, pSwapChain, SyncInterval, Flags);
         }
     }
     // Log Steam overlay state once for diagnostics.
@@ -586,6 +598,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool presentBypassAvailable = EnsurePresentBypassTrampoline() != nullptr;
     PresentCallContext ctx = CapturePresentCallContext(pSwapChain, detourCallerAddress, api,
                                                             presentBypassAvailable);
+    stageCost.SetRole(ce::present_stage_cost::ClassifyThreadRole(
+        DX12_GetGamePresentThreadId(), ctx.currentThreadId,
+        ctx.callerFromFFXFrameGenerationModule || ctx.callerFromStreamlineModule || ctx.streamlineFGRunning ||
+            ctx.runtimeOwnedSwapchainActive || (api == APIType::D3D12 && HookHasRuntimeOwnedNativeFGPresentPath())));
     if (ctx.ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
@@ -598,14 +614,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     "tid=0x%04X)",
                     bypassNum, (void*)presentBypass, GetCurrentThreadId());
             }
-            return presentBypass(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
         }
     }
+    EnterStage(CostStage::kStartupRouting);
     bool earlyReturn = false;
     const HRESULT routingResult = ExecuteStartupRouting(pSwapChain, SyncInterval, Flags, ctx, &earlyReturn);
     if (earlyReturn) {
+        EnterStage(CostStage::kPostPresent);
         return routingResult;
     }
+    EnterStage(CostStage::kCorePolicy);
     return ExecutePresentCore(pSwapChain, SyncInterval, Flags, ctx);
 }
 }

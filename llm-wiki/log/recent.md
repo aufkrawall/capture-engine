@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-09-26 - Present detour stage cost: attributing CE's ~80 us on AMD's presenter thread
+
+- Goal: attribute the ~78-82 us mean (p99 ~140 us) CE owns per Present on AMD's FSR FG presenter thread
+  (GTA sessions `20260925_233000` / `20260925_235838`: pacing-trace detour ~350 us minus forward ~270 us).
+  Loader-lock lookups and the per-present `DetectSLPresentHook` lookup were already removed; the number did not
+  move. No behaviour change in this entry, measurement only.
+- `hook/common/present_stage_cost.h`: per-thread lap clock. The outermost `DetourPresent` owns a
+  `DetourRecorder`; `EnterStage` advances the linear detour flow (entry, keepalive, context, startup_routing,
+  core_policy, post_present) and `StageScope` wraps nested regions (metrics, fsr_topmost, overlay, limiter,
+  overlay_wait, forward). Stages are disjoint and sum exactly to the detour; `kForward` is excluded from `own`.
+  A detour re-entered inside the forward (SL route) charges its work to CE and hands the clock back to forward.
+- Every Present forward on the detour path now goes through `DXGIShared::ForwardPresentThrough`
+  (`dxgi_shared_internal.h`) or `CallOriginalPresent`, both open `kForward`; a source test forbids raw
+  `presentBypass(pSwapChain` / `dxgi_shared_oPresent*(pSwapChain` / `externalPresent(pSwapChain` calls in
+  `dxgi_shared_present{,_core,_routing}.cpp` and `dxgi_shared_steam.cpp`.
+- Roles: game (== `DX12_GetGamePresentThreadId`), runtime_presenter (FFX/SL caller, runtime-owned swapchain,
+  SL FG running), other. Always on (<1 us/present); drained + logged by `main_hookthread.cpp` only.
+- Known coverage gaps (land in `core_policy`/`startup_routing`, not lost): limiter calls on the rare
+  startup/third-party/overlayless-handoff early routes, post-present work after the guarded-Steam/SL-bypass
+  early returns in core. Present1 is not instrumented. The ECL topmost-overlay recording on the presenter
+  thread is separate (`HookExecuteCommandListsCpuCost`, debug log level).
+- Hardware run pending: read `[PRESENT STAGE COST] role=runtime_presenter` lines under FSR FG; `own` mean
+  should match the pacing-trace detour-minus-forward (~80 us). Stage fields are mean/p95/max us (n=entered).
+
 ### 2026-09-25 - GTA follow-up (0.1.6820 run): FG latency count, per-present lookups (0.1.6823)
 
 - Session `20260925_233000` (two GTA runs; run 2 with `dlss_sr_preset=M`, forced vsync at the FFX proxy,

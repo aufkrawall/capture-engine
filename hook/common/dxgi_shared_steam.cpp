@@ -729,7 +729,7 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     UINT bbIdxBefore = UINT_MAX;
     UINT bbIdxAfter = UINT_MAX;
     const bool bbIdxBeforeMeasured = TryGetSwapChainBackBufferIndex(pSwapChain, &bbIdxBefore);
-    const HRESULT hr = externalPresent(pSwapChain, SyncInterval, Flags);
+    const HRESULT hr = ForwardPresentThrough(externalPresent, pSwapChain, SyncInterval, Flags);
     const bool bbIdxAfterMeasured = TryGetSwapChainBackBufferIndex(pSwapChain, &bbIdxAfter);
     const bool bbIdxMeasured = bbIdxBeforeMeasured && bbIdxAfterMeasured;
     const bool bbIdxAdvanced = bbIdxMeasured && bbIdxAfter != bbIdxBefore;
@@ -753,7 +753,7 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
                 fallbackNum, reason ? reason : "Present", (void*)presentBypass, (unsigned)hr, bbIdxMeasured ? 1 : 0,
                 bbIdxBefore, bbIdxAfter, steamNullCallbackRecoveryReady ? 1 : 0, GetCurrentThreadId());
         }
-        *resultOut = presentBypass(pSwapChain, SyncInterval, Flags);
+        *resultOut = ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
         return true;
     }
 

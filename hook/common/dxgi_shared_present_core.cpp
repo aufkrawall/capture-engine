@@ -24,8 +24,12 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 }
 
 namespace DXGIShared {
+// Runs inside DetourPresent's core_policy stage; named sub-regions below open their own
+// scope and hand the clock back to it (present_stage_cost.h).
 HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                   const PresentCallContext& ctx) {
+    using CostStage = ce::present_stage_cost::Stage;
+    using CostScope = ce::present_stage_cost::StageScope;
     bool isFirstHook = !g_SharedState.inPresentHook.exchange(true);
     auto hookGuard = ::ce::make_scope_guard([&] {
         if (isFirstHook)
@@ -100,7 +104,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             }
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             if (useBypass) {
-                return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
+                return ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
             }
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
@@ -165,15 +169,18 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             }
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
-            HRESULT handoffHr = dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
+            HRESULT handoffHr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
             if (SUCCEEDED(handoffHr)) {
                 g_SharedFpsLimiter.ApplyPostPresent();
             }
             return handoffHr;
         }
     }
-    g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
-    UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
+    {
+        CostScope metricsStage(CostStage::kMetrics);
+        g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
+        UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
+    }
 
     // Initialize performance metrics for CSV logging early so the scope guard
     // captures total frame time even if HandleDX11/12ProcessFrame or the FPS
@@ -187,6 +194,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     ++s_perfFrameNum;
     PerfLogger::BeginPresentRowScope();
     auto perfGuard = ce::make_scope_guard([&]() {
+        CostScope postPresentStage(CostStage::kPostPresent);
         if (PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             FrameMetrics perfMetrics;
             perfMetrics.qpcUs = perfMetricsQpcUs;
@@ -341,7 +349,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 // spans to the next entry. The ECL detour records both forms without resolving modules. Two equal
                 // consecutive final-batch signatures arm a same-ECL append; instability immediately falls back
                 // to AMD's UI-resource composition. No known-overlay allowlist is involved.
-                DX12_ObserveNoCallbackFSRTopmostPresent(pSwapChain, topmostSameBatchEligible);
+                {
+                    CostScope topmostStage(CostStage::kFsrTopmost);
+                    DX12_ObserveNoCallbackFSRTopmostPresent(pSwapChain, topmostSameBatchEligible);
+                }
                 // bundleOverlayActivelyFiring is hardwired false: the fenced composite is driven ONLY from the
                 // kSkipBundleCovers arm below, and while AMD owns the swapchain the route selects kSkipBundleCovers
                 // regardless of this arg (active OR suspended). It is consulted only in the non-runtime-owned
@@ -372,6 +383,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                                 : "the DetourPresent fallback (presenter thread, composite only, no re-assert)");
                     }
                     if (!proxyDriving && !DX12_IsNoCallbackFSRTopmostBatchActive()) {
+                        CostScope overlayStage(CostStage::kOverlay);
                         DX12_CompositeOverlayOntoCachedFFXUiResource();
                     }
                 } else if (amdActivelyInterpolatingOnFGQueue) {
@@ -394,10 +406,12 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     // no-callback latch with the live present back on the game's own queue (FSR->off recovery).
                     // Draw via the minimal backbuffer path so the overlay is NEVER blank across these windows;
                     // once active interpolation resumes, control returns to the composite skip branch above.
+                    CostScope overlayStage(CostStage::kOverlay);
                     DX12_ProcessFrameMinimal(pSwapChain, applicationSourcePresent,
                                              frameGenerationPresentationActive);
                 }
             } else {
+                CostScope overlayStage(CostStage::kOverlay);
                 HandleDX12ProcessFrame(pSwapChain, applicationSourcePresent, frameGenerationPresentationActive);
             }
         } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(ctx.api)) {
@@ -410,6 +424,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                         logCount + 1);
                 }
             }
+            CostScope overlayStage(CostStage::kOverlay);
             HandleDX11ProcessFrame(pSwapChain, true);
         }
     }
@@ -424,13 +439,16 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // one presented frame cannot reach here and the limiter must gate the
     // cadence grid on every entry instead of on a duplicate-present time
     // window.
-    if (g_IPC) {
-        g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
-        ApplyPresentFrameLatencyOverrides(pSwapChain);
-    }
+    {
+        CostScope limiterStage(CostStage::kLimiter);
+        if (g_IPC) {
+            g_SharedFpsLimiter.SetIPCClient(g_IPC);
+            g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+            ApplyPresentFrameLatencyOverrides(pSwapChain);
+        }
 
-    ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
+        ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
+    }
 
     // Always wait for overlay fence before Present.  The overlay ECL was
     // submitted during ProcessFrame (non-deferred), so the fence signals
@@ -447,7 +465,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         // flip blocked on the hung GPU.
         LARGE_INTEGER diagWaitT0, diagWaitT1, diagWaitFreq;
         QueryPerformanceCounter(&diagWaitT0);
-        InvokeDX12WaitForOverlayCompletion(nullptr);
+        {
+            CostScope overlayWaitStage(CostStage::kOverlayWait);
+            InvokeDX12WaitForOverlayCompletion(nullptr);
+        }
         QueryPerformanceCounter(&diagWaitT1);
         QueryPerformanceFrequency(&diagWaitFreq);
         const double diagWaitMs =
@@ -494,7 +515,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     "(sourceTid=0x%04X tid=0x%04X)",
                     bypassNum, DX12_GetGamePresentThreadId(), GetCurrentThreadId());
             }
-            HRESULT bypassHr = bypass(pSwapChain, SyncInterval, Flags);
+            HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);
             if (ctx.api == APIType::D3D12) {
                 InvokeDX12FlushDeferredSignal();
             }
@@ -535,8 +556,11 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 HookLog("DetourPresent: Calling oPresent=%p (SL route, call #%d, tid=0x%04X)", dxgi_shared_oPresent, slCallNum,
                         GetCurrentThreadId());
             }
-            WaitBackbufferFrameLatency(pSwapChain);
-            hr = dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
+            {
+                CostScope limiterStage(CostStage::kLimiter);
+                WaitBackbufferFrameLatency(pSwapChain);
+            }
+            hr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
             if (slCallNum <= 20 || (slCallNum % 500) == 0) {
                 HookLog("DetourPresent: oPresent returned hr=0x%08X (call #%d)", hr, slCallNum);
             }
@@ -559,6 +583,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // overlay ECL submitted normally, Steam called through E9 JMP at presentOriginal,
     // all three layers (game, CE overlay, Steam overlay) visible simultaneously.
 
+    // Everything from here to the detour's end, scope-guard teardown included, is
+    // post-present bookkeeping.
+    ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
     // Skipped only on AMD's native FSR presentation queue; see
@@ -572,6 +599,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     }
 
     if (SUCCEEDED(hr)) {
+        CostScope limiterStage(CostStage::kLimiter);
         g_SharedFpsLimiter.ApplyPostPresent();
     }
 

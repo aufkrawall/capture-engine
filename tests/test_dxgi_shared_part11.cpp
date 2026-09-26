@@ -17,7 +17,7 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     const size_t reject = steam.find("if (!synchronousPresentThreadAllowed)", provenance);
     const size_t callbackRead = steam.find("TryReadSteamOverlayNullCallbackSlot", reject);
     const size_t recoveryGuard = steam.find("ScopedSteamNullCallbackRecoveryGuard", callbackRead);
-    const size_t externalInvoke = steam.find("const HRESULT hr = externalPresent", recoveryGuard);
+    const size_t externalInvoke = steam.find("const HRESULT hr = ForwardPresentThrough(externalPresent", recoveryGuard);
     ASSERT_NE(entry, std::string::npos);
     ASSERT_NE(provenance, std::string::npos);
     ASSERT_NE(reject, std::string::npos);

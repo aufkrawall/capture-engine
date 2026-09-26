@@ -3,6 +3,7 @@
 #include "common/child_inject_policy.h"
 #include "common/overlay_gpu_timing.h"
 #include "common/pacing_trace.h"
+#include "common/present_stage_cost.h"
 #include "common/custom_overlay_dx12.h"
 #include "common/hook_thread_stage_cost.h"
 #include "common/ngx_ota_runtime.h"
@@ -479,6 +480,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     DWORD now = GetTickCount();
     ce::pacing_trace::Service();
+    ce::present_stage_cost::ReportPresentStageCostIfDue();
     ce::overlay_gpu_timing::Service();
     // The sl.* override copies are placed off the loader-lock path, right
     // behind the first Streamline request the redirect served.

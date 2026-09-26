@@ -54,6 +54,8 @@ struct PresentCallContext;
 
 #include "performance_metrics.h"
 
+#include "present_stage_cost.h"
+
 #include <d3d10.h>
 
 #include <d3d10_1.h>
@@ -93,6 +95,16 @@ typedef HRESULT(STDMETHODCALLTYPE* PFN_ResizeBuffers1)(IDXGISwapChain*, UINT, UI
                                                        const UINT*, IUnknown* const*);
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_SetColorSpace1)(IDXGISwapChain*, DXGI_COLOR_SPACE_TYPE);
+
+namespace DXGIShared {
+// Every Present the detour hands on to the runtime goes through here, so the
+// detour's stage accounting charges it to the runtime and never to CE
+// (present_stage_cost.h). CallOriginalPresent opens the same scope itself.
+inline HRESULT ForwardPresentThrough(PFN_Present present, IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);
+    return present(pSwapChain, SyncInterval, Flags);
+}
+}
 
 namespace DXGIShared {
 enum class DX12StartupPresentMode {

@@ -472,7 +472,7 @@ TEST(DXGISharedSourceTest, CENeverWritesIntoSteamCallbackSlots) {
     ASSERT_NE(guardedEntry, std::string::npos);
     const size_t threadGate = steam.find("if (!synchronousPresentThreadAllowed)", guardedEntry);
     const size_t callbackRead = steam.find("TryReadSteamOverlayNullCallbackSlot(", threadGate);
-    const size_t invoke = steam.find("const HRESULT hr = externalPresent", callbackRead);
+    const size_t invoke = steam.find("const HRESULT hr = ForwardPresentThrough(externalPresent", callbackRead);
     ASSERT_NE(threadGate, std::string::npos);
     ASSERT_NE(callbackRead, std::string::npos);
     ASSERT_NE(invoke, std::string::npos);

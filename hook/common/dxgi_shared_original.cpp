@@ -1,9 +1,13 @@
 #include "dxgi_shared_internal.h"
 #include "hook_cpu_cost.h"
 #include "pacing_trace_boundary.h"
+#include "present_stage_cost.h"
 
 namespace DXGIShared {
 HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    // The forwarded Present is the runtime's time, not CE's; the detour's stage
+    // accounting keeps it out of CE's own share (present_stage_cost.h).
+    ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Forward, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;

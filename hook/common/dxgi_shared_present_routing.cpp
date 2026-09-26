@@ -66,7 +66,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                                                    ctx.streamlineFGRunning, ctx.postSLConfirmedRendering,
                                                                    ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
                                                                    "startupHandoffNormalRoute");
-                const HRESULT hr = presentBypass(pSwapChain, SyncInterval, Flags);
+                const HRESULT hr = ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
                 if (SUCCEEDED(hr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
@@ -205,7 +205,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                                                                    ctx.hadFSRFGPhase, ctx.explicitSetOptionsActivation,
                                                                    "keepStartupNormalRoute");
                 *earlyReturn = true;
-                return presentBypass(pSwapChain, SyncInterval, Flags);
+                return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
             }
         } else if (ctx.runtimeOwnedSwapchainActive && ctx.callerFromStreamlineModule) {
             static std::atomic<int> s_streamlineStartupNormalTransportAllowedLogCount{0};
@@ -279,7 +279,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                         bypassCount, ctx.presentOwner, ctx.presentDepthVal, ctx.currentThreadId);
                 }
                 *earlyReturn = true;
-                return presentBypass(pSwapChain, SyncInterval, Flags);
+                return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
             }
         }
     }
@@ -328,7 +328,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     syntheticNum, (void*)postSLCallback, (void*)presentBypass, GetCurrentThreadId());
             }
             *earlyReturn = true;
-            return presentBypass(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
         }
     }
 
@@ -463,11 +463,11 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         }
         if (dxgi_shared_oPresentTrampoline) {
             *earlyReturn = true;
-            return dxgi_shared_oPresentTrampoline(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(dxgi_shared_oPresentTrampoline, pSwapChain, SyncInterval, Flags);
         }
         if (dxgi_shared_oPresentBypass) {
             *earlyReturn = true;
-            return dxgi_shared_oPresentBypass(pSwapChain, SyncInterval, Flags);
+            return ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
         }
         if (reentrantNum <= 10) {
             HookLogImportant("DetourPresent: Re-entrant #%d → S_OK (no bypass trampoline)", reentrantNum);

@@ -124,6 +124,8 @@ anchors that predate the split are approximate.
       `../common/pacing_trace_boundary.h` (paired proxy/DXGI Present spans),
       `../common/pacing_trace_analysis.h` (background save summaries and coverage validation),
       `../common/present_heartbeat.h` (race-free monotonic Present-gap diagnostics),
+      `../common/present_stage_cost.{h,_report.cpp}` (always-on per-stage CE time inside DetourPresent,
+      forward excluded, per thread role; `[PRESENT STAGE COST]` every 10 s from the hook thread),
       `../common/swapchain_create_recovery.h` (per-thread/HWND ownership across nested create hooks),
       `dx12_hook_ecl*.cpp` (ECL install/observation, including the callback-owned native-FSR
       transparent fast-forward and foreign-hook recursion break),

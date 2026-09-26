@@ -164,7 +164,7 @@ TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite)
     const std::string steam = ce::test_source::ReadFile(steamSource);
     ASSERT_FALSE(steam.empty());
 
-    const size_t indirectCall = steam.find("externalPresent(pSwapChain, SyncInterval, Flags)");
+    const size_t indirectCall = steam.find("ForwardPresentThrough(externalPresent, pSwapChain, SyncInterval, Flags)");
     ASSERT_NE(indirectCall, std::string::npos);
     const size_t guard = steam.rfind("if (!externalPresent) {", indirectCall);
     ASSERT_NE(guard, std::string::npos);
