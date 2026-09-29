@@ -155,7 +155,8 @@ if (hasCurrentBackBufferIdx) {
 
 const int64_t timestampQpc = metadata ? metadata->timestampQpc : 0;
 ScopedCEOverlayECLSubmission captureECLGuard("shared capture command list");
-if (!dx12_hook_g_SharedCaptureD3D12.CaptureFrame(captureQueue, bbIdx, timestampQpc, executeCommandLists))
+if (!dx12_hook_g_SharedCaptureD3D12.CaptureFrame(captureQueue, pSwapChain, bbIdx, timestampQpc,
+                                                 executeCommandLists))
     return false;
 
 SharedFrameDescriptor desc;

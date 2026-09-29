@@ -47,8 +47,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
     // destructors are no-ops; the OS will reclaim the memory anyway.
     if (IsProcessTerminating()) {
         m_pDevice.Detach();
-        m_pSwapChain.Detach();
-        m_pSwapChainIdentity.Detach();
+        m_SwapChainBinding.Clear();
         m_Fence.Detach();
         for (UINT i = 0; i < kSharedTextureCount; ++i) {
             m_CommandAllocators[i].Detach();
@@ -88,8 +87,6 @@ void SharedCaptureD3D12::ReapRetiredGenerations() {
             // Device removal can make driver-side COM teardown unsafe. Detach
             // this small generation and let the OS reclaim it at process exit.
             it->device.Detach();
-            it->swapChain.Detach();
-            it->swapChainIdentity.Detach();
             it->fence.Detach();
             it->commandList.Detach();
             for (auto& allocator : it->commandAllocators)
@@ -109,8 +106,6 @@ void SharedCaptureD3D12::AbandonRetiredGenerations() {
     std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
     for (auto& generation : m_RetiredGenerations) {
         generation.device.Detach();
-        generation.swapChain.Detach();
-        generation.swapChainIdentity.Detach();
         generation.fence.Detach();
         generation.commandList.Detach();
         for (auto& allocator : generation.commandAllocators)
@@ -162,8 +157,6 @@ bool SharedCaptureD3D12::Reset(bool force) {
     if (abandonComResources) {
         EarlyLog("DX12: SharedCapture Reset abandoning untrackable in-flight COM resources");
         m_pDevice.Detach();
-        m_pSwapChain.Detach();
-        m_pSwapChainIdentity.Detach();
         m_Fence.Detach();
         m_CommandList.Detach();
         for (UINT i = 0; i < kSharedTextureCount; ++i) {
@@ -173,8 +166,6 @@ bool SharedCaptureD3D12::Reset(bool force) {
     } else if (m_Fence && pendingFenceValue > completedFenceValue) {
         RetiredGeneration generation;
         generation.device = std::move(m_pDevice);
-        generation.swapChain = std::move(m_pSwapChain);
-        generation.swapChainIdentity = std::move(m_pSwapChainIdentity);
         generation.fence = std::move(m_Fence);
         generation.commandList = std::move(m_CommandList);
         generation.completionFenceValue = pendingFenceValue;
@@ -188,8 +179,6 @@ bool SharedCaptureD3D12::Reset(bool force) {
                  static_cast<unsigned long long>(completedFenceValue));
     } else {
         m_pDevice.Reset();
-        m_pSwapChain.Reset();
-        m_pSwapChainIdentity.Reset();
         m_Fence.Reset();
         m_CommandList.Reset();
     }
@@ -209,6 +198,7 @@ bool SharedCaptureD3D12::Reset(bool force) {
         m_FenceShareHandle = nullptr;
     }
 
+    m_SwapChainBinding.Clear();
     m_FenceValue.store(0, std::memory_order_relaxed);
     m_WriteIndex.store(0, std::memory_order_relaxed);
     m_FrameCounter = 0;
@@ -217,14 +207,10 @@ bool SharedCaptureD3D12::Reset(bool force) {
 
 bool SharedCaptureD3D12::IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) const {
     std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
-    if (!m_Active.load(std::memory_order_acquire) || !pDevice || !pSwapChain || pDevice != m_pDevice.Get() ||
-        !m_pSwapChainIdentity) {
+    if (!m_Active.load(std::memory_order_acquire) || !pDevice || !pSwapChain || pDevice != m_pDevice.Get()) {
         return false;
     }
-
-    ComPtr<IUnknown> identity;
-    return SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&identity))) && identity &&
-           identity.Get() == m_pSwapChainIdentity.Get();
+    return m_SwapChainBinding.Matches(pSwapChain);
 }
 
 SharedCaptureD3D12::SwapChainBinding SharedCaptureD3D12::DescribeSwapChainBinding(IDXGISwapChain* pSwapChain) {
@@ -235,10 +221,7 @@ SharedCaptureD3D12::SwapChainBinding SharedCaptureD3D12::DescribeSwapChainBindin
         return binding;
     }
     binding.active = m_Active.load(std::memory_order_acquire);
-    ComPtr<IUnknown> identity;
-    binding.targetsSwapChain = pSwapChain && m_pSwapChainIdentity &&
-                               SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&identity))) &&
-                               identity.Get() == m_pSwapChainIdentity.Get();
+    binding.targetsSwapChain = m_SwapChainBinding.Matches(pSwapChain);
     std::lock_guard<std::mutex> frameLock(m_Lock);
     binding.framesCaptured = m_FrameCounter;
     binding.lastCaptureQpc = m_CurrentFrame.presentTime;
@@ -253,9 +236,7 @@ SharedCaptureD3D12::ResizeRelease SharedCaptureD3D12::ReleaseForSwapChainResize(
 
     ResizeRelease result;
     std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
-    ComPtr<IUnknown> identity;
-    if (!pSwapChain || !m_pSwapChainIdentity || FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&identity))) ||
-        identity.Get() != m_pSwapChainIdentity.Get()) {
+    if (!m_SwapChainBinding.Matches(pSwapChain)) {
         return result;
     }
     result.targeted = true;
@@ -292,8 +273,7 @@ SharedCaptureD3D12::ResizeRelease SharedCaptureD3D12::ReleaseForSwapChainResize(
         for (auto& allocator : m_CommandAllocators)
             allocator.Reset();
     }
-    m_pSwapChain.Reset();
-    m_pSwapChainIdentity.Reset();
+    m_SwapChainBinding.Clear();
     return result;
 }
 
@@ -321,16 +301,10 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     m_pDevice = pDevice;
     // m_pCommandQueue removed - passed per frame
 
-    // Get swapchain 3 interface
-    HRESULT hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&m_pSwapChain));
-    if (FAILED(hr) || !m_pSwapChain) {
-        EarlyLog("DX12: SharedCapture - IDXGISwapChain3 query failed hr=0x%08X", hr);
-        Reset();
-        return false;
-    }
-    hr = pSwapChain->QueryInterface(IID_PPV_ARGS(&m_pSwapChainIdentity));
-    if (FAILED(hr) || !m_pSwapChainIdentity) {
-        EarlyLog("DX12: SharedCapture - IUnknown identity query failed hr=0x%08X", hr);
+    // Bind by identity only. A reference kept here would outlive the game's
+    // release of the chain and pin its HWND (capture_swapchain_binding.h).
+    if (!m_SwapChainBinding.Bind(pSwapChain)) {
+        EarlyLog("DX12: SharedCapture - swapchain answered no IUnknown identity sc=%p", pSwapChain);
         Reset();
         return false;
     }
@@ -338,7 +312,7 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     // Resolve real dimensions/format from a buffer. Swapchain creation
     // descriptors may legally carry zero width/height for HWND-derived sizing.
     ComPtr<ID3D12Resource> backBuffer;
-    hr = pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    HRESULT hr = pSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
     if (FAILED(hr) || !backBuffer) {
         EarlyLog("DX12: SharedCapture - GetBuffer(0) failed hr=0x%08X", hr);
         Reset();
@@ -407,6 +381,9 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
 
     m_Active.store(true, std::memory_order_release);
     CaptureManager::Get().RegisterCaptureTarget("d3d12", this);
+    EarlyLog("DX12: SharedCapture bound swapchain identity %p without a reference (sc=%p %llux%u fmt=%d)",
+             m_SwapChainBinding.Key(), pSwapChain, static_cast<unsigned long long>(backBufferDesc.Width),
+             backBufferDesc.Height, static_cast<int>(backBufferDesc.Format));
 
     return true;
 }
@@ -478,13 +455,24 @@ bool SharedCaptureD3D12::CreateSharedResources(UINT width, UINT height, DXGI_FOR
     return true;
 }
 
-bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex, int64_t timestampQpc,
+bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISwapChain* pSwapChain,
+                                     UINT backBufferIndex, int64_t timestampQpc,
                                      SharedCaptureExecuteCommandListsPtr executeCommandLists) {
     std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
     if (!stateLock.owns_lock())
         return false;
     ReapRetiredGenerations();
-    if (!m_Active.load(std::memory_order_acquire) || !CaptureManager::Get().IsCaptureEnabled() || !pCommandQueue) {
+    if (!m_Active.load(std::memory_order_acquire) || !CaptureManager::Get().IsCaptureEnabled() || !pCommandQueue ||
+        !pSwapChain) {
+        return false;
+    }
+    if (!m_SwapChainBinding.Matches(pSwapChain)) {
+        static std::atomic<int> s_foreignSwapChainLog{0};
+        if (s_foreignSwapChainLog.fetch_add(1, std::memory_order_relaxed) < 10) {
+            EarlyLog("DX12: SharedCapture - Rejected swapchain %p that this generation was not initialized for "
+                     "(bound identity=%p)",
+                     pSwapChain, m_SwapChainBinding.Key());
+        }
         return false;
     }
 
@@ -510,7 +498,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
 
     // Get the back buffer
     ComPtr<ID3D12Resource> backBuffer;
-    hr = m_pSwapChain->GetBuffer(backBufferIndex, IID_PPV_ARGS(&backBuffer));
+    hr = pSwapChain->GetBuffer(backBufferIndex, IID_PPV_ARGS(&backBuffer));
     if (FAILED(hr) || !backBuffer) {
         static std::atomic<int> s_getBufferFailureLog{0};
         if (s_getBufferFailureLog.fetch_add(1, std::memory_order_relaxed) < 10) {

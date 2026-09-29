@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-29 - Talos DLSS FG -> FSR FG exit: the D3D12 capture pinned Streamline's swapchain
+
+- `logs/taloscrashdlssfgtofsrfg` (0.1.6852, Steam overlay, sl.* redirected to `npi\sl` 2.14.1 = the game's own
+  version). Start with DLSS FG, record 04:31:32-38, switch to FSR FG at 04:31:51: AMD's `ffxCreateContext` ->
+  `CreateSwapChainForHwnd` got `E_ACCESSDENIED` on the first try, after the minimal unpin and after full overlay
+  cleanup (`retained=0`), then the exhaustion dump and UE's `TerminateProcess(3)` after a null-swapchain AV.
+- Comparison: `talosoverlaydisappearedinmenu` (0.1.6813) did the identical DLSS-G-on -> FFX create (also with no
+  `slDLSSGSetOptions(off)` first) successfully; the only difference in message types was the recording
+  (`Shared capture initialized for swapchain generation sc=<the SL chain>`).
+- Root cause: `SharedCaptureD3D12` held `ComPtr<IDXGISwapChain3>` + `ComPtr<IUnknown>` on the chain until a resize
+  or re-init, i.e. long after the recording stopped. The minidump has no heap image of the chain, so the refcount
+  itself is unobserved; the owned references are certain from code.
+- Fix: non-owning identity binding, swapchain passed per frame (see `cfr-capture-sync.md`). `SharedCaptureD3D11`
+  has the same member but is never instantiated.
+- Hardware validation pending: Talos DLSS FG, record, stop, switch to FSR FG. Expect `SharedCapture bound swapchain
+  identity ... without a reference` and no `E_ACCESSDENIED` on the FFX create.
+
 ### 2026-09-29 - Capture sync never engaged after an in-game FSR FG -> DLSS FG switch (Talos, Steam overlay)
 
 - `logs/20260929_040222` (0.1.6851, Talos profile `capture_sync_enabled=true`, `capture_sync_limiter_mode=reflex`,

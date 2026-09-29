@@ -50,6 +50,10 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
                          logCount + 1, stage ? stage : "pre-cleanup", hWnd);
         return;
     }
+    // The capture binds its swapchain by identity address and holds no
+    // reference; the key is printed so a capture bound to a dead chain is
+    // visible next to it.
+    const void* captureKey = dx12_hook_g_SharedCaptureD3D12.PeekBoundSwapChainKey();
     for (IDXGISwapChain* chain : chains) {
         const ce::swapchain_liveness::LivenessNote note = ce::swapchain_liveness::Query(chain);
         char residualRefs[32] = "unknown";
@@ -58,10 +62,10 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage) {
         }
         HookLogImportant(
             "DeepHook: E_ACCESSDENIED pin diagnostics #%d stage=%s hwnd=%p chain=%p ceReleasedLastRef=%d "
-            "residualRefsAtCeRelease=%s retained=%d (raw tracked pointer, never probed)",
+            "residualRefsAtCeRelease=%s retained=%d captureKey=%p (raw tracked pointer, never probed)",
             logCount + 1, stage ? stage : "pre-cleanup", hWnd, (void*)chain,
             note.ceReleasedLastOwnedReference ? 1 : 0, residualRefs,
-            HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
+            HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0, captureKey);
     }
 }
 

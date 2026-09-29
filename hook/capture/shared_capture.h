@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../../common/shared_defs.h"
+#include "capture_swapchain_binding.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -122,12 +123,15 @@ public:
     SharedCaptureD3D12() noexcept;
     ~SharedCaptureD3D12() override;
 
-    // Initialize with the device and swapchain
+    // Initialize with the device and swapchain. The swapchain is bound by
+    // identity only; no reference on it outlives the call.
     bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain);
 
-    // Call before Present to capture the frame using the specified command queue
-    bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT backBufferIndex, int64_t timestampQpc = 0,
-                      SharedCaptureExecuteCommandListsPtr executeCommandLists = nullptr);
+    // Call before Present to capture the frame using the specified command
+    // queue. `pSwapChain` is the chain being presented: the capture copies from
+    // it only while it is the one this generation was initialized for.
+    bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISwapChain* pSwapChain, UINT backBufferIndex,
+                      int64_t timestampQpc = 0, SharedCaptureExecuteCommandListsPtr executeCommandLists = nullptr);
 
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
@@ -151,8 +155,9 @@ public:
     // extra references on every back buffer, only while this capture copied
     // from the chain (logs/20260926_090625). Waits for this capture's own
     // copies, then releases the generation; if media still leases published
-    // frames, the textures stay and only the command list, allocators and the
-    // swapchain binding go. The next capture re-initializes at the new size.
+    // frames, the textures stay and only the command list and allocators go and
+    // the swapchain binding is cleared. The next capture re-initializes at the
+    // new size.
     struct ResizeRelease {
         bool targeted = false;
         bool waitedForCopies = false;
@@ -179,6 +184,14 @@ public:
         return m_FenceShareHandle;
     }
 
+    // Identity address of the bound swapchain, for diagnostics only (never an
+    // object: the capture holds no reference on it). Never blocks; nullptr
+    // when unbound or while a capture holds the state lock.
+    const void* PeekBoundSwapChainKey() const {
+        std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
+        return stateLock.owns_lock() ? m_SwapChainBinding.Key() : nullptr;
+    }
+
     // Reset resources (e.g. on swapchain resize)
     // Returns false when an old published generation is still leased by the
     // media process. Callers may retry from a later Present without blocking.
@@ -189,8 +202,6 @@ private:
 
     struct RetiredGeneration {
         ComPtr<ID3D12Device> device;
-        ComPtr<IDXGISwapChain3> swapChain;
-        ComPtr<IUnknown> swapChainIdentity;
         ComPtr<ID3D12Fence> fence;
         ComPtr<ID3D12GraphicsCommandList> commandList;
         std::array<ComPtr<ID3D12CommandAllocator>, kSharedTextureCount> commandAllocators;
@@ -203,8 +214,9 @@ private:
     void AbandonRetiredGenerations();
 
     ComPtr<ID3D12Device> m_pDevice;
-    ComPtr<IDXGISwapChain3> m_pSwapChain;
-    ComPtr<IUnknown> m_pSwapChainIdentity;
+    // No COM reference: holding one pins the chain past the game's release and
+    // DXGI denies the next swapchain on the HWND (capture_swapchain_binding.h).
+    ce::capture::SwapChainIdentityBinding m_SwapChainBinding;
 
     // Multi-buffered D3D12 shared resources opened by the D3D11 encoder.
     // A deeper ring avoids source-side capture starvation when the GPU is saturated.
