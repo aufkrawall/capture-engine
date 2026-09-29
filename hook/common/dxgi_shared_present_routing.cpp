@@ -1,6 +1,31 @@
 #include "dxgi_shared_internal.h"
 
 namespace DXGIShared {
+void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
+                                                     const char* route) {
+    if (!g_IPC || wrapperOwnsPresent) {
+        return;
+    }
+    {
+        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+        g_SharedFpsLimiter.SetIPCClient(g_IPC);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
+    }
+    // Log only when pacing on this bypass starts or stops, so a limiter that
+    // never engages on a recovered route shows up in the log.
+    static std::atomic<int> s_lastLoggedLimiting{-1};
+    static std::atomic<int> s_transitionLogCount{0};
+    const int limiting = g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0;
+    if (s_lastLoggedLimiting.exchange(limiting, std::memory_order_relaxed) != limiting) {
+        const int logCount = s_transitionLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || (logCount % 100) == 0) {
+            HookLogImportant("DetourPresent: FPS limiter %s on %s bypass (transition #%d, sc=%p, tid=0x%04X)",
+                             limiting ? "pacing" : "idle", route, logCount, (void*)pSwapChain, GetCurrentThreadId());
+        }
+    }
+}
+
 HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                       PresentCallContext& ctx, bool* earlyReturn) {
     *earlyReturn = false;
@@ -255,6 +280,12 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 ctx.staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
+            // This bypass returns before the normal route's limiter stage, and
+            // after an FSR FG -> DLSS FG switch it carries every final output.
+            // Without the limiter here capture sync and the general cap stay
+            // inactive until the game restarts.
+            ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, ctx.inWrapperPresent || ctx.wrappedSwapchain,
+                                                            "post-FSR confirmed standalone Present");
             // This is Streamline's physical/final output, not the app's proxy
             // Present. Forced FIFO belongs here: applying sync=1 to the proxy
             // can stall DLSS-G's pacer, while omitting it here lets the recovered
@@ -263,6 +294,9 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
             HRESULT guardedSteamHr = S_OK;
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                             "post-FSR confirmed standalone Present", &guardedSteamHr)) {
+                if (SUCCEEDED(guardedSteamHr)) {
+                    g_SharedFpsLimiter.ApplyPostPresent();
+                }
                 *earlyReturn = true;
                 return guardedSteamHr;
             }
@@ -275,11 +309,16 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                 if (bypassCount <= 10 || (bypassCount % 100) == 0) {
                     HookLogImportant(
                         "DetourPresent: Post-FSR confirmed standalone normal-route bypass #%d "
-                        "(owner=0x%04X depth=%d tid=0x%04X)",
-                        bypassCount, ctx.presentOwner, ctx.presentDepthVal, ctx.currentThreadId);
+                        "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
+                        bypassCount, ctx.presentOwner, ctx.presentDepthVal,
+                        g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0, ctx.currentThreadId);
                 }
                 *earlyReturn = true;
-                return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
+                const HRESULT bypassHr = ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
+                if (SUCCEEDED(bypassHr)) {
+                    g_SharedFpsLimiter.ApplyPostPresent();
+                }
+                return bypassHr;
             }
         }
     }

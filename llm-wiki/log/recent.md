@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-29 - Capture sync never engaged after an in-game FSR FG -> DLSS FG switch (Talos, Steam overlay)
+
+- `logs/20260929_040222` (0.1.6851, Talos profile `capture_sync_enabled=true`, `capture_sync_limiter_mode=reflex`,
+  capture 120 fps, Steam overlay loaded). Recordings r0003-r0005 ran at ~135-140 fps. `hook_debug.log` has exactly one
+  `FPS Limiter: Inactive (... captureSync=1, captureRequested=0 ...)` at game start and no `Active` line afterwards,
+  although `Capture state changed: ENABLED` was seen three times. Pacing health shows FSR FG 2x (04:11:11), FG off,
+  then DLSS FG 4x (04:11:37); from then every present logged `Post-FSR confirmed standalone normal-route bypass`.
+- Root cause: that bypass (Present and Present1) forwarded Streamline's final output through the bypass trampoline and
+  returned before the normal route's limiter stage, so `Apply()` never ran again. A fresh start with DLSS FG has no
+  FSR phase, stays on the normal route and paces - matching the user's "worked after restart".
+- Fix: `ApplyFpsLimiterBeforeBypassedFinalOutputPresent()` (routing unit) + `ApplyPostPresent()` after the forward in
+  both bypasses, wrapper-owned presents excluded; `limiterActive=` added to the bypass log line. Details in
+  `frame-pacing-and-limiter.md`. Regression: `tests/test_dxgi_shared_bypass_limiter.cpp` (all 3 fail on old sources;
+  verified with a host g++ harness only - the Windows build/gate was not run in this Linux session).
+- Unverified on hardware: next Talos FSR->DLSS switch session must show `FPS limiter pacing on post-FSR confirmed
+  standalone Present bypass` plus `FPS Limiter: Active (sync=capture, limiter=reflex ...)` when recording starts.
+
 ### 2026-09-29 - Portal RTX profile overrides never applied: layer could not load the hook into the renderer
 
 - `logs/20260929_033904` (0.1.6850, Portal RTX profile with `dlss_*_dll_path`, `streamline_dll_path`, SR/RR/FG

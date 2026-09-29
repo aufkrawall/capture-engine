@@ -171,6 +171,19 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   on a generated present and block the runtime's presenter thread inside CE's cadence lock (the FFX freeze class).
   That qualification is NOT the rejected `strictGrid = boundary && !FGActive` escape: a real final-output boundary
   stays unconditionally strict and is owned by `OutputGroupAdmission`.
+- **Every DXGI routing branch that forwards a real Present early must run the limiter stage itself.** The normal
+  route's `Apply(true, kUniqueApplicationPresent)` sits late in `ExecutePresentCore`; any branch in
+  `ExecuteStartupRouting` / `DetourPresent1` that returns through a bypass trampoline skips it. The post-FSR
+  confirmed-standalone Streamline bypass (`ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute`,
+  taken after an FSR FG -> DLSS FG switch with the stale Steam hook chain) is steady state, not startup: it carries
+  every final output for the rest of the process. Until 2026-09-29 it never called the limiter, so capture sync and the
+  general cap stayed `Inactive` until a game restart (Talos session `20260929_040222`: no `FPS Limiter: Active` line,
+  ~140 fps against a 120 capture cap). Both bypasses now call
+  `DXGIShared::ApplyFpsLimiterBeforeBypassedFinalOutputPresent()` before the vsync override and
+  `ApplyPostPresent()` after a successful forward; wrapper-owned presents are skipped (the wrapper already paced
+  them). The helper logs `FPS limiter pacing|idle on <route> bypass` on transitions. Guarded by
+  `tests/test_dxgi_shared_bypass_limiter.cpp`. The transient startup-handoff bypasses and the synthetic re-entrant
+  route (nested inside an already-paced app Present) deliberately stay limiter-free.
 - Native Vulkan presents are paced through the grid with `Apply(PresentSite::kFinalOutputBoundary)` on EVERY present
   (both `vkQueuePresentKHR` and the async `vkAcquireNextImageKHR` path), not only the first present entering the hook.
   Strange Brigade Vulkan presents several real swapchain images per frame period from concurrent present streams;

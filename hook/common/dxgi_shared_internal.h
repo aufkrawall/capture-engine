@@ -350,6 +350,14 @@ bool WaitFlipQueuePacingObject(HANDLE waitable, const char* context);
 
 namespace DXGIShared {
 void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
+// The FPS limiter stage of the normal Present route (capture sync, general cap,
+// frame-latency overrides), for a final-output Present that a routing branch
+// forwards through a bypass trampoline before the normal route's limiter runs.
+// Callers pair it with g_SharedFpsLimiter.ApplyPostPresent() after a successful
+// forward, exactly like the normal route. A Present that the swapchain wrapper
+// owns was already paced by the wrapper, so the limiter is skipped for it.
+void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
+                                                     const char* route);
 }
 
 namespace DXGIShared {

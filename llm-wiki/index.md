@@ -109,8 +109,9 @@ Primary sources:
     reservation learned from real overruns and a capture-sync opt-out, deterministic FG output-group
     admission and rational group cadence, composed capture/general constraints, explicit
     base-versus-final-output inject semantics, phase-preserving capture-sync recovery, the display
-    vertical-blank ceiling as a third simultaneous constraint, and post-gap native Reflex handoff.
-    Last verified 2026-09-15; front-loaded placement, its overrun controller, and the vertical-blank
+    vertical-blank ceiling as a third simultaneous constraint, post-gap native Reflex handoff, and the
+    rule that DXGI routing bypasses forwarding a real Present must run the limiter stage themselves.
+    Last verified 2026-09-15 (bypass rule 2026-09-29, code-only); front-loaded placement, its overrun controller, and the vertical-blank
     ceiling need a hardware re-check.
 - `vulkan-forced-fifo.md`
   - What `vsync_mode=fifo` has to reach in a Vulkan title: Streamline's Vulkan proxy above the layer, the layer's own present-mode override, and the `VK_NV_present_metering` capability that overrides both for the life of the device. What CE does for a metered generator is exactly two things: state the vertical blank on the WSI's own final DXGI flip (`SyncInterval=1`, `ALLOW_TEARING` cleared - re-armed 2026-09-13 once the present-mode override, not the interception, was identified as what unpaced the batch), and bound the *rendered* rate at `refresh / multiplier` so the batch still fits the panel. Two mechanisms stay retired and why: the present-mode override (NVIDIA's announced flip lead collapses from 6842 us to 141 us) and `VK_EXT_present_timing` relative scheduling (it bunched the metered batch it was meant to bound - 0.43 ms vs 6.91 ms screen-time stddev across a live `vsync_mode` change in one Portal RTX session - and its swapchain flag cost the game NVIDIA's native present path). Also the overlay submission ring that must never pace the game and the compute-composite acquire barrier that has to name the stage its submit waits at. Last verified on hardware 2026-09-14: 2x/3x/4x all pace at 143.6-144.2/s with 269-1062 us screen-time stddev once the rendered-rate ceiling is stated (before it, 41 x 4 = 164 fps on a 144 Hz panel made the generator stop scheduling flips entirely).

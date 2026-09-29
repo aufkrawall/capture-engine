@@ -388,6 +388,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 api == APIType::D3D12, hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
+            ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, inWrapperPresent || wrappedSwapchain,
+                                                            "post-FSR confirmed standalone Present1");
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
@@ -397,10 +399,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 if (bypassCount <= 10 || (bypassCount % 100) == 0) {
                     HookLogImportant(
                         "DetourPresent1: Post-FSR confirmed standalone normal-route bypass #%d "
-                        "(owner=0x%04X depth=%d tid=0x%04X)",
-                        bypassCount, presentOwner, presentDepthVal, currentThreadId);
+                        "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
+                        bypassCount, presentOwner, presentDepthVal, g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0,
+                        currentThreadId);
                 }
-                return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                const HRESULT bypassHr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                if (SUCCEEDED(bypassHr)) {
+                    g_SharedFpsLimiter.ApplyPostPresent();
+                }
+                return bypassHr;
             }
         }
     }
