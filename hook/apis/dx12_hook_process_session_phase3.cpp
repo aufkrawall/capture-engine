@@ -552,7 +552,12 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 dx12_hook_g_State.syncInit ? 1 : 0, dx12_hook_g_SwapchainQueue, dx12_hook_g_OriginalGameQueue,
                 g_CommandQueue.load(std::memory_order_acquire));
         }
-        return ProcessFrameFlow::kReturn;
+        // Skip only the overlay init: capture needs no overlay backend, and a
+        // runtime-owned FSR chain can keep the normal overlay uninitialized for
+        // its whole life (after DLSS FG -> FSR FG no recording went live,
+        // logs/20260929_142415). Phase4 onwards gates overlay work on
+        // overlayInit/syncInit.
+        return ProcessFrameFlow::kSkipOverlayInit;
     }
 
     // CRITICAL FIX: Don't initialize ImGui during FG suspension, FSR

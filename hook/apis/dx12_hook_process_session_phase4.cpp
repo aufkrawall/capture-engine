@@ -79,40 +79,44 @@ ProcessFrameFlow FrameProcessSession::Phase4() {
     // syncInit=false (cleared by the transition), this block would run InitOverlaySync
     // while the FG runtime is mid-initialization.  Destroying and recreating sync
     // resources during the transition corrupts GPU state → DEVICE_REMOVED.
-    if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && !deferOverlayWorkAfterResume &&
-        dx12_hook_g_State.overlayInit && !dx12_hook_g_State.syncInit && dx12_hook_g_FGTransitionCooldown <= 0) {
-        const char* skipSeparateOverlayGpuReason = nullptr;
-        if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
-            static std::atomic<int> s_runtimeOwnedSyncInitSkipLogCount{0};
-            int logCount = s_runtimeOwnedSyncInitSkipLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 300) == 0) {
-                const bool ffxStalled = IsFFXPresentCallbackStalled();
-                const bool ffxStallAllows =
-                    ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxStalled);
-                HookLogImportant(
-                    "DX12: Keeping staged sync init deferred because %s — decision matrix: "
-                    "runtime=%s apiFSR=%d directFFX=%d progressResolved=%d nativeFGPath=%d "
-                    "explicitNativeOff=%d ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
-                    "callbackEver=%d sameQueue=%d stableProof=%d "
-                    "scQueue=%p origGame=%p cmdQ=%p",
-                    skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
-                    ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-                    g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
-                    dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
-                    HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
-                    dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
-                    ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0, dx12_hook_g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                    dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,
-                    (dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_OriginalGameQueue != nullptr &&
-                     dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue)
-                        ? 1
-                        : 0,
-                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, dx12_hook_g_SwapchainQueue,
-                    dx12_hook_g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
-            }
-            return ProcessFrameFlow::kReturn;
+    const bool stagedSyncInitPending = allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL &&
+                                       !deferOverlayWorkAfterResume && dx12_hook_g_State.overlayInit &&
+                                       !dx12_hook_g_State.syncInit && dx12_hook_g_FGTransitionCooldown <= 0;
+    const char* stagedSyncInitSkipReason = nullptr;
+    const bool stagedSyncInitOwnedByRuntime =
+        stagedSyncInitPending && ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&stagedSyncInitSkipReason);
+    if (stagedSyncInitOwnedByRuntime) {
+        // Only the overlay's sync init waits: the frame goes on to the capture
+        // decision below, which needs no overlay backend.
+        static std::atomic<int> s_runtimeOwnedSyncInitSkipLogCount{0};
+        int logCount = s_runtimeOwnedSyncInitSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            const bool ffxStalled = IsFFXPresentCallbackStalled();
+            const bool ffxStallAllows =
+                ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(ffxStalled);
+            HookLogImportant(
+                "DX12: Keeping staged sync init deferred because %s — decision matrix: "
+                "runtime=%s apiFSR=%d directFFX=%d progressResolved=%d nativeFGPath=%d "
+                "explicitNativeOff=%d ffxStalled=%d ffxStallAllows=%d runtimeOwns=%d "
+                "callbackEver=%d sameQueue=%d stableProof=%d "
+                "scQueue=%p origGame=%p cmdQ=%p",
+                stagedSyncInitSkipReason ? stagedSyncInitSkipReason : "runtime-owned swapchain",
+                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+                g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
+                dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
+                HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+                dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
+                ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0, dx12_hook_g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,
+                (dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_OriginalGameQueue != nullptr &&
+                 dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue)
+                    ? 1
+                    : 0,
+                EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, dx12_hook_g_SwapchainQueue,
+                dx12_hook_g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
         }
-
+    }
+    if (stagedSyncInitPending && !stagedSyncInitOwnedByRuntime) {
         if (dx12_hook_s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
             dx12_hook_s_startupOverlayActivationStageMs != 0) {
             const ULONGLONG now = GetTickCount64();

@@ -222,10 +222,11 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackTopmostRouteRunsBeforeNormalBackendEa
         << "normal-backend Phase3 returns after the FSR cooldown and must not preempt the independent route";
     const size_t runtimeOwnedSkip =
         phase3Source.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(");
-    const size_t runtimeOwnedReturn = phase3Source.find("return ProcessFrameFlow::kReturn;", runtimeOwnedSkip);
+    const size_t runtimeOwnedFlow = phase3Source.find("return ProcessFrameFlow::", runtimeOwnedSkip);
     ASSERT_NE(runtimeOwnedSkip, std::string::npos);
-    EXPECT_NE(runtimeOwnedReturn, std::string::npos)
-        << "the source-order regression must remain tied to Phase3's runtime-owned FSR early return";
+    ASSERT_NE(runtimeOwnedFlow, std::string::npos);
+    EXPECT_EQ(phase3Source.find("return ProcessFrameFlow::kSkipOverlayInit;", runtimeOwnedSkip), runtimeOwnedFlow)
+        << "Phase3's runtime-owned FSR deferral skips only the normal-backend init";
 
     const size_t drawFrame = phase5.find("ProcessFrameFlow FrameProcessSession::DrawOverlayFrame()");
     ASSERT_NE(drawFrame, std::string::npos);

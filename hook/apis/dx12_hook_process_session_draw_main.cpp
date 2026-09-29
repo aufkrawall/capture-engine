@@ -358,6 +358,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
     }
 
     if (captureBeforeOverlay) {
+        captureBeforeOverlayPublished = true;
         int64_t captureStartUs = PerfLogger::GetQpcUs();
         PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
         const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;

@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-09-29 - After DLSS FG -> FSR FG no recording went live: overlay-init deferral ended ProcessFrame
+
+- `logs/20260929_142415` (0.1.6853, Talos): the cfc4537b crash fix held (FFX create `hr=0`). The next recording
+  (r0002) stayed pre-live; media `wIdx` never moved and the hook never logged a capture init after the switch.
+  `Present callback verdict decides base capture ... capture=1` proved `processCapture` was true.
+- Cause: `[outer] FG->off - forcing overlay reinit` cleared `overlayInit` at the FFX takeover. On the runtime-owned
+  FSR chain Phase3's `ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain` deferral (`Deferring overlay init because
+  runtime-owned native FSR FG swapchain`) returned `kReturn`. That skipped Phase4, where the capture decision and every
+  later publish live, on every frame. Phase4's staged sync-init deferral had the same `kReturn`.
+- Fix: both deferrals skip only overlay init (Phase3 -> `kSkipOverlayInit`; Phase4 falls through), and Phase4+ overlay
+  work stays gated on `overlayInit && syncInit`. `Phase6Tail` publishes `captureBeforeOverlay` when the draw chain
+  never reached it (closes the 2026-09-26 open item; that frame may already carry the callback-composited overlay).
+  Regression: `tests/test_dx12_runtime_owned_capture_flow.cpp` (source policy; ProcessFrame has no unit harness).
+- Hardware validation pending: Talos DLSS FG -> FSR FG, then record. Expect `Shared capture initialized ... sc=<FFX
+  chain>` after the switch and a live recording. Also still unproven: a fresh-start FSR FG recording.
+
 ### 2026-09-29 - Talos DLSS FG -> FSR FG exit: the D3D12 capture pinned Streamline's swapchain
 
 - `logs/taloscrashdlssfgtofsrfg` (0.1.6852, Steam overlay, sl.* redirected to `npi\sl` 2.14.1 = the game's own
