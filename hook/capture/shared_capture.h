@@ -1,8 +1,9 @@
 /**
  * Shared Capture Interface
  *
- * Defines the zero-copy capture mechanism using DXGI shared resources.
- * Both DX11 and DX12 capture paths use this interface.
+ * Defines the zero-copy capture mechanism using DXGI shared resources for the
+ * D3D12 inject path. D3D11 and the legacy APIs publish through their own
+ * producers (hook/apis/dx11_hook_capture_frame.cpp and friends).
  */
 
 #pragma once
@@ -59,57 +60,6 @@ public:
 
     // Check if capture is active
     virtual bool IsActive() const = 0;
-};
-
-// ============================================================================
-// SharedCaptureD3D11 - Zero-copy capture for D3D11
-// ============================================================================
-
-class SharedCaptureD3D11 : public ISharedCaptureTarget {
-public:
-    SharedCaptureD3D11();
-    ~SharedCaptureD3D11() override;
-
-    // Initialize with the device and swapchain
-    bool Initialize(ID3D11Device* pDevice, IDXGISwapChain* pSwapChain);
-
-    // Call before Present to capture the frame
-    bool CaptureFrame(ID3D11DeviceContext* pContext);
-
-    // ISharedCaptureTarget
-    bool GetCurrentFrame(SharedFrameDescriptor* pDesc) override;
-    void ReleaseFrame(UINT frameNumber) override;
-    bool IsActive() const override {
-        return m_Active;
-    }
-
-private:
-    bool CreateSharedTexture(UINT width, UINT height, DXGI_FORMAT format);
-    // Returns false when an old published generation is still leased by the
-    // media process. Callers may retry from a later Present without blocking.
-    bool Reset(bool force = false);
-
-    ComPtr<ID3D11Device> m_pDevice;
-    ComPtr<ID3D11Device1> m_pDevice1;
-    ComPtr<ID3D11DeviceContext> m_pContext;
-    ComPtr<IDXGISwapChain> m_pSwapChain;
-
-    // Double-buffered shared textures for producer/consumer
-    ComPtr<ID3D11Texture2D> m_SharedTextures[2];
-    HANDLE m_SharedHandles[2];
-    UINT m_Width = 0;
-    UINT m_Height = 0;
-    DXGI_FORMAT m_Format = DXGI_FORMAT_UNKNOWN;
-
-    // Keyed mutex for synchronization
-    ComPtr<IDXGIKeyedMutex> m_KeyedMutexes[2];
-
-    mutable std::recursive_mutex m_StateLock;
-    std::mutex m_Lock;
-    SharedFrameDescriptor m_CurrentFrame;
-    std::atomic<UINT> m_WriteIndex;
-    UINT m_FrameCounter;
-    std::atomic<bool> m_Active;
 };
 
 // ============================================================================

@@ -123,3 +123,15 @@ TEST(CaptureSwapChainBindingTest, D3D12SharedCaptureOwnsNoSwapChainReference) {
     ASSERT_NE(getBuffer, std::string::npos);
     EXPECT_LT(match, getBuffer);
 }
+
+// The never-instantiated SharedCaptureD3D11 kept a ComPtr<IDXGISwapChain> for
+// its whole lifetime, the pattern that denied Talos its FSR FG swapchain. No
+// shared capture target may own a swapchain reference.
+TEST(CaptureSwapChainBindingTest, SharedCaptureTargetsOwnNoSwapChainReference) {
+    for (const char* path : {"hook/capture/shared_capture.h", "hook/capture/shared_capture.cpp"}) {
+        const std::string source = ReadSource(path);
+        ASSERT_FALSE(source.empty()) << path;
+        EXPECT_EQ(source.find("ComPtr<IDXGISwapChain"), std::string::npos) << path;
+        EXPECT_EQ(source.find("SharedCaptureD3D11"), std::string::npos) << path;
+    }
+}

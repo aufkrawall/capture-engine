@@ -28,8 +28,8 @@
 - Root cause: `SharedCaptureD3D12` held `ComPtr<IDXGISwapChain3>` + `ComPtr<IUnknown>` on the chain until a resize
   or re-init, i.e. long after the recording stopped. The minidump has no heap image of the chain, so the refcount
   itself is unobserved; the owned references are certain from code.
-- Fix: non-owning identity binding, swapchain passed per frame (see `cfr-capture-sync.md`). `SharedCaptureD3D11`
-  has the same member but is never instantiated.
+- Fix: non-owning identity binding, swapchain passed per frame (see `cfr-capture-sync.md`). The never-instantiated
+  `SharedCaptureD3D11` had the same member and was removed afterwards.
 - Hardware validation pending: Talos DLSS FG, record, stop, switch to FSR FG. Expect `SharedCapture bound swapchain
   identity ... without a reference` and no `E_ACCESSDENIED` on the FFX create.
 
