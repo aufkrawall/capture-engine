@@ -115,6 +115,38 @@ TEST(FFXCreateObservationSourceTest, ArmingProvesTheTargetIsStillTheLoadedModule
     EXPECT_LT(lock, unpin) << "the pin is released only after the mutex scope, never under it";
 }
 
+TEST(FFXCreateObservationSourceTest, SuspensionPinsTheImageAcrossRestorationOutsideTheMutex) {
+    const std::string source = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string suspend = Between(source, "void SuspendFfxCreateContextBreakpoint(",
+                                        "void ResumeFfxCreateContextBreakpoint(");
+    const size_t pin = suspend.find("ModulePin pin(");
+    const size_t restoreLock = suspend.find("std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex)", pin);
+    const size_t restore = suspend.find("RestoreCreateBreakpointLocked(target, pin.Get(),");
+    ASSERT_NE(pin, std::string::npos);
+    ASSERT_NE(restoreLock, std::string::npos);
+    ASSERT_NE(restore, std::string::npos);
+    EXPECT_LT(pin, restoreLock);
+    EXPECT_LT(restoreLock, restore);
+    EXPECT_LT(suspend.find("g_CreateBreakpointSuspended.store(true"), pin)
+        << "freeze retargeting before taking a snapshot and acquiring the image reference";
+    const std::string body = Between(source, "bool RestoreCreateBreakpointLocked(", "\n}\n");
+    EXPECT_NE(body.find("if (!pinnedModule)"), std::string::npos);
+    EXPECT_EQ(body.find("IsLiveCreateContextExport("), std::string::npos)
+        << "a reference-free liveness check cannot protect the subsequent byte read/write";
+}
+
+TEST(FFXCreateObservationSourceTest, RetargetPinsThePreviousImageBeforeRestoringItsByte) {
+    const std::string source = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string arm = Between(source, "bool ArmFfxCreateContextBreakpoint(", "ffxReturnCode_t CallFfx");
+    const size_t pin = arm.find("ModulePin previousPin(");
+    const size_t restore = arm.find("RestoreCreateBreakpointLocked(previousTarget, previousPin.Get(),");
+    ASSERT_NE(pin, std::string::npos);
+    ASSERT_NE(restore, std::string::npos);
+    EXPECT_LT(pin, restore);
+    EXPECT_NE(arm.find("const bool previousBindingCurrent ="), std::string::npos)
+        << "a retarget racing the out-of-lock pin must not restore or overwrite a different binding";
+}
+
 TEST(FFXCreateObservationSourceTest, DormantAndShutdownRestoreTheCreateEntryByte) {
     const std::string api = ReadSource("hook/apis/ffx_hook_api.cpp");
     ASSERT_FALSE(api.empty());

@@ -303,6 +303,11 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
                 qBytes);
         }
 
+        // A full queue can stop all further WriteFrame calls before the I/O
+        // deadline. Keep cancelling the stuck write here too, outside the queue
+        // mutex, so the encoder can leave this wait and shutdown can join it.
+        CancelExpiredOutputIo("backpressure");
+
         // Wait briefly for writer to drain.
         const auto waitStart = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(queueMutex);

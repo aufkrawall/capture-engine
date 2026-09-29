@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-09-30 - Review fixes: full-queue disk timeout and FFX create-byte restoration lifetime
+
+- Full mux queues now service `CancelExpiredOutputIo("backpressure")` outside the queue lock;
+  a stalled writer no longer prevents the encoder from reaching the stop/join boundary.
+- FFX create suspension/retargeting pins the old export image outside the breakpoint mutex,
+  revalidates the binding, and restores while pinned. Missing images are never dereferenced.
+- Three source regressions fail before the fixes; native `FFXExportLifetimeTest` proves last-owner
+  unload cannot unmap a pinned export and rejection paths release their references. Combined incremental
+  product build 0.1.6857, full native suite and Python tool self-tests passed; game validation pending.
+
 ### 2026-09-29 - After DLSS FG -> FSR FG no recording went live: overlay-init deferral ended ProcessFrame
 
 - `logs/20260929_142415` (0.1.6853, Talos): the cfc4537b crash fix held (FFX create `hr=0`). The next recording

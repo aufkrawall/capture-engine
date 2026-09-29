@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-09-23 (recordings with committed packets survive trailer/close errors)
+Last cross-checked: 2026-09-30 (full-queue output I/O timeout recovery; recordings with committed packets survive trailer/close errors)
 
 ## Summary
 
@@ -53,6 +53,16 @@ Limits:
 - `ReservedCaptureOutputTest` covers forced identical clock/PID/sequence values for video, audio-only, PNG, and AVIF extensions. It also proves staging-to-new-name publication exposes no final placeholder and retries a collision while preserving the byte-identical existing output.
 - `MuxInvariantTest.VideoOutputPublishesOnlyFinalizedCommittedVideo` locks the independent cancellation, mux-finalization, duration, and written-video-packet publication gates.
 - The current cancellation-safe video publication change passed focused lifecycle/mux/source-contract coverage, incremental installed product build `0.1.5128`, the complete exact-build native suite, and all six Python tool self-tests.
+
+## Stalled local writes (2026-09-30)
+
+`video_encoder_streaming.cpp` gives local output operations a 30 s deadline and breaks a blocked
+writer with `CancelSynchronousIo`. `video_encoder_write.cpp` must service that deadline both at
+`WriteFrame` entry and inside the full-queue backpressure loop, before acquiring `queueMutex`.
+Otherwise 512 MiB can fill before the deadline and prevent every later cancellation check;
+`media_main_start.cpp` joins the encoder before `VideoEncoder::Stop`, so stop cannot recover it.
+The existing rate-limited cancellation log identifies `backpressure`. Regression coverage:
+`VideoEncoderOutputTruthTest.FullQueueStillServicesExpiredOutputIoBeforeTakingTheQueueLock`.
 
 ## Open Questions / Stale-risk
 

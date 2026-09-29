@@ -112,6 +112,21 @@ TEST(VideoEncoderOutputTruthTest, ExpiredOutputIoIsCancelledNotOnlyRefusedNextTi
     EXPECT_NE(source.find("CancelExpiredOutputIo(\"stop\")"), std::string::npos);
 }
 
+TEST(VideoEncoderOutputTruthTest, FullQueueStillServicesExpiredOutputIoBeforeTakingTheQueueLock) {
+    const std::string source = ReadVideoEncoderSource();
+    const size_t begin = source.find("while (!liveOutput) {");
+    ASSERT_NE(begin, std::string::npos);
+    const size_t end = source.find("if (backpressureWaitUs > 0)", begin);
+    ASSERT_NE(end, std::string::npos);
+    const std::string wait = source.substr(begin, end - begin);
+    const size_t cancel = wait.find("CancelExpiredOutputIo(\"backpressure\")");
+    const size_t lock = wait.find("std::unique_lock<std::mutex> lock(queueMutex)");
+    ASSERT_NE(cancel, std::string::npos)
+        << "a full queue must not stop servicing the writer's deadline while shutdown waits for the encoder";
+    ASSERT_NE(lock, std::string::npos);
+    EXPECT_LT(cancel, lock) << "cancellation must not run while the writer's queue mutex is held";
+}
+
 // Regression: when Stop() gave up waiting for the writer, the degraded flag was
 // read before the trailer, close and CFR coverage check had run, so a later
 // failure could never reach the completion and a clean save was claimed.

@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "ffx_export_lifetime.h"
 #include "../../common/log_meter.h"
 
 // ffxCreateContext entry breakpoint for protected official AMD runtimes.
@@ -96,20 +97,17 @@ bool ArmPinnedCreateBreakpointLocked(void* target, const char* moduleName, const
     return true;
 }
 
-// Same proof without taking a reference, for callers holding g_CreateBreakpointMutex: releasing a pin there
-// could run a module unload (and the loader lock) under CE's mutex.
-bool IsLiveCreateContextExport(HMODULE expectedModule, void* target) {
-    HMODULE owner = nullptr;
-    return expectedModule && IsLiveFfxExportEntry(target, "ffxCreateContext", &owner) && owner == expectedModule;
-}
-
-// Caller holds g_CreateBreakpointMutex. Returns false only when a live armed byte could not be removed.
-bool RestoreCreateBreakpointLocked(const char* reason) {
+// Caller holds g_CreateBreakpointMutex and acquired the image pin outside it.
+// A failed pin means the old image is gone; never inspect its entry byte.
+bool RestoreCreateBreakpointLocked(void* pinnedTarget, HMODULE pinnedModule, const char* reason) {
     void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
     if (!target || !g_CreateBreakpointArmed.load(std::memory_order_acquire)) {
         return true;
     }
-    if (!IsLiveCreateContextExport(g_CreateBreakpointModule.load(std::memory_order_acquire), target)) {
+    if (target != pinnedTarget) {
+        return false;  // a concurrent retarget owns the byte now
+    }
+    if (!pinnedModule) {
         // The image is gone (or replaced); its byte went with it.
         g_CreateBreakpointArmed.store(false, std::memory_order_release);
         HookLogImportant("FFX Hook: Dropped ffxCreateContext entry-breakpoint state for unloaded target %p (%s)",
@@ -201,14 +199,28 @@ bool ArmFfxCreateContextBreakpoint(HMODULE module, PfnFfxCreateContext target, c
         }
         return false;
     }
+    void* previousTarget = nullptr;
+    HMODULE previousModule = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
+        previousTarget = g_CreateBreakpointTarget.load(std::memory_order_acquire);
+        previousModule = g_CreateBreakpointModule.load(std::memory_order_acquire);
+    }
+    ce::ffx_export_lifetime::ModulePin previousPin(
+        previousModule, previousTarget != targetAddress ? previousTarget : nullptr, "ffxCreateContext");
     bool armed = false;
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
         if (!g_CreateBreakpointVehHandle) {
             g_CreateBreakpointVehHandle = AddVectoredExceptionHandler(1, FfxCreateContextBreakpointVEH);
         }
-        const bool retargetBlocked = g_CreateBreakpointTarget.load(std::memory_order_acquire) != targetAddress &&
-                                     !RestoreCreateBreakpointLocked("ffxCreateContext target changed");
+        const bool previousBindingCurrent =
+            g_CreateBreakpointTarget.load(std::memory_order_acquire) == previousTarget &&
+            g_CreateBreakpointModule.load(std::memory_order_acquire) == previousModule;
+        const bool retargetBlocked =
+            !previousBindingCurrent ||
+            (previousTarget != targetAddress &&
+             !RestoreCreateBreakpointLocked(previousTarget, previousPin.Get(), "ffxCreateContext target changed"));
         if (g_CreateBreakpointVehHandle && !retargetBlocked &&
             !g_CreateBreakpointSuspended.load(std::memory_order_acquire)) {
             g_CreateBreakpointModule.store(module, std::memory_order_release);
@@ -262,11 +274,21 @@ ffxReturnCode_t CallFfxCreateContextOriginalGuarded(PfnFfxCreateContext original
 }
 
 void SuspendFfxCreateContextBreakpoint(const char* ffx_hook_reason) {
-    std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-    // Set first so a concurrent forward cannot re-arm after the byte is restored.
-    g_CreateBreakpointSuspended.store(true, std::memory_order_release);
-    g_CreateBreakpointDeferredRearm.store(false, std::memory_order_release);
-    RestoreCreateBreakpointLocked(ffx_hook_reason);
+    void* target = nullptr;
+    HMODULE module = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
+        // Freeze retargeting while acquiring the pin outside CE's mutex.
+        g_CreateBreakpointSuspended.store(true, std::memory_order_release);
+        g_CreateBreakpointDeferredRearm.store(false, std::memory_order_release);
+        target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
+        module = g_CreateBreakpointModule.load(std::memory_order_acquire);
+    }
+    ce::ffx_export_lifetime::ModulePin pin(module, target, "ffxCreateContext");
+    {
+        std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
+        RestoreCreateBreakpointLocked(target, pin.Get(), ffx_hook_reason);
+    }
 }
 
 void ResumeFfxCreateContextBreakpoint(const char* ffx_hook_reason) {
