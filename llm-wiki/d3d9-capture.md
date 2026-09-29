@@ -1,16 +1,17 @@
 # Native D3D9 Capture
 
-Last cross-checked: 2026-08-26
+Last cross-checked: 2026-09-29 (split-renderer inject frame admission in media)
 
 Primary sources:
 - `hook/apis/dx9_hook.cpp`
 - `hook/common/d3d9_capture_policy.*`
 - `hook/common/vulkan_renderer_policy.h`
 - `hook/vulkan_layer/{layer_ipc,vulkan_layer_present}.cpp`
-- `captureengine/{inject_main,inject_config_publication}.cpp`
+- `captureengine/{inject_main,inject_config_publication,media_main_threads_inject}.cpp`
+- `common/inject_frame_source_policy.h`
 - `common/shared_defs_detail/abi_constants_and_config.h`
 - `hook/wrappers/{d3d9_wrap,wrapper_hooks}.cpp`
-- `tests/{test_d3d9_capture_policy,test_inject_capture_source,test_vulkan_renderer_policy}.cpp`
+- `tests/{test_d3d9_capture_policy,test_inject_capture_source,test_vulkan_renderer_policy,test_inject_frame_source_policy}.cpp`
 
 ## Summary
 
@@ -51,6 +52,7 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
 - A non-system `d3d9.dll` is not safe to probe like the Windows runtime. `DX9Hook::Init` discovers vtables by creating a synthetic factory/device; a translation runtime may treat that as a second renderer initialization rather than an isolated probe. Use the real-object IAT wrapper when it is the only available D3D9 path, and use the Vulkan layer for final presentation when that layer owns the process.
 - Once the Vulkan layer owns presentation, it also owns overlay rendering, injected capture, screenshots, and FPS pacing for D3D9 translation. Do not keep a parallel DX9 Present path merely because a D3D9 front-end is loaded: final Vulkan WSI is the authoritative displayed-output boundary.
 - Split 32-bit-to-64-bit translation stacks may keep the configured client and final Vulkan presentation in different processes. Portal RTX/RTX Remix sessions `20260825_190436`, `20260825_202150`, and `20260825_203627` prove this topology: `hl2.exe` is the 32-bit D3D9 client, while `NvRemixBridge.exe` owns the CE Vulkan layer, Vulkan device, and WSI swapchain. An exact bridge profile remains valid, but a non-whitelisted direct child renderer also inherits Vulkan-layer eligibility when its live parent PID is either the host's active source PID or the exact profile target published before injection, and that parent executable still matches the published whitelist. The pre-injection identity is required because the bridge can negotiate Vulkan before remote `LoadLibrary` publishes `sourcePid`. This preserves the configured parent profile without broadening it to unrelated helpers or relying on an executable-specific bridge rule.
+- Inject capture in that topology is written by the layer inside the renderer, so every frame-ring slot carries the renderer PID (the handles live in its handle table) while `sourcePid` stays with the client. Media admits such slots only through `common/inject_frame_source_policy.h`: `vulkanLayerClaim` must be {slot PID, session source} and a Toolhelp check (cached per pair) must show the renderer is the source's live direct child. Before this, media's source-PID pin dropped every NvRemixBridge.exe frame and Portal RTX recordings never left preparation (session `20260929_031827`). The cursor window is resolved from the session source, since the renderer owns no window.
 - In that session CE's hook worker called `GetD3D9PresentAddresses` inside Remix's `d3d9.dll`, which negotiated a second Vulkan layer instance/device concurrently with the real renderer. The Remix dump then faulted with a null read inside `d3d9!remixapi_InitializeLibrary`. The generic prevention is policy-based: no synthetic D3D9 bootstrap for Vulkan-owned or non-system D3D9 runtimes.
 
 ## Open questions / stale-risk

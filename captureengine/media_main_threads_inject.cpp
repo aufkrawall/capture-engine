@@ -1,5 +1,52 @@
 #include "media_main_internal.h"
+
+#include <tlhelp32.h>
+
+#include "../common/inject_frame_source_policy.h"
 #include "../common/inject_transport_snapshot.h"
+
+namespace {
+
+// Whether `rendererPid` is a live direct child of `clientPid`. This is the same
+// topology the Vulkan layer proved before it published its split-renderer claim
+// (hook/vulkan_layer/layer_participation.h); re-checking it here keeps a claim
+// left behind by a dead renderer, or a recycled PID, from naming a process media
+// would then open with PROCESS_DUP_HANDLE.
+ce::inject_frame_source::ParentCheck CheckDirectChildProcess(uint32_t rendererPid, uint32_t clientPid) {
+    using ce::inject_frame_source::ParentCheck;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return ParentCheck::kUnavailable;
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    ParentCheck result = ParentCheck::kUnavailable;
+    if (Process32FirstW(snapshot, &entry)) {
+        result = ParentCheck::kNotDirectChild;
+        do {
+            if (entry.th32ProcessID == rendererPid) {
+                if (entry.th32ParentProcessID == clientPid)
+                    result = ParentCheck::kDirectChild;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return result;
+}
+
+const char* ParentCheckName(ce::inject_frame_source::ParentCheck check) {
+    switch (check) {
+        case ce::inject_frame_source::ParentCheck::kDirectChild:
+            return "direct-child";
+        case ce::inject_frame_source::ParentCheck::kNotDirectChild:
+            return "not-direct-child";
+        case ce::inject_frame_source::ParentCheck::kUnavailable:
+            return "snapshot-unavailable";
+    }
+    return "unknown";
+}
+
+}  // namespace
 
 void InjectCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[Inject Thread] Started (event-driven ingest with adaptive source-side pacing)");
@@ -70,6 +117,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastDeferredCount = media_main_g_InjectDeferredFrames.load(std::memory_order_relaxed);
     bool earlyTexturesCreated = false;
     bool sharedTexturesCreated = false;
+    ce::inject_frame_source::SplitRendererVerificationCache splitRendererVerification;
     uint64_t publicationToIngestAccumUs = 0;
     uint32_t publicationToIngestSamples = 0;
     uint32_t publicationToIngestMaxUs = 0;
@@ -293,16 +341,55 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // was not written by the process CE injected into. Either way the handles in
                     // it cannot be resolved against the current source, so drop the frame rather
                     // than open an unrelated process.
+                    //
+                    // The one other legitimate writer is a split renderer: the Vulkan layer in a
+                    // direct child that presents for the session source (Portal RTX's
+                    // NvRemixBridge.exe for hl2.exe). Its slots carry its own PID because the
+                    // handles live in its handle table. Admit it only when its ownership claim
+                    // names the session source as client and it is still that source's direct
+                    // child (common/inject_frame_source_policy.h). Rejecting it here left Remix
+                    // recordings stuck before the first live frame (session 20260929_031827).
                     const uint32_t sessionSourcePid = media_main_g_pSharedMem->GetSourcePid();
-                    if (sessionSourcePid != 0 && slot.sourcePid != 0 && slot.sourcePid != sessionSourcePid) {
+                    const uint64_t vulkanLayerClaim =
+                        media_main_g_pSharedMem->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
+                    const uint32_t claimRendererPid = ce::vulkan_layer_claim::RendererPid(vulkanLayerClaim);
+                    const uint32_t claimClientPid = ce::vulkan_layer_claim::ClientPid(vulkanLayerClaim);
+                    const ce::inject_frame_source::Admission sourceAdmission = ce::inject_frame_source::Classify(
+                        slot.sourcePid, sessionSourcePid, claimRendererPid, claimClientPid);
+                    bool sourceAdmitted = sourceAdmission == ce::inject_frame_source::Admission::kSessionSource;
+                    if (sourceAdmission == ce::inject_frame_source::Admission::kSplitRendererCandidate) {
+                        const auto verdict = splitRendererVerification.Verify(slot.sourcePid, sessionSourcePid,
+                                                                              CheckDirectChildProcess);
+                        sourceAdmitted = verdict.admitted;
+                        if (verdict.ranCheck) {
+                            if (verdict.admitted) {
+                                LogInfo(
+                                    "[Inject Thread] Admitting split-renderer frames: slot source PID %lu is the "
+                                    "claimed Vulkan renderer for session source PID %lu (%s)",
+                                    static_cast<unsigned long>(slot.sourcePid),
+                                    static_cast<unsigned long>(sessionSourcePid), ParentCheckName(verdict.check));
+                            } else {
+                                LogWarn(
+                                    "[Inject Thread] Refusing split-renderer frames: slot source PID %lu claims "
+                                    "session source PID %lu as client but the process check says %s",
+                                    static_cast<unsigned long>(slot.sourcePid),
+                                    static_cast<unsigned long>(sessionSourcePid), ParentCheckName(verdict.check));
+                            }
+                        }
+                    }
+                    if (!sourceAdmitted) {
                         static std::atomic<uint32_t> s_mismatchCount{0};
                         const uint32_t seen = s_mismatchCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (seen <= 5 || (seen % 500) == 0) {
                             LogWarn(
                                 "[Inject Thread] Dropping frame whose slot source PID %lu does not match the "
-                                "session source PID %lu (occurrence %lu)",
+                                "session source PID %lu (admission=%s vulkanClaim renderer=%lu client=%lu "
+                                "occurrence %lu)",
                                 static_cast<unsigned long>(slot.sourcePid),
                                 static_cast<unsigned long>(sessionSourcePid),
+                                ce::inject_frame_source::AdmissionName(sourceAdmission),
+                                static_cast<unsigned long>(claimRendererPid),
+                                static_cast<unsigned long>(claimClientPid),
                                 static_cast<unsigned long>(seen));
                         }
                         // Use the existing drop path rather than `continue`: the only loop
@@ -323,12 +410,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // area once per PID and map through its current physical
                     // bounds so windowed, borderless, DPI, and render-scale
                     // configurations all place the cursor correctly.
+                    // The window belongs to the session source: a split renderer presents
+                    // into its client's window and owns none itself.
+                    const DWORD cursorWindowPid = sessionSourcePid != 0 ? sessionSourcePid : qf.sourcePid;
                     static DWORD s_cursorWindowPid = 0;
                     static HWND s_cursorWindow = NULL;
-                    if (qf.sourcePid != s_cursorWindowPid || !s_cursorWindow || !IsWindow(s_cursorWindow) ||
-                        !WindowBelongsToProcess(s_cursorWindow, qf.sourcePid)) {
-                        s_cursorWindowPid = qf.sourcePid;
-                        s_cursorWindow = qf.sourcePid != 0 ? GetMainWindowForProcess(qf.sourcePid) : NULL;
+                    if (cursorWindowPid != s_cursorWindowPid || !s_cursorWindow || !IsWindow(s_cursorWindow) ||
+                        !WindowBelongsToProcess(s_cursorWindow, cursorWindowPid)) {
+                        s_cursorWindowPid = cursorWindowPid;
+                        s_cursorWindow = cursorWindowPid != 0 ? GetMainWindowForProcess(cursorWindowPid) : NULL;
                     }
                     RECT captureBounds = {0, 0, static_cast<LONG>(qf.width), static_cast<LONG>(qf.height)};
                     RECT clientBounds = {};
