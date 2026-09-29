@@ -76,6 +76,8 @@ anchors that predate the split are approximate.
   - `vulkan_layer_target_list.h` - which processes the implicit Vulkan layer may enter; the inject
     child persists the list to `HKCU\Software\CaptureEngine\VulkanLayerTargets` (REG_MULTI_SZ),
     the layer decides at negotiation.
+  - `vulkan_layer_host_directory.h` - the `VK_LAYER_CE_host_directory.txt` pointer staged beside the layer
+    (install directory, UTF-8) and the hook-load candidate order a split renderer's layer follows.
 - `captureengine/`
   - Host/controller logic: `main_controller.cpp`, `main_recording.cpp`, `main_vulkan.cpp`,
     `main_entry.cpp`, `main_internal.h`.

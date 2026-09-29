@@ -214,7 +214,17 @@ bool LayerIPC_Init() {
             LayerLog("Inherited renderer: published exact runtime-override PID %lu for client PID %lu",
                      static_cast<unsigned long>(GetCurrentProcessId()),
                      static_cast<unsigned long>(inheritedParentPid));
-            LayerBootstrapInheritedRendererHook();
+            if (LayerBootstrapInheritedRendererHook() == InheritedRendererBootstrap::HookUnavailable) {
+                // No hook in this renderer means nothing here will ever apply the
+                // profile's runtime overrides. The claim exists so exactly one
+                // process of the tree does, so keeping it would leave the client
+                // standing down for a renderer that cannot take over. Withdrawing
+                // it hands the overrides back to the client (fail-open).
+                ReleaseInheritedRendererClaim(sharedMemory);
+                LayerLog("Inherited renderer: withdrew the runtime-override claim for client PID %lu because "
+                         "this renderer could not load the CaptureEngine hook",
+                         static_cast<unsigned long>(inheritedParentPid));
+            }
         }
 
         // Update graphics config from shared memory

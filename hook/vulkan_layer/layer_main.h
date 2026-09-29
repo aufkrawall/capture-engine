@@ -33,7 +33,21 @@ bool LayerIPC_Init();
 void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
 bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid = nullptr);
-bool LayerBootstrapInheritedRendererHook();
+
+// How far the process-local runtime-override hook got in an inherited child
+// renderer (layer_renderer_bootstrap.cpp).
+enum class InheritedRendererBootstrap {
+    // The hook is loaded and finished initializing before Vulkan did.
+    Ready,
+    // The hook DLL could not be loaded at all: nothing in this process will ever
+    // apply the overrides, so the claim that says "this renderer owns them" must
+    // not stand.
+    HookUnavailable,
+    // The hook is loaded but did not report ready in time. It may still finish, so
+    // the claim stands.
+    NotReady,
+};
+InheritedRendererBootstrap LayerBootstrapInheritedRendererHook();
 void LayerIPC_StartHostLifecycleWatcher();
 void LayerIPC_SetTextures(const HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format);
 void LayerIPC_SetFence(HANDLE fenceHandle);

@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-09-29 - Portal RTX profile overrides never applied: layer could not load the hook into the renderer
+
+- `logs/20260929_033904` (0.1.6850, Portal RTX profile with `dlss_*_dll_path`, `streamline_dll_path`, SR/RR/FG
+  presets, `dlss_debug_overlay`, `vsync_mode=fifo`, `anisotropic_filtering=16x`). The injector published the whole
+  resolved config (`srPreset=13 rrPreset=6 fgPreset=2 indicator=on runtimePaths=1111`), AF was applied by the layer
+  (`forced AF applied ... 16.0x`), but `hook_debug.log` had no `NvRemixBridge.exe` lines and the client logged
+  `Runtime preload: skipped because inherited child renderer PID 4468 owns ...` and `DLSS indicator: skipped ...`.
+- Root cause: `vulkan_layer.log` `Inherited renderer bootstrap: failed to load capture_hook_x64.dll (error=126)`.
+  `LayerBootstrapInheritedRendererHook` resolved the hook beside the layer DLL, but since the runtime staging the
+  layer is a copy under `%LOCALAPPDATA%\CaptureEngine\vulkan_layers\b<build>` holding only layer + gate. The claim
+  was already published, so the client stood down too: no process owned the overrides.
+- Fix: the controller stages `VK_LAYER_CE_host_directory.txt` (install directory) beside the layer; the layer loads the
+  hook from it via `HookLoadCandidates` and `LoadLibraryFromSecurePath`; if no candidate loads it withdraws the claim
+  (fail-open) and logs which settings will not apply. No ABI change (deliberately not a `DiscoveryInfo` field, see
+  `dx12-injection-bootstrap.md`). Regression: `tests/test_vulkan_layer_host_directory.cpp` (3 of its 11 tests fail
+  against the old sources; run under Wine with a MinGW-built gtest).
+- Not a bug, still in that profile: `vsync_mode=fifo` stands down for a metered frame generator (`NOT overriding
+  present mode 0 -> 2 (fifo) - this device enabled VK_NV_present_metering`), hardware-verified 2026-09-14 in
+  `vulkan-forced-fifo.md`; rendered rate is bounded at `refresh / multiplier` instead (`display vertical-blank
+  ceiling ... 144 fps` line).
+- Unverified on hardware: the hook actually completing its bootstrap inside `NvRemixBridge.exe`. Next Portal RTX
+  session must show `Inherited renderer bootstrap: loaded ...\capture_hook_x64.dll` + `... ready before Vulkan
+  initialization` and `Inherited renderer: synchronized process-local DLSS/Streamline profile controls` in
+  `hook_debug.log`.
+
 ### 2026-09-29 - Portal RTX inject recording stuck in "preparing": split-renderer frames dropped by media
 
 - `logs/20260929_031827` (0.1.6849, Portal RTX: `hl2.exe` 32-bit D3D9 client PID 12472, `NvRemixBridge.exe`

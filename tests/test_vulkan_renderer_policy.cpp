@@ -610,7 +610,13 @@ TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverrides
     EXPECT_NE(hookBootstrap.find("ce::inherited_renderer::RendererPid(claim)"), std::string::npos);
     EXPECT_NE(layerBootstrap.find("capture_hook_x64.dll"), std::string::npos);
     EXPECT_NE(layerBootstrap.find("CE_WaitForInheritedRendererBootstrap"), std::string::npos);
-    EXPECT_NE(layerBootstrap.find("LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"), std::string::npos);
+    // The load goes through the project's secure loader, which pins the search
+    // to the DLL's own directory and System32 (never the current directory or PATH).
+    EXPECT_NE(layerBootstrap.find("LoadLibraryFromSecurePath"), std::string::npos);
+    const std::string secureLoader =
+        ce::test_source::ReadFile(root / "common" / "secure_dll_loading.cpp");
+    EXPECT_NE(secureLoader.find("LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"), std::string::npos);
+    EXPECT_NE(secureLoader.find("LOAD_LIBRARY_SEARCH_SYSTEM32"), std::string::npos);
     EXPECT_NE(hookBootstrap.find("shared.dlssSrDllPath"), std::string::npos);
     EXPECT_NE(hookBootstrap.find("shared.streamlineDllPath"), std::string::npos);
     EXPECT_NE(hookBootstrap.find("shared.dlssDebugOverlay"), std::string::npos);

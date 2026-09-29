@@ -512,6 +512,11 @@ Reflex handoff rules.
   `CreateFeature` for feature 13 crashed on a null pointer while CE still injected `dlss_rr_preset=f`. If a
   profile's override paths look inert, read the `Runtime preload: skipped because inherited child renderer PID ...
   owns the process-local DLSS/Streamline overrides of client PID ...` line - it names both identities. Details in
+  `dx12-injection-bootstrap.md`. The claim only helps if
+  the renderer really runs the hook: on 2026-09-29 (`logs/20260929_033904`, Portal RTX) the layer could not find
+  `capture_hook_x64.dll` from its staged directory (`vulkan_layer.log`: `Inherited renderer bootstrap: failed to load
+  ... (error=126)`), so neither process applied the overrides. Fixed by the staged host-directory pointer and a
+  claim withdrawal when the hook cannot load; see the "Only the layer and the gate are staged" bullet in
   `dx12-injection-bootstrap.md`.
 - Diagnostics: every load of a runtime-family module (sl.*, nvngx_dlss*/nvngx core, nvapi64) now logs its **resolved
   full path** from the LdrRegisterDllNotification callback (`Loader: runtime module loaded: <name> -> <path>`), which

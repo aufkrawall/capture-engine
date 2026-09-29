@@ -12,6 +12,7 @@
 
 #include "build_identity.h"
 #include "logging.h"
+#include "vulkan_layer_host_directory.h"
 #include "vulkan_layer_registration_registry.h"
 
 namespace ce::vulkan_layer {
@@ -489,6 +490,79 @@ static bool WriteStagedManifest(const LayerManifest& manifest) {
     return true;
 }
 
+// Stages the pointer the layer follows to the installed hook DLL (see
+// common/vulkan_layer_host_directory.h): the hook cannot be staged, but a split
+// renderer can only receive it if the staged layer knows where it lives.
+//
+// Best-effort by design. A missing pointer costs the inherited-renderer
+// DLSS/Streamline overrides, never the overlay or the recording, so a failure
+// here must not take the whole layer registration down with it - but it is
+// logged, because the symptom (a profile's overrides silently not applying in a
+// child renderer) is otherwise invisible from the host.
+static void WriteHostDirectoryPointer(const RegistrationPlan& plan) {
+    if (plan.stagingDir.empty() || plan.stagingDir == plan.baseDir) {
+        // The layer sits beside the hook; its own directory already answers.
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::path hostDirectory = std::filesystem::absolute(plan.baseDir, ec);
+    if (ec)
+        hostDirectory = plan.baseDir;
+    const std::string contents =
+        ce::vulkan_layer_host_directory::Serialize(hostDirectory.lexically_normal().wstring());
+    if (contents.empty()) {
+        LogWarn("[VulkanReg] Install directory %s cannot be recorded for the Vulkan layer; a child renderer's "
+                "graphics runtime overrides will not apply",
+                PathToUtf8(hostDirectory).c_str());
+        return;
+    }
+
+    const std::filesystem::path pointerPath = plan.stagingDir / ce::vulkan_layer_host_directory::kPointerFileName;
+    if (std::filesystem::exists(pointerPath, ec)) {
+        std::ifstream in(pointerPath, std::ios::binary);
+        if (in) {
+            const std::string existing((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (existing == contents)
+                return;
+        }
+    }
+
+    // Replace atomically so a layer reading it while CaptureEngine starts sees the
+    // old or the new directory, never a prefix of one. A reader that holds the
+    // file open without delete sharing makes the rename fail; overwriting in
+    // place is the fallback.
+    const std::filesystem::path temporaryPath = pointerPath.wstring() + L".tmp";
+    bool written = false;
+    {
+        std::ofstream out(temporaryPath, std::ios::binary | std::ios::trunc);
+        if (out) {
+            out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+            written = out.good();
+        }
+    }
+    if (written) {
+        std::filesystem::rename(temporaryPath, pointerPath, ec);
+        written = !ec;
+    }
+    if (!written) {
+        std::filesystem::remove(temporaryPath, ec);
+        std::ofstream out(pointerPath, std::ios::binary | std::ios::trunc);
+        if (out) {
+            out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+            written = out.good();
+        }
+    }
+    if (!written) {
+        LogWarn("[VulkanReg] Failed to record the install directory for the Vulkan layer at %s; a child renderer's "
+                "graphics runtime overrides will not apply",
+                PathToUtf8(pointerPath).c_str());
+        return;
+    }
+    LogInfo("[VulkanReg] Staged host directory pointer: %s -> %s", PathToUtf8(pointerPath).c_str(),
+            PathToUtf8(hostDirectory).c_str());
+}
+
 static bool StagePlanArtifacts(const RegistrationPlan& plan) {
     if (plan.stagingDir.empty()) {
         return true;
@@ -523,6 +597,7 @@ static bool StagePlanArtifacts(const RegistrationPlan& plan) {
         success &= StageFileIfChanged(manifest.sourceGatePath, manifest.gatePath);
         success &= WriteStagedManifest(manifest);
     }
+    WriteHostDirectoryPointer(plan);
     return success;
 }
 
