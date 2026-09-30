@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-09-30 - Stable 0.1.6868 published with all five assets attested
+
+- `release-stable.yml` run 36700494306 built exact commit `a058e822` with `attest=always` and
+  `--verify --verify-clean`. Native/Python suites, x64 ASan/UBSan, PE/privacy checks, packaging,
+  and the full 887-unit analyzer ratchet passed. Runtime integration, fuzz, and test-app execution
+  remain outside this static action's coverage; x86 sanitizer runtime remains unavailable.
+- All five published asset sizes and SHA-256 digests matched the runner outputs. Attestations verified
+  against the release workflow, `refs/heads/main`, and the exact source/signer commit. The cleanup action
+  succeeded for this release. No release or tag was overwritten; the two earlier attempts were cancelled.
+- Post-publication promotion exposed `re.PatternError: bad escape` from a Windows path in notes:
+  `promote_unreleased` passed the note text as a regex replacement template. A callable replacement now
+  preserves every backslash literally, with coverage for Windows/UNC paths and backreference-like text.
+  The published release section is promoted separately from this next-cycle tooling fix.
+- Promoted notes match the published body exactly. The new promotion regression fails on the old
+  implementation; 61 focused tool tests, lint, and combined product gate 0.1.6869 passed after the fix.
+  All three attempt logs returned 404, and the one-job runner exited with no listener/worker left behind.
+
 ### 2026-09-30 - Stable release preflight: unused limiter helpers and host-timed GPU test
 
 - Release preparation found `clang-diagnostic-unused-function` at 76 > 74: the new runtime-output suite

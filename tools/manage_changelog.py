@@ -328,7 +328,7 @@ def promote_unreleased(
         f"{unreleased_notes}\n\n"
     )
 
-    updated_text = unreleased_pattern.sub(new_section, text, count=1)
+    updated_text = unreleased_pattern.sub(lambda _: new_section, text, count=1)
     return updated_text, True
 
 

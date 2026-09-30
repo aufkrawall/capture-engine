@@ -1,6 +1,6 @@
 # Changelog and Release Notes Guidelines
 
-Last cross-checked: 2026-09-20 (automated changelog validation and release notes generation via `tools/manage_changelog.py`; GitHub release notes integration in `release-stable.yml`; agent pre-commit changelog mandate in `AGENTS.md`).
+Last cross-checked: 2026-09-30 (release promotion preserves literal Windows paths and regex-like backslash sequences; automated changelog validation, release notes generation, and GitHub workflow integration).
 
 Primary sources:
 - `AGENTS.md`
@@ -99,6 +99,11 @@ Promotion is the operator's step **after** the release publishes; the workflow p
 command in its job summary. Skipping it is not silently tolerated: once `## Unreleased` states
 `Changes since [v<that tag>]`, `--generate-release-notes` refuses to publish those entries under
 that same version again, so a re-dispatch cannot republish the previous release's notes.
+
+Promotion inserts extracted notes through a callable regex replacement. A plain replacement string
+interprets Windows paths such as `C:\Games\Steam` and sequences such as `\1` as regex escapes or
+backreferences, so it can fail after successful publication or alter the notes. The
+`test_promotion_preserves_literal_backslashes_in_notes` regression covers both forms and UNC paths.
 
 ## Invariants & Guardrails
 

@@ -228,6 +228,19 @@ class ChangelogTest(unittest.TestCase):
             self.assertIn("needs a version", result.stderr)
             self.assertEqual(path.read_text(encoding="utf-8"), SAMPLE_VALID_CHANGELOG)
 
+    def test_promotion_preserves_literal_backslashes_in_notes(self) -> None:
+        for literal in (r"C:\Games\Steam\settings.ini", r"\\server\share\1", r"\g<0>"):
+            with self.subTest(literal=literal):
+                text = SAMPLE_VALID_CHANGELOG.replace(
+                    "fixed crash when shutting down overlay during fence synchronization.",
+                    f"keeps the path `{literal}` unchanged.",
+                )
+                expected_notes = extract_version_notes(text, "Unreleased")
+                updated, promoted = promote_unreleased(text, "0.1.6653")
+                self.assertTrue(promoted)
+                self.assertEqual(extract_version_notes(updated, "0.1.6653"), expected_notes)
+                self.assertEqual(validate_changelog(updated), [])
+
     def test_live_repo_changelog_is_valid(self) -> None:
         repo_changelog = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
         self.assertTrue(repo_changelog.exists(), f"Expected CHANGELOG.md at {repo_changelog}")
