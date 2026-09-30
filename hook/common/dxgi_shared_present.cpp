@@ -298,6 +298,7 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
                                                     bool presentBypassAvailable) {
     PresentCallContext ctx;
     ctx.api = api;
+    ctx.callbackProvenRuntimeOutput = ce::present_association::PeekPresentFrameVerdict().known;
     ctx.wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
     ctx.inWrapperPresent = IsInWrapperPresent();
     ctx.streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);

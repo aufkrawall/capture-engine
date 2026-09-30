@@ -288,11 +288,80 @@ inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseT
 // generated frames included (native-Vulkan vkQueuePresentKHR /
 // vkAcquireNextImageKHR). Only those sites may own multiplier-sized output-
 // group admission.
+//
+// kRuntimeOutputPresent is the DXGI Present/Present1 boundary for a Present the
+// frame-generation runtime itself issues for ONE output, proven by the present
+// callback it ran for exactly that output on the same thread
+// (ce::present_association). Callback-owned native FSR FG presents every output,
+// generated and application alike, from AMD's presenter thread, so this stream
+// is the displayed stream and inject capture records all of it. Each entry is
+// one output: CE paces it on the output grid itself, never on a base-frame
+// target that the generated outputs would then halve. It stays non-blocking
+// (see ShouldGateEveryApplyOnCadenceGrid) because the caller is the runtime's
+// presenter thread.
 enum class PresentSite : uint8_t {
     kDuplicateProne = 0,
     kUniqueApplicationPresent = 1,
     kFinalOutputBoundary = 2,
+    kRuntimeOutputPresent = 3,
 };
+
+// The DXGI Present detours' site: a Present the runtime's callback proved to be
+// one of its outputs, otherwise the application's own Present.
+inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput) {
+    return callbackProvenRuntimeOutput ? PresentSite::kRuntimeOutputPresent
+                                       : PresentSite::kUniqueApplicationPresent;
+}
+
+// Whether inject capture records the final presented output for this Apply():
+// the DX12/Vulkan final-output routes publish it, and a runtime-output site IS
+// the stream DX12 inject capture copies (every callback-proven output), which
+// holds before media's delayed handshake too. Getting this wrong divides the
+// capture-sync cap by the FG multiplier at the start of every recording (Talos
+// FSR FG logs/20260930_032355: `captureSource=final effective=60` for 1.2 s,
+// then `captureSource=base captureEq=240`).
+inline bool IsInjectCaptureFinalOutputForSite(bool finalOutputRoutePublished, PresentSite site) {
+    return finalOutputRoutePublished || site == PresentSite::kRuntimeOutputPresent;
+}
+
+// The local cadence targets for one Apply().
+//
+// The render grid is what a game-owned Reflex Sleep paces: one rendered frame,
+// i.e. a whole output group once the target denotes output frames. The present
+// grid is what CE's own wait at this call site paces: a whole group at a final-
+// output boundary (the generated outputs pass without a wait), a single output
+// at a runtime-output site, a base frame everywhere else. presentTargetFps is
+// the matching per-entry rate for the duplicate window, post-present Reflex
+// cadence and statistics.
+struct LocalCadencePlan {
+    int presentTargetFps = 0;
+    int presentCadenceTargetFps = 0;
+    int presentCadenceScale = 1;
+    int renderCadenceTargetFps = 0;
+    int renderCadenceScale = 1;
+};
+
+inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTargetFps, bool frameGenerationActive,
+                                                int frameGenerationMultiplier, bool scaleForFrameGeneration,
+                                                PresentSite site) {
+    LocalCadencePlan plan;
+    const bool finalOutputBoundary = site == PresentSite::kFinalOutputBoundary;
+    const bool runtimeOutput = site == PresentSite::kRuntimeOutputPresent;
+    plan.renderCadenceScale = ResolveCadenceScaleMultiplier(
+        frameGenerationActive, frameGenerationMultiplier,
+        scaleForFrameGeneration && (finalOutputBoundary || runtimeOutput));
+    plan.renderCadenceTargetFps = plan.renderCadenceScale > 1 ? outputTargetFps : baseTargetFps;
+    if (runtimeOutput && scaleForFrameGeneration) {
+        plan.presentTargetFps = outputTargetFps;
+        plan.presentCadenceTargetFps = outputTargetFps;
+        plan.presentCadenceScale = 1;
+        return plan;
+    }
+    plan.presentTargetFps = baseTargetFps;
+    plan.presentCadenceTargetFps = runtimeOutput ? baseTargetFps : plan.renderCadenceTargetFps;
+    plan.presentCadenceScale = runtimeOutput ? 1 : plan.renderCadenceScale;
+    return plan;
+}
 
 // Whether every Apply() entry from this site must take a cadence-grid slot
 // instead of the legacy duplicate-present time window.
@@ -310,12 +379,17 @@ enum class PresentSite : uint8_t {
 // behaviour. This is NOT the rejected `strictGrid = boundary && !FGActive`
 // escape from Portal RTX: a real final-output boundary stays strict and is
 // owned by OutputGroupAdmission below.
+//
+// A kRuntimeOutputPresent site classifies structurally, but its caller is the
+// FG runtime's presenter thread: it keeps the non-blocking cadence lock, and
+// with the limiter active the duplicate window is off anyway.
 inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenerationActive) {
     switch (site) {
         case PresentSite::kFinalOutputBoundary:
             return true;
         case PresentSite::kUniqueApplicationPresent:
             return !frameGenerationActive;
+        case PresentSite::kRuntimeOutputPresent:
         case PresentSite::kDuplicateProne:
             break;
     }

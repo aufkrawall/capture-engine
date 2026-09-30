@@ -171,6 +171,24 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   on a generated present and block the runtime's presenter thread inside CE's cadence lock (the FFX freeze class).
   That qualification is NOT the rejected `strictGrid = boundary && !FGActive` escape: a real final-output boundary
   stays unconditionally strict and is owned by `OutputGroupAdmission`.
+- **A callback-proven FG runtime output is its own site (`PresentSite::kRuntimeOutputPresent`, 2026-09-30).**
+  Callback-owned native FSR FG presents EVERY output (generated and application) from AMD's presenter thread through
+  CE's DXGI detour, and the game's own Present never reaches it (it goes into AMD's proxy). As
+  `kUniqueApplicationPresent` this stream was modelled as base frames while every Apply was one output: the general
+  cap divided by the FG multiplier per output (120 cap -> 60 displayed), and capture sync flipped from
+  `captureSource=final effective=60` before media's inject handshake to `captureSource=base captureEq=240` after it
+  (Talos `logs/20260930_032355`: ~1.2 s at half rate on every recording start, then FFX pacing took seconds to settle;
+  a 144 general cap would have replaced capture sync). The detours now read the present-callback verdict at entry
+  (`present_association::PeekPresentFrameVerdict`, before ProcessFrame consumes it; `ctx.callbackProvenRuntimeOutput`)
+  and select the site through `ResolveDxgiPresentSite`, the bypass helper included. For that site
+  `IsInjectCaptureFinalOutputForSite` makes the capture source final output (DX12 capture records every
+  callback-proven output since eec94472), and `ResolveLocalCadencePlan` splits two grids: the present grid paces each
+  output at the output target (scale 1), the render grid (game-owned Reflex hybrid spin, once per rendered frame)
+  takes target/multiplier on the exact rational group grid. The Reflex driver interval keeps the base target, since
+  FSR's generated frames are invisible to it. The site stays non-strict (presenter thread, FFX freeze class). Tests:
+  `tests/test_fps_limiter_runtime_output_site.cpp`, `PresentCallbackAssociationTest.Peek*`. Expected trace:
+  `Apply: ACTIVE ... target=120 effective=60 group=120/1 ... captureEq=120 captureSource=final site=3`, unchanged
+  across the handshake. Hardware validation pending.
 - **Every DXGI routing branch that forwards a real Present early must run the limiter stage itself.** The normal
   route's `Apply(true, kUniqueApplicationPresent)` sits late in `ExecutePresentCore`; any branch in
   `ExecuteStartupRouting` / `DetourPresent1` that returns through a bypass trampoline skips it. The post-FSR

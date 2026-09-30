@@ -2,14 +2,14 @@
 
 namespace DXGIShared {
 void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
-                                                     const char* route) {
+                                                     bool callbackProvenRuntimeOutput, const char* route) {
     if (!g_IPC || wrapperOwnsPresent) {
         return;
     }
     {
         ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
     // Log only when pacing on this bypass starts or stops, so a limiter that
@@ -285,6 +285,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
             // Without the limiter here capture sync and the general cap stay
             // inactive until the game restarts.
             ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, ctx.inWrapperPresent || ctx.wrappedSwapchain,
+                                                            ctx.callbackProvenRuntimeOutput,
                                                             "post-FSR confirmed standalone Present");
             // This is Streamline's physical/final output, not the app's proxy
             // Present. Forced FIFO belongs here: applying sync=1 to the proxy

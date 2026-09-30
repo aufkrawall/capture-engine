@@ -70,12 +70,17 @@ void NotePresentEntry(int64_t presentEntryUs) {
     verdictGeneration = stagedGeneration;
 }
 
-PresentFrameVerdict ConsumePresentFrameVerdict() {
+PresentFrameVerdict PeekPresentFrameVerdict() {
     PresentFrameVerdict verdict;
     if (verdictPending && verdictGeneration == generation.load(std::memory_order_acquire)) {
         verdict.known = true;
         verdict.generated = verdictGenerated;
     }
+    return verdict;
+}
+
+PresentFrameVerdict ConsumePresentFrameVerdict() {
+    const PresentFrameVerdict verdict = PeekPresentFrameVerdict();
     verdictPending = false;
     return verdict;
 }

@@ -130,7 +130,7 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     ExpectEveryCallScoped(core, "HandleDX12ProcessFrame(", "CostStage::kOverlay", 1, file);
     ExpectEveryCallScoped(core, "HandleDX11ProcessFrame(", "CostStage::kOverlay", 1, file);
     ExpectEveryCallScoped(core, "InvokeDX12WaitForOverlayCompletion(nullptr);", "CostStage::kOverlayWait", 1, file);
-    ExpectEveryCallScoped(core, "PresentSite::kUniqueApplicationPresent", "CostStage::kLimiter", 3, file);
+    ExpectEveryCallScoped(core, "ResolveDxgiPresentSite(", "CostStage::kLimiter", 4, file);
 
     // Post-present bookkeeping starts right after the final forward, before the signal flush.
     const size_t finalForward = core.rfind("hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);");

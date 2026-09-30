@@ -358,8 +358,9 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
 // Callers pair it with g_SharedFpsLimiter.ApplyPostPresent() after a successful
 // forward, exactly like the normal route. A Present that the swapchain wrapper
 // owns was already paced by the wrapper, so the limiter is skipped for it.
+// callbackProvenRuntimeOutput selects the same PresentSite as the normal route.
 void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
-                                                     const char* route);
+                                                     bool callbackProvenRuntimeOutput, const char* route);
 }
 
 namespace DXGIShared {
@@ -758,5 +759,9 @@ struct PresentCallContext {
     bool startupHandoffSteamRisk = false;
     bool postFSRRuntimeStartupHandoffRisk = false;
     bool streamlineStartupHandoffTransportRisk = false;
+    // The FG runtime's present callback ran for exactly this Present on this
+    // thread (ce::present_association), so it is one runtime output. Captured
+    // at entry because ProcessFrame consumes the verdict before the limiter.
+    bool callbackProvenRuntimeOutput = false;
 };
 }

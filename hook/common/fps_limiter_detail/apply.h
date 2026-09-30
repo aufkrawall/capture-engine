@@ -84,8 +84,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                                                            : "pending";
 
     const bool injectVideoCaptureRequested = shm->runtimeState.IsInjectVideoCaptureRequested();
-    const bool injectFinalOutputAvailable =
-        injectFinalOutputCaptureAvailable_.load(std::memory_order_acquire);
+    const bool injectFinalOutputAvailable = ce::fps_limiter_policy::IsInjectCaptureFinalOutputForSite(
+        injectFinalOutputCaptureAvailable_.load(std::memory_order_acquire), site);
     const auto targetSelection = ce::fps_limiter_policy::ResolveLimiterTargetSelection(
         captureRequested, captureSyncEnabled, captureFps, captureSyncMultiplier, useVFR,
         generalEnabled, generalFps, fgActive, fgMultiplier, injectVideoCaptureRequested,
@@ -177,9 +177,11 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         usingCaptureSync, injectVideoCaptureRequested, injectFinalOutputAvailable);
     int effectiveTargetFps = ce::fps_limiter_policy::ResolveFrameGenerationBaseTarget(
         targetFps, fgActive, fgMultiplier, scaleForFrameGeneration);
-    const int cadenceScale = ce::fps_limiter_policy::ResolveCadenceScaleMultiplier(
-        fgActive, fgMultiplier, scaleForFrameGeneration && finalOutputBoundary);
-    const int cadenceTargetFps = (cadenceScale > 1) ? targetFps : effectiveTargetFps;
+    const auto cadencePlan = ce::fps_limiter_policy::ResolveLocalCadencePlan(
+        targetFps, effectiveTargetFps, fgActive, fgMultiplier, scaleForFrameGeneration, site);
+    const int cadenceScale = cadencePlan.presentCadenceScale;
+    const int cadenceTargetFps = cadencePlan.presentCadenceTargetFps;
+    int presentTargetFps = cadencePlan.presentTargetFps;
     // A driver-owned low-latency interval that already accounts for NVIDIA's
     // generated frames takes the OUTPUT rate, never the FG-divided base target
     // CE's own cadence paces on - see ResolveNativeDriverPacingTargetFps().
@@ -402,22 +404,22 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             availNote = " [API UNAVAILABLE - will fallback]";
 
         TraceLog("Apply: ACTIVE sync=%s limiter=%s target=%d effective=%d group=%d/%d fg=%d fgMult=%d "
-                  "fgSignal=%d/%dx fgProof=%s driver=%d captureEq=%d general=%d captureSource=%s",
+                  "fgSignal=%d/%dx fgProof=%s driver=%d captureEq=%d general=%d captureSource=%s site=%u",
                   constraintName, modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
                   cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
                   fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps,
                   targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
-                  targetSelection.captureSourceIsFinalOutput ? "final" : "base");
+                  targetSelection.captureSourceIsFinalOutput ? "final" : "base", static_cast<unsigned>(site));
         HookLog(
             "FPS Limiter: Active (sync=%s, limiter=%s, target=%d, effective=%d, group=%d/%d, fg=%d/%dx, "
             "fgSignal=%d/%dx, fgProof=%s, driver=%d, capReq=%d, constraints=capture:%d/output general:%d "
-            "vblankCeiling:%d, captureSource=%s)%s",
+            "vblankCeiling:%d, captureSource=%s, site=%u)%s",
             constraintName, modeStr, targetFps, effectiveTargetFps, cadenceTargetFps,
             cadenceScale, fgActive ? 1 : 0, fgMultiplier, fgRuntimeSignaledActive ? 1 : 0,
             fgRuntimeSignaledMultiplier, fgPacingProof, nativeDriverTargetFps, captureRequested ? 1 : 0,
             targetSelection.captureOutputEquivalentFps, targetSelection.generalTargetFps,
             targetSelection.displayCeilingTargetFps,
-            targetSelection.captureSourceIsFinalOutput ? "final" : "base", availNote);
+            targetSelection.captureSourceIsFinalOutput ? "final" : "base", static_cast<unsigned>(site), availNote);
         loggedActive_ = true;
         lastTargetFps_ = effectiveTargetFps;
         lastUsedCaptureSync_ = usingCaptureSync;
@@ -531,7 +533,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         if (reflexHandoffReady) {
             reflexLimiterActive_ = true;
             loggedNativeFallback_ = false;
-            g_ReflexLimiter.ConfigureHybridPacing(qpcFrequency, cadenceTargetFps, cadenceScale);
+            g_ReflexLimiter.ConfigureHybridPacing(qpcFrequency, cadencePlan.renderCadenceTargetFps,
+                                                  cadencePlan.renderCadenceScale);
 
             if (!reflexNativeSleepActive_) {
                 reflexNativeSleepActive_ = true;
@@ -569,7 +572,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                 if (ce::fps_limiter_policy::ShouldRunExplicitReflexCadencePostPresent(
                         reflexDecision, allowPostPresentReflexCadence)) {
                     reflexPostPresentCadencePending_ = true;
-                    reflexPostPresentTargetFps_ = effectiveTargetFps;
+                    reflexPostPresentTargetFps_ = presentTargetFps;
                     reflexPostPresentCaptureSync_ = usingCaptureSync;
                     reflexPostPresentPushOk_ = reflexPushOk;
                     reflexPostPresentDeviceReady_ = reflexDeviceReady;
@@ -703,13 +706,15 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
 
     if (effectiveTargetFps <= 0)
         effectiveTargetFps = 60;
+    if (presentTargetFps <= 0)
+        presentTargetFps = effectiveTargetFps;
 
     const bool localCadenceFirstFrame = localTargetTime_ == 0;
     if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0 && !strictGrid) {
         LARGE_INTEGER activeDedupQpc;
         QueryPerformanceCounter(&activeDedupQpc);
         int64_t activeDedupTicks = qpcFrequency / 500;  // 2ms maximum duplicate window.
-        int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
+        int64_t intervalTicks = qpcFrequency / presentTargetFps;
         if (intervalTicks < 1) {
             intervalTicks = 1;
         }
@@ -775,7 +780,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps,
             static_cast<unsigned>(site), strictGrid ? 1 : 0);
     }
-    EmitLocalCadenceStats(cadence, effectiveTargetFps);
+    EmitLocalCadenceStats(cadence, presentTargetFps);
 
     // Record time Apply() returned so sequential duplicate presents
     // (e.g. DXVK Present+PresentEx) are deduped on the next call.

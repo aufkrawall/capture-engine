@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-30 - FPS limiter modelled callback-owned FSR FG outputs as base frames
+
+- Same session (`logs/20260930_032355`): the limiter's DXGI site sees every FSR runtime output, but counted as
+  `kUniqueApplicationPresent`. Capture sync ran `effective=60` per output until media's handshake (~1.2 s, half
+  display rate at every recording start), then `captureSource=base captureEq=240`; a general cap alone divided per
+  output (120 -> 60 displayed; unit test fails on the old code).
+- Fix (0.1.6866): `PresentSite::kRuntimeOutputPresent` from the verdict read at Present entry; final-output capture
+  source; per-output present grid, rational render grid for the Reflex hybrid spin. Details in
+  `frame-pacing-and-limiter.md`. Hardware validation pending: expect `captureSource=final site=3 group=120/1` from
+  the first ACTIVE line and no retarget at the handshake.
+
 ### 2026-09-30 - FSR FG recordings had half the motion rate: capture skipped generated outputs
 
 - `logs/20260930_032355` (0.1.6863, Talos, callback-owned FSR FG, capture sync basic 120): on screen 120 fps, but

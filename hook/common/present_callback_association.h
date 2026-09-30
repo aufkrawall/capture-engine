@@ -66,4 +66,8 @@ struct PresentFrameVerdict {
 // or when Reset() ran in between.
 PresentFrameVerdict ConsumePresentFrameVerdict();
 
+// The same verdict without clearing it. For Present-entry decisions that run
+// before ProcessFrame consumes it (the FPS limiter's call site).
+PresentFrameVerdict PeekPresentFrameVerdict();
+
 }  // namespace ce::present_association

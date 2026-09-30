@@ -11,6 +11,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour1, pSwapChain, SyncInterval, Flags);
     ce::present_association::NotePresentEntry(PerfLogger::GetQpcUs());
+    // Read before ProcessFrame consumes it; see PresentCallContext.
+    const bool callbackProvenRuntimeOutput = ce::present_association::PeekPresentFrameVerdict().known;
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;
     }
@@ -389,6 +391,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
             ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, inWrapperPresent || wrappedSwapchain,
+                                                            callbackProvenRuntimeOutput,
                                                             "post-FSR confirmed standalone Present1");
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
@@ -712,10 +715,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
     // cadence is finished after Present returns so the wait happens before the
     // game starts building the next frame. Unique application-present boundary
-    // for the same reason as DetourPresent - see ExecutePresentCore.
+    // (or one proven runtime output) for the same reason as DetourPresent - see
+    // ExecutePresentCore.
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
         ApplyPresentFrameLatencyOverrides(pSwapChain);
     }
 

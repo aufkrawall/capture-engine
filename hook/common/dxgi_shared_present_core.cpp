@@ -438,12 +438,14 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // nested, cross-thread and wrapper-owned re-entry, so a second Apply() for
     // one presented frame cannot reach here and the limiter must gate the
     // cadence grid on every entry instead of on a duplicate-present time
-    // window.
+    // window. A Present the FG runtime's callback proved to be one of its
+    // outputs is paced as that single output (PresentSite::kRuntimeOutputPresent).
     {
         CostScope limiterStage(CostStage::kLimiter);
         if (g_IPC) {
             g_SharedFpsLimiter.SetIPCClient(g_IPC);
-            g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+            g_SharedFpsLimiter.Apply(
+                true, ce::fps_limiter_policy::ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput));
             ApplyPresentFrameLatencyOverrides(pSwapChain);
         }
 

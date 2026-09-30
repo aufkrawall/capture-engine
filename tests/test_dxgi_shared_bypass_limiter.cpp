@@ -77,8 +77,9 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneGuardedSteamPresentComplete
 TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
     const std::string routing = ReadHookSource("dxgi_shared_present_routing.cpp");
     const std::string core = ReadHookSource("dxgi_shared_present_core.cpp");
-    const char* kNormalRouteApply =
-        "g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);";
+    // Both select the site from the verdict read at Present entry; the normal
+    // route's call wraps its argument onto the next line.
+    const char* kNormalRouteApply = "ce::fps_limiter_policy::ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput)";
     ASSERT_NE(core.find(kNormalRouteApply), std::string::npos);
 
     const size_t helper = routing.find("void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(");
@@ -89,7 +90,9 @@ TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
     // would break the one-Apply-per-present contract of this site.
     const size_t wrapperSkip = routing.find("if (!g_IPC || wrapperOwnsPresent) {", helper);
     const size_t setIpc = routing.find("g_SharedFpsLimiter.SetIPCClient(g_IPC);", helper);
-    const size_t apply = routing.find(kNormalRouteApply, helper);
+    const size_t apply = routing.find(
+        "g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));",
+        helper);
     const size_t latency = routing.find("ApplyPresentFrameLatencyOverrides(pSwapChain);", helper);
     ASSERT_NE(wrapperSkip, std::string::npos);
     ASSERT_NE(setIpc, std::string::npos);

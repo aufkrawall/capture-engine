@@ -108,10 +108,10 @@ zero command-list count still excludes the Present. These frames stay on the ord
 the output cadence and needs no virtual clock. Diagnostic: `Present callback verdict makes this runtime output
 capturable (... generatedOutputs=N applicationOutputs=M)`; at 2x the two counts should stay near equal.
 
-Stale-risk: the FPS limiter still labels this inject route `captureSource=base` (`captureEq=` = target x multiplier)
-although its `kUniqueApplicationPresent` Apply runs on every runtime output here and the capture is now final-output
-in content. Capture sync alone paces the output correctly (target applied per output Present); arbitration against a
-concurrent general cap compares in the wrong domain. Hardware validation of the recording pending.
+The FPS limiter models the same stream since 0.1.6866: the DXGI detours read the verdict at Present entry
+(`PeekPresentFrameVerdict`, before ProcessFrame consumes it) and pass `PresentSite::kRuntimeOutputPresent`, which makes
+the inject capture source final output and paces each output on the output grid (see
+`frame-pacing-and-limiter.md`). Hardware validation of recording and pacing pending.
 
 ### Recording-level capacity health (2026-08-01)
 

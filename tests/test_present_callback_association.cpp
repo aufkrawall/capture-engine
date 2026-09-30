@@ -126,6 +126,29 @@ TEST_F(PresentCallbackAssociationTest, ThePresentAfterACallbackCarriesItsVerdict
     EXPECT_TRUE(verdict.generated);
 }
 
+// The DXGI detours read the verdict at Present entry for the FPS limiter's call
+// site, which runs after ProcessFrame consumed it; the read must leave it there.
+TEST_F(PresentCallbackAssociationTest, PeekingAtPresentEntryLeavesTheVerdictForProcessFrame) {
+    Frame(1'000'000, 1'003'000, true);
+    PresentFrameVerdict peeked = PeekPresentFrameVerdict();
+    EXPECT_TRUE(peeked.known);
+    EXPECT_TRUE(peeked.generated);
+    peeked = PeekPresentFrameVerdict();
+    EXPECT_TRUE(peeked.known);
+    const PresentFrameVerdict consumed = ConsumePresentFrameVerdict();
+    EXPECT_TRUE(consumed.known);
+    EXPECT_TRUE(consumed.generated);
+    EXPECT_FALSE(PeekPresentFrameVerdict().known);
+}
+
+TEST_F(PresentCallbackAssociationTest, PeekSeesNothingWithoutACallbackOrAfterReset) {
+    NotePresentEntry(1'003'000);
+    EXPECT_FALSE(PeekPresentFrameVerdict().known);
+    Frame(1'011'000, 1'014'000, false);
+    Reset();
+    EXPECT_FALSE(PeekPresentFrameVerdict().known);
+}
+
 TEST_F(PresentCallbackAssociationTest, APresentWithoutACallbackHasNoVerdict) {
     NotePresentEntry(1'003'000);
     EXPECT_FALSE(ConsumePresentFrameVerdict().known);

@@ -264,7 +264,8 @@ TEST(PresentPacingPolicySourceTest, AllInnerDXGIVSyncPathsRespectNativeFGOutputO
 // for one presented frame structurally cannot reach them. They must therefore
 // declare the unique-application-present contract and let the cadence grid gate
 // every entry, instead of letting a wall-clock window decide what a duplicate
-// is.
+// is. The detours choose that contract, or kRuntimeOutputPresent for a Present
+// the FG runtime's callback proved to be one output, via ResolveDxgiPresentSite.
 TEST(PresentPacingPolicySourceTest, DXGIPresentBoundariesGateEveryApplyOnTheCadenceGrid) {
     struct Boundary {
         const char* path;
@@ -281,9 +282,10 @@ TEST(PresentPacingPolicySourceTest, DXGIPresentBoundariesGateEveryApplyOnTheCade
         ASSERT_FALSE(source.empty()) << boundary.path;
 
         int sites = 0;
-        for (size_t pos = source.find("PresentSite::kUniqueApplicationPresent"); pos != std::string::npos;
-             pos = source.find("PresentSite::kUniqueApplicationPresent", pos + 1)) {
-            ++sites;
+        for (const char* site : {"PresentSite::kUniqueApplicationPresent", "ResolveDxgiPresentSite("}) {
+            for (size_t pos = source.find(site); pos != std::string::npos; pos = source.find(site, pos + 1)) {
+                ++sites;
+            }
         }
         EXPECT_EQ(sites, boundary.expectedSites)
             << boundary.path << " must pace its top-level present through the cadence grid";
