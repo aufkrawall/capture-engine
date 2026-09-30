@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-09-15 (typed DirectDraw Flip/Blt completion rings and native Blt FIFO pacing)
+Last cross-checked: 2026-09-30 (callback-proven runtime-output cadence and duplicate-window policy)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -18,6 +18,7 @@ Primary sources:
 - `hook/apis/ddraw_hook_present_overrides.{h,cpp}`
 - `hook/common/ddraw_present_policy.h`
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
+- `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp` (runtime-output rate and duplicate-filter contracts)
 
 Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and the NGX/DLSS surface),
 `display-change-timing.md` (how a present's screen time is established), `vulkan-forced-fifo.md`,
@@ -158,7 +159,8 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   and `CWrapDXGISwapChain` are mutually exclusive (`IsInWrapperPresent()`) and guarded by `IsRecursivePresent()`, so
   nested/cross-thread re-entries return before `Apply()`. `kFinalOutputBoundary` is a site that observes every final
   presented output including generated frames (native-Vulkan present/acquire) and is the only contract allowed to own
-  output-group admission. `ShouldGateEveryApplyOnCadenceGrid()` maps the contract onto the strict grid.
+  output-group admission. `ShouldGateEveryApplyOnCadenceGrid()` selects blocking cadence-lock serialization;
+  `ShouldUseDuplicatePresentWindow()` separately selects time-based duplicate filtering.
 - **DXGI top-level presents are gated on the grid, FG off.** Strange Brigade DX12 (session `20260913_122208`, cap 90,
   `general_limiter_mode=basic`) presented ~130 fps with alternating short/long frame times while the limiter's own
   stats read a perfect `waited=120 late=0 avgFps=90.0`: the game renders a frame in 1-2 ms, so ~46 genuine presents
@@ -185,8 +187,15 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   callback-proven output since eec94472), and `ResolveLocalCadencePlan` splits two grids: the present grid paces each
   output at the output target (scale 1), the render grid (game-owned Reflex hybrid spin, once per rendered frame)
   takes target/multiplier on the exact rational group grid. The Reflex driver interval keeps the base target, since
-  FSR's generated frames are invisible to it. The site stays non-strict (presenter thread, FFX freeze class). Tests:
-  `tests/test_fps_limiter_runtime_output_site.cpp`, `PresentCallbackAssociationTest.Peek*`. Expected trace:
+  FSR's generated frames are invisible to it. The site stays non-strict (presenter thread, FFX freeze class), but
+  `ShouldUseDuplicatePresentWindow` excludes it from BOTH dedup paths independently of lock policy. A non-strict
+  lock is not evidence that two calls are the same frame: a 100 us output burst otherwise escaped the general cap
+  (also when that cap beats capture sync), and native handoff's inactive dedup skipped its next evaluation.
+  The existing duplicate windows remain for `kDuplicateProne` and FG-active unknown application sites only.
+  `LOCAL timer start` reports `site=3 strictGrid=0 dedupWindow=0`; `ACTIVE dedup` now reports the site too. Tests:
+  `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp`, `PresentCallbackAssociationTest.Peek*`. Burst tests
+  compile the real inline limiter under an isolated clock/wait namespace and assert cadence/native-call counts,
+  without scheduler timing or real waits. Three burst tests fail before the dedup fix. Expected trace:
   `Apply: ACTIVE ... target=120 effective=60 group=120/1 ... captureEq=120 captureSource=final site=3`, unchanged
   across the handshake. Hardware validation pending.
 - **Every DXGI routing branch that forwards a real Present early must run the limiter stage itself.** The normal

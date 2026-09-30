@@ -239,6 +239,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // behavior for call sites whose second call is a duplicate of the same
     // frame (DXVK Present+PresentEx).
     const bool strictGrid = ce::fps_limiter_policy::ShouldGateEveryApplyOnCadenceGrid(site, fgActive);
+    const bool useDuplicateWindow = ce::fps_limiter_policy::ShouldUseDuplicatePresentWindow(site, fgActive);
     std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
     if (strictGrid) {
         LARGE_INTEGER lockStart, lockEnd, lockFreq;
@@ -266,7 +267,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // BUT: when the FPS limiter is active and ALLOW_TEARING disables vsync,
     // frames arrive very fast (1-2ms) and dedup would skip legitimate frames.
     // Only apply dedup when the limiter is NOT active.
-    if (!isActivelyLimiting_.load(std::memory_order_relaxed) && !strictGrid) {
+    if (!isActivelyLimiting_.load(std::memory_order_relaxed) && useDuplicateWindow) {
         const int64_t kDedupTicks = qpcFrequency / 500;  // 2ms
         if (lastApplyReturnQpc != 0 && (nowQpc.QuadPart - lastApplyReturnQpc) < kDedupTicks) {
             applyDedupCount_++;
@@ -710,7 +711,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         presentTargetFps = effectiveTargetFps;
 
     const bool localCadenceFirstFrame = localTargetTime_ == 0;
-    if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0 && !strictGrid) {
+    if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0 && useDuplicateWindow) {
         LARGE_INTEGER activeDedupQpc;
         QueryPerformanceCounter(&activeDedupQpc);
         int64_t activeDedupTicks = qpcFrequency / 500;  // 2ms maximum duplicate window.
@@ -736,9 +737,10 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             if (applyActiveDedupCount_ <= 12 || (applyActiveDedupCount_ % 600) == 0) {
                 TraceLog(
                     "Apply: ACTIVE dedup sync=%s mode=%u configured=%u target=%d effective=%d "
-                    "sinceReturnUs=%lld thresholdUs=%lld activeDedup=%u inactiveDedup=%u",
+                    "sinceReturnUs=%lld thresholdUs=%lld activeDedup=%u inactiveDedup=%u site=%u",
                     usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps,
-                    effectiveTargetFps, sinceReturnUs, activeDedupUs, applyActiveDedupCount_, applyDedupCount_);
+                    effectiveTargetFps, sinceReturnUs, activeDedupUs, applyActiveDedupCount_, applyDedupCount_,
+                    static_cast<unsigned>(site));
             }
             return;
         }
@@ -770,15 +772,15 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     if (localCadenceFirstFrame) {
         TraceLog(
             "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "
-            "firstWaitUs=%lld firstLateUs=%lld site=%u strictGrid=%d",
+            "firstWaitUs=%lld firstLateUs=%lld site=%u strictGrid=%d dedupWindow=%d",
             usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps, effectiveTargetFps,
             cadenceTargetFps, cadenceScale, cadence.scheduledWaitUs,
-            cadence.lateUs, static_cast<unsigned>(site), strictGrid ? 1 : 0);
+            cadence.lateUs, static_cast<unsigned>(site), strictGrid ? 1 : 0, useDuplicateWindow ? 1 : 0);
         HookLog(
             "FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d, site=%u, "
-            "strictGrid=%d)",
+            "strictGrid=%d, dedupWindow=%d)",
             usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps,
-            static_cast<unsigned>(site), strictGrid ? 1 : 0);
+            static_cast<unsigned>(site), strictGrid ? 1 : 0, useDuplicateWindow ? 1 : 0);
     }
     EmitLocalCadenceStats(cadence, presentTargetFps);
 

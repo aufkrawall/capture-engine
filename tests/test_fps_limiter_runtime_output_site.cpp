@@ -25,6 +25,7 @@ using ce::fps_limiter_policy::PresentSite;
 using ce::fps_limiter_policy::ResolveDxgiPresentSite;
 using ce::fps_limiter_policy::ResolveLocalCadencePlan;
 using ce::fps_limiter_policy::ShouldGateEveryApplyOnCadenceGrid;
+using ce::fps_limiter_policy::ShouldUseDuplicatePresentWindow;
 
 inline constexpr PresentSite kRuntimeOutputSite = PresentSite::kRuntimeOutputPresent;
 
@@ -37,6 +38,15 @@ TEST(FpsLimiterRuntimeOutputSiteTest, CallbackProvenPresentSelectsTheRuntimeOutp
 TEST(FpsLimiterRuntimeOutputSiteTest, RuntimeOutputSiteNeverBlocksOnTheCadenceLock) {
     EXPECT_FALSE(ShouldGateEveryApplyOnCadenceGrid(kRuntimeOutputSite, true));
     EXPECT_FALSE(ShouldGateEveryApplyOnCadenceGrid(kRuntimeOutputSite, false));
+}
+
+TEST(FpsLimiterRuntimeOutputSiteTest, DuplicateWindowAndCadenceLockHaveSeparateContracts) {
+    for (bool fgActive : {false, true}) {
+        EXPECT_FALSE(ShouldUseDuplicatePresentWindow(kRuntimeOutputSite, fgActive));
+        EXPECT_FALSE(ShouldUseDuplicatePresentWindow(PresentSite::kFinalOutputBoundary, fgActive));
+        EXPECT_TRUE(ShouldUseDuplicatePresentWindow(PresentSite::kDuplicateProne, fgActive));
+        EXPECT_EQ(ShouldUseDuplicatePresentWindow(PresentSite::kUniqueApplicationPresent, fgActive), fgActive);
+    }
 }
 
 TEST(FpsLimiterRuntimeOutputSiteTest, RuntimeOutputSiteIsFinalOutputInjectCapture) {

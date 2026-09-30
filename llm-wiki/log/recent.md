@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-30 - Proven FSR outputs still escaped the FPS cap through duplicate filtering
+
+- Review confirmed a 100 us burst skipped every later cadence slot under the general cap, including when a lower
+  general cap won over capture sync. Native handoff's inactive dedup skipped the next output too.
+- `ShouldUseDuplicatePresentWindow` now separates logical-frame duplication from cadence-lock contention:
+  callback-proven runtime outputs bypass both duplicate filters while retaining the presenter's try-lock.
+- Five deterministic burst tests exercise real `Apply`/`ApplyPostPresent` with isolated clock/wait fakes; the general
+  cap, lower-general-cap recording, and native-handoff cases fail before the fix. Capture-sync and legacy duplicate
+  behavior are controls. A policy matrix covers every site with FG on/off.
+- Verified: combined incremental product gate 0.1.6867, full native suite (4,128 tests), Python tool self-tests, and
+  binary checks passed. New burst fixture adds no compiler warnings; non-hook Reflex trampoline fields are marked
+  intentionally unused without changing layout. Hardware burst validation remains pending.
+
 ### 2026-09-30 - FPS limiter modelled callback-owned FSR FG outputs as base frames
 
 - Same session (`logs/20260930_032355`): the limiter's DXGI site sees every FSR runtime output, but counted as

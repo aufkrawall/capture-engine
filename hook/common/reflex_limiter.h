@@ -340,9 +340,10 @@ private:
     bool directSetSleepModeHooked_ = false;
     bool directSleepHooked_ = false;
     bool directQueryInterfaceHooked_ = false;  // Inline hook on nvapi_QueryInterface (IAT fallback)
-    PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
-    PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
-    PFN_NvAPI_QueryInterface directQueryInterfaceTrampoline_ = nullptr;  // Trampoline for QueryInterface inline hook
+    // Non-hook builds keep the same layout but do not install these trampolines.
+    [[maybe_unused]] PFN_NvAPI_D3D_SetSleepMode directSetSleepModeTrampoline_ = nullptr;
+    [[maybe_unused]] PFN_NvAPI_D3D_Sleep directSleepTrampoline_ = nullptr;
+    [[maybe_unused]] PFN_NvAPI_QueryInterface directQueryInterfaceTrampoline_ = nullptr;
     bool loggedMissingDevice_ = false;
     bool loggedMissingSleepDevice_ = false;
     std::atomic<bool> ceOwnedSleepLogged_{false};

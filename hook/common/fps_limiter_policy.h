@@ -363,8 +363,8 @@ inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTar
     return plan;
 }
 
-// Whether every Apply() entry from this site must take a cadence-grid slot
-// instead of the legacy duplicate-present time window.
+// Whether cadence-lock contention must serialize this site's Apply() entries.
+// Duplicate filtering is a separate contract (ShouldUseDuplicatePresentWindow).
 //
 // A kUniqueApplicationPresent site only owns the application's own present
 // stream. While a frame-generation runtime is producing, that same DXGI stream
@@ -381,8 +381,8 @@ inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTar
 // owned by OutputGroupAdmission below.
 //
 // A kRuntimeOutputPresent site classifies structurally, but its caller is the
-// FG runtime's presenter thread: it keeps the non-blocking cadence lock, and
-// with the limiter active the duplicate window is off anyway.
+// FG runtime's presenter thread: it keeps the non-blocking cadence lock while
+// every admitted output takes a cadence slot, even when outputs arrive in a burst.
 inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenerationActive) {
     switch (site) {
         case PresentSite::kFinalOutputBoundary:
@@ -394,6 +394,15 @@ inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenera
             break;
     }
     return false;
+}
+
+// Only sites that may repeat a logical frame use the time-based duplicate
+// filter. Runtime outputs are proven distinct by their callbacks, independently
+// of the non-blocking lock their presenter thread requires. Keeping these
+// decisions separate prevents closely spaced FSR outputs from escaping a cap.
+inline bool ShouldUseDuplicatePresentWindow(PresentSite site, bool frameGenerationActive) {
+    return site == PresentSite::kDuplicateProne ||
+           (site == PresentSite::kUniqueApplicationPresent && frameGenerationActive);
 }
 
 // Where a fully-owned cadence period spends its idle time.

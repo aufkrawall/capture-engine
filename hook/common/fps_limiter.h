@@ -314,9 +314,11 @@ public:
     // gated on the grid: the duplicate-present window is skipped entirely and
     // blocking cadence-lock serialization preserves the Strange Brigade
     // multi-present grid: exactly one present per target interval, evenly
-    // spaced. Only kDuplicateProne sites (DXVK Present+PresentEx and the
-    // D3D/OpenGL wrappers) keep the dedup fast paths, because their second
-    // call is genuinely the same logical frame.
+    // spaced. kDuplicateProne sites (DXVK Present+PresentEx and the
+    // D3D/OpenGL wrappers) and unclassified FG application-present sites keep
+    // the dedup fast paths. A callback-proven runtime output also skips
+    // duplicate filtering, but uses a non-blocking cadence
+    // lock so CE cannot stall the FG runtime's presenter on another owner.
     void Apply(bool allowPostPresentReflexCadence = false,
                ce::fps_limiter_policy::PresentSite site =
                    ce::fps_limiter_policy::PresentSite::kDuplicateProne);
