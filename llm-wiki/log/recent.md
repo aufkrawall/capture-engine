@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-09-30 - Stable release preflight: unused limiter helpers and host-timed GPU test
+
+- Release preparation found `clang-diagnostic-unused-function` at 76 > 74: the new runtime-output suite
+  included two unused manual rearm helpers from `test_fps_limiter_shared.h`. They now live in
+  `test_fps_limiter_sleep_mode_recorder.h`, included only by `test_fps_limiter.cpp` and `test_fps_limiter_part2.cpp`.
+- `GpuWorkRunningPastTheDeadlineGrowsTheReservation` also saturated its budget before supplying GPU delay
+  on a busy host, despite its CPU-work override. The scenario now runs in the existing isolated clock/wait
+  fixture in `test_fps_limiter_runtime_output_bursts.cpp`; production pacing is unchanged.
+- Focused FPS-limiter tests and combined product gate 0.1.6868 passed after the move. Full-database clang-tidy
+  passed and automatically tightened unused-function 74 -> 68 and unused-private-field 109 -> 4;
+  existing formatter advisories remain outside the changed code. Workflow/changelog regressions passed.
+- The cancelled attempt's cleanup action failed with `unexpected end of JSON input`; its log still returned 302.
+  Direct deletion returned 204 and verification returned 404. Both workflow deletion paths now use curl,
+  with regression tests that fail on the old scripts and preserve the independent missing-log check.
+
 ### 2026-09-30 - Proven FSR outputs still escaped the FPS cap through duplicate filtering
 
 - Review confirmed a 100 us burst skipped every later cadence slot under the general cap, including when a lower

@@ -19,6 +19,7 @@ Primary sources:
 - `hook/common/ddraw_present_policy.h`
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 - `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp` (runtime-output rate and duplicate-filter contracts)
+- `tests/test_fps_limiter_sleep_mode_recorder.h` (manual rearm recorder, included only by its two consuming suites)
 
 Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and the NGX/DLSS surface),
 `display-change-timing.md` (how a present's screen time is established), `vulkan-forced-fifo.md`,
@@ -195,7 +196,9 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   `LOCAL timer start` reports `site=3 strictGrid=0 dedupWindow=0`; `ACTIVE dedup` now reports the site too. Tests:
   `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp`, `PresentCallbackAssociationTest.Peek*`. Burst tests
   compile the real inline limiter under an isolated clock/wait namespace and assert cadence/native-call counts,
-  without scheduler timing or real waits. Three burst tests fail before the dedup fix. Expected trace:
+  without scheduler timing or real waits. The same fixture covers GPU deadline reservation growth: overriding
+  CPU work alone does not remove host-driven wait overshoot, which can otherwise saturate the budget before
+  the test supplies GPU delay. Three burst tests fail before the dedup fix. Expected trace:
   `Apply: ACTIVE ... target=120 effective=60 group=120/1 ... captureEq=120 captureSource=final site=3`, unchanged
   across the handshake. Hardware validation pending.
 - **Every DXGI routing branch that forwards a real Present early must run the limiter stage itself.** The normal

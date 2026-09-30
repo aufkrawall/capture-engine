@@ -19,7 +19,7 @@
 // Load dependencies globally, then compile the real inline limiter in an
 // isolated namespace. Its unqualified clock/wait calls resolve to these fakes;
 // production FpsLimiter and other suites keep the Windows clock. No real waits
-// or scheduler-dependent assertions are needed to exercise a 100 us burst.
+// or scheduler-dependent assertions are needed to exercise bursts or deadlines.
 namespace fps_limiter_burst_test {
 
 inline int64_t g_nowUs = 1'000'000;
@@ -163,6 +163,46 @@ TEST_F(FpsLimiterRuntimeOutputBurstTest, NativeHandoffStillEvaluatesEveryProvenO
         EXPECT_EQ(state.sleepCalls, output);
     }
     limiter.SetNativePacingBackend({});
+}
+
+class FpsLimiterFrontLoadVirtualClockTest : public FpsLimiterRuntimeOutputBurstTest {
+protected:
+    void SetUp() override {
+        FpsLimiterRuntimeOutputBurstTest::SetUp();
+        g_FGCompat.SetFSRFGActive(false);
+        g_FGCompat.SetFSRFGMultiplier(0);
+        shm->fpsLimiter.SetGeneralFps(240);
+    }
+};
+
+// Strange Brigade DX12's 1.8 ms CPU frame can still miss the display deadline
+// because of GPU work. A virtual clock keeps host scheduling from filling the
+// reservation before this scenario supplies the GPU delay it is testing.
+TEST_F(FpsLimiterFrontLoadVirtualClockTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
+    constexpr auto site = ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent;
+    limiter.SetObservedFrameWorkOverrideUs(1800);
+
+    for (int i = 0; i < 96; ++i) {
+        limiter.ObservePresentToDisplay(400);
+        limiter.Apply(true, site);
+        limiter.ApplyPostPresent();
+    }
+    const auto engaged = limiter.GetFrontLoadedPacingState();
+    ASSERT_GT(engaged.releases, 0u);
+    EXPECT_EQ(engaged.gpuHeadroomUs, 0);
+    ASSERT_LT(engaged.budgetUs, engaged.intervalUs)
+        << "the budget must still have room to grow, or the assertion below proves nothing";
+
+    for (int i = 0; i < 192; ++i) {
+        limiter.ObservePresentToDisplay(2400);
+        limiter.Apply(true, site);
+        limiter.ApplyPostPresent();
+    }
+    const auto grown = limiter.GetFrontLoadedPacingState();
+
+    EXPECT_GT(grown.gpuHeadroomUs, 0) << "the reservation must cover the GPU half too";
+    EXPECT_GT(grown.budgetUs, engaged.budgetUs);
+    EXPECT_LE(grown.budgetUs, grown.intervalUs) << "it may saturate to the back edge, never past it";
 }
 
 }  // namespace fps_limiter_burst_test

@@ -39,13 +39,13 @@
     "clang-diagnostic-undefined-inline": 0,
     "clang-diagnostic-unknown-pragmas": 89,
     "clang-diagnostic-unused-const-variable": 5,
-    "clang-diagnostic-unused-function": 74,
-    "clang-diagnostic-unused-private-field": 109,
+    "clang-diagnostic-unused-function": 68,
+    "clang-diagnostic-unused-private-field": 4,
     "clang-diagnostic-unused-variable": 72
   },
-  "total": 1383,
+  "total": 1272,
   "scope": {
-    "entries": 885,
+    "entries": 887,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_compositor.cpp",
@@ -767,6 +767,8 @@
       "tests/test_fps_limiter_output_groups.cpp",
       "tests/test_fps_limiter_part2.cpp",
       "tests/test_fps_limiter_present_site.cpp",
+      "tests/test_fps_limiter_runtime_output_bursts.cpp",
+      "tests/test_fps_limiter_runtime_output_site.cpp",
       "tests/test_frame_queue.cpp",
       "tests/test_frame_timing_utils.cpp",
       "tests/test_gl_overlay_state_policy.cpp",

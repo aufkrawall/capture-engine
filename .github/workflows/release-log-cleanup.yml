@@ -88,7 +88,13 @@ jobs:
               ;;
           esac
 
-          gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs" --silent
+          # DELETE succeeds with an empty 204 body; do not send it through gh's
+          # JSON decoder, which can fail before the log is actually removed.
+          curl -fsS -X DELETE -o /dev/null \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs"
           # Fail closed: a 204 from the DELETE is not proof the archive is gone,
           # and a surviving log still publishes the hostname. Ask for the log
           # again and require a not-found status. Deliberately no -L, so an
@@ -151,7 +157,11 @@ jobs:
               *) kept=$((kept+1)); continue ;;
             esac
 
-            gh api -X DELETE "repos/$REPO/actions/runs/$id/logs" --silent || true
+            curl -fsS -X DELETE -o /dev/null \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$REPO/actions/runs/$id/logs" || true
             status="$(curl -sS -o /dev/null -w '%{http_code}' \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \

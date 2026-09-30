@@ -271,52 +271,6 @@ TEST_F(FpsLimiterTest, NoDisplayedTransitionEvidenceKeepsTheBackEdgePlacement) {
     EXPECT_EQ(limiter.GetFrontLoadedPacingState().releases, 0u);
 }
 
-// Strange Brigade DX12 is GPU-bound: a 1.8 ms CPU frame in front of ~8.5 ms of
-// GPU work. A CPU-sized budget released the game far too late, the GPU ran past
-// the deadline, and present-to-display rose 0.4 -> 6.8 ms - which put the game's
-// own variance on the screen timeline the overlay measures its percentiles
-// from. The reservation must grow until the frame is finished by its deadline.
-TEST_F(FpsLimiterTest, GpuWorkRunningPastTheDeadlineGrowsTheReservation) {
-    mockShm->runtimeState.isRecording = false;
-    mockShm->runtimeState.captureRequested = false;
-    mockShm->fpsLimiter.SetGeneralEnabled(true);
-    mockShm->fpsLimiter.SetGeneralFps(240);
-    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
-
-    // State the CPU half rather than letting it be whatever wall-clock elapsed
-    // between two Apply() calls. Strange Brigade's 1.8 ms CPU frame is the
-    // point of the scenario, and on a loaded host the measured span is instead
-    // a whole 4.17 ms interval - which saturates the budget at the back edge
-    // during the "engaged" phase and leaves nothing for the second phase to
-    // grow, the exact shape this test used to fail in.
-    limiter.SetObservedFrameWorkOverrideUs(1800);
-
-    // Seed the floor and engage the placement while the frame is finishing
-    // early enough that the grid still decides the screen time.
-    for (int i = 0; i < 96; ++i) {
-        limiter.ObservePresentToDisplay(400);
-        limiter.Apply(true, kUniquePresentSite);
-        limiter.ApplyPostPresent();
-    }
-    const auto engaged = limiter.GetFrontLoadedPacingState();
-    ASSERT_GT(engaged.releases, 0u);
-    EXPECT_EQ(engaged.gpuHeadroomUs, 0);
-    ASSERT_LT(engaged.budgetUs, engaged.intervalUs)
-        << "the budget must still have room to grow, or the assertion below proves nothing";
-
-    // Now the presents start waiting on GPU work that no longer fits.
-    for (int i = 0; i < 192; ++i) {
-        limiter.ObservePresentToDisplay(2400);
-        limiter.Apply(true, kUniquePresentSite);
-        limiter.ApplyPostPresent();
-    }
-    const auto grown = limiter.GetFrontLoadedPacingState();
-
-    EXPECT_GT(grown.gpuHeadroomUs, 0) << "the reservation must cover the GPU half too";
-    EXPECT_GT(grown.budgetUs, engaged.budgetUs);
-    EXPECT_LE(grown.budgetUs, grown.intervalUs) << "it may saturate to the back edge, never past it";
-}
-
 // A wait shorter than the scheduler tick cannot be resolved by the kernel
 // timer - it sleeps to the next tick, past the deadline. Front-loaded pacing
 // made the pre-present wait hundreds of microseconds, where the measured

@@ -20,7 +20,11 @@ so fork PRs cannot run at all; that is the current containment.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Dict, List, Set
@@ -172,6 +176,87 @@ class WorkflowSecurityPolicyTest(unittest.TestCase):
         source_name = "ffmpeg-corresponding-source.7z"
         self.assertIn(source_name, steps["Attest release assets"]["with"]["subject-path"])
         self.assertIn(source_name, steps["Publish stable tag and GitHub release"]["run"])
+
+
+class WorkflowLogCleanupTest(unittest.TestCase):
+    def _run_cleanup(
+        self, job_name: str, delete_status: int = 204, retained: bool = False
+    ) -> subprocess.CompletedProcess:
+        bundled_bash = WORKFLOW_DIR.parents[1] / "build" / "msys64" / "usr" / "bin" / "bash.exe"
+        bash = str(bundled_bash) if bundled_bash.is_file() else shutil.which("bash")
+        if not bash:
+            self.skipTest("Bash is required to exercise the GitHub-hosted cleanup script")
+        document = _load(WORKFLOW_DIR / "release-log-cleanup.yml")
+        script = document["jobs"][job_name]["steps"][0]["run"]
+        # Model GitHub's empty DELETE response without invoking the network or
+        # gh's JSON decoder. The marker survives curl's command-substitution shell.
+        mocks = r'''
+gh() {
+  case "$*" in
+    *" -X DELETE "*) echo "unexpected end of JSON input" >&2; return 1 ;;
+    *"/jobs"*) printf 'self-hosted Windows X64' ;;
+    *) printf '42' ;;
+  esac
+}
+curl() {
+  case " $* " in
+    *" -X DELETE "*)
+      if [ "$CE_TEST_DELETE_STATUS" != 204 ]; then
+        echo "DELETE failed (HTTP $CE_TEST_DELETE_STATUS)" >&2
+        return 22
+      fi
+      if [ "$CE_TEST_DELETE_STATUS" = 204 ]; then : > "$CE_TEST_DELETED_MARKER"; fi
+      printf '%s' "$CE_TEST_DELETE_STATUS"
+      ;;
+    *)
+      if [ -f "$CE_TEST_DELETED_MARKER" ] && [ "$CE_TEST_RETAINED" = 0 ]; then
+        printf '404'
+      else
+        printf '302'
+      fi
+      ;;
+  esac
+}
+'''
+        with tempfile.TemporaryDirectory() as scratch:
+            env = dict(os.environ)
+            env.update(
+                GH_TOKEN="unit-test-token",
+                REPO="example/repo",
+                RUN_ID="42",
+                CONCLUSION="success",
+                WORKFLOW="release-stable",
+                CE_TEST_DELETE_STATUS=str(delete_status),
+                CE_TEST_RETAINED="1" if retained else "0",
+                CE_TEST_DELETED_MARKER=(Path(scratch) / "deleted").as_posix(),
+            )
+            return subprocess.run(
+                [bash, "--noprofile", "--norc", "-c", mocks + script],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+    def test_empty_delete_response_removes_and_verifies_logs(self) -> None:
+        for job_name in ("purge-self-hosted-run-log", "sweep-retained-self-hosted-logs"):
+            with self.subTest(job=job_name):
+                result = self._run_cleanup(job_name)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("verified gone", result.stdout)
+
+    def test_delete_failure_is_not_reported_as_success(self) -> None:
+        for job_name in ("purge-self-hosted-run-log", "sweep-retained-self-hosted-logs"):
+            with self.subTest(job=job_name):
+                result = self._run_cleanup(job_name, delete_status=403)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_successful_delete_still_requires_missing_log(self) -> None:
+        for job_name in ("purge-self-hosted-run-log", "sweep-retained-self-hosted-logs"):
+            with self.subTest(job=job_name):
+                result = self._run_cleanup(job_name, retained=True)
+                self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

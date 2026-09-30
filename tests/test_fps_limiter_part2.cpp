@@ -1,4 +1,5 @@
 #include "test_fps_limiter_shared.h"
+#include "test_fps_limiter_sleep_mode_recorder.h"
 
 namespace {
 
