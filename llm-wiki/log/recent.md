@@ -14,6 +14,11 @@
 - The cancelled attempt's cleanup action failed with `unexpected end of JSON input`; its log still returned 302.
   Direct deletion returned 204 and verification returned 404. Both workflow deletion paths now use curl,
   with regression tests that fail on the old scripts and preserve the independent missing-log check.
+- The release runner's native suite passed, but `ReleaseLogCleanupPolicyTest` still pinned the old CLI
+  command and blocked Python tool verification. Its wiring assertion now requires direct HTTP deletion;
+  run the entire Python tool suite after workflow edits, including `privacy_paths`, before dispatching.
+- The corrected wiring passed the complete native and Python tool suites through the no-build gate
+  at product identity 0.1.6868; the corrected cleanup action also removed the second cancelled run's log.
 
 ### 2026-09-30 - Proven FSR outputs still escaped the FPS cap through duplicate filtering
 

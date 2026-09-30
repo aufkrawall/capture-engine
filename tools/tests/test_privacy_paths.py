@@ -306,7 +306,9 @@ class ReleaseLogCleanupPolicyTest(unittest.TestCase):
 
     def test_cleanup_deletes_the_triggering_runs_log(self) -> None:
         self.assertIn("github.event.workflow_run.id", self.text)
-        self.assertIn('gh api -X DELETE "repos/$REPO/actions/runs/$RUN_ID/logs"', self.text)
+        self.assertIn("curl -fsS -X DELETE -o /dev/null", self.text)
+        self.assertIn('"https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs"', self.text)
+        self.assertNotIn("gh api -X DELETE", self.text)
 
     def test_cleanup_verifies_deletion_and_fails_closed(self) -> None:
         # A 204 from the DELETE is not proof the archive is gone, so the workflow
