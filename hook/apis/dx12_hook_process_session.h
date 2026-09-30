@@ -133,8 +133,8 @@ public:
     OverlayConfig captureOverlayCfg;
     bool captureWantsOverlay;
     bool captureUsePostSL;
-    bool captureAfterOverlay;
-    bool captureBeforeOverlay;
+    bool captureAfterOverlay = false;
+    bool captureBeforeOverlay = false;
     // Set where the overlay draw chain publishes the overlay-free capture.
     // Phase6Tail publishes it when that chain never got there.
     bool captureBeforeOverlayPublished = false;

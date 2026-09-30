@@ -109,7 +109,7 @@ bool PatchSlot(void** vtable, size_t slot, void* detour, std::atomic<Fn>& origin
     // The page stays writable afterwards: restoring it could race another CE
     // patch of the same page between its unprotect and its write.
     DWORD oldProtect = 0;
-    if (!VirtualProtect(&vtable[slot], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(static_cast<void*>(&vtable[slot]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         return false;
     }
     original.store(reinterpret_cast<Fn>(current), std::memory_order_release);
@@ -122,7 +122,7 @@ void RestoreSlot(void** vtable, size_t slot, void* detour, void* original) {
     // locked write to it would fault (crash 20260811_192706).
     DWORD oldProtect = 0;
     if (vtable && original && vtable[slot] == detour &&
-        VirtualProtect(&vtable[slot], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        VirtualProtect(static_cast<void*>(&vtable[slot]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&vtable[slot]), original, detour);
     }
 }

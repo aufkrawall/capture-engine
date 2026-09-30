@@ -32,7 +32,7 @@ TEST(VTableSlotOwnerTest, ResolvesRelativeAndIndirectEntryJumps) {
     const int32_t slotDisplacement = 2;  // pointer stored 2 bytes after the 6-byte instruction
     std::memcpy(indirect + 2, &slotDisplacement, sizeof(slotDisplacement));
     const void* target = reinterpret_cast<const void*>(static_cast<uintptr_t>(0x7FF612345678ull));
-    std::memcpy(indirect + 8, &target, sizeof(target));
+    std::memcpy(indirect + 8, static_cast<const void*>(&target), sizeof(target));
     EXPECT_EQ(owner::IndirectJumpSlot(indirect), indirect + 8);
     EXPECT_EQ(owner::EntryJumpTarget(indirect), target);
 

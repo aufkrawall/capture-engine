@@ -34,7 +34,7 @@ void LogSwapchainVTableSlotOwners(IDXGISwapChain* pSwapChain, const char* source
     char line[1400] = {};
     size_t used = 0;
     for (const auto& slot : ce::vtable_slot_owner::kOverlayHookedSwapchainSlots) {
-        if (!IsReadableMemory(&vtable[slot.index], sizeof(void*))) {
+        if (!IsReadableMemory(static_cast<const void*>(&vtable[slot.index]), sizeof(void*))) {
             break;
         }
         const void* function = vtable[slot.index];

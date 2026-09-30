@@ -23,6 +23,15 @@ Ledger g_ParkedCreates;
 // Mirrors g_ParkedCreates.Count() so the per-Present check is lock-free.
 std::atomic<size_t> g_ParkedCreateCount{0};
 
+// A parked record only exists to be replayed by its swapchain's first visible Present. Once its window is
+// destroyed that Present cannot come, and the record would keep the swapchain's command queue alive.
+bool ParkedWindowGone(const void* window) {
+    return window && !IsWindow(static_cast<HWND>(const_cast<void*>(window)));
+}
+
+// Presents between two sweeps for dead windows while nothing matches the presenting swapchain.
+constexpr uint32_t kDeadWindowSweepIntervalPresents = 256;
+
 void ReleaseQueues(void** queues, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         if (queues[i]) {
@@ -45,14 +54,18 @@ void ParkInvisibleWindowCreateSwapchain(IDXGISwapChain* swapchain, HWND hWnd, IU
     deferred.captureQueue = createCapturesQueue;
     deferred.context = context;
     void* displaced = nullptr;
+    void* deadWindowQueues[ce::deferred_swapchain_create::kLedgerCapacity] = {};
+    size_t deadWindowCount = 0;
     size_t parked = 0;
     {
         std::lock_guard<std::mutex> lock(g_ParkedCreatesMutex);
+        deadWindowCount = g_ParkedCreates.ForgetWhereWindowGone(&ParkedWindowGone, deadWindowQueues);
         displaced = g_ParkedCreates.Park(swapchain, queue, hWnd, deferred);
         parked = g_ParkedCreates.Count();
         g_ParkedCreateCount.store(parked, std::memory_order_release);
     }
     ReleaseQueues(&displaced, 1);
+    ReleaseQueues(deadWindowQueues, deadWindowCount);
     HookLogImportant(
         "%s: Parked create-time queue ownership for hidden-window swapchain %p (HWND=%p queue=%p captureQueue=%d "
         "caller=%s parked=%zu) — replayed on its first visible Present",
@@ -84,8 +97,22 @@ void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain) {
     }
     Ledger::Entry entry;
     {
-        std::lock_guard<std::mutex> lock(g_ParkedCreatesMutex);
+        std::unique_lock<std::mutex> lock(g_ParkedCreatesMutex);
         if (!g_ParkedCreates.Take(swapchain, &entry)) {
+            static uint32_t s_presentsSinceSweep = 0;  // guarded by g_ParkedCreatesMutex
+            if (++s_presentsSinceSweep < kDeadWindowSweepIntervalPresents) {
+                return;
+            }
+            s_presentsSinceSweep = 0;
+            void* deadWindowQueues[ce::deferred_swapchain_create::kLedgerCapacity] = {};
+            const size_t deadWindowCount = g_ParkedCreates.ForgetWhereWindowGone(&ParkedWindowGone, deadWindowQueues);
+            g_ParkedCreateCount.store(g_ParkedCreates.Count(), std::memory_order_release);
+            lock.unlock();
+            ReleaseQueues(deadWindowQueues, deadWindowCount);
+            if (deadWindowCount) {
+                HookLogImportant("DX12: Released %zu parked hidden-window create(s) whose window was destroyed",
+                                 deadWindowCount);
+            }
             return;
         }
         g_ParkedCreateCount.store(g_ParkedCreates.Count(), std::memory_order_release);

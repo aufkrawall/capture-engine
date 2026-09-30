@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include "../../common/inject_transport_snapshot.h"
+
 namespace {
 
 bool SameComIdentity(IUnknown* left, IUnknown* right) {
@@ -127,17 +129,20 @@ static uint32_t s_transportGeneration = 0;
 static SharedMemoryLayout* s_transportGenerationShm = nullptr;
 // A replacement host's mapping (possibly at the same address) starts at 0; the
 // handles below are republished into it every frame, under a generation of ours.
-bool newTransportGeneration = s_transportGenerationShm != shm ||
-                              static_cast<uint32_t>(shm->GetTransportGeneration()) != s_transportGeneration;
-if (!dx12_hook_g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain)) {
-    if (!dx12_hook_g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain)) {
-        return false;
-    }
-    newTransportGeneration = true;
-}
+const bool captureInitialized = dx12_hook_g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain);
+const bool newTransportGeneration = ce::ShouldBeginInjectTransportGeneration(
+    captureInitialized, s_transportGenerationShm == shm, shm->GetTransportGeneration(), s_transportGeneration);
 if (newTransportGeneration) {
+    // Before Initialize() closes the previous handles, not after: a frame of the
+    // outgoing generation that media reads in between must already fail the
+    // generation check instead of resolving a reused handle value to a new texture.
     s_transportGeneration = static_cast<uint32_t>(shm->BeginTransportGeneration());
     s_transportGenerationShm = shm;
+}
+if (!captureInitialized && !dx12_hook_g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain)) {
+    return false;
+}
+if (newTransportGeneration) {
     HookLogImportant("DX12: Shared capture initialized for swapchain generation sc=%p device=%p transport=%u",
                      pSwapChain, captureDevice, s_transportGeneration);
 }

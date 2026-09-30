@@ -16,6 +16,8 @@ struct PresentCallContext;
 
 #include "dxgi_shared_detail/steam_null_callback.h"
 
+#include "steam_recovery_armed_threads.h"
+
 #include "../../common/raii_helpers.h"
 
 #include "../apis/dx11_hook.h"
@@ -663,6 +665,17 @@ public:
                 pluginLookupGuardReady ? 1 : 0, GetLastError());
             return;
         }
+        // Registered before the thread-local context is armed: the process-wide handler asks this set first
+        // (steam_recovery_armed_threads.h) and must never read thread-local storage of a thread that is not in it.
+        const ce::steam_recovery::ArmResult armResult =
+            ce::steam_recovery::g_armedThreads.Arm(GetCurrentThreadId(), &armedSlot_);
+        if (armResult == ce::steam_recovery::ArmResult::kFull) {
+            HookLogImportant("Guarded Steam Present hook could not arm Steam null-callback VEH recovery: no free "
+                             "armed-thread slot (context=%s tid=0x%04X)",
+                             context ? context : "unknown", GetCurrentThreadId());
+            return;
+        }
+        ownsArmedThread_ = armResult == ce::steam_recovery::ArmResult::kArmed;
         dxgi_shared_s_steamNullCallbackRecoveryContext = SteamNullCallbackRecoveryContext{
             context ? context : "unknown", reason, hook, bypass, streamlineStackActive, pluginLookupGuardReady, true,
         };
@@ -680,6 +693,9 @@ public:
 
     ~ScopedSteamNullCallbackRecoveryGuard() {
         dxgi_shared_s_steamNullCallbackRecoveryContext = previousContext_;
+        if (ownsArmedThread_) {
+            ce::steam_recovery::g_armedThreads.Disarm(armedSlot_);
+        }
     }
 
     ScopedSteamNullCallbackRecoveryGuard(const ScopedSteamNullCallbackRecoveryGuard&) = delete;
@@ -692,6 +708,10 @@ public:
 private:
     SteamNullCallbackRecoveryContext previousContext_;
     bool armed_ = false;
+    // The registration in ce::steam_recovery::g_armedThreads this guard made (an outer guard on the same
+    // thread keeps its own).
+    size_t armedSlot_ = ce::steam_recovery::kArmedThreadCapacity;
+    bool ownsArmedThread_ = false;
 };
 }
 

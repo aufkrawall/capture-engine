@@ -130,6 +130,23 @@ public:
         return count;
     }
 
+    // Drops the records whose window `windowGone(window)` reports destroyed. The
+    // swapchain of a destroyed window is gone with it, and its parked queue
+    // reference would only pin the queue (and through it the device). Same
+    // `released` contract as Forget.
+    template <typename WindowGone>
+    size_t ForgetWhereWindowGone(WindowGone&& windowGone, void** released) {
+        size_t count = 0;
+        for (Entry& entry : m_entries) {
+            if (entry.swapchain && windowGone(entry.window)) {
+                released[count++] = entry.queue;
+                entry = Entry{};
+                --m_count;
+            }
+        }
+        return count;
+    }
+
     size_t Count() const { return m_count; }
 
 private:

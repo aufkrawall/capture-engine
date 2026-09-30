@@ -109,6 +109,7 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     FakeBuffer untracked;
     // Volatile: the compiler may treat vtable contents as invariant and fold
     // the reads across the patch.
+    // NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign) - the compiler-generated vptr is set by the constructor
     void* volatile* bufferVtable = *reinterpret_cast<void* volatile**>(&chain.buffers[0]);
     void* volatile* chainVtable = *reinterpret_cast<void* volatile**>(&chain);
     void* const originalAddRef = bufferVtable[1];

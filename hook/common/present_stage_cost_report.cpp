@@ -34,7 +34,7 @@ double Us(uint64_t ns) {
     return static_cast<double>(ns) / 1000.0;
 }
 
-int Append(char* buffer, size_t bufferSize, int written, const char* fmt, ...) {
+__attribute__((format(printf, 4, 5))) int Append(char* buffer, size_t bufferSize, int written, const char* fmt, ...) {
     if (written < 0 || static_cast<size_t>(written) >= bufferSize) {
         return written;
     }

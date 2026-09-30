@@ -130,6 +130,16 @@ inline bool IsScannableRegion(DWORD state, DWORD protect, DWORD type) {
            access == PAGE_EXECUTE_WRITECOPY;
 }
 
+// The scan runs on the thread of a game that is already failing its resize, and
+// its cost grows with the process's committed writable memory. A second or two
+// is normal; a process with tens of gigabytes must not be held for minutes for
+// a diagnostic, so the walk stops at this budget and reports that it was cut.
+inline constexpr int64_t kScanBudgetUs = 3'000'000;
+
+inline bool IsScanBudgetExhausted(int64_t elapsedUs) {
+    return elapsedUs >= kScanBudgetUs;
+}
+
 // One-shot per process: the scan reads every writable page once, which costs
 // the failing resize a second or two, and only the first failure needs naming.
 inline constexpr HRESULT kDxgiErrorInvalidCall = static_cast<HRESULT>(0x887A0001L);

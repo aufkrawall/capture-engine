@@ -128,9 +128,14 @@ inline size_t CountLoadedTrackedOverlayModules(TrackedOverlaySubset subset) {
     return count;
 }
 
-// Present HOT PATH: loader-free. (Forward-declared earlier for IsThirdPartyOverlayLoaded.)
+// Present HOT PATH: loader-free.
 inline const char* GetLoadedThirdPartyOverlayModuleName() {
     return FirstLoadedTrackedOverlayModule(TrackedOverlaySubset::kOverlay);
+}
+
+// Loader-free: true if any known third-party overlay module is loaded.
+inline bool IsThirdPartyOverlayLoaded() {
+    return GetLoadedThirdPartyOverlayModuleName() != nullptr;
 }
 
 // Off-hot-path. Record that `moduleNameOrPath` just loaded; sets its bit if it is a tracked

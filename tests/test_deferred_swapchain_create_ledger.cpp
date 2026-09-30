@@ -101,6 +101,47 @@ TEST(DeferredSwapchainCreateLedgerTest, ForgettingEverythingHandsBackEveryQueue)
                 (released[0] == &g_queueB && released[1] == &g_queueA));
 }
 
+// A helper swapchain whose window is destroyed never presents visibly; its parked queue
+// reference must not keep the queue (and the device behind it) alive.
+TEST(DeferredSwapchainCreateLedgerTest, RecordsOfDestroyedWindowsAreReleasedAndOthersKept) {
+    TestLedger ledger;
+    ledger.Park(&g_swapchainA, &g_queueA, &g_windowGame, {});
+    ledger.Park(&g_swapchainB, &g_queueB, &g_windowHelper, {});
+    void* released[2] = {};
+    const size_t count = ledger.ForgetWhereWindowGone(
+        [](const void* window) { return window == &g_windowHelper; }, released);
+    ASSERT_EQ(count, 1u);
+    EXPECT_EQ(released[0], &g_queueB);
+    EXPECT_EQ(ledger.Count(), 1u);
+    TestLedger::Entry entry;
+    EXPECT_FALSE(ledger.Take(&g_swapchainB, &entry));
+    EXPECT_TRUE(ledger.Take(&g_swapchainA, &entry));
+    EXPECT_EQ(entry.queue, &g_queueA);
+}
+
+TEST(DeferredSwapchainCreateLedgerTest, NothingIsReleasedWhileEveryWindowLives) {
+    TestLedger ledger;
+    ledger.Park(&g_swapchainA, &g_queueA, &g_windowGame, {});
+    void* released[2] = {};
+    EXPECT_EQ(ledger.ForgetWhereWindowGone([](const void*) { return false; }, released), 0u);
+    EXPECT_EQ(ledger.Count(), 1u);
+}
+
+TEST(DeferredSwapchainCreateLedgerTest, TheGlueSweepsDeadWindowsWhenParkingAndWhileNothingMatches) {
+    const std::string glue = ReadSource("hook/apis/dx12_hook_deferred_swapchain_create.cpp");
+    const size_t park = glue.find("void ParkInvisibleWindowCreateSwapchain(");
+    const size_t promote = glue.find("void PromoteParkedCreateSwapchainOnVisiblePresent(");
+    ASSERT_NE(park, std::string::npos);
+    ASSERT_NE(promote, std::string::npos);
+    const size_t parkSweep = glue.find("ForgetWhereWindowGone(", park);
+    const size_t parkCall = glue.find("g_ParkedCreates.Park(", park);
+    ASSERT_NE(parkSweep, std::string::npos);
+    ASSERT_NE(parkCall, std::string::npos);
+    EXPECT_LT(parkSweep, parkCall) << "dead records leave before a new one takes a slot";
+    EXPECT_NE(glue.find("ForgetWhereWindowGone(", promote), std::string::npos)
+        << "records must also be released when no new swapchain is ever parked";
+}
+
 TEST(DeferredSwapchainCreateLedgerTest, PromotionRequiresTheSwapchainStillOnItsCreateQueue) {
     using deferred::PromotionDecision;
     EXPECT_EQ(deferred::DecidePromotion(false, true, true), PromotionDecision::kNotParked);

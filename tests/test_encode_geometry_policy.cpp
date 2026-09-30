@@ -73,7 +73,7 @@ TEST(EncodeGeometryPolicyTest, CursorLandsInsideTheFittedRectangle) {
     EXPECT_NEAR(bottomRight.left, fit.x + fit.width, 2);
     EXPECT_NEAR(bottomRight.top, fit.y + fit.height, 2);
     // Cursor size scales like the source did (1080/768).
-    EXPECT_NEAR(topLeft.right - topLeft.left, 32 * 1080 / 768, 1);
+    EXPECT_NEAR(topLeft.right - topLeft.left, 32.0 * 1080 / 768, 1);
 }
 
 TEST(EncodeGeometryPolicyTest, EncoderRoutesSourceChangesThroughThePolicy) {

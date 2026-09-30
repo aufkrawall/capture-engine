@@ -156,6 +156,32 @@ TEST(ResizeReferenceHoldersTest, TheLiveScanFindsAHeapHolderInThisProcess) {
     EXPECT_GE(slots, 3u);
 }
 
+// The scan holds a game's resizing thread; a process with a huge working set must not turn a
+// diagnostic into a multi-minute freeze.
+TEST(ResizeReferenceHoldersTest, TheScanStopsAtItsTimeBudget) {
+    EXPECT_FALSE(holders::IsScanBudgetExhausted(0));
+    EXPECT_FALSE(holders::IsScanBudgetExhausted(holders::kScanBudgetUs - 1));
+    EXPECT_TRUE(holders::IsScanBudgetExhausted(holders::kScanBudgetUs));
+    EXPECT_TRUE(holders::IsScanBudgetExhausted(holders::kScanBudgetUs * 10));
+    // Normal scans take a second or two; the budget must not cut those.
+    EXPECT_GE(holders::kScanBudgetUs, 2'500'000);
+}
+
+TEST(ResizeReferenceHoldersTest, TheWalkChecksTheBudgetPerChunkAndReportsACut) {
+    const std::string scan = ce::test_source::ReadFile(std::filesystem::current_path() /
+                                                       "hook/common/resize_reference_holders.cpp");
+    ASSERT_FALSE(scan.empty());
+    const size_t chunkLoop = scan.find("for (uintptr_t chunkStart = regionBase;");
+    const size_t budget = scan.find("IsScanBudgetExhausted(elapsedUs())", chunkLoop);
+    const size_t read = scan.find("ReadProcessMemory(", chunkLoop);
+    ASSERT_NE(chunkLoop, std::string::npos);
+    ASSERT_NE(budget, std::string::npos);
+    ASSERT_NE(read, std::string::npos);
+    EXPECT_LT(budget, read) << "the budget is checked before each chunk is read";
+    EXPECT_NE(scan.find("CUT at the time budget"), std::string::npos)
+        << "a truncated scan must say so, or its slot list reads as complete";
+}
+
 // Wired into the failed-resize diagnostics, once, after the reference probe.
 TEST(ResizeReferenceHoldersTest, TheFailedResizeDiagnosticsRunTheScanOnce) {
     const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");

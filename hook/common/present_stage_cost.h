@@ -329,6 +329,7 @@ public:
         state.ticks.fill(0);
         state.lastTicks = Backend::Now();
     }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - the production backends' Commit only touches atomics; a test backend that allocates may throw
     ~DetourRecorderT() {
         ThreadLapState& state = LapState<Backend>();
         if (nested_) {

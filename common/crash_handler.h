@@ -58,6 +58,9 @@ void RegisterCrashExecutionFaultHandler(CrashExecutionFaultHandler handler);
 // Passing nullptr unregisters it.
 using CrashPreDumpCallback = void (*)();
 void RegisterCrashPreDumpCallback(CrashPreDumpCallback callback);
+// Unregisters `callback` only if it is still the registered one, so a component
+// tearing down cannot clear a callback another component registered since.
+void UnregisterCrashPreDumpCallback(CrashPreDumpCallback callback);
 
 // The exception an external dump should carry: EXCEPTION_POINTERS in THIS
 // process's memory (the helper reads them with ClientPointers) and the thread

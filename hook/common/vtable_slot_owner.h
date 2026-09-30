@@ -55,7 +55,7 @@ inline const void* EntryJumpTarget(const void* entry) {
     }
     if (const void* slot = IndirectJumpSlot(entry)) {
         const void* target = nullptr;
-        std::memcpy(&target, slot, sizeof(target));
+        std::memcpy(static_cast<void*>(&target), slot, sizeof(target));
         return target;
     }
     return nullptr;

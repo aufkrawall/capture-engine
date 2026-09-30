@@ -276,7 +276,8 @@ int ControllerMain(HINSTANCE hInstance) {
                     ce::config_reload::DeferReload(g_ConfigReloadState);
                     reloadDecision = ce::config_reload::Decision::kWait;
                     static uint32_t s_deferredReloadLogs = 0;
-                    if (s_deferredReloadLogs++ < 8 || (s_deferredReloadLogs % 64) == 0) {
+                    const uint32_t deferredReloadLogIndex = ++s_deferredReloadLogs;
+                    if (deferredReloadLogIndex <= 8 || (deferredReloadLogIndex % 64) == 0) {
                         LogWarn(
                             "[Controller] Config reload deferred: readable=%d readFailures=%llu changedDuringLoad=%d "
                             "(size %llu -> %llu); keeping the current configuration and retrying",

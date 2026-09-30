@@ -237,6 +237,23 @@ TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {
     EXPECT_EQ(shm.GetFenceShareHandle(), 0x400u);
 }
 
+// The generation must begin before a capture re-initialization closes the old
+// handles, and again whenever the mapping being stamped is not the one (or not at
+// the generation) the producer last published.
+TEST(CaptureBaseShmTest, ProducerBeginsATransportGenerationBeforeReinitializingItsCapture) {
+    EXPECT_TRUE(ce::ShouldBeginInjectTransportGeneration(false, true, 5, 5));
+    EXPECT_TRUE(ce::ShouldBeginInjectTransportGeneration(false, false, 0, 5));
+    EXPECT_FALSE(ce::ShouldBeginInjectTransportGeneration(true, true, 5, 5));
+}
+
+TEST(CaptureBaseShmTest, ProducerBeginsATransportGenerationForAReplacementHostMapping) {
+    // Another mapping, possibly at the same address, starting at generation 0.
+    EXPECT_TRUE(ce::ShouldBeginInjectTransportGeneration(true, false, 5, 5));
+    EXPECT_TRUE(ce::ShouldBeginInjectTransportGeneration(true, true, 0, 5));
+    // Only the low 32 bits are stamped on frames.
+    EXPECT_FALSE(ce::ShouldBeginInjectTransportGeneration(true, true, 0x100000005ull, 5));
+}
+
 TEST(CaptureBaseShmTest, VulkanProducerPoolsCoverTheFullSharedTextureLeaseSpace) {
     EXPECT_EQ(ENCODER_TEXTURE_SLOT_COUNT, SHARED_TEXTURE_SLOT_COUNT);
     EXPECT_EQ(SHARED_TEXTURE_SLOT_COUNT, 16);

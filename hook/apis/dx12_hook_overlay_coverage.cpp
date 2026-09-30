@@ -258,7 +258,11 @@ void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
 
 void DX12_EndOverlayPresentScope() {
     OverlayPresentScope& scope = t_overlayPresentScope;
-    if (scope.depth <= 0 || --scope.depth > 0) {
+    if (scope.depth <= 0) {
+        return;
+    }
+    --scope.depth;
+    if (scope.depth > 0) {
         return;
     }
     if (scope.accountCalls > 0) {

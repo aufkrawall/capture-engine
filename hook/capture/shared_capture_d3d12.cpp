@@ -224,7 +224,7 @@ SharedCaptureD3D12::SwapChainBinding SharedCaptureD3D12::DescribeSwapChainBindin
     binding.targetsSwapChain = m_SwapChainBinding.Matches(pSwapChain);
     std::lock_guard<std::mutex> frameLock(m_Lock);
     binding.framesCaptured = m_FrameCounter;
-    binding.lastCaptureQpc = m_CurrentFrame.presentTime;
+    binding.lastCaptureQpc = static_cast<int64_t>(m_CurrentFrame.presentTime);
     return binding;
 }
 

@@ -23,7 +23,7 @@
 namespace ce::ddraw_chain_lifetime {
 
 // The application - not CE's own vtable bootstrap - is creating a primary.
-inline bool ShouldReleaseChainBeforeCreation(bool primaryDescription, int bootstrapDepth, bool shuttingDown) {
+inline bool ShouldReleaseChainBeforeCreation(bool primaryDescription, unsigned bootstrapDepth, bool shuttingDown) {
     return primaryDescription && bootstrapDepth == 0 && !shuttingDown;
 }
 

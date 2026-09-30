@@ -355,7 +355,7 @@ bool StartHotkeyInputHook(DWORD targetThreadId) {
 void StopHotkeyInputHook() {
     if (!g_HotkeyHook.thread.joinable())
         return;
-    RegisterCrashPreDumpCallback(nullptr);
+    UnregisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash);
     const DWORD hookThreadId = g_HotkeyHook.hookThreadId.load(std::memory_order_acquire);
     if (hookThreadId != 0)
         PostThreadMessage(hookThreadId, WM_QUIT, 0, 0);

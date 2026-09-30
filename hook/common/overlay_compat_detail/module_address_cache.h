@@ -137,13 +137,18 @@ inline std::uintptr_t ImageEnd(HMODULE module) {
     return base + nt->OptionalHeader.SizeOfImage;
 }
 
-// Loader-backed resolution, identical to what callers did before the cache.
-inline bool ResolveFromLoader(const void* codeAddress, Entry* out, bool wantPath) {
+// Loader-backed resolution, identical to what callers did before the cache. With `pinOut` the module
+// keeps one loader reference until the caller releases it (FreeLibrary), so the image headers ImageEnd
+// reads cannot be unmapped by a concurrent unload; without it nothing is pinned and nothing is read.
+inline bool ResolveFromLoader(const void* codeAddress, Entry* out, bool wantPath, HMODULE* pinOut = nullptr) {
     HMODULE module = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCSTR>(codeAddress), &module) ||
-        !module) {
+    const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        (pinOut ? 0 : GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT);
+    if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(codeAddress), &module) || !module) {
         return false;
+    }
+    if (pinOut) {
+        *pinOut = module;
     }
     out->module = module;
     out->path[0] = '\0';
@@ -185,11 +190,14 @@ inline bool Lookup(const void* codeAddress, HMODULE* moduleOut, char* pathOut, s
         state.misses.fetch_add(1, std::memory_order_relaxed);
 
         Entry resolved;
-        if (!ResolveFromLoader(codeAddress, &resolved, true)) {
+        HMODULE pinned = nullptr;
+        if (!ResolveFromLoader(codeAddress, &resolved, true, &pinned)) {
             return false;
         }
         resolved.begin = reinterpret_cast<std::uintptr_t>(resolved.module);
         resolved.end = ImageEnd(resolved.module);
+        // Pinned only for the header read above; a miss is once per module and generation.
+        FreeLibrary(pinned);
         resolved.generation = generation;
         // A failed path read is not cached: the next lookup asks the loader again.
         if (resolved.path[0] != '\0' && resolved.end > address && resolved.begin <= address) {

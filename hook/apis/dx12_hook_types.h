@@ -102,13 +102,13 @@ bool InitDevice(ID3D12Device* dev, DXGI_FORMAT rtvFormat);
     // RendererBackend: stage font atlas for a descriptor-free structured uint buffer.
     // The pixel shader samples from a DEFAULT-heap buffer; reading a UPLOAD heap
     // directly in the text draw has proven fragile on the x86 NVIDIA path.
-bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData);
+bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData) override;
 
-void Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices, const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH);
+void Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices, const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH) override;
 
 void SetNextUploadSlot(int allocatorSlot) override;
 
-void Shutdown();
+void Shutdown() override;
 
 private:
 bool CreateRootSignature();

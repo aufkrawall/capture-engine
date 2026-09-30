@@ -247,7 +247,7 @@ TEST(AudioLatencyProbeTest, EarlyStopEndsShotAfterBurstWithFullCaptureCenter) {
             EXPECT_EQ(DetectMarkerCenterFrame(cap.data(), scan.stopFrames, rate, spec.markerFreqHz), fullCenter);
 
             // It stops only after the burst end plus the guard ...
-            const size_t burstEnd = static_cast<size_t>(preFrames + spec.markerFrames);
+            const size_t burstEnd = static_cast<size_t>(preFrames) + static_cast<size_t>(spec.markerFrames);
             EXPECT_GE(scan.stopFrames, burstEnd + static_cast<size_t>(rate * kProbeEarlyStopGuardSeconds) -
                                            static_cast<size_t>(rate / 200))
                 << "rate=" << rate << " latencyMs=" << latencyMs;
@@ -265,7 +265,7 @@ TEST(AudioLatencyProbeTest, EarlyStopNeverFiresInsideTheBurst) {
     const std::vector<float> cap =
         MakeSyntheticCapture(rate, spec.markerFreqHz, preFrames, spec.markerFrames, rate / 2, spec.amplitude, 0.0, 5);
     // Every prefix that ends before the burst has decayed plus the guard must keep capturing.
-    const size_t burstEnd = static_cast<size_t>(preFrames + spec.markerFrames);
+    const size_t burstEnd = static_cast<size_t>(preFrames) + static_cast<size_t>(spec.markerFrames);
     const size_t guardFrames = static_cast<size_t>(rate * kProbeEarlyStopGuardSeconds);
     for (size_t frames = 64; frames + static_cast<size_t>(rate / 200) < burstEnd + guardFrames; frames += 97) {
         EXPECT_LT(DetectCompletedMarkerCenterFrame(cap.data(), frames, spec), 0) << "frames=" << frames;

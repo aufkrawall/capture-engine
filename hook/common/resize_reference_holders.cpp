@@ -102,7 +102,13 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
     size_t total = 0;
     unsigned long long bytesScanned = 0;
     unsigned long regionsScanned = 0;
-    for (uintptr_t address = lowest; address < highest;) {
+    bool budgetExhausted = false;
+    const auto elapsedUs = [&]() {
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter(&now);
+        return frequency.QuadPart > 0 ? (now.QuadPart - started.QuadPart) * 1'000'000 / frequency.QuadPart : 0;
+    };
+    for (uintptr_t address = lowest; address < highest && !budgetExhausted;) {
         MEMORY_BASIC_INFORMATION region = {};
         if (VirtualQuery(reinterpret_cast<const void*>(address), &region, sizeof(region)) == 0) {
             break;
@@ -115,6 +121,10 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
         }
         ++regionsScanned;
         for (uintptr_t chunkStart = regionBase; chunkStart < regionEnd; chunkStart += kChunkBytes) {
+            if (holders::IsScanBudgetExhausted(elapsedUs())) {
+                budgetExhausted = true;
+                break;
+            }
             const uintptr_t readStart = (std::max)(regionBase, chunkStart >= holders::kOwnerLookBackBytes
                                                                    ? chunkStart - holders::kOwnerLookBackBytes
                                                                    : regionBase);
@@ -157,11 +167,12 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
         used += static_cast<size_t>(written);
     }
     HookLogImportant(
-        "ResizeReferenceHolders: %s scanned %.1f MB in %lu writable region(s) in %.0f ms for bb=[%s] - "
+        "ResizeReferenceHolders: %s scanned %.1f MB in %lu writable region(s) in %.0f ms for bb=[%s]%s - "
         "slots=%zu (listed %zu). Owner = nearest code-image pointer in front of the slot (the object's vtable, "
         "or a return address on a stack); dxgi/d3d12 owners include the chain's own bookkeeping",
         source ? source : "resize", static_cast<double>(bytesScanned) / (1024.0 * 1024.0), regionsScanned, elapsedMs,
-        bufferList, total, (std::min)(recorded, kLoggedHits));
+        bufferList, budgetExhausted ? " (CUT at the time budget; later addresses were not scanned)" : "", total,
+        (std::min)(recorded, kLoggedHits));
 
     std::map<std::string, unsigned> owners;
     for (size_t i = 0; i < recorded; ++i) {

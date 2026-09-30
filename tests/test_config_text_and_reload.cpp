@@ -69,6 +69,57 @@ TEST(ConfigTextEncodingTest, Utf8ConfigValuesLoadAsActiveCodePageText) {
     std::filesystem::remove(path);
 }
 
+TEST(ConfigTextEncodingTest, RecentlyWrittenFilesAreRacy) {
+    constexpr uint64_t kSecond = 10'000'000;
+    const uint64_t written = 100 * kSecond;
+    EXPECT_TRUE(text::IsRacyFileTimestamp(written, written));
+    EXPECT_TRUE(text::IsRacyFileTimestamp(written, written + kSecond));
+    // FAT stamps files with 2 s granularity: 2 s after the stamp is still not enough.
+    EXPECT_TRUE(text::IsRacyFileTimestamp(written, written + 2 * kSecond));
+    EXPECT_FALSE(text::IsRacyFileTimestamp(written, written + text::kRacyFileTimestampWindow100ns));
+    EXPECT_FALSE(text::IsRacyFileTimestamp(written, written + 3600 * kSecond));
+    // A stamp ahead of the clock (skewed share, or a file stamped by another machine).
+    EXPECT_TRUE(text::IsRacyFileTimestamp(written + kSecond, written));
+}
+
+// A UTF-8 config is parsed once per (write time, size). A rewrite that keeps both - a boolean
+// flipped in place inside one file-time tick - must still be seen, or a setting saved right
+// after being read keeps its old value.
+TEST(ConfigTextEncodingTest, ASameSizeRewriteWithinTheTimestampGranularityIsNotServedFromTheCache) {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                       ("ce_racy_config_" + std::to_string(GetCurrentProcessId()) + ".ini");
+    const auto writeWithStamp = [&](const char* content, const FILETIME& stamp) {
+        {
+            std::ofstream file(path, std::ios::binary | std::ios::trunc);
+            file << content;
+        }
+        HANDLE handle = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+        EXPECT_TRUE(SetFileTime(handle, nullptr, nullptr, &stamp));
+        CloseHandle(handle);
+    };
+
+    // Stamped an hour ahead of the clock, so the entry is racy whatever the clock does meanwhile.
+    FILETIME stamp = {};
+    GetSystemTimeAsFileTime(&stamp);
+    ULARGE_INTEGER ahead;
+    ahead.LowPart = stamp.dwLowDateTime;
+    ahead.HighPart = stamp.dwHighDateTime;
+    ahead.QuadPart += 3600ull * 10'000'000ull;
+    stamp.dwLowDateTime = ahead.LowPart;
+    stamp.dwHighDateTime = ahead.HighPart;
+
+    writeWithStamp("\xEF\xBB\xBF[Capture]\r\nshow_overlay=1\r\n", stamp);
+    EXPECT_EQ(text::ReadIniValue(path.string(), "Capture", "show_overlay", "?"), "1");
+    writeWithStamp("\xEF\xBB\xBF[Capture]\r\nshow_overlay=0\r\n", stamp);
+    EXPECT_EQ(text::ReadIniValue(path.string(), "Capture", "show_overlay", "?"), "0")
+        << "the cached parse of the previous content was served for a rewritten file";
+    // Unchanged content keeps answering from the (verified) entry.
+    EXPECT_EQ(text::ReadIniValue(path.string(), "Capture", "show_overlay", "?"), "0");
+    std::filesystem::remove(path);
+}
+
 TEST(ConfigReloadPolicyTest, AChangeIsAppliedOnlyOnceStable) {
     reload::State state;
     reload::FileIdentity original{true, 100, 5000};

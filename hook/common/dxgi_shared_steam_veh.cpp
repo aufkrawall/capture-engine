@@ -166,7 +166,17 @@ bool TryRecoverForeignOverlayInvokeCrash(PEXCEPTION_POINTERS ep) {
 }
 }  // namespace
 
-LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
+// Registered process-wide, so it runs first for EVERY exception on EVERY thread. Two things follow:
+//  - It must not be instrumented by AddressSanitizer: ASan itself takes access violations to commit shadow
+//    memory on demand, and an instrumented handler reads shadow bytes that are not committed yet, faults
+//    again inside the handler and re-enters it until the stack is gone.
+//  - It must not read thread-local storage before knowing the thread is one that armed a guard: loader
+//    worker threads have no thread-local block for this module, so that read faults the same way. The
+//    armed-thread set is keyed by thread id and needs no thread-local storage.
+__attribute__((no_sanitize("address"))) LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
+    if (!ce::steam_recovery::g_armedThreads.Contains(GetCurrentThreadId())) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     // Registered once for the whole process, so it must stay out of every fault
     // that is not raised inside a guarded foreign Present on THIS thread. Before,
     // any thread's `call rax` through NULL with a Steam return address - on any

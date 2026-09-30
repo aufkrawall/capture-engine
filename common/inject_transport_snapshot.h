@@ -56,6 +56,20 @@ inline void AdoptEncoderTexturesWithFence(SharedMemoryLayout& sharedMem, uint64_
     sharedMem.useEncoderTextures.store(true, std::memory_order_release);
 }
 
+// Whether a producer that publishes into `sharedMem` must start a new transport
+// generation before its next frame. That is the case whenever its capture is about
+// to be (re)initialized - Initialize() closes the previous handles, so the
+// generation has to begin BEFORE it, or a frame of the outgoing generation that
+// media reads in between still passes the generation check against a reused handle
+// value - and when the mapping it stamps frames for is not the one it last stamped
+// (a replacement host's mapping starts at generation 0, possibly at the same
+// address).
+inline bool ShouldBeginInjectTransportGeneration(bool captureInitialized, bool sameMappingAsLastPublish,
+                                                 uint64_t mappingGeneration, uint32_t lastPublishedGeneration) {
+    return !captureInitialized || !sameMappingAsLastPublish ||
+           static_cast<uint32_t>(mappingGeneration) != lastPublishedGeneration;
+}
+
 // Reads the texture/fence handles for one inject frame under the transport
 // generation protocol (see SharedMemoryLayout::BeginTransportGeneration).
 inline InjectTransportSnapshot ReadInjectTransportSnapshot(const SharedMemoryLayout& sharedMem, int textureIndex,

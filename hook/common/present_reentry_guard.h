@@ -116,7 +116,8 @@ public:
     long AnswerNestedPresentation(void* savedOriginal, void* returnAddress, BypassBuilder builder, PresentFn,
                                   Args... args) {
         void* bypass = AcquirePresentEntryBypass(savedOriginal, family().operation(), builder);
-        if (!MayRunRealImplementation(bypass != nullptr)) {
+        const bool mayRunReal = MayRunRealImplementation(bypass != nullptr);
+        if (!mayRunReal || bypass == nullptr) {
             NoteNestedPresentation(savedOriginal, returnAddress, "dropped");
             return DropResult();
         }

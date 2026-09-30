@@ -42,7 +42,9 @@ TEST(DisplayTimingComposedTest, CompositorFlipShowsTheNewestReadyFrame) {
     // Composition submitted at 6000: frame 2 is the newest ready one, frame 1
     // was replaced before any composition showed it, frame 3 waits.
     const auto shown = composed.TakeFrameShownBy(6'000);
-    ASSERT_TRUE(shown.has_value());
+    if (!shown.has_value()) {
+        FAIL() << "the composition showed no frame";
+    }
     EXPECT_EQ(shown->associationId, 2u);
     EXPECT_EQ(shown->submitSequence, 11u);
     EXPECT_EQ(shown->presentStartTimestamp, 1'950);
@@ -53,7 +55,9 @@ TEST(DisplayTimingComposedTest, CompositorFlipShowsTheNewestReadyFrame) {
     // A composition with no newer ready frame shows nothing new.
     EXPECT_FALSE(composed.TakeFrameShownBy(8'000).has_value());
     const auto next = composed.TakeFrameShownBy(13'000);
-    ASSERT_TRUE(next.has_value());
+    if (!next.has_value()) {
+        FAIL() << "the later composition showed no frame";
+    }
     EXPECT_EQ(next->associationId, 3u);
 }
 
@@ -82,7 +86,9 @@ TEST(DisplayTimingComposedTest, ReadyFramesStayOrderedWhenEventsArriveOutOfOrder
     EXPECT_TRUE(composed.ObserveReady(11, Association(2, 2'000), 5'000, kBound));
     EXPECT_TRUE(composed.ObserveReady(10, Association(1, 1'000), 3'000, kBound));
     const auto shown = composed.TakeFrameShownBy(4'000);
-    ASSERT_TRUE(shown.has_value());
+    if (!shown.has_value()) {
+        FAIL() << "the composition showed no frame";
+    }
     EXPECT_EQ(shown->associationId, 1u);
     EXPECT_EQ(composed.pending(), 1u);
 }

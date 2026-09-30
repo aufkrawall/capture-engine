@@ -499,6 +499,11 @@ void RegisterCrashPreDumpCallback(CrashPreDumpCallback callback) {
     g_PreDumpCallback.store(callback, std::memory_order_release);
 }
 
+void UnregisterCrashPreDumpCallback(CrashPreDumpCallback callback) {
+    CrashPreDumpCallback expected = callback;
+    g_PreDumpCallback.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+}
+
 void NotifyCrashPreDump() {
     const CrashPreDumpCallback callback = g_PreDumpCallback.load(std::memory_order_acquire);
     if (!callback)

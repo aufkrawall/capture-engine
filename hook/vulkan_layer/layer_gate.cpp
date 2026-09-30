@@ -45,7 +45,7 @@ constexpr wchar_t kLayerLibraryName[] = L"VK_LAYER_CE_overlay_x86.dll";
 // when that host has debug logging on - the same rule the full layer's early log
 // follows. Without a host there is no log location to write to, so a no-host
 // decision is silent by design.
-void GateLog(const char* fmt, ...) {
+__attribute__((format(printf, 1, 2))) void GateLog(const char* fmt, ...) {
     char logsPath[MAX_PATH] = {};
     if (!ce::vulkan_layer_participation::ReadPublishedHostLogging(logsPath, sizeof(logsPath)) || logsPath[0] == '\0')
         return;

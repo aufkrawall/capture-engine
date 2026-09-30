@@ -37,6 +37,16 @@ bool IsUtf8ConfigText(std::string_view fileBytes);
 // become '?'; *lossy reports whether that happened.
 std::string Utf8ToCodePage(std::string_view utf8, unsigned codePage, bool* lossy = nullptr);
 
+// A parse cached under (write time, size) alone can miss a rewrite that keeps
+// both: file times are only as fine as the file system's clock tick (up to
+// ~16 ms on NTFS, 2 s on FAT). A file last written less than
+// kRacyFileTimestampWindow100ns before `now100ns` (or "in the future", as on a
+// share with a skewed clock) is therefore racy: its cached parse is confirmed
+// against the file's bytes before it is served. Both arguments are FILETIME
+// values (100 ns units).
+inline constexpr uint64_t kRacyFileTimestampWindow100ns = 25'000'000;  // 2.5 s, above FAT's 2 s granularity
+bool IsRacyFileTimestamp(uint64_t lastWrite100ns, uint64_t now100ns);
+
 // GetPrivateProfileStringA semantics, answered in the active code page. A UTF-8
 // file (cached parse, keyed by file time and size) is read from its own bytes
 // by config_ini_reader: the profile API's CP_ACP round trip is lossless only on

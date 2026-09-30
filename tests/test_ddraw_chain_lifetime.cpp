@@ -95,8 +95,9 @@ TEST(DDrawChainLifetimeTest, DirectDrawRefusesANewPrimaryWhileAnyReferenceToTheO
     if (!ddraw)
         GTEST_SKIP() << "ddraw.dll unavailable";
     using DirectDrawCreateEx_t = HRESULT(WINAPI*)(GUID*, void**, REFIID, IUnknown*);
-    auto create = reinterpret_cast<DirectDrawCreateEx_t>(
-        reinterpret_cast<void*>(GetProcAddress(ddraw, "DirectDrawCreateEx")));
+    // The void* hop keeps clang's cast-function-type check quiet for a FARPROC of an unrelated signature.
+    // NOLINTNEXTLINE(bugprone-casting-through-void)
+    auto create = reinterpret_cast<DirectDrawCreateEx_t>(reinterpret_cast<void*>(GetProcAddress(ddraw, "DirectDrawCreateEx")));
     ASSERT_NE(create, nullptr);
 
     IDirectDraw7* directDraw = nullptr;
@@ -188,7 +189,7 @@ TEST(DDrawChainLifetimeTest, EndSceneTracksTheDeviceAgain) {
     const std::string untrack = FunctionBody(helpers, "bool ReleaseTrackedLegacyD3D7DeviceIf(");
     ASSERT_FALSE(untrack.empty());
     const size_t exchange = untrack.find("exchange(nullptr");
-    const size_t unlock = untrack.find("}", exchange);
+    const size_t unlock = untrack.find('}', exchange);
     const size_t releaseCall = untrack.find("tracked->Release()");
     ASSERT_NE(exchange, std::string::npos);
     ASSERT_NE(releaseCall, std::string::npos);

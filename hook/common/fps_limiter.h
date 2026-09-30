@@ -78,8 +78,8 @@ private:
     LocalCadenceResult RunLocalCadence(int targetFps, int cadenceScale, bool preserveCaptureSyncPhase);
 
 public:
-    void SetIPCClient(IPCClient* ipc) {
-        this->ipc = ipc;
+    void SetIPCClient(IPCClient* ipcClient) {
+        ipc = ipcClient;
     }
 
     // For testing: inject mock shared memory
@@ -205,7 +205,7 @@ public:
     bool SmartWait(int64_t targetTick);
 
     // Direct trace log for debugging — bypasses all log infrastructure
-    void TraceLog(const char* fmt, ...);
+    void TraceLog(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
     // Close and forget the cached fps_limiter_trace.log path so the next
     // TraceLog call re-resolves it against the current host session.
     void ResetTraceLogPath();

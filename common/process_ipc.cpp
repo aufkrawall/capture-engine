@@ -32,7 +32,7 @@ std::string g_RecordingId;
 static std::atomic<uint32_t> g_invalidMessageLogCount{0};
 std::atomic<uint64_t> g_pipeNameSequence{1};
 
-static void LogInvalidMessage(const char* format, ...) {
+__attribute__((format(printf, 1, 2))) static void LogInvalidMessage(const char* format, ...) {
     if (g_invalidMessageLogCount.fetch_add(1, std::memory_order_relaxed) >= 32)
         return;
     char message[512]{};

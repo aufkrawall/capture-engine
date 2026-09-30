@@ -110,7 +110,21 @@ std::string Utf8ToCodePage(std::string_view utf8, unsigned codePage, bool* lossy
     return narrow;
 }
 
+bool IsRacyFileTimestamp(uint64_t lastWrite100ns, uint64_t now100ns) {
+    return now100ns < lastWrite100ns || now100ns - lastWrite100ns < kRacyFileTimestampWindow100ns;
+}
+
 namespace {
+
+uint64_t FileTimeToUint64(const FILETIME& time) {
+    return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+}
+
+uint64_t CurrentFileTime() {
+    FILETIME now = {};
+    GetSystemTimeAsFileTime(&now);
+    return FileTimeToUint64(now);
+}
 
 // The parsed form of the last config file read, keyed by its path, write time
 // and size. A config load asks for a few hundred values; the file is read and
@@ -121,6 +135,11 @@ struct ConfigDocumentCache {
     FILETIME lastWrite = {};
     uint64_t size = 0;
     bool valid = false;
+    // The bytes the parse came from, and whether the file was written so recently that
+    // an in-place rewrite could keep its (write time, size) key: a racy entry is only
+    // served after its bytes are confirmed unchanged (IsRacyFileTimestamp).
+    std::string bytes;
+    bool racy = false;
     std::shared_ptr<const IniDocument> utf8Document;  // null for an ANSI (or unreadable) file
 };
 
@@ -177,15 +196,33 @@ std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path, bool
     const uint64_t size = (static_cast<uint64_t>(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
     ConfigDocumentCache& cache = Cache();
     std::lock_guard<std::mutex> lock(cache.mutex);
+    const uint64_t lastWrite = FileTimeToUint64(attributes.ftLastWriteTime);
+    std::string bytes;
+    bool bytesRead = false;
     if (cache.valid && cache.path == path && cache.size == size &&
         CompareFileTime(&cache.lastWrite, &attributes.ftLastWriteTime) == 0) {
-        if (readOk) {
-            *readOk = true;
+        if (!cache.racy) {
+            if (readOk) {
+                *readOk = true;
+            }
+            return cache.utf8Document;
         }
-        return cache.utf8Document;
+        if (!ReadWholeFile(path, &bytes)) {
+            NoteConfigReadFailure(path);
+            return nullptr;
+        }
+        bytesRead = true;
+        if (bytes == cache.bytes) {
+            // Unchanged; once the file has been quiet past the timestamp granularity, the
+            // key alone is trustworthy again.
+            cache.racy = IsRacyFileTimestamp(lastWrite, CurrentFileTime());
+            if (readOk) {
+                *readOk = true;
+            }
+            return cache.utf8Document;
+        }
     }
-    std::string bytes;
-    if (!ReadWholeFile(path, &bytes)) {
+    if (!bytesRead && !ReadWholeFile(path, &bytes)) {
         // A UTF-8 file then falls through to the profile API (lossy on DBCS, or all
         // defaults when the file is locked). Counted so a reload can refuse to publish it.
         NoteConfigReadFailure(path);
@@ -199,6 +236,8 @@ std::shared_ptr<const IniDocument> Utf8DocumentFor(const std::string& path, bool
     cache.size = size;
     cache.utf8Document =
         IsUtf8ConfigText(bytes) ? std::make_shared<const IniDocument>(ParseUtf8Ini(bytes)) : nullptr;
+    cache.racy = IsRacyFileTimestamp(lastWrite, CurrentFileTime());
+    cache.bytes = std::move(bytes);
     cache.valid = true;
     return cache.utf8Document;
 }

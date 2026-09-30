@@ -5,6 +5,7 @@
 #include "../hook/common/custom_font.h"
 
 // Compiled into the test binary directly: the unit tests link common/ and mediaengine/, not the hook DLL.
+// NOLINTNEXTLINE(bugprone-suspicious-include) - deliberate, see above
 #include "../hook/common/custom_font.cpp"
 
 // GTA session 20260925_225006: at FSR FG start CE built two overlay renderers on AMD's presenter thread, each

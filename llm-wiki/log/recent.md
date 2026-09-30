@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-09-30 - Review of v0.1.6772..HEAD: robustness follow-ups
+
+- Reviewed the 68 commits after v0.1.6772 (source diffs only; the four risk-audit commits were not re-read). No
+  correctness bug found; eight low-severity hazards fixed with regression tests:
+  DX12 inject capture begins its transport generation BEFORE `Initialize()` closes the old handles
+  (`ShouldBeginInjectTransportGeneration`); parked hidden-window queues are released when their window is destroyed
+  (`Ledger::ForgetWhereWindowGone`, swept on every park and every 256th unmatched Present); the caller-module cache
+  pins the module across its header read (`ResolveFromLoader(..., &pinned)`); the UTF-8 config cache confirms
+  "racy" entries (written < 2.5 s ago) byte-for-byte (`IsRacyFileTimestamp`, git's racy-index rule); the failed-resize
+  holder scan stops at 3 s (`kScanBudgetUs`); `UnregisterCrashPreDumpCallback` removes only its own callback.
+- **False alarm worth remembering:** a first reading claimed the `Phase6Tail` overlay-free fallback capture could carry
+  CE's overlay because of the independent below-foreign-chain composite. That route is dead code
+  (`DecideBelowForeignChainFSRDeepDraw` is a stub returning `kUnavailable` since `cff7a507`); see the SUPERSEDED note in
+  `dx12-overlay-third-party-coexistence.md`. Whether the FFX present callback's composite reaches the captured proxy
+  back buffer stays the open hardware question from 2026-09-29.
+- Release preflight caught `common/crash_dump_policy.h` at 801 lines (already over at HEAD, from `d5b878f0`): the WER
+  adoption/registration helpers moved to `common/crash_dump_wer_policy.h` (still included by the old header).
+- The first full `--verify` since 0.1.6772 (sanitizers are skipped by the per-change gate) found a real bug at HEAD:
+  `SteamOverlayInitVehHandler` (process-wide, runs first for every exception) read a `thread_local`; loader worker
+  threads (`LdrpProcessWork`) have no TLS block, so the read faulted inside the handler and recursed to stack
+  overflow (silent 0xC0000005 under ASan, moved between tests). Fix: `ce::steam_recovery::g_armedThreads` (thread-id
+  set, no TLS) is consulted first, and the handler is `no_sanitize("address")`. Lesson: any process-wide VEH must be
+  TLS-free and uninstrumented until it knows the thread is one it armed.
+- Deliberately unchanged: `IsUsableHostDirectory` still accepts UNC paths (`test_vulkan_layer_host_directory.cpp` pins
+  it; a network-share install is legitimate and the pointer file has the staged layer's trust level); the duplicated
+  rejected-timestamp block in `audio_capture_loop.cpp` / `app_audio_capture_loop.cpp` (refactoring audio-critical
+  loops for a maintainability gain is not worth the risk without a hardware run).
+
 ### 2026-09-30 - Review fixes: full-queue disk timeout and FFX create-byte restoration lifetime
 
 - Full mux queues now service `CancelExpiredOutputIo("backpressure")` outside the queue lock;
@@ -99,131 +127,3 @@
   `Admitting split-renderer frames` / `Refusing split-renderer frames`; drop line now names admission + claim.
 - Verified only by Linux-built gtest of `tests/test_inject_frame_source_policy.cpp` (no MinGW/Windows run). Next
   Portal RTX session must show the admit line, `First actual inject frame queued`, and a saved file.
-
-### 2026-09-28 - Composed Vulkan present: overlay display timing matched 10 s-old frames
-
-- `logs/20260928_042343` (0.1.6847, DOOM Eternal native Vulkan, 4K -> 1440p): the game recreated its swapchain 18x
-  in 11 s (alternating 2560x1440 / 3840x2160, black window, ended at an alt-tab). CE passes present/acquire results
-  through unchanged and touches no FSE call, so nothing tied that to CE, but no result was logged. Now
-  `LogSwapchainInvalidationResult` (`vulkan_swapchain_result_policy.h`) names OUT_OF_DATE/SUBOPTIMAL/SURFACE_LOST/
-  FSE_LOST/DEVICE_LOST per call. Open: re-run to see which result drives the flapping.
-- After the switch the sensor showed `presentToDisplay` 5.9-10.5 s mean, `latchInterval n=0`, published ~29 fps
-  while the game ran at 140. The cause was stale unflipped submissions claimed by unrelated VSync completions.
-  Fix: 1 s completion bound and short submission retention, see `display-change-timing.md` "Completion bound and composed presentation".
-  Only verified by Linux-built unit tests (no MinGW or Windows run in this session).
-- Follow-up `logs/20260928_044654` (0.1.6848): catch-up gone, transition logged, but the latency row showed
-  `PC Latency -`: the estimate needs display samples and composed frames had none. Added compositor-based timing
-  (`display_timing_composed.h`, DWM via `QueuePacket_Stop` readiness) and split the service into
-  `_internal.h` + `display_timing_service.cpp` + `display_timing_service_events.cpp` (was 820 lines). Syntax-checked on
-  Linux against stub Windows/ETW headers only; next session must confirm `composed(ready>0 published>0)`.
-- Same session answers the flapping: every 2560x1440 swapchain got `vkQueuePresentKHR` -> `VK_ERROR_OUT_OF_DATE_KHR`
-  from the driver right away (occurrences #1-#4), the game rebuilt at 3840x2160 and later switched back to 1440p by
-  itself; the other 9 of 14 recreations had no invalidation result. CE passes results through untouched: game/driver
-  mode-change behaviour, not a CE defect.
-
-### 2026-09-28 - Vulkan resize mid-recording froze video: fence published to the wrong slot
-
-- `logs/20260928_001303` (0.1.6845, DOOM Eternal native Vulkan with NVIDIA present-on-DXGI, inject capture):
-  4K -> 1440p at 00:14:00. Layer retired the swapchain and published generation 9/10 (2560x1440, new fence
-  `0x2184`, logged "Published capture fence handle ... to encoderTextures"). Media opened the new textures and fitted
-  1440p into the 4K recording, but frames stopped at 00:14:06.5: every tick `Deferred inject frame`, `DupDef=120`,
-  `TickUnique=0` until stop. The first deferred frame had fence 802; the old generation ended at fence 801.
-- Root cause: `InitializeCapture` wrote the fence to `encoderTextures` whenever `encoderTextures.ready` was set.
-  Media sets it at every recording start ("Created encoder KMT textures early"), but reads that slot only when
-  `useEncoderTextures` is set, which native Vulkan never sets. Media re-read the stale shared-slot handle of the
-  retired fence (still alive, completed value 801) and `WaitForFrameFence` deferred every new-generation value
-  above it (the ~6 s before that were encoded without a real GPU wait). Earlier generations were published before
-  recording start (`ready=0`), so they used the shared slot and the bug stayed hidden.
-- Fix: `ce::PublishInjectFenceHandle` / `ce::InjectFenceUsesEncoderTextureSlot` in
-  `common/inject_transport_snapshot.h` hold the single slot rule for producer and media; the layer uses it and logs
-  slot/usingEncoderTextures/ready. Tests: `CaptureBaseShmTest.FenceRepublishedAfterResizeReachesTheSlotMediaReads`,
-  `FencePublishFollowsEncoderTextureAdoption`.
-- Follow-up (same day, static analysis only, no hardware run): the DXVK late-adoption path in
-  `layer_capture_capture.cpp` flipped `useEncoderTextures` without a fence. The encoder-texture slot still held
-  media's own fence handle (`video_encoder_textures.cpp`, media-process handle, never signaled by anyone), and
-  `ResolveFrameInput`'s encoder-owned branch opens it directly in-process, so every frame would defer at completed
-  value 0. Media clears the flag at every recording stop, so this was the normal DXVK path for any game running
-  before the recording. After adoption the entry has no IPC relay, so frames are signaled on the exported timeline
-  fence (`state.sharedFenceHandle`, `encoderFenceValue == vulkanSignalValue`). Fix: `ce::AdoptEncoderTexturesWithFence`
-  publishes that fence before the flag. Test `LateEncoderTextureAdoptionPublishesTheProducerFence`.
-- Follow-up 2 (static analysis + MinGW syntax check, no hardware run): `RepublishCaptureTransportForHost` after an
-  adoption published the import entry's `textureHandles` (all null) and `ipcFenceHandle` (unsignaled since
-  adoption). Returning false did not help: `InitializeCapture` returns early for an unchanged initialized state,
-  and `GetOrCreateSharedTextures` returned the same import. A contended try-lock also fell through to that early
-  return while the present path recorded the host generation as served. Fix:
-  `hook/vulkan_layer/vulkan_capture_transport_policy.h` decides Published/Rebuild/Retry. A rebuild invalidates
-  the import and the current state, so `InitializeCapture` retires it and builds a layer-owned transport (deferred
-  rebuilds are retried by the existing `captureStateMissing` path). Retry leaves the generation unrecorded.
-  `GetOrCreateSharedTextures` retires any valid import it meets, which also fixes a same-size swapchain rebuild
-  between recordings. `SharedTextureEntry::encoderTextureImport` marks imports. Tests:
-  `tests/test_vulkan_capture_transport_policy.cpp`.
-
-### 2026-09-27 - Recording-start latency: probe early stop, truthful live timing, WGC reserve-wait finding
-
-- `logs/20260927_195021` (0.1.6844, DXGI-dup desktop + Brave audio, first recording of the session): hotkey ->
-  media live 5453 ms, not the logged 6375 ms (`CheckChildProcessHealth` polls once per second). Split: spawn 0.05 s,
-  `[AVSyncProbe]` 3.17 s, engine/D3D/dup init 0.28 s, start + 19 audio sources 0.24 s, pre-live warmup 0.55 s,
-  encoder prewarm 0.16 s, `WGC startup delay-reserve wait` 1.00 s (budget exhausted, `partial_span_timeout`).
-- Probe: every shot captured the fixed 620 ms window (`capFrames=119040` at 192 kHz) with the marker at 95 ms.
-  Shots now stop at `DetectCompletedMarkerCenterFrame` (burst + 40 ms decayed guard); measured value unchanged,
-  full window kept as the bound. Shot spread 5.4 ms (engine-period Start jitter), so an adaptive 3-shot exit
-  was rejected. Hardware-verified in `logs/20260927_201549` (0.1.6845, same endpoint, DXGI-dup desktop): 5/5
-  `stop=marker_complete`, `shotMs` 167-176, `probeMs=859.2`, latency 32.738 ms (was 32.896); hotkey -> live 2640 ms.
-- Controller `Recording is live` now uses media's `recordingStartTime` stamp (`ResolveRecordingStartupTiming`);
-  verified: `2640 ms ... observed after 2812 ms, liveStamp=media`. Recording healthy, CFR 4801/4801, post-mux
-  audio/video end delta 0 us.
-- **Open (not changed):** `SelectWgcStartupReserveCandidate` takes the frame NEAREST `latest - target` and
-  rejects it when younger than `target - tol` (tol = min(half output interval, 5 ms)). For a steady source the
-  phase `target mod period` is constant, so it fails on every evaluation: synthetic check with target 332.9 ms
-  never succeeds at 25/28/31/40 fps. Independently, `startupReserveBelowLowWater` needs
-  `ceil(delay / outputInterval)` = 40 newer frames, which a sub-output-rate source cannot supply within the
-  delay. Net: sub-CFR sources (desktop, 30 fps video) likely always wait the full 1 s smoothness-attempt budget.
-  In this log the timeout contract realized 320.6 ms vs 332.9 target and the extra ~0.6 s only discarded frames.
-  Caution: the 1 s budget is deliberate (`GetWgcStartupReserveWaitBudgetQpc`) and the 250/500 ms input-rate
-  windows feeding smoothness decisions fill during the wait - validate before shortening. In `20260927_201549` the
-  source mostly ran above CFR (SourceFps 20.66..143.53) and the wait settled normally after ~0.27 s, consistent
-  with the full budget being paid only by sources that stay below the output rate.
-
-### 2026-09-27 - Session 20260927_040737 review: clean; two logging gaps closed
-
-- 0.1.6843, 10 recordings (r0001 inject Talos with FSR FG, r0002-r0010 WGC): all `healthy`, CFR coverage
-  `missing=0`, post-mux audio/video ends within 1 us, no underruns/trims, no ERROR lines.
-- r0005: mux write queue grew to 421/512 MB over ~45 s (output on a network share) and drained in ~5 s; no
-  backpressure, but only `QUEUE STATS` INFO recorded it. Added band/recovery warnings with writer attribution
-  and a rate-limited slow-write line (`mux_queue_pressure.h`).
-- r0001: swapchain rebuild -> transport generation 1 -> 2 with `frameIndex` restarting at 1 logged one
-  `Inject lineage regression` + 16 `Texture slot reuse anomaly` false positives. Checks are now per
-  generation (`inject_lineage.h`); the stale `lastEncodedFrameByTextureIndex` also was never reset per session.
-- Not hardware-verified yet: expect `Inject lineage restarted ... generation 1 -> 2` instead of those warnings,
-  and `Mux write queue reached 25%` on the next slow-output session.
-
-### 2026-09-27 - Talos "windowed" start fatal: hidden-window create dropped the swapchain queue
-
-- `logs/20260927_034946` (0.1.6842): the resize fix above is confirmed on hardware (4K -> 1440p with Steam, no crash).
-- New case, with or without Steam: Talos options say windowed, actual borderless native 4K. The Streamline swapchain
-  was created while the HWND was hidden -> `Invisible-window swapchain ... bypassing` -> no `Swapchain queue captured`
-  (in `logs/20260927_031545` the same create was visible and `scQ=` its create queue). First visible Present chose `path=primaryQ` (render queue),
-  `Reinit SUBMIT #1 ... devRemoved=0x887A002B`. UE's fatal path used TerminateProcess, hence no CE `.dmp`.
-- Fix: park the create queue and evidence, promote them on the first visible Present (see `dx12-injection-bootstrap.md`).
-- Next repro: expect `Parked create-time queue ownership ...`, then `First visible Present of hidden-window swapchain
-  ... promote ... presentedQueue=same`, `Swapchain queue captured`, and `ProcessFrame ... path=scQueue`.
-
-### 2026-09-27 - Talos resize fatal: CE's hooks sat where Steam patches (slot, then function entry)
-
-- `logs/20260927_031545` (0.1.6841, no FG): still `FAILED ... [6,6,6,6,6,6]`, `gameoverlayrenderer64.dll=+6`. The
-  0.1.6841 factory-slot handback ran twice (`CreateDXGIFactory`, `CreateDXGIFactory2`) and both times logged
-  `unchanged - nothing hooked it`: **Steam does not hook factory vtable slots**; hypothesis disproved and reverted.
-- Decisive: the new `slot owners` line. All five swapchain slots point into dxgi, but `[8]Present` and `[22]Present1`
-  start with `E9` into a private RWX page right after dxgi's image (Steam's relay page; `CreateSwapChainForHwnd`
-  already jumped into it at CE start), while `[13]ResizeBuffers` jumped to `capture_hook+0xDE860`. Steam hooks
-  by patching function ENTRIES and skips one already jumping into another module. Present was fine only because
-  CE hooks it below the entry (deep body). `logs/20260927_023858` (0.1.6840) is the same shape.
-- Fix: `InstallResizeReconciliationHooks` installs ResizeBuffers/ResizeBuffers1 as deep body hooks
-  (`kAssumedForeignEntryPatchSize=14`, like Present without a visible jump); with a third-party overlay loaded a
-  refused body hook takes no site (reconciliation unavailable, so no waitable flag), otherwise the entry prepend
-  stays the fallback (`resize_reconcile_hook_policy.h`). Both methods must be hooked before the flag may be added.
-  `BackBufferRefTrace` GetBuffer is a deep body hook too. The `slot owners` diagnostic stays.
-- The user's "with CE" Steam log was CrashReportClient's (Steam rewrites the file per process).
-- Next repro: expect `resize flag reconciliation ready (... site=body-below-entry ...)`, and at the first resize
-  `[13]ResizeBuffers=dxgi... entryJump->` into the same relay page as Present, then no refused resize. If the body
-  hook is refused, the line says why (`refused (<reason>)`).

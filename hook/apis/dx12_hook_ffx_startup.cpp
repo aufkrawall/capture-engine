@@ -278,7 +278,10 @@ if (logCount < 20 || (logCount % 128) == 0) {
 }
 
 
-bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue) {
+bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context,
+                                                           HRESULT hr, IUnknown* createDevice,
+                                                           const CreateSwapchainQueueCaptureEvidence& captureEvidence,
+                                                           bool createCapturesQueue) {
 if (FAILED(hr) || !swapchain || !hWnd) {
     return false;
 }

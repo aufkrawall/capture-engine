@@ -101,6 +101,29 @@ TEST(ModuleAddressCacheLive, ResolvesTheSameModuleAndPathAsTheLoaderAndServesRep
     EXPECT_STREQ(again, expectedPath);
 }
 
+// The miss path reads the module's image headers, so it pins the module for that read. The pin must
+// be given back: a leaked loader reference would keep every resolved module mapped for good.
+TEST(ModuleAddressCacheLive, ResolvingAModuleLeavesItsLoaderReferenceCountUnchanged) {
+    cache::Enable();
+    constexpr const wchar_t* kProbeModule = L"wtsapi32.dll";
+    if (GetModuleHandleW(kProbeModule) != nullptr) {
+        GTEST_SKIP() << "the probe module is already loaded by the host";
+    }
+    HMODULE probe = LoadLibraryW(kProbeModule);
+    ASSERT_NE(probe, nullptr);
+    const void* address = reinterpret_cast<const void*>(GetProcAddress(probe, "WTSFreeMemory"));
+    ASSERT_NE(address, nullptr);
+
+    char path[MAX_PATH] = {};
+    HMODULE resolved = nullptr;
+    ASSERT_TRUE(ce::overlay_compat::TryGetModulePathFromCodeAddress(address, path, sizeof(path), &resolved));
+    EXPECT_EQ(resolved, probe);
+
+    ASSERT_TRUE(FreeLibrary(probe));
+    EXPECT_EQ(GetModuleHandleW(kProbeModule), nullptr) << "the lookup leaked a loader reference";
+    cache::NoteModuleUnloaded();  // the loader's unload notification is not registered in the test host
+}
+
 TEST(ModuleAddressCacheLive, AddressOutsideAnyModuleIsNotResolved) {
     cache::Enable();
     int onStack = 0;

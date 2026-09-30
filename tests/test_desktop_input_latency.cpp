@@ -83,6 +83,22 @@ TEST(CrashPreDumpCallbackTest, RunsWhenRegisteredAndNotAfterUnregistering) {
     EXPECT_EQ(g_PreDumpCalls, 1);
 }
 
+void OtherPreDump() {}
+
+// A component tearing down must only remove its own callback.
+TEST(CrashPreDumpCallbackTest, UnregisteringLeavesAnotherComponentsCallbackInPlace) {
+    g_PreDumpCalls = 0;
+    RegisterCrashPreDumpCallback(CountPreDump);
+    UnregisterCrashPreDumpCallback(OtherPreDump);
+    NotifyCrashPreDumpForTesting();
+    EXPECT_EQ(g_PreDumpCalls, 1) << "a callback that was never registered removed the registered one";
+
+    UnregisterCrashPreDumpCallback(CountPreDump);
+    NotifyCrashPreDumpForTesting();
+    EXPECT_EQ(g_PreDumpCalls, 1);
+    UnregisterCrashPreDumpCallback(CountPreDump);  // idempotent
+}
+
 // The dump worker suspends the process; the release has to come first.
 TEST(CrashPreDumpCallbackTest, FatalPathReleasesBeforeTheDumpWorkerStarts) {
     const std::string writer = ReadSource("common/crash_dump_writer.cpp");
@@ -116,7 +132,7 @@ TEST(KeyboardHookSourceTest, HookThreadNeverLogsAndOutranksNormalThreads) {
     EXPECT_NE(callbackPath.find("if (pastTimeout)\n        return false;"), std::string::npos);
 
     EXPECT_NE(hook.find("RegisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash)"), std::string::npos);
-    EXPECT_NE(hook.find("RegisterCrashPreDumpCallback(nullptr)"), std::string::npos);
+    EXPECT_NE(hook.find("UnregisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash)"), std::string::npos);
 
     // The controller reports what the hook thread counted.
     const std::string controller = ReadSource("captureengine/main.cpp");

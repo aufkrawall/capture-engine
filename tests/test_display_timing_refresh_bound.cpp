@@ -37,6 +37,7 @@ Blanks EveryRefresh(int64_t first, int count) {
 std::vector<int64_t> GraphTimes(RefreshBoundedGraphTime& bound, const std::vector<int64_t>& reports, bool synchronized,
                                 int64_t period, const Blanks& blanks) {
     std::vector<int64_t> graph;
+    graph.reserve(reports.size());
     for (const int64_t report : reports)
         graph.push_back(bound.Apply(report, synchronized, period, blanks).graphUs);
     return graph;
@@ -118,6 +119,7 @@ TEST(RefreshBoundedGraphTimeTest, LeavesReportsAloneWithoutAPeriodOrAnObservedBl
 
     RefreshBoundedGraphTime noBlanks;
     std::vector<RefreshBoundDecision> decisions;
+    decisions.reserve(reports.size());
     for (const int64_t report : reports)
         decisions.push_back(noBlanks.Apply(report, true, kPeriod, Blanks{}));
     for (std::size_t i = 0; i < reports.size(); ++i) {
@@ -150,6 +152,7 @@ TEST(RefreshBoundedGraphTimeTest, TwoReportsInOneRefreshTakeConsecutiveBlanks) {
 TEST(RefreshBoundedGraphTimeTest, AStalePeriodCannotStretchFramesPastObservedBlanks) {
     RefreshBoundedGraphTime bound;
     std::vector<int64_t> reports;
+    reports.reserve(20);
     for (int i = 0; i < 20; ++i)
         reports.push_back(kStart + i * kPeriod + 20);
     const auto graph = GraphTimes(bound, reports, true, 16'667, EveryRefresh(kStart, 30));
