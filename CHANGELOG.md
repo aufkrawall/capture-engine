@@ -10,6 +10,7 @@ Changes since [v0.1.6772](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Recordings with FSR frame generation moved at half the on-screen frame rate (injected DirectX 12 capture, seen in The Talos Principle Reawakened):** the game showed a smooth 120 fps, but the recording only took the frames the game rendered itself (60 per second) and skipped every frame FSR generated in between. Each missing frame was filled by repeating the previous one, so the 120 fps video looked like 60 fps. When FSR's own presentation step reports a frame just before showing it, CaptureEngine now records it whether FSR generated it or the game rendered it, so the recording matches what is on screen. The hook log now counts both kinds (`generatedOutputs=` / `applicationOutputs=`).
 - **Recording stop could still hang on a stalled disk or network share:** a full packet queue stopped checking the write timeout, leaving the encoder blocked and shutdown waiting forever. The queue wait now keeps cancelling overdue writes so recording finalization can continue.
 - **Game crash when FSR runtime unload overlaps CaptureEngine shutdown or runtime replacement:** restoring the FFX create-entry breakpoint now holds the exact DLL loaded through the byte restoration. A disappearing runtime is rejected without reading its old address, and DLL references are acquired and released outside the breakpoint mutex.
 

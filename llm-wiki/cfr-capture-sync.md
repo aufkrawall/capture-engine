@@ -94,6 +94,25 @@ Final-output and base-Present timestamp domains are also transition-scoped. Fram
 
 The policy is generic across fixed 2x/3x/4x and dynamic MFG because it counts actual final runtime presents, not merely the requested multiplier. A runtime may drop an interpolated output; only a DX12 callback in the real runtime-Present scope or an actual Vulkan WSI present consumes a recording ordinal. Fixed/dynamic multiplier changes preserve the virtual phase while scaling its strongest interval estimate by the exact old/new ratio, then the next complete output group replaces that transition estimate. Focused regression coverage pins burst spreading, source-group refinement and expiry after worker handoff, recording-epoch clock reset, bounded virtual lead without clipping a valid 4x burst, multiplier transitions, phase-step retention without a latched repeat loop, final/base timestamp continuity, full Vulkan metering-batch retention, generation-safe delayed nearest matching past an ETW backlog, ordered no-reuse correlation, synthetic-callback exclusion, two-candidate CFR headroom, both overlay inclusion modes, recording-time collector startup, Vulkan metadata transport, and single-transaction nonblocking capture contention. Real hardware validation must still compare a recorded motion sequence against NVIDIA scheduled-display events while switching all-FG-off, DLSS 2x/3x/4x, and FSR/DLSS in both directions; static/unit coverage cannot prove a proprietary driver emits the same callback/ETW topology on every version.
 
+### Callback-owned FSR FG captures every runtime output (2026-09-30)
+
+With an application-supplied FFX present callback, AMD's presenter thread runs the callback and then the real DXGI
+`Present` for each output, generated and application alike, so CE's `ProcessFrame` already sees the complete
+displayed stream (unlike DLSS-G, whose generated presents are internal to Streamline and need the PostSL route
+above). Until 0.1.6864 the callback verdict (`present_association::ConsumePresentFrameVerdict`) only admitted the
+application frames: Talos at a 120 fps capture-sync cap (`logs/20260930_032355`) showed 120 fps on screen while
+media logged `Input: 60 | Dup: 60` every second, i.e. a 60 fps-motion recording on a 120 fps grid.
+`dx12_overlay_policy::IsPresentedFrameForCapture` now captures every callback-proven output; without a verdict a
+zero command-list count still excludes the Present. These frames stay on the ordinary base-Present timestamp path
+(no `SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT`): AMD paces its presents on the CPU, so Present-time QPC is already
+the output cadence and needs no virtual clock. Diagnostic: `Present callback verdict makes this runtime output
+capturable (... generatedOutputs=N applicationOutputs=M)`; at 2x the two counts should stay near equal.
+
+Stale-risk: the FPS limiter still labels this inject route `captureSource=base` (`captureEq=` = target x multiplier)
+although its `kUniqueApplicationPresent` Apply runs on every runtime output here and the capture is now final-output
+in content. Capture sync alone paces the output correctly (target applied per output Present); arbitration against a
+concurrent general cap compares in the wrong domain. Hardware validation of the recording pending.
+
 ### Recording-level capacity health (2026-08-01)
 
 The immutable CFR pipeline now publishes an observational recording-health state. Once per diagnostic window, `UpdateRecordingHealth` combines current encoder/mux pressure with exact accrued CFR timeline debt. A capacity cause is confirmed at 250 ms of simultaneous debt or after two consecutive per-cause pressure samples; video degradation latches once debt growth accumulated during capacity-pressure episodes reaches 500 ms, with a severe flag at 2 seconds. Overall peak debt and capacity-attributed growth remain separate, so pre-existing or later source-only shortfall cannot be claimed by a brief encoder/mux-pressure sample. Capacity is selected as the final limiter only when that attributed growth is at least three quarters of overall peak debt. Current `recovering` state clears when debt clears, while the confirmed cause and degraded/severe result remain recording-sticky for truthful final reporting.

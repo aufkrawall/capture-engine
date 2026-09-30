@@ -12,7 +12,7 @@ namespace {
 using ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists;
 using ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl;
 using ce::dx12_overlay_policy::ShouldAdoptDiscoveredCommandQueue;
-using ce::dx12_overlay_policy::IsApplicationRenderedPresentForCapture;
+using ce::dx12_overlay_policy::IsPresentedFrameForCapture;
 
 TEST(Dx12EclQueueRegistrationPolicyTest, SameDeviceAuxiliaryExecutionNeverReplacesEstablishedQueue) {
     EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, true));
@@ -130,22 +130,39 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyA
 // command lists, so every Present looked generated, ProcessFrame never captured,
 // and the recording sat in its preparation phase until it was cancelled.
 TEST(Dx12EclQueueRegistrationPolicyTest, CallbackVerdictDecidesCaptureWhereTheTransparentRouteCountsNothing) {
-    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(/*eclCountedNoSubmissions=*/true,
-                                                       /*callbackVerdictKnown=*/true,
-                                                       /*callbackSaysGenerated=*/false));
-    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, true, true));
-    // The callback is exact, so it also wins when a stray submission was counted
-    // before a generated frame.
-    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(false, true, true));
-    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, true, false));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/true));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/true));
+}
+
+// Talos + FSR FG (logs/20260930_032355): 120 fps on screen, but capture took
+// only the callback's application frames, so media received 60 frames/s and
+// repeated every other slot of its 120 fps grid (`Input: 60 | Dup: 60`). A
+// callback-proven generated output is what reaches the screen; it is captured
+// exactly like an application output, whatever the command-list count says.
+TEST(Dx12EclQueueRegistrationPolicyTest, CallbackProvenGeneratedOutputsAreCaptured) {
+    for (const bool eclCountedNoSubmissions : {true, false}) {
+        EXPECT_TRUE(IsPresentedFrameForCapture(eclCountedNoSubmissions, /*callbackVerdictKnown=*/true))
+            << "eclCountedNoSubmissions=" << eclCountedNoSubmissions;
+    }
 }
 
 TEST(Dx12EclQueueRegistrationPolicyTest, WithoutACallbackVerdictTheCommandListCountStillDecides) {
-    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, false, false));
-    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, false, false));
-    // An unknown verdict carries no generated bit worth reading.
-    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, false, true));
-    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, false, true));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/false));
+    EXPECT_FALSE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/false));
+}
+
+// The wrapper must not re-derive an application-only gate from the verdict's
+// generated bit: that bit feeds diagnostics only.
+TEST(Dx12EclQueueRegistrationPolicyTest, CaptureWrapperDoesNotFilterGeneratedOutputs) {
+    const std::string forward = ReadSource("hook/apis/dx12_hook_ecl_forward.cpp");
+    const size_t begin = forward.find("bool IsPresentedFrameForCapture(");
+    ASSERT_NE(begin, std::string::npos);
+    const size_t end = forward.find("return capture;", begin);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = forward.substr(begin, end - begin);
+    EXPECT_NE(body.find("dx12_overlay_policy::IsPresentedFrameForCapture(eclSubmissionCount == 0, verdict.known)"),
+              std::string::npos);
+    EXPECT_EQ(body.find("!verdict.generated"), std::string::npos);
 }
 
 // Both ProcessFrame entry points must consume the verdict beside the count and
@@ -160,9 +177,8 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ProcessFrameCaptureUsesTheCallbackVerdi
     }
     EXPECT_EQ(consumed, 2u);
     size_t decided = 0;
-    for (size_t at = process.find("IsApplicationRenderedPresentForCapture(count, callbackVerdict)");
-         at != std::string::npos;
-         at = process.find("IsApplicationRenderedPresentForCapture(count, callbackVerdict)", at + 1)) {
+    for (size_t at = process.find("IsPresentedFrameForCapture(count, callbackVerdict)"); at != std::string::npos;
+         at = process.find("IsPresentedFrameForCapture(count, callbackVerdict)", at + 1)) {
         ++decided;
     }
     EXPECT_EQ(decided, 2u);

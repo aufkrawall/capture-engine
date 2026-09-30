@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-30 - FSR FG recordings had half the motion rate: capture skipped generated outputs
+
+- `logs/20260930_032355` (0.1.6863, Talos, callback-owned FSR FG, capture sync basic 120): on screen 120 fps, but
+  media `Inject Perf` showed `Input: 60 | Dup: 60` per second. The callback verdict admitted only
+  `callback=application` Presents, although every runtime output (generated too) passes CE's Present on AMD's
+  presenter thread with the displayed image in the backbuffer.
+- Fix (0.1.6864): `dx12_overlay_policy::IsPresentedFrameForCapture` captures every callback-proven output; the
+  no-verdict ECL-count gate is unchanged. Tests: `Dx12EclQueueRegistrationPolicyTest.CallbackProvenGeneratedOutputsAreCaptured`
+  and a source check that the wrapper does not re-filter on `verdict.generated`.
+- Hardware validation pending: expect `Input: ~120 | Dup: ~0` in the media log and
+  `generatedOutputs`/`applicationOutputs` near equal in hook_debug.log. Open: the limiter still reports
+  `captureSource=base` on this route (see `cfr-capture-sync.md`).
+
 ### 2026-09-30 - Review of v0.1.6772..HEAD: robustness follow-ups
 
 - Reviewed the 68 commits after v0.1.6772 (source diffs only; the four risk-audit commits were not re-read). No

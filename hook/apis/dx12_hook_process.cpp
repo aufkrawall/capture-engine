@@ -54,7 +54,7 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     const bool isInterpolatedFrame = (count == 0);
     if (applicationSourcePresent && !isInterpolatedFrame)
         DX12_ObserveApplicationSourcePresentTiming();
-    bool processCapture = ce::dx12_ecl_forward::IsApplicationRenderedPresentForCapture(count, callbackVerdict) &&
+    bool processCapture = ce::dx12_ecl_forward::IsPresentedFrameForCapture(count, callbackVerdict) &&
                           !DX12_ShouldUseStreamlineFinalOutputCapture();
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
@@ -726,7 +726,7 @@ if (!isInterpolatedFrame &&
     sc3->Release();
     return;
 }
-bool processCapture = ce::dx12_ecl_forward::IsApplicationRenderedPresentForCapture(count, callbackVerdict) &&
+bool processCapture = ce::dx12_ecl_forward::IsPresentedFrameForCapture(count, callbackVerdict) &&
                       !protectedOfficialFFXStartupOverlayOnly && !DX12_ShouldUseStreamlineFinalOutputCapture();
 
 SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -746,8 +746,8 @@ if (screenshotRequested && !screenshotWantsOverlay && !screenshotUsePostSL) {
     // and before overlay drawing, so the screenshot includes the applied sharpen filter.
 }
 
-// For interpolated frames, only render overlay (no capture processing) since
-// the backbuffer content is from the FG engine, not a real game frame.
+// A zero-count Present without a callback verdict only renders the overlay (no
+// capture processing): CE cannot attribute its backbuffer to a presented image.
 const int64_t innerStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
 if (diagnostics) {
     diagnostics->innerCalled = true;

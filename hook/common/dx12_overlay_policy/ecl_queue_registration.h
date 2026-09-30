@@ -67,15 +67,22 @@ inline bool ShouldTransparentForwardNativeFSRCallbackEcl(bool fsrApiActive, bool
            !postSLActive && !insideCEOverlaySubmission;
 }
 
-// Base inject capture records application-rendered frames only, and otherwise
-// tells them from generated ones by whether the game submitted command lists
-// since the previous Present. The transparent route above counts nothing, so
-// there every Present looked generated and a recording never received a frame.
-// The present callback's own isGeneratedFrame for the Present it precedes
-// (ce::present_association) is exact, so it decides whenever it is known.
-inline bool IsApplicationRenderedPresentForCapture(bool eclCountedNoSubmissions, bool callbackVerdictKnown,
-                                                   bool callbackSaysGenerated) {
-    return callbackVerdictKnown ? !callbackSaysGenerated : !eclCountedNoSubmissions;
+// Whether inject capture may copy the image this Present carries.
+//
+// A known present-callback verdict (ce::present_association) proves the Present
+// is one of the frame-generation runtime's own outputs: the runtime ran the
+// callback for exactly this frame on this thread and then presented it, so the
+// swapchain backbuffer holds what reaches the screen, generated or application
+// alike. Every such output is captured; recording only the application frames
+// halved the recorded motion rate (Talos FSR FG, logs/20260930_032355: 120 fps
+// on screen, `Input: 60 | Dup: 60` per second into a 120 fps CFR grid).
+//
+// Without a verdict a zero command-list count since the previous Present marks
+// a Present CE cannot attribute to a rendered image (an FG transport present or
+// a duplicate), so only counted submissions qualify. The transparent route
+// above counts nothing, which is why the verdict must decide wherever it exists.
+inline bool IsPresentedFrameForCapture(bool eclCountedNoSubmissions, bool callbackVerdictKnown) {
+    return callbackVerdictKnown || !eclCountedNoSubmissions;
 }
 
 }  // namespace ce::dx12_overlay_policy

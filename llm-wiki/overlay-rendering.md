@@ -541,11 +541,12 @@ while that exact route owns presentation. The fast forward keeps the foreign-hoo
 no-callback FSR, Streamline/PostSL overlap, CE-owned submissions, device removal, and FSR-off discovery stay on
 the full path. This is a generic low-interference optimization, not yet hardware proof that ECL traversal caused
 the random downstream state. The fast forward also skips the per-frame command-list count, so on this route
-`count==0` on every Present and ECL-based real/generated classification is blind. Base inject capture therefore
-takes the callback's `isGeneratedFrame`, staged for the Present it precedes on the same thread
-(`present_association::ConsumePresentFrameVerdict`, `dx12_overlay_policy::IsApplicationRenderedPresentForCapture`);
-without it no recording ever went live under callback-owned FSR FG (Talos `20260926_081620`). Other
-`isInterpolatedFrame` consumers still see the zero count.
+`count==0` on every Present and ECL-based real/generated classification is blind. Inject capture therefore
+takes the callback verdict staged for the Present it precedes on the same thread
+(`present_association::ConsumePresentFrameVerdict`, `dx12_overlay_policy::IsPresentedFrameForCapture`);
+without it no recording ever went live under callback-owned FSR FG (Talos `20260926_081620`). A known verdict
+makes EVERY runtime output capturable, generated included (2026-09-30, see `cfr-capture-sync.md`); only the
+no-verdict path still requires a counted submission. Other `isInterpolatedFrame` consumers still see the zero count.
 
 **Method notes worth keeping.**
 
