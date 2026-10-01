@@ -124,6 +124,16 @@ void RememberCreatedDevice(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel, vo
     }
 }
 
+bool HasRetainedDevice() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (const auto& entry : g_devicesByAdapter) {
+        if (entry.second.device) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool TryReuseCreatedDevice(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel, REFIID riid,
                            void** ppDevice) {
     if (!ppDevice || riid == GUID_NULL) {

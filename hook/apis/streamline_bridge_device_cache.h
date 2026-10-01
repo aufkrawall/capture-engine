@@ -10,5 +10,7 @@ bool HasRememberedDeviceSupport(IUnknown* adapter, D3D_FEATURE_LEVEL featureLeve
 void RememberCreatedDevice(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel, void* device);
 bool TryReuseCreatedDevice(IUnknown* adapter, D3D_FEATURE_LEVEL featureLevel, REFIID riid,
                            void** ppDevice);
+// Whether the cache holds a reference that keeps a device alive past the game's own release.
+bool HasRetainedDevice();
 
 }  // namespace ce::streamline_bridge

@@ -16,11 +16,12 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Core-export grouped hook publication | `hook/apis/streamline_inline_hook_batch.{h,cpp}` |
 | 2.x bring-up (load by full path, `slInit`, inventory) | `hook/apis/streamline_bridge_runtime.{h,cpp}` |
 | Native D3D12 device continuity | `hook/apis/streamline_bridge_device_cache.{h,cpp}` |
+| Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/apis/streamline_bridge_native_device.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
-| Tests | `tests/test_streamline_bridge_policy.cpp` |
+| Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_debug_layer.cpp` |
 | Config | `streamline_upgrade` (default off), alongside `streamline_dll_path` |
 
 ## What it is, and what it deliberately is not
@@ -358,7 +359,8 @@ physical SR/FG image so a duplicate cannot hide behind `GetModuleHandle`'s first
 The device was healthy at the 11.7-second cached capability probe and reset before the final
 object request. The mixed NGX state is the concrete unsafe difference in this run; treating it as
 the reset's cause remains an inference until the next runtime validation proves a single NGX
-generation and reaches the render loop.
+generation and reaches the render loop. (Superseded: the seventh run found the reset's actual
+cause, a debug-layer setting reaching D3D12 while the device was retained.)
 
 ## The sixth bridged run: one bring-up route crossed the teardown boundary
 
@@ -394,6 +396,40 @@ six seconds after that. This is correlation, not an attributed stack: the dump c
 frame. The first translated set-constants and evaluate calls now log the 1.x input frame, actual 2.x
 token frame, viewport and result, which will settle whether a frame-token translation problem remains
 after the configured NGX generation is genuinely live.
+
+## The seventh bridged run: the game's debug-layer setting reset the retained device
+
+Session `20261001_034038` (0.1.6870, `witcher3.exe`, SL 2.14.1, Smooth Motion off) finally explains
+the `DXGI_ERROR_DEVICE_RESET` from runs four to six. The retained device was healthy when CE
+answered the capability probe at 44.1 s. At 47.5 s the next probe (`ppDevice=null`) found it
+removed, and both native retries returned the same reset. The title threw `0xE06D7363`. The
+System event log has no TDR (4101) in that window, so nothing GPU-side reset it.
+
+The dump's unloaded-module list shows `D3D12SDKLayers.dll` and `DXGIDebug.dll` loaded and
+unloaded. Disassembling the shipped executable at `witcher3+0x7f7a70`, the routine that ends in
+the probe/throw at `+0x7f7c3f`, gives this sequence: `D3D12GetDebugInterface(IID_ID3D12Debug)`,
+`QueryInterface(IID_ID3D12Debug5)`, slot 8 = `SetEnableAutoName(TRUE)`, release, then
+`CreateDXGIFactory2` and the per-adapter `D3D12CreateDevice(adapter, 11_0, ..., nullptr)` loop.
+The title never calls `EnableDebugLayer`.
+
+Unbridged, the probe device is already destroyed at this point, so the setting has nothing to hit.
+Bridged, CE's device cache, `slSetD3DDevice` and NGX keep the probe device alive. D3D12 creates one
+device per adapter, so once that device is removed every later creation on the adapter returns its
+removal reason for as long as those references live. Whether the reset happens inside
+`D3D12GetDebugInterface` or in the setter is not separable from this evidence. The fix therefore
+refuses before forwarding.
+
+`Bridged_D3D12GetDebugInterface` answers the ID3D12Debug family (Debug..Debug6) with
+`DXGI_ERROR_SDK_COMPONENT_MISSING` while `HasRetainedDevice()` is true. The title already handles
+that failure, because its code skips straight to the factory. No capability is lost: the device the
+bridge hands back already exists, so a layer configured now could never apply to it. DRED settings
+and other debug interfaces still forward. Before any device exists, the request still forwards. Only
+the cache decides: it holds exactly the devices the bridge created on the game's behalf. A
+queue-derived handoff names a device the game itself still holds, so a reset there would also hit the
+unbridged title.
+
+Pending: a hardware run should show the refusal line, then `reused the prior successful D3D12 device`
+on the real-device request and DLSS-G reaching the render loop.
 
 ## Invariants
 
@@ -452,6 +488,9 @@ after the configured NGX generation is genuinely live.
   impossible (`20260822_174509`). Reuse requires the same physical-adapter LUID, equal-or-lower
   minimum feature level, a healthy device, and the requested COM interface. Otherwise ordinary
   native creation remains authoritative.
+- **A device the bridge keeps alive must not see process-global D3D12 reconfiguration.** The
+  title believes its probe device is gone. A debug-layer request reaching D3D12 now would reset the
+  retained device and poison the adapter (`20261001_034038`), so it is refused before forwarding.
 - **Device identity is COM identity, not an interface pointer.** Different D3D12 interfaces on the
   same object may have different addresses. Canonicalize through `IUnknown`, retain that identity,
   and call `slSetD3DDevice` only for a genuinely distinct successfully accepted device.
@@ -646,7 +685,8 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
+Last verified 2026-10-01 (device-reset cause from session `20261001_034038`, fix pending a
+hardware run); before that 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

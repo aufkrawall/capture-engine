@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-01 - Witcher 3 `streamline_upgrade` startup crash: debug-layer setting reset the retained device
+
+- Session `20261001_034038`: the retained bridge device was healthy at the 44.1 s probe and removed
+  (`0x887A0007`) at the 47.5 s probe. There was no TDR. `witcher3+0x7f7a70` configures the debug layer
+  (`ID3D12Debug5::SetEnableAutoName(TRUE)`) right before that probe, and only the bridge kept the probe
+  device alive through it. The reset in runs four to six had the same cause.
+- Fix (0.1.6871): `Bridged_D3D12GetDebugInterface` refuses the ID3D12Debug family with
+  `DXGI_ERROR_SDK_COMPONENT_MISSING` while the device cache retains a device. Native creation moved
+  to `streamline_bridge_native_device.cpp` (bridge unit was at 799 lines). Detail in
+  `frame-generation/streamline-generation-bridge.md`. Hardware run pending.
+
 ### 2026-10-01 - Witcher 3 DX12 + Smooth Motion startup int 3: CE's hardware temp D3D11 device
 
 - Session `20261001_032227`: `int 3` in NvPresent64 on CE's hook thread (0x4690), 7 s after launch.

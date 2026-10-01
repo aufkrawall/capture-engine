@@ -262,30 +262,33 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     // follow-up session showed that Witcher can make this request with a null optional output,
     // so the retry must not require ppDevice to be non-null.
     const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    const std::string native = ReadProjectSource("hook/apis/streamline_bridge_native_device.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(native.empty());
 
-    EXPECT_NE(source.find("IUnknown* ResolveEquivalentAdapter(IUnknown* adapter)"), std::string::npos);
-    EXPECT_NE(source.find("factory->EnumAdapterByLuid(desc.AdapterLuid"), std::string::npos);
-    EXPECT_NE(source.find("const bool deviceLostClass ="), std::string::npos);
-    EXPECT_NE(source.find("null/default retry"), std::string::npos);
-    EXPECT_EQ(source.find("deviceLostClass && adapterForCreate && ppDevice"), std::string::npos);
-    EXPECT_NE(source.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
+    EXPECT_NE(native.find("IUnknown* ResolveEquivalentAdapter(IUnknown* adapter)"), std::string::npos);
+    EXPECT_NE(native.find("factory->EnumAdapterByLuid(desc.AdapterLuid"), std::string::npos);
+    EXPECT_NE(native.find("const bool deviceLostClass ="), std::string::npos);
+    EXPECT_NE(native.find("null/default retry"), std::string::npos);
+    EXPECT_EQ(native.find("deviceLostClass && adapterForCreate && ppDevice"), std::string::npos);
+    EXPECT_NE(native.find("HRESULT CallNativeD3D12CreateDevice("), std::string::npos);
     EXPECT_NE(source.find("CallNativeD3D12CreateDevice(adapter, minimumFeatureLevel"), std::string::npos);
     EXPECT_NE(source.find("SetV2RuntimeDevice(*ppDevice, /*explicitHandoff=*/true)"), std::string::npos);
-    EXPECT_NE(source.find("RememberCreatedDevice(usedDefaultAdapter ? nullptr : adapterForCreate,"),
+    EXPECT_NE(native.find("RememberCreatedDevice(usedDefaultAdapter ? nullptr : adapterForCreate,"),
               std::string::npos);
-    EXPECT_NE(source.find("TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)"),
+    EXPECT_NE(native.find("TryReuseCreatedDevice(adapter, minimumFeatureLevel, riid, ppDevice)"),
               std::string::npos);
-    EXPECT_NE(source.find("answered D3D12 capability probe from prior successful"), std::string::npos);
-    EXPECT_EQ(source.find("reinterpret_cast<PFN_D3D12CreateDevice>(V2Target(\"D3D12CreateDevice\"))"),
-              std::string::npos);
+    EXPECT_NE(native.find("answered D3D12 capability probe from prior successful"), std::string::npos);
+    for (const std::string* text : {&source, &native}) {
+        EXPECT_EQ(text->find("V2Target(\"D3D12CreateDevice\")"), std::string::npos);
+    }
 }
 
 TEST(StreamlineBridgePolicyTest, ReusesAProvenDeviceBeforeRedundantDriverCreation) {
     // Session 20260822_174509: trying the driver first returned DEVICE_RESET and poisoned the
     // retained device before the recovery path inspected it. A compatible repeated request must
     // therefore reuse the proven object before D3D12 is entered at all.
-    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge_native_device.cpp");
     const std::string cacheSource = ReadProjectSource("hook/apis/streamline_bridge_device_cache.cpp");
     ASSERT_FALSE(bridgeSource.empty());
     ASSERT_FALSE(cacheSource.empty());

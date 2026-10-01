@@ -557,4 +557,70 @@ inline bool StreamlineModuleSupersededByBridge(bool bridgeActive, Generation mod
 // mixing failure the redirect guards were written for.
 inline bool StreamlineRedirectSuppressedByBridge(bool bridgeActive) { return bridgeActive; }
 
+// ---------------------------------------------------------------------------
+// D3D12 debug-layer configuration while the bridge keeps a device alive
+// ---------------------------------------------------------------------------
+//
+// D3D12's debug layer is process-global state that only applies to devices created after it
+// is configured; D3D12 documents that enabling it while a device exists removes that device,
+// and the session below shows a mere configuration call doing the same. A title that
+// releases its probe device before configuring the layer never notices. The bridge
+// changes that precondition: CE's device cache, the 2.x plugin manager and NGX all keep the
+// first device alive, so the configuration resets it - and because D3D12 hands out one device
+// per adapter, every later D3D12CreateDevice on that adapter answers DXGI_ERROR_DEVICE_RESET
+// for as long as those references exist.
+//
+// The Witcher 3 (`20261001_034038`, witcher3+0x7f7a70): D3D12GetDebugInterface(ID3D12Debug),
+// QueryInterface(ID3D12Debug5), SetEnableAutoName(TRUE), then CreateDXGIFactory2 and the
+// adapter probe. The retained device was healthy at the previous probe and reset at this one.
+// No TDR was logged. The title treats the failure as fatal (0xE06D7363).
+//
+// Refusing the request with DXGI_ERROR_SDK_COMPONENT_MISSING - the documented answer when the
+// SDK layers are absent - loses nothing the title could have had. The device it will receive
+// from the bridge already exists, so the layer could never have applied to it. Every other
+// debug interface (DRED settings, tools) still forwards.
+struct InterfaceId {
+    uint32_t data1;
+    uint16_t data2;
+    uint16_t data3;
+    uint8_t data4[8];
+};
+
+// ID3D12Debug .. ID3D12Debug6 (Windows SDK 10.0.26100 d3d12sdklayers.h). Debug1 and Debug2 do
+// not derive from ID3D12Debug but configure the same layer.
+inline constexpr InterfaceId kD3D12DebugLayerConfigurationIids[] = {
+    {0x344488b7, 0x6846, 0x474b, {0xb9, 0x89, 0xf0, 0x27, 0x44, 0x82, 0x45, 0xe0}},  // ID3D12Debug
+    {0xaffaa4ca, 0x63fe, 0x4d8e, {0xb8, 0xad, 0x15, 0x90, 0x00, 0xaf, 0x43, 0x04}},  // ID3D12Debug1
+    {0x93a665c4, 0xa3b2, 0x4e5d, {0xb6, 0x92, 0xa2, 0x6a, 0xe1, 0x4e, 0x33, 0x74}},  // ID3D12Debug2
+    {0x5cf4e58f, 0xf671, 0x4ff1, {0xa5, 0x42, 0x36, 0x86, 0xe3, 0xd1, 0x53, 0xd1}},  // ID3D12Debug3
+    {0x014b816e, 0x9ec5, 0x4a2f, {0xa8, 0x45, 0xff, 0xbe, 0x44, 0x1c, 0xe1, 0x3a}},  // ID3D12Debug4
+    {0x548d6b12, 0x09fa, 0x40e0, {0x90, 0x69, 0x5d, 0xcd, 0x58, 0x9a, 0x52, 0xc9}},  // ID3D12Debug5
+    {0x82a816d6, 0x5d01, 0x4157, {0x97, 0xd0, 0x49, 0x75, 0x46, 0x3f, 0xd1, 0xed}},  // ID3D12Debug6
+};
+
+inline bool SameInterfaceId(const InterfaceId& left, const InterfaceId& right) {
+    if (left.data1 != right.data1 || left.data2 != right.data2 || left.data3 != right.data3) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(left.data4); ++i) {
+        if (left.data4[i] != right.data4[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool IsD3D12DebugLayerConfigurationIid(const InterfaceId& iid) {
+    for (const InterfaceId& candidate : kD3D12DebugLayerConfigurationIids) {
+        if (SameInterfaceId(iid, candidate)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool ShouldRefuseDebugLayerConfiguration(const InterfaceId& iid, bool bridgeKeepsDeviceAlive) {
+    return bridgeKeepsDeviceAlive && IsD3D12DebugLayerConfigurationIid(iid);
+}
+
 }  // namespace ce::streamline_bridge
