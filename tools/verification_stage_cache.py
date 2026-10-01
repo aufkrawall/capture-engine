@@ -30,7 +30,7 @@ SOURCE_SUFFIXES = {
     ".template",
     ".vert",
 }
-SOURCE_DIRS = ("common", "captureengine", "elevationservice", "hook", "mediaengine", "tests", "testapp", "tools")
+SOURCE_DIRS = ("common", "captureengine", "elevationservice", "hook", "installer", "mediaengine", "tests", "testapp", "tools")
 EXCLUDED_INPUTS = {
     "common/build_version.h",
     "tools/clang_tidy_baseline.json",

@@ -7,6 +7,8 @@ namespace ce::startup {
 enum class Setting { Service, Elevation, Autostart };
 std::optional<int> Bootstrap(bool controller);
 std::optional<int> TryRunSetup();
+// Elevated role run by the installer: service and startup registration for a named user.
+std::optional<int> TryRunInstallerSetup();
 void Toggle(Setting setting);
 void Pump();
 void Shutdown();

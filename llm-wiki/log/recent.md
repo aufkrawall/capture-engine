@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-01 - Native setup and uninstaller (`captureengine-setup.exe`)
+
+- New `installer/` (Win32/GDI, Windows 11 dark look, system DLLs only), `tools/installer_payload.py`,
+  `tools/build/build_installer.py`; details in `installer.md`. The earlier agent attempt (branch
+  `codex/native-installer`) was rejected and ignored; its leftovers on the dev machine (flat install in
+  `C:\Program Files\Capture Engine`, an Installed Apps entry pointing at an `app-<hash>` folder, a registered
+  service) are not trusted: only records carrying `CaptureEngineSetupRecord=1` count as ours.
+- Bugs found by running it: manifest XML comment with `--` (side-by-side error, "Permission denied" from bash);
+  the elevation-only launcher kept the log open; option defaults followed the default folder instead of the chosen one.
+- Verified: 70+ unit tests, 16 native `--files-only` tests, 7 off-screen wizard tests. Not run: anything that
+  registers a service/startup entry/Installed Apps record or elevates. Needs a manual hardware-machine run.
+
 ### 2026-10-01 - FG PC latency validated; bridge flash present is a re-present
 
 - Session `20261001_141737` (0.1.6894): under 4x MFG the overlay publishes `source=Reflex/PCL markers` about 66 ms

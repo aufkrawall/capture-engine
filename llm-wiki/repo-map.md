@@ -42,6 +42,7 @@ anchors that predate the split are approximate.
     | `build_testapps.py` | `compile_testapps`, `TestAppCommand`, `add_task`/`make_cmd` task registry |
     | `build_vulkan_layer.py` | `compile_vulkan_layer` (x64/x86) |
     | `build_elevation_service.py` | Minimal privileged sensor/ETW service target |
+    | `build_installer.py` | setup stub + uninstaller compile, PE/privacy/surface gates, `assemble_setup_executable` |
     | `build_project.py` | `compile_project`: phases 1-5 (common, hook DLL, mediaengine, captureengine) |
     | `build_project_finalize.py` | `_finalize_project_build`: phases 6-8 (FG SDK, test apps, vulkan layer), licenses, PE hardening, packaging |
     | `build_corresponding_source.py` | exact pinned/patched FFmpeg + LGPL libiconv corresponding-source staging |
@@ -264,8 +265,8 @@ anchors that predate the split are approximate.
 - `installed/captureengine/` - main runtime output directory for CaptureEngine
   binaries, logs, and `ffmpeg/` runtime DLLs.
 - `installed/testapp/` - built graphics test applications plus local-only vendor runtime DLLs.
-- `build/packages/` - automatically replaced `captureengine.7z` and `testapps.7z`
-  artifacts. The latter contains no vendor DLLs.
+- `build/packages/` - automatically replaced `captureengine.7z`, `captureengine-setup.exe` and `testapps.7z`
+  artifacts. The latter contains no vendor DLLs. `build/installer/` holds the setup stub and uninstaller.
 - `compile_commands.json` - generated at the repo root by `build.py` for clangd/LSP
   (552 translation units after the semantic-unit split).
 - `build/verification/` - per-run gate summaries (`latest_summary.txt`), manifests,
@@ -370,3 +371,11 @@ anchors that predate the split are approximate.
 - elevationservice/: LocalSystem broker with authenticated pipe, isolated LHM bridge and ETW ownership.
 - captureengine/startup_*, elevation_*, sensor_broker.*: per-user startup policy, UAC setup, service client and protected runtime.
 - Current contracts: [elevation-and-startup.md](elevation-and-startup.md).
+
+## Installer
+
+- installer/: setup + uninstaller (Win32/GDI, system DLLs only). Pure units `payload_format.h`, `install_policy.h`;
+  payload reader `payload.cpp`; engines `engine_install.cpp`, `engine_uninstall.cpp`, `files.cpp`; closing
+  `process_control.cpp`; registration/roles `registration.cpp`, `integration.cpp`; window `ui_*.cpp`, `wizard.h`;
+  entry `main.cpp`; `version.cpp` is the only unit that includes the per-build version header.
+- tools/installer_payload.py: payload packer and independent verifier. Contracts: [installer.md](installer.md).

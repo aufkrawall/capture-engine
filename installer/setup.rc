@@ -1,0 +1,47 @@
+#include "../common/build_version.h"
+
+#if defined(CE_UNINSTALLER)
+#define CE_SETUP_MANIFEST "uninstall.manifest"
+#define CE_SETUP_DESCRIPTION "Capture Engine Uninstaller"
+#define CE_SETUP_INTERNAL "captureengine_uninstall"
+#define CE_SETUP_ORIGINAL "captureengine_uninstall.exe"
+#else
+#define CE_SETUP_MANIFEST "setup.manifest"
+#define CE_SETUP_DESCRIPTION "Capture Engine Setup"
+#define CE_SETUP_INTERNAL "captureengine_setup"
+#define CE_SETUP_ORIGINAL "captureengine_setup.exe"
+#endif
+
+// ID 1 with type 24 is the application manifest; 101 is the icon the window
+// asks for (kIconResource in installer/setup.h).
+1 24 CE_SETUP_MANIFEST
+101 ICON "../captureengine/icon_idle.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,BUILD_NUMBER,0
+PRODUCTVERSION 0,1,BUILD_NUMBER,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "aufkrawall"
+            VALUE "FileDescription", CE_SETUP_DESCRIPTION
+            VALUE "FileVersion", CAPTURE_VERSION
+            VALUE "InternalName", CE_SETUP_INTERNAL
+            VALUE "LegalCopyright", "Copyright (c) 2026 aufkrawall. MIT License."
+            VALUE "OriginalFilename", CE_SETUP_ORIGINAL
+            VALUE "ProductName", "Capture Engine"
+            VALUE "ProductVersion", CAPTURE_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

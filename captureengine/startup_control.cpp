@@ -1,8 +1,10 @@
 #include "startup_control.h"
 #include "elevation_client.h"
+#include "../common/installer_setup_policy.h"
 #include "../common/logging.h"
 #include <shellapi.h>
 #include <bcrypt.h>
+#include <tlhelp32.h>
 #include <filesystem>
 #include <thread>
 #include <atomic>
@@ -225,9 +227,84 @@ DWORD Apply(Action action, const Preferences& desired) {
         LogError("[Startup] Could not roll back setup (error=%lu)", rollbackError);
     return error;
 }
+
+// The installer runs this role elevated and waits for it. Anyone able to start an
+// elevated process may already do everything it does, so what must be refused is an
+// unelevated caller steering an elevated copy through a consent prompt: the parent
+// has to be a live, older, elevated process.
+bool ParentIsLiveElevatedProcess() {
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snapshot)
+        return false;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD self = GetCurrentProcessId();
+    DWORD parentId = 0;
+    for (BOOL more = Process32FirstW(snapshot.Get(), &entry); more; more = Process32NextW(snapshot.Get(), &entry)) {
+        if (entry.th32ProcessID == self) {
+            parentId = entry.th32ParentProcessID;
+            break;
+        }
+    }
+    if (!parentId)
+        return false;
+    Handle parent(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, parentId));
+    FILETIME parentCreated{}, ownCreated{}, exited{}, kernel{}, user{};
+    if (!parent || !GetProcessTimes(parent.Get(), &parentCreated, &exited, &kernel, &user) ||
+        !GetProcessTimes(GetCurrentProcess(), &ownCreated, &exited, &kernel, &user))
+        return false;
+    // A recycled parent id must not identify a process that started later.
+    if (CompareFileTime(&parentCreated, &ownCreated) >= 0 || WaitForSingleObject(parent.Get(), 0) != WAIT_TIMEOUT)
+        return false;
+    HANDLE raw = nullptr;
+    if (!OpenProcessToken(parent.Get(), TOKEN_QUERY, &raw))
+        return false;
+    Handle token(raw);
+    TOKEN_ELEVATION elevation{};
+    DWORD bytes = 0;
+    return GetTokenInformation(token.Get(), TokenElevation, &elevation, sizeof(elevation), &bytes) &&
+           elevation.TokenIsElevated != 0;
+}
 }  // namespace
 
+std::optional<int> TryRunInstallerSetup() {
+    int count = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!arguments || count < 2 || wcscmp(arguments[1], kInstallerSetupArgument) != 0) {
+        if (arguments)
+            LocalFree(reinterpret_cast<HLOCAL>(arguments));
+        return std::nullopt;
+    }
+    const std::vector<std::wstring> rest(arguments + 2, arguments + count);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
+    if (!ce::elevation::IsElevated())
+        return ERROR_ELEVATION_REQUIRED;
+    InstallerSetupRequest request;
+    if (!ParseInstallerSetupArguments(rest, &request))
+        return ERROR_INVALID_PARAMETER;
+    if (!ParentIsLiveElevatedProcess())
+        return ERROR_ACCESS_DENIED;
+    PSID parsed = nullptr;
+    if (!ConvertStringSidToSidW(request.ownerSid.c_str(), &parsed))
+        return ERROR_INVALID_SID;
+    LocalFree(parsed);
+    SetOwnerSid(request.ownerSid);
+    ownerAdministrator = request.ownerAdministrator;
+    DWORD error = ERROR_SUCCESS;
+    if (request.service != ServiceStep::Keep)
+        error = Apply(request.service == ServiceStep::Install ? Action::InstallService : Action::RemoveService,
+                      request.preferences);
+    if (error == ERROR_SUCCESS && request.applyAutostart)
+        error = Apply(Action::Autostart, request.preferences);
+    if (error == ERROR_SUCCESS && request.service == ServiceStep::Keep && !request.applyAutostart &&
+        !WritePreferences(request.preferences))
+        error = ERROR_WRITE_FAULT;
+    return static_cast<int>(error);
+}
+
 std::optional<int> TryRunSetup() {
+    if (const auto installer = TryRunInstallerSetup())
+        return installer;
     int count = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
     const bool setup = arguments && count >= 2 && wcscmp(arguments[1], L"--ce-setup") == 0;

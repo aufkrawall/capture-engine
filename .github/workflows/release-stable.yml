@@ -285,6 +285,7 @@ jobs:
         with:
           subject-path: |
             build/packages/captureengine.7z
+            build/packages/captureengine-setup.exe
             build/packages/testapps.7z
             build/packages/ffmpeg-corresponding-source.7z
             build/verification/latest_manifest.json
@@ -315,6 +316,7 @@ jobs:
           }
           $assets = @(
             "build/packages/captureengine.7z",
+            "build/packages/captureengine-setup.exe",
             "build/packages/testapps.7z",
             "build/packages/ffmpeg-corresponding-source.7z",
             "build/verification/latest_manifest.json",

@@ -25,6 +25,13 @@ administrator requests on the next launch, and Windows autostart.
   consumption, desktop monitor queries, correlation and shared-ring publication.
 - tools/build/build_elevation_service.py: separate target without media/FFmpeg linkage.
 
+## Installer role
+
+`captureengine.exe --ce-installer-setup --owner-sid=... --owner-admin=0|1 --prefs=0-7 --service=install|remove|keep
+--autostart=apply|keep` is run by the installer (see `installer.md`). It requires an elevated process whose parent is
+also a live, older, elevated process, validates every argument (`common/installer_setup_policy.h`), then reuses
+`Apply()` so service, startup registration and the preference record behave exactly like the tray toggles.
+
 ## Invariants
 
 The manifest remains asInvoker. Only ordinary controller launches honor the full

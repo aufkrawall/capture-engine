@@ -577,6 +577,10 @@ def compile_project(
     # test apps, vulkan layer) may use the full worker count again.
     if release_jobs_callback is not None:
         release_jobs_callback()
+    # The setup program is built before the tests run: the Python self-tests drive the
+    # freshly linked stub (tools/tests/test_installer_native.py, test_installer_ui.py), and
+    # building it afterwards would test the previous build's binary.
+    compile_installer(env, clang_exe, cflags)
     test_exe = compile_tests(
         env,
         clang_exe,

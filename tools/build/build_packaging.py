@@ -244,6 +244,13 @@ def package_build_outputs() -> Tuple[str, ...]:
                 cmake_exe, staging_root, "ffmpeg-corresponding-source", source_archive
             )
 
+        setup_archive = None
+        if IS_WINDOWS:
+            setup_archive = assemble_setup_executable(
+                os.path.join(staging_root, "captureengine"),
+                os.path.join(PACKAGE_OUTPUT_DIR, SETUP_PACKAGE_NAME),
+            )
+
         required_capture_member = "captureengine/captureengine.exe"
         required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
         required_config_member = "testapps/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
@@ -266,6 +273,8 @@ def package_build_outputs() -> Tuple[str, ...]:
             raise RuntimeError("Automatic package verification failed: corresponding-source archive is incomplete")
 
         record_verification_artifact("captureengine_package", capture_archive)
+        if setup_archive:
+            record_verification_artifact("captureengine_setup_package", setup_archive)
         record_verification_artifact("testapps_package", testapps_archive)
         if IS_WINDOWS:
             record_verification_artifact("ffmpeg_source_package", source_archive)
@@ -278,6 +287,7 @@ def package_build_outputs() -> Tuple[str, ...]:
                 "testapp_files": len(testapp_files),
                 "ffmpeg_source_files": len(source_files),
                 "captureengine_archive": capture_archive,
+                "captureengine_setup": setup_archive or "not produced on this host",
                 "testapps_archive": testapps_archive,
                 "ffmpeg_source_archive": source_archive if IS_WINDOWS else "not produced on this host",
             },
@@ -285,6 +295,8 @@ def package_build_outputs() -> Tuple[str, ...]:
         log(f"Packaged CaptureEngine: {capture_archive} ({os.path.getsize(capture_archive)} bytes)")
         log(f"Packaged test apps: {testapps_archive} ({os.path.getsize(testapps_archive)} bytes)")
         archives = [capture_archive, testapps_archive]
+        if setup_archive:
+            archives.append(setup_archive)
         if IS_WINDOWS:
             log(f"Packaged FFmpeg corresponding source: {source_archive} ({os.path.getsize(source_archive)} bytes)")
             archives.append(source_archive)

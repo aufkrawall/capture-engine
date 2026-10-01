@@ -38,6 +38,8 @@ Primary sources:
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `present-interposers.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- [installer.md](installer.md)
+  - `captureengine-setup.exe` / `captureengine_uninstall.exe`: payload format, closing a running instance, the transactional file replace, config.ini never overwritten (`config.ini.new`), the manifest, runtime-writable folders, the elevated service/startup role, `--files-only` testing. Source-verified 2026-10-01; interactive registration runs pending.
 - [elevation-and-startup.md](elevation-and-startup.md)
   - Protected sensor/ETW broker, tray controls, initiating-user UAC ownership, autostart and teardown. Source-verified 2026-10-01; interactive runtime checks pending.
 - `changelog-guidelines.md`

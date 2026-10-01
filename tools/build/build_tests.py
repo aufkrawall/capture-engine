@@ -468,7 +468,7 @@ FILE_SIZE_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "file_size_baselin
 FILE_SIZE_LIMIT = 800
 FILE_SIZE_TARGET = 750
 
-LINTABLE_SOURCE_DIRS = ["common", "hook", "captureengine", "elevationservice", "mediaengine", "testapp", "tests"]
+LINTABLE_SOURCE_DIRS = ["common", "hook", "captureengine", "elevationservice", "installer", "mediaengine", "testapp", "tests"]
 LINTABLE_SOURCE_SUFFIXES = (".cpp", ".h", ".hpp", ".c")
 # The size ratchet also governs .inl files. They are ordinary C++ source under
 # the AGENTS.md rule, and the test apps use them to split a single translation
