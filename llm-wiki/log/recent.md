@@ -6,7 +6,8 @@
   with `appStream=stale markerTrusted=1`. The fix for the stale application stream is validated.
 - The one gameplay `unmarked present` (the user's one flash) had no constants, tags or evaluates since the
   previous present; it is a re-present of frame N, not an unmarked new frame. Unbridged 1.x (`142552`) does not flash.
-- Fix (pending a run): the guard also hooks 2.x `sl.dlss_g` `slHookPresent(1)` and absorbs such a re-present
+- Fix (0.1.6895 never engaged: sl.common folds slHookPresent1 into slHookPresent; a shared detour
+  fixes it in 0.1.6896, run pending): the guard also hooks 2.x `sl.dlss_g` `slHookPresent(1)` and absorbs such a re-present
   before either plugin or DXGI sees it (`PresentAction::kAbsorb`). See the bridge runs page, "Absorbing the
   re-present".
 

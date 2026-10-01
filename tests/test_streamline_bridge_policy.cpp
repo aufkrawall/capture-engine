@@ -383,17 +383,32 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     EXPECT_NE(present.find("v2Common, \"sl.common\", \"slHookPresent1\","), std::string::npos);
     EXPECT_NE(present.find("BeforeCountedPresent(swapChain, syncInterval, flags) == PresentAction::kAbsorb;"),
               std::string::npos);
-    EXPECT_NE(present.find("AfterCountedPresent(flags, result, skip);"), std::string::npos);
+    EXPECT_NE(present.find("AfterCountedPresent(flags, result, false);"), std::string::npos);
     // Session 20261001_141737: a re-present is absorbed. sl.common's hook returns before
-    // presentCommon counts it, sets `skip` so the interposer does not present it, and sl.dlss_g's
-    // hook (next on the same thread, priority 1000 after sl.common's 0) never sees it.
+    // presentCommon counts it; sl.dlss_g's hook (next on the same thread, priority 1000 after
+    // sl.common's 0) sets `skip` so the interposer does not present it, and never runs DLSS-G.
     EXPECT_NE(present.find("v2Dlssg, \"sl.dlss_g\", \"slHookPresent\","), std::string::npos);
     EXPECT_NE(present.find("v2Dlssg, \"sl.dlss_g\", \"slHookPresent1\","), std::string::npos);
-    EXPECT_NE(present.find("if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {"), std::string::npos);
+    EXPECT_NE(present.find("if (AbsorbAtCommonHook(swapChain, syncInterval, flags)) {"), std::string::npos);
     EXPECT_NE(present.find("if (ConsumeAbsorbedPresent(skip)) {"), std::string::npos);
-    EXPECT_NE(present.find("    skip = true;\n    AfterCountedPresent(flags, S_OK, true);"), std::string::npos);
-    EXPECT_NE(present.find("const bool absorb = present && present1 && dlssgPresent && dlssgPresent1;"),
+    // Session 20261001_144612: sl.common answers slHookPresent and slHookPresent1 with one folded
+    // address, so the second hook failed and absorbing never engaged. One shared detour now serves
+    // both and never writes its fourth argument (`skip` for Present, `params` for Present1); only
+    // sl.dlss_g's detour, whose entry points must be distinct, sets `skip`.
+    EXPECT_NE(present.find("const bool folded = commonLookup(\"slHookPresent\") == commonLookup(\"slHookPresent1\");"),
               std::string::npos);
+    EXPECT_NE(present.find("reinterpret_cast<void*>(&HookedSlHookPresentShared), &g_originalHookPresentShared);"),
+              std::string::npos);
+    EXPECT_NE(present.find("original(swapChain, syncInterval, flags, fourth)"), std::string::npos);
+    EXPECT_NE(present.find("dlssgPresent1 && dlssgPresent != dlssgPresent1;"), std::string::npos);
+    const size_t absorbAt = present.find("bool AbsorbAtCommonHook(");
+    ASSERT_NE(absorbAt, std::string::npos);
+    const std::string absorbBody = present.substr(absorbAt, present.find("\n}", absorbAt) - absorbAt);
+    EXPECT_NE(absorbBody.find("AfterCountedPresent(flags, S_OK, true);"), std::string::npos);
+    EXPECT_EQ(absorbBody.find("skip ="), std::string::npos);
+    const size_t consumeAt = present.find("bool ConsumeAbsorbedPresent(bool& skip) {");
+    ASSERT_NE(consumeAt, std::string::npos);
+    EXPECT_NE(present.substr(consumeAt, 200).find("skip = true;"), std::string::npos);
     EXPECT_NE(present.find("thread_local bool t_absorbingPresent = false;"), std::string::npos);
     // Session 20261001_105517: what the title sent before each present is recorded at the 1.x
     // entry points, so an unmarked present's log says whether it re-showed frame N or was new.

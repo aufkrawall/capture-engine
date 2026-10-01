@@ -520,3 +520,14 @@ frame. DLSS-G hooks that call, and its index does not advance for an absorbed pr
 fails with `eDLSSGStatusFailGetCurrentBackBufferIndexNotCalled` for titles that never call it, and W3
 never logged that. A misordered frame right after an absorbed present would mean the title caches
 the index.
+
+**First absorb run (`20261001_144612`, 0.1.6895): it never engaged.** The guard logged
+`could not hook 2.x sl.common slHookPresent1 at 00007FFF56028FA0`, the same address as
+`slHookPresent`. Both bodies are `presentCommon(Flags, swapChain); return S_OK;`, so the linker folded
+them; the earlier guard runs had the same `slHookPresent1=0` and simply covered both paths through one
+hook. Without both hooks the guard fell back to re-marking, and the flash showed again (`unmarked
+present #2`: a pure re-present of frame 1593). The fix: when both names resolve to one address, a
+single signature-agnostic detour (`HookedSlHookPresentShared`) serves both. It forwards only the
+four register arguments and never writes the fourth, which is `bool& skip` for Present and
+`params` for Present1. The `skip` write moved to sl.dlss_g's detours, and absorbing requires those
+two entry points to be distinct.

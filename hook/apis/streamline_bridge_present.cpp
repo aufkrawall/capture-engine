@@ -22,9 +22,15 @@ using SlGetPluginFunctionFn = void*(const char* functionName);
 using SlHookPresentFn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip);
 using SlHookPresent1Fn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
                                  DXGI_PRESENT_PARAMETERS* params, bool& skip);
+// sl.common 2.14.1 answers slHookPresent and slHookPresent1 with ONE address (session
+// 20261001_144612: both 00007FFF56028FA0): their bodies are identical - presentCommon(Flags,
+// swapChain) - so the linker folded them. A detour there serves both signatures, so it may use only
+// the arguments they share; the fourth is `bool& skip` for one caller and `params` for the other.
+using SlHookPresentSharedFn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, void* fourth);
 
 void* volatile g_originalHookPresent = nullptr;
 void* volatile g_originalHookPresent1 = nullptr;
+void* volatile g_originalHookPresentShared = nullptr;
 // sl.dlss_g's own present hooks. The interposer runs every plugin's before-present hook by
 // priority (sl.common 0 first, sl.dlss_g 1000) on the presenting thread, whatever `skip` says.
 void* volatile g_originalDlssgHookPresent = nullptr;
@@ -32,7 +38,7 @@ void* volatile g_originalDlssgHookPresent1 = nullptr;
 std::atomic<bool> g_absorbSupported{false};
 
 // Set by sl.common's hook for the present it absorbed; sl.dlss_g's hook, next on the same
-// thread for the same present, consumes it. Reassigned on every present.
+// thread for the same present, sets `skip` and consumes it. Reassigned on every present.
 thread_local bool t_absorbingPresent = false;
 
 std::mutex g_ledgerMutex;
@@ -41,7 +47,7 @@ PresentMarkerLedger g_ledger;  // guarded by g_ledgerMutex
 // The outcome and time of the previous present the guard saw. A title
 // that re-presents after a failed or deferred present is the first explanation to rule out.
 std::atomic<HRESULT> g_previousPresentResult{S_OK};
-std::atomic<bool> g_previousPresentSkipped{false};
+std::atomic<bool> g_previousPresentAbsorbed{false};
 std::atomic<int64_t> g_previousPresentQpc{0};
 
 int64_t QpcNow() {
@@ -80,7 +86,7 @@ void LogUnmarkedPresent(uint32_t n, PresentAction action, bool remarked, uint32_
     const int64_t previousQpc = g_previousPresentQpc.load(std::memory_order_relaxed);
     const long long sinceUs = previousQpc ? static_cast<long long>(QpcToUs(nowQpc - previousQpc)) : -1;
     const auto previousResult = static_cast<unsigned long>(g_previousPresentResult.load(std::memory_order_relaxed));
-    const int previousSkipped = g_previousPresentSkipped.load(std::memory_order_relaxed) ? 1 : 0;
+    const int previousAbsorbed = g_previousPresentAbsorbed.load(std::memory_order_relaxed) ? 1 : 0;
     HookLogImportant(
         "Streamline bridge: title presented without a Reflex PRESENT_START marker - %s frame %u (2.x DLSS-G "
         "checks Reflex and reads its tagged inputs at every present) #%u",
@@ -89,10 +95,10 @@ void LogUnmarkedPresent(uint32_t n, PresentAction action, bool remarked, uint32_
     // frame N; constants for a newer frame mean the title rendered a frame it did not mark.
     HookLogImportant(
         "Streamline bridge: unmarked present #%u - swapchain=%p sync=%u flags=0x%X sinceLastPresentUs=%lld "
-        "lastPresent(hr=0x%08lX skip=%d) | since that present: constants=%u(frame %u) tags=%u evaluates=%u(frame %u) "
-        "markers=%u(last %u frame %u) | before it: constants=%u(frame %u) tags=%u evaluates=%u(frame %u) "
+        "lastPresent(hr=0x%08lX absorbed=%d) | since that present: constants=%u(frame %u) tags=%u "
+        "evaluates=%u(frame %u) markers=%u(last %u frame %u) | before it: constants=%u(frame %u) tags=%u evaluates=%u(frame %u) "
         "markers=%u(last %u frame %u)",
-        n + 1, swapChain, syncInterval, flags, sinceUs, previousResult, previousSkipped, now.constants,
+        n + 1, swapChain, syncInterval, flags, sinceUs, previousResult, previousAbsorbed, now.constants,
         now.lastConstantsFrame, now.tags, now.evaluates, now.lastEvaluateFrame, now.markers, now.lastMarker, now.lastMarkerFrame, before.constants,
         before.lastConstantsFrame, before.tags, before.evaluates, before.lastEvaluateFrame, before.markers,
         before.lastMarker, before.lastMarkerFrame);
@@ -124,47 +130,59 @@ PresentAction BeforeCountedPresent(IDXGISwapChain* swapChain, UINT syncInterval,
     return action;
 }
 
-void AfterCountedPresent(UINT flags, HRESULT result, bool skip) {
+void AfterCountedPresent(UINT flags, HRESULT result, bool absorbed) {
     if ((flags & kDxgiPresentTest) != 0) {
         return;
     }
     g_previousPresentResult.store(result, std::memory_order_relaxed);
-    g_previousPresentSkipped.store(skip, std::memory_order_relaxed);
+    g_previousPresentAbsorbed.store(absorbed, std::memory_order_relaxed);
     g_previousPresentQpc.store(QpcNow(), std::memory_order_relaxed);
 }
 
-// sl.common's hook decides; an absorbed present never reaches presentCommon (no frame counted), and
-// `skip` keeps the interposer from presenting the proxy's back buffer to DXGI.
-bool AbsorbAtCommonHook(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
+// sl.common's hook decides; an absorbed present never reaches presentCommon (no frame counted).
+// It never touches `skip`: with folded hooks that argument is not where it would write. sl.dlss_g's
+// hook, whose two entry points are distinct, sets it.
+bool AbsorbAtCommonHook(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
     t_absorbingPresent = BeforeCountedPresent(swapChain, syncInterval, flags) == PresentAction::kAbsorb;
-    if (!t_absorbingPresent) {
-        return false;
+    if (t_absorbingPresent) {
+        AfterCountedPresent(flags, S_OK, true);
     }
-    skip = true;
-    AfterCountedPresent(flags, S_OK, true);
-    return true;
+    return t_absorbingPresent;
 }
 
 HRESULT HookedSlHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
-    if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {
+    if (AbsorbAtCommonHook(swapChain, syncInterval, flags)) {
         return S_OK;
     }
     auto* original = reinterpret_cast<SlHookPresentFn*>(
         InterlockedCompareExchangePointer(&g_originalHookPresent, nullptr, nullptr));
     const HRESULT result = original ? original(swapChain, syncInterval, flags, skip) : S_OK;
-    AfterCountedPresent(flags, result, skip);
+    AfterCountedPresent(flags, result, false);
     return result;
 }
 
 HRESULT HookedSlHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
                              DXGI_PRESENT_PARAMETERS* params, bool& skip) {
-    if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {
+    if (AbsorbAtCommonHook(swapChain, syncInterval, flags)) {
         return S_OK;
     }
     auto* original = reinterpret_cast<SlHookPresent1Fn*>(
         InterlockedCompareExchangePointer(&g_originalHookPresent1, nullptr, nullptr));
     const HRESULT result = original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
-    AfterCountedPresent(flags, result, skip);
+    AfterCountedPresent(flags, result, false);
+    return result;
+}
+
+// The folded entry point. The fourth argument passes through untouched. A fifth (Present1's
+// `skip`, on the stack) cannot be forwarded, and identical code for both callers cannot use it.
+HRESULT HookedSlHookPresentShared(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, void* fourth) {
+    if (AbsorbAtCommonHook(swapChain, syncInterval, flags)) {
+        return S_OK;
+    }
+    auto* original = reinterpret_cast<SlHookPresentSharedFn*>(
+        InterlockedCompareExchangePointer(&g_originalHookPresentShared, nullptr, nullptr));
+    const HRESULT result = original ? original(swapChain, syncInterval, flags, fourth) : S_OK;
+    AfterCountedPresent(flags, result, false);
     return result;
 }
 
@@ -254,10 +272,20 @@ bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {
             v2Common);
         return false;
     }
-    void* present = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent",
-                               reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent);
-    void* present1 = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent1",
-                                reinterpret_cast<void*>(&HookedSlHookPresent1), &g_originalHookPresent1);
+    // Both present paths must pass the guard. Folded entry points get one shared detour.
+    void* present = nullptr;
+    void* present1 = nullptr;
+    const bool folded = commonLookup("slHookPresent") == commonLookup("slHookPresent1");
+    if (folded) {
+        present = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent",
+                             reinterpret_cast<void*>(&HookedSlHookPresentShared), &g_originalHookPresentShared);
+        present1 = present;
+    } else {
+        present = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent",
+                             reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent);
+        present1 = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent1",
+                              reinterpret_cast<void*>(&HookedSlHookPresent1), &g_originalHookPresent1);
+    }
 
     // Absorbing needs both plugins' hooks on both present paths: sl.common alone would leave
     // DLSS-G processing a present Streamline never counted.
@@ -269,16 +297,18 @@ bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {
         dlssgPresent1 = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent1",
                                    reinterpret_cast<void*>(&HookedDlssgHookPresent1), &g_originalDlssgHookPresent1);
     }
-    const bool absorb = present && present1 && dlssgPresent && dlssgPresent1;
+    // sl.dlss_g's two entry points must be distinct: its detour is the one that writes `skip`.
+    const bool absorb = present && present1 && dlssgPresent && dlssgPresent1 && dlssgPresent != dlssgPresent1;
     g_absorbSupported.store(absorb, std::memory_order_release);
     HookLogImportant(
-        "Streamline bridge: present-marker guard - sl.common slHookPresent=%p slHookPresent1=%p, sl.dlss_g "
+        "Streamline bridge: present-marker guard - sl.common slHookPresent=%p slHookPresent1=%p%s, sl.dlss_g "
         "(module=%p) slHookPresent=%p slHookPresent1=%p - a title present without its own Reflex PRESENT_START "
         "while DLSS-G generates is %s",
-        present, present1, v2Dlssg, dlssgPresent, dlssgPresent1,
+        present, present1, folded ? " (one folded entry point, shared detour)" : "", v2Dlssg, dlssgPresent,
+        dlssgPresent1,
         absorb ? "absorbed when it re-presents (no constants, tags or evaluate since the last present), "
                  "otherwise re-marked"
-               : "re-marked (absorbing needs all four present hooks)");
+               : "re-marked (absorbing needs sl.common's and both distinct sl.dlss_g present hooks)");
     return present != nullptr;
 }
 
