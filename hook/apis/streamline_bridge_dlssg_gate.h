@@ -50,6 +50,21 @@ constexpr DlssgForwardedOptions DlssgOptionsFor(const DlssgViewportRequest& requ
     return options;
 }
 
+// 1.x tags persist until the title replaces them; 1.5.6 sl.common has no expiry at all. 2.x
+// legacy (frame-less) global tags expire once the present counter is more than one past the
+// tagging present (`commonEntry.cpp` getTag: "Invalidating the hanging tag"), whatever their
+// lifecycle. The Witcher 3 occasionally presents twice without re-tagging (16 times in session
+// 20261001_092557); 2.x then lost depth and motion vectors, switched interpolation off for that
+// present and back on for the next - a visible dark flash under 4x MFG. Re-issuing the title's
+// last DLSS-G input tags after each present restores the 1.x lifetime.
+inline constexpr uint32_t kV1ReflexMarkerPresentEnd = 5;  // 1.x marker 5 == 2.x PCLMarker::ePresentEnd
+
+// The tags 2.x DLSS-G reads at present: depth, motion vectors, HUD-less color, UI color+alpha.
+// Upscaler inputs/outputs are evaluate-time tags the title re-sets every frame anyway.
+constexpr bool V1TagPersistsAcrossPresents(uint32_t bufferType) {
+    return bufferType == 0 || bufferType == 1 || bufferType == 2 || bufferType == 23;
+}
+
 // A constants call changes the 2.x state only for a viewport the title configured DLSS-G on;
 // forwarding an eOff to a viewport DLSS-G never saw would invent a configuration.
 constexpr bool DlssgGateNeedsSync(const DlssgViewportRequest& request, bool haveForwarded,

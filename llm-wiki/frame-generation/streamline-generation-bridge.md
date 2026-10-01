@@ -19,7 +19,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/apis/streamline_bridge_native_device.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
 | Reflex: options, settings, markers, sleep | `hook/apis/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
-| DLSS-G options and the `notRenderingGameFrames` gate | `hook/apis/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
+| DLSS-G options, the `notRenderingGameFrames` gate, persistent present-time tags | `hook/apis/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
@@ -485,10 +485,32 @@ common constants) and forwards `eOff` while the flag is set. `eRetainResourcesWh
 the title wants FG on, so resuming costs no rebuild. Reflex follows the title's intent, not the gate.
 Granularity is the constants call, which can run one frame ahead of the present it gates.
 
-**Unverified:** that The Witcher 3 sets the flag in that window. This run logged neither the flag nor
-`reset`. Both now log transitions (`title marked frame N ... as NOT a game frame`,
-`title requested a history reset`). If the next run shows the flag never set, the artifacts are
-DLSS-G warming up on the title's inputs, not a bridge gap.
+Flag transitions and history resets now log (`title marked frame N ... as NOT a game frame`,
+`title requested a history reset`).
+
+**Confirmed in `20261001_092557`:** the title sets the flag on load and menu frames (transitions #1-#9)
+and toggles DLSS-G mode with it.
+
+## The tenth bridged run: 2.x expires tags that 1.x kept
+
+Same session: brief dark flashes while traversing. Three times during FG gameplay `sl.log` shows
+`Invalidating the hanging tag 0/1/2 (created at frame N, current frame N+2)`, then `Failed to find
+global tag 'kBufferTypeDepth'` / `'kBufferTypeMotionVectors'`, then interpolation off and back on
+~30 ms later. Tags and presents come from the same game thread (0x5164), and the per-present CSV shows
+an extra present burst ~4.5 ms after a normal one (16 such gaps in the run), so the title presented
+twice without re-tagging. The bridge sent no option change at those moments.
+
+SL2's open `sl.common` (`commonEntry.cpp`, `ResourceTaggingGeneral::getTag`) expires every legacy
+(frame-less) global tag once `getCurrentFrame() > uFrameWhenTagged + 1`, whatever its lifecycle; the
+counter advances per app present. The 1.5.6 `sl.common.dll` has no expiry string or logic at all: a 1.x
+tag lives until replaced.
+
+0.1.6885 remembers the title's last depth, motion-vector, HUD-less and UI tags per viewport
+(`RememberPresentTag`) and re-issues them on the title's 1.x present-end marker (5) while 2.x generates
+(`RefreshPersistentPresentTags`). A null tag erases the entry. The re-tag happens on the game's thread
+right after its Present returns, so it extends nothing past the lifetime SL already held from the
+title's own tag. Frame-based tagging (`slSetTagForFrame`) was not used: 1.x `slSetTag` carries no frame
+index to key it on.
 
 ## Invariants
 
@@ -538,6 +560,8 @@ DLSS-G warming up on the title's inputs, not a bridge gap.
   context exists. This is a crash, not a courtesy - it happened twice.
 - **A 1.x non-game frame never reaches 2.x DLSS-G with generation on.** 1.x skipped interpolation
   unless `notRenderingGameFrames == eFalse`; the bridge forwards that as `eOff` with resources retained.
+- **A 1.x present-time tag stays valid until the title replaces it.** 2.x expires legacy tags after one
+  extra present; the bridge re-issues DLSS-G inputs after every present to keep the 1.x lifetime.
 - **1.x Reflex markers and sleep are evaluates with a null command buffer.** `id` is the marker;
   never drop a Reflex evaluate for its command buffer.
 - **Readiness is asked, never inferred.** The only signal is `slGetFeatureFunction` succeeding.
@@ -751,8 +775,8 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-10-01 (`notRenderingGameFrames` gate from session `20261001_090234`, pending a
-hardware run; device-reset cause from `20261001_034038`, validated); before that 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
+Last verified 2026-10-01 (`notRenderingGameFrames` gate validated in `20261001_092557`; tag persistence
+from that session pending a hardware run; device-reset cause from `20261001_034038`, validated); before that 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

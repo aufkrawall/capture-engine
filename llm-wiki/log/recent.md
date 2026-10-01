@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-01 - Streamline bridge: keep 1.x tag lifetime across an extra present
+
+- Session `20261001_092557`: `notRenderingGameFrames` gate validated (W3 sets it on load/menu frames).
+  New issue: dark flashes while traversing = W3 presenting twice without re-tagging; SL2 legacy tags
+  expire after one extra present (`commonEntry.cpp` getTag), 1.5.6 had no expiry. DLSS-G lost
+  depth/mvec and toggled interpolation off/on.
+- 0.1.6885: `RememberPresentTag` + `RefreshPersistentPresentTags` on the 1.x present-end marker
+  re-issue depth/mvec/hudless/UI tags while 2.x generates. Pending a hardware run.
+- `streamline-generation-bridge.md` is at 782 lines; split the run history out before it grows again.
+
 ### 2026-10-01 - Streamline bridge: gate DLSS-G on 1.x `notRenderingGameFrames`
 
 - Session `20261001_090234` (W3, bridged, 4x MFG): FG artifacts for seconds after a save load; `sl.log`

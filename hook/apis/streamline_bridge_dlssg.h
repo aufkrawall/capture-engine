@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 // DLSS-G options for the Streamline generation bridge (x64 only; included by the translation
 // unit inside its x64 block).
@@ -27,5 +28,22 @@ bool DlssgEnabledOnAnyViewport();
 
 // Whether the TITLE wants DLSS-G on for the viewport, regardless of non-game suspension.
 bool DlssgTitleRequestsOn(uint32_t id);
+
+// The title's last DLSS-G input tag of one type on one viewport (see V1TagPersistsAcrossPresents).
+struct PersistentTag {
+    uint32_t viewport = 0;
+    uint32_t bufferType = 0;
+    sl::Resource resource{};
+    bool haveExtent = false;
+    sl::Extent extent{};
+};
+
+// slSetTag: remembers a present-time input tag, or forgets it when the title tags null.
+void RememberPresentTag(uint32_t viewport, uint32_t bufferType, const sl::Resource* resource,
+                        const sl::Extent* extent);
+
+// After a present: the tags to re-issue (only while 2.x generates). `titleRetagged` reports whether
+// the title tagged anything since the previous call - false means it presented again without tags.
+bool TakePresentTagsForRefresh(std::vector<PersistentTag>& out, bool& titleRetagged);
 
 }  // namespace ce::streamline_bridge

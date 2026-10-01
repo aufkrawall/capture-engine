@@ -88,6 +88,24 @@ TEST(StreamlineBridgeDlssgGateTest, SyncsOnFirstRequestAndOnEveryEffectiveChange
     EXPECT_TRUE(bridge::DlssgGateNeedsSync(request, true, forwarded));
 }
 
+// Session 20261001_092557: dark flashes while traversing. The title presented twice without
+// re-tagging; SL2 expired its depth/motion-vector tags ("Invalidating the hanging tag",
+// "Failed to find global tag 'kBufferTypeDepth'") and toggled interpolation off and on.
+TEST(StreamlineBridgeDlssgGateTest, PersistsExactlyTheTagsDlssgReadsAtPresent) {
+    EXPECT_TRUE(bridge::V1TagPersistsAcrossPresents(0));    // depth
+    EXPECT_TRUE(bridge::V1TagPersistsAcrossPresents(1));    // motion vectors
+    EXPECT_TRUE(bridge::V1TagPersistsAcrossPresents(2));    // HUD-less color
+    EXPECT_TRUE(bridge::V1TagPersistsAcrossPresents(23));   // UI color and alpha
+    EXPECT_FALSE(bridge::V1TagPersistsAcrossPresents(3));   // upscaler input (evaluate-time)
+    EXPECT_FALSE(bridge::V1TagPersistsAcrossPresents(4));   // upscaler output (evaluate-time)
+    EXPECT_FALSE(bridge::V1TagPersistsAcrossPresents(37));
+}
+
+TEST(StreamlineBridgeDlssgGateTest, RefreshRunsOnThePresentEndMarker) {
+    // 1.x marker ids equal 2.x PCLMarker values; ePresentEnd is 5.
+    EXPECT_EQ(bridge::kV1ReflexMarkerPresentEnd, 5u);
+}
+
 TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
     auto request = TitleRequest(false, 1, false);
     const auto forwarded = bridge::DlssgOptionsFor(request);

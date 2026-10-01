@@ -355,6 +355,12 @@ TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchanged
     EXPECT_NE(source.find("ApplyNotRenderingGameFrames(g_slDLSSGSetOptions, id, frameIndex, "
                           "in.notRenderingGameFrames);"),
               std::string::npos);
+    // Every forwarded tag is remembered, and the present-end marker re-issues the DLSS-G inputs,
+    // so a second present without re-tagging keeps them alive as 1.x did (20261001_092557).
+    EXPECT_NE(source.find("RememberPresentTag(id, bufferType2x,"), std::string::npos);
+    EXPECT_NE(source.find("if (id == kV1ReflexMarkerPresentEnd) {"), std::string::npos);
+    EXPECT_NE(source.find("RefreshPersistentPresentTags(frameIndex);"), std::string::npos);
+    EXPECT_NE(dlssg.find("A null tag is the title withdrawing the input; never resurrect it."), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) {

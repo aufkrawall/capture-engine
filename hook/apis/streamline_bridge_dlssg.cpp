@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "../common/hook_common.h"
 #include "streamline_bridge_diag.h"
@@ -154,6 +155,52 @@ bool DlssgTitleRequestsOn(uint32_t id) {
     std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
     auto it = g_dlssgOptionsByViewport.find(id);
     return it != g_dlssgOptionsByViewport.end() && it->second.request.gameRequestsOn;
+}
+
+namespace {
+std::mutex g_presentTagMutex;
+std::vector<PersistentTag> g_presentTags;  // guarded by g_presentTagMutex; a handful of entries
+bool g_titleTaggedSinceRefresh = false;    // guarded by g_presentTagMutex
+}  // namespace
+
+void RememberPresentTag(uint32_t viewport, uint32_t bufferType, const sl::Resource* resource,
+                        const sl::Extent* extent) {
+    if (!V1TagPersistsAcrossPresents(bufferType)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_presentTagMutex);
+    g_titleTaggedSinceRefresh = true;
+    auto it = g_presentTags.begin();
+    while (it != g_presentTags.end() && (it->viewport != viewport || it->bufferType != bufferType)) {
+        ++it;
+    }
+    if (!resource || !resource->native) {
+        // A null tag is the title withdrawing the input; never resurrect it.
+        if (it != g_presentTags.end()) {
+            g_presentTags.erase(it);
+        }
+        return;
+    }
+    if (it == g_presentTags.end()) {
+        it = g_presentTags.insert(g_presentTags.end(), PersistentTag{});
+        it->viewport = viewport;
+        it->bufferType = bufferType;
+    }
+    it->resource = *resource;
+    it->haveExtent = extent != nullptr;
+    it->extent = extent ? *extent : sl::Extent{};
+}
+
+bool TakePresentTagsForRefresh(std::vector<PersistentTag>& out, bool& titleRetagged) {
+    out.clear();
+    if (!DlssgEnabledOnAnyViewport()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_presentTagMutex);
+    titleRetagged = g_titleTaggedSinceRefresh;
+    g_titleTaggedSinceRefresh = false;
+    out = g_presentTags;
+    return !out.empty();
 }
 
 }  // namespace ce::streamline_bridge

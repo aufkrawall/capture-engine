@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #include "../common/hook_common.h"
 #include "streamline_bridge_policy.h"
@@ -27,6 +28,7 @@
 #include "sl_reflex.h"
 #include "streamline_bridge_diag.h"
 #include "streamline_bridge_dlssg.h"
+#include "streamline_bridge_dlssg_gate.h"
 #include "streamline_bridge_reflex.h"
 
 namespace ce::streamline_bridge {
@@ -377,30 +379,16 @@ bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, c
         resource.state = source->state;
     }
 
+    sl::Extent extent{};
     if (extent1x) {
         const auto in = *static_cast<const V1Extent*>(extent1x);
-        sl::Extent extent{};
         extent.top = in.top;
         extent.left = in.left;
         extent.width = in.width;
         extent.height = in.height;
-        sl::ResourceTag tag(resource1x ? &resource : nullptr,
-                            static_cast<sl::BufferType>(bufferType2x),
-                            sl::ResourceLifecycle::eValidUntilPresent, &extent);
-        sl::ResourceTag tags[] = {tag};
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-            HookLogImportant("Streamline bridge: first slSetTag translated - viewport=%u buffer=%u "
-                             "resource=%p",
-                             id, bufferType2x, resource1x ? resource.native : nullptr);
-        }
-        static std::atomic<bool> latch{false};
-        return ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch);
     }
-
-    sl::ResourceTag tag(resource1x ? &resource : nullptr,
-                        static_cast<sl::BufferType>(bufferType2x),
-                        sl::ResourceLifecycle::eValidUntilPresent);
+    sl::ResourceTag tag(resource1x ? &resource : nullptr, static_cast<sl::BufferType>(bufferType2x),
+                        sl::ResourceLifecycle::eValidUntilPresent, extent1x ? &extent : nullptr);
     sl::ResourceTag tags[] = {tag};
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true, std::memory_order_relaxed)) {
@@ -408,8 +396,47 @@ bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, c
                          id, bufferType2x, resource1x ? resource.native : nullptr);
     }
     static std::atomic<bool> latch{false};
-    return ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch);
+    if (!ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch)) {
+        return false;
+    }
+    RememberPresentTag(id, bufferType2x, resource1x ? &resource : nullptr, extent1x ? &extent : nullptr);
+    return true;
 }
+
+namespace {
+// Runs on the title's present-end marker: re-issues its DLSS-G input tags so they outlive one
+// extra present, as 1.x tags did (see V1TagPersistsAcrossPresents).
+void RefreshPersistentPresentTags(uint32_t frameIndex) {
+    std::vector<PersistentTag> persistent;
+    bool titleRetagged = true;
+    if (!g_slSetTag || !TakePresentTagsForRefresh(persistent, titleRetagged)) {
+        return;
+    }
+    uint32_t failures = 0;
+    for (PersistentTag& entry : persistent) {
+        sl::ResourceTag tag(&entry.resource, static_cast<sl::BufferType>(entry.bufferType),
+                            sl::ResourceLifecycle::eValidUntilPresent, entry.haveExtent ? &entry.extent : nullptr);
+        if (g_slSetTag(sl::ViewportHandle(entry.viewport), &tag, 1, nullptr) != sl::Result::eOk) {
+            ++failures;
+        }
+    }
+    static std::atomic<bool> loggedFirst{false};
+    if (!loggedFirst.exchange(true, std::memory_order_relaxed)) {
+        HookLogImportant("Streamline bridge: re-issuing %zu DLSS-G input tag(s) after each present so they outlive "
+                         "an extra present, as 1.x tags did (frame %u, failures=%u)",
+                         persistent.size(), frameIndex, failures);
+    }
+    if (!titleRetagged || failures) {
+        static std::atomic<uint32_t> gaps{0};
+        const uint32_t n = gaps.fetch_add(1, std::memory_order_relaxed);
+        if (n < 32 || (n % 256) == 0) {
+            HookLogImportant("Streamline bridge: title presented again without re-tagging (frame %u) - kept its last "
+                             "%zu DLSS-G input tag(s) alive (failures=%u) #%u",
+                             frameIndex, persistent.size(), failures, n + 1);
+        }
+    }
+}
+}  // namespace
 
 bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_t id) {
     if (!constants1x || !g_slSetConstants) {
@@ -593,7 +620,12 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         }
         ResolveFeatureFunctions();
         const bool namesFrame = frameIndex != 0 || id != kV1ReflexMarkerSleep;
-        return TranslateReflexEvaluate(id, frameIndex, namesFrame ? TokenFor(frameIndex) : LatestToken());
+        const bool forwarded =
+            TranslateReflexEvaluate(id, frameIndex, namesFrame ? TokenFor(frameIndex) : LatestToken());
+        if (id == kV1ReflexMarkerPresentEnd) {
+            RefreshPersistentPresentTags(frameIndex);
+        }
+        return forwarded;
     }
     if (!g_slEvaluateFeature || !commandBuffer) {
         return false;
