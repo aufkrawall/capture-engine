@@ -226,10 +226,14 @@ bool ConsumeAbsorbedPresent(bool& skip) {
     return true;
 }
 
+// sl.dlss_g's slHookPresent runs its slHookPresent1 (session 20261001_150639 logged two returns per
+// present), so only the outermost return of a present counts.
+thread_local uint32_t t_dlssgHookDepth = 0;
+
 // The timeline around an absorbed present, once two later presents came back from DLSS-G: how long
 // DLSS-G's hook holds the title per present, and when the title's next frame arrived.
 void AfterDlssgPresent(UINT flags, bool absorbed) {
-    if ((flags & kDxgiPresentTest) != 0) {
+    if ((flags & kDxgiPresentTest) != 0 || t_dlssgHookDepth != 0) {
         return;
     }
     std::string timeline;
@@ -256,7 +260,9 @@ HRESULT HookedDlssgHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UIN
     }
     auto* original = reinterpret_cast<SlHookPresentFn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent, nullptr, nullptr));
+    ++t_dlssgHookDepth;
     const HRESULT result = original ? original(swapChain, syncInterval, flags, skip) : S_OK;
+    --t_dlssgHookDepth;
     AfterDlssgPresent(flags, false);
     return result;
 }
@@ -269,7 +275,9 @@ HRESULT HookedDlssgHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UI
     }
     auto* original = reinterpret_cast<SlHookPresent1Fn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent1, nullptr, nullptr));
+    ++t_dlssgHookDepth;
     const HRESULT result = original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
+    --t_dlssgHookDepth;
     AfterDlssgPresent(flags, false);
     return result;
 }

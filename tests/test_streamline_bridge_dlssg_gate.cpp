@@ -271,10 +271,13 @@ TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
 
 // Session 20261001_145325: each absorbed present was followed by the next frame arriving ~20 ms
 // early. The timeline prints what the title did around it, relative to the absorbed present.
-TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineStartsAtThePresentBeforeIt) {
+TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineStartsThreePresentsBeforeIt) {
     using bridge::TimelineKind;
     bridge::PresentTimeline timeline;
-    timeline.Record({1'000, TimelineKind::kPresent, 0, 0});         // an older present, left out
+    timeline.Record({-40'000, TimelineKind::kPresent, 0, 0});       // a fourth present back, left out
+    timeline.Record({-39'000, TimelineKind::kMarker, 1, 38});
+    timeline.Record({-21'000, TimelineKind::kPresent, 0, 0});       // the third present back
+    timeline.Record({1'000, TimelineKind::kPresent, 0, 0});
     timeline.Record({10'000, TimelineKind::kConstants, 0, 41});
     timeline.Record({10'100, TimelineKind::kTag, 0, 0});
     timeline.Record({10'200, TimelineKind::kTag, 0, 0});
@@ -287,12 +290,22 @@ TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineStartsAtThePresentBef
     timeline.Record({30'500, TimelineKind::kDlssgReturn, 0, 0});
 
     EXPECT_EQ(timeline.Format(30'400),
+              " -51.4:PRESENT[fwd] -29.4:PRESENT[fwd] -20.4:consts(41) tag x2 -20.1:prsS(41)"
               " -20.0:PRESENT[fwd] -19.0:dlssg-ret -5.4:sleep(0) -1.4:sleep-ret +0.0:PRESENT[ABSORB] +0.1:dlssg-ret");
-    // Activity before the previous present is not part of it; tags collapse into a count.
+    // Activity before the third present back is not part of it; tags collapse into a count.
     timeline.Record({31'000, TimelineKind::kTag, 0, 0});
     timeline.Record({31'100, TimelineKind::kTag, 0, 0});
     timeline.Record({31'200, TimelineKind::kEvaluate, 0, 42});
     EXPECT_NE(timeline.Format(30'400).find(" tag x2 +0.8:eval(42)"), std::string::npos);
+}
+
+TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineStartsAtTheOldestEventWithFewerPresents) {
+    using bridge::TimelineKind;
+    bridge::PresentTimeline timeline;
+    timeline.Record({8'000, TimelineKind::kMarker, 0x1000, 0});
+    timeline.Record({10'000, TimelineKind::kPresent, 0, 0});
+    timeline.Record({30'000, TimelineKind::kPresent, 2, 0});
+    EXPECT_EQ(timeline.Format(30'000), " -22.0:sleep(0) -20.0:PRESENT[fwd] +0.0:PRESENT[ABSORB]");
 }
 
 TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelinePrintsOnceTwoPresentsLater) {
@@ -311,14 +324,14 @@ TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelinePrintsOnceTwoPresents
 TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineSurvivesWrapAround) {
     using bridge::TimelineKind;
     bridge::PresentTimeline timeline;
-    for (int64_t i = 0; i < 300; ++i) {
+    for (int64_t i = 0; i < 400; ++i) {
         timeline.Record({i * 1'000, TimelineKind::kMarker, 1, static_cast<uint32_t>(i)});
     }
-    timeline.Record({300'000, TimelineKind::kPresent, 2, 0});
-    const std::string text = timeline.Format(300'000);
-    EXPECT_NE(text.find("simE(299)"), std::string::npos);
-    EXPECT_EQ(text.find("simE(172)"), std::string::npos);  // older than the ring holds
-    EXPECT_NE(text.find("simE(173)"), std::string::npos);
+    timeline.Record({400'000, TimelineKind::kPresent, 2, 0});
+    const std::string text = timeline.Format(400'000);
+    EXPECT_NE(text.find("simE(399)"), std::string::npos);
+    EXPECT_EQ(text.find("simE(144)"), std::string::npos);  // older than the ring holds
+    EXPECT_NE(text.find("simE(145)"), std::string::npos);
 }
 
 }  // namespace

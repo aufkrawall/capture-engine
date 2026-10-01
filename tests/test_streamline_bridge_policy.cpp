@@ -413,6 +413,12 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     EXPECT_NE(present.find("g_timeline.ArmDump(nowUs);"), std::string::npos);
     EXPECT_NE(present.find("AfterDlssgPresent(flags, true);"), std::string::npos);
     EXPECT_NE(present.find("AfterDlssgPresent(flags, false);"), std::string::npos);
+    // Session 20261001_150639: sl.dlss_g's slHookPresent runs its own (hooked) slHookPresent1, so
+    // every present logged two DLSS-G returns. Only the outermost one counts.
+    EXPECT_NE(present.find("if ((flags & kDxgiPresentTest) != 0 || t_dlssgHookDepth != 0) {"), std::string::npos);
+    EXPECT_NE(present.find("++t_dlssgHookDepth;\n    const HRESULT result = original ? original(swapChain, syncInterval, "
+                           "flags, skip) : S_OK;\n    --t_dlssgHookDepth;"),
+              std::string::npos);
     EXPECT_NE(translate.find("if (id == kV1ReflexMarkerSleep) {\n            NoteTitleSleepReturned();"),
               std::string::npos);
     const size_t consumeAt = present.find("bool ConsumeAbsorbedPresent(bool& skip) {");

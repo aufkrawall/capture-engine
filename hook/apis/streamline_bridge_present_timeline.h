@@ -14,6 +14,12 @@
 // forwarded present would block in DLSS-G's hook) or from the title's own Reflex sleep schedule
 // is only visible in the order and timing of the title's calls. The timeline keeps the recent
 // calls and is printed once two presents after an absorbed one have returned from DLSS-G.
+//
+// Session 20261001_150639 answered the first half: DLSS-G's hook returns within 0.1 ms for every
+// present, absorbed or not, so absorbing shortens nothing. The title's real frame before the
+// re-present reached DLSS-G ~19 ms early (9 ms after the one before it), and the re-present sat
+// in that frame's regular slot. Why the frame came early lies before the window's old start, so
+// the window now begins kPresentsBefore presents ahead of the absorbed one.
 namespace ce::streamline_bridge {
 
 enum class TimelineKind : uint8_t {
@@ -36,8 +42,9 @@ struct TimelineEvent {
 // Not thread-safe; the caller serialises it.
 class PresentTimeline {
 public:
-    static constexpr size_t kCapacity = 128;
+    static constexpr size_t kCapacity = 256;
     static constexpr uint32_t kPresentsAfterAbsorb = 2;
+    static constexpr uint32_t kPresentsBefore = 3;
 
     void Record(const TimelineEvent& event) {
         events_[next_ % kCapacity] = event;
@@ -68,15 +75,18 @@ public:
 
     int64_t AbsorbedUs() const { return absorbedUs_; }
 
-    // Events from the present before the absorbed one onwards, in ms relative to the absorbed present.
+    // Events from the kPresentsBefore-th present ahead of the absorbed one onwards (or the oldest
+    // event the ring still holds), in ms relative to the absorbed present.
     std::string Format(int64_t absorbedUs) const {
         const size_t count = next_ < kCapacity ? next_ : kCapacity;
         const size_t first = next_ - count;
         size_t start = first;
-        for (size_t i = first; i < next_; ++i) {
-            const TimelineEvent& e = events_[i % kCapacity];
-            if (e.kind == TimelineKind::kPresent && e.us < absorbedUs) {
-                start = i;  // the last present before the absorbed one
+        uint32_t presentsBefore = 0;
+        for (size_t i = next_; i > first; --i) {
+            const TimelineEvent& e = events_[(i - 1) % kCapacity];
+            if (e.kind == TimelineKind::kPresent && e.us < absorbedUs && ++presentsBefore == kPresentsBefore) {
+                start = i - 1;
+                break;
             }
         }
         std::string out;
