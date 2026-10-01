@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-09-14 (Gothic II x86 exposed the pristine-code base-relocation invariant in the guarded system-DXGI bypass. Present-entry/draw-order rules remain as audited on 2026-08-14; object-wrapping proxy layering remains open.)
+Last cross-checked: 2026-10-01 (SetColorSpace1 entry ownership and its system-DXGI prolog verified against code and Microsoft symbols; hardware validation pending. Other runtime evidence retains its stated dates; object-wrapping proxy layering remains open.)
 
 Primary sources:
 - `hook/common/overlay_compat.h`
@@ -18,6 +18,8 @@ Primary sources:
 - `hook/wrappers/iat_hook.cpp`
 - `hook/wrappers/vtable_hook.cpp`
 - `hook/common/dxgi_shared.cpp`
+- `hook/common/dxgi_shared_hooks.cpp`
+- `hook/common/dxgi_color_space_hook_policy.h`
 - `hook/common/dxgi_shared_present_core.cpp`
 - `hook/common/dxgi_shared_original.cpp`
 - `hook/common/dxgi_shared_steam.cpp`
@@ -25,6 +27,7 @@ Primary sources:
 - `hook/apis/dx12_hook_process.cpp`
 - `hook/apis/dx12_hook_process_session_phase2.cpp`
 - `tests/test_dxgi_shared.cpp`
+- `tests/test_dxgi_color_space_hook_policy.cpp`
 - `tests/test_dxgi_shared_part8.cpp`
 - `tests/test_dxgi_shared_part10.cpp`
 - `tests/test_dxgi_shared_part11.cpp`
@@ -35,6 +38,17 @@ This page records the current repo knowledge for making our overlay and capture 
 
 ## Cross-API Hook-Chain Invariants (2026-08-11)
 
+- **SetColorSpace1 follows the loaded-overlay entry rule (2026-10-01).** Steam's Witcher 3 overlay log
+  reports `Unknown opcodes ... capture_hook_x64.dll,DXGISwapChain_SetColorSpace1`: it followed CE's entry
+  jump into the detour's `endbr64`; CE had not replaced swapchain slot 38. `InstallSetColorSpace1InlineHook`
+  samples the foreign jump and loaded `kOverlay` count before patching (`dxgi_color_space_hook_policy.h`),
+  publishes a deep body hook first, and leaves the entry intact on success. With an overlay loaded and
+  no visible jump, the minimum external patch span is 14; a visible E9/FF 25 measures itself. Cdb with
+  Microsoft symbols on system dxgi 10.0.26100.9549 verified `CDXGISwapChain::SetColorSpace1` at RVA 0x36280:
+  `mov [rsp+18h],rbx; push rbp; push rsi; push rdi; sub rsp,80h`, resume +0xF, stack undo 0x98, no RBP
+  restore. Body refusal keeps the entry fallback, as for factory creates; the fallback diagnostic is
+  capped at three reports. Both sites publish the same original and retain successful-only, exactly-once
+  color-space tracking. Hardware validation of Steam's hook/color handling remains pending.
 - Generic module identity tracking recognizes ReShade, Special K, OptiScaler, RTSS, Steam, Rockstar, EOS, Discord, Overwolf, and the established FFX/Streamline modules. Identification is refreshed off the Present thread from module paths, exports, and version metadata; the hot path reads only the published atomic registry.
 - **CE does not overwrite a foreign entry patch when it can hook below it** (CreateSwapChainForHwnd since 0.1.6874, Present since 0.1.6123). Prepending over a foreign `E9`/`FF 25` entry races the foreign hooker's own install: Witcher 3 + Steam `20261001_042335` (CE installing 0.5 s after process start) left Steam's saved original for exactly that relay stub null while CE had kept Steam's jump as its own original, and the first real create ran CE -> `OverlayHookD3D3+0x14bc4` -> 0x0. CE now samples the entry first, places the deep body hook, and prepends only as the fallback when no below-chain hook exists (`ShouldPrependCreateSwapChainForHwndEntry`); creates CE forwarded from its factory vtable detour get the entry detour's handling at the deep hook (`ShouldBelowChainHookRunEntrySemantics`). Where CE still prepends, it replaces only the five-byte foreign entry with an `E9` to a nearby CE relay and leaves `target+5` onward untouched. Since 0.1.6877 a *loaded* overlay owns the CSFH entry before it has patched it (`IsCreateSwapChainForHwndEntryForeignOwned`, same rule as Present): Steam patches CSFH from its CreateDXGIFactory1 handler and skips an entry that already jumps elsewhere, so CE's prepend over a still-clean entry hid Steam's overlay for the session (`20261001_044939`; `045157` worked because Steam won the race). The body hook then clears a 14-byte span (resume +16), past CSFH's `lea rbp,[rsp-60h]`; the deep-hook undo reloads RBP from its push slot (`TryAnalyzeDeepHookProlog`). **That alone did not bring Steam back** (`20261001_045954`, first launch): Steam's own log (`Steam\logs\gameoverlay_renderer.txt`) reads `Hooking vtable for factory` / `DXGIFactory2_CreateSwapChain points to another module, skipping hooks` on every CreateDXGIFactory* call - Steam decides from the factory vtable SLOTS (10 CreateSwapChain, 15 CreateSwapChainForHwnd) and hooks the dxgi functions they point to. Since 0.1.6878 a loaded overlay owns those slots too (`ShouldHookFactoryCreateSwapchainSlot`): CE intercepts CSFH with the body hook and legacy CreateSwapChain (which calls `CreateSwapChainForHwndImpl` directly, not the CSFH entry) with its own body hook (`dx12_hook_swapchain_create_below_chain.cpp`), runs the slot/entry handling there for every top-level create, and resolves the originator from the stack (`ResolveCreateSwapchainCallerBelowForeignChain`; never an overlay by inference). A slot whose body hook is refused keeps CE's detour as the fallback.
 - Inline and deep-hook byte writes are process-wide transactions: peer threads are suspended, their instruction pointers are proven outside the patch range, expected bytes are revalidated, and only then is the entry changed. Installation fails closed if the process cannot be quiesced. The old INT3 transition window is forbidden.
@@ -233,53 +247,10 @@ All four were implemented, shipped, and measured; each excluded a different over
 - Regression coverage: `tests/test_dx12_ecl_recursion_break_policy.cpp` (classification/selection policy plus source pins for the ECL break path, the per-vtable Signal forward, and eager native publication).
 
 ## RESOLVED: x86 DX12 overlay DEVICE_HUNG (dx12_test) — fixed 2026-06-09
-Single hand-off reference: `handoff-dx12-32bit-crash.md`. Chronology: `log/recent.md` (2026-06-08..09).
 
-### Current Fix
-- The 32-bit DX12 test crash was isolated to overlay text draws that sampled CE-owned font resources. Full DRED showed the solid draw completing and the first textured/font-resource draw hanging; every resource-sampling text path failed, while the all-solid diagnostic passed.
-- Corrected uncapped rendering reproduced the hang without a focus change. Alt+Tab/independent-flip transitions amplified the failure but were not required, so focus state is not the final root-cause boundary.
-- NVIDIA x86/WoW64 driver behavior is the leading explanation, not a proven vendor root cause: there is no standalone non-injected reproducer, vendor confirmation, or cross-vendor/driver matrix in the retained repository evidence.
-- The fix keeps native direct DX12 overlay rendering. It does not use pseudo overlay, DirectPresent overlay, D3D11On12, sleeps, or a focus-transition offscreen/copy fallback.
-- x86 DX12 now routes text through solid glyph spans: `FontAtlas` builds alpha spans, `RendererBackend::PreferSolidTextGeometry()` requests solid text, and `DX12Backend` enables it for x86 via `ShouldUseSolidDx12TextGeometryForProcess`.
-- `DX12Backend` skips font SRV upload when a frame has no textured commands. Healthy x86 no-FG logs show one solid command (`textured=0`) and `DX12 Overlay: x86 solid-span text path enabled`.
-- The v13 marker is `DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text + upload-slot per-frame fence`.
-
-### Validation
-- Build `0.1.3822`: `python build.py --skip-updates` succeeded.
-- Focused tests passed for glyph spans, solid-text renderer commands, x86 DX12 backend/text policy, upload/focus-loss policies, and binary log markers.
-- Runtime: six total 30 s runs of `installed/testapp/x86/dx12_test.exe` with x86 `testappconfig.ini` (`fullscreen=1`, 4K, `gpu_load=120`, `vsync=0`), overlay enabled, `observer_only=false`, DRED disabled for low perturbation. All stayed alive at 30 s, had zero not-responding samples, and no device removal.
-- Fresh-session log dirs: `installed/captureengine/logs/20260609_000749`, `20260609_000823`, `20260609_000858`.
-
-### Historical Symptom (Superseded)
-Injected **32-bit** `dx12_test.exe` in borderless-fullscreen (4K, vsync=1) freezes ~2–3.8 s on Alt+Tab in/out → GPU `DEVICE_HUNG (0x887A0006)`, a **real GPU TDR** (`DxgKrnl/TdrCaptureDumpStart/Finish` in the GPUView trace). **64-bit never freezes.** **Bare 32-bit (no CE) never freezes. app+RTSS never freezes.** So CE is the trigger.
-
-### Historical Alt+Tab stall manifestation (confirmed observation, not final root cause)
-A mid-stall watchdog dump showed the **application's own `ExecuteCommandLists`** blocked inside a **kernel GPU virtual-address map**: `dx12_test!Render → capture_hook!DetourExecuteCommandLists → D3D12Core!CCommandQueue::ExecuteCommandLists → nvwgf2um (NV UMD) → NDXGI::CDevice::MapGpuVirtualAddressCB → win32u!NtGdiDdDDIMapGpuVirtualAddress` (blocked in VidMm). The 2 s GPU TDR then fired. The dump was taken during the stall (`logs/20260606_211023`); `logs/20260608_162931` recorded a crash variant in the same NV UMD path. This confirms how one Alt+Tab failure manifested on that x86/NVIDIA system, but later steady-state DRED narrowed the actionable trigger to CE font-resource text draws and showed that focus change was not required.
-
-### Historical Alt+Tab trigger boundary: CE native backbuffer activity
-`observer_only=true` (CE injected, hooks active, but no overlay GPU resources or submissions) did not freeze under extreme Alt+Tab (`logs/20260607_003611`, `logs/20260608_163139`). This established that CE GPU work, rather than mere hook/device presence, was necessary for that transition-time manifestation. Historical v8/v9 DRED implicated both direct draw and a backbuffer copy, but that experiment did not identify the final draw-shape boundary; the later uncapped isolation did so by comparing resource-reading text with resource-free solid text.
-
-### ELIMINATED with evidence (do NOT re-pursue)
-- **GPU residency / eviction** — DISPROVEN. The in-process focus-analysis flight recorder (`[Overlay] dx12_focus_analysis=true`, `IDXGIAdapter3::QueryVideoMemoryInfo`) shows local Budget=11175 MB / Usage=81 MB **rock-flat through the 3.8 s stall** (usage 0.7 % of budget, never over-budget); CE's overlay adds only ~6 MB vs observer-only (75 MB). (`logs/20260608_162931` vs `163139`, `170854`.)
-- **Workload magnitude** — DISPROVEN. RTSS does MORE ECLs (52 vs app 38) + MORE fence Signals (64 vs 26) + a far larger footprint (~24 CUSTOM-heap resources + two 1,000,000-descriptor heaps) and never freezes.
-- **"iflip disabled by the debug layer"** — DISPROVEN. Enabling the D3D12 debug layer (`ce_dx12_debug_layer`=1) PREVENTED the historical Alt+Tab manifestation (13 edges, no stall, `logs/20260608_171158`) while the trace still showed `MMIOFlipMultiPlaneOverlay`. The layer therefore perturbed timing rather than disabling iflip; this did not establish the final underlying driver mechanism and was never a shippable fix.
-- **Per-frame submission count / DMA-pool, loader stalls, forced-on DRED** — earlier real contributors, all fixed/excluded; freeze persisted.
-
-### What RTSS actually does (observed empirically via the CE call-trace — see Tools)
-RTSS renders its overlay via **D3D11On12** (`trail: ...>d3d11on12.dll>d3d11.dll>RTSSHooks.dll`), submitting on the **app's** queue, and survives the transition because the **D3D11 runtime owns the wrapped-resource Acquire/Release/Flush**. This is exactly the technique forbidden by AGENTS.md ("use native DX12"). So the open problem is: make raw native D3D12 backbuffer-touch survive the 32-bit iflip transition the way the D3D11 runtime does.
-
-### Historical Fix-Space (Superseded By v13)
-D3D11On12, DComp/composited separate-surface overlay, hiding the overlay during the transition, pure timing/sleep bandaids, and dedicated non-FG backbuffer queues were all rejected or invalid. The accepted v13 fix keeps native direct DX12 overlay rendering and removes x86 DX12 font-resource text sampling by drawing text as solid glyph-span geometry.
-
-### Diagnostic tools (committed, gated, OFF by default)
-- **`ce_dx12_dred` flag file (empty = page-fault-only, low perturbation; `1`/`full` = auto-breadcrumbs) or env `CE_DX12_DRED=pf|1`** → DRED on device-removed: `DX12 DRED: pageFaultVA=.. [existing]/[recently-freed] ..` (+ breadcrumb op in full mode). **Page-fault-only is the right tool for the steady-state DEVICE_HUNG** (full auto-breadcrumbs perturb timing and can mask it). Code: `ce::dx12_dred` (`hook/common/dx12_dred.cpp`), `DredArmMode`/`DecideDredArmMode` (`hook/common/dx12_overlay_policy.h`).
-- `[Overlay] dx12_focus_analysis=true` (config) → in-process residency flight recorder + present-gap + CPU VA-space probe (`vaspace committedMB/freeMB/largestFreeBlockMB`, ~1/s and at the stall). **RESULT: VA is FLAT through the stall — the 32-bit VA/command-buffer-pool exhaustion hypothesis is RULED OUT.** Still useful as the residency/present-gap flight recorder. Code: `Dx12SampleVaSpace`/`DX12_UpdateFocusAnalysis`/`DX12_DumpFocusAnalysisRing` in `dx12_hook_focus_loss.cpp`.
-- `ce_dx12_trace` flag file (or env `CE_DX12_TRACE=1`) + `tools/tracing/dx12_call_trace.py` → caller-attributed D3D12 call trace (CreateCommandQueue/Resource/DescriptorHeap, ExecuteCommandLists, Signal, CreateSwapChain). Logs: `DX12 TRACE:`. NOTE: CE's own overlay ECL/Signal use the raw `realECL` pointer so they are NOT captured (a known blind spot); it captures the app's and co-resident modules' calls.
-- `tools/tracing/gpu_trace.py capture [--debug-layer N] [--open]` → automated GPUView kernel capture (wraps in-box `gpuview/log.cmd`; needs an ELEVATED shell; user triggers the Alt+Tab; auto-stops on the dump, merges to `Merged.etl`, coarse-parses).
-- `ce_dx12_debug_layer` file (`1`=layer, `2`=+GPU validation) → D3D12 debug layer (`DX12 DBGLAYER:` lines). NOTE: enabling it MASKS the freeze (timing).
-
-### Key repro log dirs
-`20260606_211023` (mid-stall dump = ground truth), `20260608_162931` (focus-analysis: flat residency + UMD AV crash), `20260608_163139` (observer-only: no freeze), `20260608_170854` (clean GPUView: TDR confirmed), `20260608_171158` (debug-layer: no freeze, iflip still on).
+The [dedicated hand-off](handoff-dx12-32bit-crash.md) retains the native DX12 solid-text fix,
+six historical runtime passes, rejected hypotheses, dump/trace evidence and diagnostic tools.
+Font-resource text sampling was the proven trigger; vendor attribution remains unconfirmed.
 
 ## Facts
 - Present coverage is per method (audit 4): `PresentMethodViews`, `ShouldRetryPresentInlineHookInstall()`; a lone

@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-01 - Leave SetColorSpace1's entry to a loaded overlay
+
+- Steam's Witcher 3 overlay log could not decode CE's `endbr64` detour after following CE's
+  SetColorSpace1 entry jump. Slot 38 itself stayed untouched (correcting the earlier follow-up below).
+- `dxgi_color_space_hook_policy.h`: a visible foreign jump or one loaded overlay owns the entry;
+  `InstallSetColorSpace1InlineHook` publishes the body hook first and prepends only after body refusal.
+  A clean entry with a loaded overlay reserves the widest 14-byte span. The existing atomic trampoline,
+  successful-only color-space recording and wrapper exactly-once guard serve both hook sites.
+- Cdb + Microsoft symbols, system dxgi 10.0.26100.9549: `CDXGISwapChain::SetColorSpace1` RVA 0x36280,
+  shadow save + three pushes + `sub rsp,80h`, resume +0xF, stack undo 0x98. Existing prolog analysis accepts it.
+- Six focused policy/source regressions include the actual prolog and body-refusal fallback; the two
+  installer regressions failed before the change and passed after it. The requested full incremental
+  build/unit gate passed as 0.1.6879 (x64/x86 hooks and binary checks). No games/test apps launched;
+  Steam's runtime color handling remains for user hardware validation.
+
 ### 2026-10-01 - Witcher 3 + Steam: startup crash in Steam's CreateSwapChainForHwnd handler
 
 - Session `20261001_042335`: AV executing 0x0 from `gameoverlayrenderer64!OverlayHookD3D3+0x14bc4` (`call r10`, r10=0),
@@ -23,8 +38,8 @@
   Steam's `gameoverlay_renderer.previous.txt`: every factory hook logged `points to another module, skipping hooks` -
   Steam reads factory vtable slots 10/15, which held CE's detours. Launch 2 worked: Steam hooked before CE patched the
   slots. 0.1.6878: slots left to a loaded overlay, CreateSwapChain gets its own body hook (resume +18), stack-derived
-  originator. Steam also logged `Unknown opcodes ... capture_hook_x64.dll,DXGISwapChain_SetColorSpace1`: CE holds the
-  swapchain SetColorSpace1 slot, so Steam skips that hook - open follow-up.
+  originator. Steam also logged `Unknown opcodes ... capture_hook_x64.dll,DXGISwapChain_SetColorSpace1`: it followed
+  CE's function-entry jump (slot 38 stayed untouched). Body-hook correction and validation boundary are above.
 
 ### 2026-10-01 - Witcher 3 `streamline_upgrade`: SR aliased in motion, DLSS-G generated nothing
 

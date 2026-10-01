@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "dxgi_color_space_hook_policy.h"
 #include "resize_reconcile_hook_policy.h"
 
 namespace DXGIShared {
@@ -223,7 +224,37 @@ bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain, const char* sou
         return false;
     }
 
+    // A loaded overlay owns the entry even while it still reads clean. Steam follows slot 38's
+    // entry jump and cannot decode CE's detour prolog, so take the body view before any prepend.
+    const bool foreignEntryJumpVisible = HasExternalEntryHook(colorSpaceAddress);
+    const size_t loadedOverlayCount =
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const bool entryForeignOwned =
+        ce::dxgi_color_space_hook::IsSetColorSpace1EntryForeignOwned(foreignEntryJumpVisible, loadedOverlayCount);
+
     void* colorSpaceTrampoline = nullptr;
+    if (entryForeignOwned) {
+        colorSpaceTrampoline = InlineHook::InstallDeepHookPublished(
+            colorSpaceAddress, reinterpret_cast<void*>(DetourSetColorSpace1), PublishSetColorSpace1Trampoline, nullptr,
+            ce::dxgi_color_space_hook::SetColorSpace1BelowChainPatchSpan(foreignEntryJumpVisible, loadedOverlayCount));
+    }
+    if (!ce::dxgi_color_space_hook::ShouldPrependSetColorSpace1Entry(entryForeignOwned, colorSpaceTrampoline != nullptr)) {
+        HookLogImportant(
+            "DXGI: SetColorSpace1 body tracking installed source=%s target=%p trampoline=%p loadedOverlays=%zu "
+            "foreignJumpVisible=%d; entry left to the foreign overlay chain",
+            source ? source : "unknown", colorSpaceAddress, colorSpaceTrampoline, loadedOverlayCount,
+            foreignEntryJumpVisible ? 1 : 0);
+        return true;
+    }
+    if (entryForeignOwned) {
+        static std::atomic<int> s_bodyFallbackLogCount{0};
+        if (s_bodyFallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant(
+                "DXGI: SetColorSpace1 body tracking refused source=%s target=%p loadedOverlays=%zu "
+                "foreignJumpVisible=%d; falling back to the entry patch",
+                source ? source : "unknown", colorSpaceAddress, loadedOverlayCount, foreignEntryJumpVisible ? 1 : 0);
+        }
+    }
     if (!InlineHook::InstallPublished(colorSpaceAddress, reinterpret_cast<void*>(DetourSetColorSpace1),
                                       &colorSpaceTrampoline, PublishSetColorSpace1Trampoline, nullptr)) {
         if (dxgi_shared_oSetColorSpace1Trampoline.load(std::memory_order_acquire)) {
