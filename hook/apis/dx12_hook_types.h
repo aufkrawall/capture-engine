@@ -617,6 +617,13 @@ extern void* dx12_hook_s_realCreateSCForHwndAddr;
 extern PFN_CreateSwapChainForHwnd dx12_hook_s_deepHookTrampoline;
 // True when CE patched the CreateSwapChainForHwnd entry itself (no foreign patch, or no below-chain hook).
 extern std::atomic<bool> dx12_hook_s_createSCForHwndEntryPrependInstalled;
+// Which factory vtable slots CE redirected; a slot left to a loaded overlay is intercepted by a body hook.
+extern std::atomic<bool> dx12_hook_s_createSCSlotHooked;
+extern std::atomic<bool> dx12_hook_s_createSCForHwndSlotHooked;
+extern std::atomic<bool> dx12_hook_s_createSCForHwndSlotLeftToOverlay;
+// Body hook on CreateSwapChain, placed only when its slot is left to a loaded overlay.
+extern void* dx12_hook_s_realCreateSCAddr;
+extern PFN_CreateSwapChain dx12_hook_s_deepCreateSCTrampoline;
 extern std::atomic<int64_t> dx12_hook_g_OverlayCooldownUntilQpc;
 inline constexpr int64_t dx12_hook_kTransitionCooldownMs = 1500;  // 1.5 s;
 extern std::mutex dx12_hook_s_hwndSwapchainMutex;

@@ -160,6 +160,100 @@ TEST(Dx12FactorySlotPolicyTest, InstallerPassesTheOwnersSpanToTheBelowChainHook)
     EXPECT_LT(span, decide);
 }
 
+// 20261001_045954 (0.1.6877): with the CSFH entry already left to Steam, Steam's own log still read
+// `DXGIFactory2_CreateSwapChain points to another module, skipping hooks` for every factory - it
+// decides from the vtable SLOTS, which held CE's detours. A loaded overlay owns the slots too.
+TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheFactorySlotsWhileABodyHookCoversTheCreate) {
+    using ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot;
+    EXPECT_FALSE(ShouldHookFactoryCreateSwapchainSlot(/*loadedOverlays=*/1, /*belowChain=*/true));
+    // No body hook: the slot detour is CE's only create view, so it stays the fallback.
+    EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(1, /*belowChain=*/false));
+    // No overlay: unchanged, CE takes the slot.
+    EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(0, false));
+    EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(0, true));
+}
+
+TEST(Dx12FactorySlotPolicyTest, BodyHookRunsEntryHandlingForEveryTopLevelCreateWhenTheSlotIsTheOverlays) {
+    using ce::dx12_factory_slot::ShouldBelowChainHookRunEntrySemantics;
+    EXPECT_TRUE(ShouldBelowChainHookRunEntrySemantics(/*forwarded=*/false, false, false, /*slotLeft=*/true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, /*accessDeniedRetry=*/true, false, true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, /*entryPrepend=*/true, true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, false, /*slotLeft=*/false));
+}
+
+TEST(Dx12FactorySlotPolicyTest, BelowChainOriginatorSkipsCeTheOverlayChainDxgiAndRelayPages) {
+    using ce::dx12_factory_slot::CreateSwapchainStackFrameKind;
+    using ce::dx12_factory_slot::SelectCreateSwapchainOriginatorFrame;
+    using Kind = CreateSwapchainStackFrameKind;
+    // CE wrapper -> Steam handler -> Steam relay page -> sl.dlss_g (the real caller) -> game
+    const Kind steamForwarded[] = {Kind::kCaptureEngine, Kind::kThirdPartyOverlay, Kind::kNoImage, Kind::kOther,
+                                   Kind::kOther};
+    EXPECT_EQ(SelectCreateSwapchainOriginatorFrame(steamForwarded, 5), 3);
+    const Kind viaDxgi[] = {Kind::kCaptureEngine, Kind::kSystemDxgi, Kind::kOther};
+    EXPECT_EQ(SelectCreateSwapchainOriginatorFrame(viaDxgi, 3), 2);
+    const Kind nothing[] = {Kind::kCaptureEngine, Kind::kThirdPartyOverlay};
+    EXPECT_EQ(SelectCreateSwapchainOriginatorFrame(nothing, 2), -1);
+    EXPECT_EQ(SelectCreateSwapchainOriginatorFrame(nullptr, 3), -1);
+}
+
+TEST(Dx12FactorySlotPolicyTest, SlotsAreDecidedAfterTheBodyHooksAndLeftSlotsAreNeverRestored) {
+    const std::string install = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    ASSERT_FALSE(install.empty());
+    const size_t body = install.find("void InstallGlobalVTableHooks() {");
+    ASSERT_NE(body, std::string::npos);
+    const size_t deepHwnd = install.find("(void*)DeepHookCreateSwapChainForHwnd,", body);
+    const size_t deepCreate = install.find("InstallCreateSwapChainBelowChainHook(vtable[10]");
+    const size_t decide10 = install.find("ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, createSCBelowChain");
+    const size_t decide15 = install.find("ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, belowChainHook");
+    const size_t patch10 = install.find("(LPVOID)DetourCreateSwapChainGlobal,", body);
+    const size_t patch15 = install.find("(LPVOID)DetourCreateSwapChainForHwndGlobal,", body);
+    ASSERT_NE(deepHwnd, std::string::npos);
+    ASSERT_NE(deepCreate, std::string::npos);
+    ASSERT_NE(decide10, std::string::npos);
+    ASSERT_NE(decide15, std::string::npos);
+    ASSERT_NE(patch10, std::string::npos);
+    ASSERT_NE(patch15, std::string::npos);
+    EXPECT_LT(deepHwnd, decide15);
+    EXPECT_LT(deepCreate, decide10);
+    EXPECT_LT(decide10, patch10);
+    EXPECT_LT(decide15, patch15);
+    // A version-specific vtable (IDXGIFactory4/6) gets the same per-slot decision.
+    EXPECT_NE(install.find("if (hookCreateSCForHwndSlot) {"), std::string::npos);
+
+    const std::string removal = ReadSource("hook/apis/dx12_hook_swapchain.cpp");
+    EXPECT_NE(removal.find("dx12_hook_s_createSCSlotHooked.exchange(false)"), std::string::npos);
+    EXPECT_NE(removal.find("dx12_hook_s_createSCForHwndSlotHooked.exchange(false)"), std::string::npos);
+    EXPECT_NE(removal.find("RemoveCreateSwapChainBelowChainHook()"), std::string::npos);
+}
+
+TEST(Dx12FactorySlotPolicyTest, BelowChainCreatesResolveTheOriginatorFromTheStack) {
+    const std::string tracking = ReadSource("hook/apis/dx12_hook_swapchain_tracking.cpp");
+    const size_t decide = tracking.find("ShouldBelowChainHookRunEntrySemantics(");
+    const size_t scope = tracking.find("ScopedBelowForeignChainSwapchainCreate belowChain;", decide);
+    const size_t run = tracking.find("RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_deepHookTrampoline", decide);
+    ASSERT_NE(decide, std::string::npos);
+    ASSERT_NE(scope, std::string::npos);
+    ASSERT_NE(run, std::string::npos);
+    EXPECT_LT(scope, run);
+    EXPECT_NE(tracking.find("slotLeftToOverlay)", decide), std::string::npos);
+
+    const std::string belowChain = ReadSource("hook/apis/dx12_hook_swapchain_create_below_chain.cpp");
+    const size_t resolver =
+        belowChain.find("CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {");
+    ASSERT_NE(resolver, std::string::npos);
+    EXPECT_NE(belowChain.find("DX12_IsSwapchainCreateBelowForeignChain()", resolver), std::string::npos);
+    // The legacy CreateSwapChain body hook runs the slot detour's handling with a stack-derived caller.
+    const size_t deep = belowChain.find("HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChain(");
+    ASSERT_NE(deep, std::string::npos);
+    const size_t caller = belowChain.find("ResolveCreateSwapchainCallerBelowForeignChain();", deep);
+    const size_t semantics = belowChain.find("RunCreateSwapChainGlobalSemantics(original, caller", deep);
+    ASSERT_NE(caller, std::string::npos);
+    ASSERT_NE(semantics, std::string::npos);
+    EXPECT_LT(caller, semantics);
+    // Never an overlay by inference below the chain.
+    EXPECT_NE(belowChain.find("context.callerFromThirdPartyOverlay = false;"), std::string::npos);
+}
+
 TEST(Dx12FactorySlotPolicyTest, FactoryVtableDiscoveryNeverEntersAnOverlayFactoryHandler) {
     // 20261001_044010: CE's discovery factory ran Steam's CreateDXGIFactory1 handler on CE's hook
     // thread while the game initialized; Steam hooked CreateSwapChainForHwnd twice and the game's

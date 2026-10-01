@@ -19,6 +19,12 @@
   CE installed; CSFH read clean (`byte=0x40`), CE prepended, and Steam skipped the already-jumping entry when the game's
   factory creation ran its handler. `045157` (same build) worked: Steam's `E9 -> ...02CA` was already there. 0.1.6877:
   a loaded overlay owns the CSFH entry; deep hook at +16 with an RBP-restoring undo. Hardware run pending.
+- `20261001_045954` (0.1.6877, two launches): entry left clean as intended, Steam overlay still missing on launch 1.
+  Steam's `gameoverlay_renderer.previous.txt`: every factory hook logged `points to another module, skipping hooks` -
+  Steam reads factory vtable slots 10/15, which held CE's detours. Launch 2 worked: Steam hooked before CE patched the
+  slots. 0.1.6878: slots left to a loaded overlay, CreateSwapChain gets its own body hook (resume +18), stack-derived
+  originator. Steam also logged `Unknown opcodes ... capture_hook_x64.dll,DXGISwapChain_SetColorSpace1`: CE holds the
+  swapchain SetColorSpace1 slot, so Steam skips that hook - open follow-up.
 
 ### 2026-10-01 - Witcher 3 `streamline_upgrade`: SR aliased in motion, DLSS-G generated nothing
 

@@ -648,6 +648,28 @@ HRESULT RunCreateSwapChainForHwndEntrySemantics(PFN_CreateSwapChainForHwnd origi
                                                 const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
                                                 IDXGISwapChain1** ppSC);
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain);
+// The CreateSwapChain slot detour's handling, parameterized by what it forwards to and who called.
+HRESULT RunCreateSwapChainGlobalSemantics(PFN_CreateSwapChain original,
+                                          const CreateSwapchainForHwndCallerContext& caller,
+                                          IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                          IDXGISwapChain** ppSwapChain);
+// Below-chain create interception (dx12_hook_swapchain_create_below_chain.cpp): used when the factory slots
+// belong to a loaded overlay.
+bool InstallCreateSwapChainBelowChainHook(void* createSwapChainFn, size_t loadedOverlayCount);
+bool RemoveCreateSwapChainBelowChainHook();
+HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                                  IDXGISwapChain** ppSwapChain);
+// Who originated a create that reached CE below a foreign chain: the first stack frame that is neither CE,
+// a third-party overlay, the system dxgi image nor code outside any image. Never an overlay by inference.
+CreateSwapchainForHwndCallerContext ResolveCreateSwapchainCallerBelowForeignChain();
+bool DX12_IsSwapchainCreateBelowForeignChain();
+class ScopedBelowForeignChainSwapchainCreate {
+public:
+    ScopedBelowForeignChainSwapchainCreate();
+    ~ScopedBelowForeignChainSwapchainCreate();
+    ScopedBelowForeignChainSwapchainCreate(const ScopedBelowForeignChainSwapchainCreate&) = delete;
+    ScopedBelowForeignChainSwapchainCreate& operator=(const ScopedBelowForeignChainSwapchainCreate&) = delete;
+};
 HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC);
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly);
 bool EnsureOffscreenRT(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format);

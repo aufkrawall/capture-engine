@@ -449,6 +449,11 @@ void* dx12_hook_s_realCreateSCForHwndAddr = nullptr;
 
 PFN_CreateSwapChainForHwnd dx12_hook_s_deepHookTrampoline = nullptr;
 std::atomic<bool> dx12_hook_s_createSCForHwndEntryPrependInstalled{false};
+std::atomic<bool> dx12_hook_s_createSCSlotHooked{false};
+std::atomic<bool> dx12_hook_s_createSCForHwndSlotHooked{false};
+std::atomic<bool> dx12_hook_s_createSCForHwndSlotLeftToOverlay{false};
+void* dx12_hook_s_realCreateSCAddr = nullptr;
+PFN_CreateSwapChain dx12_hook_s_deepCreateSCTrampoline = nullptr;
 
 std::atomic<int64_t> dx12_hook_g_OverlayCooldownUntilQpc{0};
 

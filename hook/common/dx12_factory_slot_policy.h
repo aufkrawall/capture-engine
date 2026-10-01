@@ -66,6 +66,7 @@ inline bool IsCreateSwapChainForHwndEntryForeignOwned(bool foreignEntryJumpVisib
 // Entry span the below-chain body hook must clear. A visible patch measures itself (0 = let the
 // deep hook read it); an owner that has not patched yet gets the widest form CE recognizes, since
 // a body hook deeper than the eventual foreign patch is always safe and one inside it never is.
+// The same rule serves the CreateSwapChain body hook.
 inline constexpr int kWidestForeignEntryPatchSize = 14;
 inline int CreateSwapChainForHwndBelowChainPatchSpan(bool foreignEntryJumpVisible, size_t loadedOverlayModuleCount) {
     return (!foreignEntryJumpVisible && loadedOverlayModuleCount >= 1) ? kWidestForeignEntryPatchSize : 0;
@@ -74,11 +75,48 @@ inline int CreateSwapChainForHwndBelowChainPatchSpan(bool foreignEntryJumpVisibl
 // With no CE entry patch, a create CE forwarded from its factory vtable detour reaches CE again
 // only at the below-chain hook. That call must get the entry detour's full handling (post-FSR
 // Streamline handoff, descriptor overrides, side-effect ownership), exactly as it did when CE
-// owned the entry. A nested access-denied retry stays a plain pass-through, and a call that did
-// not come through CE's vtable keeps the below-chain hook's own handling.
+// owned the entry. When CE left the factory slot to the overlay there is no vtable detour, so
+// every top-level create reaching the below-chain hook gets that handling. A nested access-denied
+// retry stays a plain pass-through, and otherwise a call that did not come through CE's vtable
+// keeps the below-chain hook's own handling.
 inline bool ShouldBelowChainHookRunEntrySemantics(bool forwardedFromVtableDetour, bool accessDeniedRetryInFlight,
-                                                  bool entryPrependInstalled) {
-    return forwardedFromVtableDetour && !accessDeniedRetryInFlight && !entryPrependInstalled;
+                                                  bool entryPrependInstalled, bool factorySlotLeftToOverlay = false) {
+    return (forwardedFromVtableDetour || factorySlotLeftToOverlay) && !accessDeniedRetryInFlight &&
+           !entryPrependInstalled;
+}
+
+// Whether CE may redirect a factory vtable slot (CreateSwapChain [10], CreateSwapChainForHwnd [15]).
+//
+// Steam does not decide what to hook from the function entry: on every CreateDXGIFactory* call it
+// reads the new factory's vtable and hooks the function each slot points to, but logs
+// `DXGIFactory2_CreateSwapChain points to another module, skipping hooks` when a slot leads out of
+// dxgi. Session 20261001_045954 (Witcher 3, 0.1.6877, two launches): with CE's slot detours already
+// in place, all ~25 of Steam's factory hooks were skipped and its overlay never drew; on the
+// second launch Steam's first factory hook ran before CE's install and the overlay worked. So with
+// an overlay loaded the slot belongs to it, like the entry, and CE intercepts with a body hook.
+// Only a slot whose body hook could not be placed falls back to the vtable detour, because CE then
+// has no other create view.
+inline bool ShouldHookFactoryCreateSwapchainSlot(size_t loadedOverlayModuleCount, bool belowChainHookInstalled) {
+    return loadedOverlayModuleCount == 0 || !belowChainHookInstalled;
+}
+
+// Who originated a create that reached a below-chain hook. Below a foreign chain the immediate
+// caller is always the last overlay in it (the same invariant as for Present), so the originator
+// is the first stack frame that is neither CE, a third-party overlay, the system dxgi image, nor
+// code outside any image (an overlay's relay page).
+enum class CreateSwapchainStackFrameKind { kCaptureEngine, kThirdPartyOverlay, kSystemDxgi, kNoImage, kOther };
+
+// Returns the index of the originating frame, or -1 when every frame is foreign or CE's own.
+inline int SelectCreateSwapchainOriginatorFrame(const CreateSwapchainStackFrameKind* kinds, int count) {
+    if (!kinds) {
+        return -1;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (kinds[i] == CreateSwapchainStackFrameKind::kOther) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 }  // namespace ce::dx12_factory_slot

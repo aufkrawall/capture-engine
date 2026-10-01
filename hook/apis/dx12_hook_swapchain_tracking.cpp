@@ -460,16 +460,20 @@ if (s_forwardingAccessDeniedCreateThroughEntryChain) {
 }
 
 // CE left a foreign entry patch intact: a create CE forwarded from its factory vtable detour gets
-// the entry detour's handling here, once, below the foreign chain.
+// the entry detour's handling here, once, below the foreign chain. With the factory slot left to a
+// loaded overlay there is no detour above, so every top-level create gets it here.
+const bool forwardedFromSlotDetour = dx12_hook_s_forwardedCreateSwapchainForHwndInlineDepth > 0;
+const bool slotLeftToOverlay = dx12_hook_s_createSCForHwndSlotLeftToOverlay.load(std::memory_order_acquire);
 if (ce::dx12_factory_slot::ShouldBelowChainHookRunEntrySemantics(
-        dx12_hook_s_forwardedCreateSwapchainForHwndInlineDepth > 0, s_forwardingAccessDeniedCreateThroughEntryChain,
-        dx12_hook_s_createSCForHwndEntryPrependInstalled.load(std::memory_order_acquire))) {
+        forwardedFromSlotDetour, s_forwardingAccessDeniedCreateThroughEntryChain,
+        dx12_hook_s_createSCForHwndEntryPrependInstalled.load(std::memory_order_acquire), slotLeftToOverlay)) {
     static std::atomic<int> s_belowChainEntrySemanticsLogCount{0};
     if (s_belowChainEntrySemanticsLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
-        HookLogImportant("DeepHook: forwarded create runs the entry detour's handling below the foreign chain "
+        HookLogImportant("DeepHook: %s create runs the entry detour's handling below the foreign chain "
                          "(hwnd=%p factory=%p)",
-                         hWnd, pThis);
+                         forwardedFromSlotDetour ? "forwarded" : "slot-left-to-overlay", hWnd, pThis);
     }
+    ScopedBelowForeignChainSwapchainCreate belowChain;
     return RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_deepHookTrampoline, pThis, pDevice, hWnd, pDesc, pFDesc,
                                                    pOut, ppSC);
 }

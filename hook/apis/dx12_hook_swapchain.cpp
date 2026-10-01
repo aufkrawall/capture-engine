@@ -107,6 +107,8 @@ void RemoveGlobalVTableHooks() {
         }
     }
 
+    RemoveCreateSwapChainBelowChainHook();
+
     // RemoveAll owns the inline patch transaction. Keep its trampoline pointer
     // resident because a foreign follower can retain the CE detour as its next
     // chain link even after the export entry changes.
@@ -152,13 +154,14 @@ void RemoveGlobalVTableHooks() {
 
     void** vtable = *(void***)pFactory;
 
-    if (dx12_hook_oCreateSwapChainGlobal) {
+    // A slot left to a loaded overlay was never CE's to restore.
+    if (dx12_hook_oCreateSwapChainGlobal && dx12_hook_s_createSCSlotHooked.exchange(false)) {
         VTableHook::Remove(reinterpret_cast<void*>(&vtable[10]), (void*)dx12_hook_oCreateSwapChainGlobal);
         HookLog("DX12: Removed CreateSwapChain vtable hook");
         dx12_hook_oCreateSwapChainGlobal = nullptr;
     }
 
-    if (dx12_hook_oCreateSwapChainForHwndGlobal) {
+    if (dx12_hook_oCreateSwapChainForHwndGlobal && dx12_hook_s_createSCForHwndSlotHooked.exchange(false)) {
         VTableHook::Remove(reinterpret_cast<void*>(&vtable[15]), (void*)dx12_hook_oCreateSwapChainForHwndGlobal);
         HookLog("DX12: Removed CreateSwapChainForHwnd vtable hook");
         dx12_hook_oCreateSwapChainForHwndGlobal = nullptr;

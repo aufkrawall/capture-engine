@@ -24,54 +24,6 @@ return ce::overlay_compat::IsThirdPartyOverlayModulePath(targetBuffer);
 }
 
 
-CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvidence(const void* callerAddress, bool callerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath, const char* ffxModulePath) {
-CreateSwapchainQueueCaptureEvidence evidence = {};
-evidence.callerAddress = callerAddress;
-evidence.callerFromThirdPartyOverlay = callerFromThirdPartyOverlay;
-evidence.authoritativeFFXRuntimeCreator =
-    ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
-                                                                                ffxFrameGenerationInStack);
-evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
-evidence.callerFromStreamlineFGModule = callerFromStreamlineFGModule;
-evidence.streamlineFrameGenerationInStack = streamlineFrameGenerationInStack;
-if (callerModulePath && *callerModulePath) {
-    strncpy_s(evidence.callerModulePath, sizeof(evidence.callerModulePath), callerModulePath, _TRUNCATE);
-}
-const char* authoritativeFFXPath = (ffxModulePath && *ffxModulePath)
-                                       ? ffxModulePath
-                                       : (callerFromFFXFGModule && callerModulePath ? callerModulePath : nullptr);
-if (authoritativeFFXPath && *authoritativeFFXPath) {
-    strncpy_s(evidence.ffxModulePath, sizeof(evidence.ffxModulePath), authoritativeFFXPath, _TRUNCATE);
-    evidence.officialAMDFFXRuntimeCreator = ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(authoritativeFFXPath);
-}
-return evidence;
-}
-
-
-CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {
-CreateSwapchainForHwndCallerContext context = {};
-
-char immediateCallerModulePath[MAX_PATH] = {};
-const void* immediateCallerAddress = CE_RETURN_ADDRESS();
-TryGetModulePathFromCodeAddress(immediateCallerAddress, immediateCallerModulePath,
-                                sizeof(immediateCallerModulePath));
-
-const char* effectiveCallerModulePath = ce::overlay_compat::GetEffectiveCreateSwapchainCallerModulePath(
-    dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
-if (effectiveCallerModulePath && *effectiveCallerModulePath) {
-    strncpy_s(context.callerModulePath, sizeof(context.callerModulePath), effectiveCallerModulePath, _TRUNCATE);
-}
-
-context.callerAddress = dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath[0]
-                            ? dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerAddress
-                            : immediateCallerAddress;
-context.callerFromFFXFGModule = ce::overlay_compat::IsFFXFrameGenerationModulePath(context.callerModulePath);
-context.callerFromThirdPartyOverlay = ce::overlay_compat::IsEffectiveCreateSwapchainCallerFromThirdPartyOverlay(
-    dx12_hook_s_forwardedCreateSwapchainForHwndCallerContext.callerModulePath, immediateCallerModulePath);
-return context;
-}
-
-
 bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(const char* context, bool rawCallerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath) {
 const bool authoritativeFGRuntimeSwapchainCreator =
     ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFrameGenerationRuntime(
@@ -416,11 +368,26 @@ if (DX12_IsInternalDXGISwapchainProbe()) {
 HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)", pThis, pDevice,
         pDesc ? (int)pDesc->SwapEffect : -1);
 
-const void* callerAddress = CE_RETURN_ADDRESS();
-char callerModulePath[MAX_PATH] = {};
-const bool rawCallerFromThirdPartyOverlay =
-    callerAddress && TryGetModulePathFromCodeAddress(callerAddress, callerModulePath, sizeof(callerModulePath)) &&
-    ce::overlay_compat::IsThirdPartyOverlayModulePath(callerModulePath);
+CreateSwapchainForHwndCallerContext caller = {};
+caller.callerAddress = CE_RETURN_ADDRESS();
+caller.callerFromThirdPartyOverlay =
+    caller.callerAddress &&
+    TryGetModulePathFromCodeAddress(caller.callerAddress, caller.callerModulePath, sizeof(caller.callerModulePath)) &&
+    ce::overlay_compat::IsThirdPartyOverlayModulePath(caller.callerModulePath);
+return RunCreateSwapChainGlobalSemantics(dx12_hook_oCreateSwapChainGlobal, caller, pThis, pDevice, pDesc,
+                                         ppSwapChain);
+}
+
+
+// The slot detour's handling; the CreateSwapChain body hook below a loaded overlay's chain runs it too
+// (DeepHookCreateSwapChain), with the originator recovered from the stack.
+HRESULT RunCreateSwapChainGlobalSemantics(PFN_CreateSwapChain original,
+                                          const CreateSwapchainForHwndCallerContext& caller,
+                                          IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                          IDXGISwapChain** ppSwapChain) {
+const void* callerAddress = caller.callerAddress;
+const char* callerModulePath = caller.callerModulePath;
+const bool rawCallerFromThirdPartyOverlay = caller.callerFromThirdPartyOverlay;
 const bool callerFromFFXFGModule =
     callerAddress && ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
 char ffxStackModulePath[MAX_PATH] = {};
@@ -452,7 +419,7 @@ if (pDesc && applyDescriptorOverrides) {
 }
 
 // Call original with (possibly) modified descriptor
-HRESULT hr = dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDescToUse, ppSwapChain);
+HRESULT hr = original(pThis, pDevice, pDescToUse, ppSwapChain);
 
 if (FAILED(hr)) {
     static std::atomic<int> s_createFailureLogCount{0};

@@ -113,6 +113,33 @@ PFN_CreateDXGIFactory1Export GenuineCreateDXGIFactory1ForDiscovery(PFN_CreateDXG
     return reinterpret_cast<PFN_CreateDXGIFactory1Export>(bypass);
 }
 
+// IDXGIFactory4/6 normally share the IDXGIFactory2 vtable; a distinct one gets the same per-slot decision.
+template <typename FactoryT>
+void HookFactoryCreateSwapchainSlotsOfVersion(PFN_CreateDXGIFactory1Export createFactory, void** baseVtable,
+                                              const char* name, bool hookCreateSCSlot, bool hookCreateSCForHwndSlot) {
+    FactoryT* factory = nullptr;
+    if (FAILED(createFactory(IID_PPV_ARGS(&factory))) || !factory) {
+        HookLog("DX12: %s not available", name);
+        return;
+    }
+    void** versionVtable = *(void***)factory;
+    HookLog("DX12: %s available, vtable=%p (IDXGIFactory2=%p, same=%d)", name, versionVtable, baseVtable,
+            (int)(versionVtable == baseVtable));
+    if (versionVtable != baseVtable) {  // Different vtable pointer
+        if (hookCreateSCSlot) {
+            VTableHook::Create(reinterpret_cast<void*>(&versionVtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                               nullptr);
+        }
+        if (hookCreateSCForHwndSlot) {
+            VTableHook::Create(reinterpret_cast<void*>(&versionVtable[15]),
+                               (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+        }
+        HookLog("DX12: Hooked %s vtable[10]=%d and vtable[15]=%d", name, hookCreateSCSlot ? 1 : 0,
+                hookCreateSCForHwndSlot ? 1 : 0);
+    }
+    factory->Release();
+}
+
 }  // namespace
 
 
@@ -166,60 +193,10 @@ dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
 // (see dx12_factory_slot_policy.h); a proxied factory is a different class.
 dx12_hook_s_savedCreateSwapChainForHwndVtable = vtable;
 
-// Hook CreateSwapChain (vtable[10] for IDXGIFactory)
-// Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
-    HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
-}
-
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success) {
-    HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
-}
-
-pFactory->Release();
-
-// Also hook IDXGIFactory4 and IDXGIFactory6 vtables to catch games that
-// QueryInterface for higher factory versions (different vtable pointers).
-// CreateSwapChainForHwnd is at the same slot (15) in all factory versions
-// because IDXGIFactory4 inherits from IDXGIFactory3 → IDXGIFactory2.
-IDXGIFactory4* pFactory4 = nullptr;
-if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory4)))) {
-    void** vtable4 = *(void***)pFactory4;
-    HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable4, vtable,
-            (int)(vtable4 == vtable));
-    if (vtable4 != vtable) {  // Different vtable pointer
-        VTableHook::Create(reinterpret_cast<void*>(&vtable4[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
-        VTableHook::Create(reinterpret_cast<void*>(&vtable4[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
-        HookLog("DX12: Hooked IDXGIFactory4 vtable[10] and vtable[15]");
-    }
-    pFactory4->Release();
-} else {
-    HookLog("DX12: IDXGIFactory4 not available");
-}
-
-IDXGIFactory6* pFactory6 = nullptr;
-if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
-    void** vtable6 = *(void***)pFactory6;
-    HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable6, vtable,
-            (int)(vtable6 == vtable));
-    if (vtable6 != vtable) {  // Different vtable pointer
-        VTableHook::Create(reinterpret_cast<void*>(&vtable6[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
-        VTableHook::Create(reinterpret_cast<void*>(&vtable6[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
-        HookLog("DX12: Hooked IDXGIFactory6 vtable[10] and vtable[15]");
-    }
-    pFactory6->Release();
-} else {
-    HookLog("DX12: IDXGIFactory6 not available");
-}
-
-// Install inline hook on CreateSwapChainForHwnd in dxgi.dll.
-// VTable hooks only patch a single vtable and miss calls through
-// Streamline's SL proxy factory (different COM vtable). Inline hooks
-// patch the actual function code and catch ALL callers.
-// Sampled before CE patches anything at this entry: whether another overlay already owns it. A
-// loaded overlay owns it even while the sample still reads clean (IsCreateSwapChainForHwndEntryForeignOwned).
+// Sampled before CE patches anything: whether another overlay already owns the CreateSwapChainForHwnd
+// entry. A loaded overlay owns it even while the sample still reads clean
+// (IsCreateSwapChainForHwndEntryForeignOwned), and owns the factory SLOTS as well: Steam hooks whatever
+// function each slot points to and skips a slot that leads out of dxgi (ShouldHookFactoryCreateSwapchainSlot).
 const bool foreignCreateSCForHwndEntry =
     realCreateSCForHwndAddr && ce::dx12_factory_slot::HasForeignEntryJump(realCreateSCForHwndAddr);
 const size_t loadedOverlayCount =
@@ -249,6 +226,57 @@ if (realCreateSCForHwndAddr) {
         HookLog("DX12: Deep hook not needed or failed for CreateSwapChainForHwnd");
     }
 }
+
+// CreateSwapChain does not route through the public CreateSwapChainForHwnd entry, so leaving its slot
+// to an overlay needs a body hook of its own. Without an overlay the slot detour covers it as before.
+bool createSCBelowChainHookInstalled = false;
+if (loadedOverlayCount > 0) {
+    createSCBelowChainHookInstalled = InstallCreateSwapChainBelowChainHook(vtable[10], loadedOverlayCount);
+}
+const bool hookCreateSCSlot =
+    ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, createSCBelowChainHookInstalled);
+const bool hookCreateSCForHwndSlot =
+    ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, belowChainHookInstalled);
+
+// Hook CreateSwapChain (vtable[10] for IDXGIFactory)
+// Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
+// A slot left to an overlay keeps its pre-patch value in the same globals: the temp swapchain and the
+// access-denied retry call it as "the slot's function", which is exactly what it still is.
+if (!hookCreateSCSlot) {
+    dx12_hook_oCreateSwapChainGlobal = reinterpret_cast<PFN_CreateSwapChain>(vtable[10]);
+} else if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                              (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
+    dx12_hook_s_createSCSlotHooked.store(true, std::memory_order_release);
+    HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
+}
+
+if (!hookCreateSCForHwndSlot) {
+    dx12_hook_oCreateSwapChainForHwndGlobal = reinterpret_cast<PFN_CreateSwapChainForHwnd>(realCreateSCForHwndAddr);
+    dx12_hook_s_createSCForHwndSlotLeftToOverlay.store(true, std::memory_order_release);
+} else if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
+                              (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success) {
+    dx12_hook_s_createSCForHwndSlotHooked.store(true, std::memory_order_release);
+    HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
+}
+if (!hookCreateSCSlot || !hookCreateSCForHwndSlot) {
+    const char* overlayName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    HookLogImportant("DX12: Factory vtable slots left to the loaded overlay %s (CreateSwapChain[10]=%s "
+                     "CreateSwapChainForHwnd[15]=%s) - it hooks the functions the slots point to and skips a slot "
+                     "that leads out of dxgi; CE intercepts those creates with body hooks below its chain",
+                     overlayName ? overlayName : "none", hookCreateSCSlot ? "CE" : "overlay",
+                     hookCreateSCForHwndSlot ? "CE" : "overlay");
+}
+
+pFactory->Release();
+
+// Also hook IDXGIFactory4 and IDXGIFactory6 vtables to catch games that
+// QueryInterface for higher factory versions (different vtable pointers).
+// CreateSwapChainForHwnd is at the same slot (15) in all factory versions
+// because IDXGIFactory4 inherits from IDXGIFactory3 → IDXGIFactory2.
+HookFactoryCreateSwapchainSlotsOfVersion<IDXGIFactory4>(pCreateFactory, vtable, "IDXGIFactory4", hookCreateSCSlot,
+                                                        hookCreateSCForHwndSlot);
+HookFactoryCreateSwapchainSlotsOfVersion<IDXGIFactory6>(pCreateFactory, vtable, "IDXGIFactory6", hookCreateSCSlot,
+                                                        hookCreateSCForHwndSlot);
 
 // Install inline hook on CreateSwapChainForHwnd in dxgi.dll - unless a foreign overlay already
 // patched the entry and CE holds the below-chain view: overwriting that patch races the other
