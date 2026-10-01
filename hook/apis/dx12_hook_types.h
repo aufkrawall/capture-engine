@@ -615,6 +615,8 @@ extern PFN_CreateSwapChainForHwnd dx12_hook_oCreateSwapChainForHwndGlobal;
 extern PFN_CreateSwapChainForHwnd dx12_hook_s_oCreateSCForHwndInline;
 extern void* dx12_hook_s_realCreateSCForHwndAddr;
 extern PFN_CreateSwapChainForHwnd dx12_hook_s_deepHookTrampoline;
+// True when CE patched the CreateSwapChainForHwnd entry itself (no foreign patch, or no below-chain hook).
+extern std::atomic<bool> dx12_hook_s_createSCForHwndEntryPrependInstalled;
 extern std::atomic<int64_t> dx12_hook_g_OverlayCooldownUntilQpc;
 inline constexpr int64_t dx12_hook_kTransitionCooldownMs = 1500;  // 1.5 s;
 extern std::mutex dx12_hook_s_hwndSwapchainMutex;

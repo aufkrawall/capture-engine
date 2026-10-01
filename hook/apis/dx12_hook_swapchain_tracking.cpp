@@ -459,6 +459,21 @@ if (s_forwardingAccessDeniedCreateThroughEntryChain) {
     return E_FAIL;
 }
 
+// CE left a foreign entry patch intact: a create CE forwarded from its factory vtable detour gets
+// the entry detour's handling here, once, below the foreign chain.
+if (ce::dx12_factory_slot::ShouldBelowChainHookRunEntrySemantics(
+        dx12_hook_s_forwardedCreateSwapchainForHwndInlineDepth > 0, s_forwardingAccessDeniedCreateThroughEntryChain,
+        dx12_hook_s_createSCForHwndEntryPrependInstalled.load(std::memory_order_acquire))) {
+    static std::atomic<int> s_belowChainEntrySemanticsLogCount{0};
+    if (s_belowChainEntrySemanticsLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+        HookLogImportant("DeepHook: forwarded create runs the entry detour's handling below the foreign chain "
+                         "(hwnd=%p factory=%p)",
+                         hWnd, pThis);
+    }
+    return RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_deepHookTrampoline, pThis, pDevice, hWnd, pDesc, pFDesc,
+                                                   pOut, ppSC);
+}
+
 ce::swapchain_create::RecoveryScope recoveryScope(hWnd);
 const CreateSwapchainForHwndCallerContext callerContext = ResolveCreateSwapchainForHwndCallerContext();
 const void* callerAddress = callerContext.callerAddress;
@@ -472,7 +487,7 @@ const bool callerFromStreamlineFGModule =
     callerAddress && ce::overlay_compat::IsCodeAddressFromStreamlineFrameGenerationModule(callerAddress);
 const bool streamlineFrameGenerationInStack = ce::overlay_compat::HasStreamlineFrameGenerationModuleInStack();
 const bool callerFromThirdPartyOverlay = ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
-    "DeepHook", rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
+    "DeepHook",rawCallerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,
     callerFromStreamlineFGModule, streamlineFrameGenerationInStack, callerModulePath);
 const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
     callerAddress, callerFromThirdPartyOverlay, callerFromFFXFGModule, ffxFrameGenerationInStack,

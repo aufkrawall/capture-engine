@@ -102,23 +102,29 @@ return rawCallerFromThirdPartyOverlay && !authoritativeFGRuntimeSwapchainCreator
 }
 
 
-HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
+// The entry detour's handling, parameterized by what it forwards to: CE's entry trampoline when CE
+// owns the CreateSwapChainForHwnd entry, or the below-chain trampoline when a foreign overlay does
+// (see ShouldBelowChainHookRunEntrySemantics).
+HRESULT RunCreateSwapChainForHwndEntrySemantics(PFN_CreateSwapChainForHwnd original, IDXGIFactory2* pThis,
+                                                IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
+                                                IDXGISwapChain1** ppSC) {
 if (HookIsShuttingDown()) {
-    if (dx12_hook_s_oCreateSCForHwndInline)
-        return dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    if (original)
+        return original(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     return E_FAIL;
 }
 
 if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("CreateSwapChainForHwnd INLINE")) {
-    return dx12_hook_s_oCreateSCForHwndInline
-               ? dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
+    return original
+               ? original(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
                : E_FAIL;
 }
 
 // Skip side-effects for temp swapchains created during hook installation
 if (DX12_IsInternalDXGISwapchainProbe()) {
     HookLog("CreateSwapChainForHwnd INLINE: Temp swapchain — passthrough");
-    return dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
+    return original(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
 }
 
 MarkForwardedCreateSwapchainForHwndInlineSideEffectsHandled();
@@ -189,7 +195,7 @@ if (deferPresentHookRefreshForStreamlineHandoff) {
         "CreateSwapChainForHwnd INLINE: pre post-FSR Streamline runtime swapchain create");
 }
 
-HRESULT hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+HRESULT hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
     DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);
@@ -238,7 +244,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
         if (hr == E_ACCESSDENIED) {
             // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
             constexpr int attempt = 1;
-            hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+            hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant(
                     "CreateSwapChainForHwnd INLINE: runtime-managed minimal-recovery retry %d succeeded "
@@ -268,7 +274,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
             if (hr == E_ACCESSDENIED) {
                 // Retry once after cleanup, not on a timer.
                 constexpr int attempt = 1;
-                hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
                 if (SUCCEEDED(hr)) {
                     HookLogImportant(
                         "CreateSwapChainForHwnd INLINE: escalated full-cleanup retry %d succeeded hr=0x%08X",
@@ -316,7 +322,7 @@ if (hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()) {
         if (hr == E_ACCESSDENIED) {
             // Retry once after changing CE-owned state; elapsed time cannot release caller-owned references.
             constexpr int attempt = 1;
-            hr = dx12_hook_s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+            hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
             if (SUCCEEDED(hr)) {
                 HookLogImportant("CreateSwapChainForHwnd INLINE: Retry attempt %d succeeded hr=0x%08X", attempt,
                                  hr);
@@ -376,6 +382,12 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
 }
 
 return hr;
+}
+
+
+HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut, IDXGISwapChain1** ppSC) {
+return RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_oCreateSCForHwndInline, pThis, pDevice, hWnd, pDesc, pFDesc,
+                                              pOut, ppSC);
 }
 
 

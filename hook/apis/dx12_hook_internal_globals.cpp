@@ -448,6 +448,7 @@ PFN_CreateSwapChainForHwnd dx12_hook_s_oCreateSCForHwndInline = nullptr;
 void* dx12_hook_s_realCreateSCForHwndAddr = nullptr;
 
 PFN_CreateSwapChainForHwnd dx12_hook_s_deepHookTrampoline = nullptr;
+std::atomic<bool> dx12_hook_s_createSCForHwndEntryPrependInstalled{false};
 
 std::atomic<int64_t> dx12_hook_g_OverlayCooldownUntilQpc{0};
 

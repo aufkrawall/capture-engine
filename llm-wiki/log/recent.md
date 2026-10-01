@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-01 - Witcher 3 + Steam: startup crash in Steam's CreateSwapChainForHwnd handler
+
+- Session `20261001_042335`: AV executing 0x0 from `gameoverlayrenderer64!OverlayHookD3D3+0x14bc4` (`call r10`, r10=0),
+  entered from `DetourCreateSwapChainForHwndInline` -> CE's prepend trampoline -> Steam relay `...038A`. Steam was
+  loaded before CE (`active=gameoverlayrenderer64.dll`), CE installed 0.5 s after process start. Steam's per-hook original
+  slots (relay stubs 0x40 apart) are all set except the `0380` stub CE captured: Steam abandoned that hook mid-install.
+  Earlier sessions had CE injected before Steam (`active=none`) or Steam settled (`042507`, relay `02CA`, fine).
+- Fix (0.1.6874): CSFH entry is sampled before patching; with a foreign jump and a deep hook placed, CE does not prepend.
+  The deep hook runs `RunCreateSwapChainForHwndEntrySemantics` for CE-forwarded creates.
+- `20261001_044010` (0.1.6874, no prepend): stack overflow, `OverlayHookD3D3+0x14bc4` recursing. Steam's CSFH original slot
+  = `...03C0` while the entry jumps to `...038A`: Steam hooked CSFH twice, the second trampoline re-enters the first relay.
+  The double install already existed at CE's first entry sample, 5 ms after CE's discovery factory ran Steam's
+  CreateDXGIFactory1 handler on CE's hook thread. 0.1.6876: discovery factories bypass the foreign export patch
+  (`GenuineCreateDXGIFactory1ForDiscovery`), like the temp swapchain and WARP device. Steam-internal cause is inferred,
+  not proven; a clean run logs a foreign target ending `...02CA` in `is owned by a foreign patch`. Hardware run pending.
+
 ### 2026-10-01 - Witcher 3 `streamline_upgrade`: SR aliased in motion, DLSS-G generated nothing
 
 - Session `20261001_040020` (0.1.6871): no crash. `sl.log` held 553x `ReflexNotDetectedAtRuntime ... -1 != N`,

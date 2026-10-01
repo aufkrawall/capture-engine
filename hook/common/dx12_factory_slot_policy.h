@@ -37,4 +37,28 @@ inline bool HasForeignEntryJump(const void* entry) {
     return bytes[0] == 0xE9 || (bytes[0] == 0xFF && bytes[1] == 0x25);
 }
 
+// Who owns the CreateSwapChainForHwnd ENTRY when another overlay patched it first.
+//
+// CE used to prepend itself over a foreign entry patch and keep the foreign jump as its
+// "original". Session 20261001_042335 (Witcher 3, Steam overlay loaded before CE, CE installing
+// 0.5 s after process start): CE overwrote Steam's patch while Steam was still installing its
+// hooks. Steam abandoned that one hook - its saved original for exactly that relay stub is null
+// while its neighbours are set - and the first real swapchain create ran CE -> Steam's handler ->
+// 0x0. Overwriting a foreign patch races the foreign hooker's own transaction, so CE leaves the
+// entry alone and intercepts below the chain with the deep body hook. The prepend remains only
+// the fallback when no below-chain hook could be placed.
+inline bool ShouldPrependCreateSwapChainForHwndEntry(bool foreignEntryJumpAtInstall, bool belowChainHookInstalled) {
+    return !foreignEntryJumpAtInstall || !belowChainHookInstalled;
+}
+
+// With no CE entry patch, a create CE forwarded from its factory vtable detour reaches CE again
+// only at the below-chain hook. That call must get the entry detour's full handling (post-FSR
+// Streamline handoff, descriptor overrides, side-effect ownership), exactly as it did when CE
+// owned the entry. A nested access-denied retry stays a plain pass-through, and a call that did
+// not come through CE's vtable keeps the below-chain hook's own handling.
+inline bool ShouldBelowChainHookRunEntrySemantics(bool forwardedFromVtableDetour, bool accessDeniedRetryInFlight,
+                                                  bool entryPrependInstalled) {
+    return forwardedFromVtableDetour && !accessDeniedRetryInFlight && !entryPrependInstalled;
+}
+
 }  // namespace ce::dx12_factory_slot
