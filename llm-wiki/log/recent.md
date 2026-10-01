@@ -12,6 +12,9 @@
   re-present".
 - `145325` (0.1.6896): absorb works, no flashes; each absorb is followed by the next frame ~20 ms early and a
   ~30 ms hold on screen. 0.1.6897 logs an `absorbed-present timeline` to find out why (run pending).
+- `150639` (0.1.6897): the absorb costs no time (DLSS-G's hook returns in 0.1 ms either way). The real frame
+  before the re-present arrived ~19 ms early, and the re-present took its slot. W3 also stutters on its own.
+  0.1.6899 widens the timeline to three presents before the absorb (bridge runs page).
 
 ### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
 

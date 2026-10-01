@@ -542,3 +542,16 @@ smaller dip (85.3). Open question: does the absorbed call returning at once (a f
 would sit in DLSS-G's hook) let the title start N+1 early? 0.1.6897 logs `absorbed-present timeline`
 (`streamline_bridge_present_timeline.h`): every title call, Reflex sleep entry/return, present and
 DLSS-G hook return, from the present before the absorbed one until two presents after it.
+
+**Timeline run (`20261001_150639`, 0.1.6897): the absorb costs no time; the early frame comes before it.**
+Two in-game absorbs (frames 790 and 3823), both with the same shape (ms from the absorbed present):
+`-18.9 PRESENT[fwd]` (frame N) ... `-13.1 sleep-ret, simS(N)` (the frame index did NOT advance),
+`-9.0 sleep(0)`, `+0.0 PRESENT[ABSORB]` (no SL calls at all, ~9 ms after that sim like a normal
+render), `+15.8 sleep-ret, simS(N+1)`, `+29.4 PRESENT[fwd]` (N+1). DLSS-G's hook returns within 0.1 ms for
+forwarded presents too, so the "absorbed call returns at once" hypothesis is wrong. In the CSV the
+groups run 29.3 / **9.4** / 47.6 / 29.9 ms: frame N's group came ~19 ms early, and the re-present sat in
+N's regular slot; N-1 to N+1 is the normal two slots (57 ms). The user notes W3 stutters on its own too.
+Open question: what released frame N's sim early (a short Reflex sleep, a skipped sleep, or the title).
+0.1.6899 (dbe816f5) starts the timeline three presents before the absorbed one. It also records only the
+outermost DLSS-G return, because sl.dlss_g's slHookPresent runs its own hooked slHookPresent1 and
+every present logged two `dlssg-ret`.
