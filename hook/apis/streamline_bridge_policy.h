@@ -593,6 +593,20 @@ inline V1ReflexEvaluate ClassifyV1ReflexEvaluate(uint32_t id, uint32_t* pclMarke
     return V1ReflexEvaluate::kUnknown;
 }
 
+// The Reflex mode to forward on a DLSS-G state change. 2.x DLSS-G needs Reflex active, so it is
+// promoted to low latency + boost (2) while FG is on. When FG turns off, the title's own last
+// request comes back - forcing off (0) there switched Reflex off for a title that had asked for
+// it until its next constants call (`20261001_041637`: 0.1-1.4 s each time).
+inline constexpr uint32_t kNoTitleReflexMode = UINT32_MAX;
+inline constexpr uint32_t kReflexModeLowLatencyWithBoost = 2;
+
+inline uint32_t ReflexModeForDlssgState(bool dlssgEnabled, uint32_t titleMode) {
+    if (dlssgEnabled) {
+        return kReflexModeLowLatencyWithBoost;
+    }
+    return titleMode == kNoTitleReflexMode ? 0u : titleMode;
+}
+
 // ---------------------------------------------------------------------------
 // One 2.x frame token per 1.x frame index
 // ---------------------------------------------------------------------------

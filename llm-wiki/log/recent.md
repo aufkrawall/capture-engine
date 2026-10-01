@@ -9,7 +9,9 @@
 - SR aliasing: 1.x `Boolean` is 1 byte (`sl.common` 1.5.6 compares bytes at +0x19c..0x1a3); the mirror read dwords,
   taking `cameraMotionIncluded` from `notRenderingGameFrames`. `V1Constants` is 432 bytes, not 456.
 - Fix (0.1.6872): markers -> `slPCLSetMarker`, sleep -> `slReflexSleep`, Reflex settings answered, one token per
-  frame index (`RecentFrameTokens`). New unit `streamline_bridge_reflex.cpp`. Hardware run pending.
+  frame index (`RecentFrameTokens`). New unit `streamline_bridge_reflex.cpp`.
+- Validated in `20261001_041637`: 138 fps steady output from a 34.6 fps base (4x MFG), SR fine. Follow-up
+  0.1.6873: FG off restores the title's Reflex mode instead of forcing off.
 
 ### 2026-10-01 - Witcher 3 `streamline_upgrade` startup crash: debug-layer setting reset the retained device
 

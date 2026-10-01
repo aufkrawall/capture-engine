@@ -27,6 +27,8 @@ PFun_slPCLGetState* g_slPCLGetState = nullptr;
 std::mutex g_resolveMutex;
 
 std::atomic<uint32_t> g_forwardedReflexMode{UINT32_MAX};
+// The mode the title itself last asked for through slSetFeatureConstants(Reflex).
+std::atomic<uint32_t> g_titleReflexMode{kNoTitleReflexMode};
 // Set by the first sleep the title drives itself; synthesized sleeps stop from then on.
 std::atomic<bool> g_titleDrivesSleep{false};
 
@@ -111,8 +113,17 @@ bool TranslateReflexConstants(const void* constants1x, bool dlssgEnabled) {
         RefuseOnce(latch, "slSetFeatureConstants(Reflex)", "the 1.x Reflex mode is outside the known range");
         return false;
     }
-    return ForwardReflexMode(dlssgEnabled ? sl::ReflexMode::eLowLatencyWithBoost : static_cast<sl::ReflexMode>(in.mode),
+    g_titleReflexMode.store(in.mode, std::memory_order_relaxed);
+    const sl::ReflexMode requested = static_cast<sl::ReflexMode>(in.mode);
+    return ForwardReflexMode(dlssgEnabled ? sl::ReflexMode::eLowLatencyWithBoost : requested,
                              /*synthesized=*/dlssgEnabled);
+}
+
+bool UpdateReflexForDlssg(bool dlssgEnabled) {
+    const uint32_t titleMode = g_titleReflexMode.load(std::memory_order_relaxed);
+    const uint32_t mode = ReflexModeForDlssgState(dlssgEnabled, titleMode);
+    const bool synthesized = dlssgEnabled || titleMode == kNoTitleReflexMode;
+    return ForwardReflexMode(static_cast<sl::ReflexMode>(mode), synthesized);
 }
 
 bool TranslateReflexSettings(void* settings1x) {
@@ -203,7 +214,7 @@ bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameTo
                          "sl::Result=%d",
                          marker, frameIndex, static_cast<uint32_t>(*token), static_cast<int>(result));
     }
-    if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart) && (count == 1 || count % 3000 == 0)) {
+    if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart) && (count == 1 || count % 1000 == 0)) {
         LogMarkerSummary(frameIndex);
     }
     static std::atomic<bool> latch{false};

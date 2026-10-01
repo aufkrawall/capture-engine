@@ -26,6 +26,10 @@ bool ForwardReflexMode(sl::ReflexMode mode, bool synthesized);
 // slSetFeatureConstants(Reflex). While DLSS-G is on, Reflex is promoted to low latency + boost.
 bool TranslateReflexConstants(const void* constants1x, bool dlssgEnabled);
 
+// A DLSS-G state change: promote Reflex while it is on, and hand back the title's own last
+// requested mode (off only if the title never asked for one) when it turns off.
+bool UpdateReflexForDlssg(bool dlssgEnabled);
+
 // slGetFeatureSettings(Reflex): answers the 1.x settings struct from the 2.x state.
 bool TranslateReflexSettings(void* settings1x);
 

@@ -83,6 +83,20 @@ TEST(StreamlineBridgeV1ReflexTest, SleepDeprecatedAndUnknownIdsAreDistinguished)
     EXPECT_EQ(marker, UINT32_MAX);
 }
 
+TEST(StreamlineBridgeV1ReflexTest, TurningFrameGenerationOffHandsBackTheTitlesReflexMode) {
+    // 20261001_041637: FG off forced Reflex off although the title had asked for low latency (1).
+    EXPECT_EQ(bridge::ReflexModeForDlssgState(/*dlssgEnabled=*/false, 1u), 1u);
+    EXPECT_EQ(bridge::ReflexModeForDlssgState(/*dlssgEnabled=*/false, 2u), 2u);
+    EXPECT_EQ(bridge::ReflexModeForDlssgState(/*dlssgEnabled=*/false, 0u), 0u);
+    EXPECT_EQ(bridge::ReflexModeForDlssgState(/*dlssgEnabled=*/false, bridge::kNoTitleReflexMode), 0u);
+}
+
+TEST(StreamlineBridgeV1ReflexTest, FrameGenerationPromotesReflexWhateverTheTitleAsked) {
+    for (uint32_t title : {0u, 1u, 2u, bridge::kNoTitleReflexMode}) {
+        EXPECT_EQ(bridge::ReflexModeForDlssgState(/*dlssgEnabled=*/true, title), 2u) << title;
+    }
+}
+
 struct FakeToken {
     uint32_t frame;
 };

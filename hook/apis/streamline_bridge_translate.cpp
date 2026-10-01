@@ -556,9 +556,7 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
             // titles (including The Witcher 3) leave their SL Reflex mode at zero while using
             // NVAPI Reflex separately, which the 2.x plugin cannot observe. Promote Reflex
             // while FG is on and restore the game's mode when it turns off.
-            if (!ForwardReflexMode(options.mode == sl::DLSSGMode::eOff ? sl::ReflexMode::eOff
-                                                                       : sl::ReflexMode::eLowLatencyWithBoost,
-                                   /*synthesized=*/true)) {
+            if (!UpdateReflexForDlssg(options.mode != sl::DLSSGMode::eOff)) {
                 HookLogImportant("Streamline bridge: failed to update Reflex for DLSS-G state %u",
                                  cached.mode);
             }

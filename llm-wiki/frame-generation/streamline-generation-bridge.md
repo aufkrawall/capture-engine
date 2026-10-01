@@ -457,9 +457,12 @@ null command buffer, so all markers and sleeps vanished. The title also queried
   thrashed between the game thread (constants for N+1) and the render thread (evaluate for N), and
   re-asked `slGetNewFrameToken` for an issued index.
 
-Pending: a run should show `first Reflex marker translated`, rising `presentStart` in `Reflex markers
-so far`, `answered slGetFeatureSettings(Reflex) - lowLatencyAvailable=1`, and no
-`ReflexNotDetectedAtRuntime` in `sl.log`.
+**Validated in `20261001_041637`** (0.1.6872): the user reports SR and FG working. Display interval
+is a steady 7.2 ms (138 fps at the Reflex cap of a 143 Hz panel) from a 28.9 ms base under 4x MFG,
+with `generationObserved=1` and no `ReflexNotDetectedAtRuntime`. The title drives its own sleep
+(frame 0). The run also showed that an FG-off translation forced Reflex off, although the title had
+asked for mode 1, until the title's next constants call. 0.1.6873 hands back the title's last mode
+(`ReflexModeForDlssgState`).
 
 ## Invariants
 
