@@ -6,6 +6,9 @@
 #include "../common/mip_bias_limits.h"
 #include "../hook/apis/lod_helper.h"
 #include "../hook/common/dx12_sampler_policy.h"
+#include "../hook/common/mip_bias_range.h"
+
+#include <limits>
 
 namespace {
 
@@ -188,4 +191,25 @@ TEST_F(ConfigTest, MipBiasLimitsFollowAProcessProfile) {
     AppConfig other;
     LoadConfig(tempConfigFile, other, "other.exe");
     EXPECT_EQ(other.graphics.mipBiasMin, "default");
+}
+
+// The DX12 sampler hook logs the bias range only when it widens, so Observe()
+// must report exactly the widening calls and ignore values with no range.
+TEST(MipBiasRangeTest, ReportsOnlyWideningValues) {
+    ce::mip_bias::BiasRange range;
+    EXPECT_FALSE(range.HasValue());
+
+    EXPECT_TRUE(range.Observe(0.0f));
+    EXPECT_TRUE(range.HasValue());
+    EXPECT_FLOAT_EQ(range.Min(), 0.0f);
+    EXPECT_FLOAT_EQ(range.Max(), 0.0f);
+
+    EXPECT_TRUE(range.Observe(-4.0f));
+    EXPECT_TRUE(range.Observe(2.0f));
+    EXPECT_FALSE(range.Observe(-0.75f)) << "inside the range";
+    EXPECT_FALSE(range.Observe(-4.0f)) << "equal to a bound";
+    EXPECT_FALSE(range.Observe(std::numeric_limits<float>::quiet_NaN()));
+    EXPECT_FALSE(range.Observe(-std::numeric_limits<float>::infinity()));
+    EXPECT_FLOAT_EQ(range.Min(), -4.0f);
+    EXPECT_FLOAT_EQ(range.Max(), 2.0f);
 }

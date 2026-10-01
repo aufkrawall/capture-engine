@@ -46,9 +46,13 @@ Primary sources:
   `Capture_vkCreateSampler`. As with `mip_bias`, the safe sampler policy decides eligibility, so comparison/shadow and
   other special-purpose samplers keep their bias (Witcher 3 DX12 creates a +2.0 comparison sampler). A bias that
   the game applies in the shader (`SampleBias`) instead of in the sampler descriptor is out of reach. DX12
-  diagnostics: `application mip bias X first seen decision=...` logs each distinct application value once (up to
-  48), independently of the 16-entry fingerprint log, and `sampler mip bias A->B (... limits=...)` logs the first
-  24 changes. Shared ABI 67 (`SharedGraphicsConfig::mipBiasMin/Max`, char[16] each).
+  diagnostics (independent of the 16-entry fingerprint log): `sampler mip bias application=A effective=B
+  decision=...` once per distinct pair (up to 48), and `sampler mip bias range now application=[min..max]
+  effective=[min..max]` whenever either range widens (lock-free `hook/common/mip_bias_range.h`, up to 32 lines).
+  The range covers CREATED samplers, not per-draw binding; tracking DX12 descriptor-heap use per draw would cost
+  the hot path. Validated in W3 DX12 (`20261001_103142`): material samplers request -4.0, clamped to -0.1 / -2.0
+  as configured; the +2.0 comparison and -0.75 clamp-address samplers stay untouched. Shared ABI 67
+  (`SharedGraphicsConfig::mipBiasMin/Max`, char[16] each).
 - `cpu_prerender_limit` has integer semantics only: `-1`, `0`, or `1-6`. Fractional, non-finite, trailing-junk, and
   out-of-range inputs normalize to `-1`.
 - `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's
