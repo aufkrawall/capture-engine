@@ -139,8 +139,8 @@ int StateIndex(DWORD type) {
 
 bool HasOverride(const GraphicsConfig& gfx) {
     return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
-           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") || HasConfiguredMipBias(gfx) ||
-           gfx.forceMipBiasClamp || (gfx.sgssaa && !gfx.disableAutoMipBias);
+           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") || HasMipBiasOverride(gfx) ||
+           (gfx.sgssaa && !gfx.disableAutoMipBias);
 }
 
 bool Bootstrap(DeviceState& deviceState, DWORD stage, StageState& state, GetTextureStageStateFn getState) {

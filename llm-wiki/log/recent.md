@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-01 - `mip_bias_min` / `mip_bias_max`: bound the application's own sampler bias
+
+- Request from W3 DX12 (session `20261001_100155`). That log cannot show W3's in-game biases: the
+  16-entry DX12 fingerprint log filled by 10:02:07, before gameplay (15x 0.0, one +2.0 comparison sampler).
+- New shared policy `common/mip_bias_limits.h`, applied last in `FinalizeMipBias` and in the Vulkan layer.
+  ABI 67. New DX12 log: each distinct application bias once (`first seen`). Pending a hardware run.
+- Open: if W3 applies its upscaler bias in the shader rather than in sampler descriptors, the bound
+  cannot reach it; the `first seen` lines will show which case applies.
+
 ### 2026-10-01 - Streamline bridge: re-mark presents the title leaves without PRESENT_START
 
 - Session `20261001_093949`: tag persistence validated (no `Failed to find global tag`). Remaining

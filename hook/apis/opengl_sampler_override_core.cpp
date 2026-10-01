@@ -203,7 +203,7 @@ GLfloat OverrideFloatValue(GLenum pname, GLfloat value, const GraphicsConfig& gf
         if (value == static_cast<GLfloat>(enumValue))
             value = static_cast<GLfloat>(OverrideMinFilter(enumValue, gfx));
     }
-    if (pname == GL_TEXTURE_LOD_BIAS && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx))) {
+    if (pname == GL_TEXTURE_LOD_BIAS && HasMipBiasOverride(gfx)) {
         value = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, value));
     }
     return value;

@@ -506,6 +506,8 @@ inline uint64_t HashSamplerOverrideConfig(const GraphicsConfig& gfx) {
     mixString(gfx.mipMapping);
     mixString(gfx.mipBias);
     mixString(gfx.mipBiasMode);
+    mixString(gfx.mipBiasMin);
+    mixString(gfx.mipBiasMax);
     mixString(gfx.msaaSamples);
     mixByte(gfx.forceMipBiasClamp ? 1 : 0);
     mixByte(gfx.sgssaa ? 1 : 0);

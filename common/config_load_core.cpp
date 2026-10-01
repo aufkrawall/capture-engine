@@ -277,6 +277,31 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         }
     }
     config.graphics.mipBiasMode = reader.GetStr("Graphics", "mip_bias_mode", "strict");
+    config.graphics.mipBiasMin = reader.GetStr("Graphics", "mip_bias_min", "default");
+    config.graphics.mipBiasMax = reader.GetStr("Graphics", "mip_bias_max", "default");
+    {
+        float minBias = 0.0f;
+        float maxBias = 0.0f;
+        const bool hasMin = ce::mip_bias::TryParseLimit(config.graphics.mipBiasMin, minBias);
+        const bool hasMax = ce::mip_bias::TryParseLimit(config.graphics.mipBiasMax, maxBias);
+        if (!hasMin && !ce::mip_bias::IsUnsetLimitText(config.graphics.mipBiasMin)) {
+            LogInvalidConfigBoundary("Graphics", "mip_bias_min", config.graphics.mipBiasMin, "default");
+            config.graphics.mipBiasMin = "default";
+        }
+        if (!hasMax && !ce::mip_bias::IsUnsetLimitText(config.graphics.mipBiasMax)) {
+            LogInvalidConfigBoundary("Graphics", "mip_bias_max", config.graphics.mipBiasMax, "default");
+            config.graphics.mipBiasMax = "default";
+        }
+        if (hasMin && hasMax && minBias > maxBias) {
+            // No bias satisfies both, and picking one bound would be a guess.
+            LogInvalidConfigBoundary("Graphics", "mip_bias_min",
+                                     config.graphics.mipBiasMin + " (above mip_bias_max " +
+                                         config.graphics.mipBiasMax + ")",
+                                     "default");
+            config.graphics.mipBiasMin = "default";
+            config.graphics.mipBiasMax = "default";
+        }
+    }
     config.graphics.forceMipBiasClamp = reader.GetBool("Graphics", "force_mip_bias_clamp", false);
     config.graphics.nvLodSpreadFix = reader.GetBool("Graphics", "nv_lod_spread_fix", false);
     config.graphics.legacyD3DNativeOverlay = reader.GetBool("Graphics", "legacy_d3d_native_overlay", true);

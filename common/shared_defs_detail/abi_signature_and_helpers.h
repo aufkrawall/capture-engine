@@ -76,6 +76,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenReserved));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenStrength));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenIntensity));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, mipBiasMin));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, mipBiasMax));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));

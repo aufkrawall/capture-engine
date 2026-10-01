@@ -764,6 +764,10 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
         m_MipBiasMode = "strict";
 
     m_ForceMipBiasClamp = cfg.forceMipBiasClamp;
+    // Bounded copies: a peer that wrote no terminator must not run the parse off the field.
+    m_MipBiasLimits =
+        ce::mip_bias::ParseLimits(std::string(cfg.mipBiasMin, strnlen(cfg.mipBiasMin, sizeof(cfg.mipBiasMin))),
+                                  std::string(cfg.mipBiasMax, strnlen(cfg.mipBiasMax, sizeof(cfg.mipBiasMax))));
     m_MipMapping = cfg.mipMapping[0] ? cfg.mipMapping : "default";
     m_SamplerOverrideMode = cfg.samplerOverrideMode[0] ? cfg.samplerOverrideMode : "safe";
 
@@ -780,7 +784,9 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     LayerLog(
         "VulkanLayerState: Updated from config - policy=%s AF=%d, MipBias=%.1f, "
-        "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d, Prerender=%.0f",
-        m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(), m_ForceMipBiasClamp ? 1 : 0,
+        "MipBiasLimits=%s%.2f..%s%.2f, MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d, Prerender=%.0f",
+        m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipBiasLimits.hasMin ? "" : "none:",
+        m_MipBiasLimits.min, m_MipBiasLimits.hasMax ? "" : "none:", m_MipBiasLimits.max, m_MipMapping.c_str(),
+        m_ForceMipBiasClamp ? 1 : 0,
         m_VsyncMode.c_str(), m_BackbufferCount, m_PrerenderLimit);
 }

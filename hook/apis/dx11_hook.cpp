@@ -284,9 +284,14 @@ bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConf
 
     const float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
     if (finalizedBias != desc.MipLODBias) {
+        static std::atomic<int> s_finalizedLogCount{0};
+        const int logIndex = s_finalizedLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 24) {
+            HookLogImportant("DX11: Finalized mip bias %.2f->%.2f limits=%s..%s (#%d)", desc.MipLODBias,
+                             finalizedBias, gfx.mipBiasMin.c_str(), gfx.mipBiasMax.c_str(), logIndex + 1);
+        }
         desc.MipLODBias = finalizedBias;
         modified = true;
-        HookLogImportant("DX11: Finalized mip bias %.2f->%.2f", desc.MipLODBias, finalizedBias);
     }
 
     return modified;

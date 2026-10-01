@@ -6,6 +6,7 @@
 #include <array>
 #include <utility>
 
+#include "mip_bias_limits.h"
 #include "sharpen_policy.h"
 
 constexpr const char* kMissingConfigValue = "\x1d";

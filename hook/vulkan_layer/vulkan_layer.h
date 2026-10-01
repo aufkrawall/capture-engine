@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mip_bias_limits.h"
 #include "sharpen_policy.h"
 #include "vulkan_capture_transport_policy.h"
 #include "vulkan_final_output_capture.h"
@@ -356,6 +357,9 @@ public:
     const char* GetMipBiasMode() const {
         return m_MipBiasMode.c_str();
     }
+    ce::mip_bias::Limits GetMipBiasLimits() const {
+        return m_MipBiasLimits;
+    }
     const char* GetMipMapping() const {
         return m_MipMapping.c_str();
     }
@@ -457,6 +461,7 @@ private:
     bool m_MipBiasOverrideActive;
     bool m_ForceMipBiasClamp;
     std::string m_MipBiasMode;
+    ce::mip_bias::Limits m_MipBiasLimits;
     std::string m_MipMapping;
     std::string m_SamplerOverrideMode;
     std::string m_VsyncMode;

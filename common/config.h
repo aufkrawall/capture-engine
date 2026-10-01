@@ -169,6 +169,10 @@ struct GraphicsConfig {
     std::string mipMapping;  // "default", "nearest", "bilinear", "trilinear"
     std::string mipBias;     // "default", "0", "0.5", "-0.5", etc.
     std::string mipBiasMode = "strict";  // "strict", "offset", "base"
+    // Bounds on the final bias; the application keeps choosing it otherwise.
+    // "default" = no bound. See common/mip_bias_limits.h.
+    std::string mipBiasMin = "default";
+    std::string mipBiasMax = "default";
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     // Force the NVIDIA GL/VK driver's FERMI_UNOPT_LOD_SPREAD path ON inside the
     // game process. Process-local; the driver files stay untouched.

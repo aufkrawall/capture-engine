@@ -167,6 +167,13 @@ struct SharedGraphicsConfig {
     // 0..1 weight of the filtered result against the original pixels. This one
     // IS off at 0, and it is what a viewer reads as "how much sharpening".
     float sharpenIntensity;
+
+    // Bounds on the application's final sampler mip bias, as config text:
+    // "default" (or empty) leaves that side unbounded, otherwise a number the
+    // shared ce::mip_bias::ParseLimits accepts. A host that predates these
+    // fields cannot be talked to at all (SHARED_MEMORY_VERSION 67).
+    char mipBiasMin[16];
+    char mipBiasMax[16];
 };
 
 // Deliberately outside UE's accepted -15..15 range, so 0 stays usable as a real
@@ -270,10 +277,14 @@ static_assert(offsetof(SharedGraphicsConfig, sharpenStrength) == offsetof(Shared
 static_assert(offsetof(SharedGraphicsConfig, sharpenIntensity) ==
                   offsetof(SharedGraphicsConfig, sharpenStrength) + sizeof(float),
               "the sharpen intensity must follow the strength it is independent of");
-// 1752 + the twelve bytes of the sharpen block. The DLSS FG fields had already
-// consumed the tail padding, so unlike those this block grows the mapping -
-// which is what SHARED_MEMORY_VERSION 62 exists for.
-static_assert(sizeof(SharedGraphicsConfig) == 1768,
+static_assert(offsetof(SharedGraphicsConfig, mipBiasMin) ==
+                  offsetof(SharedGraphicsConfig, sharpenIntensity) + sizeof(float),
+              "the mip bias limits must be appended after the sharpen block");
+static_assert(offsetof(SharedGraphicsConfig, mipBiasMax) == offsetof(SharedGraphicsConfig, mipBiasMin) + 16,
+              "the mip bias maximum must follow the minimum");
+// 1752 + the twelve bytes of the sharpen block (SHARED_MEMORY_VERSION 62) +
+// the 32 bytes of mip bias limits (SHARED_MEMORY_VERSION 67).
+static_assert(sizeof(SharedGraphicsConfig) == 1800,
               "SharedGraphicsConfig size change requires an IPC ABI version bump");
 static_assert(offsetof(SharedGraphicsConfig, sharpenIntensity) + sizeof(float) <= sizeof(SharedGraphicsConfig),
               "the sharpen intensity must fit inside the mapping");

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,6 +84,15 @@ std::atomic<uint64_t> g_firstConfigHash{0};
 std::atomic<bool> g_configChangeLogged{false};
 std::mutex g_fingerprintMutex;
 std::unordered_set<uint64_t> g_loggedFingerprints;
+// The fingerprint log stops after 16 samplers, usually before the first level
+// has loaded, so it cannot show which biases a title actually uses in play -
+// the evidence a mip_bias_min/max bound is tuned from. Distinct application
+// values are few, so each is logged once together with the policy verdict.
+constexpr size_t kMaxLoggedBiasValues = 48;
+std::mutex g_biasValueMutex;
+std::unordered_set<uint32_t> g_loggedBiasValues;
+std::atomic<bool> g_biasValueLogFull{false};
+std::atomic<uint32_t> g_biasChangeLogs{0};
 
 const GUID kIidD3D12SDKConfiguration = {
     0xe9eb5314, 0x33aa, 0x42b2, {0xa7, 0x18, 0xd7, 0x7f, 0x58, 0xb1, 0xf1, 0xc7}};
@@ -147,17 +157,48 @@ void RecordDecision(DecisionCounters& counters, const char* source, const Desc& 
     }
 }
 
+void RecordBias(const char* source, float originalBias, float finalBias,
+                const ce::dx12_sampler_policy::Result& result, const GraphicsConfig& gfx) {
+    if (!g_biasValueLogFull.load(std::memory_order_relaxed)) {
+        bool firstSeen = false;
+        {
+            std::lock_guard<std::mutex> lock(g_biasValueMutex);
+            if (g_loggedBiasValues.size() < kMaxLoggedBiasValues) {
+                firstSeen = g_loggedBiasValues.insert(std::bit_cast<uint32_t>(originalBias)).second;
+            } else {
+                g_biasValueLogFull.store(true, std::memory_order_relaxed);
+            }
+        }
+        if (firstSeen) {
+            HookLog("DX12 AF: %s sampler application mip bias %.3f first seen decision=%s final=%.3f", source,
+                    originalBias, ce::dx12_sampler_policy::DecisionName(result.decision), finalBias);
+        }
+    }
+    if (result.mipBiasModified) {
+        const uint32_t index = g_biasChangeLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 24) {
+            HookLog("DX12 AF: %s sampler mip bias %.3f->%.3f (mipBias=%s mode=%s limits=%s..%s clamp=%d) (#%u)",
+                    source, originalBias, finalBias, gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(),
+                    gfx.mipBiasMin.c_str(), gfx.mipBiasMax.c_str(), gfx.forceMipBiasClamp ? 1 : 0, index + 1);
+        }
+    }
+}
+
 ce::dx12_sampler_policy::Result ApplyDynamicSampler(D3D12_SAMPLER_DESC& desc, const char* source) {
     const D3D12_SAMPLER_DESC original = desc;
-    const auto result = ce::dx12_sampler_policy::Apply(desc, GetActiveGraphicsConfig());
+    const GraphicsConfig gfx = GetActiveGraphicsConfig();
+    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
     RecordDecision(g_dynamicCounters, source, original, result);
+    RecordBias(source, original.MipLODBias, desc.MipLODBias, result, gfx);
     return result;
 }
 
 ce::dx12_sampler_policy::Result ApplyStaticSampler(D3D12_STATIC_SAMPLER_DESC& desc, const char* source) {
     const D3D12_STATIC_SAMPLER_DESC original = desc;
-    const auto result = ce::dx12_sampler_policy::Apply(desc, GetActiveGraphicsConfig());
+    const GraphicsConfig gfx = GetActiveGraphicsConfig();
+    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
     RecordDecision(g_staticCounters, source, original, result);
+    RecordBias(source, original.MipLODBias, desc.MipLODBias, result, gfx);
     return result;
 }
 

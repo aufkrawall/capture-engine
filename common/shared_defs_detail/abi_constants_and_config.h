@@ -137,17 +137,20 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             its shared textures/fence can receive the handle values the closed
 //             ones had, so media can no longer identify a transport by handle
 //             value alone. FrameSlot grows to 56 bytes.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 66;
+// Version 67: SharedGraphicsConfig gained `mipBiasMin` / `mipBiasMax`, bounds
+//             on the application's own sampler mip bias. They grow `sizeof`,
+//             so an older peer must not open the mapping.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 67;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_66_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_67_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_66";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_67";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)

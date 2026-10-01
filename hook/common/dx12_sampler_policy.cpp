@@ -114,7 +114,7 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
         desc.MaxAnisotropy = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
     }
 
-    if ((!gfx.mipBias.empty() && gfx.mipBias != "default") || gfx.forceMipBiasClamp) {
+    if (HasMipBiasOverride(gfx)) {
         desc.MipLODBias = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, desc.MipLODBias));
     }
 
@@ -133,7 +133,7 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
 bool HasSamplerOverride(const GraphicsConfig& gfx) {
     return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
            (!gfx.mipMapping.empty() && gfx.mipMapping != "default") ||
-           (!gfx.mipBias.empty() && gfx.mipBias != "default") || gfx.forceMipBiasClamp;
+           HasMipBiasOverride(gfx);
 }
 
 Result Apply(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {

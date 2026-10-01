@@ -62,6 +62,10 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     graphics.mipBias[sizeof(graphics.mipBias) - 1] = '\0';
     strncpy(graphics.mipBiasMode, config.graphics.mipBiasMode.c_str(), sizeof(graphics.mipBiasMode) - 1);
     graphics.mipBiasMode[sizeof(graphics.mipBiasMode) - 1] = '\0';
+    strncpy(graphics.mipBiasMin, config.graphics.mipBiasMin.c_str(), sizeof(graphics.mipBiasMin) - 1);
+    graphics.mipBiasMin[sizeof(graphics.mipBiasMin) - 1] = '\0';
+    strncpy(graphics.mipBiasMax, config.graphics.mipBiasMax.c_str(), sizeof(graphics.mipBiasMax) - 1);
+    graphics.mipBiasMax[sizeof(graphics.mipBiasMax) - 1] = '\0';
     graphics.forceMipBiasClamp = config.graphics.forceMipBiasClamp;
     strncpy(graphics.msaaSamples, config.graphics.msaaSamples.c_str(), sizeof(graphics.msaaSamples) - 1);
     graphics.msaaSamples[sizeof(graphics.msaaSamples) - 1] = '\0';
@@ -174,6 +178,9 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         (std::hash<std::string>{}(std::string(graphics.samplerOverrideMode)) << 2) ^
         (std::hash<std::string>{}(std::string(graphics.mipMapping)) << 3) ^
         (std::hash<std::string>{}(std::string(graphics.mipBias)) << 4) ^
+        (std::hash<std::string>{}(std::string(graphics.mipBiasMin)) << 5) ^
+        (std::hash<std::string>{}(std::string(graphics.mipBiasMax)) << 6) ^
+        (static_cast<uint64_t>(graphics.forceMipBiasClamp) << 36) ^
         (static_cast<uint64_t>(graphics.backbufferCount) << 3) ^
         (static_cast<uint64_t>(sharedMemory->fpsLimiter.GetGeneralFps()) << 4) ^
         (static_cast<uint64_t>(sharedMemory->fpsLimiter.GetGeneralEnabled()) << 5) ^
@@ -237,7 +244,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     if (completeSummaryHash != configSummaryHash) {
         LogInfo(
             "[Inject] SharedMem config updated: logLevel=%s vsync=%s af=%s sampler=%s mip=%s mipBias=%s "
-            "mode=%s cpuPrerender=%.2f "
+            "mode=%s mipBiasLimits=%s..%s mipBiasClamp=%d cpuPrerender=%.2f "
             "backBuffer=%d fpsLimit=%d(%s) overlayEnabled=%d observerOnly=%d observerPolicyOnly=%d "
             "observerStartupPresentOnly=%d captureOverlay=%d screenshotOverlay=%d frameTiming=%s systemLatency=%d "
             "dlssAutoExp=%s sharpen=%.2f srPreset=%u rrPreset=%u fgPreset=%u indicator=%s "
@@ -251,6 +258,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
             "ue5CustomMask=0x%016llX",
             LogLevelToConfigString(config.logLevel), graphics.vsyncMode, graphics.anisotropicFiltering,
             graphics.samplerOverrideMode, graphics.mipMapping, graphics.mipBias, graphics.mipBiasMode,
+            graphics.mipBiasMin, graphics.mipBiasMax, graphics.forceMipBiasClamp ? 1 : 0,
             graphics.prerenderLimit, graphics.backbufferCount,
             sharedMemory->fpsLimiter.GetGeneralFps(),
             sharedMemory->fpsLimiter.GetGeneralEnabled() ? "ON" : "OFF", sharedMemory->overlayConfig.showOverlay,

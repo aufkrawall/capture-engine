@@ -433,6 +433,8 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.mipMapping = sharedMem->graphicsConfig.mipMapping;
         result.mipBias = sharedMem->graphicsConfig.mipBias;
         result.mipBiasMode = sharedMem->graphicsConfig.mipBiasMode;
+        result.mipBiasMin = sharedMem->graphicsConfig.mipBiasMin;
+        result.mipBiasMax = sharedMem->graphicsConfig.mipBiasMax;
         result.forceMipBiasClamp = sharedMem->graphicsConfig.forceMipBiasClamp;
         result.msaaSamples = sharedMem->graphicsConfig.msaaSamples;
         result.sharpenMode =

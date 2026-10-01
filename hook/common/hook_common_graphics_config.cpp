@@ -7,6 +7,7 @@
 #include <string.h>
 #include <windows.h>
 #include <mutex>
+#include "../../common/mip_bias_limits.h"
 #include "../../common/shared_defs.h"
 #include "../../common/sharpen_policy.h"
 #include "ngx_drs_override.h"
@@ -43,6 +44,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig.mipMapping = shmGfx.mipMapping;
         mergedConfig.mipBias = shmGfx.mipBias;
         mergedConfig.mipBiasMode = shmGfx.mipBiasMode;
+        mergedConfig.mipBiasMin = shmGfx.mipBiasMin;
+        mergedConfig.mipBiasMax = shmGfx.mipBiasMax;
         mergedConfig.forceMipBiasClamp = shmGfx.forceMipBiasClamp;
         mergedConfig.msaaSamples = shmGfx.msaaSamples;
         mergedConfig.sharpenMode = ce::sharpen::ModeName(static_cast<ce::sharpen::Mode>(shmGfx.sharpenMode));
@@ -181,6 +184,12 @@ GraphicsConfig GetActiveGraphicsConfig() {
         if (g_pLocalConfig->graphics.mipBiasMode != "strict" && !g_pLocalConfig->graphics.mipBiasMode.empty()) {
             mergedConfig.mipBiasMode = g_pLocalConfig->graphics.mipBiasMode;
         }
+        if (!ce::mip_bias::IsUnsetLimitText(g_pLocalConfig->graphics.mipBiasMin)) {
+            mergedConfig.mipBiasMin = g_pLocalConfig->graphics.mipBiasMin;
+        }
+        if (!ce::mip_bias::IsUnsetLimitText(g_pLocalConfig->graphics.mipBiasMax)) {
+            mergedConfig.mipBiasMax = g_pLocalConfig->graphics.mipBiasMax;
+        }
         if (g_pLocalConfig->graphics.forceMipBiasClamp) {
             mergedConfig.forceMipBiasClamp = true;
         }
@@ -260,6 +269,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         (mergedConfig.anisotropicFiltering != "default" && !mergedConfig.anisotropicFiltering.empty()) ||
         (mergedConfig.mipMapping != "default" && !mergedConfig.mipMapping.empty()) ||
         (mergedConfig.mipBias != "default" && !mergedConfig.mipBias.empty()) || mergedConfig.forceMipBiasClamp ||
+        ce::mip_bias::ParseLimits(mergedConfig.mipBiasMin, mergedConfig.mipBiasMax).Active() ||
         (mergedConfig.msaaSamples != "default" && !mergedConfig.msaaSamples.empty()) ||
         mergedConfig.cpuPrerenderLimit > -0.5f || HasBackbufferCountOverride(mergedConfig.backbufferCount) ||
         mergedConfig.frameLatency > 0 || mergedConfig.sgssaa ||

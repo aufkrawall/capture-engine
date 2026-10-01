@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "../../common/config.h"
+#include "../../common/mip_bias_limits.h"
 #include "../../common/strict_float_parse.h"
 
 // Helper to check if SGSSAA is requested and what the sample count is
@@ -52,6 +53,17 @@ inline bool HasConfiguredMipBias(const GraphicsConfig& gfx) {
     return !gfx.mipBias.empty() && gfx.mipBias != "default";
 }
 
+inline ce::mip_bias::Limits GetConfiguredMipBiasLimits(const GraphicsConfig& gfx) {
+    return ce::mip_bias::ParseLimits(gfx.mipBiasMin, gfx.mipBiasMax);
+}
+
+// Any setting that can change a sampler's bias: the replacement/offset, the
+// zero clamp, or a bound on the application's own value. Every API path gates
+// its bias work on this one predicate so a limit alone is never skipped.
+inline bool HasMipBiasOverride(const GraphicsConfig& gfx) {
+    return HasConfiguredMipBias(gfx) || gfx.forceMipBiasClamp || GetConfiguredMipBiasLimits(gfx).Active();
+}
+
 inline bool TryParseConfiguredMipBias(const GraphicsConfig& gfx, float& outBias) {
     if (!HasConfiguredMipBias(gfx)) {
         return false;
@@ -78,9 +90,12 @@ inline float ApplyConfiguredMipBias(const GraphicsConfig& gfx, float originalBia
     return userBias;
 }
 
+// The last step for every API: the zero clamp wins, then the configured
+// bounds, then the sampler range.
 inline float FinalizeMipBias(const GraphicsConfig& gfx, float bias) {
     if (gfx.forceMipBiasClamp) {
         return 0.0f;
     }
-    return std::clamp(bias, -16.0f, 15.99f);
+    bias = ce::mip_bias::ApplyLimits(bias, GetConfiguredMipBiasLimits(gfx));
+    return std::clamp(bias, ce::mip_bias::kMinBias, ce::mip_bias::kMaxBias);
 }

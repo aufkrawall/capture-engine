@@ -655,23 +655,37 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
             }
 
             // Mip bias override with mode support
+            const ce::mip_bias::Limits biasLimits = state.GetMipBiasLimits();
             if (state.IsForceMipBiasClampEnabled()) {
                 modified.mipLodBias = 0.0f;
-            } else if (state.IsMipBiasOverrideActive()) {
-                float userBias = state.GetMipLodBias();
-                const char* mode = state.GetMipBiasMode();
-                float originalBias = pCreateInfo->mipLodBias;
+            } else if (state.IsMipBiasOverrideActive() || biasLimits.Active()) {
+                const float originalBias = pCreateInfo->mipLodBias;
+                if (state.IsMipBiasOverrideActive()) {
+                    float userBias = state.GetMipLodBias();
+                    const char* mode = state.GetMipBiasMode();
 
-                if (strcmp(mode, "offset") == 0) {
-                    modified.mipLodBias = originalBias + userBias;
-                } else if (strcmp(mode, "base") == 0) {
-                    if (originalBias >= 0.0f)
-                        modified.mipLodBias = originalBias;
-                    else
+                    if (strcmp(mode, "offset") == 0) {
                         modified.mipLodBias = originalBias + userBias;
-                } else {
-                    // "strict" - absolute override
-                    modified.mipLodBias = userBias;
+                    } else if (strcmp(mode, "base") == 0) {
+                        if (originalBias >= 0.0f)
+                            modified.mipLodBias = originalBias;
+                        else
+                            modified.mipLodBias = originalBias + userBias;
+                    } else {
+                        // "strict" - absolute override
+                        modified.mipLodBias = userBias;
+                    }
+                }
+                // The bounds come last, so they hold whatever produced the value.
+                const float preLimitBias = modified.mipLodBias;
+                modified.mipLodBias = ce::mip_bias::ApplyLimits(modified.mipLodBias, biasLimits);
+                if (modified.mipLodBias != preLimitBias) {
+                    static std::atomic<int> s_biasLimitLogCount{0};
+                    const int logIndex = s_biasLimitLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logIndex < 24) {
+                        LayerLog("Vulkan sampler: mip bias limited app=%.2f %.2f->%.2f (#%d)", originalBias,
+                                 preLimitBias, modified.mipLodBias, logIndex + 1);
+                    }
                 }
 
                 const float maxBias = disp->maxSamplerLodBias > 0.0f ? disp->maxSamplerLodBias : 16.0f;

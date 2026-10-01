@@ -6,6 +6,7 @@ native borderless Blt versus DXGI flip/VRR ownership)
 Primary sources:
 - `common/config.{h,cpp}`
 - `common/mip_mapping_policy.h`
+- `common/mip_bias_limits.h`
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
@@ -19,7 +20,7 @@ Primary sources:
 - `hook/common/ddraw_present_policy.h`
 - `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
-- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_mip_bias_limits,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
 - `tests/{test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 - `tests/{test_ddraw_present_override_policy,test_legacy_d3d7_vtable_abi,test_legacy_d3d8_vtable_abi}.cpp`
@@ -35,6 +36,19 @@ Primary sources:
   bounded configuration diagnostic. On a mipmapped ordinary sampler, nearest means point MIN/MAG plus nearest-mip,
   bilinear means linear MIN/MAG plus nearest-mip, and trilinear means linear MIN/MAG plus linear-mip. The override
   never enables mipmapping for an application state or object that has no usable mip range.
+- `mip_bias_min` / `mip_bias_max = default|-16..15.99` bound the application's own sampler bias instead of replacing
+  it (`common/mip_bias_limits.h`, shared by the host loader, the hook and the Vulkan layer). The application still
+  chooses which samplers get a bias and how much. A bound is the last step of the pipeline: after `mip_bias`
+  (strict/offset/base), SGSSAA and the Unity -0.5 clamp, inside `FinalizeMipBias`. `force_mip_bias_clamp` keeps
+  precedence. A minimum above the maximum is rejected at load (both reset to `default`) and ignored defensively by
+  `ParseLimits`. Every API gates its bias work on `HasMipBiasOverride` (configured bias, zero clamp, or an active
+  bound), so a bound alone always reaches DX9/legacy D3D/DX10/11/12/OpenGL; Vulkan applies the same helper in
+  `Capture_vkCreateSampler`. As with `mip_bias`, the safe sampler policy decides eligibility, so comparison/shadow and
+  other special-purpose samplers keep their bias (Witcher 3 DX12 creates a +2.0 comparison sampler). A bias that
+  the game applies in the shader (`SampleBias`) instead of in the sampler descriptor is out of reach. DX12
+  diagnostics: `application mip bias X first seen decision=...` logs each distinct application value once (up to
+  48), independently of the 16-entry fingerprint log, and `sampler mip bias A->B (... limits=...)` logs the first
+  24 changes. Shared ABI 67 (`SharedGraphicsConfig::mipBiasMin/Max`, char[16] each).
 - `cpu_prerender_limit` has integer semantics only: `-1`, `0`, or `1-6`. Fractional, non-finite, trailing-junk, and
   out-of-range inputs normalize to `-1`.
 - `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's

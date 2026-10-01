@@ -568,7 +568,13 @@ mip_mapping=default
 ; and base adjusts only negative application bias.
 mip_bias=default
 mip_bias_mode=strict
-; true forces mip bias to zero and takes precedence over the two settings above.
+; mip_bias_min / mip_bias_max: default or a number from -16 to 15.99. They keep
+; the application's own bias but stop it from going past a bound, e.g.
+; mip_bias_min=-2.0 pulls a -3.5 back to -2.0 and leaves -1.0 alone. Applied
+; last, after mip_bias. min must not be above max.
+mip_bias_min=default
+mip_bias_max=default
+; true forces mip bias to zero and takes precedence over the settings above.
 force_mip_bias_clamp=false
 ; on fixes NVIDIA's long-standing texture filtering quality bug with negative LOD
 ; bias in OpenGL and Vulkan, by forcing the driver's FERMI_UNOPT_LOD_SPREAD setting
