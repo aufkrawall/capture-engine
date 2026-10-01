@@ -200,7 +200,31 @@ are those. Nothing above the generator is touched, no timer is added and no driv
 - Deciding the interposer route inside a per-API branch. It is a property of who owns the chain, not of the API; the
   Witcher 3 crash below is what that mistake cost.
 
+## CE's hook-discovery devices must never initialize the interposer
+Witcher 3 DX12 + Smooth Motion, session `20261001_032227`, build 0.1.6868: `int 3` inside NvPresent64 on CE's hook
+thread before the first frame. NvPresent64 statically links Microsoft Detours and, while a hardware device is being
+created, attaches to `dxgi!CDXGIFactory::CreateSwapChainForHwnd`; it breaks into `int 3` when
+`DetourTransactionCommit` fails. Detours allows one transaction per module at a time, so a second thread entering
+the same init gets `ERROR_INVALID_OPERATION` (0x10DD, the value in `eax` at the breakpoint). The game's main thread
+was inside `D3D12CreateDevice` (NVIDIA UMD init), while CE's thread was in the `DX11Hook::Init` temp probe creating a
+**hardware** D3D11 device. The game's attach won: the dump holds its trampoline in NvPresent64's cache.
+
+Why CE was in the DX11 path at all: NvPresent64 imports `d3d11.dll`, so the game's own D3D12 device creation mapped
+it, and `D3D12CreateDevice` had not returned yet (`DX11 check #57 ... dllPresent=1 ... d3d12Created=0 => INSTALL`).
+
+Fix: the DX11/D3D10 temp probe is WARP-only with no hardware fallback, the same rule as the DX12 temp-swapchain
+bootstrap (`dx12-injection-bootstrap.md`). The harvested vtables live in d3d11/d3d10/dxgi, not the driver;
+`DX11HookDiscoveryProbeTest` compares every `ID3D11Device`, `ID3D11DeviceContext`, `IDXGISwapChain` and
+`ID3D10Device` slot between WARP and hardware on the test host. Signature in a log: `DX11: Temp D3D11
+hook-discovery device is WARP`. Not yet hardware-validated in Witcher 3.
+
+The same audit found the D3D10 sampler hook writing `ID3D10Device` slot 9, which is `Draw`;
+`CreateSamplerState` is slot 86 (`hook/common/d3d10_vtable_slots.h`).
+
 ## Open questions / stale-risk
+- CE still installs DX11 hooks in this DX12 process, because a driver-loaded `d3d11.dll` counts as DX11 presence
+  while the game's `D3D12CreateDevice` is still running. That is now harmless (WARP probe), but the classification
+  itself is unchanged.
 - Stale-risk **medium**: the classification is keyed on the `nvpresent` module name. A driver that renames or
   relocates the interposer, or a different vendor shipping the same topology, needs the token table extended.
 - **The output-chain topology has not been run on hardware yet.** 0.1.6555/0.1.6556 validated the app-facing

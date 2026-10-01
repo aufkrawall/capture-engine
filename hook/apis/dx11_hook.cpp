@@ -359,6 +359,17 @@ void DX11Hook::Init() {
     // we need to hook the vtable of an EXISTING swapchain.
     // We do this by creating a temporary swapchain using the hooked factory,
     // which will also trigger our InstallVTableHooks.
+    //
+    // The temp devices below are WARP and never fall back to hardware, the same
+    // rule as the DX12 temp-swapchain bootstrap. CE runs this on its hook thread,
+    // usually while the game is creating its own device, and a hardware device
+    // here re-enters vendor UMD initialization concurrently with the game's. With
+    // NVIDIA Smooth Motion that init Detours dxgi!CreateSwapChainForHwnd and
+    // breaks into int 3 when a second thread's transaction collides (Witcher 3
+    // DX12, session 20261001_032227: the game thread inside D3D12CreateDevice,
+    // CE's thread here, DetourTransactionCommit = ERROR_INVALID_OPERATION). Every
+    // vtable harvested below belongs to d3d11/d3d10/dxgi, not to the driver, so
+    // WARP yields the same entries (DX11HookDiscoveryProbeTest).
     HookLog("DX11: Scanning for pre-existing swapchains...");
 
     // First, try D3D10 route (the game is D3D10)
@@ -384,7 +395,13 @@ void DX11Hook::Init() {
             }
             ID3D10Device* tempDevice = nullptr;
             // Use the REAL function, not our detour, to create a temp device
-            HRESULT hr = pD3D10CD(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &tempDevice);
+            HRESULT hr = pD3D10CD(NULL, D3D10_DRIVER_TYPE_WARP, NULL, 0, D3D10_SDK_VERSION, &tempDevice);
+            if (FAILED(hr) || !tempDevice) {
+                HookLogImportant(
+                    "DX11: WARP temp D3D10 device for hook discovery failed (hr=0x%08lX); no hardware fallback, "
+                    "D3D10 vtables come from the application's own objects",
+                    static_cast<unsigned long>(hr));
+            }
             if (SUCCEEDED(hr) && tempDevice) {
                 // Get DXGI factory from temp device
                 IDXGIDevice* dxgiDev = nullptr;
@@ -488,8 +505,17 @@ void DX11Hook::Init() {
             HRESULT hr = E_FAIL;
             {
                 ScopedInternalDXGISwapchainProbe probeScope;
-                hr = pTempCreate(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                hr = pTempCreate(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                  flReq, 1, D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
+            }
+            if (FAILED(hr) || !sc) {
+                HookLogImportant(
+                    "DX11: WARP temp D3D11 device/swapchain for hook discovery failed (hr=0x%08lX); no hardware "
+                    "fallback, D3D11 vtables come from the application's own objects",
+                    static_cast<unsigned long>(hr));
+            } else {
+                HookLog("DX11: Temp D3D11 hook-discovery device is WARP (fl=0x%X); no vendor driver initialized",
+                        static_cast<unsigned>(flOut));
             }
             if (SUCCEEDED(hr) && sc) {
                 InstallVTableHooks(dev, ctx, sc);

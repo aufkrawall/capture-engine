@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-01 - Witcher 3 DX12 + Smooth Motion startup int 3: CE's hardware temp D3D11 device
+
+- Session `20261001_032227`: `int 3` in NvPresent64 on CE's hook thread (0x4690), 7 s after launch.
+  NvPresent64's Detours `DetourTransactionCommit` returned `ERROR_INVALID_OPERATION` while the game's
+  main thread was inside `D3D12CreateDevice` (NVIDIA UMD init). CE's thread was in the `DX11Hook::Init`
+  temp probe, creating a hardware D3D11 device. That probe ran because the game's own device creation
+  mapped `d3d11.dll` (an NvPresent64 import) before `D3D12CreateDevice` returned.
+- Fix: the DX11/D3D10 temp probe is WARP-only, as the DX12 bootstrap already was. A new unit test
+  compares all WARP and hardware vtable slots for the D3D11 device, context and swapchain, and for the
+  D3D10 device; it passed on this NVIDIA host with no skip. Detail in `present-interposers.md`.
+- Same audit: the D3D10 sampler hook patched `ID3D10Device` slot 9 (`Draw`); it now patches slot 86.
+- Pending: a hardware run of Witcher 3 DX12 with Smooth Motion. The DX11 classification in DX12
+  processes is unchanged (open question).
+
 ### 2026-09-30 - Stable 0.1.6868 published with all five assets attested
 
 - `release-stable.yml` run 36700494306 built exact commit `a058e822` with `attest=always` and

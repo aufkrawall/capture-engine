@@ -169,7 +169,9 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   application D3D12 evidence, device sampler hooks, Present-hook recursion, and queue/swapchain
   tracking. The removed process-global flag could hide a real game swapchain created concurrently.
   A standalone same-process probe found identical ECL, Present, and Present1 method addresses on
-  WARP and hardware, so hook discovery does not need a vendor UMD device.
+  WARP and hardware, so hook discovery does not need a vendor UMD device. The DX11/D3D10 temp probe in
+  `DX11Hook::Init` follows the same rule since NVIDIA Smooth Motion aborted Witcher 3 DX12 when CE's
+  hardware temp device ran vendor init concurrently with the game's (`present-interposers.md`).
 - **A thread quiescence walks this process, not the machine.** `ThreadQuiescence` used to enumerate
   peers with `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)`. That flag ignores the process id it is
   given and always snapshots **every thread on the system**, so the cost tracked total system load

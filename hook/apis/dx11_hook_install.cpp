@@ -1,5 +1,7 @@
 #include "dx11_hook_internal.h"
 
+#include "../common/d3d10_vtable_slots.h"
+
 
 void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* source) {
 
@@ -85,11 +87,13 @@ void InstallVTableHooks(ID3D11Device* pDevice,  ID3D11DeviceContext* pContext,  
         if (SUCCEEDED(hr) && pDevice10) {
             void** pDeviceVTable = *(void***)pDevice10;
 
-            // CreateSamplerState (Index 9)
             if (dx11_hook_oCreateSamplerState10 == NULL) {
-                if (VTableHook::Create(reinterpret_cast<void*>(&pDeviceVTable[9]), (LPVOID)&DetourCreateSamplerState10,
-                                       (LPVOID*)&dx11_hook_oCreateSamplerState10) == VTableHook::Success) {
-                    HookLog("DX10: CreateSamplerState hook installed");
+                if (VTableHook::Create(
+                        reinterpret_cast<void*>(&pDeviceVTable[ce::d3d10_vtable_slots::kDeviceCreateSamplerState]),
+                        (LPVOID)&DetourCreateSamplerState10,
+                        (LPVOID*)&dx11_hook_oCreateSamplerState10) == VTableHook::Success) {
+                    HookLog("DX10: CreateSamplerState hook installed (slot=%u)",
+                            ce::d3d10_vtable_slots::kDeviceCreateSamplerState);
                 }
             }
             pDevice10->Release();

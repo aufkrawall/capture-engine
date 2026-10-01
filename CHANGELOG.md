@@ -6,6 +6,10 @@ Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Witcher 3 (DX12) crashed at startup with NVIDIA Smooth Motion enabled:** to find DirectX's functions, CaptureEngine creates a small throwaway Direct3D 11 device. It used the graphics card for this, often while the game was creating its own device. That ran the NVIDIA driver's setup twice at once, and Smooth Motion stops the game when two threads set it up at the same time. CaptureEngine now uses Windows' software renderer (WARP) for this device, so the graphics driver never runs on CaptureEngine's own threads. Its DirectX 12 setup already worked this way. The log line `Temp D3D11 hook-discovery device is WARP` confirms the change.
+
+- **Direct3D 10 games could break as soon as their display was created:** CaptureEngine's texture-filtering hook for Direct3D 10 patched the wrong function. It replaced the game's draw call instead of sampler creation, so every draw call went through code meant for something else. The hook now patches sampler creation.
+
 - **Release changelog promotion:** Windows paths and backslash sequences in release notes now remain literal, preventing promotion from failing or changing the notes after publication.
 
 ## v0.1.6868
