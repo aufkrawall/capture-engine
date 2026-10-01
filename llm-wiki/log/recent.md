@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
+
+- Session `20261001_105517` (0.1.6889, W3 bridged 4x MFG). PC latency `source=unavailable` all FG session.
+  It worked in 0.1.6886 (`100155`) and broke in `103142`; this is not a code regression. The game-thread presents
+  reach DXGI only in DLSS-G's ~1.6 s startup (`PRESENT STAGE COST role=game calls=471/270/57/0`). Their 141 ms
+  median stayed frozen. Fix: an application stream older than 250 ms vs newest present/display is ignored
+  (overlay-rendering.md). Both regression tests failed before the fix.
+- Re-mark validated (no `ReflexNotDetectedAtRuntime`), but flashes remain exactly at the three re-marked
+  presents (8-present CSV groups). Diagnostics added (`unmarked present #N`); see bridge runs page.
+
 ### 2026-10-01 - `mip_bias_min` / `mip_bias_max`: bound the application's own sampler bias
 
 - Request from W3 DX12 (session `20261001_100155`). That log cannot show W3's in-game biases: the

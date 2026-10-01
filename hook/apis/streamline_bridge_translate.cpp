@@ -350,6 +350,7 @@ bool TranslateIsFeatureSupported(uint32_t feature1x, uint32_t* adapterBitMask) {
 }
 
 bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, const void* extent1x) {
+    NoteTitleActivity(TitleActivity::kTag, 0);
     static std::atomic<bool> deviceLatch{false};
     if (!DeviceReadyFor(V2Call::SetTag, deviceLatch)) {
         return false;
@@ -443,6 +444,7 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
     if (!constants1x || !g_slSetConstants) {
         return false;
     }
+    NoteTitleActivity(TitleActivity::kConstants, frameIndex);
     // A frame boundary is the other thing that can change the readiness answer: Streamline
     // finishes bringing DLSS-G's context up around swapchain creation and the first presents,
     // which CE observes here as the game's frame index moving. Re-asking once per frame while
@@ -614,6 +616,8 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         return false;
     }
     static std::atomic<bool> deviceLatch{false};
+    NoteTitleActivity(feature1x == kV1FeatureReflex ? TitleActivity::kMarker : TitleActivity::kEvaluate, frameIndex,
+                      id);
     if (feature1x == kV1FeatureReflex) {
         // Markers and sleep: `id` is the marker and the command buffer is null by design.
         if (!DeviceReadyFor(V2Call::EvaluateFeature, deviceLatch)) {

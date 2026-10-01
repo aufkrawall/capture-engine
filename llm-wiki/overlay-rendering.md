@@ -219,6 +219,14 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   `expectedGeneratorHoldUs` addition is a model.
 - Stale-risk: any other generator that paces from its own thread (Intel XeSS-FG, AFMF, third-party proxy swapchains)
   has the same topology and no producer wired. `generatorHold=modelled` while `generationObserved=1` is the symptom.
+- **A stream that stopped is not a cadence.** The application-interval median counts only while the newest application
+  Present is within 250 ms of the newest present or display (`IsApplicationPresentStreamFreshLocked`). Witcher 3 under
+  bridged DLSS-G (session `20261001_105517`) let the game's own Present reach DXGI during the generator's ~1.6 s
+  startup only, at hitch cadence. The frozen 141 ms median broke both paths for the whole session: the estimate's
+  base-interval bound (100 ms) rejected every sample (`rejected=... base=...`). The 28.9 ms PCL markers also read as
+  output-rate (`markerTrusted=0`, `markerCadenceRejects` climbing). The chain log prints `appStream=fresh|stale`, and
+  `applicationInterval` is the effective cadence after the gate. Regression:
+  `StaleApplicationStreamDoesNotDisqualifyMarkersUnderGeneration`, `...DoesNotRejectEveryEstimateUnderGeneration`.
 
 ### The generator's queue depth
 

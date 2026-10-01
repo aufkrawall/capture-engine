@@ -445,3 +445,21 @@ presented without a Reflex PRESENT_START marker - re-marked frame N`, and the ma
 Note: `title presented again without re-tagging` never fired in this run. It is driven by the
 title's present-end marker, so it cannot see a present the title sends without markers; the
 present-marker guard's log line is the one that counts those presents.
+
+## The twelfth bridged run: flashes survive the re-mark
+
+Session `20261001_105517` (0.1.6889): `ReflexNotDetectedAtRuntime` is gone and `sl.log` is silent
+during gameplay, yet the user still saw occasional dark flashes. The three re-marks during
+gameplay (`re-marked frame 788/1374/3631`) are the CSV's only 8-present groups (two 4x groups
+~9 ms apart). Their spacing (16.93 s, 65.24 s) matches to the millisecond. DLSS-G now generates a
+full group for the extra present. It flashed under all three handlings so far: tags expired
+(092557), Reflex check skipped (093949), generated (105517). That points at the extra present's own
+inputs or content, not at a single 2.x check. Unresolved: whether that present re-shows frame N
+(re-issued `eValidUntilPresent` tags then point at resources the next frame may already be writing)
+or is a new frame the title left unmarked (then frame N's constants are the wrong ones).
+
+CE now logs `unmarked present #N` with the present's sync interval, flags, the time since the
+previous present and that present's HRESULT/skip. It also logs the title's activity since the
+previous present and before it: constants (frame), tags, upscaler evaluates (frame), Reflex
+markers (last id, frame). A next run decides between the two readings. Also open: whether the
+unbridged 1.x game shows the same flash.

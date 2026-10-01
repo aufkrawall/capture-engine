@@ -216,6 +216,7 @@ public:
         diagnostics.applicationFramesInFlight = static_cast<uint32_t>(InFlightApplicationFramesLocked());
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
         diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
+        diagnostics.applicationPresentStreamFresh = IsApplicationPresentStreamFreshLocked();
         diagnostics.frameBeginIntervalUs = MedianRing(frameBeginIntervals_);
         diagnostics.markerIntervalUs = markerIntervalUs_;
         if (diagnostics.displayIntervalUs > 0 && diagnostics.applicationIntervalUs > 0) {
@@ -276,11 +277,33 @@ private:
         return std::llround(1'000'000.0 / static_cast<double>(fgBaseFps));
     }
 
+    // The application-source cadence is a measurement only while that stream is
+    // still arriving. A generator that takes presentation over from the game
+    // can let the game's own Present reach DXGI during its startup only: The
+    // Witcher 3 under bridged DLSS-G (session 20261001_105517) delivered ~1.6 s
+    // of them at hitch cadence, then none. The frozen 141 ms median exceeded the
+    // sampling bound, so every estimate was rejected, and made the game's
+    // 28.9 ms PCL markers look like output-rate markers, so the marker path was
+    // rejected too: no PC latency for the rest of the session.
+    bool IsApplicationPresentStreamFreshLocked() const {
+        if (applicationPresents_.Empty())
+            return false;
+        const int64_t newestApplicationUs = applicationPresents_.Back();
+        int64_t newestObservationUs = newestApplicationUs;
+        if (!presents_.Empty())
+            newestObservationUs = (std::max)(newestObservationUs, presents_.Back());
+        if (!displays_.Empty())
+            newestObservationUs = (std::max)(newestObservationUs, displays_.Back());
+        return newestObservationUs - newestApplicationUs <= kMaximumIntervalUs;
+    }
+
     int64_t ResolveWorkIntervalLocked() const {
         const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
         const int64_t fgBaseInterval = ResolveFgBaseIntervalLocked();
+        const int64_t applicationIntervalUs =
+            IsApplicationPresentStreamFreshLocked() ? MedianRing(applicationPresentIntervals_) : 0;
         if (fgMultiplier >= 2) {
-            const int64_t appInterval = MedianRing(applicationPresentIntervals_);
+            const int64_t appInterval = applicationIntervalUs;
             if (appInterval > 0 && (fgBaseInterval <= 0 || appInterval >= fgBaseInterval / 2))
                 return appInterval;
             if (markerCadenceTrusted_ && markerIntervalUs_ > 0)
@@ -291,7 +314,6 @@ private:
             if (displayInterval > 0)
                 return displayInterval * fgMultiplier;
         }
-        const int64_t applicationIntervalUs = MedianRing(applicationPresentIntervals_);
         if (applicationIntervalUs > 0)
             return applicationIntervalUs;
         if (markerCadenceTrusted_ && markerIntervalUs_ > 0)

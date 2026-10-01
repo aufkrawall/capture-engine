@@ -200,7 +200,91 @@ QueuedGeneratorResult MeasureQueuedGenerator(int queueDepth, bool trustQueueCoun
     return result;
 }
 
+// The Witcher 3 under bridged DLSS-G 4x (session 20261001_105517): the game's
+// own Present reaches DXGI only during the generator's startup, at hitch
+// cadence, and then never again; from there on only the generator's presenter
+// thread presents. Returns the tracker after a few seconds of steady output.
+struct StartupOnlyApplicationStream {
+    Tracker tracker;
+    int64_t lastScreenUs = 0;
+};
+
+void RunStartupOnlyApplicationStream(StartupOnlyApplicationStream& run, bool withMarkers) {
+    constexpr int multiplier = 4;
+    constexpr int64_t startupIntervalUs = 141'000;
+    constexpr int64_t applicationIntervalUs = 28'900;
+    constexpr int64_t outputIntervalUs = applicationIntervalUs / multiplier;
+    run.tracker.SetFrameGeneration(1'000'000.0f / static_cast<float>(applicationIntervalUs), multiplier);
+
+    auto presentOutputs = [&](int64_t applicationPresentUs) {
+        for (int output = 0; output < multiplier; ++output) {
+            const int64_t runtimePresentUs = applicationPresentUs + 1'000 + outputIntervalUs * output;
+            run.tracker.ObservePresent(runtimePresentUs);
+            run.lastScreenUs = runtimePresentUs + 2'000;
+            run.tracker.ObserveDisplay(run.lastScreenUs, runtimePresentUs);
+        }
+    };
+
+    int64_t applicationPresentUs = 50'000'000;
+    for (int frame = 0; frame < 12; ++frame, applicationPresentUs += startupIntervalUs) {
+        run.tracker.ObserveApplicationPresent(applicationPresentUs);
+        presentOutputs(applicationPresentUs);
+    }
+
+    NativeReport report{};
+    for (int frame = 0; frame < 120; ++frame, applicationPresentUs += applicationIntervalUs) {
+        presentOutputs(applicationPresentUs);
+        if (!withMarkers)
+            continue;
+        if (report.count == NativeReport::kCapacity) {
+            std::copy(report.frames.begin() + 1, report.frames.end(), report.frames.begin());
+            --report.count;
+        }
+        report.frames[report.count++] =
+            MakeNativeFrame(static_cast<uint64_t>(frame + 1), static_cast<uint64_t>(applicationPresentUs));
+        if (frame % 8 == 7)
+            run.tracker.SubmitNativeReport(report);
+    }
+}
+
 }  // namespace
+
+// Regression for session 20261001_105517: the frozen startup cadence (141 ms)
+// exceeded the sampling bound, so every estimate was rejected, and made the
+// game's base-rate PCL markers look like output-rate ones, so those were
+// rejected too - the overlay showed no PC latency for the whole FG session.
+TEST(SystemLatencyFGMeasurementTest, StaleApplicationStreamDoesNotDisqualifyMarkersUnderGeneration) {
+    StartupOnlyApplicationStream run;
+    RunStartupOnlyApplicationStream(run, /*withMarkers=*/true);
+
+    const auto snapshot = run.tracker.GetSnapshot(run.lastScreenUs);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::ReflexMarkers);
+    const auto diagnostics = run.tracker.GetDiagnostics();
+    EXPECT_FALSE(diagnostics.applicationPresentStreamFresh);
+    EXPECT_TRUE(diagnostics.markerCadenceTrusted);
+    EXPECT_EQ(diagnostics.markerReportsRejectedForOutputCadence, 0u);
+    EXPECT_NEAR(static_cast<double>(diagnostics.applicationIntervalUs), 28'900.0, 50.0);
+    EXPECT_TRUE(diagnostics.frameGenerationObserved);
+}
+
+TEST(SystemLatencyFGMeasurementTest, StaleApplicationStreamDoesNotRejectEveryEstimateUnderGeneration) {
+    StartupOnlyApplicationStream run;
+    RunStartupOnlyApplicationStream(run, /*withMarkers=*/false);
+
+    const auto snapshot = run.tracker.GetSnapshot(run.lastScreenUs);
+    ASSERT_TRUE(snapshot.valid);
+    EXPECT_EQ(snapshot.source, Source::Estimated);
+    // At least one application interval of work plus the generator hold.
+    EXPECT_GT(snapshot.milliseconds, 28.9f);
+    EXPECT_LT(snapshot.milliseconds, 150.0f);
+    const auto diagnostics = run.tracker.GetDiagnostics();
+    EXPECT_FALSE(diagnostics.applicationPresentStreamFresh);
+    // Only displays while the 141 ms stream still counts as live may be rejected: the 12 startup
+    // frames and the 250 ms freshness bound after the last of them. 120 steady frames follow.
+    constexpr uint64_t kOutputsInFreshnessWindow = 250'000 / (28'900 / 4) + 4;
+    EXPECT_LT(diagnostics.samplesRejectedBaseInterval, 12u * 4u + kOutputsInFreshnessWindow);
+}
 
 // Regression: the FSR-FG topology of session 20260904_034526. The application
 // Present arrives through the FidelityFX swapchain proxy on the game thread and

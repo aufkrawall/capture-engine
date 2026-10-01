@@ -151,6 +151,49 @@ TEST(StreamlineBridgeDlssgGateTest, NothingIsSynthesizedWithoutTitleMarkersOrGen
     EXPECT_EQ(frame, 5u);
 }
 
+// Session 20261001_105517: dark flashes remained at the re-marked presents. What the title sent
+// before such a present tells a re-present of frame N from a new frame it left unmarked.
+TEST(StreamlineBridgeDlssgGateTest, ActivityIsAttributedToThePresentItLedUpTo) {
+    using bridge::TitleActivity;
+    bridge::PresentMarkerLedger ledger;
+    uint32_t frame = 0;
+
+    // A normal frame: constants, two tags, the upscaler evaluate, then its markers.
+    ledger.NoteTitleActivity(TitleActivity::kConstants, 41);
+    ledger.NoteTitleActivity(TitleActivity::kTag, 0);
+    ledger.NoteTitleActivity(TitleActivity::kTag, 0);
+    ledger.NoteTitleActivity(TitleActivity::kEvaluate, 41);
+    ledger.NoteTitleActivity(TitleActivity::kMarker, 41, bridge::kV1ReflexMarkerPresentStart);
+    ledger.NoteTitlePresentStart(41);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));
+    EXPECT_EQ(ledger.LastPresentActivity().constants, 1u);
+    EXPECT_EQ(ledger.LastPresentActivity().lastConstantsFrame, 41u);
+    EXPECT_EQ(ledger.LastPresentActivity().tags, 2u);
+    EXPECT_EQ(ledger.LastPresentActivity().evaluates, 1u);
+    EXPECT_EQ(ledger.LastPresentActivity().lastMarker, bridge::kV1ReflexMarkerPresentStart);
+
+    // The extra present with nothing in between: an empty activity, the normal frame before it.
+    ASSERT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));
+    EXPECT_EQ(frame, 41u);
+    EXPECT_EQ(ledger.LastPresentActivity().constants, 0u);
+    EXPECT_EQ(ledger.LastPresentActivity().tags, 0u);
+    EXPECT_EQ(ledger.LastPresentActivity().evaluates, 0u);
+    EXPECT_EQ(ledger.LastPresentActivity().markers, 0u);
+    EXPECT_EQ(ledger.PreviousPresentActivity().lastConstantsFrame, 41u);
+
+    // A new frame the title rendered but left unmarked shows its own, newer constants.
+    ledger.NoteTitleActivity(TitleActivity::kConstants, 42);
+    ASSERT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));
+    EXPECT_EQ(ledger.LastPresentActivity().constants, 1u);
+    EXPECT_EQ(ledger.LastPresentActivity().lastConstantsFrame, 42u);
+
+    // A test present neither counts nor consumes what the title sent.
+    ledger.NoteTitleActivity(TitleActivity::kTag, 0);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(bridge::kDxgiPresentTest, true, &frame));
+    ledger.PresentNeedsMarker(0, true, &frame);
+    EXPECT_EQ(ledger.LastPresentActivity().tags, 1u);
+}
+
 TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
     auto request = TitleRequest(false, 1, false);
     const auto forwarded = bridge::DlssgOptionsFor(request);

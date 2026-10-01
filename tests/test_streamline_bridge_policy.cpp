@@ -381,7 +381,14 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     EXPECT_NE(present.find("reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent)"),
               std::string::npos);
     EXPECT_NE(present.find("v2Common, \"slHookPresent1\","), std::string::npos);
-    EXPECT_NE(present.find("BeforeCountedPresent(flags);"), std::string::npos);
+    EXPECT_NE(present.find("BeforeCountedPresent(swapChain, syncInterval, flags);"), std::string::npos);
+    EXPECT_NE(present.find("AfterCountedPresent(flags, result, skip);"), std::string::npos);
+    // Session 20261001_105517: what the title sent before each present is recorded at the 1.x
+    // entry points, so an unmarked present's log says whether it re-showed frame N or was new.
+    EXPECT_NE(translate.find("NoteTitleActivity(TitleActivity::kTag, 0);"), std::string::npos);
+    EXPECT_NE(translate.find("NoteTitleActivity(TitleActivity::kConstants, frameIndex);"), std::string::npos);
+    EXPECT_NE(translate.find("NoteTitleActivity(feature1x == kV1FeatureReflex ? TitleActivity::kMarker"),
+              std::string::npos);
     EXPECT_NE(present.find("if (!IsInModule(target, v2Common)) {"), std::string::npos);
     EXPECT_NE(runtime.find("InstallPresentMarkerGuard(GetModuleHandleA(RuntimeFeaturePath(runtimeDir, "
                            "\"sl.common.dll\").c_str()));"),

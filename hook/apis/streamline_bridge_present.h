@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "streamline_bridge_dlssg_gate.h"
+
 // The present-marker guard of the Streamline generation bridge (x64 only).
 //
 // 2.x DLSS-G requires a Reflex PRESENT_START marker before every present it counts; 1.x did not.
@@ -17,6 +19,10 @@ bool InstallPresentMarkerGuard(HMODULE v2Common);
 
 // The title's own PRESENT_START marker for `frameIndex` reached 2.x.
 void NoteTitlePresentStart(uint32_t frameIndex);
+
+// The title's other per-frame calls, recorded so an unmarked present can be told apart from a
+// re-present (see TitlePresentActivity). `marker` is the 1.x Reflex marker id for kMarker.
+void NoteTitleActivity(TitleActivity kind, uint32_t frameIndex, uint32_t marker = 0);
 
 // Sends PRESENT_START/PRESENT_END for a frame the title already presented (translate unit).
 bool SynthesizePresentMarkersFor(uint32_t frameIndex);

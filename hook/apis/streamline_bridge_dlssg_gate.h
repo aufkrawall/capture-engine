@@ -75,6 +75,25 @@ constexpr bool V1TagPersistsAcrossPresents(uint32_t bufferType) {
 inline constexpr uint32_t kV1ReflexMarkerPresentStart = 4;  // 1.x marker 4 == 2.x PCLMarker::ePresentStart
 inline constexpr uint32_t kDxgiPresentTest = 0x1;           // DXGI_PRESENT_TEST; sl.common skips those
 
+// What the title sent the bridge between two presents 2.x counted. Re-marking keeps an unmarked
+// present from being skipped, but session 20261001_105517 still showed dark flashes exactly at
+// those presents (now generated as a full 4x group). Whether such a present re-shows the last
+// frame or carries a new frame the title left unmarked decides which frame it must be attributed
+// to, and only this activity tells the two apart: a re-present brings no constants, tags or
+// upscaler evaluate; a new frame brings constants for a newer frame index.
+struct TitlePresentActivity {
+    uint32_t constants = 0;
+    uint32_t lastConstantsFrame = 0;
+    uint32_t tags = 0;
+    uint32_t evaluates = 0;  // feature evaluates other than Reflex markers and sleep
+    uint32_t lastEvaluateFrame = 0;
+    uint32_t markers = 0;    // Reflex markers and sleeps
+    uint32_t lastMarker = 0;
+    uint32_t lastMarkerFrame = 0;
+};
+
+enum class TitleActivity : uint8_t { kConstants, kTag, kEvaluate, kMarker };
+
 // Not thread-safe; the caller serialises it.
 class PresentMarkerLedger {
 public:
@@ -84,6 +103,27 @@ public:
         markedSincePresent_ = true;
     }
 
+    void NoteTitleActivity(TitleActivity kind, uint32_t frameIndex, uint32_t marker = 0) {
+        switch (kind) {
+        case TitleActivity::kConstants:
+            ++current_.constants;
+            current_.lastConstantsFrame = frameIndex;
+            break;
+        case TitleActivity::kTag:
+            ++current_.tags;
+            break;
+        case TitleActivity::kEvaluate:
+            ++current_.evaluates;
+            current_.lastEvaluateFrame = frameIndex;
+            break;
+        case TitleActivity::kMarker:
+            ++current_.markers;
+            current_.lastMarker = marker;
+            current_.lastMarkerFrame = frameIndex;
+            break;
+        }
+    }
+
     // Every present 2.x's sl.common sees. True, with the frame to re-mark, when the title sent no
     // PRESENT_START since the previous counted present. Nothing is synthesized for a title that
     // never marks presents (2.x DLSS-G would not run for it at all) or while 2.x is not generating.
@@ -91,6 +131,9 @@ public:
         if ((presentFlags & kDxgiPresentTest) != 0) {
             return false;
         }
+        previousPresentActivity_ = lastPresentActivity_;
+        lastPresentActivity_ = current_;
+        current_ = {};
         const bool marked = markedSincePresent_;
         markedSincePresent_ = false;
         if (marked || !haveTitleFrame_ || !dlssgEnabled) {
@@ -100,10 +143,17 @@ public:
         return true;
     }
 
+    // Activity that led up to the present PresentNeedsMarker last counted, and to the one before.
+    const TitlePresentActivity& LastPresentActivity() const { return lastPresentActivity_; }
+    const TitlePresentActivity& PreviousPresentActivity() const { return previousPresentActivity_; }
+
 private:
     bool haveTitleFrame_ = false;
     bool markedSincePresent_ = false;
     uint32_t lastFrame_ = 0;
+    TitlePresentActivity current_;
+    TitlePresentActivity lastPresentActivity_;
+    TitlePresentActivity previousPresentActivity_;
 };
 
 // A constants call changes the 2.x state only for a viewport the title configured DLSS-G on;

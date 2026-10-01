@@ -91,6 +91,10 @@ struct Diagnostics {
     // epoch, not that the queue is empty; the correlator then holds the
     // documented single-frame hold.
     uint32_t applicationFramesInFlight = 0;
+    // Whether the application-source Present stream is still arriving. A stale
+    // stream's cadence is ignored, so applicationIntervalUs then reports the
+    // marker or published-base cadence that replaced it.
+    bool applicationPresentStreamFresh = false;
     bool frameGenerationObserved = false;
     bool markerCadenceTrusted = true;
     // A generator is holding the application frame back behind the frames it
