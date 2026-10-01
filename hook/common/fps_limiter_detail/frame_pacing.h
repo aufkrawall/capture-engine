@@ -39,7 +39,7 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
     };
 
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    now.QuadPart = ReadClock();
 
     if (localTargetTime_ == 0) {
         // Start later in the current frame rather than a full frame ahead.
@@ -73,14 +73,14 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
     }
 
     LARGE_INTEGER beforeWait;
-    QueryPerformanceCounter(&beforeWait);
+    beforeWait.QuadPart = ReadClock();
     SmartWait(localTargetTime_);
     LARGE_INTEGER afterWait;
-    QueryPerformanceCounter(&afterWait);
+    afterWait.QuadPart = ReadClock();
     result.actualWaitUs = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
     lastActualWaitUs_ = result.actualWaitUs;
 
-    QueryPerformanceCounter(&now);
+    now.QuadPart = ReadClock();
     if (waitTicks <= 0) {
         // Capture sync owns a cadence grid, not merely a frequency. Preserve that grid's phase
         // through a hitch so the source and immutable CFR timelines do not remain half a frame
@@ -168,6 +168,15 @@ inline void FpsLimiter::EnsureTimerResolution() {
 }
 
 inline bool FpsLimiter::SmartWait(int64_t targetTick) {
+    if (clock_.waitUntil) {
+        // Test clock: a wait arrives exactly at its deadline.
+        if (targetTick - ReadClock() <= 0)
+            return false;
+        smartWaitCount_.fetch_add(1, std::memory_order_relaxed);
+        clock_.waitUntil(clock_.context, targetTick);
+        return true;
+    }
+
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
 
@@ -201,8 +210,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     // going from a 37us median (212us worst) on ~9ms coarse waits to an 88us
     // median (561us worst) on ~500us ones. Below one tick, yielding and
     // spinning is both cheaper and exact.
-    constexpr int64_t kSchedulerTickUs = 1000;
-    if (diffUs > fineMarginUs + kSchedulerTickUs && !highResTimerFailed) {
+    if (ce::fps_limiter_policy::SmartWaitArmsKernelTimer(diffUs, fineMarginUs, highResTimerFailed)) {
         std::lock_guard<std::mutex> lock(timerStateMutex_);
         if (!highResTimer) {
             // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
@@ -280,7 +288,7 @@ inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverT
             gameSleepCount, freshSleepCount);
     }
     LARGE_INTEGER retQpc;
-    QueryPerformanceCounter(&retQpc);
+    retQpc.QuadPart = ReadClock();
     lastApplyReturnQpc = retQpc.QuadPart;
     return true;
 }
@@ -304,7 +312,7 @@ inline void FpsLimiter::ApplyPostPresent() {
             HookLog("FPS Limiter: API-native post-present pacing failed; timer fallback will be used");
         }
         LARGE_INTEGER retQpc;
-        QueryPerformanceCounter(&retQpc);
+        retQpc.QuadPart = ReadClock();
         lastApplyReturnQpc = retQpc.QuadPart;
         return;
     }
@@ -337,9 +345,9 @@ inline void FpsLimiter::ApplyPostPresent() {
     bool ceOwnedSleepOk = false;
     int64_t ceOwnedSleepUs = 0;
     if (!reflexPostPresentSkipSleep_) {
-        QueryPerformanceCounter(&sleepStart);
+        sleepStart.QuadPart = ReadClock();
         ceOwnedSleepOk = g_ReflexLimiter.Sleep();
-        QueryPerformanceCounter(&sleepEnd);
+        sleepEnd.QuadPart = ReadClock();
         ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
     } else {
         ceOwnedSleepOk = true;
@@ -405,6 +413,6 @@ inline void FpsLimiter::ApplyPostPresent() {
     }
 
     LARGE_INTEGER retQpc;
-    QueryPerformanceCounter(&retQpc);
+    retQpc.QuadPart = ReadClock();
     lastApplyReturnQpc = retQpc.QuadPart;
 }

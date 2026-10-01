@@ -85,10 +85,13 @@ were fixed:
 - Config tests used `test_config.ini` / `test_whitelist_entry.ini` in the current
   working directory; both suites clobbered each other's files. Paths now include the
   process id.
-- FPS-limiter timing tests used single-shot upper bounds that were too tight under
-  scheduler contention. `SmartWait_Accuracy` now asserts on the median of seven waits,
-  and the remaining upper bounds are loaded-host sanity bounds while lower/median
-  accuracy checks stay meaningful.
+- FPS-limiter timing tests asserted on wall-clock and failed under load (widened
+  margins and medians only made them slower to fail). Since 2026-10-01 every
+  `Apply()`-level test runs on a virtual clock (`FpsLimiter::SetClockSourceForTesting`,
+  `ReflexLimiter::SetTickSourceForTesting`, fixture `VirtualLimiterClock`) and asserts
+  the exact deadline. Only the real `SmartWait` tests read the real clock, and they assert
+  only load-proof claims (never early; sub-tick never arms the timer); the path choice is
+  the pure `SmartWaitArmsKernelTimer`. 40/40 suite repeats passed at 2x CPU oversubscription.
 
 ## Duplicated overlay telemetry conversion
 

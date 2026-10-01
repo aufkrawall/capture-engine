@@ -31,7 +31,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         qpcFrequency = freq.QuadPart;
     }
     LARGE_INTEGER nowQpc;
-    QueryPerformanceCounter(&nowQpc);
+    nowQpc.QuadPart = ReadClock();
 
     bool captureRequested = shm->runtimeState.captureRequested.load(std::memory_order_acquire);
     bool captureSyncEnabled = shm->fpsLimiter.GetCaptureSyncEnabled();
@@ -243,9 +243,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::defer_lock);
     if (strictGrid) {
         LARGE_INTEGER lockStart, lockEnd, lockFreq;
-        QueryPerformanceCounter(&lockStart);
+        lockStart.QuadPart = ReadClock();
         cadenceLock.lock();
-        QueryPerformanceCounter(&lockEnd);
+        lockEnd.QuadPart = ReadClock();
         QueryPerformanceFrequency(&lockFreq);
         const int64_t lockWaitUs = ((lockEnd.QuadPart - lockStart.QuadPart) * 1000000) / lockFreq.QuadPart;
         if (lockWaitUs > 500) {
@@ -456,7 +456,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                 externalNativeLoggedSuccess_ = true;
             }
             LARGE_INTEGER retQpc;
-            QueryPerformanceCounter(&retQpc);
+            retQpc.QuadPart = ReadClock();
             lastApplyReturnQpc = retQpc.QuadPart;
             return;
         }
@@ -556,7 +556,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             isActivelyLimiting_.store(false, std::memory_order_relaxed);
             lastActualWaitUs_ = 0;
             LARGE_INTEGER retQpc;
-            QueryPerformanceCounter(&retQpc);
+            retQpc.QuadPart = ReadClock();
             lastApplyReturnQpc = retQpc.QuadPart;
             return;
         } else if (TryHandleReflexNativeWarmup(reflexDecision.useGameSleepWarmup, reflexPushOk,
@@ -597,7 +597,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                         reflexPostPresentArmedLogged_ = true;
                     }
                     LARGE_INTEGER retQpc;
-                    QueryPerformanceCounter(&retQpc);
+                    retQpc.QuadPart = ReadClock();
                     lastApplyReturnQpc = retQpc.QuadPart;
                     return;
                 }
@@ -605,9 +605,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
 
                 LARGE_INTEGER sleepStart;
                 LARGE_INTEGER sleepEnd;
-                QueryPerformanceCounter(&sleepStart);
+                sleepStart.QuadPart = ReadClock();
                 ceOwnedSleepOk = g_ReflexLimiter.Sleep();
-                QueryPerformanceCounter(&sleepEnd);
+                sleepEnd.QuadPart = ReadClock();
                 ceOwnedSleepUs = ((sleepEnd.QuadPart - sleepStart.QuadPart) * 1000000) / qpcFrequency;
 
                 reflexLimiterActive_ = true;
@@ -638,7 +638,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                         effectiveTargetFps, ceOwnedSleepOk ? 1 : 0);
                 }
                 LARGE_INTEGER retQpc;
-                QueryPerformanceCounter(&retQpc);
+                retQpc.QuadPart = ReadClock();
                 lastApplyReturnQpc = retQpc.QuadPart;
                 return;
             }
@@ -713,7 +713,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     const bool localCadenceFirstFrame = localTargetTime_ == 0;
     if (!usingCaptureSync && !localCadenceFirstFrame && lastApplyReturnQpc != 0 && useDuplicateWindow) {
         LARGE_INTEGER activeDedupQpc;
-        QueryPerformanceCounter(&activeDedupQpc);
+        activeDedupQpc.QuadPart = ReadClock();
         int64_t activeDedupTicks = qpcFrequency / 500;  // 2ms maximum duplicate window.
         int64_t intervalTicks = qpcFrequency / presentTargetFps;
         if (intervalTicks < 1) {
@@ -786,6 +786,6 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
 
     // Record time Apply() returned so sequential duplicate presents
     // (e.g. DXVK Present+PresentEx) are deduped on the next call.
-    QueryPerformanceCounter(&nowQpc);
+    nowQpc.QuadPart = ReadClock();
     lastApplyReturnQpc = nowQpc.QuadPart;
 }

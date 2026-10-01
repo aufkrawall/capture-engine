@@ -5,21 +5,6 @@
 #include <string>
 #include <vector>
 
-// The upper bound every "did not block" assertion in this file uses.
-//
-// What those assertions exist to catch is a blocking wait on the remote-limiter
-// release event, which would cost that event's whole timeout - hundreds of
-// milliseconds, not tens. They used to bound elapsed time at 100 ms, which never
-// discriminated that from an ordinary scheduling stall on a busy host, and made
-// this suite fail roughly one full run in six on a healthy tree. Each site also
-// records its elapsed time, so a real slowdown stays visible without being fatal.
-//
-// This is a weaker timing assumption, not the absence of one. The exact form is
-// to assert on what the limiter decided rather than on what the scheduler
-// delivered - GateEveryPresentStaysNonBlockingWhenInactive does that with
-// GetLastWaitUs() == 0 - and that is where the rest of these belong too.
-constexpr double kNotBlockingMs = 500.0;
-
 // Test the high-precision wait logic
 // SmartWait's contract is the deadline: it must block until the target tick and
 // must not return before it. That holds under any load, so it is asserted
@@ -30,8 +15,11 @@ constexpr double kNotBlockingMs = 500.0;
 // form of this test bounded the median at 20 ms and the worst sample at 60 ms
 // over a 16.666 ms wait, and failed on a healthy tree whenever the machine was
 // busy. The overshoot is still computed and reported on failure, as a
-// diagnostic; the path SmartWait chose to get there is pinned structurally by
-// SubTickWaitsLandWithoutTheKernelTimer and its supra-tick sibling.
+// diagnostic. Neither is whether a wait happened at all, nor which path it took:
+// a host stall between reading the clock and entering SmartWait can consume
+// the whole wait, so on a loaded machine a 16.7 ms request may reach SmartWait
+// already due. The path choice is pinned exactly, against the pure policy
+// SmartWait uses, by SmartWaitPathIsChosenByRemainingTime.
 TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
     limiter.ResetSmartWaitCounters();
 
@@ -44,7 +32,7 @@ TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
         const int64_t targetUs = 16666;  // 16.666 ms
         const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
 
-        ASSERT_TRUE(limiter.SmartWait(targetTicks));
+        limiter.SmartWait(targetTicks);
 
         QueryPerformanceCounter(&end);
         // The deadline, exactly. Never early, at any load.
@@ -53,9 +41,11 @@ TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
         overshootMs.push_back(static_cast<double>(end.QuadPart - targetTicks) * 1000.0 / freq.QuadPart);
     }
 
-    // Each one had room for the kernel timer and must have used it.
-    EXPECT_EQ(limiter.GetSmartWaitCount(), 7u);
-    EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 7u);
+    // Load-proof bookkeeping only: a wait the host delayed past its deadline
+    // is not counted, and only counted waits can arm the timer.
+    EXPECT_LE(limiter.GetSmartWaitCount(), 7u);
+    EXPECT_LE(limiter.GetKernelTimerWaitCount(), limiter.GetSmartWaitCount());
+    RecordProperty("kernelTimerWaits", std::to_string(limiter.GetKernelTimerWaitCount()));
 
     std::sort(overshootMs.begin(), overshootMs.end());
     RecordProperty("medianOvershootMs", std::to_string(overshootMs[overshootMs.size() / 2]));
@@ -76,99 +66,64 @@ TEST_F(FpsLimiterTest, SmartWait_Late) {
     EXPECT_FALSE(waited);
 }
 
-// Test the SmartWait function directly
+// Test the SmartWait function directly. The deadline is the whole contract:
+// never early, asserted exactly. How late it lands is the scheduler's answer.
 TEST_F(FpsLimiterTest, SmartWait_WithTarget) {
     LARGE_INTEGER start, end;
     QueryPerformanceCounter(&start);
 
-    // Target 5ms in the future (enough to verify wait, fast enough for tests)
-    int64_t targetTicks = start.QuadPart + (5 * freq.QuadPart / 1000);
-    bool waited = limiter.SmartWait(targetTicks);
+    const int64_t targetTicks = start.QuadPart + (5 * freq.QuadPart / 1000);
+    limiter.SmartWait(targetTicks);
 
     QueryPerformanceCounter(&end);
-
-    EXPECT_TRUE(waited);
-
+    EXPECT_GE(end.QuadPart, targetTicks) << "SmartWait returned before its deadline";
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    EXPECT_GE(elapsedMs, 3.0);  // Should wait at least ~3ms
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
+    RecordProperty("elapsedMs", std::to_string((double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart));
 }
 
+// The Apply() tests below run on the virtual clock (UseVirtualClock), so the
+// ticks a call took are exactly the wait the limiter decided on. A wait on a
+// helper-process event - the "blocking" these tests guard against - is not on
+// that clock at all and would show up as a different wait, not as a slow one.
+
 TEST_F(FpsLimiterTest, Apply_GeneralBasicUsesLocalCadence) {
-    // Setup for general FPS limit
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-
-    limiter.Apply();
-
-    QueryPerformanceCounter(&end);
-
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-
-    // First local-cadence frame starts around half an interval ahead.
-    EXPECT_GE(elapsedMs, 3.0);
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
+    // First local-cadence frame starts half an interval ahead.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), FirstSlotTicks(60));
+    EXPECT_TRUE(limiter.IsActivelyLimiting());
 }
 
 TEST_F(FpsLimiterTest, Apply_NoExternalTargetUsesLocalCadence) {
-    // Setup for general FPS limit
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(60);
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-
-    limiter.Apply();
-
-    QueryPerformanceCounter(&end);
-
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-
-    // Local cadence should not pay any helper-process event timeout.
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
+    // Local cadence waits for its own slot and nothing else.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), FirstSlotTicks(60));
+    EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 60);
 }
 
 TEST_F(FpsLimiterTest, GeneralBasicUsesLocalCadenceWithoutLimiterProcessTimeout) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
     mockShm->fpsLimiter.SetGeneralFps(140);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-
-    limiter.Apply();
-
-    QueryPerformanceCounter(&end);
-
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), FirstSlotTicks(140));
     EXPECT_EQ(limiter.GetMissedFrames(), 0u);
 }
 
 TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActive) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -177,19 +132,9 @@ TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActi
 
     limiter.Apply();
 
-    bool sawFastDedup = false;
-    for (int attempt = 0; attempt < 3 && !sawFastDedup; ++attempt) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply();
-        QueryPerformanceCounter(&end);
-
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
-    }
-
-    EXPECT_TRUE(sawFastDedup);
+    // No time passes between the two calls, so the second is a duplicate.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), 0);
+    EXPECT_EQ(limiter.GetLastWaitUs(), 0);
 }
 
 // Strange Brigade Vulkan presents several real swapchain images per frame
@@ -199,6 +144,7 @@ TEST_F(FpsLimiterTest, GeneralBasicDeduplicatesImmediateSequentialApplyWhileActi
 // pace the immediate second Apply too: it waits for the next grid slot instead
 // of returning fast.
 TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -207,73 +153,41 @@ TEST_F(FpsLimiterTest, GateEveryPresentPacesImmediateSecondApply) {
 
     limiter.Apply(false, kFinalOutputSite);
 
-    bool sawFastDedup = false;
-    bool sawPacedSecondApply = false;
-    for (int attempt = 0; attempt < 3 && !sawPacedSecondApply; ++attempt) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply(false, kFinalOutputSite);
-        QueryPerformanceCounter(&end);
-
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
-        // Strict grid must never take the dedup fast path: the second present
-        // waits for its own grid slot (~16.7ms after the first at 60fps).
-        sawPacedSecondApply = elapsedMs >= 3.0 && limiter.GetLastWaitUs() > 0;
-    }
-
-    EXPECT_FALSE(sawFastDedup);
-    EXPECT_TRUE(sawPacedSecondApply);
+    // Strict grid never takes the dedup fast path: the second present waits
+    // for its own grid slot, one interval after the first.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), FirstIntervalTicks(60));
+    EXPECT_GT(limiter.GetLastWaitUs(), 0);
 }
 
 // A final-output site must never stall when the limiter is not configured: it
 // only changes lock/dedup semantics, not the inactive fast path.
 TEST_F(FpsLimiterTest, GateEveryPresentStaysNonBlockingWhenInactive) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(false);
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);
-    QueryPerformanceCounter(&end);
-
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // The exact, load-independent form of "non-blocking": an inactive limiter
-    // decides to wait for nothing at all, whatever the host was doing meanwhile.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), 0);
     EXPECT_EQ(limiter.GetLastWaitUs(), 0);
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
     EXPECT_FALSE(limiter.IsActivelyLimiting());
 }
 
 TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
+    UseVirtualClock();
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = false;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
     mockShm->fpsLimiter.SetCaptureFps(60);
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    limiter.Apply();
-
-// NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    QueryPerformanceCounter(&end);
-
-    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
-    EXPECT_GE(elapsedMs, 3.0);
-    RecordProperty("elapsedMs", std::to_string(elapsedMs));
-    // See kNotBlockingMs.
-    EXPECT_LT(elapsedMs, kNotBlockingMs);
+    // Capture sync is already pacing during warmup (captureRequested, not yet
+    // recording): the first frame takes the 60 fps half-interval slot.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), FirstSlotTicks(60));
+    EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 60);
 }
 
 TEST_F(FpsLimiterTest, VfrCaptureStillHonorsConfiguredGeneralLimiter) {
+    UseVirtualClock();
     mockShm->runtimeState.captureRequested = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
@@ -283,8 +197,7 @@ TEST_F(FpsLimiterTest, VfrCaptureStillHonorsConfiguredGeneralLimiter) {
     mockShm->fpsLimiter.SetGeneralFps(120);
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
-    limiter.Apply();
-
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), FirstSlotTicks(120));
     EXPECT_TRUE(limiter.IsActivelyLimiting());
     EXPECT_GT(limiter.GetLastWaitUs(), 0);
 }

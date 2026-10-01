@@ -140,7 +140,14 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   deadline. Invisible while the limiter's waits were whole milliseconds; front-loading made the pre-present wait
   hundreds of microseconds and the measured overshoot went from a 37 us median (212 us worst) on ~9 ms coarse waits
   to an 88 us median (561 us worst) on ~500 us ones. The coarse timer is now only armed when the coarse portion
-  exceeds a tick; below that the existing yield/spin loop owns the whole wait.
+  exceeds a tick; below that the existing yield/spin loop owns the whole wait. The decision is the pure
+  `fps_limiter_policy::SmartWaitArmsKernelTimer`, tested exactly.
+- **Tests never time the limiter on the real clock.** Every limiter time read goes through `FpsLimiter::ReadClock()`
+  and every wait through `SmartWait`, so `SetClockSourceForTesting` (unset in production: QPC + SmartWait) lets
+  `FpsLimiterTest::UseVirtualClock()` make a wait land exactly on its deadline. Reflex game-sleep recency
+  (`HasRecentGameSleep(500)` gates DLSS-G pacing) reads `ReflexLimiter::NowTickMs()`, which the fixture ties to the
+  same virtual clock. A new limiter test that asserts WHEN a caller is released must use the virtual clock and
+  `clock.Advance()` for simulated game work or hitches - never `sleep_for` or measured QPC spans.
 - **Front-loading does not recover the whole hold, because the presentation queue takes what the limiter gives up.**
   On `20260913_130052` `anchorToPresent` fell 20.5 -> 11.8 ms exactly as designed, but `presentToDisplay` rose
   0.4 -> 6.8 ms, so the published estimate went 26.4 -> 24.2 ms - a real 2.2 ms, not 9. Presenting earlier moves the

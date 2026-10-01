@@ -5,9 +5,10 @@
 - Request from W3 DX12 (session `20261001_100155`). That log cannot show W3's in-game biases: the
   16-entry DX12 fingerprint log filled by 10:02:07, before gameplay (15x 0.0, one +2.0 comparison sampler).
 - New shared policy `common/mip_bias_limits.h`, applied last in `FinalizeMipBias` and in the Vulkan layer.
-  ABI 67. New DX12 log: each distinct application bias once (`first seen`). Pending a hardware run.
-- Open: if W3 applies its upscaler bias in the shader rather than in sampler descriptors, the bound
-  cannot reach it; the `first seen` lines will show which case applies.
+  ABI 67. VALIDATED `20261001_103142` (W3 material samplers request -4.0; bounded to -0.1/-2.0, visible).
+- 0.1.6889: DX12 now logs each application->effective pair once plus the min/max range on widening.
+- Same day: FPS limiter tests moved to a virtual clock (see frame-pacing-and-limiter.md); the
+  wall-clock form flaked again in this session (6.3 ms vs >= 8, 15.8 vs < 15).
 
 ### 2026-10-01 - Streamline bridge: re-mark presents the title leaves without PRESENT_START
 

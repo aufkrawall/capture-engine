@@ -389,8 +389,9 @@ TEST_F(FpsLimiterTest, ReflexFinalOutputInjectRouteUsesDisplayedCaptureTarget) {
 
 // Basic mode has the same final-output target semantics as native/FG-fallback
 // mode. Capture sync avoids the intentional immediate duplicate-present guard,
-// making the scaled interval directly measurable without a timing sleep.
+// so on the virtual clock the second Apply waits exactly one scaled interval.
 TEST_F(FpsLimiterTest, BasicCaptureSyncScalesToFinalFGOutputRate) {
+    UseVirtualClock();
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
@@ -403,16 +404,10 @@ TEST_F(FpsLimiterTest, BasicCaptureSyncScalesToFinalFGOutputRate) {
 
     limiter.Apply();
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply();
-    QueryPerformanceCounter(&end);
-    const double elapsedMs =
-        static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
-
-    EXPECT_GE(elapsedMs, 25.0);
-    EXPECT_LT(elapsedMs, 100.0);
+    // 60 fps of final output with 2x FG: one paced group every 33.3 ms.
+    const int64_t secondWaitTicks = VirtualTicksOf([&] { limiter.Apply(); });
     g_FGCompat.SetDLSSFGActive(false);
+    EXPECT_EQ(secondWaitTicks, FirstIntervalTicks(60, 2));
 }
 
 TEST_F(FpsLimiterTest, ExplicitNativeModeUsesApiBackendAfterPresent) {

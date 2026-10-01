@@ -693,4 +693,16 @@ inline PhasePreservingLateAdvance AdvanceCaptureSyncDeadlineAfterLateFrame(int64
     return result;
 }
 
+// Whether SmartWait arms the kernel's high-resolution waitable timer for the
+// coarse part of a wait. EnsureTimerResolution() puts the scheduler on a 1 ms
+// tick, and a timer armed for less than that cannot land inside it - it sleeps
+// to the next tick, past the deadline - so a wait must leave a whole tick after
+// the fine margin, or it yields and spins instead. A pure function of the
+// remaining time, so the choice is testable without measuring a real wait.
+inline constexpr int64_t kSmartWaitSchedulerTickUs = 1000;
+
+inline bool SmartWaitArmsKernelTimer(int64_t remainingUs, int64_t fineMarginUs, bool timerUnavailable) {
+    return !timerUnavailable && remainingUs > fineMarginUs + kSmartWaitSchedulerTickUs;
+}
+
 }  // namespace ce::fps_limiter_policy

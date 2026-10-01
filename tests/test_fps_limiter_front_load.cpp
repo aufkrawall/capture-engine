@@ -1,6 +1,7 @@
 #include "test_fps_limiter_shared.h"
 
 #include <algorithm>
+#include <string>
 
 // Front-loaded cadence placement. The limiter's deadline decides when a frame
 // is PRESENTED; it does not have to decide when the game may BUILD it.
@@ -98,7 +99,15 @@ TEST(FpsLimiterPolicyTest, FrontLoadHeadroomDecaysBackToZero) {
     EXPECT_EQ(headroom, 0);
 }
 
+// The frame work the front-loaded tests simulate: the game builds each frame for
+// 1 ms of virtual time after the limiter releases it. On the real clock that span
+// was whatever the host scheduler did between two calls, and a loaded machine
+// reported a whole interval of "work" - the budget saturated and
+// UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents failed under load.
+constexpr int64_t kGameWorkUs = 1000;
+
 TEST_F(FpsLimiterTest, UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -106,6 +115,7 @@ TEST_F(FpsLimiterTest, UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        clock.Advance(TicksFromUs(kGameWorkUs));
         // A present that is scanned out promptly: the frame's GPU work finished
         // before its deadline, so the release may move in.
         limiter.ObservePresentToDisplay(400);
@@ -129,6 +139,7 @@ TEST_F(FpsLimiterTest, UniquePresentSiteMovesTheWaitAheadOfTheFrameItPresents) {
 // pre-present wait own the cap, so a call site that never runs the
 // post-present half must still be capped exactly.
 TEST_F(FpsLimiterTest, SkippedPostPresentReleaseStillHoldsTheCap) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -138,22 +149,22 @@ TEST_F(FpsLimiterTest, SkippedPostPresentReleaseStillHoldsTheCap) {
     limiter.Apply(true, kUniquePresentSite);
 
     constexpr int kFrames = 24;
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    for (int i = 0; i < kFrames; ++i) {
-        // Deliberately no ApplyPostPresent(): the armed release is dropped.
-        limiter.Apply(true, kUniquePresentSite);
-    }
-    QueryPerformanceCounter(&end);
+    const int64_t elapsedTicks = VirtualTicksOf([&] {
+        for (int i = 0; i < kFrames; ++i) {
+            // Deliberately no ApplyPostPresent(): the armed release is dropped.
+            limiter.Apply(true, kUniquePresentSite);
+        }
+    });
 
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    const double idealMs = kFrames * 1000.0 / 120.0;
-    EXPECT_GE(elapsedMs, idealMs * 0.9) << "dropping the release must never lift the cap";
+    // No time passes outside the limiter's own waits, so the cap is exact:
+    // kFrames whole intervals, each within one tick of rational remainder.
+    EXPECT_GE(elapsedTicks, kFrames * (FirstIntervalTicks(120) - 1))
+        << "dropping the release must never lift the cap";
     EXPECT_EQ(limiter.GetFrontLoadedPacingState().releases, 0u);
 }
 
 TEST_F(FpsLimiterTest, DuplicateProneSiteNeverArmsAFrontLoadedRelease) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -161,6 +172,7 @@ TEST_F(FpsLimiterTest, DuplicateProneSiteNeverArmsAFrontLoadedRelease) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        clock.Advance(TicksFromUs(kGameWorkUs));
         limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kDuplicateProneSite);
         limiter.ApplyPostPresent();
@@ -172,6 +184,7 @@ TEST_F(FpsLimiterTest, DuplicateProneSiteNeverArmsAFrontLoadedRelease) {
 // Frame generation disqualifies the placement for the same reason it
 // disqualifies the strict grid on a unique-application-present site.
 TEST_F(FpsLimiterTest, FrameGenerationKeepsTheBackEdgePlacement) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -183,6 +196,7 @@ TEST_F(FpsLimiterTest, FrameGenerationKeepsTheBackEdgePlacement) {
     ConfirmDLSSFGPacing();
 
     for (int i = 0; i < 48; ++i) {
+        clock.Advance(TicksFromUs(kGameWorkUs));
         limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
@@ -198,6 +212,7 @@ TEST_F(FpsLimiterTest, FrameGenerationKeepsTheBackEdgePlacement) {
 // slack before the deadline raises the rate of presents that miss it, and a
 // missed deadline there skips whole grid slots.
 TEST_F(FpsLimiterTest, CaptureSyncKeepsTheBackEdgePlacement) {
+    UseVirtualClock();
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
@@ -206,6 +221,7 @@ TEST_F(FpsLimiterTest, CaptureSyncKeepsTheBackEdgePlacement) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        clock.Advance(TicksFromUs(kGameWorkUs));
         limiter.ObservePresentToDisplay(400);
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
@@ -257,6 +273,7 @@ TEST(FpsLimiterPolicyTest, FrontLoadingNeedsDisplayedTransitionEvidence) {
 // below the frame's whole CPU+GPU time buys no latency at all - so the back
 // edge stays the default rather than a guess.
 TEST_F(FpsLimiterTest, NoDisplayedTransitionEvidenceKeepsTheBackEdgePlacement) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -264,6 +281,7 @@ TEST_F(FpsLimiterTest, NoDisplayedTransitionEvidenceKeepsTheBackEdgePlacement) {
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     for (int i = 0; i < 48; ++i) {
+        clock.Advance(TicksFromUs(kGameWorkUs));
         limiter.Apply(true, kUniquePresentSite);
         limiter.ApplyPostPresent();
     }
@@ -276,54 +294,59 @@ TEST_F(FpsLimiterTest, NoDisplayedTransitionEvidenceKeepsTheBackEdgePlacement) {
 // made the pre-present wait hundreds of microseconds, where the measured
 // overshoot went from a 37 us median on ~9 ms coarse waits to an 88 us median
 // (561 us worst) on ~500 us ones. SmartWait must land those by yielding.
-// Asserted structurally rather than by measuring how long the waits took. The
-// claim is that SmartWait does not hand a sub-tick wait to the kernel timer,
-// and which path it takes is SmartWait's own decision; how long the wait then
-// lasts is the host scheduler's answer and moves with system load. The measured
-// form of this test failed on an otherwise healthy tree whenever the machine
-// was busy - see the sibling test below for the supra-tick half of the same
-// contract.
+//
+// The path is chosen from the time remaining when SmartWait looks, which is a
+// pure function, so it is pinned there exactly - both directions, so the
+// sub-tick rule cannot be satisfied by abandoning the timer altogether.
+TEST(FpsLimiterPolicyTest, SmartWaitPathIsChosenByRemainingTime) {
+    using ce::fps_limiter_policy::kSmartWaitSchedulerTickUs;
+    using ce::fps_limiter_policy::SmartWaitArmsKernelTimer;
+    constexpr int64_t kMarginUs = 250;
+
+    EXPECT_FALSE(SmartWaitArmsKernelTimer(400, kMarginUs, false)) << "sub-tick: yield and spin";
+    EXPECT_FALSE(SmartWaitArmsKernelTimer(kMarginUs + kSmartWaitSchedulerTickUs, kMarginUs, false))
+        << "exactly one tick after the margin still cannot land inside the tick";
+    EXPECT_TRUE(SmartWaitArmsKernelTimer(kMarginUs + kSmartWaitSchedulerTickUs + 1, kMarginUs, false));
+    EXPECT_TRUE(SmartWaitArmsKernelTimer(9000, kMarginUs, false)) << "supra-tick: use the timer";
+    EXPECT_FALSE(SmartWaitArmsKernelTimer(9000, kMarginUs, true)) << "no timer available: poll";
+}
+
+// The real primitive, for what holds under any load. A sub-tick request can
+// only shrink while the host stalls, never grow, so it can never reach the
+// timer path - and no wait may return before its deadline.
 TEST_F(FpsLimiterTest, SubTickWaitsLandWithoutTheKernelTimer) {
     limiter.ResetSmartWaitCounters();
 
     for (int i = 0; i < 15; ++i) {
         LARGE_INTEGER start;
         QueryPerformanceCounter(&start);
-        const int64_t targetUs = 400;
-        const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
+        const int64_t targetTicks = start.QuadPart + (400 * freq.QuadPart / 1000000);
 
-        ASSERT_TRUE(limiter.SmartWait(targetTicks));
+        limiter.SmartWait(targetTicks);
 
-        // Never early: the deadline is the contract, and it holds under any
-        // load. An overshoot bound would not.
         LARGE_INTEGER end;
         QueryPerformanceCounter(&end);
         EXPECT_GE(end.QuadPart, targetTicks);
     }
 
-    EXPECT_EQ(limiter.GetSmartWaitCount(), 15u);
     EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 0u)
         << "a wait shorter than the scheduler tick cannot land inside it; the timer sleeps past the deadline";
 }
 
-// The other half of the same contract: a wait with room for the timer does use
-// it, rather than burning the whole interval in the yield/spin loop. Without
-// this, the test above would still pass if SmartWait stopped using the kernel
-// timer altogether.
-TEST_F(FpsLimiterTest, SupraTickWaitsStillUseTheKernelTimer) {
+// A real supra-tick wait still lands on or after its deadline, whichever path
+// the remaining time selected by the time SmartWait looked.
+TEST_F(FpsLimiterTest, SupraTickWaitsNeverReturnEarly) {
     limiter.ResetSmartWaitCounters();
 
     LARGE_INTEGER start;
     QueryPerformanceCounter(&start);
-    const int64_t targetUs = 9000;
-    const int64_t targetTicks = start.QuadPart + (targetUs * freq.QuadPart / 1000000);
+    const int64_t targetTicks = start.QuadPart + (9000 * freq.QuadPart / 1000000);
 
-    ASSERT_TRUE(limiter.SmartWait(targetTicks));
+    limiter.SmartWait(targetTicks);
 
     LARGE_INTEGER end;
     QueryPerformanceCounter(&end);
     EXPECT_GE(end.QuadPart, targetTicks);
-
-    EXPECT_EQ(limiter.GetSmartWaitCount(), 1u);
-    EXPECT_EQ(limiter.GetKernelTimerWaitCount(), 1u);
+    EXPECT_LE(limiter.GetKernelTimerWaitCount(), limiter.GetSmartWaitCount());
+    RecordProperty("kernelTimerWaits", std::to_string(limiter.GetKernelTimerWaitCount()));
 }

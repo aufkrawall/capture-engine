@@ -80,8 +80,22 @@ public:
         return targetIntervalUs_.load(std::memory_order_acquire);
     }
 
+    // The millisecond clock the recency checks below read. Unset - always,
+    // outside the tests - it is GetTickCount64. The FPS limiter decides
+    // whether DLSS-G pacing is confirmed by asking whether the game slept
+    // within the last 500 ms, so on the real clock a load spike between a test
+    // marking the sleep and calling Apply() changed the limiter's decision.
+    // FpsLimiterTest drives this from its virtual clock instead.
+    struct TickSource {
+        void* context = nullptr;
+        ULONGLONG (*nowMs)(void* context) = nullptr;
+    };
+    void SetTickSourceForTesting(const TickSource& source) {
+        tickSource_ = source.nowMs ? source : TickSource{};
+    }
+
     void MarkNativePacingSignal() {
-        lastNativePacingSignalTick_.store(GetTickCount64(), std::memory_order_release);
+        lastNativePacingSignalTick_.store(NowTickMs(), std::memory_order_release);
     }
 
     bool HasRecentNativePacingSignal(uint32_t maxAgeMs) const {
@@ -89,12 +103,12 @@ public:
         if (lastTick == 0) {
             return false;
         }
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = NowTickMs();
         return now >= lastTick && (now - lastTick) <= maxAgeMs;
     }
 
     void MarkGameSleep(const char* sourceName = nullptr) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = NowTickMs();
         const ULONGLONG previous = lastGameSleepTick_.exchange(now, std::memory_order_acq_rel);
         gameSleepObserved_.store(true, std::memory_order_release);
         gameSleepCount_.fetch_add(1, std::memory_order_acq_rel);
@@ -109,7 +123,7 @@ public:
         if (lastTick == 0) {
             return false;
         }
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = NowTickMs();
         return now >= lastTick && (now - lastTick) <= maxAgeMs;
     }
 
@@ -295,6 +309,11 @@ public:
 #endif
 
 private:
+    ULONGLONG NowTickMs() const {
+        return tickSource_.nowMs ? tickSource_.nowMs(tickSource_.context) : GetTickCount64();
+    }
+    TickSource tickSource_{};  // see SetTickSourceForTesting
+
     static bool IsSystemModulePath(const char* path);
     static bool IsCaptureHookModulePath(const char* path);
 

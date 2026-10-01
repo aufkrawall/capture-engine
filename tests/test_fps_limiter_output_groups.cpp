@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
-#include <thread>
 #include <vector>
 
 // Output-group admission for real final presentation boundaries (the
@@ -47,10 +46,6 @@ NativeFpsPacingBackend MakeMockNativePacingBackend(MockNativePacingBackendState*
     backend.clear = [](void* context) { ++static_cast<MockNativePacingBackendState*>(context)->clearCalls; };
     backend.name = "test native backend";
     return backend;
-}
-
-double ElapsedMs(const LARGE_INTEGER& start, const LARGE_INTEGER& end, const LARGE_INTEGER& freq) {
-    return static_cast<double>(end.QuadPart - start.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
 }
 
 // Sum of `groups` consecutive rational group intervals at the given frequency.
@@ -280,6 +275,7 @@ TEST(FpsLimiterOutputGroupPolicyTest, NativeDriverPacingTargetIsTheFrameGenerati
 // policy paced only the first callback of such a burst and let the whole
 // second group through unpaced.
 TEST_F(FpsLimiterTest, ThreeTimesSixCallbackBurstPacesExactlyTwoGroups) {
+    UseVirtualClock();
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // 3x group interval = 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -288,23 +284,21 @@ TEST_F(FpsLimiterTest, ThreeTimesSixCallbackBurstPacesExactlyTwoGroups) {
     const uint32_t pacedBefore = limiter.GetPacedGroupCount();
     const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
 
-    std::vector<double> elapsedMs;
-    elapsedMs.reserve(6);
+    std::vector<int64_t> waitTicks;
+    waitTicks.reserve(6);
     for (int i = 0; i < 6; ++i) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply(false, kFinalOutputSite);
-        QueryPerformanceCounter(&end);
-        elapsedMs.push_back(ElapsedMs(start, end, freq));
+        waitTicks.push_back(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }));
     }
 
-    // Owners are callbacks 1 and 4; generated passes are 2, 3, 5, 6.
-    EXPECT_GE(elapsedMs[0], 3.0) << "first owner takes the half-interval cadence slot (~6.25 ms)";
-    EXPECT_LT(elapsedMs[1], 3.0);
-    EXPECT_LT(elapsedMs[2], 3.0);
-    EXPECT_GE(elapsedMs[3], 8.0) << "second owner waits one full group interval (12.5 ms)";
-    EXPECT_LT(elapsedMs[4], 3.0);
-    EXPECT_LT(elapsedMs[5], 3.0);
+    // Owners are callbacks 1 and 4; generated passes are 2, 3, 5, 6. On the
+    // virtual clock these are the limiter's exact decisions, not what the
+    // scheduler delivered (the wall-clock form flaked at 6.3 ms vs >= 8).
+    EXPECT_EQ(waitTicks[0], FirstSlotTicks(240, 3)) << "first owner takes the half-interval slot (6.25 ms)";
+    EXPECT_EQ(waitTicks[1], 0);
+    EXPECT_EQ(waitTicks[2], 0);
+    EXPECT_EQ(waitTicks[3], FirstIntervalTicks(240, 3)) << "second owner waits one full group interval (12.5 ms)";
+    EXPECT_EQ(waitTicks[4], 0);
+    EXPECT_EQ(waitTicks[5], 0);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 2u);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount() - generatedBefore, 4u);
     EXPECT_EQ(limiter.GetConcurrentApplySkipCount(), 0u);
@@ -339,6 +333,7 @@ TEST_F(FpsLimiterTest, NoFGRealBoundaryAdmitsEveryCallbackAsGroupOwner) {
 // keep the immediate dedup while FG is active: generated outputs there are not
 // pushed onto the base grid and the dedup fast path still applies.
 TEST_F(FpsLimiterTest, LegacyDuplicateCallSiteKeepsImmediateDedupWhileFGActive) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -348,12 +343,8 @@ TEST_F(FpsLimiterTest, LegacyDuplicateCallSiteKeepsImmediateDedupWhileFGActive) 
     g_FGCompat.SetDLSSFGActive(true);
 
     limiter.Apply();  // paces the first base frame
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply();  // duplicate of the same logical frame
-    QueryPerformanceCounter(&end);
-
-    EXPECT_LT(ElapsedMs(start, end, freq), 3.0);
+    // Duplicate of the same logical frame, with no time in between.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(); }), 0);
     EXPECT_EQ(limiter.GetLastWaitUs(), 0);
     EXPECT_EQ(limiter.GetPacedGroupCount(), 0u) << "boundary admission counters stay untouched";
 
@@ -366,6 +357,7 @@ TEST_F(FpsLimiterTest, LegacyDuplicateCallSiteKeepsImmediateDedupWhileFGActive) 
 // first callback after the transition owns a clean cadence slot on the new
 // group grid.
 TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
+    UseVirtualClock();
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // group interval 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -378,12 +370,9 @@ TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
     const uint32_t resetsBefore = limiter.GetGroupAdmissionResetCount();
     mockShm->fpsLimiter.SetGeneralFps(120);  // group interval 25 ms
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);  // clean group owner after the reset
-    QueryPerformanceCounter(&end);
-
-    EXPECT_GE(ElapsedMs(start, end, freq), 8.0) << "first cadence slot of the new grid (~12.5 ms half-interval)";
+    // Clean group owner after the reset.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), FirstSlotTicks(120, 3))
+        << "first cadence slot of the new grid (12.5 ms half-interval)";
     EXPECT_EQ(limiter.GetGroupAdmissionResetCount() - resetsBefore, 1u);
     EXPECT_EQ(limiter.GetPacedGroupCount(), 2u);
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount(), 1u);
@@ -395,6 +384,7 @@ TEST_F(FpsLimiterTest, TargetChangeResetsGroupAdmissionAndPacesNextCallback) {
 // Deactivation must clear the group ordinal too so re-activation cannot
 // inherit a partial group.
 TEST_F(FpsLimiterTest, DeactivationResetsPartialGroupAdmission) {
+    UseVirtualClock();
     ConfigureThreeTimesGeneralCap(*mockShm, 240);
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -413,11 +403,7 @@ TEST_F(FpsLimiterTest, DeactivationResetsPartialGroupAdmission) {
     // Re-activation: the first callback owns a clean slot.
     const uint32_t resetsBefore = limiter.GetGroupAdmissionResetCount();
     mockShm->fpsLimiter.SetGeneralEnabled(true);
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);
-    QueryPerformanceCounter(&end);
-    EXPECT_GE(ElapsedMs(start, end, freq), 3.0);
+    EXPECT_GT(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), 0) << "the new owner is paced";
     EXPECT_EQ(limiter.GetGroupAdmissionResetCount() - resetsBefore, 0u) << "already clean from deactivation";
     EXPECT_EQ(limiter.GetPacedGroupCount(), 2u);
 
@@ -466,6 +452,7 @@ TEST_F(FpsLimiterTest, GeneratedSlotsNeverArmPostPresentNativeCadence) {
 // inject capture sync keeps one base group at the requested capture rate
 // because its source contains only application-rendered frames.
 TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
+    UseVirtualClock();
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
     ConfirmDLSSFGPacing();
@@ -478,25 +465,16 @@ TEST_F(FpsLimiterTest, CaptureSourceChoosesGroupCadenceScale) {
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
     mockShm->fpsLimiter.SetCaptureFps(60);
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);
-    QueryPerformanceCounter(&end);
-    EXPECT_GE(ElapsedMs(start, end, freq), 15.0);
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), FirstSlotTicks(60, 3));
 
     // This test leaves the explicit final-output route unavailable, so inject
     // capture publishes only application-rendered frames and the target stays
     // the 60 fps base rate (~8.3 ms first slot).
     mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
     mockShm->fpsLimiter.SetGeneralEnabled(false);
-    LARGE_INTEGER start2, end2;
     limiter.Shutdown();
-    QueryPerformanceCounter(&start2);
-    limiter.Apply(false, kFinalOutputSite);
-    QueryPerformanceCounter(&end2);
-    const double injectMs = ElapsedMs(start2, end2, freq);
-    EXPECT_GE(injectMs, 3.0);
-    EXPECT_LT(injectMs, 15.0) << "inject capture sync must not scale the cadence by the FG multiplier";
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), FirstSlotTicks(60, 1))
+        << "inject capture sync must not scale the cadence by the FG multiplier";
 
     mockShm->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
     g_FGCompat.SetDLSSFGMultiplier(0);
@@ -583,6 +561,7 @@ TEST_F(FpsLimiterTest, NativeDriverPacingScalesInjectCaptureSyncTargetToOutputRa
 // the modulo admission budget: the same multiplier-cycle continues and no
 // extra unpaced group is emitted.
 TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
+    UseVirtualClock();
     ConfigureThreeTimesGeneralCap(*mockShm, 240);  // group interval 12.5 ms
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -595,17 +574,12 @@ TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
     ASSERT_EQ(limiter.GetGeneratedSlotPassCount(), 2u);
 
     // Simulated game hitch: three group intervals pass before the next owner.
-    // The duration only needs to exceed one interval (3x margin), so this is a
-    // stall simulation, not a timing assertion.
-    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    clock.Advance(3 * FirstIntervalTicks(240, 3));
 
     const uint32_t pacedBefore = limiter.GetPacedGroupCount();
     const uint32_t generatedBefore = limiter.GetGeneratedSlotPassCount();
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);  // late group-2 owner: deadline already passed
-    QueryPerformanceCounter(&end);
-    EXPECT_LT(ElapsedMs(start, end, freq), 3.0)
+    // Late group-2 owner: its deadline already passed.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), 0)
         << "a late owner re-bases the cadence without a short catch-up wait";
 
     limiter.Apply(false, kFinalOutputSite);
@@ -613,11 +587,10 @@ TEST_F(FpsLimiterTest, LateArrivalKeepsGroupAdmissionBudget) {
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 1u) << "exactly one owner per group after the hitch";
     EXPECT_EQ(limiter.GetGeneratedSlotPassCount() - generatedBefore, 2u);
 
-    // The next group's owner paces on the re-based grid.
-    QueryPerformanceCounter(&start);
-    limiter.Apply(false, kFinalOutputSite);
-    QueryPerformanceCounter(&end);
-    EXPECT_GE(ElapsedMs(start, end, freq), 8.0) << "the re-based cadence still paces its group owners";
+    // The next group's owner paces on the re-based grid: one full interval.
+    // The rational remainder carries across the re-base, so a step may differ by one tick.
+    EXPECT_NEAR(VirtualTicksOf([&] { limiter.Apply(false, kFinalOutputSite); }), FirstIntervalTicks(240, 3), 1)
+        << "the re-based cadence still paces its group owners";
     limiter.Apply(false, kFinalOutputSite);
     limiter.Apply(false, kFinalOutputSite);
     EXPECT_EQ(limiter.GetPacedGroupCount() - pacedBefore, 2u);

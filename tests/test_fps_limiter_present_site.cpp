@@ -13,6 +13,7 @@
 // times. A unique application-present site must therefore take a grid slot for
 // an immediate second Apply instead of the dedup fast path.
 TEST_F(FpsLimiterTest, UniqueApplicationPresentPacesImmediateSecondApply) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -21,22 +22,9 @@ TEST_F(FpsLimiterTest, UniqueApplicationPresentPacesImmediateSecondApply) {
 
     limiter.Apply(true, kUniquePresentSite);
 
-    bool sawFastDedup = false;
-    bool sawPacedSecondApply = false;
-    for (int attempt = 0; attempt < 3 && !sawPacedSecondApply; ++attempt) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply(true, kUniquePresentSite);
-        QueryPerformanceCounter(&end);
-
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
-        sawPacedSecondApply = elapsedMs >= 3.0 && limiter.GetLastWaitUs() > 0;
-    }
-
-    EXPECT_FALSE(sawFastDedup);
-    EXPECT_TRUE(sawPacedSecondApply);
+    // An immediate second present takes the next grid slot, one interval on.
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(true, kUniquePresentSite); }), FirstIntervalTicks(60));
+    EXPECT_GT(limiter.GetLastWaitUs(), 0);
 }
 
 // The unique-present contract only covers the application's own present
@@ -45,6 +33,7 @@ TEST_F(FpsLimiterTest, UniqueApplicationPresentPacesImmediateSecondApply) {
 // duplicate-window behaviour is retained rather than spending a base-rate grid
 // slot on a present CE does not own.
 TEST_F(FpsLimiterTest, UniqueApplicationPresentKeepsDuplicateWindowWhileFrameGenerationProduces) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(true);
@@ -57,38 +46,26 @@ TEST_F(FpsLimiterTest, UniqueApplicationPresentKeepsDuplicateWindowWhileFrameGen
 
     limiter.Apply(true, kUniquePresentSite);
 
-    bool sawFastDedup = false;
-    for (int attempt = 0; attempt < 3 && !sawFastDedup; ++attempt) {
-        LARGE_INTEGER start, end;
-        QueryPerformanceCounter(&start);
-        limiter.Apply(true, kUniquePresentSite);
-        QueryPerformanceCounter(&end);
-
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-        sawFastDedup = elapsedMs < 3.0 && limiter.GetLastWaitUs() == 0;
-    }
+    // No time in between: the duplicate window passes it without waiting.
+    const int64_t secondWaitTicks = VirtualTicksOf([&] { limiter.Apply(true, kUniquePresentSite); });
+    const int64_t secondLastWaitUs = limiter.GetLastWaitUs();
 
     g_FGCompat.SetDLSSFGActive(false);
 
-    EXPECT_TRUE(sawFastDedup);
+    EXPECT_EQ(secondWaitTicks, 0);
+    EXPECT_EQ(secondLastWaitUs, 0);
 }
 
 // A unique application-present site must not stall when the limiter is not
 // configured, exactly like the final-output boundary.
 TEST_F(FpsLimiterTest, UniqueApplicationPresentStaysNonBlockingWhenInactive) {
+    UseVirtualClock();
     mockShm->runtimeState.isRecording = false;
     mockShm->runtimeState.captureRequested = false;
     mockShm->fpsLimiter.SetGeneralEnabled(false);
 
-    LARGE_INTEGER start, end;
-    QueryPerformanceCounter(&start);
-    limiter.Apply(true, kUniquePresentSite);
-    QueryPerformanceCounter(&end);
-
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    const double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
-    EXPECT_LT(elapsedMs, 100.0);
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.Apply(true, kUniquePresentSite); }), 0);
+    EXPECT_EQ(limiter.GetLastWaitUs(), 0);
     EXPECT_FALSE(limiter.IsActivelyLimiting());
 }
 

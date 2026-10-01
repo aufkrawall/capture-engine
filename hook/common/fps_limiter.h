@@ -272,6 +272,29 @@ public:
         frameWorkOverrideUs_.store(workUs > 0 ? workUs : 0, std::memory_order_relaxed);
     }
 
+    // The time base every pacing decision reads, and the wait that reaches a
+    // deadline on it. Unset - always, outside the tests - it is
+    // QueryPerformanceCounter plus SmartWait.
+    //
+    // A test that asserts WHEN the limiter releases a caller cannot do so on
+    // the real clock: whatever the host scheduler spends between two Apply()
+    // calls is subtracted from the next wait (RunLocalCadence waits
+    // `deadline - now`), and past the deadline the cadence re-bases instead of
+    // waiting at all. Wider margins only made those tests slower to fail. On a
+    // virtual clock time moves only when the limiter waits or the test says the
+    // game worked, so a release time is exactly the scheduled deadline.
+    //
+    // Both callbacks are required; the clock counts in QPC ticks at the real
+    // QueryPerformanceFrequency. Install before the first Apply().
+    struct ClockSource {
+        void* context = nullptr;
+        int64_t (*now)(void* context) = nullptr;
+        void (*waitUntil)(void* context, int64_t targetTick) = nullptr;
+    };
+    void SetClockSourceForTesting(const ClockSource& clock) {
+        clock_ = (clock.now && clock.waitUntil) ? clock : ClockSource{};
+    }
+
     void SetInjectFinalOutputCaptureAvailable(bool available) {
         injectFinalOutputCaptureAvailable_.store(available, std::memory_order_release);
     }
@@ -409,6 +432,15 @@ private:
     bool loggedNoEvent_ = false;      // Tracks whether the no-event warning was already emitted
     bool loggedActive_ = false;       // Tracks whether the active-state log was already emitted
     int64_t qpcFrequency = 0;
+    ClockSource clock_{};  // see SetClockSourceForTesting
+    int64_t ReadClock() const {
+        if (clock_.now) {
+            return clock_.now(clock_.context);
+        }
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        return now.QuadPart;
+    }
     uint32_t missedFrames = 0;  // Track frames where limiter couldn't keep up
     // CRITICAL FIX: Per-instance log counters (was static, never reset)
     int timeoutLogCount_ = 0;

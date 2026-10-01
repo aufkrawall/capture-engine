@@ -207,9 +207,9 @@ inline bool FpsLimiter::RunFrontLoadedRelease() {
     }
     LARGE_INTEGER releaseStart;
     LARGE_INTEGER releaseEnd;
-    QueryPerformanceCounter(&releaseStart);
+    releaseStart.QuadPart = ReadClock();
     SmartWait(releaseTarget);
-    QueryPerformanceCounter(&releaseEnd);
+    releaseEnd.QuadPart = ReadClock();
     const int64_t releaseWaitUs =
         qpcFrequency > 0 ? ((releaseEnd.QuadPart - releaseStart.QuadPart) * 1000000) / qpcFrequency : 0;
     lastFrontLoadedReleaseWaitUs_ = releaseWaitUs;
