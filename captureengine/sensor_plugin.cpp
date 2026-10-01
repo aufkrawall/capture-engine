@@ -17,6 +17,9 @@
 #include "../common/logging.h"
 #include "sensor_bridge_host.h"
 #include "sensor_selection_policy.h"
+#ifndef CE_ELEVATION_SERVICE
+#include "sensor_broker.h"
+#endif
 #include "../common/strict_float_parse.h"
 #include "../common/strict_integer_parse.h"
 
@@ -245,7 +248,7 @@ struct LibreHardwareMonitorPlugin::Impl {
             if (wait == WAIT_TIMEOUT) {
                 LogWarn("[Sensors:LHM] Bridge did not stop within 3000 ms; terminating only the bridge process");
                 TerminateProcess(process, 1);
-                WaitForSingleObject(process, 1000);
+                WaitForSingleObject(process, INFINITE);
             }
         }
         CloseIfValid(process);
@@ -311,7 +314,11 @@ struct LibreHardwareMonitorPlugin::Impl {
         // The bridge is this same executable in its dedicated role, so the
         // integration needs no interpreter, no script on disk, and nothing on
         // the machine beyond the user-supplied LibreHardwareMonitor files.
+#ifdef CE_ELEVATION_SERVICE
+        const std::filesystem::path bridgeExecutable = executableDirectory / L"captureengine_elevation_service.exe";
+#else
         const std::filesystem::path bridgeExecutable = executableDirectory / L"captureengine.exe";
+#endif
         if (GetFileAttributesW(bridgeExecutable.c_str()) == INVALID_FILE_ATTRIBUTES) {
             LogWarn("[Sensors:LHM] Cannot resolve the bridge executable (error=%lu)", GetLastError());
             return false;
@@ -485,7 +492,7 @@ struct LibreHardwareMonitorPlugin::Impl {
         }
         LogInfo(
             "[Sensors:LHM] CPU temperature, package power and core clock require LibreHardwareMonitor's kernel "
-            "driver; start CaptureEngine as administrator to read them");
+            "driver; enable the elevation service or start CaptureEngine as administrator to read them");
     }
 
     void Poll() {
@@ -561,7 +568,7 @@ struct LibreHardwareMonitorPlugin::Impl {
         } else if (!readyLogged && launchTickMs != 0 && GetTickCount64() - launchTickMs > 30000) {
             LogWarn("[Sensors:LHM] Bridge did not become ready within 30000 ms; terminating it");
             TerminateProcess(process, 1);
-            WaitForSingleObject(process, 1000);
+            WaitForSingleObject(process, INFINITE);
             running = false;
             snapshot = {};
         } else if (snapshot.receivedTickMs != 0 &&
@@ -595,19 +602,38 @@ struct LibreHardwareMonitorPlugin::Impl {
 };
 
 LibreHardwareMonitorPlugin::LibreHardwareMonitorPlugin(const HardwareSensorsConfig& config)
-    : impl_(std::make_unique<Impl>(config)) {}
+    : impl_(std::make_unique<Impl>(config)) {
+#ifndef CE_ELEVATION_SERVICE
+    broker_ = std::make_unique<SensorBrokerBackend>(config, [this] { impl_->Shutdown(); });
+#endif
+}
 
 LibreHardwareMonitorPlugin::~LibreHardwareMonitorPlugin() = default;
 
 bool LibreHardwareMonitorPlugin::Start() {
+#ifndef CE_ELEVATION_SERVICE
+    brokerActive_ = broker_->Start();
+    if (brokerActive_) { impl_->Shutdown(); return true; }
+#endif
     return impl_->Start();
 }
 
 void LibreHardwareMonitorPlugin::Poll() {
+#ifndef CE_ELEVATION_SERVICE
+    const bool wasBroker = brokerActive_;
+    const bool wasLocal = impl_->running;
+    broker_->Poll();
+    brokerActive_ = broker_->Connected();
+    if (brokerActive_) { if (impl_->running) impl_->Shutdown(); return; }
+    if (wasBroker || (wasLocal && !impl_->running)) impl_->Start();
+#endif
     impl_->Poll();
 }
 
 HardwareSensorSnapshot LibreHardwareMonitorPlugin::GetSnapshot() const {
+#ifndef CE_ELEVATION_SERVICE
+    if (brokerActive_) return broker_->Snapshot();
+#endif
     if (!IsSnapshotFresh(impl_->snapshot, GetTickCount64(), impl_->config.pollIntervalMs))
         return {};
     return impl_->snapshot;

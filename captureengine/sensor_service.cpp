@@ -409,6 +409,10 @@ int SensorProcessMain(const AppConfig& config) {
         }
 
         if (!displayTimingTargets.empty()) {
+            if (displayTimingService && displayTimingService->NeedsRestart()) {
+                LogInfo("[DisplayTiming] Timing backend changed; reconnecting the collector");
+                displayTimingService.reset();
+            }
             if (!displayTimingService) {
                 displayTimingService = std::make_unique<DisplayTimingService>();
                 displayTimingService->Start();

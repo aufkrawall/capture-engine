@@ -92,13 +92,14 @@ class VerificationStageCacheTest(unittest.TestCase):
         manifest = self.root / "captureengine" / "captureengine.manifest"
         shader = self.root / "tools" / "shaders" / "overlay.hlsl"
         definition = self.root / "hook" / "layer.def"
-        for path in (manifest, shader, definition):
+        broker = self.root / "elevationservice" / "service_main.cpp"
+        for path in (manifest, shader, definition, broker):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("input\n", encoding="utf-8")
 
         discovered = discover_project_inputs(str(self.root))
 
-        for path in (manifest, shader, definition):
+        for path in (manifest, shader, definition, broker):
             self.assertIn(os.path.normcase(str(path.resolve())), discovered)
 
 

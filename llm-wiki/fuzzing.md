@@ -12,7 +12,7 @@ Primary sources:
 
 ## Summary
 
-Three libFuzzer harnesses cover the project's untrusted-input parsers. They are built
+Four libFuzzer harnesses cover the project's untrusted-input parsers. They are built
 and executed by `build.py --run-fuzz`; they are **not** part of the ordinary unit
 gate. A permanent regression floor for the same code lives in the normal test suite
 so the validators stay covered without a fuzz run.
@@ -21,6 +21,7 @@ so the validators stay covered without a fuzz run.
 |---|---|---|---|
 | Config parser | `tests/fuzz/fuzz_config_parser.cpp` | `LoadConfig()` (`common/config.cpp`) | `tests/fuzz/corpus/config/` |
 | Hardware-sensor protocol | `tests/fuzz/fuzz_hardware_sensor_protocol.cpp` | `ParseBridgeMessage()` (`captureengine/sensor_plugin.cpp`) | `tests/fuzz/corpus/hardware_sensor_protocol/` |
+| Elevation service | tests/fuzz/fuzz_elevation_protocol.cpp | Bounded privileged pipe request validator | tests/fuzz/corpus/elevation_protocol/ |
 | IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
 
 ## Running

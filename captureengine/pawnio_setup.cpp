@@ -17,6 +17,8 @@
 #include "../common/config.h"
 #include "../common/logging.h"
 #include "sensor_selection_policy.h"
+#include "elevation_client.h"
+#include "pawnio_workers.h"
 
 namespace ce::pawnio {
 namespace {
@@ -139,8 +141,10 @@ int RunProcessAndWait(const std::wstring& executable, std::wstring commandLine) 
     DWORD exitCode = static_cast<DWORD>(-1);
     if (wait == WAIT_OBJECT_0)
         GetExitCodeProcess(process.hProcess, &exitCode);
-    else
+    else {
         TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+    }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return static_cast<int>(exitCode);
@@ -366,7 +370,7 @@ int RunElevatedSetupRole(const wchar_t* command) {
             LogWarn("[PawnIO] Cannot start the elevated setup role (error=%lu)", error);
         return -1;
     }
-    WaitForSingleObject(info.hProcess, 10 * 60 * 1000);
+    WaitForSingleObject(info.hProcess, INFINITE);
     DWORD exitCode = static_cast<DWORD>(-1);
     GetExitCodeProcess(info.hProcess, &exitCode);
     CloseHandle(info.hProcess);
@@ -401,6 +405,14 @@ void RestartAsAdministrator() {
 }
 
 void OfferRestartAsAdministrator() {
+    if (SetupShuttingDown()) return;
+    if (ce::elevation::ServiceEnabled()) {
+        MessageBoxW(nullptr,
+            L"PawnIO was installed successfully.\n\n"
+            L"The elevation service will reconnect the hardware sensors automatically.",
+            L"CaptureEngine", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        return;
+    }
     if (IsProcessElevated()) {
         MessageBoxW(nullptr,
                     L"PawnIO was installed successfully.\n\n"
@@ -508,6 +520,7 @@ int AskWithMessageBox() {
 
 void PromptThread() {
     int choice = AskWithTaskDialog();
+    if (SetupShuttingDown()) return;
     if (choice == 0)
         choice = AskWithMessageBox();
     if (choice == kNeverButtonId) {
@@ -647,11 +660,11 @@ void OfferInstallationAsync(const ::HardwareSensorsConfig& config) {
     if (IsDriverInstalled() || IsPromptSuppressed())
         return;
     LogInfo("[PawnIO] Driver absent; offering optional installation once");
-    std::thread(PromptThread).detach();
+    LaunchSetupWorker(PromptThread);
 }
 
 void InstallDriverAsync() {
-    std::thread([]() {
+    LaunchSetupWorker([]() {
         if (IsDriverInstalled()) {
             MessageBoxW(nullptr, L"The PawnIO driver is already installed on this machine.", L"CaptureEngine",
                         MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
@@ -665,11 +678,11 @@ void InstallDriverAsync() {
         }
         MessageBoxW(nullptr, L"PawnIO driver installation was cancelled or did not complete.", L"CaptureEngine",
                     MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    }).detach();
+    });
 }
 
 void UninstallDriverAsync() {
-    std::thread([]() {
+    LaunchSetupWorker([]() {
         if (!IsDriverInstalled()) {
             MessageBoxW(nullptr, L"The PawnIO driver is not installed on this machine.", L"CaptureEngine",
                         MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
@@ -694,7 +707,7 @@ void UninstallDriverAsync() {
         }
         MessageBoxW(nullptr, L"PawnIO driver uninstallation was cancelled or did not complete.", L"CaptureEngine",
                     MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    }).detach();
+    });
 }
 
 std::optional<int> TryRunPawnIoSetupHost() {

@@ -41,6 +41,7 @@ anchors that predate the split are approximate.
     | `build_preflight.py` | verify preflight (file-size baseline, compile-db snapshot), format |
     | `build_testapps.py` | `compile_testapps`, `TestAppCommand`, `add_task`/`make_cmd` task registry |
     | `build_vulkan_layer.py` | `compile_vulkan_layer` (x64/x86) |
+    | `build_elevation_service.py` | Minimal privileged sensor/ETW service target |
     | `build_project.py` | `compile_project`: phases 1-5 (common, hook DLL, mediaengine, captureengine) |
     | `build_project_finalize.py` | `_finalize_project_build`: phases 6-8 (FG SDK, test apps, vulkan layer), licenses, PE hardening, packaging |
     | `build_corresponding_source.py` | exact pinned/patched FFmpeg + LGPL libiconv corresponding-source staging |
@@ -363,3 +364,9 @@ anchors that predate the split are approximate.
 - Python facade fragments are excluded from standalone flake8/pyright analysis
   (`<tool>_*.py` unit families, `build_*.py`, `source_splitter_*.py`); the facades themselves
   (`build.py`, `source_splitter.py`) stay linted.
+
+## Elevation and startup
+
+- elevationservice/: LocalSystem broker with authenticated pipe, isolated LHM bridge and ETW ownership.
+- captureengine/startup_*, elevation_*, sensor_broker.*: per-user startup policy, UAC setup, service client and protected runtime.
+- Current contracts: [elevation-and-startup.md](elevation-and-startup.md).

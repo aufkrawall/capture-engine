@@ -394,7 +394,10 @@ TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
     "pseudo_overlay_sync.cpp",
 )
 
-TESTS_ONLY_SENSOR_SOURCES = ("sensor_plugin.cpp", "pawnio_setup.cpp")
+TESTS_ONLY_SENSOR_SOURCES = (
+    "sensor_plugin.cpp", "pawnio_setup.cpp", "pawnio_workers.cpp", "sensor_broker.cpp", "elevation_client.cpp", "startup_preferences.cpp",
+    "startup_control.cpp", "startup_autostart.cpp", "elevation_setup.cpp", "elevation_runtime.cpp", "elevation_removal.cpp",
+)
 
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
@@ -480,6 +483,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             "-ldxguid",
             "-lws2_32",
             "-lole32",
+            "-loleaut32",
             "-lwinmm",
             "-luser32",
             "-lgdi32",
@@ -568,6 +572,11 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
         compile_tasks.append((test_cflags + extra, os.path.join(PROJECT_ROOT, "captureengine", name), obj))
         captureengine_test_objs.append(obj)
+
+    service_security_source = os.path.join(PROJECT_ROOT, "elevationservice", "service_security.cpp")
+    service_security_object = os.path.join(obj_dir, "elevationservice", "service_security.test.o")
+    compile_tasks.append((test_cflags, service_security_source, service_security_object))
+    captureengine_test_objs.append(service_security_object)
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))

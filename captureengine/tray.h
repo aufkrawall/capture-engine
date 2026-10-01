@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include "resource.h"
+#include "startup_control.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 #define WM_SHUTDOWN_TIMER (WM_USER + 2)
@@ -16,6 +17,10 @@ public:
         std::function<void()> onInstallPawnIo;
         std::function<void()> onUninstallPawnIo;
         std::function<bool()> isPawnIoInstalled;
+        std::function<void(ce::startup::Setting)> onToggleStartup;
+        std::function<ce::startup::Preferences()> startupPreferences;
+        std::function<std::wstring()> elevationServiceStatus;
+        std::function<bool()> startupBusy;
     };
 
     TrayIcon(HINSTANCE hInstance, Callbacks callbacks);

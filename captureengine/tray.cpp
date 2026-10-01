@@ -183,6 +183,9 @@ void TrayIcon::ShowContextMenu() {
     constexpr UINT kIdInstallPawnIo = 1002;
     constexpr UINT kIdUninstallPawnIo = 1003;
     constexpr UINT kIdClose = 1004;
+    constexpr UINT kIdElevationService = 1005;
+    constexpr UINT kIdLaunchElevated = 1006;
+    constexpr UINT kIdAutostart = 1007;
 
     AppendMenuW(hMenu, MF_STRING, kIdOpenConfig, L"Open config");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -194,6 +197,14 @@ void TrayIcon::ShowContextMenu() {
         AppendMenuW(hMenu, MF_STRING, kIdInstallPawnIo, L"Install PawnIO");
     }
 
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    const auto preferences = callbacks.startupPreferences ? callbacks.startupPreferences() : ce::startup::Preferences{};
+    const UINT setupFlags = MF_STRING | (callbacks.startupBusy && callbacks.startupBusy() ? MF_GRAYED : 0);
+    const std::wstring serviceText = callbacks.elevationServiceStatus ? callbacks.elevationServiceStatus() : L"Use elevation service";
+    AppendMenuW(hMenu, setupFlags | (preferences.service ? MF_CHECKED : MF_UNCHECKED), kIdElevationService, serviceText.c_str());
+    AppendMenuW(hMenu, setupFlags | (preferences.elevated ? MF_CHECKED : MF_UNCHECKED), kIdLaunchElevated,
+                L"Always request administrator privileges (next launch)");
+    AppendMenuW(hMenu, setupFlags | (preferences.autostart ? MF_CHECKED : MF_UNCHECKED), kIdAutostart, L"Start with Windows");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
 
@@ -241,6 +252,11 @@ void TrayIcon::ShowContextMenu() {
     } else if (cmd == kIdUninstallPawnIo) {
         if (callbacks.onUninstallPawnIo)
             callbacks.onUninstallPawnIo();
+    } else if (cmd == kIdElevationService || cmd == kIdLaunchElevated || cmd == kIdAutostart) {
+        if (callbacks.onToggleStartup) {
+            callbacks.onToggleStartup(cmd == kIdElevationService ? ce::startup::Setting::Service :
+                cmd == kIdLaunchElevated ? ce::startup::Setting::Elevation : ce::startup::Setting::Autostart);
+        }
     } else if (cmd == kIdClose) {
         if (callbacks.onQuit) {
             StartShutdownAnimation();

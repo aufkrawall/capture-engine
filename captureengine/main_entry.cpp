@@ -3,6 +3,8 @@
 #include "../common/config_reload_policy.h"
 #include "../common/config_text_encoding.h"
 #include "../common/path_utils.h"
+#include "startup_control.h"
+#include "pawnio_workers.h"
 
 namespace {
 // Hot-reload debounce state for config.ini (see config_reload_policy.h).
@@ -127,6 +129,10 @@ int ControllerMain(HINSTANCE hInstance) {
         ce::pawnio::UninstallDriverAsync();
     };
     trayCallbacks.isPawnIoInstalled = []() { return ce::pawnio::IsDriverInstalled(); };
+    trayCallbacks.onToggleStartup = ce::startup::Toggle;
+    trayCallbacks.startupPreferences = ce::startup::DisplayPreferences;
+    trayCallbacks.elevationServiceStatus = ce::startup::ServiceStatusText;
+    trayCallbacks.startupBusy = ce::startup::Busy;
     auto tray = std::make_unique<TrayIcon>(hInstance, std::move(trayCallbacks));
     const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
     main_g_Tray = tray.get();
@@ -165,6 +171,7 @@ int ControllerMain(HINSTANCE hInstance) {
     static DWORD lastConfigCheck = 0;
 
     while (main_g_Running) {
+        ce::startup::Pump();
         iterCount++;
         const int64_t iterNowUs = Log_GetQpcUs();
         const int64_t iterDeltaUs = iterNowUs - loopStartUs;
@@ -403,6 +410,8 @@ int ControllerMain(HINSTANCE hInstance) {
         main_g_PseudoOverlay.reset();
     }
 
+    ce::startup::Shutdown();
+    ce::pawnio::ShutdownSetupWorkers();
     ShutdownChildProcesses();
 
     // Now remove tray icon after shutdown is complete
@@ -418,6 +427,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
 // Main entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    if (const auto setupResult = ce::startup::TryRunSetup()) return *setupResult;
     if (const std::optional<int> workerResult = TryRunProcessLoopbackWorkerHost()) {
         return *workerResult;
     }
@@ -440,8 +450,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return RunDumpHelperFromCommandLine();
     }
 
+    if (HasExactCommandLineArgument(L"--ce-service-integration"))
+        return static_cast<int>(ce::startup::RunElevationIntegration());
+    if (HasExactCommandLineArgument(L"--ce-service-fixture"))
+        return static_cast<int>(ce::startup::RunElevationFixture(HasExactCommandLineArgument(L"--ce-fixture-wait")));
+
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
+    if (const auto startupResult = ce::startup::Bootstrap(mode == ProcessMode::Controller &&
+        !HasExactCommandLineArgument(L"--list-monitors") && !HasExactCommandLineArgument(L"--license")))
+        return *startupResult;
     if (mode == ProcessMode::Controller && HasExactCommandLineArgument(L"--list-monitors")) {
         return ce::monitor_selection::WriteMonitorListToStandardOutput();
     }

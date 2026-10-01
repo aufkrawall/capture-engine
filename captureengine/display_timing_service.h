@@ -22,6 +22,7 @@ public:
 
     void Start();
     void UpdateTargets(const std::vector<DisplayTimingTarget>& targets);
+    bool NeedsRestart() const;
 
 private:
     class Impl;

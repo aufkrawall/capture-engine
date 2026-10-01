@@ -17,6 +17,7 @@
 #include "display_timing_refresh.h"
 #include "display_timing_session_reclaim.h"
 #include "display_timing_startup.h"
+#include "elevation_client.h"
 #include "display_timing_submissions.h"
 #include "display_timing_vblank.h"
 
@@ -48,6 +49,7 @@ public:
 
     void Start();
     void UpdateTargets(const std::vector<DisplayTimingTarget>& targets);
+    bool NeedsRestart() const;
 
 private:
 
@@ -125,6 +127,12 @@ private:
     std::atomic<bool> started_{false};
     std::atomic<DisplayTimingStatus> startupStatus_{DisplayTimingStatus::Unavailable};
     TRACEHANDLE session_ = 0;
+    ce::elevation::Client broker_;
+    bool brokerConfigured_ = false;
+    bool brokerTrace_ = false;
+    uint32_t attemptedServicePid_ = 0;
+    std::atomic<uint32_t> deniedServicePid_{0};
+    std::atomic<bool> consuming_{false};
     TRACEHANDLE traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
     HANDLE stopEvent_ = nullptr;
     wchar_t sessionName_[display_timing_etw::kTraceSessionNameCapacity] = {};

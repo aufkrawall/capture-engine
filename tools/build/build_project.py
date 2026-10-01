@@ -663,6 +663,7 @@ def compile_project(
                 "-lruntimeobject",
                 "-lole32",
                 "-loleaut32",
+                "-luuid",
                 "-lwindowscodecs",
                 "-ldbghelp",
                 "-lwbemuuid",
@@ -716,6 +717,8 @@ def compile_project(
         if os.path.exists(stale_layer_register_exe):
             if safe_delete_file(stale_layer_register_exe):
                 log("Removed stale vulkan_layer_register.exe")
+
+    compile_elevation_service(env, clang_exe, cflags)
 
     # compile_custom_ffmpeg() already synchronized the complete runtime closure
     # before compilation. Re-verify that final bundle here without deleting and

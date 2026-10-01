@@ -38,6 +38,8 @@ Primary sources:
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `present-interposers.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- [elevation-and-startup.md](elevation-and-startup.md)
+  - Protected sensor/ETW broker, tray controls, initiating-user UAC ownership, autostart and teardown. Source-verified 2026-10-01; interactive runtime checks pending.
 - `changelog-guidelines.md`
   - ADHD-friendly, scannable structure, bold lead-in anchors, and issue transparency standards for `CHANGELOG.md` and GitHub release tag notes. Continuous pre-commit update mandate, allowed categories, and release automation via `tools/manage_changelog.py`. Last verified 2026-09-20.
 - `configuration.md`

@@ -383,6 +383,12 @@ void ShutdownChildProcesses() {
                 TerminateProcess(main_g_hLoggerProcess, 1);
             if (main_g_hSensorProcess)
                 TerminateProcess(main_g_hSensorProcess, 1);
+            // TerminateProcess is asynchronous. Do not release ownership while
+            // a child still maps product files or owns an out-of-process worker.
+            for (int i = 0; i < handleCount; ++i) {
+                if (WaitForSingleObject(handles[i], INFINITE) != WAIT_OBJECT_0)
+                    LogError("[Controller] Cannot confirm %s process exit (error=%lu)", handleNames[i], GetLastError());
+            }
         } else {
             LogInfo("[Controller] All child processes exited cleanly");
         }

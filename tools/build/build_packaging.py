@@ -394,6 +394,7 @@ def sanitizer_stage_outputs() -> List[str]:
     return [
         os.path.join(SANITIZER_STAGE_ROOT, "tests", "unit_tests.exe"),
         os.path.join(capture_dir, "captureengine.exe"),
+        os.path.join(capture_dir, "captureengine_elevation_service.exe"),
         os.path.join(capture_dir, "mediaengine.dll"),
         os.path.join(capture_dir, "capture_hook_x64.dll"),
         os.path.join(capture_dir, "VK_LAYER_CE_overlay.dll"),
@@ -504,6 +505,7 @@ def run_sanitizer_regression_pass(ccache_flag: bool, jobs: Optional[int] = None)
 # than fuzzing from an empty corpus, which is how the original harnesses rotted
 # unnoticed: they were never built, never run, and their corpora were empty.
 FUZZ_TARGET_CORPUS = {
+    "fuzz_elevation_protocol.cpp": "elevation_protocol",
     "fuzz_config_parser.cpp": "config",
     "fuzz_hardware_sensor_protocol.cpp": "hardware_sensor_protocol",
     "fuzz_ipc_deserialize.cpp": "ipc",
@@ -602,7 +604,7 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
     # implementation rather than the common/ tree linked into every product.
     sensor_plugin_obj = os.path.join(obj_dir, "captureengine", "sensor_plugin.fuzz.o").replace("\\", "/")
     compile_tasks.append(
-        (base_cflags, os.path.join(PROJECT_ROOT, "captureengine", "sensor_plugin.cpp"), sensor_plugin_obj)
+        (base_cflags + ["-DCE_ELEVATION_SERVICE=1"], os.path.join(PROJECT_ROOT, "captureengine", "sensor_plugin.cpp"), sensor_plugin_obj)
     )
 
     # These sanitizer/coverage compilations must not reach compile_commands.json:

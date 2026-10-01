@@ -9,6 +9,8 @@ struct HardwareSensorsConfig;
 
 namespace ce::hardware_sensors {
 
+class SensorBrokerBackend;
+
 struct SensorValue {
     float value = 0.0f;
     bool valid = false;
@@ -62,6 +64,10 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+#ifndef CE_ELEVATION_SERVICE
+    std::unique_ptr<SensorBrokerBackend> broker_;
+    bool brokerActive_ = false;
+#endif
 };
 
 }  // namespace ce::hardware_sensors

@@ -330,7 +330,8 @@ TEST(HardwareSensorBridgeTest, PawnIoSetupVerifiesBundledInstallerLocally) {
     EXPECT_NE(setup.find("ComputeFileSha256"), std::string::npos);
     // The prompt cannot run on the controller thread: that loop dispatches
     // hotkeys itself, and a nested modal loop would swallow them.
-    EXPECT_NE(setup.find("std::thread(PromptThread).detach()"), std::string::npos);
+    EXPECT_NE(setup.find("LaunchSetupWorker(PromptThread)"), std::string::npos);
+    EXPECT_EQ(setup.find(".detach()"), std::string::npos);
 }
 
 TEST(HardwareSensorBridgeTest, PawnIoPromptOffersThreeDistinctAnswers) {

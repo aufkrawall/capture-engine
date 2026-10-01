@@ -4,6 +4,16 @@
 
 Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6868).
 
+### New
+
+- **Hardware sensors without elevating CaptureEngine:** the optional elevation service runs PawnIO sensors and privileged display timing in a protected runtime. CaptureEngine and its ordinary workers can stay unelevated; the service stops when its last client exits.
+- **Administrator launch preference:** a tray checkbox requests administrator privileges on the next launch, preserving launch arguments and the initiating user's settings. Changing it leaves the current recording running.
+- **Start with Windows:** a tray checkbox manages one startup registration per user, including an approved elevated scheduled task for administrator accounts or a login UAC prompt for standard accounts.
+
+### Improved
+
+- **Service removal and portable-folder cleanup:** tray service removal waits for owned processes to exit and removes the protected runtime. CaptureEngine confirms child exit before releasing process handles; injected games must also close before their loaded hook files can be removed.
+
 ### Fixed
 
 - **Steam overlay color-space tracking (e.g. The Witcher 3):** CaptureEngine now leaves the color-space function's entry to a loaded overlay and tracks changes further inside it, so Steam can install its hook instead of failing to decode CaptureEngine's detour.

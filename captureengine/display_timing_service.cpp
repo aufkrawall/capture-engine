@@ -23,8 +23,21 @@ void DisplayTimingService::Impl::Start() {
     nvidiaSchedule_.SetQpcFrequency(qpcFrequency_);
     outputs_.SetQpcFrequency(qpcFrequency_);
     RefreshDisplayPeriods();
-    swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
-    const ULONG status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
+    brokerConfigured_ = ce::elevation::ServiceEnabled();
+    attemptedServicePid_ = ce::elevation::ServiceProcessId();
+    // A service instance whose trace this process was not allowed to consume is not retried; the
+    // local backend takes over until a new service instance appears.
+    brokerTrace_ = brokerConfigured_ && attemptedServicePid_ != deniedServicePid_.load() &&
+                   broker_.Connect(ce::elevation::ControllerPid()) && broker_.AcquireTrace();
+    ULONG status = ERROR_SUCCESS;
+    if (brokerTrace_) {
+        wcscpy_s(sessionName_, ce::elevation::kTraceName);
+        LogInfo("[DisplayTiming] Consuming the service-owned trace without controlling its session");
+    } else {
+        broker_.Disconnect();
+        swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
+        status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
+    }
     if (status != ERROR_SUCCESS) {
         SetStartupFailure(status);
         return;
@@ -38,6 +51,21 @@ void DisplayTimingService::Impl::Start() {
     trace.BufferCallback = &BufferThunk;
     trace.Context = this;
     traceHandle_ = OpenTraceW(&trace);
+    if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE && brokerTrace_) {
+        const DWORD consumerError = GetLastError();
+        broker_.ReleaseTrace();
+        broker_.Disconnect();
+        brokerTrace_ = false;
+        LogWarn("[DisplayTiming] Service trace could not be consumed (error=%lu); trying the local backend",
+                consumerError);
+        swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
+        const ULONG localStatus = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
+        if (localStatus != ERROR_SUCCESS) {
+            SetStartupFailure(localStatus);
+            return;
+        }
+        traceHandle_ = OpenTraceW(&trace);
+    }
     if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
         SetStartupFailure(GetLastError());
         StopTraceSession();
@@ -54,13 +82,18 @@ void DisplayTimingService::Impl::Start() {
     }
 
     startupStatus_.store(DisplayTimingStatus::Starting, std::memory_order_release);
+    consuming_.store(true, std::memory_order_release);
     processThread_ = std::thread([this] {
         const ULONG traceStatus = ProcessTrace(&traceHandle_, 1, nullptr, nullptr);
         // ERROR_CANCELLED is the ordinary result of stopping the session.
         if (traceStatus != ERROR_SUCCESS && traceStatus != ERROR_CANCELLED) {
             startupStatus_.store(DisplayTimingStatus::Failed, std::memory_order_release);
-            LogWarn("[DisplayTiming] Event consumption stopped: %lu", traceStatus);
+            if (brokerTrace_)
+                deniedServicePid_.store(attemptedServicePid_);
+            LogWarn("[DisplayTiming] Event consumption stopped: %lu%s", traceStatus,
+                    brokerTrace_ ? " (service trace; using the local backend until the service restarts)" : "");
         }
+        consuming_.store(false, std::memory_order_release);
     });
     flushThread_ = std::thread([this] { FlushLoop(); });
     LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus "
@@ -110,6 +143,9 @@ void DisplayTimingService::Impl::SetStartupFailure(ULONG error) {
         error == ERROR_ACCESS_DENIED ? DisplayTimingStatus::AccessDenied : DisplayTimingStatus::Failed;
     startupStatus_.store(status, std::memory_order_release);
     ce::display_timing_startup::LogStartupFailure(error);
+    broker_.ReleaseTrace();
+    broker_.Disconnect();
+    brokerTrace_ = false;
 }
 
 void DisplayTimingService::Impl::ObserveTraceLosses(ULONG eventsLost) {
@@ -302,7 +338,8 @@ void DisplayTimingService::Impl::LogHealthIfDue() {
 void DisplayTimingService::Impl::FlushLoop() {
     while (WaitForSingleObject(stopEvent_, kTraceFlushPeriodMs) == WAIT_TIMEOUT) {
         auto flushProperties = MakeProperties(sessionName_);
-        FlushTraceW(session_, sessionName_, flushProperties.Get());
+        if (!brokerTrace_)
+            FlushTraceW(session_, sessionName_, flushProperties.Get());
         LARGE_INTEGER now = {};
         QueryPerformanceCounter(&now);
         DrainReady(now.QuadPart, false);
@@ -326,12 +363,17 @@ void DisplayTimingService::Impl::StopNoexcept() noexcept {
     if (flushThread_.joinable())
         flushThread_.join();
     StopTraceSession();
+    if (brokerTrace_ && traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
+        CloseTrace(traceHandle_);
+    }
     if (processThread_.joinable())
         processThread_.join();
     if (traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
-        CloseTrace(traceHandle_);
+        if (!brokerTrace_) CloseTrace(traceHandle_);
         traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
     }
+    broker_.ReleaseTrace();
+    broker_.Disconnect();
     LARGE_INTEGER now = {};
     QueryPerformanceCounter(&now);
     DrainReadyNoexcept(now.QuadPart);
@@ -357,3 +399,13 @@ void DisplayTimingService::Start() {
 void DisplayTimingService::UpdateTargets(const std::vector<DisplayTimingTarget>& targets) {
     impl_->UpdateTargets(targets);
 }
+
+bool DisplayTimingService::Impl::NeedsRestart() const {
+    const bool configured = ce::elevation::ServiceEnabled();
+    if (configured != brokerConfigured_) return true;
+    if (brokerTrace_ && (!broker_.Connected() || !consuming_.load(std::memory_order_acquire))) return true;
+    const uint32_t pid = configured ? ce::elevation::ServiceProcessId() : 0;
+    return configured && !brokerTrace_ && pid != 0 && pid != attemptedServicePid_;
+}
+
+bool DisplayTimingService::NeedsRestart() const { return impl_->NeedsRestart(); }
