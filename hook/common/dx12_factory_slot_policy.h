@@ -51,6 +51,26 @@ inline bool ShouldPrependCreateSwapChainForHwndEntry(bool foreignEntryJumpAtInst
     return !foreignEntryJumpAtInstall || !belowChainHookInstalled;
 }
 
+// A loaded overlay owns the CreateSwapChainForHwnd entry even before it has patched it - the same
+// rule as for Present (ShouldLeavePresentEntryToForeignOverlayChain). Steam patches this entry from
+// inside its CreateDXGIFactory1 handler and skips any entry that already jumps into another module.
+// Session 20261001_044939 (Witcher 3, Steam loaded before CE): CE's factory discovery no longer
+// runs Steam's handler, so CE sampled a pristine entry, prepended, and Steam - hooking it a second
+// later from the game's own factory creation - found CE's jump, skipped the function, never saw
+// the game's swapchain and drew nothing all session. The next launch (20261001_045157) Steam won
+// the race and its overlay worked. Sampling decided only who came first.
+inline bool IsCreateSwapChainForHwndEntryForeignOwned(bool foreignEntryJumpVisible, size_t loadedOverlayModuleCount) {
+    return foreignEntryJumpVisible || loadedOverlayModuleCount >= 1;
+}
+
+// Entry span the below-chain body hook must clear. A visible patch measures itself (0 = let the
+// deep hook read it); an owner that has not patched yet gets the widest form CE recognizes, since
+// a body hook deeper than the eventual foreign patch is always safe and one inside it never is.
+inline constexpr int kWidestForeignEntryPatchSize = 14;
+inline int CreateSwapChainForHwndBelowChainPatchSpan(bool foreignEntryJumpVisible, size_t loadedOverlayModuleCount) {
+    return (!foreignEntryJumpVisible && loadedOverlayModuleCount >= 1) ? kWidestForeignEntryPatchSize : 0;
+}
+
 // With no CE entry patch, a create CE forwarded from its factory vtable detour reaches CE again
 // only at the below-chain hook. That call must get the entry detour's full handling (post-FSR
 // Streamline handoff, descriptor overrides, side-effect ownership), exactly as it did when CE

@@ -164,6 +164,58 @@ TEST(DXGISharedTest, DeepHookPrologRefusesShapesWithAnUnknownStackEffect) {
     EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(truncated, 4, &stackDelta));
 }
 
+// Session 20261001_044939: with Steam loaded but not yet patched, CE must take the
+// CreateSwapChainForHwnd body hook past the widest entry span (resume offset 16), and that range
+// contains the frame-pointer setup. The undo has to reload the caller's RBP from its push slot.
+TEST(DXGISharedTest, DeepHookPrologRestoresRbpAfterTheCreateSwapChainForHwndFrameSetup) {
+    using ce::inline_hook_policy::DeepHookPrologUndo;
+    using ce::inline_hook_policy::TryAnalyzeDeepHookProlog;
+    // push rbp/rbx/rsi/rdi/r12/r14/r15 ; lea rbp,[rsp-60h] - live dxgi bytes [0,16)
+    const unsigned char csfh[] = {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+                                  0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xA0};
+    DeepHookPrologUndo undo;
+    ASSERT_TRUE(TryAnalyzeDeepHookProlog(csfh, static_cast<int>(sizeof(csfh)), &undo));
+    EXPECT_EQ(undo.stackDelta, 56);
+    EXPECT_TRUE(undo.restoreRbp);
+    EXPECT_EQ(undo.rbpSlotOffsetFromPrologRsp, 48);  // first push: the top of the 56-byte block
+    // The stack-only form cannot express the restore and must keep refusing.
+    int stackDelta = 0;
+    EXPECT_FALSE(ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(
+        csfh, static_cast<int>(sizeof(csfh)), &stackDelta));
+
+    // The 5-byte span CE uses below a visible Steam E9 never reaches the frame setup.
+    undo = DeepHookPrologUndo{};
+    ASSERT_TRUE(TryAnalyzeDeepHookProlog(csfh, 5, &undo));
+    EXPECT_EQ(undo.stackDelta, 32);
+    EXPECT_FALSE(undo.restoreRbp);
+
+    // disp32 form, RBP pushed second: slot = delta - 16.
+    const unsigned char disp32[] = {0x53, 0x55, 0x48, 0x8D, 0xAC, 0x24, 0x00, 0xFF, 0xFF, 0xFF};
+    undo = DeepHookPrologUndo{};
+    ASSERT_TRUE(TryAnalyzeDeepHookProlog(disp32, static_cast<int>(sizeof(disp32)), &undo));
+    EXPECT_EQ(undo.stackDelta, 16);
+    EXPECT_TRUE(undo.restoreRbp);
+    EXPECT_EQ(undo.rbpSlotOffsetFromPrologRsp, 0);
+}
+
+TEST(DXGISharedTest, DeepHookPrologRefusesAFrameSetupWithoutTheCallersRbpOnTheStack) {
+    using ce::inline_hook_policy::DeepHookPrologUndo;
+    using ce::inline_hook_policy::TryAnalyzeDeepHookProlog;
+    DeepHookPrologUndo undo;
+    // push r13 (41 55) is not push rbp.
+    const unsigned char r13[] = {0x41, 0x55, 0x48, 0x8D, 0x6C, 0x24, 0xA0};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(r13, static_cast<int>(sizeof(r13)), &undo));
+    // lea before the push would lose the caller's RBP.
+    const unsigned char leaFirst[] = {0x48, 0x8D, 0x6C, 0x24, 0xA0, 0x55};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(leaFirst, static_cast<int>(sizeof(leaFirst)), &undo));
+    // A frame setup truncated by the resume offset is never half-consumed.
+    const unsigned char truncated[] = {0x55, 0x48, 0x8D, 0x6C, 0x24, 0xA0};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(truncated, 5, &undo));
+    // dxgi!ResizeBuffers opens with mov rax,rsp - still refused.
+    const unsigned char movRaxRsp[] = {0x48, 0x8B, 0xC4, 0x44, 0x89, 0x48, 0x20};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(movRaxRsp, static_cast<int>(sizeof(movRaxRsp)), &undo));
+}
+
 // Session 20260812_150918: the caller logged the foreign `E9 at 00007FFD5C049960` and the deep
 // install, milliseconds later, read `byte=0x48` — the ORIGINAL first byte — and refused.
 // RTSS restores the entry bytes, calls through, and re-patches on every present, so byte 0 is

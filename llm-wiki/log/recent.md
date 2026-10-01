@@ -15,6 +15,10 @@
   CreateDXGIFactory1 handler on CE's hook thread. 0.1.6876: discovery factories bypass the foreign export patch
   (`GenuineCreateDXGIFactory1ForDiscovery`), like the temp swapchain and WARP device. Steam-internal cause is inferred,
   not proven; a clean run logs a foreign target ending `...02CA` in `is owned by a foreign patch`. Hardware run pending.
+- `20261001_044939` (0.1.6876): no crash, but no Steam overlay. Steam had patched only the CreateDXGIFactory1 export when
+  CE installed; CSFH read clean (`byte=0x40`), CE prepended, and Steam skipped the already-jumping entry when the game's
+  factory creation ran its handler. `045157` (same build) worked: Steam's `E9 -> ...02CA` was already there. 0.1.6877:
+  a loaded overlay owns the CSFH entry; deep hook at +16 with an RBP-restoring undo. Hardware run pending.
 
 ### 2026-10-01 - Witcher 3 `streamline_upgrade`: SR aliased in motion, DLSS-G generated nothing
 

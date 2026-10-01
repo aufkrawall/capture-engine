@@ -218,9 +218,14 @@ if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
 // VTable hooks only patch a single vtable and miss calls through
 // Streamline's SL proxy factory (different COM vtable). Inline hooks
 // patch the actual function code and catch ALL callers.
-// Sampled before CE patches anything at this entry: whether another overlay already owns it.
+// Sampled before CE patches anything at this entry: whether another overlay already owns it. A
+// loaded overlay owns it even while the sample still reads clean (IsCreateSwapChainForHwndEntryForeignOwned).
 const bool foreignCreateSCForHwndEntry =
     realCreateSCForHwndAddr && ce::dx12_factory_slot::HasForeignEntryJump(realCreateSCForHwndAddr);
+const size_t loadedOverlayCount =
+    ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+const bool createSCForHwndEntryForeignOwned =
+    ce::dx12_factory_slot::IsCreateSwapChainForHwndEntryForeignOwned(foreignCreateSCForHwndEntry, loadedOverlayCount);
 
 // Install DEEP hook on CreateSwapChainForHwnd.
 // When Streamline hooks CreateSwapChainForHwnd at byte 0 and uses a saved
@@ -233,7 +238,9 @@ bool belowChainHookInstalled = false;
 if (realCreateSCForHwndAddr) {
     void* trampoline = InlineHook::InstallDeepHookPublished(
         realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd,
-        PublishDeepCreateSwapChainForHwndTrampoline, nullptr);
+        PublishDeepCreateSwapChainForHwndTrampoline, nullptr,
+        ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan(foreignCreateSCForHwndEntry,
+                                                                         loadedOverlayCount));
     if (trampoline) {
         belowChainHookInstalled = true;
         HookLog("DX12: Installed DEEP hook on CreateSwapChainForHwnd at %p (trampoline=%p)",
@@ -247,23 +254,28 @@ if (realCreateSCForHwndAddr) {
 // patched the entry and CE holds the below-chain view: overwriting that patch races the other
 // hooker's own install (see ShouldPrependCreateSwapChainForHwndEntry).
 if (realCreateSCForHwndAddr && !dx12_hook_s_oCreateSCForHwndInline) {
-    if (!ce::dx12_factory_slot::ShouldPrependCreateSwapChainForHwndEntry(foreignCreateSCForHwndEntry,
+    if (!ce::dx12_factory_slot::ShouldPrependCreateSwapChainForHwndEntry(createSCForHwndEntryForeignOwned,
                                                                          belowChainHookInstalled)) {
         const auto* entryBytes = static_cast<const unsigned char*>(realCreateSCForHwndAddr);
         int32_t rel32 = 0;
         memcpy(&rel32, entryBytes + 1, sizeof(rel32));
         const void* foreignTarget = entryBytes[0] == 0xE9 ? entryBytes + 5 + rel32 : nullptr;
+        const char* overlayName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
         HookLogImportant("DX12: CreateSwapChainForHwnd entry at %p is owned by a foreign patch (%02X %02X %02X %02X "
-                         "%02X -> %p); CE leaves it intact and intercepts below the chain (deep trampoline=%p)",
+                         "%02X -> %p, foreignJumpVisibleNow=%d loadedOverlay=%s); CE leaves it intact and intercepts "
+                         "below the chain (deep trampoline=%p)",
                          realCreateSCForHwndAddr, entryBytes[0], entryBytes[1], entryBytes[2], entryBytes[3],
-                         entryBytes[4], foreignTarget, reinterpret_cast<void*>(dx12_hook_s_deepHookTrampoline));
+                         entryBytes[4], foreignTarget, foreignCreateSCForHwndEntry ? 1 : 0,
+                         overlayName ? overlayName : "none", reinterpret_cast<void*>(dx12_hook_s_deepHookTrampoline));
     } else {
         void* trampoline = nullptr;
         if (InlineHook::InstallPublished(realCreateSCForHwndAddr, (void*)DetourCreateSwapChainForHwndInline,
                                          &trampoline, PublishCreateSwapChainForHwndTrampoline, nullptr)) {
             dx12_hook_s_createSCForHwndEntryPrependInstalled.store(true, std::memory_order_release);
-            HookLog("DX12: Installed INLINE hook on CreateSwapChainForHwnd at %p (foreignEntry=%d)",
-                    realCreateSCForHwndAddr, foreignCreateSCForHwndEntry ? 1 : 0);
+            HookLog("DX12: Installed INLINE hook on CreateSwapChainForHwnd at %p (foreignEntry=%d foreignOwned=%d "
+                    "belowChain=%d)",
+                    realCreateSCForHwndAddr, foreignCreateSCForHwndEntry ? 1 : 0,
+                    createSCForHwndEntryForeignOwned ? 1 : 0, belowChainHookInstalled ? 1 : 0);
         } else {
             HookLog("DX12: FAILED to install inline hook on CreateSwapChainForHwnd");
         }

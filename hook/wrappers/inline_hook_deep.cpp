@@ -208,21 +208,25 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     // Step 4: Determine how much stack the prolog in [0, resumeOffset) consumed, so the patch
     // can undo it and hand the wrapper the original call state. Those instructions have always
     // already run by then — either in the function itself or in the external hook's trampoline.
-    int stackUndo = 0;
-    if (!ce::inline_hook_policy::TryComputeDeepHookPrologStackDelta(origDiskBytes, resumeOffset, &stackUndo)) {
+    ce::inline_hook_policy::DeepHookPrologUndo prologUndo;
+    if (!ce::inline_hook_policy::TryAnalyzeDeepHookProlog(origDiskBytes, resumeOffset, &prologUndo)) {
         HookLog("DeepHook: Prolog at %p is not a recognized stack shape - cannot undo (resumeOffset=%d)", target,
                 resumeOffset);
         return nullptr;
     }
-    HookLog("DeepHook: Prolog consumes %d bytes of stack to undo (resumeOffset=%d)", stackUndo, resumeOffset);
+    const int stackUndo = prologUndo.stackDelta;
+    const int rbpSlot = prologUndo.rbpSlotOffsetFromPrologRsp;
+    HookLog("DeepHook: Prolog consumes %d bytes of stack to undo (resumeOffset=%d restoreRbp=%d rbpSlot=+%d)",
+            stackUndo, resumeOffset, prologUndo.restoreRbp ? 1 : 0, rbpSlot);
 
     // Step 5: Determine how many bytes to displace at resume offset (need >= patch size)
     const uint8_t* resumeCode = code + resumeOffset;
     int displaceSize = 0;
-    // The in-place patch is: [add rsp,N (4 or 7 bytes, omitted when nothing to undo)]
-    // + jmp [rip+0] addr (14 bytes)
+    // The in-place patch is: [mov rbp,[rsp+slot] (5 or 8 bytes, only after a frame-pointer setup)]
+    // + [add rsp,N (4 or 7 bytes, omitted when nothing to undo)] + jmp [rip+0] addr (14 bytes)
+    const int rbpRestoreEncodingSize = !prologUndo.restoreRbp ? 0 : ((rbpSlot <= 127) ? 5 : 8);
     int undoEncodingSize = (stackUndo == 0) ? 0 : ((stackUndo <= 127) ? 4 : 7);
-    int neededPatchSize = undoEncodingSize + PATCH_SIZE;
+    int neededPatchSize = rbpRestoreEncodingSize + undoEncodingSize + PATCH_SIZE;
     while (displaceSize < neededPatchSize) {
         int len = GetInstructionLength(resumeCode + displaceSize, true);
         if (len == 0) {
@@ -387,9 +391,26 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
             PATCH_SIZE);
 
     // Step 8: Build the in-place patch at resumeOffset
-    // Format: [add rsp, <stackUndo>] ; jmp [rip+0] <wrapperFn>
+    // Format: [mov rbp, [rsp+<rbpSlot>]] ; [add rsp, <stackUndo>] ; jmp [rip+0] <wrapperFn>
     uint8_t patchBuf[64];
     int pOff = 0;
+
+    if (prologUndo.restoreRbp) {
+        // The prolog's frame-pointer setup clobbered the caller's RBP; its push slot still holds it.
+        patchBuf[pOff++] = 0x48;  // REX.W
+        patchBuf[pOff++] = 0x8B;  // MOV r64, r/m64
+        if (rbpSlot <= 127) {
+            patchBuf[pOff++] = 0x6C;  // ModRM: RBP, [SIB+disp8]
+            patchBuf[pOff++] = 0x24;  // SIB: base=RSP
+            patchBuf[pOff++] = (uint8_t)rbpSlot;
+        } else {
+            patchBuf[pOff++] = 0xAC;  // ModRM: RBP, [SIB+disp32]
+            patchBuf[pOff++] = 0x24;  // SIB: base=RSP
+            uint32_t slotVal = (uint32_t)rbpSlot;
+            memcpy(&patchBuf[pOff], &slotVal, 4);
+            pOff += 4;
+        }
+    }
 
     if (stackUndo == 0) {
         // Nothing to undo (e.g. a shadow-space save prolog): the wrapper is entered on the
