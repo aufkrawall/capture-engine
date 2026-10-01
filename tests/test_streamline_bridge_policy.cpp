@@ -377,21 +377,35 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     ASSERT_FALSE(translate.empty());
 
     // The guard sits on the exact place 2.x counts a present, in the bridge's own sl.common.
-    EXPECT_NE(present.find("v2Common, \"slHookPresent\","), std::string::npos);
+    EXPECT_NE(present.find("v2Common, \"sl.common\", \"slHookPresent\","), std::string::npos);
     EXPECT_NE(present.find("reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent)"),
               std::string::npos);
-    EXPECT_NE(present.find("v2Common, \"slHookPresent1\","), std::string::npos);
-    EXPECT_NE(present.find("BeforeCountedPresent(swapChain, syncInterval, flags);"), std::string::npos);
+    EXPECT_NE(present.find("v2Common, \"sl.common\", \"slHookPresent1\","), std::string::npos);
+    EXPECT_NE(present.find("BeforeCountedPresent(swapChain, syncInterval, flags) == PresentAction::kAbsorb;"),
+              std::string::npos);
     EXPECT_NE(present.find("AfterCountedPresent(flags, result, skip);"), std::string::npos);
+    // Session 20261001_141737: a re-present is absorbed. sl.common's hook returns before
+    // presentCommon counts it, sets `skip` so the interposer does not present it, and sl.dlss_g's
+    // hook (next on the same thread, priority 1000 after sl.common's 0) never sees it.
+    EXPECT_NE(present.find("v2Dlssg, \"sl.dlss_g\", \"slHookPresent\","), std::string::npos);
+    EXPECT_NE(present.find("v2Dlssg, \"sl.dlss_g\", \"slHookPresent1\","), std::string::npos);
+    EXPECT_NE(present.find("if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {"), std::string::npos);
+    EXPECT_NE(present.find("if (ConsumeAbsorbedPresent(skip)) {"), std::string::npos);
+    EXPECT_NE(present.find("    skip = true;\n    AfterCountedPresent(flags, S_OK, true);"), std::string::npos);
+    EXPECT_NE(present.find("const bool absorb = present && present1 && dlssgPresent && dlssgPresent1;"),
+              std::string::npos);
+    EXPECT_NE(present.find("thread_local bool t_absorbingPresent = false;"), std::string::npos);
     // Session 20261001_105517: what the title sent before each present is recorded at the 1.x
     // entry points, so an unmarked present's log says whether it re-showed frame N or was new.
     EXPECT_NE(translate.find("NoteTitleActivity(TitleActivity::kTag, 0);"), std::string::npos);
     EXPECT_NE(translate.find("NoteTitleActivity(TitleActivity::kConstants, frameIndex);"), std::string::npos);
     EXPECT_NE(translate.find("NoteTitleActivity(feature1x == kV1FeatureReflex ? TitleActivity::kMarker"),
               std::string::npos);
-    EXPECT_NE(present.find("if (!IsInModule(target, v2Common)) {"), std::string::npos);
+    EXPECT_NE(present.find("if (!IsInModule(target, plugin)) {"), std::string::npos);
     EXPECT_NE(runtime.find("InstallPresentMarkerGuard(GetModuleHandleA(RuntimeFeaturePath(runtimeDir, "
-                           "\"sl.common.dll\").c_str()));"),
+                           "\"sl.common.dll\").c_str()),"),
+              std::string::npos);
+    EXPECT_NE(runtime.find("GetModuleHandleA(RuntimeFeaturePath(runtimeDir, \"sl.dlss_g.dll\").c_str()));"),
               std::string::npos);
     // Only the title's own successful PRESENT_START feeds the ledger.
     EXPECT_NE(reflex.find("} else if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart)) {"),

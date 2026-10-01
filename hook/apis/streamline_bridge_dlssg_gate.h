@@ -94,6 +94,25 @@ struct TitlePresentActivity {
 
 enum class TitleActivity : uint8_t { kConstants, kTag, kEvaluate, kMarker };
 
+// No camera, no tag and no upscale since the previous present: the title re-presents what it
+// already showed (session 20261001_141737: `constants=0 tags=0 evaluates=0`, only markers).
+constexpr bool IsRePresent(const TitlePresentActivity& activity) {
+    return activity.constants == 0 && activity.tags == 0 && activity.evaluates == 0;
+}
+
+// What the guard does with a present 2.x is about to see.
+//
+// kAbsorb: the present carries no game frame, and 2.x DLSS-G reads its tagged inputs at every present
+// (ProgrammingGuideDLSS_G "tagged buffers are used during the Swapchain::Present call"). Between frame
+// N's present and this one the title is already rendering N+1 into those resources, so any handling
+// that lets DLSS-G see the present shows a dark flash: expired tags, a failed Reflex check and a
+// re-marked frame N all did (sessions 092557, 093949, 105517 and 141737). The bridge keeps it from
+// both 2.x present hooks (sl.common's counter and sl.dlss_g) and from DXGI. Nothing advances: not
+// Streamline's frame counter and not DLSS-G's back-buffer index, which the title re-queries.
+// Only the first unmarked present after a marked one is absorbed. A title that stops marking its
+// presents falls back to kReMark, so its screen never freezes.
+enum class PresentAction : uint8_t { kForward, kReMark, kAbsorb };
+
 // Not thread-safe; the caller serialises it.
 class PresentMarkerLedger {
 public:
@@ -128,19 +147,34 @@ public:
     // PRESENT_START since the previous counted present. Nothing is synthesized for a title that
     // never marks presents (2.x DLSS-G would not run for it at all) or while 2.x is not generating.
     bool PresentNeedsMarker(uint32_t presentFlags, bool dlssgEnabled, uint32_t* frameIndex) {
+        return ClassifyPresent(presentFlags, dlssgEnabled, false, frameIndex) == PresentAction::kReMark;
+    }
+
+    // `absorbSupported`: the guard holds both 2.x present hooks, so it can keep a present from all of them.
+    PresentAction ClassifyPresent(uint32_t presentFlags, bool dlssgEnabled, bool absorbSupported,
+                                  uint32_t* frameIndex) {
         if ((presentFlags & kDxgiPresentTest) != 0) {
-            return false;
+            return PresentAction::kForward;
         }
         previousPresentActivity_ = lastPresentActivity_;
         lastPresentActivity_ = current_;
         current_ = {};
         const bool marked = markedSincePresent_;
         markedSincePresent_ = false;
-        if (marked || !haveTitleFrame_ || !dlssgEnabled) {
-            return false;
+        if (marked) {
+            unmarkedRun_ = 0;
+            return PresentAction::kForward;
+        }
+        if (!haveTitleFrame_ || !dlssgEnabled) {
+            return PresentAction::kForward;
         }
         *frameIndex = lastFrame_;
-        return true;
+        const bool firstUnmarked = unmarkedRun_ == 0;
+        ++unmarkedRun_;
+        if (absorbSupported && firstUnmarked && IsRePresent(lastPresentActivity_)) {
+            return PresentAction::kAbsorb;
+        }
+        return PresentAction::kReMark;
     }
 
     // Activity that led up to the present PresentNeedsMarker last counted, and to the one before.
@@ -151,6 +185,7 @@ private:
     bool haveTitleFrame_ = false;
     bool markedSincePresent_ = false;
     uint32_t lastFrame_ = 0;
+    uint32_t unmarkedRun_ = 0;  // consecutive unmarked presents while DLSS-G generates
     TitlePresentActivity current_;
     TitlePresentActivity lastPresentActivity_;
     TitlePresentActivity previousPresentActivity_;

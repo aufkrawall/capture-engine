@@ -486,3 +486,37 @@ classifies it. `sl.log` and the DLSS-G NGX log are silent at that moment. Still 
 - Which displayed frames are dark: the generated group, or the real frame?
 
 (`unmarked present #1` at FG startup did carry constants, frame 529, so the ledger is not blind.)
+
+### Absorbing the re-present
+
+The unbridged comparison (`20261001_142552`, `streamline_upgrade=false`, the game's 1.x 2x FG) showed
+no flash. Two facts settle the handling:
+
+- **DLSS-G reads its inputs at present.** The 2.x guide says tagged buffers "are used during the
+  `Swapchain::Present` call". At the re-present the title is already rendering N+1 into depth, motion
+  vectors and HUD-less colour; the ledger only sees Streamline calls, which come late in a frame. Any
+  handling that lets 2.x DLSS-G see the present lets it read half-written inputs, or resets its
+  history.
+- **The interposer runs every plugin's before-present hook.** In 2.x
+  `sl.interposer/dxgi/dxgiSwapChain.cpp` calls them by ascending priority (sl.common 0 is always
+  first; sl.dlss_g is 1000; sl.nvperf also hooks but is not loaded), whatever `skip` says. It calls
+  the base `Present` only when nothing set `skip`.
+
+So the guard also hooks the 2.x `sl.dlss_g` `slHookPresent(1)` (via that plugin's own
+`slGetPluginFunction`). `PresentMarkerLedger::ClassifyPresent` returns `kAbsorb` when all of these
+hold: the title sent no PRESENT_START, DLSS-G generates, nothing new arrived since the last present
+(`IsRePresent`), it is the first unmarked present after a marked one, and all four present hooks
+are installed. sl.common's hook then returns before `presentCommon` (no frame counted, so Reflex
+stays in step without a re-mark) and sets `skip`. sl.dlss_g's hook, next on the same thread, returns
+without running (`t_absorbingPresent`). Nothing reaches DXGI. sl.common's after-hook still runs;
+it only recycles frame-based tags, which the bridge does not use.
+
+Other cases are still re-marked as before: a present with new constants, a second unmarked present in
+a row (a title that stopped marking must not freeze), or missing hooks. The log reads
+`absorbed it (a re-present ...) after frame N`.
+
+**Stale-risk:** this assumes the title queries `GetCurrentBackBufferIndex` before rendering its next
+frame. DLSS-G hooks that call, and its index does not advance for an absorbed present. 2.x DLSS-G
+fails with `eDLSSGStatusFailGetCurrentBackBufferIndexNotCalled` for titles that never call it, and W3
+never logged that. A misordered frame right after an absorbed present would mean the title caches
+the index.

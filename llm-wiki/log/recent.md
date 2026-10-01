@@ -5,8 +5,10 @@
 - Session `20261001_141737` (0.1.6894): under 4x MFG the overlay publishes `source=Reflex/PCL markers` about 66 ms
   with `appStream=stale markerTrusted=1`. The fix for the stale application stream is validated.
 - The one gameplay `unmarked present` (the user's one flash) had no constants, tags or evaluates since the
-  previous present; it is a re-present of frame N, not an unmarked new frame. The flash is still open; see the
-  bridge runs page (thirteenth run).
+  previous present; it is a re-present of frame N, not an unmarked new frame. Unbridged 1.x (`142552`) does not flash.
+- Fix (pending a run): the guard also hooks 2.x `sl.dlss_g` `slHookPresent(1)` and absorbs such a re-present
+  before either plugin or DXGI sees it (`PresentAction::kAbsorb`). See the bridge runs page, "Absorbing the
+  re-present".
 
 ### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
 

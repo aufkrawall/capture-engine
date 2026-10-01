@@ -25,6 +25,15 @@ using SlHookPresent1Fn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, U
 
 void* volatile g_originalHookPresent = nullptr;
 void* volatile g_originalHookPresent1 = nullptr;
+// sl.dlss_g's own present hooks. The interposer runs every plugin's before-present hook by
+// priority (sl.common 0 first, sl.dlss_g 1000) on the presenting thread, whatever `skip` says.
+void* volatile g_originalDlssgHookPresent = nullptr;
+void* volatile g_originalDlssgHookPresent1 = nullptr;
+std::atomic<bool> g_absorbSupported{false};
+
+// Set by sl.common's hook for the present it absorbed; sl.dlss_g's hook, next on the same
+// thread for the same present, consumes it. Reassigned on every present.
+thread_local bool t_absorbingPresent = false;
 
 std::mutex g_ledgerMutex;
 PresentMarkerLedger g_ledger;  // guarded by g_ledgerMutex
@@ -54,8 +63,16 @@ void PublishTrampoline(void* trampoline, void* context) {
     InterlockedExchangePointer(static_cast<void* volatile*>(context), trampoline);
 }
 
-void LogUnmarkedPresent(uint32_t n, bool remarked, uint32_t frameIndex, IDXGISwapChain* swapChain, UINT syncInterval,
-                        UINT flags, const TitlePresentActivity& now, const TitlePresentActivity& before) {
+const char* UnmarkedPresentOutcome(PresentAction action, bool remarked) {
+    if (action == PresentAction::kAbsorb) {
+        return "absorbed it (a re-present: 2.x would read inputs the title is already rewriting) after";
+    }
+    return remarked ? "re-marked" : "could NOT re-mark (no frame token)";
+}
+
+void LogUnmarkedPresent(uint32_t n, PresentAction action, bool remarked, uint32_t frameIndex,
+                        IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, const TitlePresentActivity& now,
+                        const TitlePresentActivity& before) {
     if (n >= 32 && (n % 256) != 0) {
         return;
     }
@@ -65,9 +82,9 @@ void LogUnmarkedPresent(uint32_t n, bool remarked, uint32_t frameIndex, IDXGISwa
     const auto previousResult = static_cast<unsigned long>(g_previousPresentResult.load(std::memory_order_relaxed));
     const int previousSkipped = g_previousPresentSkipped.load(std::memory_order_relaxed) ? 1 : 0;
     HookLogImportant(
-        "Streamline bridge: title presented without a Reflex PRESENT_START marker - %s frame %u so 2.x DLSS-G "
-        "does not fail its Reflex check and skip this present (1.x had no such check) #%u",
-        remarked ? "re-marked" : "could NOT re-mark (no frame token)", frameIndex, n + 1);
+        "Streamline bridge: title presented without a Reflex PRESENT_START marker - %s frame %u (2.x DLSS-G "
+        "checks Reflex and reads its tagged inputs at every present) #%u",
+        UnmarkedPresentOutcome(action, remarked), frameIndex, n + 1);
     // No constants, tags or upscaler evaluate since the previous present means a re-present of
     // frame N; constants for a newer frame mean the title rendered a frame it did not mark.
     HookLogImportant(
@@ -82,27 +99,29 @@ void LogUnmarkedPresent(uint32_t n, bool remarked, uint32_t frameIndex, IDXGISwa
 }
 
 // Runs on the title's present thread, ahead of the present 2.x is about to count.
-void BeforeCountedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+PresentAction BeforeCountedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
     const bool dlssgEnabled = DlssgEnabledOnAnyViewport();
+    const bool absorbSupported = g_absorbSupported.load(std::memory_order_acquire);
     uint32_t frameIndex = 0;
-    bool needsMarker = false;
+    PresentAction action = PresentAction::kForward;
     TitlePresentActivity activity;
     TitlePresentActivity previousActivity;
     {
         std::lock_guard<std::mutex> lock(g_ledgerMutex);
-        needsMarker = g_ledger.PresentNeedsMarker(flags, dlssgEnabled, &frameIndex);
-        if (needsMarker) {
+        action = g_ledger.ClassifyPresent(flags, dlssgEnabled, absorbSupported, &frameIndex);
+        if (action != PresentAction::kForward) {
             activity = g_ledger.LastPresentActivity();
             previousActivity = g_ledger.PreviousPresentActivity();
         }
     }
-    if (!needsMarker) {
-        return;
+    if (action == PresentAction::kForward) {
+        return action;
     }
-    const bool remarked = SynthesizePresentMarkersFor(frameIndex);
+    const bool remarked = action == PresentAction::kReMark && SynthesizePresentMarkersFor(frameIndex);
     static std::atomic<uint32_t> count{0};
     const uint32_t n = count.fetch_add(1, std::memory_order_relaxed);
-    LogUnmarkedPresent(n, remarked, frameIndex, swapChain, syncInterval, flags, activity, previousActivity);
+    LogUnmarkedPresent(n, action, remarked, frameIndex, swapChain, syncInterval, flags, activity, previousActivity);
+    return action;
 }
 
 void AfterCountedPresent(UINT flags, HRESULT result, bool skip) {
@@ -114,8 +133,22 @@ void AfterCountedPresent(UINT flags, HRESULT result, bool skip) {
     g_previousPresentQpc.store(QpcNow(), std::memory_order_relaxed);
 }
 
+// sl.common's hook decides; an absorbed present never reaches presentCommon (no frame counted), and
+// `skip` keeps the interposer from presenting the proxy's back buffer to DXGI.
+bool AbsorbAtCommonHook(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
+    t_absorbingPresent = BeforeCountedPresent(swapChain, syncInterval, flags) == PresentAction::kAbsorb;
+    if (!t_absorbingPresent) {
+        return false;
+    }
+    skip = true;
+    AfterCountedPresent(flags, S_OK, true);
+    return true;
+}
+
 HRESULT HookedSlHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
-    BeforeCountedPresent(swapChain, syncInterval, flags);
+    if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {
+        return S_OK;
+    }
     auto* original = reinterpret_cast<SlHookPresentFn*>(
         InterlockedCompareExchangePointer(&g_originalHookPresent, nullptr, nullptr));
     const HRESULT result = original ? original(swapChain, syncInterval, flags, skip) : S_OK;
@@ -125,12 +158,43 @@ HRESULT HookedSlHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT f
 
 HRESULT HookedSlHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
                              DXGI_PRESENT_PARAMETERS* params, bool& skip) {
-    BeforeCountedPresent(swapChain, syncInterval, flags);
+    if (AbsorbAtCommonHook(swapChain, syncInterval, flags, skip)) {
+        return S_OK;
+    }
     auto* original = reinterpret_cast<SlHookPresent1Fn*>(
         InterlockedCompareExchangePointer(&g_originalHookPresent1, nullptr, nullptr));
     const HRESULT result = original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
     AfterCountedPresent(flags, result, skip);
     return result;
+}
+
+// True once: the present sl.common's hook just absorbed on this thread.
+bool ConsumeAbsorbedPresent(bool& skip) {
+    if (!t_absorbingPresent) {
+        return false;
+    }
+    t_absorbingPresent = false;
+    skip = true;
+    return true;
+}
+
+HRESULT HookedDlssgHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
+    if (ConsumeAbsorbedPresent(skip)) {
+        return S_OK;
+    }
+    auto* original = reinterpret_cast<SlHookPresentFn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgHookPresent, nullptr, nullptr));
+    return original ? original(swapChain, syncInterval, flags, skip) : S_OK;
+}
+
+HRESULT HookedDlssgHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
+                                DXGI_PRESENT_PARAMETERS* params, bool& skip) {
+    if (ConsumeAbsorbedPresent(skip)) {
+        return S_OK;
+    }
+    auto* original = reinterpret_cast<SlHookPresent1Fn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgHookPresent1, nullptr, nullptr));
+    return original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
 }
 
 bool IsInModule(void* address, HMODULE module) {
@@ -141,19 +205,25 @@ bool IsInModule(void* address, HMODULE module) {
            owner == module;
 }
 
+SlGetPluginFunctionFn* PluginFunctionLookup(HMODULE plugin) {
+    auto* getPluginFunction =
+        plugin ? reinterpret_cast<SlGetPluginFunctionFn*>(GetProcAddress(plugin, "slGetPluginFunction")) : nullptr;
+    return IsInModule(reinterpret_cast<void*>(getPluginFunction), plugin) ? getPluginFunction : nullptr;
+}
+
 // The plugin publishes its hooks only through slGetPluginFunction, never as exports.
-void* InstallOne(SlGetPluginFunctionFn* getPluginFunction, HMODULE v2Common, const char* name, void* detour,
-                 void* volatile* original) {
+void* InstallOne(SlGetPluginFunctionFn* getPluginFunction, HMODULE plugin, const char* pluginName, const char* name,
+                 void* detour, void* volatile* original) {
     void* target = getPluginFunction(name);
-    if (!IsInModule(target, v2Common)) {
-        HookLogImportant("Streamline bridge: 2.x sl.common answered %s with %p, outside its image - not hooking it",
-                         name, target);
+    if (!IsInModule(target, plugin)) {
+        HookLogImportant("Streamline bridge: 2.x %s answered %s with %p, outside its image - not hooking it",
+                         pluginName, name, target);
         return nullptr;
     }
     void* trampoline = nullptr;
     if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishTrampoline,
                                       const_cast<void**>(original))) {
-        HookLogImportant("Streamline bridge: could not hook 2.x sl.common %s at %p", name, target);
+        HookLogImportant("Streamline bridge: could not hook 2.x %s %s at %p", pluginName, name, target);
         return nullptr;
     }
     return target;
@@ -171,28 +241,44 @@ void NoteTitleActivity(TitleActivity kind, uint32_t frameIndex, uint32_t marker)
     g_ledger.NoteTitleActivity(kind, frameIndex, marker);
 }
 
-bool InstallPresentMarkerGuard(HMODULE v2Common) {
+bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {
     static std::atomic<bool> attempted{false};
     if (attempted.exchange(true, std::memory_order_acq_rel)) {
         return true;  // one attempt per process: a second would stack a hook on the first
     }
-    auto* getPluginFunction =
-        v2Common ? reinterpret_cast<SlGetPluginFunctionFn*>(GetProcAddress(v2Common, "slGetPluginFunction")) : nullptr;
-    if (!IsInModule(reinterpret_cast<void*>(getPluginFunction), v2Common)) {
+    auto* commonLookup = PluginFunctionLookup(v2Common);
+    if (!commonLookup) {
         HookLogImportant(
             "Streamline bridge: no 2.x sl.common slGetPluginFunction (module=%p) - presents the title leaves without a "
             "Reflex PRESENT_START marker will fail DLSS-G's Reflex check",
             v2Common);
         return false;
     }
-    void* present = InstallOne(getPluginFunction, v2Common, "slHookPresent",
+    void* present = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent",
                                reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent);
-    void* present1 = InstallOne(getPluginFunction, v2Common, "slHookPresent1",
+    void* present1 = InstallOne(commonLookup, v2Common, "sl.common", "slHookPresent1",
                                 reinterpret_cast<void*>(&HookedSlHookPresent1), &g_originalHookPresent1);
+
+    // Absorbing needs both plugins' hooks on both present paths: sl.common alone would leave
+    // DLSS-G processing a present Streamline never counted.
+    void* dlssgPresent = nullptr;
+    void* dlssgPresent1 = nullptr;
+    if (auto* dlssgLookup = PluginFunctionLookup(v2Dlssg)) {
+        dlssgPresent = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent",
+                                  reinterpret_cast<void*>(&HookedDlssgHookPresent), &g_originalDlssgHookPresent);
+        dlssgPresent1 = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent1",
+                                   reinterpret_cast<void*>(&HookedDlssgHookPresent1), &g_originalDlssgHookPresent1);
+    }
+    const bool absorb = present && present1 && dlssgPresent && dlssgPresent1;
+    g_absorbSupported.store(absorb, std::memory_order_release);
     HookLogImportant(
-        "Streamline bridge: present-marker guard on 2.x sl.common - slHookPresent=%p slHookPresent1=%p (a title "
-        "present without its own Reflex PRESENT_START re-marks the last presented frame while DLSS-G generates)",
-        present, present1);
+        "Streamline bridge: present-marker guard - sl.common slHookPresent=%p slHookPresent1=%p, sl.dlss_g "
+        "(module=%p) slHookPresent=%p slHookPresent1=%p - a title present without its own Reflex PRESENT_START "
+        "while DLSS-G generates is %s",
+        present, present1, v2Dlssg, dlssgPresent, dlssgPresent1,
+        absorb ? "absorbed when it re-presents (no constants, tags or evaluate since the last present), "
+                 "otherwise re-marked"
+               : "re-marked (absorbing needs all four present hooks)");
     return present != nullptr;
 }
 

@@ -194,6 +194,73 @@ TEST(StreamlineBridgeDlssgGateTest, ActivityIsAttributedToThePresentItLedUpTo) {
     EXPECT_EQ(ledger.LastPresentActivity().tags, 1u);
 }
 
+// Session 20261001_141737: the flash present was a re-present. Since frame 2721's present the title
+// sent no constants, tags or upscaler evaluate, only markers (ending in its sleep), then presented again
+// ~18 ms later. Every way of letting 2.x DLSS-G see it flashed, so the guard keeps it from 2.x.
+TEST(StreamlineBridgeDlssgGateTest, AbsorbsARePresentOfTheLastMarkedFrame) {
+    using bridge::PresentAction;
+    using bridge::TitleActivity;
+    bridge::PresentMarkerLedger ledger;
+    uint32_t frame = 0;
+
+    ledger.NoteTitleActivity(TitleActivity::kConstants, 2721);
+    ledger.NoteTitleActivity(TitleActivity::kTag, 0);
+    ledger.NoteTitleActivity(TitleActivity::kEvaluate, 2721);
+    ledger.NoteTitleActivity(TitleActivity::kMarker, 2721, bridge::kV1ReflexMarkerPresentStart);
+    ledger.NoteTitlePresentStart(2721);
+    EXPECT_EQ(ledger.ClassifyPresent(0, true, true, &frame), PresentAction::kForward);
+
+    ledger.NoteTitleActivity(TitleActivity::kMarker, 2721, bridge::kV1ReflexMarkerPresentEnd);
+    ledger.NoteTitleActivity(TitleActivity::kMarker, 0, 0x1000);  // the 1.x sleep marker
+    EXPECT_EQ(ledger.ClassifyPresent(0, true, true, &frame), PresentAction::kAbsorb);
+    EXPECT_EQ(frame, 2721u);
+
+    // The next real frame is the title's own marked present again.
+    ledger.NoteTitleActivity(TitleActivity::kConstants, 2722);
+    ledger.NoteTitlePresentStart(2722);
+    EXPECT_EQ(ledger.ClassifyPresent(0, true, true, &frame), PresentAction::kForward);
+    EXPECT_EQ(ledger.ClassifyPresent(0, true, true, &frame), PresentAction::kAbsorb);
+}
+
+TEST(StreamlineBridgeDlssgGateTest, AbsorbsOnlyWhereItCannotHideAFrame) {
+    using bridge::PresentAction;
+    using bridge::TitleActivity;
+    uint32_t frame = 0;
+
+    // Without both plugins' present hooks the guard can only re-mark.
+    bridge::PresentMarkerLedger unsupported;
+    unsupported.NoteTitlePresentStart(7);
+    EXPECT_EQ(unsupported.ClassifyPresent(0, true, false, &frame), PresentAction::kForward);
+    EXPECT_EQ(unsupported.ClassifyPresent(0, true, false, &frame), PresentAction::kReMark);
+
+    // A new frame the title left unmarked (session 141737's FG-startup present #1: constants for a newer
+    // frame) is shown, not swallowed.
+    bridge::PresentMarkerLedger newFrame;
+    newFrame.NoteTitlePresentStart(528);
+    EXPECT_EQ(newFrame.ClassifyPresent(0, true, true, &frame), PresentAction::kForward);
+    newFrame.NoteTitleActivity(TitleActivity::kConstants, 529);
+    EXPECT_EQ(newFrame.ClassifyPresent(0, true, true, &frame), PresentAction::kReMark);
+    EXPECT_EQ(frame, 528u);
+
+    // A title that stops marking: only the first unmarked present is absorbed, the screen keeps updating.
+    bridge::PresentMarkerLedger stopped;
+    stopped.NoteTitlePresentStart(9);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kForward);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kAbsorb);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kReMark);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kReMark);
+    stopped.NoteTitlePresentStart(10);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kForward);
+    EXPECT_EQ(stopped.ClassifyPresent(0, true, true, &frame), PresentAction::kAbsorb);
+
+    // Nothing is absorbed while DLSS-G is off, and test presents are never touched.
+    bridge::PresentMarkerLedger off;
+    off.NoteTitlePresentStart(3);
+    EXPECT_EQ(off.ClassifyPresent(0, false, true, &frame), PresentAction::kForward);
+    EXPECT_EQ(off.ClassifyPresent(0, false, true, &frame), PresentAction::kForward);
+    EXPECT_EQ(off.ClassifyPresent(bridge::kDxgiPresentTest, true, true, &frame), PresentAction::kForward);
+}
+
 TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
     auto request = TitleRequest(false, 1, false);
     const auto forwarded = bridge::DlssgOptionsFor(request);
