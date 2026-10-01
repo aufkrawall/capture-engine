@@ -15,6 +15,9 @@
 - `150639` (0.1.6897): the absorb costs no time (DLSS-G's hook returns in 0.1 ms either way). The real frame
   before the re-present arrived ~19 ms early, and the re-present took its slot. W3 also stutters on its own.
   0.1.6899 widens the timeline to three presents before the absorb (bridge runs page).
+- `151935` (0.1.6899): settled. The title's simulation thread called Reflex sleep 11 ms late, so the render
+  thread drew frame N with no new sim and presented it early; the re-present follows once that sim finishes. This is
+  W3's own stutter (camera pans), and the absorb stays as is.
 
 ### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
 

@@ -555,3 +555,13 @@ Open question: what released frame N's sim early (a short Reflex sleep, a skippe
 0.1.6899 (dbe816f5) starts the timeline three presents before the absorbed one. It also records only the
 outermost DLSS-G return, because sl.dlss_g's slHookPresent runs its own hooked slHookPresent1 and
 every present logged two `dlssg-ret`.
+
+**Wide timeline run (`20261001_151935`, 0.1.6899): the early frame is the title's own.** One in-game absorb
+(after frame 2361). Normal frames run `sleep-ret, simS(N), simE(N)`, then `subS(N)` and `sleep(0)`
+within 0.4 ms, with the render following on another thread. Before the absorb, the title called `sleep(0)` 11 ms
+late (after `subE(2360)`). The render thread then drew `2361` at once (`subS(2361)` 0.4 ms later, no
+sleep-ret or sim in between) and presented it 9.7 ms after 2360. Only then did the sleep return and `simS(2361)`
+run, and the render thread presented again without drawing (the absorbed re-present). Frame 2362 was normal. CE
+did nothing in that window (hook log quiet). The user saw stutter on abrupt camera pans (streaming). Conclusion:
+the re-present is how W3 recovers from a simulation-thread hitch. It is not CE-caused, and the absorb is the best
+generic handling. The rate-limited timeline (first 8, then every 64th absorb) stays as a diagnostic.
