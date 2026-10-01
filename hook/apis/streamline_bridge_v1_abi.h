@@ -26,9 +26,16 @@ namespace ce::streamline_bridge {
 // No public 1.5.6 header exists, so these are mirrors. Each one is either corroborated by
 // two independent header sources or measured from a real session - never inferred.
 
-// `sl1::Constants`. Identical in upstream v1.1.1 and OptiScaler's vendored SL1 set, which
-// is what makes it trustworthy across the 1.x line. Unlike 2.x it has NO BaseStructure
-// header, and it carries `notRenderingGameFrames`, which 2.x dropped.
+// `sl1::Constants`. Unlike 2.x it has NO BaseStructure header, and it carries
+// `notRenderingGameFrames`, which 2.x dropped.
+//
+// Every 1.x `Boolean` is `enum Boolean : char` - ONE byte (upstream v1.1.1 sl_consts.h), and
+// the game's own 1.5.6 sl.common.dll validates the eight of them as
+// `cmp byte ptr [rbx+0x19c..0x1a3], 2` (2 = eInvalid). An earlier mirror read them as dwords
+// and declared the struct 456 bytes: `cameraMotionIncluded` then read
+// `notRenderingGameFrames` (eFalse), so Streamline added camera motion to vectors that already
+// carried it - DLSS sharp at rest and aliased in motion, DLSS-G interpolating the wrong motion
+// (`20261001_040020`) - and the last three flags were read from past the end of the struct.
 struct V1Float2 {
     float x, y;
 };
@@ -60,20 +67,23 @@ struct V1Constants {
     float cameraFOV;
     float cameraAspectRatio;
     float motionVectorsInvalidValue;
-    uint32_t depthInverted;
-    uint32_t cameraMotionIncluded;
-    uint32_t motionVectors3D;
-    uint32_t reset;
-    uint32_t notRenderingGameFrames;  // no 2.x equivalent - dropped in translation
-    uint32_t orthographicProjection;
-    uint32_t motionVectorsDilated;
-    uint32_t motionVectorsJittered;
+    uint8_t depthInverted;
+    uint8_t cameraMotionIncluded;
+    uint8_t motionVectors3D;
+    uint8_t reset;
+    uint8_t notRenderingGameFrames;  // no 2.x equivalent - dropped in translation
+    uint8_t orthographicProjection;
+    uint8_t motionVectorsDilated;
+    uint8_t motionVectorsJittered;
     void* ext;
 };
-static_assert(sizeof(V1Constants) == 456, "1.x sl::Constants is 456 bytes on x64");
+static_assert(sizeof(V1Constants) == 432, "1.x sl::Constants is 432 bytes on x64");
 static_assert(offsetof(V1Constants, jitterOffset) == 320, "");
 static_assert(offsetof(V1Constants, cameraNear) == 392, "");
-static_assert(offsetof(V1Constants, depthInverted) == 412, "");
+static_assert(offsetof(V1Constants, depthInverted) == 0x19c, "sl.common 1.5.6 reads it at +0x19c");
+static_assert(offsetof(V1Constants, cameraMotionIncluded) == 0x19d, "");
+static_assert(offsetof(V1Constants, motionVectorsJittered) == 0x1a3, "");
+static_assert(offsetof(V1Constants, ext) == 424, "");
 
 // `sl1::Resource`. Measured layout already encoded in streamline_api_generation.h and
 // independently confirmed by OptiScaler's header; note `type` is a 1-byte enum, not a dword.
@@ -104,7 +114,7 @@ struct V1DLSSConstants {
     float sharpness;
     float preExposure;
     float exposureScale;
-    uint32_t colorBuffersHDR;
+    uint8_t colorBuffersHDR;  // 1-byte 1.x Boolean, like every Boolean in V1Constants
 };
 
 // `sl1::DLSSSettings`. Only the first three fields are written back: that is exactly what
@@ -131,6 +141,24 @@ struct V1DLSSSettings {
 struct V1ReflexConstants {
     uint32_t mode;
 };
+
+// `sl1::ReflexSettings` (OUT of slGetFeatureSettings(Reflex)). Upstream v1.1.1 layout, and the
+// game's own 1.5.6 sl.reflex settings writer stores exactly these: `[rbx]` lowLatencyAvailable,
+// `[rbx+1]` latencyReportAvailable, `[rbx+4]` statsWindowMessage, `[rbx+0x1e08]`
+// flashIndicatorDriverControlled. The 64 per-frame reports in between are not written by the
+// bridge. A title that is told nothing here believes Reflex is unavailable and keeps its mode
+// at off, which DLSS-G then refuses (`20261001_040020`).
+struct V1ReflexSettings {
+    uint8_t lowLatencyAvailable;
+    uint8_t latencyReportAvailable;
+    uint32_t statsWindowMessage;
+    uint8_t frameReport[64][120];
+    uint8_t flashIndicatorDriverControlled;
+    void* ext;
+};
+static_assert(offsetof(V1ReflexSettings, statsWindowMessage) == 4, "");
+static_assert(offsetof(V1ReflexSettings, flashIndicatorDriverControlled) == 0x1e08,
+              "sl.reflex 1.5.6 writes it at +0x1e08");
 
 // `sl1::DLSSGConstants`. mode@0 measured going 0 -> 1 exactly 68 ms before
 // `DLSS FG ACTIVATED` in the same session, which is what identifies it. The dword at +4 was

@@ -352,29 +352,33 @@ TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) 
     // `eDLSSGStatusFailReflexNotDetectedAtRuntime` because the 1.x title kept its SL Reflex
     // mode at zero. A zero mode cannot be forwarded verbatim into a runtime that requires an
     // active Reflex signal before DLSS-G will produce frames.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(translate.empty());
 
-    EXPECT_NE(source.find("bool ForwardReflexOptions(sl::ReflexMode mode, bool synthesized)"),
-              std::string::npos);
+    EXPECT_NE(source.find("bool ForwardReflexMode(sl::ReflexMode mode, bool synthesized)"), std::string::npos);
     EXPECT_NE(source.find("sl::ReflexMode::eLowLatencyWithBoost"), std::string::npos);
     EXPECT_NE(source.find("synthesized for DLSS-G"), std::string::npos);
-    EXPECT_NE(source.find("g_slReflexSetOptions && g_slReflexSleep"), std::string::npos);
+    EXPECT_NE(translate.find("ResolveReflexFunctions(g_slGetFeatureFunction)"), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, DrivesReflexRuntimeDetectionOncePerBridgedFGFrame) {
     // Session 20260822_015042: setting eLowLatencyWithBoost was not enough. SL2 continued to
-    // report `eDLSSGStatusFailReflexNotDetectedAtRuntime` because native 2.x titles also call
-    // slReflexSleep once per frame, while a 1.x title has no equivalent export for the bridge
-    // to translate. The bridge must own that per-frame contract and deduplicate it by token.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    // report `eDLSSGStatusFailReflexNotDetectedAtRuntime`. The synthesized per-frame sleep is a
+    // fallback for a title that drives none; once the title's own sleep arrives through
+    // slEvaluateFeature(Reflex), a second sleep per frame would halve its frame rate.
+    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(translate.empty());
 
     EXPECT_NE(source.find("PFun_slReflexSleep* g_slReflexSleep"), std::string::npos);
     EXPECT_NE(source.find("bool MaybeSynthesizeReflexSleep(uint32_t frameIndex"), std::string::npos);
-    EXPECT_NE(source.find("g_slGetFeatureFunction(sl::kFeatureReflex, \"slReflexSleep\""),
+    EXPECT_NE(source.find("resolve(sl::kFeatureReflex, \"slReflexSleep\", g_slReflexSleep)"), std::string::npos);
+    EXPECT_NE(source.find("g_titleDrivesSleep.load(std::memory_order_relaxed)"), std::string::npos);
+    EXPECT_NE(translate.find("MaybeSynthesizeReflexSleep(frameIndex, token, DlssgEnabledOnAnyViewport());"),
               std::string::npos);
-    EXPECT_NE(source.find("MaybeSynthesizeReflexSleep(frameIndex, token);"), std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, ExplainsTheInertStaticImportInterposer) {

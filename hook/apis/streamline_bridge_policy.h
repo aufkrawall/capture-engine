@@ -558,6 +558,86 @@ inline bool StreamlineModuleSupersededByBridge(bool bridgeActive, Generation mod
 inline bool StreamlineRedirectSuppressedByBridge(bool bridgeActive) { return bridgeActive; }
 
 // ---------------------------------------------------------------------------
+// Reflex markers: 1.x delivers them through slEvaluateFeature
+// ---------------------------------------------------------------------------
+//
+// 1.x has no marker or sleep export. Its Reflex guide (v1.1.1) has the title call
+// `slEvaluateFeature(nullptr, eFeatureReflex, frameIndex, marker)` and states that `id` names
+// the marker; the game's 1.5.6 sl.reflex still registers that evaluate callback
+// (`latencyBeginEvaluation`). The command buffer is null by design. The bridge used to drop
+// every such call for its null command buffer, so 2.x never saw a PRESENT marker and DLSS-G
+// reported `eDLSSGStatusFailReflexNotDetectedAtRuntime ... -1 != <frame>` on every present
+// without generating a frame (`20261001_040020`).
+//
+// 1.x values 0..8 equal 2.x `PCLMarker` 0..8; 6 (input sample) is deprecated in 2.x and
+// 0x1000 is the special sleep marker.
+inline constexpr uint32_t kV1ReflexMarkerInputSample = 6;
+inline constexpr uint32_t kV1ReflexMarkerPCLatencyPing = 8;
+inline constexpr uint32_t kV1ReflexMarkerSleep = 0x1000;
+
+enum class V1ReflexEvaluate { kSleep, kMarker, kDeprecated, kUnknown };
+
+inline V1ReflexEvaluate ClassifyV1ReflexEvaluate(uint32_t id, uint32_t* pclMarker) {
+    if (id == kV1ReflexMarkerSleep) {
+        return V1ReflexEvaluate::kSleep;
+    }
+    if (id == kV1ReflexMarkerInputSample) {
+        return V1ReflexEvaluate::kDeprecated;
+    }
+    if (id <= kV1ReflexMarkerPCLatencyPing) {
+        if (pclMarker) {
+            *pclMarker = id;
+        }
+        return V1ReflexEvaluate::kMarker;
+    }
+    return V1ReflexEvaluate::kUnknown;
+}
+
+// ---------------------------------------------------------------------------
+// One 2.x frame token per 1.x frame index
+// ---------------------------------------------------------------------------
+//
+// 1.x threads a bare frame index through calls made on several threads: the game thread sets
+// constants for frame N+1 while the render thread still tags and evaluates frame N, and
+// markers arrive from both. A single cached token thrashed between them and asked
+// `slGetNewFrameToken` for an index it had already issued, moving Streamline's frame counter
+// backwards. Remembering the recent frames gives every index exactly one token.
+template <typename Token, size_t kCapacity>
+class RecentFrameTokens {
+public:
+    Token* Find(uint32_t frameIndex) const {
+        const Slot& slot = slots_[frameIndex % kCapacity];
+        return slot.frame == frameIndex ? slot.token : nullptr;
+    }
+
+    void Remember(uint32_t frameIndex, Token* token) {
+        Slot& slot = slots_[frameIndex % kCapacity];
+        slot.frame = frameIndex;
+        slot.token = token;
+        // A title that restarts its count (a load) moves far below the latest frame; follow it.
+        const bool restarted = latestFrame_ != kNoFrame && frameIndex + kCapacity < latestFrame_;
+        if (latestFrame_ == kNoFrame || frameIndex >= latestFrame_ || restarted) {
+            latestFrame_ = frameIndex;
+            latest_ = token;
+        }
+    }
+
+    // The newest frame's token, for a call that carries no frame of its own (1.x sleep).
+    Token* Latest() const { return latest_; }
+    uint32_t LatestFrame() const { return latestFrame_; }
+
+private:
+    static constexpr uint32_t kNoFrame = UINT32_MAX;
+    struct Slot {
+        uint32_t frame = kNoFrame;
+        Token* token = nullptr;
+    };
+    Slot slots_[kCapacity]{};
+    uint32_t latestFrame_ = kNoFrame;
+    Token* latest_ = nullptr;
+};
+
+// ---------------------------------------------------------------------------
 // D3D12 debug-layer configuration while the bridge keeps a device alive
 // ---------------------------------------------------------------------------
 //

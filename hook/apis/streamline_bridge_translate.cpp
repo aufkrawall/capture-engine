@@ -26,6 +26,8 @@
 #include "sl_dlss.h"
 #include "sl_dlss_g.h"
 #include "sl_reflex.h"
+#include "streamline_bridge_diag.h"
+#include "streamline_bridge_reflex.h"
 
 namespace ce::streamline_bridge {
 namespace {
@@ -72,8 +74,6 @@ std::atomic<uint32_t> g_probedEpoch{0};
 PFun_slDLSSSetOptions* g_slDLSSSetOptions = nullptr;
 PFun_slDLSSGetOptimalSettings* g_slDLSSGetOptimalSettings = nullptr;
 PFun_slDLSSGSetOptions* g_slDLSSGSetOptions = nullptr;
-PFun_slReflexSetOptions* g_slReflexSetOptions = nullptr;
-PFun_slReflexSleep* g_slReflexSleep = nullptr;
 
 // 2.x treats repeated SetOptions as a Present-race warning; 1.x drives feature constants
 // every frame. Keep the last translated state per viewport and forward only changes.
@@ -83,7 +83,6 @@ struct CachedDLSSGOptions {
 };
 std::mutex g_dlssgOptionsMutex;
 std::unordered_map<uint32_t, CachedDLSSGOptions> g_dlssgOptionsByViewport;
-std::atomic<uint32_t> g_forwardedReflexMode{UINT32_MAX};
 
 // Feature entry points exist only once a device is set - `slGetFeatureFunction` says so in
 // the SDK header itself - so they are resolved from the calls that need them rather than at
@@ -99,7 +98,7 @@ std::mutex g_featureFunctionMutex;
 
 void ResolveFeatureFunctions() {
     if (g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions &&
-        g_slReflexSetOptions && g_slReflexSleep) {
+        ResolveReflexFunctions(g_slGetFeatureFunction)) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_featureFunctionMutex);
@@ -117,34 +116,17 @@ void ResolveFeatureFunctions() {
         g_slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions",
                                reinterpret_cast<void*&>(g_slDLSSGSetOptions));
     }
-    if (!g_slReflexSetOptions) {
-        g_slGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions",
-                               reinterpret_cast<void*&>(g_slReflexSetOptions));
-    }
-    if (!g_slReflexSleep) {
-        g_slGetFeatureFunction(sl::kFeatureReflex, "slReflexSleep",
-                               reinterpret_cast<void*&>(g_slReflexSleep));
-    }
     // Report only the complete set; failures before the device exists are the expected reason
     // this event-driven path retries, not useful per-attempt diagnostics.
     static std::atomic<bool> logged{false};
-    const bool complete = g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions &&
-                          g_slReflexSetOptions && g_slReflexSleep;
+    const bool reflexComplete = ResolveReflexFunctions(g_slGetFeatureFunction);
+    const bool complete = g_slDLSSSetOptions && g_slDLSSGetOptimalSettings && g_slDLSSGSetOptions && reflexComplete;
     if (complete && !logged.exchange(true, std::memory_order_relaxed)) {
         HookLogImportant(
             "Streamline bridge: feature entry points resolved - slDLSSSetOptions=%p "
             "slDLSSGetOptimalSettings=%p slDLSSGSetOptions=%p slReflexSetOptions=%p slReflexSleep=%p",
             reinterpret_cast<void*>(g_slDLSSSetOptions), reinterpret_cast<void*>(g_slDLSSGetOptimalSettings),
-            reinterpret_cast<void*>(g_slDLSSGSetOptions), reinterpret_cast<void*>(g_slReflexSetOptions),
-            reinterpret_cast<void*>(g_slReflexSleep));
-    }
-}
-
-// One log line per distinct refusal reason, so a first bridged run diagnoses itself without
-// a per-frame call turning the log into noise.
-void RefuseOnce(std::atomic<bool>& latch, const char* what, const char* why) {
-    if (!latch.exchange(true, std::memory_order_relaxed)) {
-        HookLogImportant("Streamline bridge: refusing %s - %s", what, why);
+            reinterpret_cast<void*>(g_slDLSSGSetOptions), ReflexSetOptionsEntry(), ReflexSleepEntry());
     }
 }
 
@@ -203,44 +185,6 @@ bool DeviceReadyFor(V2Call call, std::atomic<bool>& latch) {
     return false;
 }
 
-bool ResultOk(sl::Result result, const char* call, std::atomic<bool>& latch) {
-    if (result == sl::Result::eOk) {
-        return true;
-    }
-    if (!latch.exchange(true, std::memory_order_relaxed)) {
-        HookLogImportant("Streamline bridge: %s returned sl::Result=%d", call, static_cast<int>(result));
-    }
-    return false;
-}
-
-// Sends one Reflex state and suppresses repeats. ReflexOptions has no viewport argument in
-// 2.x, so the last state is intentionally process-wide.
-bool ForwardReflexOptions(sl::ReflexMode mode, bool synthesized) {
-    const uint32_t modeValue = static_cast<uint32_t>(mode);
-    if (g_forwardedReflexMode.load(std::memory_order_relaxed) == modeValue) {
-        return true;
-    }
-    if (!g_slReflexSetOptions) {
-        return false;
-    }
-
-    sl::ReflexOptions options{};
-    options.mode = mode;
-    static std::atomic<bool> latch{false};
-    if (!ResultOk(g_slReflexSetOptions(options), "slReflexSetOptions", latch)) {
-        return false;
-    }
-    g_forwardedReflexMode.store(modeValue, std::memory_order_relaxed);
-    static std::atomic<bool> logged{false};
-    if (!logged.exchange(true, std::memory_order_relaxed)) {
-        HookLogImportant("Streamline bridge: translated Reflex mode=%u", modeValue);
-    } else {
-        HookLogImportant("Streamline bridge: %s Reflex mode=%u",
-                         synthesized ? "synthesized for DLSS-G" : "translated", modeValue);
-    }
-    return true;
-}
-
 bool DlssgEnabledOnAnyViewport() {
     std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
     for (const auto& [viewport, options] : g_dlssgOptionsByViewport) {
@@ -252,38 +196,15 @@ bool DlssgEnabledOnAnyViewport() {
     return false;
 }
 
-// Reflex options configure the feature; SL2 detects it at runtime only after the host drives
-// its per-frame sleep. Native 2.x titles call slReflexSleep every frame, but a 1.x title has
-// no such export and cannot be retrofitted to do so. While bridged DLSS-G is enabled, CE owns
-// that contract: one sleep per game-frame token, on the frame thread that already supplies it.
-bool MaybeSynthesizeReflexSleep(uint32_t frameIndex, const sl::FrameToken* token) {
-    if (!token || !DlssgEnabledOnAnyViewport()) {
-        return true;
-    }
-    static std::atomic<uint32_t> attemptedFrame{UINT32_MAX};
-    if (attemptedFrame.exchange(frameIndex, std::memory_order_relaxed) == frameIndex) {
-        return true;
-    }
-    ResolveFeatureFunctions();
-    if (!g_slReflexSleep) {
-        static std::atomic<bool> latch{false};
-        RefuseOnce(latch, "slReflexSleep", "the 2.x runtime did not provide the Reflex frame entry point");
-        return false;
-    }
-    static std::atomic<bool> latch{false};
-    return ResultOk(g_slReflexSleep(*token), "slReflexSleep", latch);
-}
+// 1.x threads a bare frame index; 2.x wants one token per frame, reused across that frame's
+// constants, tags, markers and evaluate - on whichever thread they arrive. See RecentFrameTokens.
+std::mutex g_tokenMutex;
+RecentFrameTokens<sl::FrameToken, 16> g_frameTokens;
 
-// 1.x threads a bare frame index; 2.x wants a token obtained once per frame and reused
-// across that frame's constants, tags and evaluate. Cached so all three see the same one.
 sl::FrameToken* TokenFor(uint32_t frameIndex) {
-    static std::mutex mutex;
-    static uint32_t cachedIndex = UINT32_MAX;
-    static sl::FrameToken* cachedToken = nullptr;
-
-    std::lock_guard<std::mutex> lock(mutex);
-    if (cachedToken && cachedIndex == frameIndex) {
-        return cachedToken;
+    std::lock_guard<std::mutex> lock(g_tokenMutex);
+    if (sl::FrameToken* known = g_frameTokens.Find(frameIndex)) {
+        return known;
     }
     if (!g_slGetNewFrameToken) {
         return nullptr;
@@ -292,9 +213,14 @@ sl::FrameToken* TokenFor(uint32_t frameIndex) {
     if (g_slGetNewFrameToken(token, &frameIndex) != sl::Result::eOk || !token) {
         return nullptr;
     }
-    cachedIndex = frameIndex;
-    cachedToken = token;
+    g_frameTokens.Remember(frameIndex, token);
     return token;
+}
+
+// The newest frame's token, for a 1.x call that names no frame (sleep passes 0).
+sl::FrameToken* LatestToken() {
+    std::lock_guard<std::mutex> lock(g_tokenMutex);
+    return g_frameTokens.Latest();
 }
 
 // 1.x `slSetTag` carries no command buffer, so tags are held until the next
@@ -552,7 +478,7 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
 
     // Sleep before forwarding common state: this is the earliest point in the translated
     // frame where both the frame boundary and the complete FrameToken exist.
-    MaybeSynthesizeReflexSleep(frameIndex, token);
+    MaybeSynthesizeReflexSleep(frameIndex, token, DlssgEnabledOnAnyViewport());
 
     const sl::Result result = g_slSetConstants(out, *token, sl::ViewportHandle(id));
     static std::atomic<bool> logged{false};
@@ -630,9 +556,9 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
             // titles (including The Witcher 3) leave their SL Reflex mode at zero while using
             // NVAPI Reflex separately, which the 2.x plugin cannot observe. Promote Reflex
             // while FG is on and restore the game's mode when it turns off.
-            if (!ForwardReflexOptions(options.mode == sl::DLSSGMode::eOff ? sl::ReflexMode::eOff
-                                                                          : sl::ReflexMode::eLowLatencyWithBoost,
-                                      /*synthesized=*/true)) {
+            if (!ForwardReflexMode(options.mode == sl::DLSSGMode::eOff ? sl::ReflexMode::eOff
+                                                                       : sl::ReflexMode::eLowLatencyWithBoost,
+                                   /*synthesized=*/true)) {
                 HookLogImportant("Streamline bridge: failed to update Reflex for DLSS-G state %u",
                                  cached.mode);
             }
@@ -641,28 +567,7 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         return false;
     }
 
-    // Reflex. 1.x configures it through slSetFeatureConstants; 2.x through slReflexSetOptions.
-    //
-    // This is not optional for the feature the bridge exists to deliver: DLSS-G does not engage
-    // with Reflex off, so refusing this call - which is what the bridge did at first - would
-    // leave frame generation configured and inert. Only `mode` is carried, because only `mode`
-    // was measured; see V1ReflexConstants for why the rest of that capture is stack, not struct.
     if (feature1x == kV1FeatureReflex) {
-        if (!g_slReflexSetOptions) {
-            static std::atomic<bool> latch{false};
-            RefuseOnce(latch, "slSetFeatureConstants(Reflex)", "the 2.x runtime has no slReflexSetOptions yet");
-            return false;
-        }
-        const auto& in = *static_cast<const V1ReflexConstants*>(constants1x);
-        // eOff / eLowLatency / eLowLatencyWithBoost, identical in both generations. Anything
-        // outside that is refused rather than cast into an enum it does not belong to.
-        if (in.mode > static_cast<uint32_t>(sl::ReflexMode::eLowLatencyWithBoost)) {
-            static std::atomic<bool> latch{false};
-            RefuseOnce(latch, "slSetFeatureConstants(Reflex)", "the 1.x Reflex mode is outside the known range");
-            return false;
-        }
-        sl::ReflexOptions options{};
-        options.mode = static_cast<sl::ReflexMode>(in.mode);
         bool fgEnabled = false;
         {
             std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
@@ -670,9 +575,7 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
             fgEnabled = it != g_dlssgOptionsByViewport.end() &&
                         it->second.mode != static_cast<uint32_t>(sl::DLSSGMode::eOff);
         }
-        return ForwardReflexOptions(
-            fgEnabled ? sl::ReflexMode::eLowLatencyWithBoost : static_cast<sl::ReflexMode>(in.mode),
-            /*synthesized=*/fgEnabled);
+        return TranslateReflexConstants(constants1x, fgEnabled);
     }
 
     static std::atomic<bool> latch{false};
@@ -682,9 +585,18 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
 }
 
 bool TranslateGetFeatureSettings(uint32_t feature1x, const void* constants1x, void* settings1x) {
+    if (feature1x == kV1FeatureReflex) {
+        // The 1.x guide passes null constants for this query. Device-dependent like the rest.
+        static std::atomic<bool> reflexDeviceLatch{false};
+        if (!DeviceReadyFor(V2Call::GetFeatureSettings, reflexDeviceLatch)) {
+            return false;
+        }
+        ResolveFeatureFunctions();
+        return TranslateReflexSettings(settings1x);
+    }
     if (feature1x != kV1FeatureDLSS || !constants1x || !settings1x) {
         static std::atomic<bool> latch{false};
-        RefuseOnce(latch, "slGetFeatureSettings", "only the DLSS settings query has a verified 1.x layout");
+        RefuseOnce(latch, "slGetFeatureSettings", "only DLSS and Reflex settings have a verified 1.x layout");
         return false;
     }
     static std::atomic<bool> deviceLatch{false};
@@ -724,10 +636,19 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         RefuseOnce(latch, "slEvaluateFeature", "the 1.x feature has no faithful 2.x equivalent");
         return false;
     }
+    static std::atomic<bool> deviceLatch{false};
+    if (feature1x == kV1FeatureReflex) {
+        // Markers and sleep: `id` is the marker and the command buffer is null by design.
+        if (!DeviceReadyFor(V2Call::EvaluateFeature, deviceLatch)) {
+            return false;
+        }
+        ResolveFeatureFunctions();
+        const bool namesFrame = frameIndex != 0 || id != kV1ReflexMarkerSleep;
+        return TranslateReflexEvaluate(id, frameIndex, namesFrame ? TokenFor(frameIndex) : LatestToken());
+    }
     if (!g_slEvaluateFeature || !commandBuffer) {
         return false;
     }
-    static std::atomic<bool> deviceLatch{false};
     if (!DeviceReadyFor(V2Call::EvaluateFeature, deviceLatch)) {
         return false;
     }
@@ -737,7 +658,7 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         RefuseOnce(latch, "slEvaluateFeature", "the 2.x runtime would not issue a frame token");
         return false;
     }
-    MaybeSynthesizeReflexSleep(frameIndex, token);
+    MaybeSynthesizeReflexSleep(frameIndex, token, DlssgEnabledOnAnyViewport());
 
     // The viewport travels in the input chain, not as a parameter. 1.x threads it through
     // every call as a bare `id`, and the 2.x header is explicit that "frame and viewport

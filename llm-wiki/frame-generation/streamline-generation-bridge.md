@@ -18,10 +18,11 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Native D3D12 device continuity | `hook/apis/streamline_bridge_device_cache.{h,cpp}` |
 | Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/apis/streamline_bridge_native_device.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
+| Reflex: options, settings, markers, sleep | `hook/apis/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
-| Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_debug_layer.cpp` |
+| Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_debug_layer.cpp`, `tests/test_streamline_bridge_v1_reflex.cpp` |
 | Config | `streamline_upgrade` (default off), alongside `streamline_dll_path` |
 
 ## What it is, and what it deliberately is not
@@ -431,6 +432,35 @@ unbridged title.
 Pending: a hardware run should show the refusal line, then `reused the prior successful D3D12 device`
 on the real-device request and DLSS-G reaching the render loop.
 
+## The eighth bridged run: Reflex markers arrive through slEvaluateFeature
+
+Session `20261001_040020` (0.1.6871) ran without crashing. DLSS SR was aliased in motion (the
+Boolean layout above), and DLSS-G added no frames. `sl.log` held 553x
+`eDLSSGStatusFailReflexNotDetectedAtRuntime - sl.reflex must be enabled and active -1 != <frame>`.
+In the open 2.x sl.reflex source, `kMarkerPresentFrame` is set only by a `ePresentStart` marker,
+and `-1` means none ever arrived.
+
+1.x has no marker or sleep export. The v1.1.1 Reflex guide has the title call
+`slEvaluateFeature(nullptr, eFeatureReflex, frameIndex, marker)` with **the marker in `id`**. Sleep
+is `id = eReflexMarkerSleep = 0x1000`, with frame 0. The 1.5.6 `sl.reflex` still registers that
+evaluate callback (`latencyBeginEvaluation`). The bridge returned false for every evaluate with a
+null command buffer, so all markers and sleeps vanished. The title also queried
+`slGetFeatureSettings(Reflex)`, got a refusal, and kept Reflex mode 0 (it was 1 unbridged).
+
+0.1.6872:
+- Reflex evaluates route to `slPCLSetMarker` (1.x 0..8 = 2.x `PCLMarker` 0..8, 6 dropped) and
+  `slReflexSleep`. Sleep with frame 0 uses the newest frame's token. The first title sleep stops
+  CE's synthesized sleep.
+- `slGetFeatureSettings(Reflex)` answers the four fields the 1.5.6 writer stores, from
+  `slReflexGetState` / `slPCLGetState`.
+- `TokenFor` keeps 16 recent frame -> token pairs (`RecentFrameTokens`). The single cached token
+  thrashed between the game thread (constants for N+1) and the render thread (evaluate for N), and
+  re-asked `slGetNewFrameToken` for an issued index.
+
+Pending: a run should show `first Reflex marker translated`, rising `presentStart` in `Reflex markers
+so far`, `answered slGetFeatureSettings(Reflex) - lowLatencyAvailable=1`, and no
+`ReflexNotDetectedAtRuntime` in `sl.log`.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -477,6 +507,8 @@ on the real-device request and DLSS-G reaching the render loop.
 - **No feature context, no call.** Most 2.x exports jump through a plugin pointer the manager
   binds late, so every device-dependent translation is refused until Streamline says the
   context exists. This is a crash, not a courtesy - it happened twice.
+- **1.x Reflex markers and sleep are evaluates with a null command buffer.** `id` is the marker;
+  never drop a Reflex evaluate for its command buffer.
 - **Readiness is asked, never inferred.** The only signal is `slGetFeatureFunction` succeeding.
   Both inferences that were tried - "slSetD3DDevice returned eOk" and "the interposer created
   the device" - produced the same null call.
@@ -564,11 +596,17 @@ same slot). So a range check, not a mapping table.
 
 ### Structure layouts (x64)
 
-`Constants` - 456 bytes, **no** BaseStructure header. Identical in upstream v1.1.1 and
-OptiScaler's set. Translation to 2.x: prepend the 2.x `BaseStructure`, copy
-`cameraViewToClip`..`reset` verbatim, **drop `notRenderingGameFrames`** (no 2.x field), keep
-the three motion-vector/projection Booleans, leave 2.x
-`minRelativeLinearDepthObjectSeparation` at its **40.0f** default rather than zero, drop `ext`.
+`Constants` - **432** bytes, **no** BaseStructure header. Every 1.x `Boolean` is
+`enum Boolean : char`: one byte. The game's own 1.5.6 `sl.common.dll` validates the eight of them as
+`cmp byte ptr [rbx+0x19c..0x1a3], 2`, so `depthInverted`@0x19c .. `motionVectorsJittered`@0x1a3 and
+`ext`@424. Until 0.1.6872 the mirror read them as dwords (456 bytes). That made
+`cameraMotionIncluded` come from `notRenderingGameFrames` (eFalse), so SL2 added camera motion
+again. The result was DLSS sharp at rest and aliased in motion, and DLSS-G interpolating the wrong
+motion (`20261001_040020`). The last three flags were also read past the struct. Translation to 2.x:
+prepend the 2.x `BaseStructure`, copy `cameraViewToClip`..`reset` verbatim, **drop
+`notRenderingGameFrames`** (no 2.x field), keep the three motion-vector/projection Booleans, leave
+2.x `minRelativeLinearDepthObjectSeparation` at its **40.0f** default rather than zero, drop `ext`.
+**Byte-level width claims about a 1.x struct need the binary's own instruction, not a header copy.**
 
 `Resource` - `{ ResourceType type (1 byte); void* native@8; void* memory@16; void* view@24;
 uint32_t state@32; void* ext@40 }`, 48 bytes. Independently confirms the offsets
@@ -583,6 +621,7 @@ Measured from The Witcher 3 session `20260821_042540` (4x FG active, 4968 frames
 | `DLSSConstants` | `mode`@0, `outputWidth`@4, `outputHeight`@8, `sharpness`@12, `preExposure`@16, `exposureScale`@20, `colorBuffersHDR`@24 | 1 and 4; 3840; 2160; 0.0; 1.0; 1.0; 1 |
 | `DLSSSettings` (out) | `optimalRenderWidth`@0, `optimalRenderHeight`@4, `optimalSharpness`@8 | 1920; 1080; 0.35, then zeroes |
 | `ReflexConstants` | `mode`@0 **only**; the struct is 8 bytes | 1 (and +4 always 0) |
+| `ReflexSettings` (out) | `lowLatencyAvailable`@0, `latencyReportAvailable`@1, `statsWindowMessage`@4, 64 reports, `flashIndicatorDriverControlled`@0x1e08 | the 1.5.6 writer's own stores |
 | `DLSSGConstants` | `mode`@0 (**0 = off, 1 = on**), `numFramesToGenerate`@4 (unconfirmed) | 0 -> 1, 68 ms before `DLSS FG ACTIVATED`; +4 constantly 1 |
 
 **`ReflexConstants` had a phantom field, and it is worth knowing how.** An earlier reading of
@@ -661,13 +700,9 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - **The `20260821_161620` startup C++ exception did not recur** in `20260821_163534`, which
   reached the render loop. It remains unexplained rather than fixed; if it returns, `sl.log`
   is now there to say whether Streamline was involved.
-- **Reflex activation alone is not runtime detection.** 1.x drives options through
-  `slSetFeatureConstants`, while native 2.x titles also call `slReflexSleep` once per frame.
-  Witcher 3 `20260822_015042` accepted `eLowLatencyWithBoost` yet kept reporting
-  `eDLSSGStatusFailReflexNotDetectedAtRuntime`; there was no sleep traffic. While bridged DLSS-G
-  is on, CE now resolves `slReflexSleep`, promotes the mode as before, and issues exactly one
-  sleep per translated game-frame token. Turning DLSS-G off stops the sleeps and restores off.
-  Frame-limit and marker fields keep 2.x defaults because they were never measured.
+- **Reflex detection needs the title's PRESENT markers** (see the eighth run). The synthesized
+  per-frame sleep is a fallback for a title that drives none. Frame-limit and marker fields of
+  `ReflexConstants` keep 2.x defaults because they were never measured.
 - **`slShutdown` on a 1.x runtime that has only been `slInit`ed is expected to unload its
   plugins, but that is not verified.** The inventory line printed straight after the call is
   there to settle it: if `sl.common.dll` is still listed from the game's folder afterwards,
