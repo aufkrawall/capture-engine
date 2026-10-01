@@ -147,4 +147,3 @@
 - Three source regressions fail before the fixes; native `FFXExportLifetimeTest` proves last-owner
   unload cannot unmap a pinned export and rejection paths release their references. Combined incremental
   product build 0.1.6857, full native suite and Python tool self-tests passed; game validation pending.
-
