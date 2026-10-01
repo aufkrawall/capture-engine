@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-01 - FG PC latency validated; bridge flash present is a re-present
+
+- Session `20261001_141737` (0.1.6894): under 4x MFG the overlay publishes `source=Reflex/PCL markers` about 66 ms
+  with `appStream=stale markerTrusted=1`. The fix for the stale application stream is validated.
+- The one gameplay `unmarked present` (the user's one flash) had no constants, tags or evaluates since the
+  previous present; it is a re-present of frame N, not an unmarked new frame. The flash is still open; see the
+  bridge runs page (thirteenth run).
+
 ### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
 
 - Session `20261001_105517` (0.1.6889, W3 bridged 4x MFG). PC latency `source=unavailable` all FG session.

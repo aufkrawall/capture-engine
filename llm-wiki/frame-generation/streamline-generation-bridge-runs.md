@@ -463,3 +463,26 @@ previous present and that present's HRESULT/skip. It also logs the title's activ
 previous present and before it: constants (frame), tags, upscaler evaluates (frame), Reflex
 markers (last id, frame). A next run decides between the two readings. Also open: whether the
 unbridged 1.x game shows the same flash.
+
+## The thirteenth bridged run: the extra present is a re-present
+
+Session `20261001_141737` (0.1.6894). The user saw one flash late in the run and then quit. The only
+gameplay re-mark (`unmarked present #3`, frame 2721) is the CSV's only 8-present group, about 5 s
+before FG ends. The two in-game unmarked presents logged the same pattern:
+
+- **Since the previous present:** `constants=0 tags=0 evaluates=0`, 5 Reflex markers, the last of
+  them the 1.x sleep (`0x1000`, frame 0).
+- **Before it:** a normal frame with constants, 7 tags, the DLSS evaluate and PRESENT_START, all for
+  frame 2721.
+- **Present details:** `sync=0 flags=0x0`, 16-18 ms after a successful present.
+
+So the title presents again without rendering a new scene: no camera, no upscale, no new tags. The
+"unmarked new frame" reading is ruled out. Re-marking frame N attributes the present to the right
+frame, yet the flash stays. That holds across all four handlings (expired tags, skipped, generated,
+now confirmed as a re-present), which points at what the present shows rather than at how 2.x
+classifies it. `sl.log` and the DLSS-G NGX log are silent at that moment. Still open:
+
+- Does the unbridged 1.x game flash too?
+- Which displayed frames are dark: the generated group, or the real frame?
+
+(`unmarked present #1` at FG startup did carry constants, frame 529, so the ledger is not blind.)
