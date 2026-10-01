@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-01 - Streamline bridge: gate DLSS-G on 1.x `notRenderingGameFrames`
+
+- Session `20261001_090234` (W3, bridged, 4x MFG): FG artifacts for seconds after a save load; `sl.log`
+  clean, pacing/overlay/exit fine. 1.5.6 `sl.dlss_g!presentCommon` interpolates only when the flag is
+  eFalse (`+0x1ab8b`); both generations pass 0 to NGX. The bridge dropped it.
+- `streamline_bridge_dlssg.{h,cpp}` (split from translate.cpp) + `streamline_bridge_dlssg_gate.h`:
+  `eOff` with `eRetainResourcesWhenOff` while the flag is set. New logs for flag transitions and `reset`.
+- Open: the run did not log the flag, so "W3 sets it in that window" is unverified. See
+  `frame-generation/streamline-generation-bridge.md` (ninth run).
+
 ### 2026-10-01 - Leave SetColorSpace1's entry to a loaded overlay
 
 - Steam's Witcher 3 overlay log could not decode CE's `endbr64` detour after following CE's

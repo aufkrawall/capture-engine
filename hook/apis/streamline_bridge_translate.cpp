@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
-#include <unordered_map>
 
 #include "../common/hook_common.h"
 #include "streamline_bridge_policy.h"
@@ -27,6 +26,7 @@
 #include "sl_dlss_g.h"
 #include "sl_reflex.h"
 #include "streamline_bridge_diag.h"
+#include "streamline_bridge_dlssg.h"
 #include "streamline_bridge_reflex.h"
 
 namespace ce::streamline_bridge {
@@ -74,15 +74,6 @@ std::atomic<uint32_t> g_probedEpoch{0};
 PFun_slDLSSSetOptions* g_slDLSSSetOptions = nullptr;
 PFun_slDLSSGetOptimalSettings* g_slDLSSGetOptimalSettings = nullptr;
 PFun_slDLSSGSetOptions* g_slDLSSGSetOptions = nullptr;
-
-// 2.x treats repeated SetOptions as a Present-race warning; 1.x drives feature constants
-// every frame. Keep the last translated state per viewport and forward only changes.
-struct CachedDLSSGOptions {
-    uint32_t mode;
-    uint32_t numFramesToGenerate;
-};
-std::mutex g_dlssgOptionsMutex;
-std::unordered_map<uint32_t, CachedDLSSGOptions> g_dlssgOptionsByViewport;
 
 // Feature entry points exist only once a device is set - `slGetFeatureFunction` says so in
 // the SDK header itself - so they are resolved from the calls that need them rather than at
@@ -181,17 +172,6 @@ bool DeviceReadyFor(V2Call call, std::atomic<bool>& latch) {
             "Streamline bridge: holding %s back - the 2.x runtime has no feature context yet. Forwarding it now "
             "would jump through a plugin pointer Streamline has not bound, which is a null call, not an error",
             DescribeV2Call(call));
-    }
-    return false;
-}
-
-bool DlssgEnabledOnAnyViewport() {
-    std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
-    for (const auto& [viewport, options] : g_dlssgOptionsByViewport) {
-        (void)viewport;
-        if (options.mode != static_cast<uint32_t>(sl::DLSSGMode::eOff)) {
-            return true;
-        }
     }
     return false;
 }
@@ -473,7 +453,7 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
     out.orthographicProjection = static_cast<sl::Boolean>(in.orthographicProjection);
     out.motionVectorsDilated = static_cast<sl::Boolean>(in.motionVectorsDilated);
     out.motionVectorsJittered = static_cast<sl::Boolean>(in.motionVectorsJittered);
-    // `notRenderingGameFrames` has no 2.x field and is deliberately dropped;
+    // `notRenderingGameFrames` has no 2.x field; it gates DLSS-G below, as 1.x did.
     // `minRelativeLinearDepthObjectSeparation` keeps its 40.0f default rather than a zero.
 
     // Sleep before forwarding common state: this is the earliest point in the translated
@@ -488,6 +468,17 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
             "sl::Result=%d",
             frameIndex, static_cast<uint32_t>(*token), id, static_cast<int>(result));
     }
+    // A history reset is the title's own camera-cut signal; when DLSS-G misbehaves around a load
+    // or cut, whether one arrived is the first question.
+    if (in.reset != 0) {
+        static std::atomic<uint32_t> resets{0};
+        const uint32_t n = resets.fetch_add(1, std::memory_order_relaxed);
+        if (n < 16 || (n % 256) == 0) {
+            HookLogImportant("Streamline bridge: title requested a history reset on frame %u viewport %u (raw=%u) #%u",
+                             frameIndex, id, in.reset, n + 1);
+        }
+    }
+    ApplyNotRenderingGameFrames(g_slDLSSGSetOptions, id, frameIndex, in.notRenderingGameFrames);
     static std::atomic<bool> latch{false};
     return ResultOk(result, "slSetConstants", latch);
 }
@@ -529,51 +520,11 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
             return false;
         }
         const auto& in = *static_cast<const V1DLSSGConstants*>(constants1x);
-        sl::DLSSGOptions options{};
-        options.mode = (in.mode == 0) ? sl::DLSSGMode::eOff : sl::DLSSGMode::eOn;
-        // Left at whatever 1.x asked for; CE's own dlss_fg_factor override applies later,
-        // on its existing slDLSSGSetOptions hook, exactly as it does for a native 2.x game.
-        options.numFramesToGenerate = in.numFramesToGenerate ? in.numFramesToGenerate : 1;
-        const CachedDLSSGOptions cached{static_cast<uint32_t>(options.mode), options.numFramesToGenerate};
-        {
-            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
-            auto it = g_dlssgOptionsByViewport.find(id);
-            if (it != g_dlssgOptionsByViewport.end() && it->second.mode == cached.mode &&
-                it->second.numFramesToGenerate == cached.numFramesToGenerate) {
-                return true;  // unchanged: forwarding again is a documented Present race
-            }
-        }
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-            HookLogImportant("Streamline bridge: first DLSS-G options translated - mode=%u numFramesToGenerate=%u",
-                             in.mode, options.numFramesToGenerate);
-        }
-        static std::atomic<bool> latch{false};
-        if (ResultOk(g_slDLSSGSetOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch)) {
-            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
-            g_dlssgOptionsByViewport[id] = cached;
-            // 2.x refuses to generate frames unless Reflex is detected at runtime. Some 1.x
-            // titles (including The Witcher 3) leave their SL Reflex mode at zero while using
-            // NVAPI Reflex separately, which the 2.x plugin cannot observe. Promote Reflex
-            // while FG is on and restore the game's mode when it turns off.
-            if (!UpdateReflexForDlssg(options.mode != sl::DLSSGMode::eOff)) {
-                HookLogImportant("Streamline bridge: failed to update Reflex for DLSS-G state %u",
-                                 cached.mode);
-            }
-            return true;
-        }
-        return false;
+        return TranslateDlssgConstants(g_slDLSSGSetOptions, in.mode, in.numFramesToGenerate, id);
     }
 
     if (feature1x == kV1FeatureReflex) {
-        bool fgEnabled = false;
-        {
-            std::lock_guard<std::mutex> lock(g_dlssgOptionsMutex);
-            auto it = g_dlssgOptionsByViewport.find(id);
-            fgEnabled = it != g_dlssgOptionsByViewport.end() &&
-                        it->second.mode != static_cast<uint32_t>(sl::DLSSGMode::eOff);
-        }
-        return TranslateReflexConstants(constants1x, fgEnabled);
+        return TranslateReflexConstants(constants1x, DlssgTitleRequestsOn(id));
     }
 
     static std::atomic<bool> latch{false};

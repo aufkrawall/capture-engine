@@ -16,6 +16,8 @@ Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Witcher 3 (DX12) with `streamline_upgrade=true`: frame-generation artifacts for the first seconds after loading a save:** Streamline 1.x lets a game mark frames as "not game frames" (loading screens, fades), and 1.x then skips frame generation for them. Streamline 2.x has no such flag, and CaptureEngine dropped it when translating, so DLSS frame generation interpolated frames the game had excluded. CaptureEngine now pauses frame generation for exactly those frames and keeps its resources, so generation resumes on the next game frame without a rebuild. The log shows `title marked frame N ... as NOT a game frame` and `DLSS-G off ... (notRenderingGameFrames ...)`, plus `title requested a history reset` for the game's camera cuts.
+
 - **Steam overlay color-space tracking (e.g. The Witcher 3):** CaptureEngine now leaves the color-space function's entry to a loaded overlay and tracks changes further inside it, so Steam can install its hook instead of failing to decode CaptureEngine's detour.
 
 - **Witcher 3 (DX12) crashed at startup with NVIDIA Smooth Motion enabled:** to find DirectX's functions, CaptureEngine creates a small throwaway Direct3D 11 device. It used the graphics card for this, often while the game was creating its own device. That ran the NVIDIA driver's setup twice at once, and Smooth Motion stops the game when two threads set it up at the same time. CaptureEngine now uses Windows' software renderer (WARP) for this device, so the graphics driver never runs on CaptureEngine's own threads. Its DirectX 12 setup already worked this way. The log line `Temp D3D11 hook-discovery device is WARP` confirms the change.

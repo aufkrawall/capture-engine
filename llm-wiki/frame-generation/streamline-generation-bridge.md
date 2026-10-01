@@ -19,6 +19,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/apis/streamline_bridge_native_device.{h,cpp}` |
 | 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
 | Reflex: options, settings, markers, sleep | `hook/apis/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
+| DLSS-G options and the `notRenderingGameFrames` gate | `hook/apis/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
@@ -464,6 +465,31 @@ with `generationObserved=1` and no `ReflexNotDetectedAtRuntime`. The title drive
 asked for mode 1, until the title's next constants call. 0.1.6873 hands back the title's last mode
 (`ReflexModeForDlssgState`).
 
+## The ninth bridged run: 1.x gates interpolation on `notRenderingGameFrames`
+
+Session `20261001_090234` (0.1.6883, 4x MFG, FG preset B): heavy FG artifacts for the first seconds
+after a save loaded, then clean. Pacing, overlay and both FG transitions were healthy. `sl.log` showed
+no DLSS-G warning at all, so the runtime saw nothing wrong with its inputs.
+
+The game's own 1.5.6 `sl.dlss_g.dll` explains what the bridge dropped. `presentCommon` (function
+`0x19f20`) zeroes r15d at `+0x1a064`, then at `+0x1ab8b` runs
+`cmp byte ptr [rax+0x1a0], r15b; cmove edx, ecx`: the interpolate flag survives only when the frame's
+`Constants.notRenderingGameFrames` is exactly eFalse. eInvalid also suppresses and logs "cannot be
+left as invalid"; an `ignoreNotRenderingGameFrames` config key exists. Both the 1.5.6 and the 2.14.1
+plugin pass a constant 0 for the NGX parameter `DLSSG.NotRenderingGameFrames`, so the gate lives in
+the plugin. 2.x has no field, and the bridge discarded it, so 2.x interpolated every frame the title
+had excluded.
+
+0.1.6884 keeps a per-viewport request (title mode and frame count from DLSS-G constants, the flag from
+common constants) and forwards `eOff` while the flag is set. `eRetainResourcesWhenOff` is set whenever
+the title wants FG on, so resuming costs no rebuild. Reflex follows the title's intent, not the gate.
+Granularity is the constants call, which can run one frame ahead of the present it gates.
+
+**Unverified:** that The Witcher 3 sets the flag in that window. This run logged neither the flag nor
+`reset`. Both now log transitions (`title marked frame N ... as NOT a game frame`,
+`title requested a history reset`). If the next run shows the flag never set, the artifacts are
+DLSS-G warming up on the title's inputs, not a bridge gap.
+
 ## Invariants
 
 - **Activation is all-or-nothing, decided once, before anything is touched.** It requires
@@ -510,6 +536,8 @@ asked for mode 1, until the title's next constants call. 0.1.6873 hands back the
 - **No feature context, no call.** Most 2.x exports jump through a plugin pointer the manager
   binds late, so every device-dependent translation is refused until Streamline says the
   context exists. This is a crash, not a courtesy - it happened twice.
+- **A 1.x non-game frame never reaches 2.x DLSS-G with generation on.** 1.x skipped interpolation
+  unless `notRenderingGameFrames == eFalse`; the bridge forwards that as `eOff` with resources retained.
 - **1.x Reflex markers and sleep are evaluates with a null command buffer.** `id` is the marker;
   never drop a Reflex evaluate for its command buffer.
 - **Readiness is asked, never inferred.** The only signal is `slGetFeatureFunction` succeeding.
@@ -606,8 +634,8 @@ same slot). So a range check, not a mapping table.
 `cameraMotionIncluded` come from `notRenderingGameFrames` (eFalse), so SL2 added camera motion
 again. The result was DLSS sharp at rest and aliased in motion, and DLSS-G interpolating the wrong
 motion (`20261001_040020`). The last three flags were also read past the struct. Translation to 2.x:
-prepend the 2.x `BaseStructure`, copy `cameraViewToClip`..`reset` verbatim, **drop
-`notRenderingGameFrames`** (no 2.x field), keep the three motion-vector/projection Booleans, leave
+prepend the 2.x `BaseStructure`, copy `cameraViewToClip`..`reset` verbatim, route
+`notRenderingGameFrames` (no 2.x field) to the DLSS-G gate (ninth run), keep the three motion-vector/projection Booleans, leave
 2.x `minRelativeLinearDepthObjectSeparation` at its **40.0f** default rather than zero, drop `ext`.
 **Byte-level width claims about a 1.x struct need the binary's own instruction, not a header copy.**
 
@@ -723,8 +751,8 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   not `sl.*`), but should point at the same folder as `streamline_dll_path`: a bridged runtime
   resolves its own `nvngx_*` out of the folder it was pinned to. CE logs any disagreement.
 
-Last verified 2026-10-01 (device-reset cause from session `20261001_034038`, fix pending a
-hardware run); before that 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
+Last verified 2026-10-01 (`notRenderingGameFrames` gate from session `20261001_090234`, pending a
+hardware run; device-reset cause from `20261001_034038`, validated); before that 2026-08-22 (session `20260822_015042`; ABI measurements from The Witcher 3 sessions
 `20260821_041255` and `20260821_042540`, activation timing from `20260821_151738` and
 `20260821_151924`, the bridged runs from `20260821_155250`, `20260821_161620` and
 `20260821_163534`).

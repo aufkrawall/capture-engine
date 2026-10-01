@@ -71,7 +71,7 @@ struct V1Constants {
     uint8_t cameraMotionIncluded;
     uint8_t motionVectors3D;
     uint8_t reset;
-    uint8_t notRenderingGameFrames;  // no 2.x equivalent - dropped in translation
+    uint8_t notRenderingGameFrames;  // no 2.x field - gates DLSS-G (streamline_bridge_dlssg_gate.h)
     uint8_t orthographicProjection;
     uint8_t motionVectorsDilated;
     uint8_t motionVectorsJittered;

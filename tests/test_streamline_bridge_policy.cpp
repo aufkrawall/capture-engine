@@ -336,15 +336,25 @@ TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchanged
     // SR received an incomplete input set (sl::Result=20). 2.x's deprecated slSetTag allows a
     // null command buffer for eValidUntilPresent tags, which is exactly the 1.x call shape.
     // The same session showed SL2 warning on every repeated FG options call, so unchanged 1.x
-    // per-frame constants must be suppressed at the bridge boundary.
+    // per-frame constants must be suppressed at the bridge boundary (the DLSS-G option state
+    // moved to streamline_bridge_dlssg.cpp with the notRenderingGameFrames gate).
     const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string dlssg = ReadProjectSource("hook/apis/streamline_bridge_dlssg.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(dlssg.empty());
 
     EXPECT_NE(source.find("Translate immediately."), std::string::npos);
     EXPECT_NE(source.find("g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr)"), std::string::npos);
     EXPECT_EQ(source.find("constexpr size_t kMaxPendingTags"), std::string::npos);
-    EXPECT_NE(source.find("struct CachedDLSSGOptions"), std::string::npos);
-    EXPECT_NE(source.find("unchanged: forwarding again is a documented Present race"), std::string::npos);
+    EXPECT_NE(dlssg.find("struct DlssgViewportState"), std::string::npos);
+    EXPECT_NE(dlssg.find("if (!DlssgGateNeedsSync(state.request, state.haveForwarded, state.forwarded))"),
+              std::string::npos);
+    EXPECT_NE(dlssg.find("unchanged: forwarding again is a documented Present race"), std::string::npos);
+    // Every translated common-constants call feeds the gate; dropping the field again would let
+    // 2.x interpolate frames the title marked as non-game (20261001_090234).
+    EXPECT_NE(source.find("ApplyNotRenderingGameFrames(g_slDLSSGSetOptions, id, frameIndex, "
+                          "in.notRenderingGameFrames);"),
+              std::string::npos);
 }
 
 TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) {
