@@ -531,3 +531,14 @@ single signature-agnostic detour (`HookedSlHookPresentShared`) serves both. It f
 four register arguments and never writes the fourth, which is `bool& skip` for Present and
 `params` for Present1. The `skip` write moved to sl.dlss_g's detours, and absorbing requires those
 two entry points to be distinct.
+
+**Second absorb run (`20261001_145325`, 0.1.6896): no flashes, one long frame per absorb.** All four
+in-game re-presents were absorbed (`absorbed it ... after frame 1393/2681/2899/3330`), and the
+8-present CSV groups are gone. But each absorb lines up with a group arriving 4-7 ms after the previous
+one instead of ~27 ms, followed by a ~45 ms gap (the CSV spacing 37.23 s / 6.30 s / 12.46 s equals the
+absorb spacing). On screen that is one ~30 ms hold: the 10 s pacing windows with an absorb had 0.1% lows
+of 31.6/34.4/55.8/77.9 fps against 80-97 elsewhere. The re-marked handling (`141737`) had shown a
+smaller dip (85.3). Open question: does the absorbed call returning at once (a forwarded present
+would sit in DLSS-G's hook) let the title start N+1 early? 0.1.6897 logs `absorbed-present timeline`
+(`streamline_bridge_present_timeline.h`): every title call, Reflex sleep entry/return, present and
+DLSS-G hook return, from the present before the absorbed one until two presents after it.

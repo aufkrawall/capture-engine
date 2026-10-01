@@ -10,6 +10,8 @@
   fixes it in 0.1.6896, run pending): the guard also hooks 2.x `sl.dlss_g` `slHookPresent(1)` and absorbs such a re-present
   before either plugin or DXGI sees it (`PresentAction::kAbsorb`). See the bridge runs page, "Absorbing the
   re-present".
+- `145325` (0.1.6896): absorb works, no flashes; each absorb is followed by the next frame ~20 ms early and a
+  ~30 ms hold on screen. 0.1.6897 logs an `absorbed-present timeline` to find out why (run pending).
 
 ### 2026-10-01 - PC latency dead under FG; bridge flashes persist at re-marked presents
 

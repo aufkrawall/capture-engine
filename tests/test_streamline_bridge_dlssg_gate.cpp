@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "../hook/apis/streamline_bridge_dlssg_gate.h"
+#include "../hook/apis/streamline_bridge_present_timeline.h"
 
 // Session 20261001_090234 (Witcher 3, streamline_upgrade=true, 4x MFG): heavy DLSS-G artifacts
 // for the first seconds after a save game loaded. The bridge dropped 1.x
@@ -266,6 +267,58 @@ TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
     const auto forwarded = bridge::DlssgOptionsFor(request);
     request.notRenderingGameFrames = true;
     EXPECT_FALSE(bridge::DlssgGateNeedsSync(request, true, forwarded));
+}
+
+// Session 20261001_145325: each absorbed present was followed by the next frame arriving ~20 ms
+// early. The timeline prints what the title did around it, relative to the absorbed present.
+TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineStartsAtThePresentBeforeIt) {
+    using bridge::TimelineKind;
+    bridge::PresentTimeline timeline;
+    timeline.Record({1'000, TimelineKind::kPresent, 0, 0});         // an older present, left out
+    timeline.Record({10'000, TimelineKind::kConstants, 0, 41});
+    timeline.Record({10'100, TimelineKind::kTag, 0, 0});
+    timeline.Record({10'200, TimelineKind::kTag, 0, 0});
+    timeline.Record({10'300, TimelineKind::kMarker, 4, 41});
+    timeline.Record({10'400, TimelineKind::kPresent, 0, 0});        // frame 41's own present
+    timeline.Record({11'400, TimelineKind::kDlssgReturn, 0, 0});
+    timeline.Record({25'000, TimelineKind::kMarker, 0x1000, 0});
+    timeline.Record({29'000, TimelineKind::kSleepReturn, 0, 0});
+    timeline.Record({30'400, TimelineKind::kPresent, 2, 0});        // the absorbed re-present
+    timeline.Record({30'500, TimelineKind::kDlssgReturn, 0, 0});
+
+    EXPECT_EQ(timeline.Format(30'400),
+              " -20.0:PRESENT[fwd] -19.0:dlssg-ret -5.4:sleep(0) -1.4:sleep-ret +0.0:PRESENT[ABSORB] +0.1:dlssg-ret");
+    // Activity before the previous present is not part of it; tags collapse into a count.
+    timeline.Record({31'000, TimelineKind::kTag, 0, 0});
+    timeline.Record({31'100, TimelineKind::kTag, 0, 0});
+    timeline.Record({31'200, TimelineKind::kEvaluate, 0, 42});
+    EXPECT_NE(timeline.Format(30'400).find(" tag x2 +0.8:eval(42)"), std::string::npos);
+}
+
+TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelinePrintsOnceTwoPresentsLater) {
+    bridge::PresentTimeline timeline;
+    EXPECT_FALSE(timeline.PresentReturned());  // nothing armed
+    timeline.ArmDump(5'000);
+    timeline.ArmDump(9'000);                   // a second absorb while armed keeps the first
+    EXPECT_EQ(timeline.AbsorbedUs(), 5'000);
+    EXPECT_FALSE(timeline.PresentReturned());
+    EXPECT_TRUE(timeline.PresentReturned());
+    EXPECT_FALSE(timeline.PresentReturned());  // printed once
+    timeline.ArmDump(40'000);
+    EXPECT_EQ(timeline.AbsorbedUs(), 40'000);
+}
+
+TEST(StreamlineBridgeDlssgGateTest, AbsorbedPresentTimelineSurvivesWrapAround) {
+    using bridge::TimelineKind;
+    bridge::PresentTimeline timeline;
+    for (int64_t i = 0; i < 300; ++i) {
+        timeline.Record({i * 1'000, TimelineKind::kMarker, 1, static_cast<uint32_t>(i)});
+    }
+    timeline.Record({300'000, TimelineKind::kPresent, 2, 0});
+    const std::string text = timeline.Format(300'000);
+    EXPECT_NE(text.find("simE(299)"), std::string::npos);
+    EXPECT_EQ(text.find("simE(172)"), std::string::npos);  // older than the ring holds
+    EXPECT_NE(text.find("simE(173)"), std::string::npos);
 }
 
 }  // namespace

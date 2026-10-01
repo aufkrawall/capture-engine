@@ -12,6 +12,7 @@
 #include "../wrappers/inline_hook.h"
 #include "streamline_bridge_dlssg.h"
 #include "streamline_bridge_dlssg_gate.h"
+#include "streamline_bridge_present_timeline.h"
 
 namespace ce::streamline_bridge {
 namespace {
@@ -43,6 +44,12 @@ thread_local bool t_absorbingPresent = false;
 
 std::mutex g_ledgerMutex;
 PresentMarkerLedger g_ledger;  // guarded by g_ledgerMutex
+PresentTimeline g_timeline;    // guarded by g_ledgerMutex
+
+static_assert(static_cast<uint32_t>(PresentAction::kForward) == 0 &&
+                  static_cast<uint32_t>(PresentAction::kReMark) == 1 &&
+                  static_cast<uint32_t>(PresentAction::kAbsorb) == 2,
+              "PresentTimeline::ActionName follows PresentAction's order");
 
 // The outcome and time of the previous present the guard saw. A title
 // that re-presents after a failed or deferred present is the first explanation to rule out.
@@ -63,6 +70,22 @@ int64_t QpcToUs(int64_t ticks) {
         return value.QuadPart > 0 ? value.QuadPart : 1;
     }();
     return ticks * 1'000'000 / frequency;
+}
+
+int64_t NowUs() { return QpcToUs(QpcNow()); }
+
+TimelineKind TimelineKindFor(TitleActivity kind) {
+    switch (kind) {
+    case TitleActivity::kConstants:
+        return TimelineKind::kConstants;
+    case TitleActivity::kTag:
+        return TimelineKind::kTag;
+    case TitleActivity::kEvaluate:
+        return TimelineKind::kEvaluate;
+    case TitleActivity::kMarker:
+        break;
+    }
+    return TimelineKind::kMarker;
 }
 
 void PublishTrampoline(void* trampoline, void* context) {
@@ -96,12 +119,12 @@ void LogUnmarkedPresent(uint32_t n, PresentAction action, bool remarked, uint32_
     HookLogImportant(
         "Streamline bridge: unmarked present #%u - swapchain=%p sync=%u flags=0x%X sinceLastPresentUs=%lld "
         "lastPresent(hr=0x%08lX absorbed=%d) | since that present: constants=%u(frame %u) tags=%u "
-        "evaluates=%u(frame %u) markers=%u(last %u frame %u) | before it: constants=%u(frame %u) tags=%u evaluates=%u(frame %u) "
-        "markers=%u(last %u frame %u)",
+        "evaluates=%u(frame %u) markers=%u(last %u frame %u) | before it: constants=%u(frame %u) tags=%u "
+        "evaluates=%u(frame %u) markers=%u(last %u frame %u)",
         n + 1, swapChain, syncInterval, flags, sinceUs, previousResult, previousAbsorbed, now.constants,
-        now.lastConstantsFrame, now.tags, now.evaluates, now.lastEvaluateFrame, now.markers, now.lastMarker, now.lastMarkerFrame, before.constants,
-        before.lastConstantsFrame, before.tags, before.evaluates, before.lastEvaluateFrame, before.markers,
-        before.lastMarker, before.lastMarkerFrame);
+        now.lastConstantsFrame, now.tags, now.evaluates, now.lastEvaluateFrame, now.markers, now.lastMarker,
+        now.lastMarkerFrame, before.constants, before.lastConstantsFrame, before.tags, before.evaluates,
+        before.lastEvaluateFrame, before.markers, before.lastMarker, before.lastMarkerFrame);
 }
 
 // Runs on the title's present thread, ahead of the present 2.x is about to count.
@@ -115,6 +138,13 @@ PresentAction BeforeCountedPresent(IDXGISwapChain* swapChain, UINT syncInterval,
     {
         std::lock_guard<std::mutex> lock(g_ledgerMutex);
         action = g_ledger.ClassifyPresent(flags, dlssgEnabled, absorbSupported, &frameIndex);
+        if ((flags & kDxgiPresentTest) == 0) {
+            const int64_t nowUs = NowUs();
+            g_timeline.Record({nowUs, TimelineKind::kPresent, static_cast<uint32_t>(action), 0});
+            if (action == PresentAction::kAbsorb) {
+                g_timeline.ArmDump(nowUs);
+            }
+        }
         if (action != PresentAction::kForward) {
             activity = g_ledger.LastPresentActivity();
             previousActivity = g_ledger.PreviousPresentActivity();
@@ -196,23 +226,52 @@ bool ConsumeAbsorbedPresent(bool& skip) {
     return true;
 }
 
+// The timeline around an absorbed present, once two later presents came back from DLSS-G: how long
+// DLSS-G's hook holds the title per present, and when the title's next frame arrived.
+void AfterDlssgPresent(UINT flags, bool absorbed) {
+    if ((flags & kDxgiPresentTest) != 0) {
+        return;
+    }
+    std::string timeline;
+    {
+        std::lock_guard<std::mutex> lock(g_ledgerMutex);
+        g_timeline.Record({NowUs(), TimelineKind::kDlssgReturn, 0, 0});
+        if (absorbed || !g_timeline.PresentReturned()) {
+            return;
+        }
+        timeline = g_timeline.Format(g_timeline.AbsorbedUs());
+    }
+    static std::atomic<uint32_t> dumps{0};
+    const uint32_t n = dumps.fetch_add(1, std::memory_order_relaxed);
+    if (n < 8 || (n % 64) == 0) {
+        HookLogImportant("Streamline bridge: absorbed-present timeline #%u (ms from the absorbed present):%s", n + 1,
+                         timeline.c_str());
+    }
+}
+
 HRESULT HookedDlssgHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip) {
     if (ConsumeAbsorbedPresent(skip)) {
+        AfterDlssgPresent(flags, true);
         return S_OK;
     }
     auto* original = reinterpret_cast<SlHookPresentFn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent, nullptr, nullptr));
-    return original ? original(swapChain, syncInterval, flags, skip) : S_OK;
+    const HRESULT result = original ? original(swapChain, syncInterval, flags, skip) : S_OK;
+    AfterDlssgPresent(flags, false);
+    return result;
 }
 
 HRESULT HookedDlssgHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags,
                                 DXGI_PRESENT_PARAMETERS* params, bool& skip) {
     if (ConsumeAbsorbedPresent(skip)) {
+        AfterDlssgPresent(flags, true);
         return S_OK;
     }
     auto* original = reinterpret_cast<SlHookPresent1Fn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent1, nullptr, nullptr));
-    return original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
+    const HRESULT result = original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
+    AfterDlssgPresent(flags, false);
+    return result;
 }
 
 bool IsInModule(void* address, HMODULE module) {
@@ -257,6 +316,12 @@ void NoteTitlePresentStart(uint32_t frameIndex) {
 void NoteTitleActivity(TitleActivity kind, uint32_t frameIndex, uint32_t marker) {
     std::lock_guard<std::mutex> lock(g_ledgerMutex);
     g_ledger.NoteTitleActivity(kind, frameIndex, marker);
+    g_timeline.Record({NowUs(), TimelineKindFor(kind), marker, frameIndex});
+}
+
+void NoteTitleSleepReturned() {
+    std::lock_guard<std::mutex> lock(g_ledgerMutex);
+    g_timeline.Record({NowUs(), TimelineKind::kSleepReturn, 0, 0});
 }
 
 bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {

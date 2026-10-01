@@ -627,6 +627,9 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
         const bool namesFrame = frameIndex != 0 || id != kV1ReflexMarkerSleep;
         const bool forwarded =
             TranslateReflexEvaluate(id, frameIndex, namesFrame ? TokenFor(frameIndex) : LatestToken());
+        if (id == kV1ReflexMarkerSleep) {
+            NoteTitleSleepReturned();
+        }
         if (id == kV1ReflexMarkerPresentEnd) {
             RefreshPersistentPresentTags(frameIndex);
         }

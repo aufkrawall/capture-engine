@@ -406,6 +406,15 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     const std::string absorbBody = present.substr(absorbAt, present.find("\n}", absorbAt) - absorbAt);
     EXPECT_NE(absorbBody.find("AfterCountedPresent(flags, S_OK, true);"), std::string::npos);
     EXPECT_EQ(absorbBody.find("skip ="), std::string::npos);
+    // Session 20261001_145325: the frame after an absorbed present arrived ~20 ms early. The
+    // timeline that explains it needs every title call, every present and DLSS-G's return.
+    EXPECT_NE(present.find("g_timeline.Record({NowUs(), TimelineKindFor(kind), marker, frameIndex});"),
+              std::string::npos);
+    EXPECT_NE(present.find("g_timeline.ArmDump(nowUs);"), std::string::npos);
+    EXPECT_NE(present.find("AfterDlssgPresent(flags, true);"), std::string::npos);
+    EXPECT_NE(present.find("AfterDlssgPresent(flags, false);"), std::string::npos);
+    EXPECT_NE(translate.find("if (id == kV1ReflexMarkerSleep) {\n            NoteTitleSleepReturned();"),
+              std::string::npos);
     const size_t consumeAt = present.find("bool ConsumeAbsorbedPresent(bool& skip) {");
     ASSERT_NE(consumeAt, std::string::npos);
     EXPECT_NE(present.substr(consumeAt, 200).find("skip = true;"), std::string::npos);

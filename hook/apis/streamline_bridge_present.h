@@ -25,6 +25,9 @@ void NoteTitlePresentStart(uint32_t frameIndex);
 // re-present (see TitlePresentActivity). `marker` is the 1.x Reflex marker id for kMarker.
 void NoteTitleActivity(TitleActivity kind, uint32_t frameIndex, uint32_t marker = 0);
 
+// The title's 1.x Reflex sleep returned (timeline only; see streamline_bridge_present_timeline.h).
+void NoteTitleSleepReturned();
+
 // Sends PRESENT_START/PRESENT_END for a frame the title already presented (translate unit).
 bool SynthesizePresentMarkersFor(uint32_t frameIndex);
 
