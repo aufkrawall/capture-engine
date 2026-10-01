@@ -29,6 +29,7 @@
 #include "streamline_bridge_diag.h"
 #include "streamline_bridge_dlssg.h"
 #include "streamline_bridge_dlssg_gate.h"
+#include "streamline_bridge_present.h"
 #include "streamline_bridge_reflex.h"
 
 namespace ce::streamline_bridge {
@@ -662,6 +663,17 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
     }
     static std::atomic<bool> latch{false};
     return ResultOk(result, "slEvaluateFeature", latch);
+}
+
+// Only a token the title's frame already has: issuing one for an old index would move
+// Streamline's frame counter backwards (see RecentFrameTokens).
+bool SynthesizePresentMarkersFor(uint32_t frameIndex) {
+    const sl::FrameToken* token = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_tokenMutex);
+        token = g_frameTokens.Find(frameIndex);
+    }
+    return token && SynthesizePresentMarkers(*token);
 }
 
 }  // namespace ce::streamline_bridge

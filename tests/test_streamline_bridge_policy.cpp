@@ -363,6 +363,42 @@ TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchanged
     EXPECT_NE(dlssg.find("A null tag is the title withdrawing the input; never resurrect it."), std::string::npos);
 }
 
+TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart) {
+    // Session 20261001_093949: three dark flashes, each a second title present without a Reflex
+    // PRESENT_START. 2.x DLSS-G compares sl.reflex's frame (latched only at that marker) with the
+    // present count and skipped those presents ("ReflexNotDetectedAtRuntime 2667 != 2668").
+    const std::string present = ReadProjectSource("hook/apis/streamline_bridge_present.cpp");
+    const std::string runtime = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
+    const std::string reflex = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(runtime.empty());
+    ASSERT_FALSE(reflex.empty());
+    ASSERT_FALSE(translate.empty());
+
+    // The guard sits on the exact place 2.x counts a present, in the bridge's own sl.common.
+    EXPECT_NE(present.find("v2Common, \"slHookPresent\","), std::string::npos);
+    EXPECT_NE(present.find("reinterpret_cast<void*>(&HookedSlHookPresent), &g_originalHookPresent)"),
+              std::string::npos);
+    EXPECT_NE(present.find("v2Common, \"slHookPresent1\","), std::string::npos);
+    EXPECT_NE(present.find("BeforeCountedPresent(flags);"), std::string::npos);
+    EXPECT_NE(present.find("if (!IsInModule(target, v2Common)) {"), std::string::npos);
+    EXPECT_NE(runtime.find("InstallPresentMarkerGuard(GetModuleHandleA(RuntimeFeaturePath(runtimeDir, "
+                           "\"sl.common.dll\").c_str()));"),
+              std::string::npos);
+    // Only the title's own successful PRESENT_START feeds the ledger.
+    EXPECT_NE(reflex.find("} else if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart)) {"),
+              std::string::npos);
+    EXPECT_NE(reflex.find("NoteTitlePresentStart(frameIndex);"), std::string::npos);
+    // Re-marking reuses the frame's existing token; a new one for an old index would move
+    // Streamline's frame counter backwards.
+    const size_t synth = translate.find("bool SynthesizePresentMarkersFor(uint32_t frameIndex) {");
+    ASSERT_NE(synth, std::string::npos);
+    const std::string body = translate.substr(synth, translate.find("\n}", synth) - synth);
+    EXPECT_NE(body.find("g_frameTokens.Find(frameIndex)"), std::string::npos);
+    EXPECT_EQ(body.find("TokenFor("), std::string::npos);
+}
+
 TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) {
     // Session 20260822_011315: SL2 rejected every generated frame with
     // `eDLSSGStatusFailReflexNotDetectedAtRuntime` because the 1.x title kept its SL Reflex

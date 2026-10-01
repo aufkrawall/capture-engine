@@ -14,6 +14,7 @@
 #include "sl_pcl.h"
 #include "streamline_bridge_diag.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_bridge_present.h"
 #include "streamline_bridge_v1_abi.h"
 
 namespace ce::streamline_bridge {
@@ -37,14 +38,17 @@ std::atomic<uint32_t> g_markerCounts[kV1ReflexMarkerPCLatencyPing + 1]{};
 std::atomic<uint32_t> g_titleSleeps{0};
 std::atomic<uint32_t> g_synthesizedSleeps{0};
 std::atomic<uint32_t> g_markerFailures{0};
+std::atomic<uint32_t> g_synthesizedPresents{0};
 
 void LogMarkerSummary(uint32_t frameIndex) {
     HookLogImportant(
         "Streamline bridge: Reflex markers so far (frame %u) - simStart=%u simEnd=%u submitStart=%u submitEnd=%u "
-        "presentStart=%u presentEnd=%u flash=%u ping=%u sleeps(title=%u synthesized=%u) failures=%u",
+        "presentStart=%u presentEnd=%u flash=%u ping=%u sleeps(title=%u synthesized=%u) "
+        "re-marked presents=%u failures=%u",
         frameIndex, g_markerCounts[0].load(), g_markerCounts[1].load(), g_markerCounts[2].load(),
         g_markerCounts[3].load(), g_markerCounts[4].load(), g_markerCounts[5].load(), g_markerCounts[7].load(),
-        g_markerCounts[8].load(), g_titleSleeps.load(), g_synthesizedSleeps.load(), g_markerFailures.load());
+        g_markerCounts[8].load(), g_titleSleeps.load(), g_synthesizedSleeps.load(), g_synthesizedPresents.load(),
+        g_markerFailures.load());
 }
 
 }  // namespace
@@ -207,6 +211,8 @@ bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameTo
     const uint32_t count = g_markerCounts[marker].fetch_add(1, std::memory_order_relaxed) + 1;
     if (result != sl::Result::eOk) {
         g_markerFailures.fetch_add(1, std::memory_order_relaxed);
+    } else if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart)) {
+        NoteTitlePresentStart(frameIndex);
     }
     static std::atomic<bool> loggedFirst{false};
     if (!loggedFirst.exchange(true, std::memory_order_relaxed)) {
@@ -219,6 +225,21 @@ bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameTo
     }
     static std::atomic<bool> latch{false};
     return ResultOk(result, "slPCLSetMarker", latch);
+}
+
+bool SynthesizePresentMarkers(const sl::FrameToken& token) {
+    if (!g_slPCLSetMarker) {
+        return false;
+    }
+    // A complete pair, so the driver's report for the re-marked frame stays START-before-END.
+    const sl::Result start = g_slPCLSetMarker(sl::PCLMarker::ePresentStart, token);
+    const sl::Result end = g_slPCLSetMarker(sl::PCLMarker::ePresentEnd, token);
+    g_synthesizedPresents.fetch_add(1, std::memory_order_relaxed);
+    const bool ok = start == sl::Result::eOk && end == sl::Result::eOk;
+    if (!ok) {
+        g_markerFailures.fetch_add(1, std::memory_order_relaxed);
+    }
+    return ok;
 }
 
 bool MaybeSynthesizeReflexSleep(uint32_t frameIndex, const sl::FrameToken* token, bool dlssgEnabled) {

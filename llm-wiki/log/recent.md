@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-01 - Streamline bridge: re-mark presents the title leaves without PRESENT_START
+
+- Session `20261001_093949`: tag persistence validated (no `Failed to find global tag`). Remaining
+  flashes = `eDLSSGStatusFailReflexNotDetectedAtRuntime ... N != N+1`, three times, each exactly at a
+  second W3 present ~5 ms after a normal one (per-present CSV spacing matches `sl.log`). SL2 Reflex
+  latches `presentCount + 1` only on PRESENT_START; sl.common counts every non-test present.
+- 0.1.6886: `streamline_bridge_present.cpp` hooks the bridge's 2.x `sl.common` `slHookPresent(1)` and
+  sends a PRESENT_START/END pair for the last marked frame (`PresentMarkerLedger`). Pending a hardware run.
+- Split the bridge page: run history now in `frame-generation/streamline-generation-bridge-runs.md`.
+
 ### 2026-10-01 - Streamline bridge: keep 1.x tag lifetime across an extra present
 
 - Session `20261001_092557`: `notRenderingGameFrames` gate validated (W3 sets it on load/menu frames).
@@ -8,7 +18,7 @@
   depth/mvec and toggled interpolation off/on.
 - 0.1.6885: `RememberPresentTag` + `RefreshPersistentPresentTags` on the 1.x present-end marker
   re-issue depth/mvec/hudless/UI tags while 2.x generates. Pending a hardware run.
-- `streamline-generation-bridge.md` is at 782 lines; split the run history out before it grows again.
+- Tag persistence validated in `20261001_093949` (see the entry above).
 
 ### 2026-10-01 - Streamline bridge: gate DLSS-G on 1.x `notRenderingGameFrames`
 

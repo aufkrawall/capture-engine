@@ -37,6 +37,10 @@ bool TranslateReflexSettings(void* settings1x);
 // or of the newest frame when the call carries none (sleep may pass frame 0).
 bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameToken* token);
 
+// PRESENT_START + PRESENT_END for a frame the title already presented, ahead of a present it left
+// unmarked (see PresentMarkerLedger).
+bool SynthesizePresentMarkers(const sl::FrameToken& token);
+
 // One synthesized sleep per frame while DLSS-G is on - only until the title is seen driving
 // its own sleep, after which a second sleep per frame would halve its frame rate.
 bool MaybeSynthesizeReflexSleep(uint32_t frameIndex, const sl::FrameToken* token, bool dlssgEnabled);

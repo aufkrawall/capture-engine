@@ -65,6 +65,47 @@ constexpr bool V1TagPersistsAcrossPresents(uint32_t bufferType) {
     return bufferType == 0 || bufferType == 1 || bufferType == 2 || bufferType == 23;
 }
 
+// 2.x DLSS-G checks Reflex at every present: sl.reflex records `presentCount + 1` only on a
+// PRESENT_START marker (`reflexEntry.cpp`, kCurrentFrame), and sl.common bumps `presentCount` on
+// every non-test present. A present without its own PRESENT_START therefore fails the check
+// ("eDLSSGStatusFailReflexNotDetectedAtRuntime ... N != N+1") and DLSS-G skips that present -
+// the dark flash that remained in session 20261001_093949 once the tags outlived the extra present
+// (three failures, each exactly at a second present burst ~5 ms after a normal one). 1.x had no
+// such check. The bridge re-marks the title's last presented frame for a present it left unmarked.
+inline constexpr uint32_t kV1ReflexMarkerPresentStart = 4;  // 1.x marker 4 == 2.x PCLMarker::ePresentStart
+inline constexpr uint32_t kDxgiPresentTest = 0x1;           // DXGI_PRESENT_TEST; sl.common skips those
+
+// Not thread-safe; the caller serialises it.
+class PresentMarkerLedger {
+public:
+    void NoteTitlePresentStart(uint32_t frameIndex) {
+        haveTitleFrame_ = true;
+        lastFrame_ = frameIndex;
+        markedSincePresent_ = true;
+    }
+
+    // Every present 2.x's sl.common sees. True, with the frame to re-mark, when the title sent no
+    // PRESENT_START since the previous counted present. Nothing is synthesized for a title that
+    // never marks presents (2.x DLSS-G would not run for it at all) or while 2.x is not generating.
+    bool PresentNeedsMarker(uint32_t presentFlags, bool dlssgEnabled, uint32_t* frameIndex) {
+        if ((presentFlags & kDxgiPresentTest) != 0) {
+            return false;
+        }
+        const bool marked = markedSincePresent_;
+        markedSincePresent_ = false;
+        if (marked || !haveTitleFrame_ || !dlssgEnabled) {
+            return false;
+        }
+        *frameIndex = lastFrame_;
+        return true;
+    }
+
+private:
+    bool haveTitleFrame_ = false;
+    bool markedSincePresent_ = false;
+    uint32_t lastFrame_ = 0;
+};
+
 // A constants call changes the 2.x state only for a viewport the title configured DLSS-G on;
 // forwarding an eOff to a viewport DLSS-G never saw would invent a configuration.
 constexpr bool DlssgGateNeedsSync(const DlssgViewportRequest& request, bool haveForwarded,

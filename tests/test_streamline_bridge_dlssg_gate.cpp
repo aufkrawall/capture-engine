@@ -106,6 +106,51 @@ TEST(StreamlineBridgeDlssgGateTest, RefreshRunsOnThePresentEndMarker) {
     EXPECT_EQ(bridge::kV1ReflexMarkerPresentEnd, 5u);
 }
 
+// Session 20261001_093949: the remaining dark flashes. Each second present ~5 ms after a normal
+// one carried no Reflex PRESENT_START, so 2.x DLSS-G logged "eDLSSGStatusFailReflexNotDetectedAtRuntime
+// - sl.reflex must be enabled and active 2667 != 2668" and skipped that present.
+TEST(StreamlineBridgeDlssgGateTest, ReMarksOnlyAPresentTheTitleLeftUnmarked) {
+    EXPECT_EQ(bridge::kV1ReflexMarkerPresentStart, 4u);  // == 2.x PCLMarker::ePresentStart
+    bridge::PresentMarkerLedger ledger;
+    uint32_t frame = 0;
+
+    ledger.NoteTitlePresentStart(2667);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));  // the title's own marked present
+
+    frame = 0;
+    EXPECT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));   // the extra present
+    EXPECT_EQ(frame, 2667u);
+    frame = 0;
+    EXPECT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));   // and any further one
+    EXPECT_EQ(frame, 2667u);
+
+    ledger.NoteTitlePresentStart(2668);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));
+}
+
+TEST(StreamlineBridgeDlssgGateTest, TestPresentsAreNeitherCountedNorMarked) {
+    // sl.common's presentCommon returns early for DXGI_PRESENT_TEST, so the counter does not move.
+    bridge::PresentMarkerLedger ledger;
+    uint32_t frame = 0;
+    ledger.NoteTitlePresentStart(10);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(bridge::kDxgiPresentTest, true, &frame));
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));  // the title's marker still pairs with it
+    EXPECT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));
+}
+
+TEST(StreamlineBridgeDlssgGateTest, NothingIsSynthesizedWithoutTitleMarkersOrGeneration) {
+    bridge::PresentMarkerLedger ledger;
+    uint32_t frame = 0;
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));   // title never marked a present
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, true, &frame));
+
+    ledger.NoteTitlePresentStart(5);
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, false, &frame));  // marked, DLSS-G off
+    EXPECT_FALSE(ledger.PresentNeedsMarker(0, false, &frame));  // unmarked, but DLSS-G off
+    EXPECT_TRUE(ledger.PresentNeedsMarker(0, true, &frame));    // generation resumed, still unmarked
+    EXPECT_EQ(frame, 5u);
+}
+
 TEST(StreamlineBridgeDlssgGateTest, NonGameFramesWhileTitleIsOffNeedNoCall) {
     auto request = TitleRequest(false, 1, false);
     const auto forwarded = bridge::DlssgOptionsFor(request);

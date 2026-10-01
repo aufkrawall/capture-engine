@@ -15,6 +15,7 @@
 #if defined(_M_X64) || defined(__x86_64__)
 #include "sl.h"
 #include "sl_core_types.h"
+#include "streamline_bridge_present.h"
 #endif
 
 // `g_pLocalConfig` (AppConfig*) comes from hook_common.h.
@@ -278,6 +279,8 @@ bool InitializeV2Runtime(HMODULE v2Interposer, const std::string& runtimeDir) {
         major, minor, patch, runtimeDir.c_str(),
         logDir.empty() ? "off - raise log_level to trace for Streamline's own account"
                        : "verbose in the session log directory");
+    // slInit has loaded the plugins; take the 2.x sl.common by path, never a same-named 1.x one.
+    InstallPresentMarkerGuard(GetModuleHandleA(RuntimeFeaturePath(runtimeDir, "sl.common.dll").c_str()));
     return true;
 }
 #else
