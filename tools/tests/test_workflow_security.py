@@ -173,7 +173,7 @@ class WorkflowSecurityPolicyTest(unittest.TestCase):
     def test_release_publishes_and_attests_corresponding_source(self) -> None:
         document = _load(WORKFLOW_DIR / "release-stable.yml")
         steps = {step["name"]: step for step in document["jobs"]["build-release"]["steps"]}
-        source_name = "ffmpeg-corresponding-source.7z"
+        source_name = "ffmpeg-corresponding-source-"
         self.assertIn(source_name, steps["Attest release assets"]["with"]["subject-path"])
         self.assertIn(source_name, steps["Publish stable tag and GitHub release"]["run"])
 

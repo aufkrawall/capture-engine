@@ -17,6 +17,7 @@ Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Download names include the version:** the installer and archives are now `captureengine-setup-0.1.<build>.exe`, `captureengine-0.1.<build>.7z`, `testapps-0.1.<build>.7z` and `ffmpeg-corresponding-source-0.1.<build>.7z`, so a downloaded file shows which release it is.
 - **Recordings and screenshots default to your Videos folder:** a new `config.ini` pre-fills `output_dir=%VIDEOS%\Capture Engine` and `screenshot_dir=%VIDEOS%\Capture Engine\Screenshots`, so a Program Files install no longer buries captures in the install folder. Leaving both empty still writes to `captures` and `screenshots` beside the executable; existing `config.ini` files are untouched.
 - **Benchmark reports default to your Documents folder:** a new `config.ini` pre-fills `[Benchmark] output_dir=%DOCUMENTS%\Capture Engine Benchmarks`. Leaving it empty still uses `benchmarks` beside the executable.
 - **Path variables in `output_dir`, `screenshot_dir` and `[Benchmark] output_dir`:** `%VIDEOS%` and `%DOCUMENTS%` resolve to the Windows Videos and Documents folders even when they were moved (OneDrive, another drive), and `%USERPROFILE%` or any other environment variable is expanded. An undefined variable in a capture folder is logged instead of silently creating a folder named after it.

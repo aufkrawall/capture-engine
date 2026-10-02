@@ -139,13 +139,13 @@ both presentation callbacks and display-change screen timestamps. Benchmark runs
 
 ### Release verification
 
-Official stable releases contain `captureengine.7z`, the separate `testapps.7z` validation bundle,
-`ffmpeg-corresponding-source.7z`, and `latest_manifest.json` / `latest_summary.txt` from the full clean build,
+Official stable releases contain `captureengine-setup-<version>.exe`, `captureengine-<version>.7z`, the separate
+`testapps-<version>.7z` validation bundle, `ffmpeg-corresponding-source-<version>.7z`, and `latest_manifest.json` / `latest_summary.txt` from the full clean build,
 test, lint, and sanitizer gate. Public releases also carry GitHub artifact attestations. After downloading an asset,
 GitHub CLI can verify that it was produced by this repository's release workflow:
 
 ```powershell
-gh attestation verify .\captureengine.7z --repo aufkrawall/capture-engine
+gh attestation verify .\captureengine-<version>.7z --repo aufkrawall/capture-engine
 ```
 
 CaptureEngine binaries are not currently Authenticode-signed, so Windows may show a SmartScreen warning. An
@@ -714,8 +714,9 @@ through an MSYS shell. `build.py` is a small compatibility facade; its ordered s
 The build covers the x64 application and hook, the x86 compatibility hook, MediaEngine, both Vulkan layers, shaders
 and resources, the native graphics test applications, and the unit-test binaries. Shipping files are staged under
 `installed/captureengine`; validation-only programs remain under `installed/testapp`. After binary verification, a
-product build atomically replaces `build/packages/captureengine.7z` and `build/packages/testapps.7z`; native Windows
-builds also create `build/packages/ffmpeg-corresponding-source.7z`. The product
+product build builds `build/packages/captureengine-setup-<version>.exe`; with `--portable-archives` it also replaces
+`build/packages/captureengine-<version>.7z`, `testapps-<version>.7z` and (native Windows) `ffmpeg-corresponding-source-<version>.7z`.
+Older builds' packages of the same kind are removed. The product
 archive contains a clean `captureengine/` folder without local logs, captures, backups, stale files, or the current
 user configuration. It includes the pinned LibreHardwareMonitor runtime files and PawnIO installer under
 `plugins/LibreHardwareMonitor`. The separate `testapps/` archive contains only first-party executables/PDBs plus a

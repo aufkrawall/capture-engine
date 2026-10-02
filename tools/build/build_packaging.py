@@ -42,6 +42,25 @@ CAPTURE_PACKAGE_PLUGIN_FILES = {
 }
 
 
+def versioned_package_name(name: str, build_number: Optional[int] = None) -> str:
+    """`captureengine.7z` -> `captureengine-0.1.<build>.7z`, matching the release tag."""
+    stem, extension = os.path.splitext(name)
+    number = CURRENT_BUILD_NUMBER if build_number is None else build_number
+    return f"{stem}-0.1.{number}{extension}"
+
+
+def _remove_superseded_packages(name: str, keep_path: str) -> None:
+    """Drop packages of the same kind from older builds (and the pre-versioning name)."""
+    stem, extension = os.path.splitext(name)
+    pattern = re.compile(rf"^{re.escape(stem)}(-0\.1\.\d+)?{re.escape(extension)}$")
+    keep = os.path.abspath(keep_path)
+    for entry in os.listdir(os.path.dirname(keep)):
+        candidate = os.path.join(os.path.dirname(keep), entry)
+        if pattern.match(entry) and os.path.abspath(candidate) != keep and os.path.isfile(candidate):
+            os.remove(candidate)
+            log(f"Removed superseded package {entry}")
+
+
 def _validate_workspace_cleanup_target(path: str) -> str:
     target = os.path.abspath(path)
     workspace_temp = os.path.abspath(WORKSPACE_TEMP_DIR)
@@ -231,9 +250,9 @@ def package_build_outputs(portable_archives: bool = False) -> Tuple[str, ...]:
 
         archives: List[str] = []
         details = {"captureengine_files": len(capture_files)}
-        capture_archive = os.path.join(PACKAGE_OUTPUT_DIR, CAPTUREENGINE_PACKAGE_NAME)
-        testapps_archive = os.path.join(PACKAGE_OUTPUT_DIR, TESTAPPS_PACKAGE_NAME)
-        source_archive = os.path.join(PACKAGE_OUTPUT_DIR, FFMPEG_SOURCE_PACKAGE_NAME)
+        capture_archive = os.path.join(PACKAGE_OUTPUT_DIR, versioned_package_name(CAPTUREENGINE_PACKAGE_NAME))
+        testapps_archive = os.path.join(PACKAGE_OUTPUT_DIR, versioned_package_name(TESTAPPS_PACKAGE_NAME))
+        source_archive = os.path.join(PACKAGE_OUTPUT_DIR, versioned_package_name(FFMPEG_SOURCE_PACKAGE_NAME))
         if portable_archives:
             testapp_files = _stage_testapps_package(
                 TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE, TESTAPP_CONFIG_TEMPLATE
@@ -277,6 +296,12 @@ def package_build_outputs(portable_archives: bool = False) -> Tuple[str, ...]:
                 raise RuntimeError(
                     "Automatic package verification failed: corresponding-source archive is incomplete"
                 )
+            for name, path in (
+                (CAPTUREENGINE_PACKAGE_NAME, capture_archive),
+                (TESTAPPS_PACKAGE_NAME, testapps_archive),
+                *(((FFMPEG_SOURCE_PACKAGE_NAME, source_archive),) if IS_WINDOWS else ()),
+            ):
+                _remove_superseded_packages(name, path)
             details["testapp_files"] = len(testapp_files)
             details["ffmpeg_source_files"] = len(source_files)
             details["captureengine_archive"] = capture_archive
@@ -303,8 +328,9 @@ def package_build_outputs(portable_archives: bool = False) -> Tuple[str, ...]:
         if IS_WINDOWS:
             setup_archive = assemble_setup_executable(
                 os.path.join(staging_root, "captureengine"),
-                os.path.join(PACKAGE_OUTPUT_DIR, SETUP_PACKAGE_NAME),
+                os.path.join(PACKAGE_OUTPUT_DIR, versioned_package_name(SETUP_PACKAGE_NAME)),
             )
+            _remove_superseded_packages(SETUP_PACKAGE_NAME, setup_archive)
             record_verification_artifact("captureengine_setup_package", setup_archive)
             archives.append(setup_archive)
         details["captureengine_setup"] = setup_archive or "not produced on this host"

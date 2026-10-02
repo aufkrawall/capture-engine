@@ -284,10 +284,10 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
-            build/packages/captureengine.7z
-            build/packages/captureengine-setup.exe
-            build/packages/testapps.7z
-            build/packages/ffmpeg-corresponding-source.7z
+            build/packages/captureengine-${{ steps.version.outputs.version }}.7z
+            build/packages/captureengine-setup-${{ steps.version.outputs.version }}.exe
+            build/packages/testapps-${{ steps.version.outputs.version }}.7z
+            build/packages/ffmpeg-corresponding-source-${{ steps.version.outputs.version }}.7z
             build/verification/latest_manifest.json
             build/verification/latest_summary.txt
 
@@ -315,10 +315,10 @@ jobs:
             throw "Tag $tag already exists on origin; refusing to overwrite."
           }
           $assets = @(
-            "build/packages/captureengine.7z",
-            "build/packages/captureengine-setup.exe",
-            "build/packages/testapps.7z",
-            "build/packages/ffmpeg-corresponding-source.7z",
+            "build/packages/captureengine-$version.7z",
+            "build/packages/captureengine-setup-$version.exe",
+            "build/packages/testapps-$version.7z",
+            "build/packages/ffmpeg-corresponding-source-$version.7z",
             "build/verification/latest_manifest.json",
             "build/verification/latest_summary.txt"
           )

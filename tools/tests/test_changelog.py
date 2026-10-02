@@ -138,8 +138,9 @@ class ChangelogTest(unittest.TestCase):
         self.assertIn("built and fully verified from abcdef0123456789", rel_notes)
         self.assertIn("Faster startup", rel_notes)
         self.assertIn("Release Assets", rel_notes)
-        self.assertIn("captureengine.7z", rel_notes)
-        self.assertIn("ffmpeg-corresponding-source.7z", rel_notes)
+        self.assertIn("captureengine-0.1.6652.7z", rel_notes)
+        self.assertIn("captureengine-setup-0.1.6652.exe", rel_notes)
+        self.assertIn("ffmpeg-corresponding-source-0.1.6652.7z", rel_notes)
         self.assertIn("Distribution & Licensing", rel_notes)
 
     def test_promote_unreleased(self) -> None:

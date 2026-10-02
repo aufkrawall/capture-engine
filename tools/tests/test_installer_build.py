@@ -85,7 +85,7 @@ class InstallerBuildTest(unittest.TestCase):
 
     def test_the_release_workflow_publishes_the_setup_program(self):
         workflow = (Path(build.PROJECT_ROOT) / ".github" / "workflows" / "release-stable.yml").read_text(encoding="utf-8")
-        self.assertEqual(workflow.count("build/packages/captureengine-setup.exe"), 2)  # attestation and upload
+        self.assertEqual(workflow.count("build/packages/captureengine-setup-"), 2)  # attestation and upload
         self.assertEqual(build.SETUP_PACKAGE_NAME, "captureengine-setup.exe")
 
     def test_installer_sources_are_inside_every_source_scope_list(self):

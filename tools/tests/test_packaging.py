@@ -346,6 +346,28 @@ class PackagingTests(unittest.TestCase):
             kwargs.update(excluded)
             self.assertFalse(build.should_package_outputs(**kwargs))
 
+    def test_package_names_carry_the_build_number_and_supersede_older_builds(self) -> None:
+        self.assertEqual(build.versioned_package_name("captureengine.7z", 6900), "captureengine-0.1.6900.7z")
+        self.assertEqual(
+            build.versioned_package_name("captureengine-setup.exe", 6900), "captureengine-setup-0.1.6900.exe"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = (
+                "captureengine.7z",
+                "captureengine-0.1.6800.7z",
+                "captureengine-0.1.6900.7z",
+                "captureengine-setup-0.1.6800.exe",
+                "testapps-0.1.6800.7z",
+            )
+            for name in names:
+                (root / name).write_bytes(b"x")
+            build._remove_superseded_packages("captureengine.7z", str(root / "captureengine-0.1.6900.7z"))
+            self.assertEqual(
+                sorted(entry.name for entry in root.iterdir()),
+                ["captureengine-0.1.6900.7z", "captureengine-setup-0.1.6800.exe", "testapps-0.1.6800.7z"],
+            )
+
     def test_package_cleanup_is_scoped_to_workspace_temp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace_temp = Path(temporary) / "workspace-temp"
