@@ -8,6 +8,7 @@ test_installer_native.py) and skips when it is absent.
 """
 
 import ctypes
+import hashlib
 import os
 import shutil
 import subprocess
@@ -59,7 +60,9 @@ class SetupWindowTest(unittest.TestCase):
         shutil.rmtree(cls.work, ignore_errors=True)
 
     def setUp(self):
-        self.target = self.work / f"target-{self._testMethodName}"
+        slug = self._testMethodName[:20]
+        token = hashlib.sha256(self._testMethodName.encode()).hexdigest()[:8]
+        self.target = self.work / f"t_{slug}_{token}"
         self.process = None
 
     def tearDown(self):

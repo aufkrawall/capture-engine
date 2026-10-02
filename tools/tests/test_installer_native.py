@@ -8,6 +8,7 @@ captureengine_setup_stub.exe, or CE_INSTALLER_STUB) and skip when it is absent.
 """
 
 import ctypes
+import hashlib
 import os
 import shutil
 import subprocess
@@ -62,7 +63,9 @@ class NativeInstallerTest(unittest.TestCase):
         shutil.rmtree(cls.work, ignore_errors=True)
 
     def setUp(self):
-        self.target = self.work / f"target-{self._testMethodName}"
+        slug = self._testMethodName[:20]
+        token = hashlib.sha256(self._testMethodName.encode()).hexdigest()[:8]
+        self.target = self.work / f"t_{slug}_{token}"
 
     def run_setup(self, version, *arguments, expect=0):
         completed = subprocess.run(
@@ -227,6 +230,7 @@ class NativeInstallerTest(unittest.TestCase):
     def test_unusable_folders_are_refused(self):
         self.run_setup(1, "--files-only", "--dir=C:\\", "/S", expect=1)
         self.run_setup(1, "--files-only", "--dir=relative\\folder", "/S", expect=1)
+        self.run_setup(1, "--files-only", f"--dir=C:\\{'a' * 201}", "/S", expect=1)
         self.run_setup(1, "--files-only", "/S", expect=3)
 
     def test_a_running_program_from_the_installation_folder_is_closed_and_others_are_left_alone(self):
