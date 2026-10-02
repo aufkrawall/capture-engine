@@ -88,7 +88,7 @@ bool ForwardReflexMode(sl::ReflexMode mode, bool synthesized) {
 
     sl::ReflexOptions options{};
     options.mode = mode;
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     if (!ResultOk(g_slReflexSetOptions(options), "slReflexSetOptions", latch)) {
         return false;
     }
@@ -144,7 +144,7 @@ bool TranslateReflexSettings(void* settings1x) {
         state = std::make_unique<sl::ReflexState>();
     }
     *state = sl::ReflexState{};
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     if (!ResultOk(g_slReflexGetState(*state), "slReflexGetState", latch)) {
         return false;
     }
@@ -198,7 +198,7 @@ bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameTo
                              frameIndex, static_cast<uint32_t>(*token));
         }
         g_titleSleeps.fetch_add(1, std::memory_order_relaxed);
-        static std::atomic<bool> latch{false};
+        static ResultTracker latch;
         return ResultOk(g_slReflexSleep(*token), "slReflexSleep", latch);
     }
 
@@ -223,7 +223,7 @@ bool TranslateReflexEvaluate(uint32_t id, uint32_t frameIndex, const sl::FrameTo
     if (marker == static_cast<uint32_t>(sl::PCLMarker::ePresentStart) && (count == 1 || count % 1000 == 0)) {
         LogMarkerSummary(frameIndex);
     }
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     return ResultOk(result, "slPCLSetMarker", latch);
 }
 
@@ -256,7 +256,7 @@ bool MaybeSynthesizeReflexSleep(uint32_t frameIndex, const sl::FrameToken* token
         return false;
     }
     g_synthesizedSleeps.fetch_add(1, std::memory_order_relaxed);
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     return ResultOk(g_slReflexSleep(*token), "slReflexSleep", latch);
 }
 

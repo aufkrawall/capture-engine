@@ -397,7 +397,7 @@ bool TranslateSetTag(const void* resource1x, uint32_t bufferType, uint32_t id, c
         HookLogImportant("Streamline bridge: first slSetTag translated - viewport=%u buffer=%u resource=%p",
                          id, bufferType2x, resource1x ? resource.native : nullptr);
     }
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     if (!ResultOk(g_slSetTag(sl::ViewportHandle(id), tags, 1, nullptr), "slSetTag", latch)) {
         return false;
     }
@@ -509,7 +509,7 @@ bool TranslateSetConstants(const void* constants1x, uint32_t frameIndex, uint32_
         }
     }
     ApplyNotRenderingGameFrames(g_slDLSSGSetOptions, id, frameIndex, in.notRenderingGameFrames);
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     return ResultOk(result, "slSetConstants", latch);
 }
 
@@ -539,7 +539,7 @@ bool TranslateSetFeatureConstants(uint32_t feature1x, const void* constants1x, u
         options.preExposure = in.preExposure;
         options.exposureScale = in.exposureScale;
         options.colorBuffersHDR = static_cast<sl::Boolean>(in.colorBuffersHDR);
-        static std::atomic<bool> latch{false};
+        static ResultTracker latch;
         return ResultOk(g_slDLSSSetOptions(sl::ViewportHandle(id), options), "slDLSSSetOptions", latch);
     }
 
@@ -594,7 +594,7 @@ bool TranslateGetFeatureSettings(uint32_t feature1x, const void* constants1x, vo
     options.outputHeight = in.outputHeight;
 
     sl::DLSSOptimalSettings optimal{};
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     if (!ResultOk(g_slDLSSGetOptimalSettings(options, optimal), "slDLSSGetOptimalSettings", latch)) {
         return false;
     }
@@ -668,7 +668,7 @@ bool TranslateEvaluateFeature(void* commandBuffer, uint32_t feature1x, uint32_t 
             feature1x, feature2x, frameIndex, static_cast<uint32_t>(*token), id, commandBuffer,
             static_cast<int>(result));
     }
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     return ResultOk(result, "slEvaluateFeature", latch);
 }
 

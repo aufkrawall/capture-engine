@@ -55,7 +55,7 @@ bool SyncDlssgOptions(PFun_slDLSSGSetOptions* setOptions, uint32_t id, bool from
     if (wanted.retainResourcesWhenOff) {
         options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     }
-    static std::atomic<bool> latch{false};
+    static ResultTracker latch;
     if (!ResultOk(setOptions(sl::ViewportHandle(id), options), "slDLSSGSetOptions", latch)) {
         return false;
     }

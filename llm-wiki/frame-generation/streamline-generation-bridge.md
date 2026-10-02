@@ -361,6 +361,12 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
   (rate-limited) - the title overlapped calls; before the fix such an overlap was the alt-tab crash.
   A crash in `sl.dlss_g` with `sl.log` showing `collectGarbage ... NativeBackBuffer[i] ... forced yes`
   on another thread just before is that race.
+- `title SetFullscreenState(TRUE) reaches 2.x DLSS-G (window=... foreground=0 - DXGI refuses ...)` and
+  `previous SetFullscreenState(X) never reached 2.x DLSS-G's after-hook` - a refused switch: 2.x's interposer
+  runs no after-hooks on failure, so sl.dlss_g stays torn down until the next accepted switch.
+- `<call> returned sl::Result=N (<name>) - K consecutive failure(s), T in total` (logged at K = 1, 2, 4, ... and
+  on a result change) and `<call> succeeds again after K consecutive failure(s)`. 38 `eErrorInvalidState` on
+  `slSetTag`/`slEvaluateFeature` after a refused fullscreen switch: session 20261002_043740 (open question).
 
 ## Open questions / stale-risk
 

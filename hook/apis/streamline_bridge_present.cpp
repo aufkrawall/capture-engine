@@ -32,6 +32,7 @@ using SlHookPresentSharedFn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterv
 // sl.dlss_g's swapchain before-hooks (2.x sl.api/internal.h PFun*Before).
 using SlHookSetFullscreenStatePreFn = HRESULT(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target,
                                               bool& skip);
+using SlHookSetFullscreenStatePostFn = HRESULT(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target);
 using SlHookResizeSwapChainPreFn = HRESULT(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
                                            DXGI_FORMAT format, UINT& swapChainFlags, bool& skip);
 using SlHookResize1SwapChainPreFn = HRESULT(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
@@ -46,6 +47,7 @@ void* volatile g_originalHookPresentShared = nullptr;
 void* volatile g_originalDlssgHookPresent = nullptr;
 void* volatile g_originalDlssgHookPresent1 = nullptr;
 void* volatile g_originalDlssgSetFullscreenStatePre = nullptr;
+void* volatile g_originalDlssgSetFullscreenStatePost = nullptr;
 void* volatile g_originalDlssgResizeSwapChainPre = nullptr;
 void* volatile g_originalDlssgResize1SwapChainPre = nullptr;
 std::atomic<bool> g_absorbSupported{false};
@@ -317,17 +319,63 @@ HRESULT HookedDlssgHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UI
     return result;
 }
 
+// 2.x's interposer runs the after-hooks only when DXGI accepted the switch; a refused one (e.g.
+// DXGI_ERROR_NOT_CURRENTLY_AVAILABLE for a window without focus) leaves DLSS-G torn down by its
+// before-hook with nothing rebuilt. A before-hook with no after-hook since the last one is that case.
+std::atomic<int> g_fullscreenPending{-1};  // requested state of an unfinished transition, -1 none
+std::atomic<uint32_t> g_fullscreenRequests{0};
+std::atomic<bool> g_fullscreenPostHooked{false};  // without it every transition would look refused
+
+bool SwapchainWindowIsForeground(IDXGISwapChain* swapChain, HWND* window) {
+    DXGI_SWAP_CHAIN_DESC desc{};
+    *window = swapChain && SUCCEEDED(swapChain->GetDesc(&desc)) ? desc.OutputWindow : nullptr;
+    HWND foreground = GetForegroundWindow();
+    return *window && foreground && GetAncestor(*window, GA_ROOT) == GetAncestor(foreground, GA_ROOT);
+}
+
+void NoteFullscreenRequest(IDXGISwapChain* swapChain, BOOL fullscreen) {
+    const bool tracked = g_fullscreenPostHooked.load(std::memory_order_acquire);
+    const int unfinished =
+        tracked ? g_fullscreenPending.exchange(fullscreen ? 1 : 0, std::memory_order_acq_rel) : -1;
+    const uint32_t n = g_fullscreenRequests.fetch_add(1, std::memory_order_relaxed);
+    if (n >= 32 && unfinished < 0) {
+        return;
+    }
+    HWND window = nullptr;
+    const bool foreground = SwapchainWindowIsForeground(swapChain, &window);
+    if (unfinished >= 0) {
+        HookLogImportant(
+            "Streamline bridge: the title's previous SetFullscreenState(%s) never reached 2.x DLSS-G's after-hook - DXGI "
+            "refused it, and 2.x ran no after-hooks, so DLSS-G stayed torn down until this SetFullscreenState(%s) "
+            "(window=%p foreground=%d)",
+            unfinished ? "TRUE" : "FALSE", fullscreen ? "TRUE" : "FALSE", window, foreground ? 1 : 0);
+        return;
+    }
+    HookLogImportant(
+        "Streamline bridge: title SetFullscreenState(%s) reaches 2.x DLSS-G (window=%p foreground=%d%s) #%u",
+        fullscreen ? "TRUE" : "FALSE", window, foreground ? 1 : 0,
+        fullscreen && !foreground ? " - DXGI refuses exclusive fullscreen to a window without focus" : "", n + 1);
+}
+
 // The before-hooks flush DLSS-G and force-destroy its back-buffer wrappers. The after-hooks stay
 // outside the serializer: SetFullscreenStatePost waits for presents to settle.
 HRESULT HookedDlssgSetFullscreenStatePre(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target,
                                          bool& skip) {
     auto* original = reinterpret_cast<SlHookSetFullscreenStatePreFn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgSetFullscreenStatePre, nullptr, nullptr));
+    NoteFullscreenRequest(swapChain, fullscreen);
     SwapchainCallScope serial(g_dlssgSwapchainCalls);
     if (serial.Waited()) {
         LogSerializedWait(fullscreen ? "SetFullscreenState(TRUE)" : "SetFullscreenState(FALSE)", swapChain);
     }
     return original ? original(swapChain, fullscreen, target, skip) : S_OK;
+}
+
+HRESULT HookedDlssgSetFullscreenStatePost(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target) {
+    auto* original = reinterpret_cast<SlHookSetFullscreenStatePostFn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgSetFullscreenStatePost, nullptr, nullptr));
+    g_fullscreenPending.store(-1, std::memory_order_release);
+    return original ? original(swapChain, fullscreen, target) : S_OK;
 }
 
 HRESULT HookedDlssgResizeSwapChainPre(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
@@ -403,8 +451,11 @@ void InstallSwapchainSerializer(SlGetPluginFunctionFn* dlssgLookup, HMODULE v2Dl
          &g_originalDlssgResizeSwapChainPre, nullptr},
         {"slHookResize1SwapChainPre", reinterpret_cast<void*>(&HookedDlssgResize1SwapChainPre),
          &g_originalDlssgResize1SwapChainPre, nullptr},
+        // Not serialized: only marks the transition finished (see NoteFullscreenRequest).
+        {"slHookSetFullscreenStatePost", reinterpret_cast<void*>(&HookedDlssgSetFullscreenStatePost),
+         &g_originalDlssgSetFullscreenStatePost, nullptr},
     };
-    void* taken[5] = {present, present1, nullptr, nullptr, nullptr};
+    void* taken[6] = {present, present1, nullptr, nullptr, nullptr, nullptr};
     size_t takenCount = 2;
     for (Entry& entry : entries) {
         void* target = dlssgLookup(entry.name);
@@ -424,11 +475,13 @@ void InstallSwapchainSerializer(SlGetPluginFunctionFn* dlssgLookup, HMODULE v2Dl
             taken[takenCount++] = entry.installed;
         }
     }
+    g_fullscreenPostHooked.store(entries[3].installed != nullptr, std::memory_order_release);
     HookLogImportant(
         "Streamline bridge: swapchain call serializer - sl.dlss_g Present=%p Present1=%p SetFullscreenStatePre=%p "
         "ResizeSwapChainPre=%p Resize1SwapChainPre=%p run one at a time (2.x's interposer leaves that to the title; "
-        "a 1.x title may call SetFullscreenState from its window thread mid-present)",
-        present, present1, entries[0].installed, entries[1].installed, entries[2].installed);
+        "a 1.x title may call SetFullscreenState from its window thread mid-present); SetFullscreenStatePost=%p "
+        "tracks refused transitions",
+        present, present1, entries[0].installed, entries[1].installed, entries[2].installed, entries[3].installed);
 }
 
 }  // namespace

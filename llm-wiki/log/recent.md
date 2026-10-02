@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-02 - W3 bridged save-load crash: unresolved, diagnostics added
+
+- Session `20261002_043740` (0.1.6923): AV (null read) on W3's main thread in game code
+  (`witcher3+...WriteBytes+0x2f6666`, r12 = result of a game vcall); no CE/SL frames, heap not in either dump.
+  Preceded by: game window never foreground until 04:39:13.77 (Explorer had focus), so DXGI refused the startup
+  `SetFullscreenState(TRUE)` (NOT_CURRENTLY_AVAILABLE). 2.14.1's interposer then skips every after-hook
+  (`dxgiSwapchain.cpp`), leaving sl.dlss_g torn down by its pre-hook. Right after, 2.x answered the title's
+  `slSetTag` and later its first DLSS `slEvaluateFeature` (04:39:25, save load) with 38 `eErrorInvalidState`
+  - never seen before. Not from sl.api/sl.common/sl.dlss sources (only reflex/pcl/nis/pluginManager return it in
+  the public 2.14.1 tree), so most likely closed sl.dlss_g. `sl.log` is buffered and lost its last 19 s.
+- 0.1.6924: `ResultTracker` (1st/2nd/4th... failure, result name, recovery) replaces the one-shot result latch;
+  fullscreen requests log foreground state and a refused transition (pre without post). Next run must say whether
+  DLSS evaluate keeps failing until the crash and whether the crash needs the refused startup fullscreen.
+- User reports W3 often minimizes itself at startup: consistent with exclusive fullscreen requested without focus.
+  Unverified whether CE contributes; compare with `streamline_upgrade=false` / CE off.
+
 ### 2026-10-02 - W3 bridged alt-tab crash: 2.x DLSS-G needs serialized swapchain calls
 
 - Session `20261001_153717` (0.1.6899, `streamline_upgrade=true`, 4x MFG): alt-tab -> AV in 2.14.1
