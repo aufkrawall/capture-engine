@@ -61,6 +61,7 @@ inline constexpr int kExitBadArguments = 3;
 // ---------------------------------------------------------------------------
 
 void LogOpen(const wchar_t* name);
+void LogClose();
 [[gnu::format(printf, 1, 2)]] void Log(const char* format, ...);
 const std::wstring& LogFilePath();
 
@@ -164,13 +165,20 @@ bool LoadManifest(const std::wstring& directory, Manifest* manifest);
 // Deletes `path`. A file that is in use (a hook DLL loaded into a running game)
 // is renamed aside and scheduled for deletion at the next restart. True when
 // the original name is free afterwards.
-bool RemoveOrRenameAway(const std::wstring& path, bool* deferredToReboot);
+bool RemoveOrRenameAway(const std::wstring& path, bool* deferredToReboot, HANDLE parentDirectory = nullptr);
+// A retained parent handle anchors the leaf even if its directory acquires a link tag.
+Handle OpenChildDirectoryNoFollow(HANDLE parentDirectory, const std::wstring& name);
+bool DeleteFileInDirectory(HANDLE parentDirectory, const std::wstring& path);
+bool RenameFileInDirectory(HANDLE parentDirectory, const std::wstring& path, const std::wstring& destination);
 void RemoveManifestFiles(const std::wstring& directory, const std::vector<std::string>& files,
                          std::vector<std::wstring>* warnings, bool* rebootRecommended);
 // Removes each listed directory only if it is empty; never recursive.
 void RemoveEmptyDirectories(const std::wstring& directory, const std::vector<std::string>& files);
 // Deletes leftovers of an interrupted run (.cenew / .cebak) in the listed folders.
 void CleanTemporaryFiles(const std::wstring& directory, const std::vector<std::string>& files);
+// Removes a relocated copy only after proving the two folders are distinct.
+void RemovePreviousInstallation(const std::wstring& previousDirectory, const std::wstring& directory,
+                                std::vector<std::wstring>* warnings, bool* rebootRecommended);
 
 // ---------------------------------------------------------------------------
 // Installation state and actions
@@ -217,6 +225,7 @@ struct UninstallRequest {
     std::wstring directory;
     bool removeUserData = false;
     bool filesOnly = false;
+    std::vector<DWORD> waitingInstallers;
     unsigned closeTimeoutSeconds = 30;
 };
 
@@ -237,7 +246,8 @@ UninstallResult RunUninstall(const UninstallRequest& request, const ProgressFn& 
 // them, and stops the elevation service. Returns false (with a reason) only
 // when something still runs from the folder afterwards.
 bool CloseRunningInstances(const std::wstring& directory, std::wstring* error, const ProgressFn& progress,
-                           bool stopService = true, unsigned graceSeconds = 30);
+                           bool stopService = true, unsigned graceSeconds = 30,
+                           const std::vector<DWORD>& waitingInstallers = {});
 bool StopElevationService(std::wstring* error);
 bool ElevationServiceExists();
 
@@ -249,7 +259,8 @@ bool WriteUninstallRecord(const std::wstring& directory, uint64_t estimatedBytes
 bool RemoveUninstallRecord();
 bool CreateAppShortcut(const std::wstring& linkPath, const std::wstring& directory, DWORD* error);
 // Removes the link only when it targets this installation. Returns true if absent afterwards.
-bool RemoveOwnedShortcut(const std::wstring& linkPath, const std::wstring& directory);
+bool RemoveOwnedShortcut(const std::wstring& linkPath, const std::wstring& directory,
+                         const std::wstring& previousDirectory = {});
 bool OwnedShortcutExists(const std::wstring& linkPath, const std::wstring& directory);
 std::wstring StartMenuShortcutPath();
 std::wstring DesktopShortcutPath();

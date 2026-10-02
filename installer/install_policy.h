@@ -88,6 +88,7 @@ struct CommandLine {
     std::wstring extractDirectory;
     std::wstring previewDirectory;
     std::wstring waitProcess;
+    std::wstring elevationLauncher;
     uint32_t optionsOn = 0;
     uint32_t optionsOff = 0;
     bool removeUserData = false;
@@ -167,6 +168,8 @@ inline CommandLine ParseCommandLine(const std::vector<std::wstring>& arguments) 
             result.previewDirectory.assign(text.substr(10));
         } else if (StartsWithNoCase(text, L"--wait-process=")) {
             result.waitProcess.assign(text.substr(15));
+        } else if (StartsWithNoCase(text, L"--elevation-launcher=")) {
+            result.elevationLauncher.assign(text.substr(21));
         } else if (StartsWithNoCase(text, L"--close-timeout=")) {
             const std::wstring_view number = text.substr(16);
             unsigned value = 0;

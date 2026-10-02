@@ -215,6 +215,7 @@ DWORD WINAPI WorkerThread(LPVOID parameter) {
         UninstallRequest request;
         request.directory = wizard.directory;
         request.removeUserData = (wizard.options & kOptRemoveData) != 0;
+        request.waitingInstallers = wizard.waitingInstallers;
         request.filesOnly = wizard.filesOnly;
         request.closeTimeoutSeconds = wizard.closeTimeoutSeconds;
         wizard.uninstallResult = RunUninstall(request, progress);
@@ -639,10 +640,11 @@ int RunSetupWizard(HINSTANCE instance, PayloadReader* payload, const CommandLine
 #endif  // !CE_UNINSTALLER
 
 int RunUninstallWizard(HINSTANCE instance, const std::wstring& directory, bool removeDataDefault, bool filesOnly,
-                       unsigned closeTimeoutSeconds) {
+                       unsigned closeTimeoutSeconds, const std::vector<DWORD>& waitingInstallers) {
     Wizard& wizard = g_wizard;
     wizard.closeTimeoutSeconds = closeTimeoutSeconds;
     wizard.uninstall = true;
+    wizard.waitingInstallers = waitingInstallers;
     wizard.filesOnly = filesOnly;
     wizard.directory = directory;
     if (!CreateWizardWindow(wizard, instance, L"Uninstall Capture Engine", filesOnly))

@@ -375,6 +375,7 @@ anchors that predate the split are approximate.
 ## Installer
 
 - installer/: setup + uninstaller (Win32/GDI, system DLLs only). Pure units `payload_format.h`, `install_policy.h`;
+  `filesystem_guard.h` pins resolved directory paths and compares file IDs; `shortcuts.cpp` owns shell-link creation/removal.
   payload reader `payload.cpp`; engines `engine_install.cpp`, `engine_uninstall.cpp`, `files.cpp`; closing
   `process_control.cpp`; registration/roles `registration.cpp`, `integration.cpp`; window `ui_*.cpp`, `wizard.h`;
   entry `main.cpp`; `version.cpp` is the only unit that includes the per-build version header.

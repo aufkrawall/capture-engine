@@ -39,7 +39,7 @@ Primary sources:
 
 ## Content Catalog
 - [installer.md](installer.md)
-  - `captureengine-setup.exe` / `captureengine_uninstall.exe`: payload format, closing a running instance, the transactional file replace, config.ini never overwritten (`config.ini.new`), the manifest, runtime-writable folders, the elevated service/startup role, `--files-only` testing. Source-verified 2026-10-01; interactive registration runs pending.
+  - `captureengine-setup.exe` / `captureengine_uninstall.exe`: payload format, closing a running instance, the transactional file replace, config.ini never overwritten (`config.ini.new`), the manifest, runtime-writable folders, the elevated service/startup role, `--files-only` testing. Source-verified 2026-10-02, with junction/alias cleanup and synchronous uninstall regressions; interactive registration runs pending.
 - [elevation-and-startup.md](elevation-and-startup.md)
   - Protected sensor/ETW broker, tray controls, initiating-user UAC ownership, autostart and teardown. Source-verified 2026-10-01; interactive runtime checks pending.
 - `changelog-guidelines.md`

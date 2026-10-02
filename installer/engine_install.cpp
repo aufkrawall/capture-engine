@@ -13,6 +13,7 @@
 // config.ini.new beside it.
 
 #include "setup.h"
+#include "filesystem_guard.h"
 
 #include <algorithm>
 
@@ -33,16 +34,25 @@ struct StagedFile {
 // Undoes a failed file commit. Registration is not part of it.
 class Rollback {
 public:
-    explicit Rollback(std::vector<StagedFile>& files) : files_(files) {}
+    Rollback(std::vector<StagedFile>& files, const std::wstring& directory) : files_(files), directory_(directory) {}
     void NoteCreatedDirectory(const std::wstring& path) { directories_.push_back(path); }
     void Run() {
         for (auto it = files_.rbegin(); it != files_.rend(); ++it) {
-            if (it->swapped) {
-                DeleteFileW(it->destination.c_str());
-                if (it->hadOriginal && !MoveFileExW(it->backup.c_str(), it->destination.c_str(), MOVEFILE_WRITE_THROUGH))
-                    Log("rollback: could not restore %s (error %lu)", Narrow(it->destination).c_str(), GetLastError());
+            const InstallationPathGuard guard(directory_, it->entry->path);
+            if (!guard.Valid()) {
+                if (guard.Error() != ERROR_FILE_NOT_FOUND && guard.Error() != ERROR_PATH_NOT_FOUND)
+                    Log("rollback: skipping %s (unsafe or unavailable folder, error %lu)",
+                        it->entry->path.c_str(), guard.Error());
+                continue;
             }
-            DeleteFileW(it->staging.c_str());
+            const std::wstring destination = JoinPath(guard.Directory(), Widen(it->entry->path));
+            if (it->swapped) {
+                DeleteFileInDirectory(guard.ParentHandle(), destination);
+                const std::wstring backup = destination + kBackupSuffixWide;
+                if (it->hadOriginal && !RenameFileInDirectory(guard.ParentHandle(), backup, destination))
+                    Log("rollback: could not restore %s (error %lu)", Narrow(destination).c_str(), GetLastError());
+            }
+            DeleteFileInDirectory(guard.ParentHandle(), destination + kStagingSuffixWide);
         }
         // Only the folders this run created, and only while empty.
         for (auto it = directories_.rbegin(); it != directories_.rend(); ++it)
@@ -51,6 +61,7 @@ public:
 
 private:
     std::vector<StagedFile>& files_;
+    const std::wstring& directory_;
     std::vector<std::wstring> directories_;
 };
 
@@ -82,7 +93,8 @@ void Fail(InstallResult& result, const std::wstring& message) {
 }
 
 // Everything past the point of no return: registration reports warnings only.
-void RegisterInstallation(const InstallRequest& request, const std::wstring& directory, uint64_t totalBytes,
+void RegisterInstallation(const InstallRequest& request, const std::wstring& directory,
+                          const std::wstring& previousDirectory, uint64_t totalBytes,
                           InstallResult& result, const ProgressFn& progress) {
     const auto warn = [&](const std::wstring& message) {
         result.warnings.push_back(message);
@@ -98,7 +110,7 @@ void RegisterInstallation(const InstallRequest& request, const std::wstring& dir
         if (request.options & option) {
             if (!CreateAppShortcut(link, directory, &error))
                 warn(std::wstring(L"The ") + label + L" shortcut could not be created: " + ErrorText(error));
-        } else if (!RemoveOwnedShortcut(link, directory)) {
+        } else if (!RemoveOwnedShortcut(link, directory, previousDirectory)) {
             warn(std::wstring(L"The old ") + label + L" shortcut could not be removed.");
         }
     };
@@ -203,7 +215,7 @@ InstallResult RunInstall(PayloadReader& payload, const InstallRequest& request, 
 
     // 3. Stage -------------------------------------------------------------
     std::vector<StagedFile> files;
-    Rollback rollback(files);
+    Rollback rollback(files, directory);
     DWORD error = 0;
     if (!CreateDirectoryTracked(directory, rollback, &error)) {
         Fail(result, L"The installation folder could not be created: " + ErrorText(error));
@@ -353,21 +365,12 @@ InstallResult RunInstall(PayloadReader& payload, const InstallRequest& request, 
 
     // 8. Registration (warnings only) ----------------------------------------
     if (!request.filesOnly)
-        RegisterInstallation(request, directory, totalBytes, result, progress);
+        RegisterInstallation(request, directory, previousDirectory, totalBytes, result, progress);
 
     // A moved installation: the old folder's files go, its data stays.
     if (!previousDirectory.empty()) {
-        Manifest old;
-        if (LoadManifest(previousDirectory, &old)) {
-            report(98, L"Removing the previous installation folder...");
-            RemoveManifestFiles(previousDirectory, old.files, &result.warnings, &result.rebootRecommended);
-            RemoveEmptyDirectories(previousDirectory, old.files);
-            RemoveOrRenameAway(JoinPath(previousDirectory, kManifestFile), nullptr);
-            RemoveDirectoryW(previousDirectory.c_str());
-        } else {
-            result.warnings.push_back(L"The previous installation in " + previousDirectory +
-                                      L" was left in place. You can delete that folder yourself.");
-        }
+        report(98, L"Checking the previous installation folder...");
+        RemovePreviousInstallation(previousDirectory, directory, &result.warnings, &result.rebootRecommended);
     }
 
     report(100, L"Done.");

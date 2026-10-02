@@ -38,6 +38,16 @@ void LogOpen(const wchar_t* name) {
         g_logPath.clear();
 }
 
+void LogClose() {
+    if (!g_logLockReady)
+        return;
+    EnterCriticalSection(&g_logLock);
+    if (g_logFile != INVALID_HANDLE_VALUE)
+        CloseHandle(g_logFile);
+    g_logFile = INVALID_HANDLE_VALUE;
+    LeaveCriticalSection(&g_logLock);
+}
+
 const std::wstring& LogFilePath() {
     return g_logPath;
 }

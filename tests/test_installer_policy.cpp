@@ -280,6 +280,17 @@ TEST(InstallerCommandLineTest, FilesOnlyIsAnExplicitSwitch) {
     EXPECT_TRUE(Command({L"--files-only", L"/S"}).filesOnly);
 }
 
+TEST(InstallerCommandLineTest, InternalLauncherArgumentsArePreservedForProcessValidation) {
+    const auto command = ParseCommandLine({L"--uninstall", L"--from-temporary-copy", L"--wait-process=123",
+                                           L"--elevation-launcher=456", L"--files-only", L"--close-timeout=1"});
+    ASSERT_TRUE(command.valid);
+    EXPECT_EQ(command.waitProcess, L"123");
+    EXPECT_EQ(command.elevationLauncher, L"456");
+    EXPECT_TRUE(command.fromTemporaryCopy);
+    EXPECT_TRUE(command.filesOnly);
+    EXPECT_EQ(command.closeTimeoutSeconds, 1u);
+}
+
 TEST(InstallerCommandLineTest, ModesAndErrors) {
     EXPECT_EQ(Command({L"--uninstall"}).mode, Mode::Uninstall);
     EXPECT_EQ(Command({L"/?"}).mode, Mode::Help);

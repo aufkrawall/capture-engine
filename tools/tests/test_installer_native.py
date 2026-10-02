@@ -207,6 +207,23 @@ class NativeInstallerTest(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
         self.assertFalse((self.target / "captureengine.exe").exists())
 
+    def test_a_refused_install_never_cleans_up_through_a_junction(self):
+        outside = self.work / "outside-cleanup"
+        outside.mkdir()
+        expected = {"private.cebak": b"user backup", "avcodec-63.dll.cenew": b"external staging"}
+        for name, contents in expected.items():
+            (outside / name).write_bytes(contents)
+        self.target.mkdir()
+        link = self.target / "ffmpeg"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+        try:
+            self.install(1, expect=1)
+            for name, contents in expected.items():
+                self.assertTrue((outside / name).exists(), name)
+                self.assertEqual((outside / name).read_bytes(), contents)
+        finally:
+            link.rmdir()
+
     def test_unusable_folders_are_refused(self):
         self.run_setup(1, "--files-only", "--dir=C:\\", "/S", expect=1)
         self.run_setup(1, "--files-only", "--dir=relative\\folder", "/S", expect=1)
@@ -268,6 +285,89 @@ class NativeInstallerTest(unittest.TestCase):
         self.assertFalse((self.target / "config.ini").exists())
         self.assertFalse((self.target / "logs").exists())
         self.assertEqual(self.content("captures/clip.mkv"), b"rec")
+
+    def test_remove_data_unlinks_the_logs_root_and_keeps_its_target(self):
+        self.install(1)
+        (self.target / "logs").rmdir()
+        outside = self.work / "outside-recordings"
+        outside.mkdir()
+        canary = outside / "recording.mkv"
+        canary.write_bytes(b"external recording")
+        link = self.target / "logs"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+        try:
+            self.uninstall("--remove-data")
+            self.assertTrue(canary.exists())
+            self.assertEqual(canary.read_bytes(), b"external recording")
+            self.assertFalse(link.exists())
+        finally:
+            if link.is_junction():
+                link.rmdir()
+
+    def test_uninstall_never_cleans_manifest_temporary_files_through_a_junction(self):
+        self.install(1)
+        shutil.rmtree(self.target / "ffmpeg")
+        outside = self.work / "outside-uninstall-cleanup"
+        outside.mkdir()
+        canary = outside / "saved.cebak"
+        canary.write_bytes(b"external backup")
+        link = self.target / "ffmpeg"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+        try:
+            self.uninstall()
+            self.assertTrue(canary.exists())
+            self.assertEqual(canary.read_bytes(), b"external backup")
+        finally:
+            if link.is_junction():
+                link.rmdir()
+
+    def installed_uninstaller(self):
+        binary = Path(os.environ.get("CE_UNINSTALLER") or STUB.parent / "captureengine_uninstall.exe")
+        if not binary.is_file():
+            self.skipTest("uninstaller not built")
+        target = self.target / "captureengine_uninstall.exe"
+        shutil.copy2(binary, target)
+        return target
+
+    def test_silent_installed_uninstaller_waits_for_removal_and_keeps_its_launcher_alive(self):
+        self.install(1)
+        uninstaller = self.installed_uninstaller()
+        completed = subprocess.run([str(uninstaller), "--files-only", "/S", "--remove-data", "--close-timeout=1"],
+                                   capture_output=True, timeout=20, check=False)
+        self.assertEqual(completed.returncode, 0)
+        for relative in ("captureengine.exe", "mediaengine.dll", "captureengine_install.manifest", "config.ini"):
+            self.assertFalse((self.target / relative).exists(), relative)
+        self.assertFalse(uninstaller.exists())
+
+    def test_setup_inside_the_installation_hands_off_removal_instead_of_reinstalling(self):
+        self.install(1)
+        setup = self.target / "maintenance-setup.exe"
+        shutil.copy2(self.setups[1], setup)
+        manifest = self.target / "captureengine_install.manifest"
+        manifest.write_bytes(manifest.read_bytes() + b"file=maintenance-setup.exe\n")
+        completed = subprocess.run([str(setup), "--uninstall", "--files-only", "/S", f"--dir={self.target}",
+                                    "--close-timeout=1"], capture_output=True, timeout=20, check=False)
+        self.assertEqual(completed.returncode, 0)
+        self.assertFalse((self.target / "captureengine.exe").exists())
+        self.assertFalse(manifest.exists())
+        self.assertFalse(setup.exists())
+
+    def test_temporary_copy_rejects_an_unverifiable_elevation_launcher(self):
+        self.install(1)
+        uninstaller = self.installed_uninstaller()
+        completed = subprocess.run([str(uninstaller), "--files-only", "/S", "--elevation-launcher=not-a-process"],
+                                   capture_output=True, timeout=20, check=False)
+        self.assertEqual(completed.returncode, 3)
+        self.assertTrue(uninstaller.exists())
+        self.assertTrue((self.target / "captureengine.exe").exists())
+
+    def test_silent_installed_uninstaller_returns_the_temporary_copys_failure(self):
+        self.target.mkdir()
+        uninstaller = self.installed_uninstaller()
+        completed = subprocess.run([str(uninstaller), "--files-only", "/S", "--close-timeout=1"],
+                                   capture_output=True, timeout=20, check=False)
+        self.assertEqual(completed.returncode, 1)
+        self.assertTrue(uninstaller.exists())
 
     def test_uninstall_without_a_manifest_leaves_the_files(self):
         self.target.mkdir()

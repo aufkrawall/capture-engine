@@ -50,6 +50,7 @@ struct Wizard {
     // Testing: off-screen window, file operations only (see --files-only).
     bool filesOnly = false;
     unsigned closeTimeoutSeconds = 30;
+    std::vector<DWORD> waitingInstallers;
     Page page = Page::License;
 
     HWND license = nullptr;
@@ -123,7 +124,8 @@ void DestroyWizard(Wizard& wizard);
 int RunSetupWizard(HINSTANCE instance, PayloadReader* payload, const CommandLine& command,
                    const std::wstring& defaultDirectory);
 int RunUninstallWizard(HINSTANCE instance, const std::wstring& directory, bool removeDataDefault,
-                       bool filesOnly = false, unsigned closeTimeoutSeconds = 30);
+                       bool filesOnly = false, unsigned closeTimeoutSeconds = 30,
+                       const std::vector<DWORD>& waitingInstallers = {});
 // Renders every page to <directory>\page-N.bmp without showing a window.
 int RunPreview(HINSTANCE instance, const std::wstring& directory);
 void ShowMessage(HWND owner, const std::wstring& text, const std::wstring& caption, bool error);

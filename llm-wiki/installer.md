@@ -1,6 +1,6 @@
 # Installer and uninstaller
 
-Last verified: 2026-10-01 (source, unit tests, native `--files-only` and off-screen UI tests). Interactive
+Last verified: 2026-10-02 (source, unit tests, native `--files-only` and off-screen UI tests). Interactive
 runs that touch the machine - UAC prompt, service/startup registration, PawnIO, Installed Apps, shortcuts, launch as
 the user - are **unverified** and need a manual run. Stale-risk: medium.
 
@@ -16,13 +16,16 @@ nothing with this one.
   user-data and temp-name predicates, shortcut ownership.
 - `installer/payload.cpp`: footer/index read, streamed block decode (LZMS via `cabinet.dll`, resolved at run time).
 - `installer/engine_install.cpp`, `engine_uninstall.cpp`, `files.cpp`: the file transaction, registration, removal.
+- `installer/filesystem_guard.h`: directory leases, resolved paths and filesystem-identity comparison.
 - `installer/process_control.cpp`: close a running Capture Engine, stop the elevation service.
-- `installer/registration.cpp`, `integration.cpp`: Installed Apps record, shortcuts, ACLs, the program's own roles.
+- `installer/registration.cpp`, `shortcuts.cpp`, `integration.cpp`: Installed Apps record, shortcuts, ACLs, the program's own roles.
 - `installer/ui_*.cpp`, `wizard.h`: window, pages, theme, custom button/checkbox control.
 - `installer/main.cpp`: CLI, self-elevation, silent mode, uninstaller hop to a temp copy.
 - `common/installer_setup_policy.h` + `captureengine/startup_control.cpp` (`TryRunInstallerSetup`): the elevated role.
 - `tools/build/build_installer.py`, `tools/installer_payload.py`: compile, payload packer, assembly and verification.
-- Tests: `tests/test_installer_policy.cpp`, `tools/tests/test_installer_{payload,build,native,ui}.py`.
+- Tests: `tests/test_installer_policy.cpp`, `tests/test_installer_files.cpp`,
+  `tools/tests/test_installer_{payload,build,native,ui}.py`. The native unit fixtures use the real file and shell-link units
+  in scratch folders, with no registry/service registration.
 
 ## File format
 
@@ -47,7 +50,21 @@ Integrity (CRC-32 per file, footer and index) only; there is no publisher signat
   Uninstall keeps `config.ini` unless "delete my settings and logs" is ticked; recordings are never deleted.
 - **Manifest** (`captureengine_install.manifest`) lists exactly the files written. Updates delete only files the old
   manifest listed and the new payload no longer ships; uninstall deletes only manifest files. User data paths are
-  never removable through it, and links (reparse points) inside the folder are never written or deleted through.
+  never removable through it. Cleanup and rollback resolve the root once and hold read-access directory handles
+  without delete sharing while operating on internal folders; a junction or unavailable folder is skipped.
+  Internal-folder and leaf opens/deletes/renames use the retained parent object (`NtCreateFile` / `NtSetInformationFile`), preventing
+  alias or reparse changes from redirecting the operation while still permitting rollback and loaded-image renames.
+  Recursive logs removal inspects the root without following it, so a `logs` junction is removed as a link.
+- **Relocation.** Previous-install cleanup compares volume/file IDs on retained directory handles, including aliases
+  through junctions or drive mappings. Matching IDs keep the newly installed files; unknown identity leaves the old
+  folder with a warning. Distinct-folder deletion uses the resolved old path. Disabled shortcuts are owned by either
+  the current or previous folder; foreign shortcuts stay untouched.
+- **Uninstall handoff.** The installed launcher waits on a temp copy and propagates its exit code for silent and GUI
+  removal. The child validates its live, older parent and retains handles to same-image waiting launchers,
+  including the initiating UAC process forwarded explicitly (AppInfo ancestry is not assumed);
+  shutdown excludes only those waiting PIDs. Their mapped installed image can be renamed aside and deleted at
+  restart. The parent closes its log before the child starts, forwards files-only mode and close timeout, then removes
+  the temp copy after the child exits. Both setup and uninstaller explicitly forward `--uninstall`.
 - **Permissions.** Program files keep the folder's inherited ACL. `logs`, `captures`, `screenshots`, `benchmarks`
   and `config.ini` get a Users Modify ACE, because the app writes there as a standard user and only reads
   `config.ini`. The hard-link symbol store lives under `logs`, with a copy fallback.
@@ -65,7 +82,8 @@ Integrity (CRC-32 per file, footer and index) only; there is no publisher signat
 `--files-only --dir=<scratch>` runs the file transaction, config.ini rules, manifest and ACLs with no registry,
 service, shortcut or driver work and no elevation; without `/S` it opens the real wizard off-screen. Native tests
 drive fresh install, update, locked file rollback, a DLL loaded in a running process, junction refusal, process
-closing/termination, uninstall and ACLs; UI tests click through the pages with real mouse messages.
+closing/termination, uninstall and ACLs, plus external-file preservation and real temporary-copy completion/failure;
+UI tests click through the pages with real mouse messages.
 `--preview=<dir>` writes a BMP of every page. Never run setup without `--files-only` on a development machine
 unless the point is to test registration: it registers a service, startup entry and Installed Apps record.
 
@@ -77,6 +95,7 @@ Exit codes: 0 ok, 1 failed, 2 cancelled, 3 bad arguments.
 ## Open questions
 
 - Hardware run: UAC flow with a standard user and alternate admin credentials; shortcuts for the shell user; service
-  and Run-key toggles after install; PawnIO silent install; launch-as-user; uninstall hop to the temp copy.
+  and Run-key toggles after install; PawnIO silent install; launch-as-user; the initiating UAC launcher of the uninstall hop.
+  Files-only temporary-copy completion and failure are covered automatically.
 - The service is a machine-wide name: uninstalling one copy removes a service another copy registered.
 - Unsigned: SmartScreen/SAC will warn until the file is signed (needs a certificate-aware footer position).

@@ -37,7 +37,8 @@ BOOL CALLBACK PostCloseToWindow(HWND window, LPARAM parameter) {
     return TRUE;
 }
 
-std::vector<DWORD> FindProcessesUnder(const std::wstring& directory) {
+std::vector<DWORD> FindProcessesUnder(const std::wstring& directory,
+                                    const std::vector<DWORD>& waitingInstallers) {
     std::vector<DWORD> found;
     Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (!snapshot.Valid())
@@ -48,7 +49,8 @@ std::vector<DWORD> FindProcessesUnder(const std::wstring& directory) {
     if (!Process32FirstW(snapshot.Get(), &entry))
         return found;
     do {
-        if (entry.th32ProcessID == 0 || entry.th32ProcessID == 4 || entry.th32ProcessID == self)
+        if (entry.th32ProcessID == 0 || entry.th32ProcessID == 4 || entry.th32ProcessID == self ||
+            std::find(waitingInstallers.begin(), waitingInstallers.end(), entry.th32ProcessID) != waitingInstallers.end())
             continue;
         const std::wstring image = ProcessImagePath(entry.th32ProcessID);
         if (!image.empty() && IsPathInside(image, directory))
@@ -141,8 +143,8 @@ bool StopElevationService(std::wstring* error) {
 }
 
 bool CloseRunningInstances(const std::wstring& directory, std::wstring* error, const ProgressFn& progress,
-                           bool stopService, unsigned graceSeconds) {
-    std::vector<DWORD> running = FindProcessesUnder(directory);
+                           bool stopService, unsigned graceSeconds, const std::vector<DWORD>& waitingInstallers) {
+    std::vector<DWORD> running = FindProcessesUnder(directory, waitingInstallers);
     if (!running.empty()) {
         Log("close: %zu process(es) run from the installation folder", running.size());
         if (progress)
@@ -152,7 +154,7 @@ bool CloseRunningInstances(const std::wstring& directory, std::wstring* error, c
         EnumWindows(PostCloseToWindow, reinterpret_cast<LPARAM>(&search));
         Log("close: asked %zu window(s) to close", search.posted);
         if (!WaitForExit(running, graceSeconds * 1000)) {
-            running = FindProcessesUnder(directory);
+            running = FindProcessesUnder(directory, waitingInstallers);
             Log("close: %zu process(es) still alive after the grace period; terminating", running.size());
             for (DWORD processId : running) {
                 Handle process(OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, processId));
@@ -162,7 +164,7 @@ bool CloseRunningInstances(const std::wstring& directory, std::wstring* error, c
             }
             WaitForExit(running, kTerminateWaitMilliseconds);
         }
-        running = FindProcessesUnder(directory);
+        running = FindProcessesUnder(directory, waitingInstallers);
         if (!running.empty()) {
             if (error)
                 *error = L"Capture Engine is still running from this folder and could not be closed. "

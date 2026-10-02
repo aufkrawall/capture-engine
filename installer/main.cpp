@@ -6,8 +6,14 @@
 // prompt and can be exercised by tools.
 
 #include "wizard.h"
+#include "../common/elevation_windows.h"
 
 #include <shellapi.h>
+#include <tlhelp32.h>
+
+#include <algorithm>
+#include <map>
+#include <optional>
 
 namespace ce::setup {
 namespace {
@@ -73,7 +79,8 @@ std::wstring RawArgumentTail() {
 
 int RelaunchElevated() {
     const std::wstring self = ModulePath();
-    const std::wstring arguments = RawArgumentTail();
+    const std::wstring arguments = RawArgumentTail() + L" --elevation-launcher=" +
+                                   std::to_wstring(GetCurrentProcessId());
     SHELLEXECUTEINFOW info{};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
@@ -102,46 +109,130 @@ std::wstring DefaultDirectory() {
 
 // The uninstaller lives inside the folder it removes. Running it from there
 // would keep its own image locked, so it copies itself to a temporary folder
-// and continues from the copy; the copy waits for the original to exit
-// (a process handle, not a sleep) before deleting it with the rest.
-bool ContinueFromTemporaryCopy(const CommandLine& command, const std::wstring& directory) {
+// and waits for the copy's real result. Waiting launchers are excluded from
+// shutdown; their mapped image can be renamed aside during removal.
+std::optional<int> ContinueFromTemporaryCopy(const CommandLine& command, const std::wstring& directory) {
     const std::wstring self = ModulePath();
     wchar_t temp[MAX_PATH + 2] = {};
     const DWORD length = GetTempPathW(MAX_PATH, temp);
     if (!length || length >= MAX_PATH)
-        return false;
-    const std::wstring folder =
-        std::wstring(temp, length) + L"CaptureEngine-Uninstall-" + std::to_wstring(GetTickCount64());
-    DWORD error = 0;
-    if (!CreateDirectoryTree(folder, &error))
-        return false;
+        return std::nullopt;
+    GUID nonce{};
+    wchar_t nonceText[40] = {};
+    if (FAILED(CoCreateGuid(&nonce)) || !StringFromGUID2(nonce, nonceText, 40))
+        return std::nullopt;
+    const std::wstring folder = std::wstring(temp, length) + L"CaptureEngine-Uninstall-" + nonceText;
+    if (!CreateDirectoryW(folder.c_str(), nullptr))
+        return std::nullopt;
     const std::wstring copy = JoinPath(folder, kUninstallerExe);
-    if (!CopyFileW(self.c_str(), copy.c_str(), FALSE))
-        return false;
-    std::wstring arguments = L"--from-temporary-copy --dir=\"" + directory + L"\" --wait-process=" +
-                             std::to_wstring(GetCurrentProcessId());
+    if (!CopyFileW(self.c_str(), copy.c_str(), TRUE)) {
+        RemoveDirectoryW(folder.c_str());
+        return std::nullopt;
+    }
+    std::wstring arguments = L"--uninstall --from-temporary-copy --dir=\"" + directory + L"\" --wait-process=" +
+                             std::to_wstring(GetCurrentProcessId()) + L" --close-timeout=" +
+                             std::to_wstring(command.closeTimeoutSeconds);
     if (command.silent)
         arguments += L" /S";
     if (command.removeUserData)
         arguments += L" --remove-data";
+    if (command.filesOnly)
+        arguments += L" --files-only";
+    if (!command.elevationLauncher.empty())
+        arguments += L" --elevation-launcher=" + ce::elevation::QuoteArgument(command.elevationLauncher);
     std::wstring commandLine = L"\"" + copy + L"\" " + arguments;
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
+    Log("uninstall: handing removal to a temporary copy and waiting for its result");
+    LogClose();  // The child owns the transcript while it works.
     if (!CreateProcessW(copy.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr, folder.c_str(), &startup,
                         &process)) {
         Log("uninstall: cannot start the temporary copy (error %lu)", GetLastError());
-        return false;
+        DeleteFileW(copy.c_str());
+        RemoveDirectoryW(folder.c_str());
+        return std::nullopt;
     }
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    return true;
+    Handle thread(process.hThread);
+    Handle child(process.hProcess);
+    DWORD code = kExitFailed;
+    if (WaitForSingleObject(child.Get(), INFINITE) != WAIT_OBJECT_0 || !GetExitCodeProcess(child.Get(), &code))
+        Log("uninstall: could not obtain the temporary copy's result (error %lu)", GetLastError());
+    // The child has exited: its image can be removed immediately, with no helper
+    // process or temp executable left running until restart.
+    if (!DeleteFileW(copy.c_str()) || !RemoveDirectoryW(folder.c_str()))
+        Log("uninstall: temporary copy cleanup failed (error %lu)", GetLastError());
+    Log("uninstall: temporary copy finished with exit code %lu", static_cast<unsigned long>(code));
+    return static_cast<int>(code);
 }
 
-void ScheduleSelfDeletion() {
-    const std::wstring self = ModulePath();
-    MoveFileExW(self.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
-    MoveFileExW(DirectoryOf(self).c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+// The internal PID must identify this copy's actual live parent. Retain handles
+// to it and any same-image UAC launcher ancestors so PID reuse cannot exempt a
+// different process from shutdown. Other Capture Engine processes still close.
+std::vector<Handle> OpenWaitingInstallers(const std::wstring& parentArgument,
+                                        const std::wstring& elevationLauncher, std::vector<DWORD>* ids) {
+    std::vector<Handle> handles;
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    std::map<DWORD, DWORD> parents;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (!snapshot.Valid())
+        return handles;
+    for (BOOL more = Process32FirstW(snapshot.Get(), &entry); more; more = Process32NextW(snapshot.Get(), &entry))
+        parents[entry.th32ProcessID] = entry.th32ParentProcessID;
+    DWORD pid = parents[GetCurrentProcessId()];
+    if (!pid || parentArgument != std::to_wstring(pid))
+        return handles;
+    const std::wstring image = ProcessImagePath(pid);
+    FILETIME before{}, exited{}, kernel{}, user{};
+    if (image.empty() || !GetProcessTimes(GetCurrentProcess(), &before, &exited, &kernel, &user))
+        return handles;
+    FILETIME parentCreated{};
+    while (pid && EqualsNoCase(ProcessImagePath(pid), image)) {
+        Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
+        FILETIME created{};
+        if (!process.Valid() || WaitForSingleObject(process.Get(), 0) != WAIT_TIMEOUT ||
+            !GetProcessTimes(process.Get(), &created, &exited, &kernel, &user) || CompareFileTime(&created, &before) >= 0)
+            break;
+        if (handles.empty())
+            parentCreated = created;
+        before = created;
+        ids->push_back(pid);
+        handles.push_back(std::move(process));
+        pid = parents[pid];
+    }
+    if (!elevationLauncher.empty()) {
+        bool retained = false;
+        // Compare only against PIDs from the OS snapshot: no numeric parsing of
+        // the internal argument, overflow or recycled older ancestor is accepted.
+        for (const auto& processEntry : parents) {
+            const DWORD candidate = processEntry.first;
+            if (elevationLauncher != std::to_wstring(candidate))
+                continue;
+            if (std::find(ids->begin(), ids->end(), candidate) != ids->end()) {
+                retained = true;
+                break;
+            }
+            Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, candidate));
+            FILETIME created{};
+            if (process.Valid() && WaitForSingleObject(process.Get(), 0) == WAIT_TIMEOUT &&
+                GetProcessTimes(process.Get(), &created, &exited, &kernel, &user) &&
+                CompareFileTime(&created, &parentCreated) < 0 && EqualsNoCase(ProcessImagePath(candidate), image)) {
+                ids->push_back(candidate);
+                handles.push_back(std::move(process));
+                retained = true;
+            }
+            break;
+        }
+        if (!retained) {
+            Log("uninstall: could not validate the initiating UAC launcher");
+            ids->clear();
+            handles.clear();
+            return handles;
+        }
+    }
+    Log("uninstall: retaining %zu waiting installer launcher(s) during removal", handles.size());
+    return handles;
 }
 
 int RunUninstallMode(HINSTANCE instance, const CommandLine& command) {
@@ -163,20 +254,24 @@ int RunUninstallMode(HINSTANCE instance, const CommandLine& command) {
         return kExitFailed;
     }
     if (!command.fromTemporaryCopy && IsPathInside(ModulePath(), directory)) {
-        if (ContinueFromTemporaryCopy(command, directory))
-            return kExitOk;
+        if (const auto code = ContinueFromTemporaryCopy(command, directory))
+            return *code;
         Log("uninstall: continuing without a temporary copy; the uninstaller itself may remain");
     }
-    if (!command.waitProcess.empty()) {
-        Handle parent(OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(_wtoi(command.waitProcess.c_str()))));
-        if (parent.Valid())
-            WaitForSingleObject(parent.Get(), 60000);
+    std::vector<DWORD> waitingInstallers;
+    const auto launchers = command.fromTemporaryCopy ? OpenWaitingInstallers(command.waitProcess, command.elevationLauncher, &waitingInstallers)
+                                                    : std::vector<Handle>();
+    if (command.fromTemporaryCopy && launchers.empty()) {
+        Log("uninstall: the temporary copy has no valid waiting launcher");
+        return kExitBadArguments;
     }
     int code;
     if (command.silent) {
         UninstallRequest request;
         request.directory = directory;
         request.removeUserData = command.removeUserData;
+        request.filesOnly = command.filesOnly;
+        request.waitingInstallers = waitingInstallers;
         request.closeTimeoutSeconds = command.closeTimeoutSeconds;
         const UninstallResult result = RunUninstall(request, {});
         if (!result.success)
@@ -184,10 +279,8 @@ int RunUninstallMode(HINSTANCE instance, const CommandLine& command) {
         code = result.success ? kExitOk : kExitFailed;
     } else {
         code = RunUninstallWizard(instance, directory, command.removeUserData, command.filesOnly,
-                                  command.closeTimeoutSeconds);
+                                  command.closeTimeoutSeconds, waitingInstallers);
     }
-    if (command.fromTemporaryCopy)
-        ScheduleSelfDeletion();
     return code;
 }
 
@@ -261,17 +354,6 @@ int RunFilesOnly(const CommandLine& command) {
         Log("files-only needs --dir=<folder>");
         return kExitBadArguments;
     }
-    if (command.mode == Mode::Uninstall) {
-        UninstallRequest request;
-        request.directory = command.directory;
-        request.removeUserData = command.removeUserData;
-        request.filesOnly = true;
-        request.closeTimeoutSeconds = command.closeTimeoutSeconds;
-        const UninstallResult result = RunUninstall(request, {});
-        if (!result.success)
-            Log("files-only uninstall failed: %s", Narrow(result.error).c_str());
-        return result.success ? kExitOk : kExitFailed;
-    }
 #if !defined(CE_UNINSTALLER)
     PayloadReader payload;
     const PayloadStatus status = payload.Open(ModulePath());
@@ -341,7 +423,7 @@ int Run(HINSTANCE instance) {
     }
 #endif
 
-    if (active.filesOnly && active.silent && (active.mode == Mode::Install || active.mode == Mode::Uninstall))
+    if (active.filesOnly && active.silent && active.mode == Mode::Install)
         return RunFilesOnly(active);
 
     if (needsElevation)

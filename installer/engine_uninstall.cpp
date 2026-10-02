@@ -17,6 +17,25 @@ namespace {
 void RemoveTreeNoFollow(const std::wstring& path, int depth = 0) {
     if (depth > 32)
         return;
+    // Inspect the root without following it, and pin a real directory while
+    // enumerating. Checking only the children would traverse a logs junction.
+    Handle folder(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!folder.Valid() || !GetFileInformationByHandle(folder.Get(), &information)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            Log("uninstall: could not safely open the logs folder (error %lu)", error);
+        return;
+    }
+    if (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        folder.Reset();
+        RemoveDirectoryW(path.c_str());
+        Log("uninstall: removed a logs directory link without traversing its target");
+        return;
+    }
+    if (!(information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        return;
     WIN32_FIND_DATAW data{};
     HANDLE search = FindFirstFileW(JoinPath(path, L"*").c_str(), &data);
     if (search != INVALID_HANDLE_VALUE) {
@@ -39,6 +58,7 @@ void RemoveTreeNoFollow(const std::wstring& path, int depth = 0) {
         } while (FindNextFileW(search, &data));
         FindClose(search);
     }
+    folder.Reset();
     RemoveDirectoryW(path.c_str());
 }
 
@@ -94,7 +114,8 @@ UninstallResult RunUninstall(const UninstallRequest& request, const ProgressFn& 
 
     report(5, L"Closing Capture Engine...");
     std::wstring closeError;
-    if (!CloseRunningInstances(directory, &closeError, progress, !request.filesOnly, request.closeTimeoutSeconds)) {
+    if (!CloseRunningInstances(directory, &closeError, progress, !request.filesOnly, request.closeTimeoutSeconds,
+                               request.waitingInstallers)) {
         result.error = closeError;
         return result;
     }

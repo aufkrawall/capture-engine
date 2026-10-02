@@ -18,6 +18,7 @@ INSTALLER_COMMON_SOURCES = (
     "version.cpp",
     "process_control.cpp",
     "registration.cpp",
+    "shortcuts.cpp",
     "integration.cpp",
     "files.cpp",
     "engine_uninstall.cpp",
