@@ -21,6 +21,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | Reflex: options, settings, markers, sleep | `hook/apis/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
 | DLSS-G options, the `notRenderingGameFrames` gate, persistent present-time tags | `hook/apis/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
 | Present-marker guard (re-marks a title present without PRESENT_START) | `hook/apis/streamline_bridge_present.{h,cpp}` (x64 only), policy `PresentMarkerLedger` in `streamline_bridge_dlssg_gate.h` |
+| Swapchain call serializer (sl.dlss_g Present/Present1 vs SetFullscreenStatePre/Resize(1)SwapChainPre) | `hook/apis/streamline_bridge_swapchain_serial.h` (unit-tested, `tests/test_streamline_bridge_swapchain_serial.cpp`), hooks in `streamline_bridge_present.cpp` |
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
@@ -190,6 +191,15 @@ layer, Reflex markers, `notRenderingGameFrames`, tag lifetime, unmarked presents
   bridge counts device/factory creations arriving through its own pass-through slots, and the
   first feature call that depends on one says so plainly if none ever did. An unanswerable
   precondition becomes a fact in the log instead of silently absent frame generation.
+- **2.x needs a one-call-at-a-time swapchain caller; a 1.x title is not one.** 2.x's interposer
+  runs plugin before-hooks with no lock (`sl.interposer/dxgi/dxgiSwapchain.cpp`). W3 calls
+  `SetFullscreenState(FALSE)` from its window thread on alt-tab while the render thread presents;
+  `sl.dlss_g`'s `slHookSetFullscreenStatePre` flushes and force-destroys `NativeBackBuffer[i]`
+  under the in-flight present -> AV in `sl.dlss_g` (session 20261001_153717). The bridge serializes
+  sl.dlss_g's Present/Present1 and its SetFullscreenState/ResizeSwapChain/Resize1SwapChain **before**
+  hooks with one re-entrant lock whose wait pumps sent messages (DXGI SendMessages to the window
+  thread from inside Present). The **after**-hooks stay outside: `slHookSetFullscreenStatePost`
+  sleeps "for stability" until presents advance, so locking it would deadlock.
 - **The hook DLL compiles against the real SDK headers** (`build_project.py` adds
   `FG_SDK_INCLUDE_DIR/streamline/include` to `hk_cflags`), so only the 1.x side is
   hand-mirrored. CE's own `sl*`-prefixed types are global and do not collide with `sl::`.
@@ -346,6 +356,11 @@ struct into stack leftovers, which is how the structs' sizes were bounded.
 - A healthy bridged FG session has no `slReflexSleep` refusal and no
   `eDLSSGStatusFailReflexNotDetectedAtRuntime` records in `sl.log`.
 - `Streamline 1.x probe: ...` - a recorded payload (fires unbridged too).
+- `Streamline bridge: swapchain call serializer - sl.dlss_g Present=... SetFullscreenStatePre=...` -
+  a null entry means that call is not serialized. `... waited for another thread's swapchain call`
+  (rate-limited) - the title overlapped calls; before the fix such an overlap was the alt-tab crash.
+  A crash in `sl.dlss_g` with `sl.log` showing `collectGarbage ... NativeBackBuffer[i] ... forced yes`
+  on another thread just before is that race.
 
 ## Open questions / stale-risk
 

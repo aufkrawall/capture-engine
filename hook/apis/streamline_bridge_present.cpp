@@ -13,6 +13,7 @@
 #include "streamline_bridge_dlssg.h"
 #include "streamline_bridge_dlssg_gate.h"
 #include "streamline_bridge_present_timeline.h"
+#include "streamline_bridge_swapchain_serial.h"
 
 namespace ce::streamline_bridge {
 namespace {
@@ -28,6 +29,14 @@ using SlHookPresent1Fn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, U
 // swapChain) - so the linker folded them. A detour there serves both signatures, so it may use only
 // the arguments they share; the fourth is `bool& skip` for one caller and `params` for the other.
 using SlHookPresentSharedFn = HRESULT(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, void* fourth);
+// sl.dlss_g's swapchain before-hooks (2.x sl.api/internal.h PFun*Before).
+using SlHookSetFullscreenStatePreFn = HRESULT(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target,
+                                              bool& skip);
+using SlHookResizeSwapChainPreFn = HRESULT(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
+                                           DXGI_FORMAT format, UINT& swapChainFlags, bool& skip);
+using SlHookResize1SwapChainPreFn = HRESULT(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
+                                            DXGI_FORMAT format, UINT swapChainFlags, const UINT* creationNodeMask,
+                                            IUnknown* const* presentQueues, bool& skip);
 
 void* volatile g_originalHookPresent = nullptr;
 void* volatile g_originalHookPresent1 = nullptr;
@@ -36,7 +45,25 @@ void* volatile g_originalHookPresentShared = nullptr;
 // priority (sl.common 0 first, sl.dlss_g 1000) on the presenting thread, whatever `skip` says.
 void* volatile g_originalDlssgHookPresent = nullptr;
 void* volatile g_originalDlssgHookPresent1 = nullptr;
+void* volatile g_originalDlssgSetFullscreenStatePre = nullptr;
+void* volatile g_originalDlssgResizeSwapChainPre = nullptr;
+void* volatile g_originalDlssgResize1SwapChainPre = nullptr;
 std::atomic<bool> g_absorbSupported{false};
+
+// sl.dlss_g's present hooks and its fullscreen/resize before-hooks, one call at a time (see
+// streamline_bridge_swapchain_serial.h: alt-tab in Witcher 3 freed a back buffer mid-present).
+SwapchainCallSerializer g_dlssgSwapchainCalls;
+
+void LogSerializedWait(const char* call, IDXGISwapChain* swapChain) {
+    static std::atomic<uint32_t> waits{0};
+    const uint32_t n = waits.fetch_add(1, std::memory_order_relaxed);
+    if (n < 16 || (n % 256) == 0) {
+        HookLogImportant(
+            "Streamline bridge: sl.dlss_g %s waited for another thread's swapchain call to leave 2.x DLSS-G "
+            "(swapchain=%p tid=0x%lX) - the title overlaps swapchain calls 2.x expects one at a time #%u",
+            call, swapChain, GetCurrentThreadId(), n + 1);
+    }
+}
 
 // Set by sl.common's hook for the present it absorbed; sl.dlss_g's hook, next on the same
 // thread for the same present, sets `skip` and consumes it. Reassigned on every present.
@@ -260,6 +287,10 @@ HRESULT HookedDlssgHookPresent(IDXGISwapChain* swapChain, UINT syncInterval, UIN
     }
     auto* original = reinterpret_cast<SlHookPresentFn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent, nullptr, nullptr));
+    SwapchainCallScope serial(g_dlssgSwapchainCalls);
+    if (serial.Waited()) {
+        LogSerializedWait("Present", swapChain);
+    }
     ++t_dlssgHookDepth;
     const HRESULT result = original ? original(swapChain, syncInterval, flags, skip) : S_OK;
     --t_dlssgHookDepth;
@@ -275,11 +306,53 @@ HRESULT HookedDlssgHookPresent1(IDXGISwapChain* swapChain, UINT syncInterval, UI
     }
     auto* original = reinterpret_cast<SlHookPresent1Fn*>(
         InterlockedCompareExchangePointer(&g_originalDlssgHookPresent1, nullptr, nullptr));
+    SwapchainCallScope serial(g_dlssgSwapchainCalls);
+    if (serial.Waited()) {
+        LogSerializedWait("Present1", swapChain);
+    }
     ++t_dlssgHookDepth;
     const HRESULT result = original ? original(swapChain, syncInterval, flags, params, skip) : S_OK;
     --t_dlssgHookDepth;
     AfterDlssgPresent(flags, false);
     return result;
+}
+
+// The before-hooks flush DLSS-G and force-destroy its back-buffer wrappers. The after-hooks stay
+// outside the serializer: SetFullscreenStatePost waits for presents to settle.
+HRESULT HookedDlssgSetFullscreenStatePre(IDXGISwapChain* swapChain, BOOL fullscreen, IDXGIOutput* target,
+                                         bool& skip) {
+    auto* original = reinterpret_cast<SlHookSetFullscreenStatePreFn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgSetFullscreenStatePre, nullptr, nullptr));
+    SwapchainCallScope serial(g_dlssgSwapchainCalls);
+    if (serial.Waited()) {
+        LogSerializedWait(fullscreen ? "SetFullscreenState(TRUE)" : "SetFullscreenState(FALSE)", swapChain);
+    }
+    return original ? original(swapChain, fullscreen, target, skip) : S_OK;
+}
+
+HRESULT HookedDlssgResizeSwapChainPre(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
+                                      DXGI_FORMAT format, UINT& swapChainFlags, bool& skip) {
+    auto* original = reinterpret_cast<SlHookResizeSwapChainPreFn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgResizeSwapChainPre, nullptr, nullptr));
+    SwapchainCallScope serial(g_dlssgSwapchainCalls);
+    if (serial.Waited()) {
+        LogSerializedWait("ResizeBuffers", swapChain);
+    }
+    return original ? original(swapChain, bufferCount, width, height, format, swapChainFlags, skip) : S_OK;
+}
+
+HRESULT HookedDlssgResize1SwapChainPre(IDXGISwapChain* swapChain, UINT bufferCount, UINT width, UINT height,
+                                       DXGI_FORMAT format, UINT swapChainFlags, const UINT* creationNodeMask,
+                                       IUnknown* const* presentQueues, bool& skip) {
+    auto* original = reinterpret_cast<SlHookResize1SwapChainPreFn*>(
+        InterlockedCompareExchangePointer(&g_originalDlssgResize1SwapChainPre, nullptr, nullptr));
+    SwapchainCallScope serial(g_dlssgSwapchainCalls);
+    if (serial.Waited()) {
+        LogSerializedWait("ResizeBuffers1", swapChain);
+    }
+    return original ? original(swapChain, bufferCount, width, height, format, swapChainFlags, creationNodeMask,
+                               presentQueues, skip)
+                    : S_OK;
 }
 
 bool IsInModule(void* address, HMODULE module) {
@@ -314,6 +387,50 @@ void* InstallOne(SlGetPluginFunctionFn* getPluginFunction, HMODULE plugin, const
     return target;
 }
 
+// Each before-hook is hooked only at an address no other bridge detour owns: a linker-folded entry
+// point (sl.common folds its two present hooks) cannot take a second detour with another signature.
+void InstallSwapchainSerializer(SlGetPluginFunctionFn* dlssgLookup, HMODULE v2Dlssg, void* present, void* present1) {
+    struct Entry {
+        const char* name;
+        void* detour;
+        void* volatile* original;
+        void* installed;
+    };
+    Entry entries[] = {
+        {"slHookSetFullscreenStatePre", reinterpret_cast<void*>(&HookedDlssgSetFullscreenStatePre),
+         &g_originalDlssgSetFullscreenStatePre, nullptr},
+        {"slHookResizeSwapChainPre", reinterpret_cast<void*>(&HookedDlssgResizeSwapChainPre),
+         &g_originalDlssgResizeSwapChainPre, nullptr},
+        {"slHookResize1SwapChainPre", reinterpret_cast<void*>(&HookedDlssgResize1SwapChainPre),
+         &g_originalDlssgResize1SwapChainPre, nullptr},
+    };
+    void* taken[5] = {present, present1, nullptr, nullptr, nullptr};
+    size_t takenCount = 2;
+    for (Entry& entry : entries) {
+        void* target = dlssgLookup(entry.name);
+        bool folded = false;
+        for (size_t i = 0; i < takenCount; ++i) {
+            folded = folded || (target != nullptr && target == taken[i]);
+        }
+        if (folded) {
+            HookLogImportant(
+                "Streamline bridge: 2.x sl.dlss_g %s shares entry point %p with another hooked function - not "
+                "serializing it",
+                entry.name, target);
+            continue;
+        }
+        entry.installed = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", entry.name, entry.detour, entry.original);
+        if (entry.installed) {
+            taken[takenCount++] = entry.installed;
+        }
+    }
+    HookLogImportant(
+        "Streamline bridge: swapchain call serializer - sl.dlss_g Present=%p Present1=%p SetFullscreenStatePre=%p "
+        "ResizeSwapChainPre=%p Resize1SwapChainPre=%p run one at a time (2.x's interposer leaves that to the title; "
+        "a 1.x title may call SetFullscreenState from its window thread mid-present)",
+        present, present1, entries[0].installed, entries[1].installed, entries[2].installed);
+}
+
 }  // namespace
 
 void NoteTitlePresentStart(uint32_t frameIndex) {
@@ -337,6 +454,22 @@ bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {
     if (attempted.exchange(true, std::memory_order_acq_rel)) {
         return true;  // one attempt per process: a second would stack a hook on the first
     }
+    // sl.dlss_g's hooks do not depend on sl.common's: the serializer must hold without the guard.
+    void* dlssgPresent = nullptr;
+    void* dlssgPresent1 = nullptr;
+    if (auto* dlssgLookup = PluginFunctionLookup(v2Dlssg)) {
+        dlssgPresent = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent",
+                                  reinterpret_cast<void*>(&HookedDlssgHookPresent), &g_originalDlssgHookPresent);
+        dlssgPresent1 = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent1",
+                                   reinterpret_cast<void*>(&HookedDlssgHookPresent1), &g_originalDlssgHookPresent1);
+        InstallSwapchainSerializer(dlssgLookup, v2Dlssg, dlssgPresent, dlssgPresent1);
+    } else {
+        HookLogImportant(
+            "Streamline bridge: no 2.x sl.dlss_g slGetPluginFunction (module=%p) - its present and fullscreen/resize "
+            "hooks are not serialized",
+            v2Dlssg);
+    }
+
     auto* commonLookup = PluginFunctionLookup(v2Common);
     if (!commonLookup) {
         HookLogImportant(
@@ -362,14 +495,6 @@ bool InstallPresentMarkerGuard(HMODULE v2Common, HMODULE v2Dlssg) {
 
     // Absorbing needs both plugins' hooks on both present paths: sl.common alone would leave
     // DLSS-G processing a present Streamline never counted.
-    void* dlssgPresent = nullptr;
-    void* dlssgPresent1 = nullptr;
-    if (auto* dlssgLookup = PluginFunctionLookup(v2Dlssg)) {
-        dlssgPresent = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent",
-                                  reinterpret_cast<void*>(&HookedDlssgHookPresent), &g_originalDlssgHookPresent);
-        dlssgPresent1 = InstallOne(dlssgLookup, v2Dlssg, "sl.dlss_g", "slHookPresent1",
-                                   reinterpret_cast<void*>(&HookedDlssgHookPresent1), &g_originalDlssgHookPresent1);
-    }
     // sl.dlss_g's two entry points must be distinct: its detour is the one that writes `skip`.
     const bool absorb = present && present1 && dlssgPresent && dlssgPresent1 && dlssgPresent != dlssgPresent1;
     g_absorbSupported.store(absorb, std::memory_order_release);

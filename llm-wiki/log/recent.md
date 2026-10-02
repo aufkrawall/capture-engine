@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-02 - W3 bridged alt-tab crash: 2.x DLSS-G needs serialized swapchain calls
+
+- Session `20261001_153717` (0.1.6899, `streamline_upgrade=true`, 4x MFG): alt-tab -> AV in 2.14.1
+  `sl.dlss_g+0x441a4` under CE's `HookedDlssgHookPresent1` on the render thread (0x6D0), reading a field of
+  `NativeBackBuffer[1]` that the window thread (0x3E6C) had force-destroyed 80 ms earlier in
+  `SetFullscreenState(FALSE)` -> `slHookSetFullscreenStatePre`. The game then hung for ~50 s in Streamline's
+  exception handler (window thread looping in `SetFullscreenStatePost`'s stability sleep); inject log recorded exit 0.
+- Fix (0.1.6923): `SwapchainCallSerializer` around sl.dlss_g Present/Present1 + the three swapchain before-hooks;
+  the wait pumps sent messages. Unit-tested incl. the SendMessage deadlock case. Hardware run pending: alt-tab
+  in and out of fullscreen with DLSS-G on, look for the serializer setup line and `waited for another thread`.
+
 ### 2026-10-01 - Native setup and uninstaller (`captureengine-setup.exe`)
 
 - New `installer/` (Win32/GDI, Windows 11 dark look, system DLLs only), `tools/installer_payload.py`,
