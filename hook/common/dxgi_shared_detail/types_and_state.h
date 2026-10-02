@@ -69,6 +69,10 @@ struct SharedState {
     std::atomic<bool> fsr4RecreationPending{false};
     std::atomic<int> wrapperResizeDepth{0};
     std::atomic<uint32_t> presentInFlightDepth{0};
+    // GetTickCount64() when a Present last left CE's hook (0 = never). A stall
+    // detector measures "no presents" from here: ProcessFrame runs before the
+    // forward, so its tick alone also counts the time a Present spent inside.
+    std::atomic<ULONGLONG> lastPresentReturnTickMs{0};
     std::atomic<uint64_t> frameCount{0};
     std::atomic<bool> deviceRemovedFatal{false};
     std::atomic<uint64_t> presentCallCount{0};

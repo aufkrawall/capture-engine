@@ -359,17 +359,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     const bool d3d12CommandQueueSwapchain = CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChain");
 
     // Apply backbuffer count override from config
+    bool ceAddedWaitable = false;
     DXGI_SWAP_CHAIN_DESC modifiedDesc;
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChain");
+        ceAddedWaitable =
+            ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChain")
+                .waitableObjectRequested;
 
         pDesc = &modifiedDesc;
     }
 
     IDXGISwapChain* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChain");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChain", ppSwapChain,
                                pDesc ? pDesc->OutputWindow : nullptr);
@@ -433,11 +437,14 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
         CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForHwnd");
 
     // Apply backbuffer count override from config
+    bool ceAddedWaitable = false;
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForHwnd");
+        ceAddedWaitable =
+            ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForHwnd")
+                .waitableObjectRequested;
 
         pDesc = &modifiedDesc;
     }
@@ -445,6 +452,7 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr =
         m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChainForHwnd");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForHwnd", ppSwapChain,
                                hWnd);
@@ -470,17 +478,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
         CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForCoreWindow");
 
     // Apply backbuffer count override from config
+    bool ceAddedWaitable = false;
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForCoreWindow");
+        ceAddedWaitable =
+            ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForCoreWindow")
+                .waitableObjectRequested;
 
         pDesc = &modifiedDesc;
     }
 
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput, &pReal);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChainForCoreWindow");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForCoreWindow", ppSwapChain);
     } else
@@ -527,17 +539,21 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForComposition(IUnkn
         CaptureAndHookD3D12QueueFromFactoryDevice(pDevice, "CreateSwapChainForComposition");
 
     // Apply backbuffer count override from config
+    bool ceAddedWaitable = false;
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
     if (pDesc) {
         modifiedDesc = *pDesc;
         const auto& gfx = GetActiveGraphicsConfig();
-        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForComposition");
+        ceAddedWaitable =
+            ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "CreateSwapChainForComposition")
+                .waitableObjectRequested;
 
         pDesc = &modifiedDesc;
     }
 
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForComposition(DeWrap(pDevice), pDesc, pRestrictToOutput, &pReal);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChainForComposition");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForComposition",
                                ppSwapChain);

@@ -236,6 +236,10 @@ private:
 
     HANDLE m_hFrameLatencyWaitable = INVALID_HANDLE_VALUE;
     bool m_FrameLatencyWaitableQueried = false;
+    // Whether CE added the real swapchain's frame-latency waitable (and so may
+    // pace on it); read once on the first pacing wait.
+    bool m_CeAddedWaitable = false;
+    bool m_CeAddedWaitableQueried = false;
     void DrawOverlay();
     bool IsFSRInternalSwapchain();  // FSR FG internal swapchain detection
     IDXGISwapChain* GetRealSafe();  // Thread-safe real swapchain access

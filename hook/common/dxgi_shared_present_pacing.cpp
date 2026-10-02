@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
+#include "swapchain_flag_apply.h"
 #include "vulkan_dxgi_fifo_policy.h"
 
 // Flip-queue pacing and present-queue latency overrides, split out of
@@ -84,9 +85,25 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
     const auto& gfx = GetActiveGraphicsConfig();
     const bool overrideActive = HasBackbufferCountOverride(gfx.backbufferCount);
     const bool vulkanOwnsPresentation = IsVulkanActive();
-    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(
-            overrideActive, vulkanOwnsPresentation, s_flipQueuePacingWedged.load(std::memory_order_relaxed))) {
-        if (!overrideActive) {
+    const bool pacingLatchedOff = s_flipQueuePacingWedged.load(std::memory_order_relaxed);
+    // Ownership is read only once every cheaper reason to skip is gone.
+    const bool pacingOtherwiseDue = ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(
+        overrideActive, vulkanOwnsPresentation, pacingLatchedOff, /*ceAddedWaitableObject=*/true);
+    const bool ceAddedWaitable =
+        pacingOtherwiseDue && ce::swapchain_flag_policy::DidCeAddFrameLatencyWaitable(pSwapChain);
+    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,
+                                                               pacingLatchedOff, ceAddedWaitable)) {
+        if (pacingOtherwiseDue) {
+            // The creator asked for this waitable object and waits on it itself.
+            static std::atomic<int> s_foreignWaitableLogCount{0};
+            const int skipNum = s_foreignWaitableLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (skipNum <= 3 || (skipNum % 5000) == 0)
+                HookLogImportant(
+                    "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - its frame-latency "
+                    "waitable was requested by the application or FG runtime that created it, which waits on it "
+                    "itself; a second wait by CE would take the count its next frame needs",
+                    skipNum, (void*)pSwapChain);
+        } else if (!overrideActive) {
             static int s_logCount = 0;
             if (s_logCount++ < 3)
                 HookLog("WaitBackbufferFrameLatency: no override (count=%d)", gfx.backbufferCount);

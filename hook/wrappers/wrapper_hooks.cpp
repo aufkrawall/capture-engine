@@ -161,10 +161,12 @@ extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11D
 
 #include "../common/swapchain_flag_apply.h"
 
-bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc) {
+bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc, bool* ceAddedWaitableOut) {
     const auto& gfx = GetActiveGraphicsConfig();
     const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
         desc, gfx, "Wrapped_D3D11CreateDeviceAndSwapChain");
+    if (ceAddedWaitableOut)
+        *ceAddedWaitableOut = decision.waitableObjectRequested;
     return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 }
 

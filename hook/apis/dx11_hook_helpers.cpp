@@ -200,22 +200,26 @@ void MarkDeferredAFBootstrapped11(ID3D11DeviceContext* context) {
 
 }
 
-bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc,  const char* source) {
+bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc,  const char* source, bool* ceAddedWaitableOut) {
 
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
     const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
         desc, gfx, source ? source : "DX11 CreateSwapChain");
+    if (ceAddedWaitableOut)
+        *ceAddedWaitableOut = decision.waitableObjectRequested;
     return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 
 }
 
-bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc,  const char* source) {
+bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc,  const char* source, bool* ceAddedWaitableOut) {
 
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
     const auto decision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
         desc, gfx, source ? source : "DX11 CreateSwapChainForHwnd");
+    if (ceAddedWaitableOut)
+        *ceAddedWaitableOut = decision.waitableObjectRequested;
     return decision.bufferCountAction == ce::swapchain_flag_policy::BufferCountAction::Applied;
 
 }

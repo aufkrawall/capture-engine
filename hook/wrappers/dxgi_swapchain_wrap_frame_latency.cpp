@@ -1,12 +1,28 @@
 #include "dxgi_swapchain_wrap_internal.h"
 #include "../common/present_pacing_policy.h"
+#include "../common/swapchain_flag_apply.h"
 
 
 void CWrapDXGISwapChain::WaitFrameLatency() {
     const auto& gfx = GetActiveGraphicsConfig();
-    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(HasBackbufferCountOverride(gfx.backbufferCount),
-                                                               DXGIShared::IsVulkanActive(),
-                                                               /*pacingLatchedOff=*/false))
+    const bool overrideActive = HasBackbufferCountOverride(gfx.backbufferCount);
+    const bool vulkanOwnsPresentation = DXGIShared::IsVulkanActive();
+    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,
+                                                               /*pacingLatchedOff=*/false,
+                                                               /*ceAddedWaitableObject=*/true))
+        return;
+    // The real swapchain carries the tag; a waitable its creator asked for is
+    // that creator's to wait on (present_pacing_policy.h).
+    if (!m_CeAddedWaitableQueried) {
+        m_CeAddedWaitableQueried = true;
+        m_CeAddedWaitable = ce::swapchain_flag_policy::DidCeAddFrameLatencyWaitable(m_pReal);
+        if (!m_CeAddedWaitable) {
+            WrapperLog("WaitFrameLatency: not pacing sc=%p - its frame-latency waitable belongs to its creator",
+                       m_pReal);
+        }
+    }
+    if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,
+                                                               /*pacingLatchedOff=*/false, m_CeAddedWaitable))
         return;
 
     // The wait itself, its ceiling, and the latch that retires a waitable object

@@ -61,7 +61,7 @@ TEST(PresentPacingPolicyTest, VulkanLayerOwnedPresentationSuppressesFlipQueuePac
     // thread, which vkDestroySwapchainKHR joins.
     EXPECT_FALSE(ShouldWaitForFlipQueueRoom(/*backbufferCountOverrideActive=*/true,
                                             /*vulkanLayerOwnsPresentation=*/true,
-                                            /*pacingLatchedOff=*/false));
+                                            /*pacingLatchedOff=*/false, /*ceAddedWaitableObject=*/true));
     EXPECT_FALSE(ShouldApplyCePresentationPolicy(/*vulkanLayerOwnsPresentation=*/true));
 }
 
@@ -70,20 +70,20 @@ TEST(PresentPacingPolicyTest, D3DPresentationStillPaced) {
     // may not turn backbuffer_count into a no-op.
     EXPECT_TRUE(ShouldWaitForFlipQueueRoom(/*backbufferCountOverrideActive=*/true,
                                            /*vulkanLayerOwnsPresentation=*/false,
-                                           /*pacingLatchedOff=*/false));
+                                           /*pacingLatchedOff=*/false, /*ceAddedWaitableObject=*/true));
     EXPECT_TRUE(ShouldApplyCePresentationPolicy(/*vulkanLayerOwnsPresentation=*/false));
 }
 
 TEST(PresentPacingPolicyTest, NoPacingWithoutTheOverride) {
     EXPECT_FALSE(ShouldWaitForFlipQueueRoom(/*backbufferCountOverrideActive=*/false,
                                             /*vulkanLayerOwnsPresentation=*/false,
-                                            /*pacingLatchedOff=*/false));
+                                            /*pacingLatchedOff=*/false, /*ceAddedWaitableObject=*/true));
 }
 
 TEST(PresentPacingPolicyTest, LatchedOffPacingStaysOff) {
     EXPECT_FALSE(ShouldWaitForFlipQueueRoom(/*backbufferCountOverrideActive=*/true,
                                             /*vulkanLayerOwnsPresentation=*/false,
-                                            /*pacingLatchedOff=*/true));
+                                            /*pacingLatchedOff=*/true, /*ceAddedWaitableObject=*/true));
 }
 
 TEST(PresentPacingPolicyTest, WaitCeilingIsFiniteAndAboveEveryHealthyWait) {

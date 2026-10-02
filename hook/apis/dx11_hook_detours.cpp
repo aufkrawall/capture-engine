@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "../common/swapchain_flag_apply.h"
 
 
 HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,  const void* shaderBytecode, 
@@ -416,6 +417,7 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
 
     DXGI_SWAP_CHAIN_DESC desc;
     const DXGI_SWAP_CHAIN_DESC* pFinalDesc = pSwapChainDesc;
+    bool ceAddedWaitable = false;
 
     if (pSwapChainDesc) {
         const GraphicsConfig& gfx = GetActiveGraphicsConfig();
@@ -423,7 +425,7 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
         bool modified = false;
 
         // Backbuffer Count
-        modified = ApplyDX11BackbufferCountOverride(desc, "CreateDeviceAndSwapChain") || modified;
+        modified = ApplyDX11BackbufferCountOverride(desc, "CreateDeviceAndSwapChain", &ceAddedWaitable) || modified;
 
         // MSAA Override
         const char* msaa = gfx.msaaSamples.c_str();
@@ -462,6 +464,9 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
     // Calling that would re-enter the wrapper -> infinite recursion -> stack overflow.
     HRESULT hr = realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                               pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+    // The flag reached DXGI only if the modified descriptor is the one that was passed.
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable && pFinalDesc == &desc, hr, ppSwapChain ? *ppSwapChain : nullptr,
+                                                               "DX11 CreateDeviceAndSwapChain");
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
         DX11Hook_RegisterDeviceIdentity(*ppDevice, "D3D11CreateDeviceAndSwapChain", true);
@@ -544,13 +549,16 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory,  IUnknow
 
     DXGI_SWAP_CHAIN_DESC modifiedDesc = {};
     DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
+    bool ceAddedWaitable = false;
     if (pDesc) {
         modifiedDesc = *pDesc;
-        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChain");
+        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChain", &ceAddedWaitable);
         pDescToUse = &modifiedDesc;
     }
 
     HRESULT hr = dx11_hook_oCreateSwapChain(pFactory, DeWrap(pDevice), pDescToUse, ppSwapChain);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, ppSwapChain ? *ppSwapChain : nullptr,
+                                                               "DX11 CreateSwapChain");
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         DXGI_SWAP_CHAIN_DESC actualDesc = {};
@@ -657,9 +665,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, 
 
     DXGI_SWAP_CHAIN_DESC1 modifiedDesc = {};
     const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+    bool ceAddedWaitable = false;
     if (pDesc) {
         modifiedDesc = *pDesc;
-        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChainForHwnd");
+        ApplyDX11BackbufferCountOverride(modifiedDesc, "CreateSwapChainForHwnd", &ceAddedWaitable);
         pDescToUse = &modifiedDesc;
     }
 
@@ -674,6 +683,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, 
     HRESULT hr = dx11_hook_oCreateSwapChainForHwnd(pFactory, DeWrap(pDevice), hWnd, pDescToUse, pFullscreenDesc,
                                          pRestrictToOutput, ppSwapChain);
     HookLog("DX11: AFTER oCreateSwapChainForHwnd call (hr=0x%08X)", hr);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, ppSwapChain ? *ppSwapChain : nullptr,
+                                                               "DX11 CreateSwapChainForHwnd");
 
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         DXGI_SWAP_CHAIN_DESC actualDesc = {};

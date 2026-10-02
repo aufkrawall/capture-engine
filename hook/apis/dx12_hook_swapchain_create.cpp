@@ -105,6 +105,7 @@ HookLogImportant("CreateSwapChainForHwnd INLINE: factory=%p device=%p hwnd=%p", 
 // Apply backbuffer count override from config
 DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
 const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+ce::swapchain_flag_policy::Decision descriptorDecision;
 const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
 if (pDesc && !applyDescriptorOverrides) {
     LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("CreateSwapChainForHwnd INLINE", captureEvidence,
@@ -113,7 +114,7 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "INLINE");
+    descriptorDecision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "INLINE");
     pDescToUse = &modifiedDesc;
 }
 
@@ -149,6 +150,8 @@ if (deferPresentHookRefreshForStreamlineHandoff) {
 
 HRESULT hr = original(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
 HookLogImportant("CreateSwapChainForHwnd INLINE: result hr=0x%08X sc=%p", hr, (ppSC && *ppSC) ? *ppSC : nullptr);
+ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(descriptorDecision.waitableObjectRequested, hr, ppSC ? *ppSC : nullptr,
+                                                           "CreateSwapChainForHwnd INLINE");
 if (SUCCEEDED(hr) && ppSC && *ppSC) {
     DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);
 }
@@ -406,6 +409,7 @@ const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
 // Apply backbuffer count override from config
 DXGI_SWAP_CHAIN_DESC modifiedDesc;
 DXGI_SWAP_CHAIN_DESC* pDescToUse = pDesc;
+ce::swapchain_flag_policy::Decision descriptorDecision;
 const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
 if (pDesc && !applyDescriptorOverrides) {
     LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DetourCreateSwapChainGlobal", captureEvidence,
@@ -414,12 +418,15 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DetourCreateSwapChainGlobal");
+    descriptorDecision =
+        ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DetourCreateSwapChainGlobal");
     pDescToUse = &modifiedDesc;
 }
 
 // Call original with (possibly) modified descriptor
 HRESULT hr = original(pThis, pDevice, pDescToUse, ppSwapChain);
+ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(descriptorDecision.waitableObjectRequested, hr, ppSwapChain ? *ppSwapChain : nullptr,
+                                                           "DetourCreateSwapChainGlobal");
 
 if (FAILED(hr)) {
     static std::atomic<int> s_createFailureLogCount{0};
@@ -588,6 +595,7 @@ const auto captureEvidence = BuildCreateSwapchainQueueCaptureEvidence(
 // Apply backbuffer count override from config
 DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
 const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+ce::swapchain_flag_policy::Decision descriptorDecision;
 const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
 if (pDesc && !applyDescriptorOverrides) {
     LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DetourCreateSwapChainForHwndGlobal", captureEvidence,
@@ -596,8 +604,8 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx,
-                                                                  "DetourCreateSwapChainForHwndGlobal");
+    descriptorDecision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(
+        modifiedDesc, gfx, "DetourCreateSwapChainForHwndGlobal");
     pDescToUse = &modifiedDesc;
 }
 
@@ -609,6 +617,10 @@ PrepareForAuthoritativeFFXSwapchainCreate(captureEvidence, "DetourCreateSwapChai
 ScopedForwardedCreateSwapchainForHwndInlineSideEffectGuard inlineSideEffectGuard;
 ScopedForwardedCreateSwapchainForHwndCallerContext forwardedCallerContext(callerAddress, callerModulePath);
 HRESULT hr = dx12_hook_oCreateSwapChainForHwndGlobal(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+// Tagged here, before the inline-handled early return: the inner hooks saw the
+// flag already set, so only this layer knows CE added it.
+ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(descriptorDecision.waitableObjectRequested, hr, ppSC ? *ppSC : nullptr,
+                                                           "DetourCreateSwapChainForHwndGlobal");
 
 if (ce::dx12_overlay_policy::ShouldSkipGlobalCreateSwapchainForHwndSideEffectsAfterInlineForward(
         inlineSideEffectGuard.InlineHandledForwardedCall())) {

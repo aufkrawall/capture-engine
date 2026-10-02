@@ -81,10 +81,24 @@ inline bool ShouldDisablePacingAfterWait(DWORD waitResult) {
 }
 
 // Whether the pacing wait may run at all this present.
+//
+// `ceAddedWaitableObject` is true only for a swapchain whose frame-latency
+// waitable flag CE itself added at creation (swapchain_flag_apply.h tags it).
+// When the application or a frame-generation runtime created the swapchain
+// with that flag, the object belongs to its creator, who already waits on it
+// once per frame. DXGI releases the object once per retired present, so a
+// second wait by CE takes a count the owner's next frame needs. With
+// SetMaximumFrameLatency(1) the wait before a present can then only be
+// satisfied by that same present: it stalls for the full ceiling.
+//
+// GTA V Enhanced, session 20261002_060100: the first DLSS-G enable after a
+// save load created sl.dlss_g's swapchain with the flag (0x842). CE waited on
+// it before the first present, stalled 1000 ms, and its startup-stall detector
+// read that as a hung startup and dumped the process.
 inline bool ShouldWaitForFlipQueueRoom(bool backbufferCountOverrideActive, bool vulkanLayerOwnsPresentation,
-                                       bool pacingLatchedOff) {
+                                       bool pacingLatchedOff, bool ceAddedWaitableObject) {
     return backbufferCountOverrideActive && ShouldApplyCePresentationPolicy(vulkanLayerOwnsPresentation) &&
-           !pacingLatchedOff;
+           !pacingLatchedOff && ceAddedWaitableObject;
 }
 
 } // namespace ce::present_pacing_policy

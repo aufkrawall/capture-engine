@@ -218,7 +218,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     DXGIShared::g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard = ::ce::make_scope_guard(
-        []() { DXGIShared::g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
+        []() {
+            DXGIShared::g_SharedState.lastPresentReturnTickMs.store(GetTickCount64(), std::memory_order_release);
+            DXGIShared::g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
+        });
 
     // EXTREME DEBUG: Log entry with full state
     DWORD threadId = GetCurrentThreadId();

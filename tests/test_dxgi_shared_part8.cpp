@@ -382,24 +382,24 @@ TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilCo
 
 TEST(DXGISharedTest, PureDLSSStartupWrapperOnlyStallDumpRequiresStrongHalfArmedSignal) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 4, true, false, false, 1000, false));
+        false, true, 4, true, false, false, 1000, false, 1000, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 8, false, true, false, 1500, false));
+        false, true, 8, false, true, false, 1500, false, 1500, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        true, true, 8, true, false, false, 1500, false));
+        true, true, 8, true, false, false, 1500, false, 1500, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, false, 8, true, false, false, 1500, false));
+        false, false, 8, true, false, false, 1500, false, 1500, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 3, true, false, false, 1500, false));
+        false, true, 3, true, false, false, 1500, false, 1500, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 8, false, false, true, 1500, false));
+        false, true, 8, false, false, true, 1500, false, 1500, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 8, false, false, false, 1500, false));
+        false, true, 8, false, false, false, 1500, false, 1500, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 8, true, false, false, 999, false));
+        false, true, 8, true, false, false, 999, false, 999, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
-        false, true, 8, true, false, false, 1500, true));
+        false, true, 8, true, false, false, 1500, false, 1500, true));
 }
 
 TEST(DXGISharedTest, PureDLSSStartupCallbackStaysDormantUntilStartupWindowExpires) {

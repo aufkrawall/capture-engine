@@ -525,6 +525,7 @@ HookLogImportant("DeepHook: CreateSwapChainForHwnd ENTER factory=%p device=%p hw
 // Apply backbuffer count override from config
 DXGI_SWAP_CHAIN_DESC1 modifiedDesc;
 const DXGI_SWAP_CHAIN_DESC1* pDescToUse = pDesc;
+ce::swapchain_flag_policy::Decision descriptorDecision;
 const bool applyDescriptorOverrides = ShouldApplySwapchainDescriptorOverridesForCreate(captureEvidence);
 if (pDesc && !applyDescriptorOverrides) {
     LogSkippedSwapchainDescriptorOverridesForRuntimeCreate("DeepHook", captureEvidence, pDesc->BufferCount,
@@ -533,7 +534,7 @@ if (pDesc && !applyDescriptorOverrides) {
 if (pDesc && applyDescriptorOverrides) {
     modifiedDesc = *pDesc;
     const auto& gfx = GetActiveGraphicsConfig();
-    ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DeepHook");
+    descriptorDecision = ce::swapchain_flag_policy::ApplyBackbufferCountOverrideToDesc(modifiedDesc, gfx, "DeepHook");
     pDescToUse = &modifiedDesc;
 }
 
@@ -541,6 +542,7 @@ PrepareForAuthoritativeFFXSwapchainCreate(captureEvidence, "DeepHook");
 
 // Try the call first — let the game/SL handle SC lifecycle naturally
 HRESULT hr = dx12_hook_s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(descriptorDecision.waitableObjectRequested, hr, ppSC ? *ppSC : nullptr, "DeepHook");
 HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
 const bool protectedOfficialFFXStartupCreate =

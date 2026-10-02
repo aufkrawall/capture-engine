@@ -55,6 +55,8 @@ extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11D
                                                   IDXGISwapChain* pSwapChain);
 #include "wrapper_hooks_internal.h"
 
+#include "../common/swapchain_flag_apply.h"
+
 // ============================================================================
 // Wrapped D3D12 Device Creation (uses MSVC-compiled wrapper via C interface)
 // ============================================================================
@@ -238,9 +240,10 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
 
     DXGI_SWAP_CHAIN_DESC modifiedDesc = {};
     const DXGI_SWAP_CHAIN_DESC* pDescToUse = pSwapChainDesc;
+    bool ceAddedWaitable = false;
     if (pSwapChainDesc) {
         modifiedDesc = *pSwapChainDesc;
-        ApplyD3D11CreateDeviceSwapChainBackbufferOverride(modifiedDesc);
+        ApplyD3D11CreateDeviceSwapChainBackbufferOverride(modifiedDesc, &ceAddedWaitable);
         pDescToUse = &modifiedDesc;
     }
 
@@ -249,6 +252,8 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
                                                 pFeatureLevel, ppImmediateContext);
 
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
+    ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, ppSwapChain ? *ppSwapChain : nullptr,
+                                                               "Wrapped_D3D11CreateDeviceAndSwapChain");
 
     if (SUCCEEDED(hr)) {
         if (ppDevice && *ppDevice) {

@@ -23,7 +23,8 @@ extern std::atomic<bool> g_D3D11Or10DeviceCreated;
 
 // Applies the configured backbuffer-count override to a swap-chain description
 // created through D3D11CreateDeviceAndSwapChain. Defined in wrapper_hooks.cpp.
-bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc);
+bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc,
+                                                       bool* ceAddedWaitableOut = nullptr);
 
 namespace ce::wrapper_hooks {
 

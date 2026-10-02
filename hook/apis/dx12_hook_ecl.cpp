@@ -549,6 +549,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                                                             : 0;
                 const bool dumpAlreadyRequested =
                     dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.load(std::memory_order_acquire);
+                const bool presentInFlight =
+                    DXGIShared::g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) > 0;
+                const ULONGLONG lastPresentReturnTickMs =
+                    DXGIShared::g_SharedState.lastPresentReturnTickMs.load(std::memory_order_acquire);
+                const ULONGLONG msSincePresentReturned =
+                    lastPresentReturnTickMs != 0 && nowMs >= lastPresentReturnTickMs ? (nowMs - lastPresentReturnTickMs)
+                                                                                     : processFrameDormantMs;
                 if (ce::dx12_overlay_policy::ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
                         dx12_hook_g_HadFSRFGPhase,
                         DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(
@@ -558,15 +565,16 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                             std::memory_order_acquire),
                         dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
                         dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire), processFrameDormantMs,
-                        dumpAlreadyRequested)) {
+                        presentInFlight, msSincePresentReturned, dumpAlreadyRequested)) {
                     bool expectedDumpRequested = false;
                     if (dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.compare_exchange_strong(
                             expectedDumpRequested, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
                         HookLogImportant(
                             "DX12: Pure-DLSS startup stall detected — wrapper ECL progress continues without top-level "
-                            "Present recovery (progress=%d dormant=%llums postSLActive=%d confirmed=%d "
-                            "startupPending=%d)",
+                            "Present recovery (progress=%d dormant=%llums sincePresentReturned=%llums "
+                            "postSLActive=%d confirmed=%d startupPending=%d)",
                             progressCount, (unsigned long long)processFrameDormantMs,
+                            (unsigned long long)msSincePresentReturned,
                             dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0,
                             dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
                             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(

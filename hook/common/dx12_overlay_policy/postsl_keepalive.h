@@ -341,10 +341,23 @@ inline bool ShouldDeferPostSLRenderingDuringStartupTransitionWindow(bool startup
            !activeRuntimeWarmupProof;
 }
 
+// The stall this dump is for: the game keeps submitting through Streamline's
+// wrapper queue while no top-level Present reaches CE. A Present that is inside
+// CE right now, or returned recently, is the opposite of that shape, however
+// long ago ProcessFrame last ran: ProcessFrame runs before the forward, so a
+// slow Present ages it without the game having stopped presenting. A Present
+// that never returns is the freeze watchdog's, which names its thread.
+//
+// GTA V Enhanced, session 20261002_060100: the first DLSS-G Present after a save
+// load spent 1000 ms inside CE's own flip-queue pacing wait. ProcessFrame had
+// last run before that wait, so 26 ms after the Present returned this read
+// "dormant=1031ms" and dumped. Writing the 205 MB dump froze the game another
+// 3.9 s, longer than the stall it was meant to explain.
 inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
     bool hadFSRFGPhase, bool startupTopLevelPresentConsumed, int wrapperProgressCount, bool startupActivationPending,
-    bool postSLActive, bool postSLConfirmedRendering, ULONGLONG processFrameDormantMs, bool dumpAlreadyRequested) {
-    if (dumpAlreadyRequested || hadFSRFGPhase || !startupTopLevelPresentConsumed) {
+    bool postSLActive, bool postSLConfirmedRendering, ULONGLONG processFrameDormantMs, bool presentInFlight,
+    ULONGLONG msSincePresentReturned, bool dumpAlreadyRequested) {
+    if (dumpAlreadyRequested || hadFSRFGPhase || !startupTopLevelPresentConsumed || presentInFlight) {
         return false;
     }
 
@@ -357,7 +370,9 @@ inline bool ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(
         return false;
     }
 
-    return processFrameDormantMs >= 1000;
+    const ULONGLONG presentSilenceMs =
+        processFrameDormantMs < msSincePresentReturned ? processFrameDormantMs : msSincePresentReturned;
+    return presentSilenceMs >= 1000;
 }
 
 inline bool ShouldRetainStreamlineStartupActivationSwapchain(bool isD3D12SwapChain,

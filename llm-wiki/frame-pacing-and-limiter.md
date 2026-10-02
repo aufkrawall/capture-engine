@@ -76,6 +76,20 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   below anything a player would call a freeze. A wait that misses the ceiling latches pacing off process-wide rather
   than paying the ceiling on every later present. Both halves matter: commit ccbdeac5 fixed the freeze with a 16 ms
   ceiling that broke the pacing, and dd30a5b6 restored the pacing by restoring the freeze.
+- **CE paces only on a waitable object CE added (2026-10-02).** Every create that adds
+  `FRAME_LATENCY_WAITABLE_OBJECT` tags the created swapchain with DXGI private data
+  (`ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable`, `swapchain_flag_apply.h`); both pacing transports
+  wait only when `DidCeAddFrameLatencyWaitable` says so (`ShouldWaitForFlipQueueRoom(..., ceAddedWaitableObject)`).
+  A waitable the game or an FG runtime requested itself is waited on by its creator once per frame. DXGI refills it
+  once per retired present, so CE's extra wait takes the count the creator's next frame needs. At
+  `SetMaximumFrameLatency(1)` the wait before a present can only be satisfied by that same present, so it runs
+  into the 1000 ms ceiling. Evidence (GTA V Enhanced `20261002_060100`, logs not kept):
+  - the first DLSS-G enable after a save load created `sl.dlss_g`'s swapchain with flags `0x842`, BufferCount 6;
+    CE logged `Preserving swapchain descriptor for authoritative FG runtime create`, so the flag was not CE's;
+  - `SetMaximumFrameLatency(1) OK (cpu_prerender_limit)`, then on that chain's first present `flip-queue pacing
+    wait did not complete within 1000 ms` and `DetourPresent TOTAL SLOW 1001.5ms`;
+  - later DLSS-G and FSR chains did not stall only because the miss had latched pacing off for the process.
+  `SetMaximumFrameLatency` still applies to a creator-owned waitable: the creator's own wait then enforces the depth.
 - **The cadence wait is front-loaded: the deadline decides when a frame is PRESENTED, not when the game may BUILD it.**
   Spending the whole wait after the game already finished rendering ages the finished frame by the wait. Strange
   Brigade DX12 (session `20260913_124032`, 90 fps cap) built a frame in a median 1.8 ms (stddev 0.15 ms) and then sat

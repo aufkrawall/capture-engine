@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-02 - GTA: freeze and dump at the first DLSS-G enable after a save load (fixed 0.1.6930, run pending)
+
+- Session `20261002_060100` (0.1.6929). New `sl.dlss_g` swapchain at 06:02:45.807, explicit `SetOptions(ON)` at
+  45.905, first present at 46.016 blocked 1000 ms in CE's `backbuffer_count` pacing wait on the runtime's own
+  waitable (see frame-pacing-and-limiter.md). Fix: pace only on a waitable CE added (private-data tag).
+- At 47.044 `Pure-DLSS startup stall detected ... dormant=1031ms` requested an immediate dump 26 ms after that
+  present returned: dormancy was measured from the last ProcessFrame, which runs before the forward. Writing the
+  205 MB dump froze the game 3.9 s (`ExecuteCommandLists SLOW 3925.2ms` on the requesting submit thread). Fix:
+  `ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall` measures silence from the last Present return
+  (`SharedState::lastPresentReturnTickMs`) and never fires while a Present is inside CE.
+- Overlay: only present 3559, the new chain's first present, was undrawn (`lastGate=overlay-backend-uninitialized`,
+  90-frame `Swapchain change during active FG` cooldown); the freeze kept it on screen ~4 s. PostSL drew every
+  later present, but only after the startup window expired during the dump, so whether the pre-PostSL interval
+  has a gap without the freeze is OPEN. Check the `[OVERLAY HANDOFF]` lines of the next run of this sequence.
+- Eight later swapchain handoffs in the same run (DLSS<->FSR, FG off) all had `firstPresent=drawn`.
+
 ### 2026-10-02 - W3 menu run on 0.1.6929: suspend works; one dark flash unattributed
 
 - Session `20261002_055313`: all six menu OFFs reached DLSS-G (`Accepting explicit slDLSSGSetOptions(OFF) as

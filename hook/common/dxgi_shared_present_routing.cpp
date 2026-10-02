@@ -374,7 +374,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
 
     g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard =
-        ce::make_scope_guard([]() { g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel); });
+        ce::make_scope_guard([]() {
+            g_SharedState.lastPresentReturnTickMs.store(GetTickCount64(), std::memory_order_release);
+            g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
+        });
 
     if (IsShuttingDown()) {
         if (IsReadableMemory(pSwapChain, sizeof(void*))) {
