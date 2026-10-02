@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-02 - W3 menu run on 0.1.6929: suspend works; one dark flash unattributed
+
+- Session `20261002_055313`: all six menu OFFs reached DLSS-G (`Accepting explicit slDLSSGSetOptions(OFF) as
+  authoritative after confirmed PostSL rendering`, one with `startupWindow=1`). No held OFF, so the replay path was
+  not exercised. All 24 `[OVERLAY HANDOFF]` presents were covered; no re-presents (`re-marked presents=0`).
+- Evidence for the user's "minor dark flash in the menu" (logs will not stay):
+  - Inside the menu, W3 itself switched DLSS-G on twice for ~0.7 s (05:54:02.203-02.950, 03.535-04.333). It marked
+    frames as game frames, with title constants mode=1.
+  - Each title OFF arrives as mode=0, which the bridge forwards without `eRetainResourcesWhenOff`. So every re-enable
+    recreates DLSS-G (~934 MB of NGX allocations in sl.log) and shows a 270-290 ms present gap; sl.log logs
+    `Frame rate over 100.00ms, reseting frame timer`.
+  - Twice the game created 46 DXGI factories in a row (05:54:07, 05:54:40-41; display-mode enumeration on its own
+    thread), each with a ~160 ms present gap.
+  - CE's own cost was at most ~9 ms on the OFF present (overlay reinit). Not attributed to CE; an unbridged
+    (`streamline_upgrade=false`) comparison would settle it.
+
 ### 2026-10-02 - Held startup-window OFF: replayed on the title thread, never dropped (0.1.6929)
 
 - Closes the remaining edge of the entry below: a held SetOptions(OFF) was dropped as stale at window expiry once
