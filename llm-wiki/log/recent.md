@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-02 - W3: DLSS-G stayed on in menus; the stale-OFF proof never arrived (fixed)
+
+- Session `20261002_051703`, second process: FG-on at 05:20:39.764 then OFF at 05:20:40.178 (startup window) was
+  suppressed as startup churn; the title calls SetOptions only on edges, so active proof stayed 1/3 and every later
+  menu OFF (05:21:08, 05:21:41, ...) was suppressed. Not a bridge translation bug: the bridge forwarded every edge.
+- Fix: title frames (PCL present-start markers while FG runs and PostSL is confirmed) are a second proof clock; see
+  guardrails.md (2026-10-02). Remaining edge: a genuine OFF inside the 3 s startup window is still dropped at expiry.
+
 ### 2026-10-02 - Overlay gap at DLSS-G activation: the FG-ON present skipped its draw (fixed 0.1.6926)
 
 - Session `20261002_045950` (0.1.6925): present 827, the FG-ON edge, logged `drawObserved=0 inheritIfNoDraw=1` on

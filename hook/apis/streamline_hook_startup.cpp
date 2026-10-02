@@ -49,7 +49,9 @@ void ResetStartupProtectedOffChurnActiveProof(const char* reason) {
 
 
     const bool wasPending = streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel);
-    const uint32_t previousProof = streamline_hook_g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel);
+    const uint32_t previousProof = ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProof(
+        streamline_hook_g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel),
+        streamline_hook_g_StartupProtectedOffChurnActiveFrameCount.exchange(0, std::memory_order_acq_rel));
     if (wasPending || previousProof > 0) {
         static std::atomic<int> s_resetLogCount{0};
         const int logCount = s_resetLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -97,7 +99,9 @@ void MarkStartupProtectedOffChurnObserved(const char* source,  bool postSLConfir
 
 
     const bool wasPending = streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.exchange(true, std::memory_order_acq_rel);
-    const uint32_t previousProof = streamline_hook_g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel);
+    const uint32_t previousProof = ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProof(
+        streamline_hook_g_StartupProtectedOffChurnActiveProofCount.exchange(0, std::memory_order_acq_rel),
+        streamline_hook_g_StartupProtectedOffChurnActiveFrameCount.exchange(0, std::memory_order_acq_rel));
     if (!wasPending || previousProof > 0) {
         static std::atomic<int> s_churnLogCount{0};
         const int logCount = s_churnLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -122,12 +126,13 @@ void MarkStartupProtectedActiveRuntimeProof(const char* source,  int multiplier)
         return;
     }
 
-    const uint32_t previousProof = streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire);
-    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(previousProof)) {
+    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(GetStartupProtectedOffChurnActiveProof())) {
         return;
     }
 
-    const uint32_t newProof = streamline_hook_g_StartupProtectedOffChurnActiveProofCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint32_t newUpdates = streamline_hook_g_StartupProtectedOffChurnActiveProofCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint32_t newProof = ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProof(
+        newUpdates, streamline_hook_g_StartupProtectedOffChurnActiveFrameCount.load(std::memory_order_acquire));
     if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(newProof)) {
         const bool wasPending = streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel);
         if (wasPending) {
@@ -158,7 +163,47 @@ bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComeback
 
     return ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
         streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.load(std::memory_order_acquire),
-        streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire), startupProtectedComebackProof,
+        GetStartupProtectedOffChurnActiveProof(), startupProtectedComebackProof,
         postSLConfirmedRendering, postSLConfirmedButStartupSettling);
 
+}
+
+
+uint32_t GetStartupProtectedOffChurnActiveProof() {
+    return ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProof(
+        streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire),
+        streamline_hook_g_StartupProtectedOffChurnActiveFrameCount.load(std::memory_order_acquire));
+}
+
+
+// Called for every forwarded PCL present-start marker, so the common case is one relaxed load.
+void NoteStartupProtectedActiveTitleFrame(uint64_t frameId) {
+    if (!streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.load(std::memory_order_acquire)) {
+        return;
+    }
+    static std::atomic<uint64_t> s_lastCountedFrame{UINT64_MAX};
+    const bool newTitleFrame = s_lastCountedFrame.exchange(frameId, std::memory_order_acq_rel) != frameId;
+    if (!ce::streamline_runtime_policy::ShouldCountTitleFrameAsStartupProtectedActiveProof(
+            true, newTitleFrame, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+            HookIsPostSLOverlayConfirmedRendering())) {
+        return;
+    }
+    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(GetStartupProtectedOffChurnActiveProof())) {
+        return;
+    }
+
+    const uint32_t newFrames =
+        streamline_hook_g_StartupProtectedOffChurnActiveFrameCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint32_t newProof = ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProof(
+        streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire), newFrames);
+    if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(newProof) &&
+        streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "Streamline Hook: Startup-protected OFF churn quiet proof reached "
+            "(source=title frames activeFrames=%u activeUpdates=%u required=%u frame=%llu) — future OFF edges may "
+            "be accepted",
+            newFrames, streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire),
+            ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold(),
+            static_cast<unsigned long long>(frameId));
+    }
 }

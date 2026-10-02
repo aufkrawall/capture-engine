@@ -630,6 +630,28 @@ inline bool HasStartupProtectedOffChurnActiveProof(uint32_t consecutiveActiveRun
     return consecutiveActiveRuntimeUpdatesAfterOffChurn >= GetStartupProtectedOffChurnActiveProofUpdateThreshold();
 }
 
+// Active proof after startup-protected OFF churn runs on two clocks: Streamline runtime updates that
+// report FG active (GetState / SetOptions(ON)), and title frames presented while Streamline FG runs
+// and PostSL renders (one PCL present-start marker per frame, which DLSS-G requires every frame).
+// A title that polls GetState every frame advances both at the same pace, so its protection is
+// unchanged. A title that calls SetOptions only on ON/OFF edges produced one active update per
+// comeback and never reached the threshold: one suppressed OFF then kept every later genuine OFF
+// suppressed for the rest of the session (Witcher 3 through the 2.x bridge, session
+// 20261002_051703: DLSS-G stayed on in the game menu from the third FG-on onwards).
+inline uint32_t GetStartupProtectedOffChurnActiveProof(uint32_t activeRuntimeUpdatesAfterOffChurn,
+                                                       uint32_t activeTitleFramesAfterOffChurn) {
+    return activeRuntimeUpdatesAfterOffChurn > activeTitleFramesAfterOffChurn ? activeRuntimeUpdatesAfterOffChurn
+                                                                              : activeTitleFramesAfterOffChurn;
+}
+
+// A title frame counts once (a re-marked present reuses its frame token) and only while it is
+// actually generated through: Streamline FG running and PostSL confirmed on the current epoch.
+inline bool ShouldCountTitleFrameAsStartupProtectedActiveProof(bool offChurnProofPending, bool newTitleFrame,
+                                                               bool streamlineFGRunning,
+                                                               bool postSLConfirmedRendering) {
+    return offChurnProofPending && newTitleFrame && streamlineFGRunning && postSLConfirmedRendering;
+}
+
 inline bool ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
     bool startupProtectedOffChurnObserved, uint32_t consecutiveActiveRuntimeUpdatesAfterOffChurn,
     bool startupProtectedComebackProof, bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {

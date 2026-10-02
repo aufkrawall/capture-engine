@@ -129,7 +129,13 @@ void FlushSuppressedSetOptionsOffIfNeeded();
 
 inline std::atomic<bool> streamline_hook_g_StartupProtectedOffChurnNeedsActiveProof{false};
 
-inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActiveProofCount{0};bool IsObserverOnlyModeActive();void LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
+inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActiveProofCount{0};
+// Title frames (PCL present-start markers) seen while FG ran since the last OFF churn; see
+// GetStartupProtectedOffChurnActiveProof in streamline_runtime_policy.h.
+inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActiveFrameCount{0};
+uint32_t GetStartupProtectedOffChurnActiveProof();
+void NoteStartupProtectedActiveTitleFrame(uint64_t frameId);
+bool IsObserverOnlyModeActive();void LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
     uint32_t viewportKey, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
     bool safePostFSRBootstrapPath, bool startupActivationPending, bool postSLActiveButUnconfirmed,
     bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,

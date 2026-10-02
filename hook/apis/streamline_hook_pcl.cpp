@@ -48,9 +48,13 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
     const uint64_t frameId = captureMarker ? static_cast<uint32_t>(frame) : 0;
 
     const sl::Result result = original(marker, frame);
-    if (result == sl::Result::eOk && captureMarker)
+    if (result == sl::Result::eOk && captureMarker) {
         g_pclMarkerHistory.Record(markerValue, frameId, markerTimeUs);
-    else if (result != sl::Result::eOk && captureMarker) {
+        // The title's per-frame clock for the startup-protected OFF churn proof: titles that never
+        // poll GetState report "still active" through nothing else.
+        if (markerValue == ce::system_latency::PclMarkerHistory::kPresentStartMarker)
+            NoteStartupProtectedActiveTitleFrame(frameId);
+    } else if (result != sl::Result::eOk && captureMarker) {
         static std::atomic<uint32_t> s_forwardFailureCount{0};
         const uint32_t failureCount = s_forwardFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (ce::log_meter::ShouldLogCadence(failureCount, 5, 300)) {

@@ -426,7 +426,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active,  int multiplier,  bool exp
                     "(hadFSR=%d explicit=%d safeBootstrap=%d activeProof=%u/%u)",
                     hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
                     safePostFSRBootstrapPath ? 1 : 0,
-                    streamline_hook_g_StartupProtectedOffChurnActiveProofCount.load(std::memory_order_acquire),
+                    GetStartupProtectedOffChurnActiveProof(),
                     ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold());
             }
         } else if (!active && !postSLConfirmedButStartupSettling && postSLConfirmedButRuntimeStateStabilizingBase &&
