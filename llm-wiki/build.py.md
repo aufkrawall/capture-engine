@@ -119,15 +119,15 @@ keyring listing, never from matching the key file.
 For ordinary source changes across all code areas (including capture, CFR, FG, and audio), the standard final product gate is a validated incremental compile with unit tests, omitting release archive packaging:
 
 ```powershell
-python build.py --incremental --skip-package --run-tests --skip-updates --concise
+python build.py --incremental --run-tests --skip-updates --concise
 ```
 
-This compiles only changed translation units, reuses content-validated objects, verifies PE/binaries, and runs unit tests in ~25–45 s. `--skip-package` is standard during development; it skips the setup executable and (when requested) the ~67 s portable 7z archives (`captureengine.7z`, `testapps.7z`, `ffmpeg-corresponding-source.7z`), which are produced only with `--portable-archives`. Pass `--gtest-filter=<suite-or-test>` to focus on touched units during iteration.
+This compiles only changed translation units, reuses content-validated objects, verifies PE/binaries, runs unit tests, and leaves a fresh `build/packages/captureengine-setup-<version>.exe` (~20 s of the ~45–70 s total). Since 2026-10-02 the closing gate deliberately keeps packaging on so every change ends with an installable build; `--skip-package` is for intermediate product builds only and skips the setup executable and (when requested) the ~67 s portable 7z archives (`captureengine.7z`, `testapps.7z`, `ffmpeg-corresponding-source.7z`), which are produced only with `--portable-archives`. Pass `--gtest-filter=<suite-or-test>` to focus on touched units during iteration.
 
 Use the clean compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
 
 ```powershell
-python build.py --skip-package --skip-updates --concise
+python build.py --skip-updates --concise
 ```
 
 If a product build fails after starting, correct the failure and resume the immediately preceding failed top-level identity without recompiling proven-unchanged units:
@@ -228,7 +228,7 @@ Default quality mode currently:
 | `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Reuses content-validated objects by default (same signature discipline as `--incremental`); use `--verify-clean` for the strict clean product rebuild. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate. |
 | `--verify-clean` | user-facing | Force the strict clean product rebuild inside `--verify` | Every object is recompiled and every link redone; still runs the full test/lint/sanitizer gate. Required for `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, and analyzer/test-gate policy changes. Exits 2 when used without `--verify`. |
 | `--portable-archives` | user-facing | Also create the portable 7z archives (`captureengine`, `testapps`, `ffmpeg-corresponding-source`) | Default packaging builds only `captureengine-setup.exe`. Passed by `release-stable.yml`. Ignored with `--skip-package`. |
-| `--skip-package` | user-facing | Skip all automatic packaging (setup executable and portable archives) | Keeps every other build/finalize stage (licenses, PE hardening, tests); the `package_archives` step is recorded as skipped. Standard for dev iteration and ordinary commit gates to avoid spending ~67 s compressing release archives; production release flows omit it. |
+| `--skip-package` | user-facing | Skip all automatic packaging (setup executable and portable archives) | Keeps every other build/finalize stage (licenses, PE hardening, tests); the `package_archives` step is recorded as skipped. For intermediate product builds only; the closing per-change gate omits it so a fresh installer is always produced (2026-10-02), and production release flows omit it. |
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build so compile failures and `compile_commands.json` stay current. The non-LTO validation link is content-cached; this flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
