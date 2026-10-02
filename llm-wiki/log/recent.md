@@ -15,6 +15,9 @@
     thread), each with a ~160 ms present gap.
   - CE's own cost was at most ~9 ms on the OFF present (overlay reinit). Not attributed to CE; an unbridged
     (`streamline_upgrade=false`) comparison would settle it.
+  - User: the flash came right after opening the menu. That is the game's own DLSS-G toggle, and similar toggle
+    artifacts occur in other games without CE. Classified as not CE (DLSS-G toggle). Reopen only if an unbridged
+    run is clean.
 
 ### 2026-10-02 - Held startup-window OFF: replayed on the title thread, never dropped (0.1.6929)
 
