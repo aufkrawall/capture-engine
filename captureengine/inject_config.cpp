@@ -2,6 +2,8 @@
 
 #include "../common/config.h"
 #include "../common/logging.h"
+#include "../common/path_utils.h"
+#include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "../common/sharpen_policy.h"
 
@@ -25,6 +27,18 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
     sharedMemory->benchmark.durationSeconds.store(config.benchmark.durationSeconds, std::memory_order_release);
 
     std::string resolvedOutputDir = config.benchmark.outputDir;
+    if (resolvedOutputDir.find('%') != std::string::npos) {
+        // The hook reads this as ANSI text inside the game, so %DOCUMENTS%-style
+        // references are resolved here. A folder whose real name the code page
+        // cannot express is created now so its ASCII short name can stand in.
+        const std::filesystem::path expanded(ce::capture_output::ExpandConfiguredPathReferences(
+            std::filesystem::path(resolvedOutputDir).wstring()));
+        if (expanded.is_absolute()) {
+            std::error_code ignored;
+            std::filesystem::create_directories(expanded, ignored);
+        }
+        resolvedOutputDir = ce::path::AnsiCompatiblePath(expanded.wstring());
+    }
     char exePath[MAX_PATH] = {};
     if (GetModuleFileNameA(NULL, exePath, MAX_PATH) > 0) {
         std::string baseDir = exePath;

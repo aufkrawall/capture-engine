@@ -71,9 +71,9 @@ wgc_same_device_capture=true
 
 [Output]
 ; Empty paths use the captures folder next to CaptureEngine.exe. Relative paths
-; start from the CaptureEngine installation folder. %VIDEOS% is your Windows
-; Videos folder (wherever it was moved to); environment variables such as
-; %USERPROFILE% are expanded too.
+; start from the CaptureEngine installation folder. %VIDEOS% and %DOCUMENTS% are
+; your Windows Videos and Documents folders (wherever they were moved to);
+; environment variables such as %USERPROFILE% are expanded too.
 ; output_dir and screenshot_dir are independent. Set both to use the same custom
 ; folder for recordings and screenshots.
 output_dir=%VIDEOS%\Capture Engine
@@ -400,7 +400,8 @@ start_delay_seconds=0
 ; 0 records until the benchmark hotkey is pressed again.
 duration_seconds=0
 ; Output directory for HTML benchmark reports (empty = "benchmarks" subfolder beside executable).
-output_dir=
+; %DOCUMENTS% is your Windows Documents folder (wherever it was moved to).
+output_dir=%DOCUMENTS%\Capture Engine Benchmarks
 
 [Overlay]
 ; This is the overlay drawn inside injected applications.

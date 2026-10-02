@@ -76,31 +76,37 @@ std::optional<std::wstring> BuildFilename(const std::wstring& prefix, const std:
     return buffer.data();
 }
 
-// %VIDEOS% is the user's Videos library folder. Unlike %USERPROFILE%\Videos it
-// follows a relocated folder (OneDrive, another drive). A real environment
-// variable of that name is not shadowed.
-std::wstring ExpandVideosToken(std::wstring value) {
-    constexpr size_t kTokenLength = 8;  // length of L"%VIDEOS%"
+// %VIDEOS% / %DOCUMENTS% are the user's library folders. Unlike
+// %USERPROFILE%\Videos they follow a relocated folder (OneDrive, another drive).
+// A real environment variable of the same name is not shadowed.
+struct KnownFolderToken {
+    const wchar_t* token;  // including the percent signs
+    const wchar_t* environmentName;
+    const KNOWNFOLDERID& folderId;
+};
+
+std::wstring ExpandKnownFolderToken(std::wstring value, const KnownFolderToken& spec) {
+    const size_t tokenLength = std::wcslen(spec.token);
     const auto isToken = [&](size_t at) {
-        return at + kTokenLength <= value.size() && _wcsnicmp(value.c_str() + at, L"%VIDEOS%", kTokenLength) == 0;
+        return at + tokenLength <= value.size() && _wcsnicmp(value.c_str() + at, spec.token, tokenLength) == 0;
     };
 
     size_t first = value.find(L'%');
     while (first != std::wstring::npos && !isToken(first))
         first = value.find(L'%', first + 1);
-    if (first == std::wstring::npos || GetEnvironmentVariableW(L"VIDEOS", nullptr, 0) != 0)
+    if (first == std::wstring::npos || GetEnvironmentVariableW(spec.environmentName, nullptr, 0) != 0)
         return value;
 
-    PWSTR videos = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(FOLDERID_Videos, KF_FLAG_DEFAULT, nullptr, &videos);
-    const std::wstring folder = (SUCCEEDED(result) && videos) ? std::wstring(videos) : std::wstring();
-    CoTaskMemFree(videos);
+    PWSTR known = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(spec.folderId, KF_FLAG_DEFAULT, nullptr, &known);
+    const std::wstring folder = (SUCCEEDED(result) && known) ? std::wstring(known) : std::wstring();
+    CoTaskMemFree(known);
     if (folder.empty())
         return value;
 
     for (size_t at = first; at != std::wstring::npos; at = value.find(L'%', at)) {
         if (isToken(at)) {
-            value.replace(at, kTokenLength, folder);
+            value.replace(at, tokenLength, folder);
             at += folder.size();
         } else {
             ++at;
@@ -110,6 +116,14 @@ std::wstring ExpandVideosToken(std::wstring value) {
 }
 
 }  // namespace
+
+std::wstring ExpandConfiguredPathReferences(const std::wstring& value) {
+    if (value.find(L'%') == std::wstring::npos)
+        return value;
+    std::wstring expanded = ExpandKnownFolderToken(value, {L"%VIDEOS%", L"VIDEOS", FOLDERID_Videos});
+    expanded = ExpandKnownFolderToken(std::move(expanded), {L"%DOCUMENTS%", L"DOCUMENTS", FOLDERID_Documents});
+    return ce::path::ExpandEnvironmentReferences(expanded);
+}
 
 OutputNameSeed MakeOutputNameSeed() {
     return CurrentSeed();
@@ -133,7 +147,7 @@ std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirec
         // %VIDEOS% and %VAR% references (e.g. %VIDEOS%\Capture Engine) are expanded
         // before the relative-path rule so they can name an absolute folder.
         const std::wstring original = directory.wstring();
-        const std::wstring expanded = ce::path::ExpandEnvironmentReferences(ExpandVideosToken(original));
+        const std::wstring expanded = ExpandConfiguredPathReferences(original);
         if (expanded != original) {
             directory = std::filesystem::path(expanded);
         } else if (original.find(L'%') != std::wstring::npos) {

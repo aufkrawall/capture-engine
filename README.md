@@ -73,9 +73,11 @@ The generated file is the full user reference and ends with safe/unsafe applicat
 
 Default hotkeys: Ctrl+9 starts/stops a recording (F9 is the fallback if the hotkey is disabled), Ctrl+8 toggles the
 injected overlay, Ctrl+0 takes a screenshot, Ctrl+Minus records audio only, and Ctrl+7 starts, stops, or clears an
-in-game benchmark. The default `config.ini` sends recordings to `%VIDEOS%\Capture Engine` and screenshots to its `Screenshots` subfolder
-(`%VIDEOS%` is the Windows Videos folder; `%USERPROFILE%` and other environment variables work too). Leaving
-`[Output] output_dir` / `screenshot_dir` empty uses `captures/` and `screenshots/` next to the executable; benchmark HTML reports go to `benchmarks/` unless `[Benchmark] output_dir` redirects them;
+in-game benchmark. The default `config.ini` sends recordings to `%VIDEOS%\Capture Engine`, screenshots to its
+`Screenshots` subfolder and benchmark HTML reports to `%DOCUMENTS%\Capture Engine Benchmarks` (`%VIDEOS%` and
+`%DOCUMENTS%` are the Windows library folders; `%USERPROFILE%` and other environment variables work too). Leaving
+`[Output] output_dir` / `screenshot_dir` empty uses `captures/` and `screenshots/` next to the executable, and leaving
+`[Benchmark] output_dir` empty uses `benchmarks/`;
 logs go to `logs/`. Run `CaptureEngine.exe --list-monitors` to print copyable stable monitor IDs for
 `monitor=id:<stable-id>`.
 

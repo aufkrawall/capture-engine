@@ -19,6 +19,11 @@ struct OutputNameSeed {
 // capture share a seed so their published names differ only by extension.
 OutputNameSeed MakeOutputNameSeed();
 
+// Expands %VIDEOS%, %DOCUMENTS% (Windows library folders, wherever they were
+// moved) and %VAR% environment references in a configured directory. Undefined
+// references are left in place.
+std::wstring ExpandConfiguredPathReferences(const std::wstring& value);
+
 std::filesystem::path GetExecutableDirectory();
 std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirectory,
                                               const std::filesystem::path& executableDirectory);

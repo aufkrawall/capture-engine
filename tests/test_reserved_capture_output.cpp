@@ -70,6 +70,23 @@ TEST_F(ReservedCaptureOutputTest, RealVideosEnvironmentVariableIsNotShadowedByTh
     EXPECT_EQ(resolved, directory / L"Capture Engine");
 }
 
+TEST_F(ReservedCaptureOutputTest, DocumentsTokenExpandsToTheDocumentsKnownFolder) {
+    PWSTR documents = nullptr;
+    ASSERT_EQ(S_OK, SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &documents));
+    const std::wstring documentsFolder(documents);
+    CoTaskMemFree(documents);
+
+    EXPECT_EQ(ce::capture_output::ExpandConfiguredPathReferences(L"%Documents%\\Capture Engine Benchmarks"),
+              documentsFolder + L"\\Capture Engine Benchmarks");
+    EXPECT_EQ(ce::capture_output::ExpandConfiguredPathReferences(L"D:\\Plain\\Path"), L"D:\\Plain\\Path");
+}
+
+TEST_F(ReservedCaptureOutputTest, UnknownReferencesStayUnexpanded) {
+    SetEnvironmentVariableW(L"CE_CAPTURE_DIR_TEST_UNDEFINED", nullptr);
+    EXPECT_EQ(ce::capture_output::ExpandConfiguredPathReferences(L"%CE_CAPTURE_DIR_TEST_UNDEFINED%\\x"),
+              L"%CE_CAPTURE_DIR_TEST_UNDEFINED%\\x");
+}
+
 class ReservedCaptureOutputCollisionTest : public ReservedCaptureOutputTest,
                                            public ::testing::WithParamInterface<const wchar_t*> {};
 
