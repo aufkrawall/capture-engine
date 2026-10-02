@@ -58,6 +58,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("installer_ui", unittest_command("test_installer_ui")),
         ("changelog_policy", unittest_command("test_changelog")),
         ("lhm_plugin_acquisition", unittest_command("test_lhm_plugin")),
+        ("log_digest", self_test_command("log_digest.py")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
         ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),

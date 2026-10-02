@@ -40,7 +40,7 @@ become a library other clients use for recording, overlay and 3D overrides.
 | --- | --- | --- | --- |
 | 1 | Subsystem directory layout (repo-map.md), root-relative includes, layout helpers in `build_common.py` | mechanical | done 2026-10-02 |
 | 2 | Runtime log volume: the top families below, an ON-CHANGE gate in `log_meter.h`, shorter prefixes | behavioral (logging only) | 2a done 2026-10-02 (0.1.6946): ~25 families + hook/Vulkan prefix; remaining: service `Log()` date prefix, DisplayTiming line, PRESENT STAGE COST legend, `sl.log` verbosity |
-| 3 | `tools/log_digest.py`: a per-session digest (files, warnings/errors, transitions, top templates, gaps) so an investigation starts from ~5 KB instead of ~2 MB | new tool | planned |
+| 3 | `tools/log_digest.py`: a per-session digest (files, warnings/errors, transitions, top templates, gaps) so an investigation starts from ~20 KB instead of 2-16 MB | new tool | done 2026-10-02 |
 | 4 | Agent docs: compress `index.md` routing paragraphs and AGENTS.md without dropping any rule | docs | planned |
 | 5 | Dead code: linker `--gc-sections` report + unreferenced units (e.g. excluded `hook/wrappers/d3d12_*_wrap.cpp`) | behavioral (removal) | planned |
 | 6 | State grouping: loose `dx12_hook_g_*` / `streamline_hook_g_*` globals into named state structs per concern | mechanical | planned |

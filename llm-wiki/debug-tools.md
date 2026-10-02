@@ -7,6 +7,16 @@ Copyright (c) 2026 aufkrawall
 
 This file is a project-local tool inventory and diagnostic guide. Treat documented paths as hints until verified on the current machine.
 
+## Session log digest (`tools/log_digest.py`)
+
+First step for any session-log question: `python tools/log_digest.py installed/captureengine/logs/<stamp>`
+prints files (vendor logs `sl.log`/`nvngx_*.log` marked), processes (pid -> exe from each process's first
+line), problems grouped by message template with counts and first/last time, a state-transition timeline
+with repeats collapsed, per-file lost lines and the longest silences, and the templates that dominate each
+log. Typical size: 20-35 KB for a 2-16 MB session. Narrow with `--pid`, `--since HH:MM:SS`, `--until`.
+It reads both the current hook prefix and the pre-0.1.6946 one. Self-test: `--self-test` (runs in the
+Python tool self-tests).
+
 ## Tool/path resolution precedence
 
 On Windows, `tools/discover-debug-tools.ps1` is the shared non-mutating discovery helper. Its machine-local output is `debug-tool-manifest.json` (under `%LOCALAPPDATA%\LLMDebugTools` by default).
