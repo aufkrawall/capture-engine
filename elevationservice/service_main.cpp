@@ -1,9 +1,9 @@
 #include "service_internal.h"
-#include "../captureengine/sensor_bridge_host.h"
-#include "../common/logging.h"
+#include "captureengine/sensors/sensor_bridge_host.h"
+#include "common/logging/logging.h"
 #include <algorithm>
 #include <vector>
-#include "../common/elevation_lifetime.h"
+#include "common/ipc/elevation_lifetime.h"
 
 namespace ce::elevation {
 namespace {

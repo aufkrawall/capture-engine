@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/vulkan_layer/vulkan_present_metering_policy.h"
+#include "hook/vulkan_layer/vulkan_present_metering_policy.h"
 #include "source_fragment_reader.h"
 
 // Regression coverage for `vsync_mode=fifo` behaving like mailbox in Portal RTX
@@ -214,7 +214,7 @@ TEST(VulkanPresentTimingRetirement, GeneratedFrameSpacingStaysWithTheRuntime) {
     const std::string capabilities = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_capabilities.cpp");
     const std::string remix =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "remix_hook.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "remix_hook.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(capabilities.empty());
     ASSERT_FALSE(remix.empty());
@@ -263,7 +263,7 @@ TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
     const std::string swapchain = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_swapchain.cpp");
     const std::string streamline = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp");
+        fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp");
     const std::string bridge = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.cpp");
     const std::string bridgeHeader = ce::test_source::ReadFile(
@@ -275,7 +275,7 @@ TEST(VulkanPresentModeOverride, BothOverrideSitesConsultTheMeteringGate) {
 
     EXPECT_NE(swapchain.find("ShouldSkipPresentModeOverride"), std::string::npos);
     const std::string meteringBridge = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "common" / "vulkan_layer_metering_bridge.h");
+        fs::current_path() / "hook" / "present" / "vulkan_layer_metering_bridge.h");
     ASSERT_FALSE(meteringBridge.empty());
     EXPECT_NE(streamline.find("MeteredGeneratorOwnsPresentPlacement"), std::string::npos);
     EXPECT_NE(meteringBridge.find("CEVulkanLayerDeviceEnabledPresentMetering"), std::string::npos);

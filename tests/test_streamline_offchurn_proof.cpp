@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/streamline_runtime_policy.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -85,8 +85,8 @@ TEST(StreamlineOffChurnProofTest, PerFrameChurnStillNeverReachesProof) {
 
 TEST(StreamlineOffChurnProofSourceTest, PresentStartMarkerFeedsTheProofAndEveryResetClearsBothClocks) {
     namespace fs = std::filesystem;
-    const fs::path pcl = fs::current_path() / "hook" / "apis" / "streamline_hook_pcl.cpp";
-    const fs::path startup = fs::current_path() / "hook" / "apis" / "streamline_hook_startup.cpp";
+    const fs::path pcl = fs::current_path() / "hook" / "streamline" / "streamline_hook_pcl.cpp";
+    const fs::path startup = fs::current_path() / "hook" / "streamline" / "streamline_hook_startup.cpp";
     ASSERT_TRUE(fs::exists(pcl));
     ASSERT_TRUE(fs::exists(startup));
     const std::string pclText = ce::test_source::ReadLogicalSource(pcl);
@@ -153,16 +153,15 @@ TEST(StreamlineOffChurnProofTest, TitleOptionsReportedOnThroughGetStateSupersede
 // the title reporting ON again (SetOptions(ON) or GetState options); otherwise it is replayed.
 TEST(StreamlineOffChurnProofSourceTest, HeldOffIsNeverDiscardedAndReplaysThroughCEsHandlerUnlocked) {
     namespace fs = std::filesystem;
-    const fs::path apis = fs::current_path() / "hook" / "apis";
     for (const char* name : {"streamline_hook.cpp", "streamline_hook_dlssg.cpp", "streamline_hook_startup.cpp",
                              "streamline_hook_state.cpp"}) {
-        const std::string text = ce::test_source::ReadLogicalSource(apis / name);
+        const std::string text = ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", name));
         ASSERT_FALSE(text.empty()) << name;
         EXPECT_EQ(text.find("ShouldDropSuppressedOffChurn"), std::string::npos) << name;
         EXPECT_EQ(text.find("Dropping stale suppressed"), std::string::npos) << name;
     }
 
-    const std::string hook = ce::test_source::ReadLogicalSource(apis / "streamline_hook.cpp");
+    const std::string hook = ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", "streamline_hook.cpp"));
     const size_t service = hook.find("void ServiceHeldSetOptionsOffOnTitleFrame()");
     ASSERT_NE(service, std::string::npos);
     const size_t lock = hook.find("std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);", service);
@@ -184,7 +183,7 @@ TEST(StreamlineOffChurnProofSourceTest, HeldOffIsNeverDiscardedAndReplaysThrough
     ASSERT_NE(rawForward, std::string::npos);
     EXPECT_LT(handoff, rawForward) << "the Present path forwards only when no title frame clock exists";
 
-    const std::string dlssg = ce::test_source::ReadLogicalSource(apis / "streamline_hook_dlssg.cpp");
+    const std::string dlssg = ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", "streamline_hook_dlssg.cpp"));
     const size_t hold = dlssg.find("streamline_hook_g_SuppressedOffOptions = adjustedOptions;");
     ASSERT_NE(hold, std::string::npos);
     const size_t clearNext = dlssg.find("streamline_hook_g_SuppressedOffOptions.next = nullptr;", hold);
@@ -201,7 +200,7 @@ TEST(StreamlineOffChurnProofSourceTest, HeldOffIsNeverDiscardedAndReplaysThrough
     ASSERT_NE(getStateFlush, std::string::npos);
     EXPECT_LT(supersede, getStateFlush);
 
-    const std::string bridge = ce::test_source::ReadLogicalSource(apis / "streamline_bridge_reflex.cpp");
+    const std::string bridge = ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", "streamline_bridge_reflex.cpp"));
     const size_t synth = bridge.find("bool SynthesizePresentMarkers(");
     ASSERT_NE(synth, std::string::npos);
     const size_t scope = bridge.find("StreamlineHook::CeIssuedFrameMarkerScope", synth);

@@ -11,24 +11,24 @@
 #include <filesystem>
 #include <string>
 
-#include "../mediaengine/audio_fault_accounting.h"
+#include "mediaengine/audio/audio_fault_accounting.h"
 #include "source_fragment_reader.h"
 
 namespace {
 
 std::string ReadAudioEncoderSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "audio_encoder.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "audio" / "audio_encoder.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadPullSyncSource() {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "mediaengine" / "mediaengine_audio_pull_sync.cpp";
+        std::filesystem::current_path() / "mediaengine" / "engine" / "mediaengine_audio_pull_sync.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadMediaEngineUnit(const char* fileName) {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / fileName;
+    const std::filesystem::path source = ce::test_source::FindSource("mediaengine", fileName);
     return ce::test_source::ReadLogicalSource(source);
 }
 
@@ -311,10 +311,10 @@ TEST(RecordingAudioLossTest, IdleSourceSilenceIsNotLoss) {
 
 TEST(RecordingAudioLossTest, StopLatchesLossBeforeCountersResetAndBothOutputsUseIt) {
     const auto root = std::filesystem::current_path();
-    const std::string stop = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_recording_stop.cpp");
-    const std::string config = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_config.cpp");
-    const std::string thread = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_audio_thread.cpp");
-    const std::string start = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_recording_start.cpp");
+    const std::string stop = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_recording_stop.cpp");
+    const std::string config = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_config.cpp");
+    const std::string thread = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_audio_thread.cpp");
+    const std::string start = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_recording_start.cpp");
     ASSERT_FALSE(stop.empty());
     // Video path: latched before the per-source reset clears the counter.
     const size_t reset = stop.find("src.timelineStarvationDropSamples = 0;");

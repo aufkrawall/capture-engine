@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
-#include "../captureengine/display_timing_policy.h"
-#include "../hook/common/performance_metrics.h"
-#include "../hook/common/reflex_defs.h"
-#include "../hook/common/streamline_pcl_latency.h"
-#include "../hook/common/system_latency_metrics.h"
-#include "../hook/common/system_latency_windows.h"
+#include "captureengine/display_timing/display_timing_policy.h"
+#include "hook/metrics/performance_metrics.h"
+#include "hook/pacing/reflex_defs.h"
+#include "hook/metrics/streamline_pcl_latency.h"
+#include "hook/metrics/system_latency_metrics.h"
+#include "hook/metrics/system_latency_windows.h"
 
 namespace {
 

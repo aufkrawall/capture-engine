@@ -5,15 +5,15 @@
 #include "dxgi_factory_wrap.h"
 #include <d3d12.h>
 #include <objbase.h>
-#include "../apis/dx12_hook.h"
-#include "../common/dx12_overlay_policy.h"
-#include "../common/dxgi_shared.h"
-#include "../common/swapchain_flag_apply.h"
-#include "../common/fg_detection.h"
-#include "../common/overlay_compat.h"
+#include "hook/d3d12/dx12_hook.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/present/swapchain_flag_apply.h"
+#include "hook/fg/fg_detection.h"
+#include "hook/overlay/overlay_compat.h"
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_swapchain_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 #include "wrapper_hooks.h"
 
 static bool g_DisableSwapchainWrapper = false;

@@ -26,7 +26,7 @@
 // This mirrors the rule CE already applies on D3D: a flip-model BufferCount
 // reduction that would violate the game's own allocation is skipped and stays
 // physical-count preserving (`ApplyDX11BackbufferCountOverride`,
-// `hook/apis/dx11_hook_helpers.cpp`). Vulkan is strictly more sensitive because
+// `hook/d3d11/dx11_hook_helpers.cpp`). Vulkan is strictly more sensitive because
 // the acquire limit is part of the API contract, so the same rule is mandatory
 // here, not merely prudent.
 

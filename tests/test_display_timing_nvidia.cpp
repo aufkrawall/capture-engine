@@ -1,4 +1,4 @@
-#include "../captureengine/display_timing_nvidia.h"
+#include "captureengine/display_timing/display_timing_nvidia.h"
 #include <gtest/gtest.h>
 
 #include <cstring>

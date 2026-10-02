@@ -3,10 +3,10 @@
 // only a value past a bound is pulled back onto it.
 #include "test_config_shared.h"
 
-#include "../common/mip_bias_limits.h"
-#include "../hook/apis/lod_helper.h"
-#include "../hook/common/dx12_sampler_policy.h"
-#include "../hook/common/mip_bias_range.h"
+#include "common/graphics/mip_bias_limits.h"
+#include "hook/ddraw/lod_helper.h"
+#include "hook/d3d12/dx12_sampler_policy.h"
+#include "hook/overrides/mip_bias_range.h"
 
 #include <limits>
 

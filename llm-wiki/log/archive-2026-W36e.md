@@ -64,7 +64,7 @@ assumed: on this path it leads the flip event by about **two microseconds**, so 
 series by nothing at all (stddev 2187 -> 2171, i.e. noise). It is now consumed and discarded on the deferred path, so
 it cannot strand on a driver thread and be applied to a later immediate flip.
 
-The fix is `captureengine/display_timing_vblank.h`: record `VSyncDPC` per `VidPnSourceId` and round every deferred
+The fix is `captureengine/display_timing/display_timing_vblank.h`: record `VSyncDPC` per `VidPnSourceId` and round every deferred
 completion onto an observed blank. Nothing models a refresh period - under VRR the blank stream follows the frame
 rate (measured 116 blanks/s at 116 fps output, the clock's median period tracking 6.95 ms -> 8.60 ms), so variable
 refresh is followed rather than assumed.
@@ -159,7 +159,7 @@ shipping the library ships no kernel driver at all, which is what made bundling 
 also means the README's "run as administrator" was only half the story: this machine *has* PawnIO installed and still
 read every CPU rail as exactly zero without elevation, so both are required.
 
-`captureengine/pawnio_setup.cpp` detects the driver by its service key and, when CPU metrics are requested and it is
+`captureengine/sensors/pawnio_setup.cpp` detects the driver by its service key and, when CPU metrics are requested and it is
 missing, offers installation once. CaptureEngine neither bundles nor downloads the driver - it delegates to the
 Windows Package Manager (`namazso.PawnIO`) under a single UAC prompt, falling back to opening the project page. Three
 deliberate choices:
@@ -211,7 +211,7 @@ How the native bridge reaches a managed library with no managed code of our own:
   hardcoded, and any `HardwareType` whose name starts with `Gpu` counts as a GPU.
 
 Side benefits taken while porting:
-- Sensor selection moved into `captureengine/sensor_selection_policy.h` as dependency-free logic and finally has
+- Sensor selection moved into `captureengine/sensors/sensor_selection_policy.h` as dependency-free logic and finally has
   direct unit coverage (`tests/test_sensor_selection_policy.cpp`, 12 cases): preferred-name ranking, lowest-numbered
   instance, sticky previous identifier, highest-value last resort, zero-is-unreadable except the fan, active-GPU tie
   handling, and the identifier grammar. As a PowerShell script this logic had none.

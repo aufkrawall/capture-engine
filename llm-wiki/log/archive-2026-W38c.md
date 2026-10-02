@@ -38,7 +38,7 @@ it, and both only ever worked while CE was processing the driver's private chain
 removed the device.
 
 Replaced in 0.1.6556 with structural evidence: CE counts the interposer's private-chain presents and the
-application's presents and takes the ratio (`hook/common/present_interposer_cadence.h`). Session `20260914_105853`
+application's presents and takes the ratio (`hook/present/present_interposer_cadence.h`). Session `20260914_105853`
 measures it exactly - `DetourPresent: ENTRY #1/#2` at `10:59:08.951/.952` for one `Present ENTRY #0`, and so on for
 every frame. 1:1 forwarding reads as Smooth Motion loaded and NOT engaged rather than as a 1x generator. The base
 and output FPS the overlay shows come from the same two measured streams, because the frame history now only holds
@@ -155,7 +155,7 @@ automatically disabled", and NVIDIA excludes Vulkan from DLSS-G V-Sync support.
 
 **Change (0.1.6545)**: `ShouldSkipPresentModeOverride` gates both override sites - the layer's
 `vkCreateSwapchainKHR` and the upstream `sl.interposer` hook, which reads the same fact through a new layer export
-`CEVulkanLayerDeviceEnabledPresentMetering` (`hook/common/vulkan_layer_metering_bridge.h`). The gate is the
+`CEVulkanLayerDeviceEnabledPresentMetering` (`hook/present/vulkan_layer_metering_bridge.h`). The gate is the
 application's own `VkDeviceCreateInfo` extension list, not an observed metered present: the generator creates its
 swapchain and presents through it immediately, so there is nothing to observe first and a present mode can only be
 chosen at creation. `off` and `mailbox` are untouched.

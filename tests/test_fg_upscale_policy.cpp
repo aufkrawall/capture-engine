@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../testapp/fg_upscale_policy.h"
+#include "testapp/fg_upscale_policy.h"
 
 using testapp::fg::ComputeJitter;
 using testapp::fg::ComputeRenderSize;

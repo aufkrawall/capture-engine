@@ -11,16 +11,16 @@
   4. DX12 queue/swapchain hooks already discovered the Talos swapchain queue device before the limiter activated, but that device was not published into `g_ReflexLimiter` or `HookContext`, so `PushFpsLimit()` could not call `NvAPI_D3D_SetSleepMode`.
 
 - **Fix**:
-  1. `hook/apis/dx12_hook.cpp` now publishes devices discovered from command queues and swapchain queues to native limiter consumers and keeps `HookContext`'s DX12 device/queue fields synchronized without reintroducing NvAPI inline hooks.
-  2. `hook/common/reflex_limiter.h` now exposes device availability for diagnostics and logs missing SetSleepMode/Sleep inputs, SetSleepMode failures, Sleep failures, and successful push device/version details.
-  3. `hook/common/fps_limiter.h` now includes native-device availability in explicit Reflex CE-owned Sleep success and timer-fallback traces.
+  1. `hook/d3d12/dx12_hook.cpp` now publishes devices discovered from command queues and swapchain queues to native limiter consumers and keeps `HookContext`'s DX12 device/queue fields synchronized without reintroducing NvAPI inline hooks.
+  2. `hook/pacing/reflex_limiter.h` now exposes device availability for diagnostics and logs missing SetSleepMode/Sleep inputs, SetSleepMode failures, Sleep failures, and successful push device/version details.
+  3. `hook/pacing/fps_limiter.h` now includes native-device availability in explicit Reflex CE-owned Sleep success and timer-fallback traces.
   4. `tests/test_fps_limiter.cpp` now has focused coverage for the Reflex limiter retaining a published device for native pacing.
 
 - **Verification**:
   1. Focused limiter coverage passed: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=FpsLimiterTest.*:LimiterModeParseTest.*` ran 23/23 tests successfully and produced build `0.1.2596`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2597`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/common/reflex_limiter.h`, `hook/common/fps_limiter.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `hook/pacing/reflex_limiter.h`, `hook/pacing/fps_limiter.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The fix is generic and avoids NvAPI prologue patching, but fresh Talos validation should confirm latency drops through native Reflex Sleep rather than timer fallback, and GTA/DLSS FG validation should keep watching for `inlineHooks=0`, healthy DLSSG startup, and no Reflex ownership false positives.
 
@@ -43,7 +43,7 @@
   1. Focused policy coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=StreamlineRuntimePolicyTest.*` ran 48/48 tests successfully and produced build `0.1.2594`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2595`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `hook/streamline/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The rule is intentionally generic and evidence-gated, but fresh Talos validation should confirm that the final menu-side `GetState(OFF)` now clears the visible label without needing to leave the 2D menu, and GTA validation should watch for unexpected multi-viewport flicker.
 
@@ -58,18 +58,18 @@
   4. The remaining diagnostic gap was timing and provenance. Periodic scans should catch feature-owner DLLs, but a freshly loaded `sl.*.dll` should also be inspected immediately, and the next repro needs to say exactly whether the game obtained the function through `slGetFeatureFunction`, returned-wrapper substitution, direct `GetProcAddress`, direct imports, or no Streamline OFF call at all.
 
 - **Fix**:
-  1. `hook/main.cpp` now calls `StreamlineHook::OnModuleLoaded(...)` directly from the load notification path. `hook/apis/streamline_hook.cpp` filters this through the shared `ShouldInspectStreamlineModuleOnLoad(...)` policy and immediately runs the Streamline feature hook install/proactive-resolution pass for fresh `sl.*.dll` modules.
+  1. `hook/runtime/main.cpp` now calls `StreamlineHook::OnModuleLoaded(...)` directly from the load notification path. `hook/streamline/streamline_hook.cpp` filters this through the shared `ShouldInspectStreamlineModuleOnLoad(...)` policy and immediately runs the Streamline feature hook install/proactive-resolution pass for fresh `sl.*.dll` modules.
   2. `slGetFeatureFunction` lookups for DLSSG and Reflex feature functions now log original target, delivered target, hook readiness, and wrapper-substitution state once per function.
   3. Returned-pointer wrapper fallback use and proactive feature-resolution gaps now log once, so failed export-inline/import paths are visible without needing per-call spam.
   4. Successful `slDLSSGGetState` calls are sampled with options mode, generated frames, fence evidence, update decision, and SetOptions hook readiness so a future 2D-menu trace can prove whether Streamline still reported active state after the menu toggle.
   5. `tests/test_streamline_runtime_policy.cpp` now covers that fresh module-load inspection includes feature DLLs such as `sl.dlss_g.dll` / `sl.reflex.dll` while excluding NGX DLLs.
-  6. `hook/wrappers/iat_hook.cpp` now actually treats an already-patched import slot as an idempotent no-op when the original function is still tracked, and `PatchIATAllModules` no longer reads the caller's output pointer before writing it. This matches the documented direct-import fallback behavior and avoids uninitialized dummy-output quirks during repeated scans.
+  6. `hook/hooking/iat_hook.cpp` now actually treats an already-patched import slot as an idempotent no-op when the original function is still tracked, and `PatchIATAllModules` no longer reads the caller's output pointer before writing it. This matches the documented direct-import fallback behavior and avoids uninitialized dummy-output quirks during repeated scans.
 
 - **Verification**:
   1. Focused policy coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=StreamlineRuntimePolicyTest.*` ran 46/46 tests successfully and produced build `0.1.2592`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2593`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `hook/apis/streamline_hook.h`, `hook/common/streamline_runtime_policy.h`, `hook/main.cpp`, `hook/wrappers/iat_hook.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `hook/streamline/streamline_hook.h`, `hook/streamline/streamline_runtime_policy.h`, `hook/runtime/main.cpp`, `hook/hooking/iat_hook.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until a fresh Talos 2D-menu `DLSS FG -> all FG off` repro shows either a captured OFF edge in the menu or explicit evidence that Talos delays the real Streamline disable call until 3D rendering resumes.
 
@@ -94,7 +94,7 @@
   2. An initial canonical build attempt produced build `0.1.2589` and failed because the new safe-bootstrap queue inspection was placed before `g_SwapchainQueue` was visible in `dx12_hook.cpp`; the code was moved behind the queue state and then lifetime-tightened so the tracked-ECL check runs while the queue-state lock is still held.
   3. Canonical build coverage passed after that correction: `python build.py --skip-updates` produced build `0.1.2591`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `hook/common/streamline_runtime_policy.h`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `hook/streamline/streamline_hook.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `hook/streamline/streamline_runtime_policy.h`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: High until fresh Talos validation confirms that the same 2D-menu `FSR FG -> DLSS FG` switch now reaches `safeBootstrap=1`, invokes PostSL on the protected normal route, and renders the overlay without needing to leave the menu.
 
@@ -108,9 +108,9 @@
   3. The existing direct-import fallback path could resolve an owner module from an intercepted feature pointer, but the normal module scan only considered `sl.interposer.dll` and `sl.common.dll`. Feature-owner modules such as `sl.dlss_g.dll` could therefore miss the import-fallback pass, and the old logs were too quiet about whether fallback owner resolution or import discovery failed.
 
 - **Fix**:
-  1. `hook/common/streamline_runtime_policy.h` now exposes testable Streamline module-name helpers that recognize any loaded `sl.*.dll` as a feature-hooking candidate while keeping the core-module mask narrow.
-  2. `hook/apis/streamline_hook.cpp` now enumerates all loaded modules and calls `InstallHooksForModule` for every `sl.*.dll`, so Streamline feature exports from owner DLLs get direct-import fallback retries too.
-  3. `hook/wrappers/iat_hook.cpp` now treats an already-patched IAT slot as a no-op, keeping repeated feature-module fallback scans idempotent and preventing the saved original from being overwritten by CE's own detour.
+  1. `hook/streamline/streamline_runtime_policy.h` now exposes testable Streamline module-name helpers that recognize any loaded `sl.*.dll` as a feature-hooking candidate while keeping the core-module mask narrow.
+  2. `hook/streamline/streamline_hook.cpp` now enumerates all loaded modules and calls `InstallHooksForModule` for every `sl.*.dll`, so Streamline feature exports from owner DLLs get direct-import fallback retries too.
+  3. `hook/hooking/iat_hook.cpp` now treats an already-patched IAT slot as a no-op, keeping repeated feature-module fallback scans idempotent and preventing the saved original from being overwritten by CE's own detour.
   4. New diagnostics log owner-resolution failures and one-shot "fallback unavailable" reasons so future Talos/GTA traces show whether no direct import existed yet or a hook-resolution seam remains.
 
 - **Verification**:
@@ -118,7 +118,7 @@
   2. An initial canonical build attempt produced build `0.1.2586` and failed because MinGW's `tlhelp32.h` exposes `MODULEENTRY32` rather than `MODULEENTRY32A`; the code was corrected to the portable non-suffixed ToolHelp type/functions.
   3. Canonical build coverage passed after that correction: `python build.py --skip-updates` produced build `0.1.2587`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `hook/wrappers/iat_hook.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `hook/streamline/streamline_runtime_policy.h`, `hook/hooking/iat_hook.cpp`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The fix is generic and narrow, but fresh Talos validation should confirm that disabling DLSS FG from the 2D menu now produces an observed `slDLSSGSetOptions(OFF)` or an explicit fallback-unavailable diagnostic before leaving the menu.
 
@@ -133,9 +133,9 @@
   4. The existing 9-12 frame stabilization was therefore too short for this pure-DLSS startup's GetState OFF jitter, even though widening explicit SetOptions OFF suppression would be too risky for deliberate user disables.
 
 - **Fix**:
-  1. `hook/common/dx12_overlay_policy.h` now exposes a source-specific `slDLSSGGetState` OFF warmup-protection helper that lasts until the existing 30-frame PostSL warmup proof threshold.
-  2. `hook/apis/dx12_hook.cpp` exports that helper to Streamline through `hook/common/hook_common.h`.
-  3. `hook/apis/streamline_hook.cpp` now applies the extended window only to inactive `GetState` polls. Explicit `slDLSSGSetOptions(OFF)` still uses the shorter existing startup/stabilization guard.
+  1. `hook/d3d12/dx12_overlay_policy.h` now exposes a source-specific `slDLSSGGetState` OFF warmup-protection helper that lasts until the existing 30-frame PostSL warmup proof threshold.
+  2. `hook/d3d12/dx12_hook.cpp` exports that helper to Streamline through `hook/runtime/hook_common.h`.
+  3. `hook/streamline/streamline_hook.cpp` now applies the extended window only to inactive `GetState` polls. Explicit `slDLSSGSetOptions(OFF)` still uses the shorter existing startup/stabilization guard.
   4. New diagnostics log when post-stabilization `GetState` OFF is suppressed during the 9-30 warmup-proof window.
   5. Focused tests were added in `tests/test_dxgi_shared.cpp` and `tests/test_streamline_runtime_policy.cpp`.
 
@@ -143,7 +143,7 @@
   1. Focused policy coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=StreamlineRuntimePolicyTest.*:DXGISharedTest.GetStateOffWarmupProtectionExtendsToPostSLProofThreshold:DXGISharedTest.ConfirmedPostSLRuntimeStateStabilizationStartsRightAfterSettlingEnds:DXGISharedTest.ChurnedPostSLReactivationExtendsRuntimeStateStabilizationToWarmupProofThreshold` ran 45/45 tests successfully and produced build `0.1.2583`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2584`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `hook/common/hook_common.h`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `hook/streamline/streamline_hook.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `hook/runtime/hook_common.h`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. This is a narrow GetState-only stale-OFF extension, but fresh GTA validation should confirm that the same pure `all FG off -> DLSS FG` enable no longer collapses immediately after PostSL submit #13, and that deliberate DLSS FG disables still forward normally after the shorter SetOptions guard.
 
@@ -158,8 +158,8 @@
   4. `slDLSSGSetOptions` logging showed runtime updates but not whether the exact ON/OFF request was forwarded to Streamline, suppressed, or returned an error, which made stale driver-cap diagnosis weaker than it needed to be.
 
 - **Fix**:
-  1. `hook/common/streamline_runtime_policy.h` now exposes `ResolveStreamlineReflexFrameLimitForwarding(...)` so tests and hooks keep incoming game signal ownership separate from CE's optional forwarded cap override.
-  2. `hook/apis/streamline_hook.cpp` now classifies Streamline Reflex activation/deactivation strictly from the incoming game mode/`frameLimitUs` while logging both incoming and forwarded frame-limit values.
+  1. `hook/streamline/streamline_runtime_policy.h` now exposes `ResolveStreamlineReflexFrameLimitForwarding(...)` so tests and hooks keep incoming game signal ownership separate from CE's optional forwarded cap override.
+  2. `hook/streamline/streamline_hook.cpp` now classifies Streamline Reflex activation/deactivation strictly from the incoming game mode/`frameLimitUs` while logging both incoming and forwarded frame-limit values.
   3. `slDLSSGSetOptions` now emits rate-limited transition logs that include requested vs forwarded mode, generated-frame override/clamp state, forwarded vs suppressed call state, result code, current runtime, Streamline signal, and startup-protection flags.
   4. Proactive Reflex feature resolution now logs once when Reflex feature functions are unavailable and once when they become hookable, making missing Reflex traffic explicit in future GTA/Talos traces.
 
@@ -167,7 +167,7 @@
   1. Focused policy coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=StreamlineRuntimePolicyTest.*` ran 41/41 tests successfully and produced build `0.1.2581`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2582`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `hook/streamline/streamline_runtime_policy.h`, `tests/test_streamline_runtime_policy.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. This is intentionally generic ownership tightening and diagnostics rather than an active Reflex-driver reset. Fresh GTA validation should confirm whether the final DLSSG OFF is forwarded and whether any game/Streamline Reflex clear is visible.
 
@@ -182,17 +182,17 @@
   4. Limiter mode parsing accepted the documented lowercase values but was brittle for whitespace, quotes, mixed case, and common NVIDIA aliases.
 
 - **Fix in progress**:
-  1. `hook/common/reflex_limiter.h` no longer installs SetSleepMode/Sleep inline hooks from `SetTargetFps()` or `PushFpsLimit()`. The normal limiter path uses the resolved original NvAPI entrypoints directly and logs whether inline hooks are installed.
+  1. `hook/pacing/reflex_limiter.h` no longer installs SetSleepMode/Sleep inline hooks from `SetTargetFps()` or `PushFpsLimit()`. The normal limiter path uses the resolved original NvAPI entrypoints directly and logs whether inline hooks are installed.
   2. Disabling a previously pushed CE Reflex cap now attempts to forward a zero `minimumIntervalUs` SetSleepMode call, preserving game-provided Reflex options when available.
-  3. `hook/common/fps_limiter.h` now lets explicit Reflex mode use CE-owned `NvAPI_D3D_Sleep` when no game-owned Reflex sleep has been observed, while still handing off to game-owned native sleep after a stable fresh sleep streak.
-  4. `hook/apis/streamline_hook.cpp` now hooks `slReflexSleep` through dynamic hooks, feature lookup, and direct import fallback, marking successful Streamline sleep calls as native pacing evidence and applying the existing hybrid pacing helper before forwarding.
-  5. `common/config.h` now parses limiter modes case-insensitively with whitespace/quote trimming and additional aliases such as `nvidia-reflex`.
+  3. `hook/pacing/fps_limiter.h` now lets explicit Reflex mode use CE-owned `NvAPI_D3D_Sleep` when no game-owned Reflex sleep has been observed, while still handing off to game-owned native sleep after a stable fresh sleep streak.
+  4. `hook/streamline/streamline_hook.cpp` now hooks `slReflexSleep` through dynamic hooks, feature lookup, and direct import fallback, marking successful Streamline sleep calls as native pacing evidence and applying the existing hybrid pacing helper before forwarding.
+  5. `common/config/config.h` now parses limiter modes case-insensitively with whitespace/quote trimming and additional aliases such as `nvidia-reflex`.
 
 - **Verification**:
   1. Focused limiter coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=FpsLimiterTest.*:LimiterModeParseTest.*` ran 22/22 tests successfully and produced build `0.1.2579`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2580`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/common/reflex_limiter.h`, `hook/common/fps_limiter.h`, `hook/apis/streamline_hook.cpp`, `common/config.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/reflex_limiter.h`, `hook/pacing/fps_limiter.h`, `hook/streamline/streamline_hook.cpp`, `common/config/config.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The direction is generic and less invasive than NvAPI inline patching, but fresh GTA/Talos validation should confirm explicit Reflex mode does not double-sleep in titles with direct non-Streamline NvAPI Reflex integrations. Streamline integrations should now be observable via `slReflexSleep`.
 
@@ -207,15 +207,15 @@
   4. The overlay publication layer was repeatedly logging planner inactive `Off` vs preferred inactive `STREAMLINE_NO_FG` even though both publish the same visible FG type (`0`), making the relevant hook diagnostics harder to see.
 
 - **Fix**:
-  1. `hook/apis/streamline_hook.cpp` now hooks current `slReflexSetOptions` alongside legacy `slReflexSetConstants` through dynamic hooks, direct import fallback, owner-module fallback, and proactive `slGetFeatureFunction` resolution after `slSetD3DDevice`.
+  1. `hook/streamline/streamline_hook.cpp` now hooks current `slReflexSetOptions` alongside legacy `slReflexSetConstants` through dynamic hooks, direct import fallback, owner-module fallback, and proactive `slGetFeatureFunction` resolution after `slSetD3DDevice`.
   2. New Reflex diagnostics log source entrypoint, mode, low-latency flag, incoming `frameLimitUs`, CE target interval, Streamline signal, DLSS/FSR API flags, and runtime mode only when the observed Reflex signal changes.
-  3. `hook/common/streamline_runtime_policy.h` now treats nonzero `frameLimitUs` as a Reflex/native pacing signal even if the low-latency mode is off, and exposes the CE frame-limit override decision for tests.
-  4. `hook/common/dx12_overlay_policy.h`, `hook/common/overlay_metrics_publisher.cpp`, and `hook/apis/dx12_hook.cpp` now compare visible published FG metric types before logging planner-vs-visible divergences, so inactive `Off` and inactive `STREAMLINE_NO_FG` no longer spam the trace.
+  3. `hook/streamline/streamline_runtime_policy.h` now treats nonzero `frameLimitUs` as a Reflex/native pacing signal even if the low-latency mode is off, and exposes the CE frame-limit override decision for tests.
+  4. `hook/d3d12/dx12_overlay_policy.h`, `hook/overlay/overlay_metrics_publisher.cpp`, and `hook/d3d12/dx12_hook.cpp` now compare visible published FG metric types before logging planner-vs-visible divergences, so inactive `Off` and inactive `STREAMLINE_NO_FG` no longer spam the trace.
 
 - **Verification**:
   1. Focused policy coverage passed: `python build.py --skip-updates --tests-only --run-tests --gtest-filter=StreamlineRuntimePolicyTest.*:DXGISharedTest.OverlayFG*` ran 42/42 tests successfully and produced build `0.1.2577`.
   2. Canonical build coverage passed: `python build.py --skip-updates` produced build `0.1.2578`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `hook/apis/dx12_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `hook/common/dx12_overlay_policy.h`, `hook/common/overlay_metrics_publisher.cpp`, `hook/common/reflex_limiter.h`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `hook/d3d12/dx12_hook.cpp`, `hook/streamline/streamline_runtime_policy.h`, `hook/d3d12/dx12_overlay_policy.h`, `hook/overlay/overlay_metrics_publisher.cpp`, `hook/pacing/reflex_limiter.h`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. This is generic hook coverage and logging rather than a game-specific limiter override. Fresh GTA validation should confirm whether `slReflexSetOptions` now exposes the suspected stale `frameLimitUs` edge and whether the game or Streamline clears it after DLSS FG really turns off.

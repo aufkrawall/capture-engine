@@ -28,7 +28,7 @@ Copyright (c) 2026 aufkrawall
     - **Run lint explicitly, never routinely.** Linting is a pre-release or on-demand check (`python build.py --no-build --lint --skip-updates --concise`), not a per-change requirement for ordinary development commits. A cold cache still costs roughly the old whole-tree duration; a warm run revalidates fingerprints and analyzes only misses.
     - **Prefer linting after a full product build.** Lint covers whatever `compile_commands.json` currently holds, and a `--tests-only` build regenerates it with a reduced entry count (252 of 552 translation units as of 2026-08-06). Such a run logs `clang-tidy lint scope reduced`, still fails on increases, and never folds its artificially low counts in, so it cannot corrupt the baseline — but it also proves nothing about the unlinted product sources.
     - Regenerate the baseline only deliberately, with `python build.py --no-build --lint --update-lint-baseline --skip-updates --concise`, when an increase is genuinely justified — and only after a full product build, because that flag refuses to rewrite the baseline from a partial database. The raw warning list stays advisory; only a regression is fatal.
-- **Fuzzing:** run explicitly with `python build.py --run-fuzz [--fuzz-seconds N]` when modifying parser logic, deserialization state machines, or untrusted input boundaries (e.g. wire protocols or parsing logic in `common/config.cpp`, `common/process_ipc.cpp`); routine additions of configuration keys or constants do not require fuzzing. Register every new harness in `FUZZ_TARGET_CORPUS` in `build.py` and commit its seed corpus; see `llm-wiki/fuzzing.md`.
+- **Fuzzing:** run explicitly with `python build.py --run-fuzz [--fuzz-seconds N]` when modifying parser logic, deserialization state machines, or untrusted input boundaries (e.g. wire protocols or parsing logic in `common/config/config.cpp`, `common/ipc/process_ipc.cpp`); routine additions of configuration keys or constants do not require fuzzing. Register every new harness in `FUZZ_TARGET_CORPUS` in `build.py` and commit its seed corpus; see `llm-wiki/fuzzing.md`.
 - **GitHub Actions stable releases:** when the user asks to create/replace a stable release via the `release-stable` action, consult `llm-wiki/build.py.md` ("Stable release operations" and "Release asset privacy"): the self-hosted runner is this PC and must be started manually (`%USERPROFILE%\Programme\build\actions-runner\run.cmd`) before dispatching, otherwise the run stays queued; the delete-then-trigger procedure, explicit `version=0.1.N` input, and the privacy-sanitized release assets are documented there.
 - Prefer `--concise` for agent runs: `build.log` and the console retain stage summaries, warnings, and bounded failure tails, while complete commands/subprocess output remain in the run's `build.details.log`. Use `build/verification/latest_summary.txt` or `latest_manifest.json` for status and inspect detailed/per-stage artifacts only when diagnosing a failure. If you need more of a gate's output than you captured, read that run's `build.details.log` or stage artifact — never re-run the gate just to see its output again!
 - Match the surrounding code's existing indentation, naming, comment density, and line endings; keep edits narrowly scoped and inspect `git diff --check` / `git diff` before building! Never run `clang-format.exe -i`, `python build.py --format`, or any whole-file automatic formatter on existing source files unless explicitly requested.
@@ -113,18 +113,16 @@ The `srv*`-only path misses CE's local PDBs and produces incomplete stack traces
 
 - `llm-wiki/` is canonical LLM-maintained derived memory, not the sole source of truth.
 - When starting work on an unfamiliar area — whether to understand or change it —
-  first orient via `llm-wiki/repo-map.md` (the code map: semantic units per
-  subsystem, the Python build pipeline units, test matrix, and important paths),
-  then read the relevant topic page(s) via `llm-wiki/index.md`, then
-  `llm-wiki/log/recent.md` for active/stale-risk areas. Re-check the code map
-  after large refactors: monolithic files may have been split into per-area units.
-- File names are semantic: the 2026-08-06 conversion removed all numbered
-  `*_2/_3` chunks and `_part_*.py` fragments. A few modules keep a small
-  logical-source facade (`dx12_hook.cpp`, `mediaengine.cpp`, `wgc_capture.cpp`,
-  `layer_capture.cpp`, the `*.py` entry points) that the source-policy reader
-  keys on; the real content lives in content-named sibling units. If an archive
-  cites a pre-conversion name, resolve it through `repo-map.md` instead of
-  grepping the tree for it.
+  first orient via `llm-wiki/repo-map.md` (the code map: one table per module,
+  `<module>/<subsystem>/`), then read the relevant topic page(s) via
+  `llm-wiki/index.md`, then `llm-wiki/log/recent.md` for active/stale-risk areas.
+- Source layout (2026-10-02): product code lives in `<module>/<subsystem>/`, basenames are
+  unique per module, and cross-directory includes are repo-root-relative
+  (`#include "hook/overlay/custom_overlay.h"`; same-directory includes stay bare). A
+  `<stem>.cpp` with `<stem>_internal.h` and `<stem>_*.cpp` siblings is one logical unit
+  that source-policy tests read whole. If a wiki page or archive cites an old path
+  (`hook/apis/`, `hook/common/`, flat `captureengine/`), find the file by basename.
+- Ongoing refactor program, its rules and status: `llm-wiki/refactor-roadmap.md`.
 - For substantial work, start with `llm-wiki/index.md`, read only relevant topic pages, then read `llm-wiki/log/recent.md` for active/stale-risk areas.
 - Read archives only when historical context is needed or explicitly linked.
 - For trivial localized edits, skip broad wiki loading unless the area is unfamiliar or stale-risk is likely.

@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-#include "../hook/common/remix_frame_generation_policy.h"
+#include "hook/ngx/remix_frame_generation_policy.h"
 #include "source_fragment_reader.h"
 
 TEST(RemixFrameGenerationPolicyTest, RecognizesOnlyTheUpstreamRemixScheduleOption) {
@@ -50,7 +50,7 @@ TEST(RemixFrameGenerationPolicyTest, NegotiatesExactKnownPublicApiVersionsWithTa
 
 TEST(RemixFrameGenerationPolicyTest, HooksTheLegitimateRemixInterfaceWithoutSyntheticD3D9Startup) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "remix_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "ngx" / "remix_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -72,7 +72,7 @@ TEST(RemixFrameGenerationPolicyTest, HooksTheLegitimateRemixInterfaceWithoutSynt
 
 TEST(RemixFrameGenerationPolicyTest, RegistersBeforeTheGetProcAddressRouterIsArmed) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "main_hookthread.cpp";
+    const fs::path source = fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -86,7 +86,7 @@ TEST(RemixFrameGenerationPolicyTest, RegistersBeforeTheGetProcAddressRouterIsArm
 
 TEST(RemixFrameGenerationPolicyTest, TracksLateModuleLoadAndUnloadWithoutAProcessNameRule) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "main_overlay_detect.cpp";
+    const fs::path source = fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);

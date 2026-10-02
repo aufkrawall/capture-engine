@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/vulkan_layer/vulkan_loader_data.h"
+#include "hook/vulkan_layer/vulkan_loader_data.h"
 #include "source_fragment_reader.h"
 
 namespace {

@@ -16,7 +16,7 @@ Only the shader-side algorithm headers are vendored, with their include chain:
 `ffx_core.h` selects its own backend from `FFX_CPU` / `FFX_GPU` plus
 `FFX_HLSL` / `FFX_GLSL`, so the same two algorithm headers serve the HLSL
 shaders, the GLSL shaders, and the C++ constant setup in
-`hook/common/sharpen_constants.cpp`.
+`hook/sharpen/sharpen_constants.cpp`.
 
 **Do not take these headers from the newer FidelityFX SDK 2.x drop.** Its
 `docs/license.md` is a binary-redistribution-only license that contradicts the

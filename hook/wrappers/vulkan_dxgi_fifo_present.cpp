@@ -5,15 +5,15 @@
 
 #include <dxgi1_6.h>
 
-#include "../../common/log_meter.h"
-#include "../common/dxgi_shared.h"
-#include "../common/hook_common.h"
-#include "../common/overlay_compat.h"
-#include "../common/vulkan_dxgi_fifo_policy.h"
-#include "../common/vulkan_layer_metering_bridge.h"
-#include "../common/vulkan_dxgi_fifo_registry.h"
-#include "iat_hook.h"
-#include "inline_hook.h"
+#include "common/logging/log_meter.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/overlay/overlay_compat.h"
+#include "hook/present/vulkan_dxgi_fifo_policy.h"
+#include "hook/present/vulkan_layer_metering_bridge.h"
+#include "hook/present/vulkan_dxgi_fifo_registry.h"
+#include "hook/hooking/iat_hook.h"
+#include "hook/hooking/inline_hook.h"
 #include "wrapper_hooks.h"
 
 namespace ce::vulkan_dxgi_fifo {

@@ -1,6 +1,6 @@
 #include "test_dxgi_shared_shared.h"
 
-#include "../hook/common/dxgi_shared_internal.h"
+#include "hook/present/dxgi_shared_internal.h"
 
 namespace {
 
@@ -278,7 +278,7 @@ TEST(DXGISharedForeignHandlerValidityTest, RejectsNullAndNonExecutableHandlers) 
 // owns no entry bytes, and sees presents on swapchains it never created.
 TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapchainsAreCovered) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string install = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(install.empty());
@@ -360,8 +360,8 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
 // re-enters the deep hook without end.
 TEST(DXGISharedSourceTest, DeepBodyForwardIsCheckedBeforeEveryForeignChainEntryForward) {
     namespace fs = std::filesystem;
-    const fs::path presentSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
-    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    const fs::path presentSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "present" / "dxgi_shared_original_present1.cpp";
     ASSERT_TRUE(fs::exists(presentSource));
     ASSERT_TRUE(fs::exists(present1Source));
     const std::string present = ce::test_source::ReadFile(presentSource);
@@ -399,7 +399,7 @@ TEST(DXGISharedSourceTest, DeepBodyForwardIsCheckedBeforeEveryForeignChainEntryF
 // frames. Both decisions read these two predicates.
 TEST(DXGISharedSourceTest, DeepBodyHookCountsAsAPresentViewButNotAsAnOwnedEntryPatch) {
     namespace fs = std::filesystem;
-    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp";
+    const fs::path hooksSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks.cpp";
     ASSERT_TRUE(fs::exists(hooksSource));
     const std::string hooks = ce::test_source::ReadFile(hooksSource);
     ASSERT_FALSE(hooks.empty());
@@ -416,7 +416,7 @@ TEST(DXGISharedSourceTest, DeepBodyHookCountsAsAPresentViewButNotAsAnOwnedEntryP
     // there, so the "second overlay joined an entry CE prepended over" warning does not apply.
     EXPECT_NE(hooks.find("IsPresentEntryLeftToForeignChain()", prepended), std::string::npos);
 
-    const fs::path detectSource = fs::current_path() / "hook" / "main_overlay_detect.cpp";
+    const fs::path detectSource = fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp";
     ASSERT_TRUE(fs::exists(detectSource));
     const std::string detect = ce::test_source::ReadFile(detectSource);
     ASSERT_FALSE(detect.empty());
@@ -437,8 +437,8 @@ TEST(DXGISharedSourceTest, DeepBodyHookCountsAsAPresentViewButNotAsAnOwnedEntryP
 // interposers, whose frames are simply further out.
 TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelowAForeignChain) {
     namespace fs = std::filesystem;
-    const fs::path presentSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present.cpp";
-    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp";
+    const fs::path presentSource = fs::current_path() / "hook" / "present" / "dxgi_shared_present.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "present" / "dxgi_shared_present1.cpp";
     ASSERT_TRUE(fs::exists(presentSource));
     ASSERT_TRUE(fs::exists(present1Source));
     const std::string present = ce::test_source::ReadFile(presentSource);
@@ -471,7 +471,7 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
     // The originator walk must stop at the first real originator instead of scanning every
     // frame for every module: address->module resolution takes the loader lock and this runs
     // on the Present hot path.
-    const fs::path presentImpl = fs::current_path() / "hook" / "common" / "dxgi_shared_present.cpp";
+    const fs::path presentImpl = fs::current_path() / "hook" / "present" / "dxgi_shared_present.cpp";
     const std::string presentImplText = ce::test_source::ReadFile(presentImpl);
     ASSERT_FALSE(presentImplText.empty());
     const size_t resolver = presentImplText.find("void ResolvePresentOriginatorBelowForeignChain(");
@@ -482,7 +482,7 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
 
     // The predicate itself is derived from the deep-body trampolines, not from a separate flag
     // that could drift out of sync with them.
-    const fs::path sharedSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    const fs::path sharedSource = fs::current_path() / "hook" / "present" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(sharedSource));
     const std::string shared = ce::test_source::ReadFile(sharedSource);
     ASSERT_FALSE(shared.empty());
@@ -502,7 +502,7 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
 // anything to service by invoking one of them.
 TEST(DXGISharedSourceTest, NoForeignOverlayHandlerIsInvokedWhileCEInterceptsBelowTheChain) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
     ASSERT_FALSE(steam.empty());

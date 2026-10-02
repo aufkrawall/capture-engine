@@ -1,6 +1,6 @@
 #include "test_config_shared.h"
 
-#include "../common/logging.h"
+#include "common/logging/logging.h"
 
 TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     AppConfig config;

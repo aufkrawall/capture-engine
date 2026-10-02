@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/deferred_swapchain_create_ledger.h"
+#include "hook/present/deferred_swapchain_create_ledger.h"
 
 #include "source_fragment_reader.h"
 
@@ -128,7 +128,7 @@ TEST(DeferredSwapchainCreateLedgerTest, NothingIsReleasedWhileEveryWindowLives) 
 }
 
 TEST(DeferredSwapchainCreateLedgerTest, TheGlueSweepsDeadWindowsWhenParkingAndWhileNothingMatches) {
-    const std::string glue = ReadSource("hook/apis/dx12_hook_deferred_swapchain_create.cpp");
+    const std::string glue = ReadSource("hook/d3d12/dx12_hook_deferred_swapchain_create.cpp");
     const size_t park = glue.find("void ParkInvisibleWindowCreateSwapchain(");
     const size_t promote = glue.find("void PromoteParkedCreateSwapchainOnVisiblePresent(");
     ASSERT_NE(park, std::string::npos);
@@ -155,7 +155,7 @@ TEST(DeferredSwapchainCreateLedgerTest, PromotionRequiresTheSwapchainStillOnItsC
 // Every create path that bypasses a hidden-window swapchain must hand its queue and evidence
 // to the ledger; dropping them is what sent the first overlay frame to the render queue.
 TEST(DeferredSwapchainCreateLedgerTest, EveryHiddenWindowCreateBypassParksItsQueue) {
-    const std::string bypass = ReadSource("hook/apis/dx12_hook_ffx_startup.cpp");
+    const std::string bypass = ReadSource("hook/d3d12/dx12_hook_ffx_startup.cpp");
     const size_t fn = bypass.find("bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(");
     ASSERT_NE(fn, std::string::npos);
     const size_t policy =
@@ -170,8 +170,8 @@ TEST(DeferredSwapchainCreateLedgerTest, EveryHiddenWindowCreateBypassParksItsQue
     EXPECT_LT(forget, park) << "the visible branch supersedes, the hidden branch parks";
     EXPECT_LT(park, bypassed) << "a bypassed create must park before it returns";
 
-    const std::string create = ReadSource("hook/apis/dx12_hook_swapchain_create.cpp");
-    const std::string tracking = ReadSource("hook/apis/dx12_hook_swapchain_tracking.cpp");
+    const std::string create = ReadSource("hook/d3d12/dx12_hook_swapchain_create.cpp");
+    const std::string tracking = ReadSource("hook/d3d12/dx12_hook_swapchain_tracking.cpp");
     size_t callSites = 0;
     for (const std::string* source : {&create, &tracking}) {
         for (size_t at = source->find("ShouldBypassInvisibleWindowCreateSwapchainSideEffects(");
@@ -189,18 +189,18 @@ TEST(DeferredSwapchainCreateLedgerTest, EveryHiddenWindowCreateBypassParksItsQue
 }
 
 TEST(DeferredSwapchainCreateLedgerTest, TheFirstVisiblePresentPromotesBeforeAQueueIsChosen) {
-    const std::string phase1 = ReadSource("hook/apis/dx12_hook_process_session_phase1.cpp");
+    const std::string phase1 = ReadSource("hook/d3d12/dx12_hook_process_session_phase1.cpp");
     const size_t invisibleSkip = phase1.find("ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(");
     const size_t promote = phase1.find("PromoteParkedCreateSwapchainOnVisiblePresent(pSwapChain)");
     ASSERT_NE(invisibleSkip, std::string::npos);
     ASSERT_NE(promote, std::string::npos);
     EXPECT_LT(invisibleSkip, promote) << "only a Present whose window is visible may promote";
 
-    const std::string phase2 = ReadSource("hook/apis/dx12_hook_process_session_phase2.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_phase2.cpp");
     EXPECT_EQ(phase2.find("PromoteParkedCreateSwapchainOnVisiblePresent"), std::string::npos)
         << "Phase2 chooses the overlay queue; promotion belongs in Phase1, ahead of it";
 
-    const std::string glue = ReadSource("hook/apis/dx12_hook_deferred_swapchain_create.cpp");
+    const std::string glue = ReadSource("hook/d3d12/dx12_hook_deferred_swapchain_create.cpp");
     const size_t fn = glue.find("void PromoteParkedCreateSwapchainOnVisiblePresent(");
     ASSERT_NE(fn, std::string::npos);
     const size_t protectedFFX = glue.find("HandleProtectedOfficialFFXStartupSwapchainCreate(", fn);
@@ -209,7 +209,7 @@ TEST(DeferredSwapchainCreateLedgerTest, TheFirstVisiblePresentPromotesBeforeAQue
     ASSERT_NE(capture, std::string::npos);
     EXPECT_LT(protectedFFX, capture) << "replay in the visible create path's order";
 
-    const std::string shutdown = ReadSource("hook/apis/dx12_hook_main.cpp");
+    const std::string shutdown = ReadSource("hook/d3d12/dx12_hook_main.cpp");
     EXPECT_NE(shutdown.find("ReleaseParkedCreateSwapchains("), std::string::npos)
         << "parked queue references must not outlive the DX12 hook";
 }

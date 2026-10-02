@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/apis/dx9_sampler_rearm_policy.h"
-#include "../hook/apis/dx9_state_block_sampler_policy.h"
+#include "hook/d3d9/dx9_sampler_rearm_policy.h"
+#include "hook/d3d9/dx9_state_block_sampler_policy.h"
 #include "source_fragment_reader.h"
 
 namespace sb = ce::dx9_sampler_state;
@@ -169,7 +169,7 @@ TEST(Dx9SamplerRearmPolicyTest, ForeignSavedOriginalIsRefusedOnce) {
 
 // Source policy for the state-block wiring and the body re-arm.
 TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapshotAndTheTrampolines) {
-    const std::string detours = ReadSource("hook/apis/dx9_hook_state_detours.cpp");
+    const std::string detours = ReadSource("hook/d3d9/dx9_hook_state_detours.cpp");
     ASSERT_FALSE(detours.empty());
     EXPECT_NE(detours.find("ce::dx9_sampler_state::OnCreateStateBlock(device, *stateBlock, type)"), std::string::npos);
     EXPECT_NE(detours.find("ce::dx9_sampler_state::OnBeginStateBlock(device)"), std::string::npos);
@@ -178,7 +178,7 @@ TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapsh
     EXPECT_NE(detours.find("VTableHook::Create(&vtable[60]"), std::string::npos) << "BeginStateBlock";
     EXPECT_NE(detours.find("VTableHook::Create(&vtable[4]"), std::string::npos) << "IDirect3DStateBlock9::Capture";
 
-    const std::string state = ReadSource("hook/apis/dx9_sampler_state.cpp");
+    const std::string state = ReadSource("hook/d3d9/dx9_sampler_state.cpp");
     ASSERT_FALSE(state.empty());
     const size_t reconcile = state.find("void ReconcileAfterExternalStateChange(");
     ASSERT_NE(reconcile, std::string::npos);
@@ -193,7 +193,7 @@ TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapsh
     ASSERT_NE(refresh, std::string::npos);
     EXPECT_LT(state.find("deviceState.recording.load(", refresh), state.find("GetActiveGraphicsConfigVersion()", refresh));
 
-    const std::string rearmUnit = ReadSource("hook/apis/dx9_hook_sampler_rearm.cpp");
+    const std::string rearmUnit = ReadSource("hook/d3d9/dx9_hook_sampler_rearm.cpp");
     ASSERT_FALSE(rearmUnit.empty());
     EXPECT_NE(rearmUnit.find("InlineHook::InstallPublished(pristine"), std::string::npos);
     EXPECT_EQ(rearmUnit.find("VTableHook::Create("), std::string::npos) << "the slot is never written";

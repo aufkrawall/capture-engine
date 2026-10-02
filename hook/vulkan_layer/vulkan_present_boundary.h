@@ -11,7 +11,7 @@
 #include "vulkan_layer.h"
 #include "vulkan_present_thread_policy.h"
 
-#include "../common/fps_limiter.h"
+#include "hook/pacing/fps_limiter.h"
 
 namespace ce::vulkan_present_boundary {
 

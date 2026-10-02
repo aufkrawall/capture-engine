@@ -1,0 +1,489 @@
+#include "mediaengine_internal.h"
+
+#include "common/config/live_stream_config.h"
+
+
+void MediaEngine::SetSourcePrefers10BitHint(bool prefer10Bit) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] SetSourcePrefers10Bit(%s)", prefer10Bit ? "true" : "false");
+            videoEnc->SetSourcePrefers10Bit(prefer10Bit);
+        }
+
+}
+
+
+void MediaEngine::SetCursorCompositionSuppressedHint(bool suppressed) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] Cursor composition %s (capture frames %s the cursor)",
+                    suppressed ? "suppressed" : "active", suppressed ? "already contain" : "do not contain");
+            videoEnc->SetCursorCompositionSuppressed(suppressed);
+        }
+
+}
+
+
+void MediaEngine::SetActiveScreenGrab(bool enabled) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        activeScreenGrab = enabled;
+
+}
+
+
+void MediaEngine::SetAudioOnly(bool enabled) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        audioOnly = enabled;
+
+}
+
+
+void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
+
+
+        const std::filesystem::path exeDir = ce::capture_output::GetExecutableDirectory();
+        const std::string audioOnlyOutputDir =
+            ce::live_stream::IsLiveStreamTarget(config->video.outputDir) ? std::string() : config->video.outputDir;
+        const std::filesystem::path outDir =
+            ce::capture_output::ResolveCaptureDirectory(audioOnlyOutputDir, exeDir);
+        audioOnlyOutputReservation =
+            ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
+        if (!audioOnlyOutputReservation) {
+            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s",
+                    ce::privacy::CollapsePathForLog(outDir.string()).c_str());
+            audioOnlyFmtCtx = nullptr;
+            return;
+        }
+        audioOnlyFilename = audioOnlyOutputReservation.Utf8Path();
+        audioOnlyTrailerSucceeded = false;
+        audioOnlyWrittenPackets = 0;
+        if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
+            DLL_Log("MediaEngine: Failed to create audio-only muxer");
+            audioOnlyFmtCtx = nullptr;
+            audioOnlyOutputReservation.CleanupOwnedFile();
+            audioOnlyFilename.clear();
+        }
+
+}
+
+
+bool MediaEngine::CleanupAudioOnlyMuxer() {
+
+
+        int closeResult = 0;
+        if (audioOnlyFmtCtx) {
+            if (audioOnlyFmtCtx->pb) {
+                closeResult = avio_closep(&audioOnlyFmtCtx->pb);
+                if (closeResult < 0) {
+                    DLL_Log("MediaEngine: Failed to close audio-only output: %d", closeResult);
+                }
+            }
+            avformat_free_context(audioOnlyFmtCtx);
+            audioOnlyFmtCtx = nullptr;
+        }
+        const bool outputPublished = ce::mux::ShouldPublishAudioOnlyOutput(audioOnlyTrailerSucceeded, closeResult >= 0,
+                                                                          audioOnlyWrittenPackets);
+        if (outputPublished) {
+            if (!audioOnlyTrailerSucceeded || closeResult < 0) {
+                DLL_Log(
+                    "MediaEngine: ERROR audio-only finalize failed (trailerOk=%d close=%d) after %llu committed "
+                    "packets; keeping the recording",
+                    audioOnlyTrailerSucceeded ? 1 : 0, closeResult,
+                    static_cast<unsigned long long>(audioOnlyWrittenPackets));
+            }
+            audioOnlyOutputReservation.Publish();
+        } else {
+            audioOnlyOutputReservation.CleanupOwnedFile();
+        }
+        const bool audioDeviceLost = AudioSourcesLostTheirDevice();
+        const bool audioContentHoles = AudioTracksHaveContentHoles();
+        const bool audioContentLost = AudioContentWasLost();
+        // An audio-only file holds nothing but audio: its container failures degrade the audio.
+        const bool audioOnlyContainerLoss = audioOnlyWriteErrorCount > 0 || !audioOnlyTrailerSucceeded || closeResult < 0;
+        lastOutputDegradedFlags = ce::capture_policy::ComposeOutputDegradedFlags(
+            false, audioOnlyContainerLoss || audioDeviceLost || audioContentHoles || audioContentLost);
+        if (lastOutputDegradedFlags != 0) {
+            DLL_Log("[OutputHealth] audio-only output degraded scope=%s (container=%d audioDeviceLost=%d "
+                    "audioHoles=%d audioLost=%d)",
+                    ce::capture_policy::GetRecordingDegradedScope(lastOutputDegradedFlags),
+                    audioOnlyContainerLoss ? 1 : 0, audioDeviceLost ? 1 : 0, audioContentHoles ? 1 : 0,
+                    audioContentLost ? 1 : 0);
+        }
+        audioOnlyWriteErrorCount = 0;
+        audioOnlyTrailerSucceeded = false;
+        audioOnlyWrittenPackets = 0;
+        audioOnlyFilename.clear();
+        return outputPublished;
+
+}
+
+
+void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
+
+
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        DLL_Log("MediaEngine::ReloadConfig called");
+
+        // A live recording's audio, frame and stop paths read `config` (strings
+        // and vectors included) without muxMutex, so replacing it mid-recording
+        // was a data race. It was never applied to the running recording anyway;
+        // keep it aside until the next start.
+        if (recording) {
+            deferredConfig = std::make_unique<AppConfig>(*newConfig);
+            DLL_Log(
+                "MediaEngine: Config reload deferred while recording is active; it applies when the next "
+                "recording starts");
+            return;
+        }
+        deferredConfig.reset();
+
+        // Update config
+        this->config = *newConfig;
+        trackAudioFormats = ResolveTrackAudioFormats(*newConfig);
+        DLL_Log("[AVSyncAuto] engine_reload: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
+                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs), this->config.avSyncConfidence.c_str(),
+                this->config.avSyncReason.c_str(), this->config.avSyncUsedAudioProbe ? 1 : 0);
+
+        DLL_Log("MediaEngine: Re-initializing encoders with new config...");
+
+        // Clear audio sources (and their encoders)
+        audioSources.clear();
+        DLL_Log("MediaEngine: Cleared existing audio sources");
+
+        // Re-create VideoEncoder to apply all new settings
+        videoEnc.reset();
+        videoEnc = std::make_unique<VideoEncoder>();
+
+        bool vRes =
+            videoEnc->Init(config.video, 0, 0, config.video.fps, [this](AVPacket* pkt) { this->WritePacket(pkt); });
+
+
+        if (!vRes) {
+            DLL_Log("MediaEngine: Failed to re-init VideoEncoder!");
+            return;
+        }
+        DLL_Log("MediaEngine: VideoEncoder re-initialized successfully.");
+
+        // Re-create audio sources with new config (including new codec)
+        // Maps track number to encoder for that track
+        std::map<int, AudioEncoder*> trackToEncoder;
+        // Guards against summing two identical app-audio captures into one track.
+        std::set<std::string> seenAppAudioTrackKeys;
+
+        for (size_t i = 0; i < config.audioSources.size(); i++) {
+            const AudioConfig& audioConfig = config.audioSources[i];
+            if (!audioConfig.enabled) {
+                DLL_Log("MediaEngine::ReloadConfig audio source %zu disabled", i);
+                continue;
+            }
+
+            DLL_Log("MediaEngine::ReloadConfig setting up audio source %zu (codec=%s)", i, audioConfig.codec.c_str());
+
+            // Get the list of tracks this source should output to
+            std::vector<int> targetTracks = audioConfig.tracks;
+            if (targetTracks.empty()) {
+                targetTracks.push_back((int)(i + 1));
+            }
+
+            DLL_Log("MediaEngine::ReloadConfig Audio source %zu targets %zu tracks", i, targetTracks.size());
+
+            // For each target track, create or reuse an encoder
+            for (int track : targetTracks) {
+                // Defense in depth: never create a second app-audio capture for the
+                // same process on the same track. Summing identical captures combs.
+                if (audioConfig.sourceType == AudioConfig::AppAudio) {
+                    const std::string appKey = AppAudioTrackKey(audioConfig, track);
+                    if (!seenAppAudioTrackKeys.insert(appKey).second) {
+                        DLL_Log(
+                            "MediaEngine::ReloadConfig WARNING: duplicate app-audio source (process='%s' "
+                            "processId=%lu) already targets track %d - skipping duplicate capture to avoid "
+                            "comb-filter artifacts",
+                            audioConfig.processName.empty() ? "<pid>" : audioConfig.processName.c_str(),
+                            (unsigned long)audioConfig.processId, track);
+                        continue;
+                    }
+                }
+                TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
+                AudioConfig resolvedAudioConfig = audioConfig;
+                resolvedAudioConfig.outputChannels = audioConfig.downmix ? 2 : trackFormat.channels;
+                resolvedAudioConfig.outputChannelMask =
+                    audioConfig.downmix ? DefaultChannelMaskForChannels(2) : trackFormat.channelMask;
+                AudioEncoder* encoderForTrack = nullptr;
+                auto it = trackToEncoder.find(track);
+                if (it != trackToEncoder.end()) {
+                    encoderForTrack = it->second;
+                    DLL_Log(
+                        "MediaEngine::ReloadConfig Audio source %zu reusing encoder "
+                        "for track %d",
+                        i, track);
+                } else {
+                    // Create new encoder for this track
+                    auto newEncoder = std::make_unique<AudioEncoder>();
+                    bool aRes =
+                        newEncoder->Init(resolvedAudioConfig, [this](AVPacket* pkt) { this->WritePacket(pkt); });
+
+                    if (!aRes) {
+                        DLL_Log("MediaEngine::ReloadConfig Audio encoder for track %d failed", track);
+                        continue;
+                    }
+
+                    videoEnc->AddAudioContext(resolvedAudioConfig, newEncoder->GetCodecContext(), track);
+
+                    encoderForTrack = newEncoder.get();
+                    trackToEncoder[track] = encoderForTrack;
+
+                    AudioSource source;
+                    source.config = resolvedAudioConfig;
+                    source.track = track;
+                    source.configuredSourceIndex = i;
+                    source.sourceType = audioConfig.sourceType;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
+                    source.encoder = std::move(newEncoder);
+                    source.sharedEncoderPtr = source.encoder.get();
+
+                    // Create appropriate capture type
+                    if (audioConfig.sourceType == AudioConfig::AppAudio) {
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
+                    } else {
+                        source.capture = std::make_unique<AudioCapture>();
+                    }
+
+                    // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+                    InitAudioSourceBuffers(source, audioConfig, i);
+
+                    DLL_Log(
+                        "MediaEngine::ReloadConfig Created new encoder for track %d "
+                        "(source %zu, type=%d)",
+                        track, i, (int)audioConfig.sourceType);
+                    audioSources.push_back(std::move(source));
+                }
+
+                if (it != trackToEncoder.end()) {
+                    AudioSource source;
+                    source.config = resolvedAudioConfig;
+                    source.track = track;
+                    source.configuredSourceIndex = i;
+                    source.sourceType = audioConfig.sourceType;
+                    source.mixChannels =
+                        resolvedAudioConfig.outputChannels > 0 ? resolvedAudioConfig.outputChannels : 2;
+                    source.mixChannelMask = resolvedAudioConfig.outputChannelMask != 0
+                                                ? resolvedAudioConfig.outputChannelMask
+                                                : DefaultChannelMaskForChannels(source.mixChannels);
+                    source.encoder = nullptr;
+                    source.sharedEncoderPtr = encoderForTrack;
+
+                    // Create appropriate capture type
+                    if (audioConfig.sourceType == AudioConfig::AppAudio) {
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
+                        source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
+                    } else {
+                        source.capture = std::make_unique<AudioCapture>();
+                    }
+
+                    // INIT RING BUFFER AND SYNC RESAMPLER (Per-source drift compensation)
+                    InitAudioSourceBuffers(source, audioConfig, i);
+
+                    DLL_Log(
+                        "MediaEngine::ReloadConfig Audio source %zu shares encoder "
+                        "for track %d (type=%d)",
+                        i, track, (int)audioConfig.sourceType);
+                    audioSources.push_back(std::move(source));
+                }
+            }
+        }
+
+        CoalesceCaptureRoutes();
+
+        DLL_Log(
+            "MediaEngine: ReloadConfig complete. Audio sources: %zu, unique "
+            "tracks: %zu",
+            audioSources.size(), trackToEncoder.size());
+
+}
+
+
+void MediaEngine::CoalesceCaptureRoutes() {
+
+
+        using CaptureRouteKey = std::tuple<int, std::string>;
+        std::map<CaptureRouteKey, size_t> owners;
+        std::map<CaptureRouteKey, std::pair<int, uint32_t>> appCaptureFormats;
+        size_t physicalCaptureCount = 0;
+        size_t sharedRouteCount = 0;
+
+        auto captureKey = [](const AudioSource& src) -> CaptureRouteKey {
+            std::string physicalIdentity;
+            if (src.sourceType == AudioConfig::AppAudio) {
+                physicalIdentity = ce::audio::AppAudioTrackIdentity(
+                    src.config.processName, static_cast<unsigned long>(src.config.processId), 0);
+            } else {
+                physicalIdentity = src.config.device.empty() ? "<default>" : src.config.device;
+                std::transform(physicalIdentity.begin(), physicalIdentity.end(), physicalIdentity.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            }
+            return {static_cast<int>(src.sourceType), std::move(physicalIdentity)};
+        };
+
+        for (const auto& src : audioSources) {
+            if (src.sourceType != AudioConfig::AppAudio) {
+                continue;
+            }
+            const CaptureRouteKey key = captureKey(src);
+            auto& format = appCaptureFormats[key];
+            if (src.mixChannels > format.first) {
+                format = {src.mixChannels, src.mixChannelMask};
+            }
+        }
+
+        for (size_t idx = 0; idx < audioSources.size(); ++idx) {
+            auto& src = audioSources[idx];
+            const CaptureRouteKey key = captureKey(src);
+            const auto [it, inserted] = owners.emplace(key, idx);
+            if (inserted) {
+                src.captureFanoutOwnerIndex = idx;
+                if (src.appCapture) {
+                    const auto format = appCaptureFormats[key];
+                    src.appCapture->SetRequestedFormat(48000, format.first, format.second);
+                    DLL_Log("[AudioRoute] App capture owner=%zu configuredSource=%zu requests shared format=%dch/0x%x",
+                            idx, src.configuredSourceIndex, format.first, format.second);
+                }
+                ++physicalCaptureCount;
+                continue;
+            }
+
+            const size_t ownerIdx = it->second;
+            src.captureFanoutOwnerIndex = ownerIdx;
+            src.capture.reset();
+            src.appCapture.reset();
+            ++sharedRouteCount;
+            DLL_Log(
+                "[AudioRoute] Source route src=%zu track=%d shares physical capture owner=%zu track=%d "
+                "configuredSource=%zu type=%d format=%dch/0x%x",
+                idx, src.track, ownerIdx, audioSources[ownerIdx].track, src.configuredSourceIndex,
+                static_cast<int>(src.sourceType), src.mixChannels, src.mixChannelMask);
+        }
+
+        DLL_Log("[AudioRoute] Capture topology: physical=%zu routedFollowers=%zu totalRoutes=%zu", physicalCaptureCount,
+                sharedRouteCount, audioSources.size());
+
+}
+
+
+ProcessLoopbackCapture* MediaEngine::GetAppCaptureForRoute(size_t srcIdx) {
+
+
+        if (srcIdx >= audioSources.size()) {
+            return nullptr;
+        }
+        const size_t ownerIdx = audioSources[srcIdx].captureFanoutOwnerIndex;
+        if (ownerIdx >= audioSources.size()) {
+            return nullptr;
+        }
+        return audioSources[ownerIdx].appCapture.get();
+
+}
+
+
+std::pair<int64_t, int64_t> MediaEngine::GetCaptureGroupBufferedSampleRange(size_t srcIdx) const {
+
+
+        if (srcIdx >= audioSources.size()) {
+            return {0, 0};
+        }
+        const size_t ownerIdx = audioSources[srcIdx].captureFanoutOwnerIndex;
+        int64_t minimum = std::numeric_limits<int64_t>::max();
+        int64_t maximum = 0;
+        for (const auto& route : audioSources) {
+            if (route.captureFanoutOwnerIndex != ownerIdx || !route.ringBuffer) {
+                continue;
+            }
+            const size_t channels = static_cast<size_t>(std::max(1, route.mixChannels));
+            const int64_t bufferedSamples = static_cast<int64_t>(route.ringBuffer->GetAvailable() / channels);
+            minimum = std::min(minimum, bufferedSamples);
+            maximum = std::max(maximum, bufferedSamples);
+        }
+        return {minimum == std::numeric_limits<int64_t>::max() ? 0 : minimum, maximum};
+
+}
+
+
+void MediaEngine::InitAudioSourceBuffers(AudioSource& source,  const AudioConfig& audioConfig,  size_t sourceIdx) {
+
+
+        constexpr int kMixerSampleRate = 48000;
+        constexpr size_t kDefaultAudioRingBufferSeconds = 8;
+        // Heavy CFR overload runs can fall tens of seconds behind real time even
+        // while audio/video file durations still stay mathematically equal. Give CFR
+        // enough retention headroom to avoid destructive oldest-audio trims in those
+        // runs so we preserve pitch and avoid crackle while diagnostics report the
+        // underlying encoder shortfall honestly.
+        constexpr size_t kCfrAudioRingBufferSeconds = 30;
+        const bool isCfrPath = ce::audio::ShouldUseCfrAudioContinuityPolicy(config.video.useVFR);
+        const size_t ringBufferSeconds = isCfrPath ? kCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
+        const int channels = std::clamp(source.mixChannels, 1, 8);
+        const size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * channels;
+        source.fullRingBufferCapacityFloats = capacity;
+
+        // App-audio sources commonly target candidate processes that may not be
+        // running (a "capture whichever game is running" profile). Allocating the
+        // full multi-second CFR retention buffer (~11.5 MB at 30s/48k/stereo) for
+        // every such source wastes memory on sources that never capture. Start app
+        // sources with a small buffer and grow in-place to full capacity on first
+        // captured audio (see AudioLoop). System/mic sources are always active, so
+        // they keep full capacity immediately.
+        constexpr size_t kAppAudioInitialRingBufferSeconds = 1;
+        const size_t initialCapacity = (source.appCapture != nullptr)
+                                           ? std::min(capacity, static_cast<size_t>(kMixerSampleRate) *
+                                                                    kAppAudioInitialRingBufferSeconds * channels)
+                                           : capacity;
+        source.ringBuffer = std::make_unique<AudioRingBuffer>(initialCapacity);
+        DLL_Log(
+            "MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (initial, full=%zu floats/%zus), "
+            "rate=%d channels=%d mask=0x%x deferred=%d",
+            sourceIdx, initialCapacity, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask,
+            initialCapacity < capacity ? 1 : 0);
+
+        source.syncResampler = std::make_unique<AudioResampler>();
+        AudioResampler::InputFormat syncInFmt;
+        syncInFmt.sampleRate = kMixerSampleRate;
+        syncInFmt.channels = channels;
+        syncInFmt.bitsPerSample = 32;
+        syncInFmt.validBitsPerSample = 32;
+        syncInFmt.isFloat = true;
+        syncInFmt.blockAlign = channels * 4;
+        syncInFmt.channelMask = source.mixChannelMask;
+        AudioResampler::OutputFormat syncOutFmt;
+        syncOutFmt.sampleRate = kMixerSampleRate;
+        syncOutFmt.channels = channels;
+        syncOutFmt.sampleFmt = AV_SAMPLE_FMT_FLT;
+        syncOutFmt.channelMask = source.mixChannelMask;
+        source.syncResampler->Init(syncInFmt, syncOutFmt);
+        DLL_Log("MediaEngine::Init SyncResampler created for source %zu (rate=%d channels=%d)", sourceIdx,
+                kMixerSampleRate, channels);
+
+}
+
+void MediaEngine::ApplyConfigDeferredDuringRecording() {
+    if (!deferredConfig)
+        return;
+    // Exactly what a reload during recording used to do, only no longer while
+    // recording threads read `config`: replace the settings, keep the encoders
+    // (and the per-recording hints already applied to them) as they are.
+    const std::unique_ptr<AppConfig> pending = std::move(deferredConfig);
+    config = *pending;
+    trackAudioFormats = ResolveTrackAudioFormats(config);
+    DLL_Log("MediaEngine: Applied the config reload deferred during the previous recording");
+}

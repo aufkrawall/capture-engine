@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/backbuffer_reference_trace.h"
+#include "hook/present/backbuffer_reference_trace.h"
 #include "source_fragment_reader.h"
 
 namespace trace = ce::backbuffer_reference_trace;
@@ -141,7 +141,7 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
 // DXGI's GetBuffer is hooked below its entry, and only while the slot still names DXGI's
 // function: a slot-hooking overlay skips a function whose entry already jumps elsewhere.
 TEST(BackBufferReferenceTraceTest, GetBufferIsHookedBelowDxgisEntryNeverInTheSlotOrAtTheEntry) {
-    const std::string source = ReadSource("hook/common/backbuffer_reference_trace.cpp");
+    const std::string source = ReadSource("hook/present/backbuffer_reference_trace.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_EQ(source.find("PatchSlot(swapChainVtable"), std::string::npos);
     EXPECT_EQ(source.find("InlineHook::InstallPublished(getBufferTarget"), std::string::npos);
@@ -154,7 +154,7 @@ TEST(BackBufferReferenceTraceTest, GetBufferIsHookedBelowDxgisEntryNeverInTheSlo
 
 // Armed after every successful D3D12 resize, read out on a refused one.
 TEST(BackBufferReferenceTraceTest, ResizeDiagnosticsArmTheTraceOnSuccessAndReadItOnFailure) {
-    const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string resize = ReadSource("hook/present/dxgi_shared_resize.cpp");
     const size_t begin = resize.find("void EndD3D12ResizeDiagnostics(");
     ASSERT_NE(begin, std::string::npos);
     const std::string body = resize.substr(begin, resize.find("\n}\n", begin) - begin);
@@ -167,6 +167,6 @@ TEST(BackBufferReferenceTraceTest, ResizeDiagnosticsArmTheTraceOnSuccessAndReadI
     EXPECT_LT(track, throttle) << "the log throttle must never stop the trace from following a new chain";
     EXPECT_LT(log, throttle);
 
-    const std::string teardown = ReadSource("hook/common/dxgi_shared_hooks_present_vtable.cpp");
+    const std::string teardown = ReadSource("hook/present/dxgi_shared_hooks_present_vtable.cpp");
     EXPECT_NE(teardown.find("BackBufferReferenceTrace_Uninstall();"), std::string::npos);
 }

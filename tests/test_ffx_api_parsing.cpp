@@ -4,9 +4,9 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../hook/apis/ffx_cached_pointer_router.h"
-#include "../hook/apis/ffx_hook.h"
-#include "../hook/common/ffx_api_parsing.h"
+#include "hook/ffx/ffx_cached_pointer_router.h"
+#include "hook/ffx/ffx_hook.h"
+#include "hook/ffx/ffx_api_parsing.h"
 
 namespace {
 

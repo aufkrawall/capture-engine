@@ -4,14 +4,14 @@
 #include <string>
 #include <vector>
 
-#include "../hook/vulkan_layer/overlay_submit_queue_policy.h"
-#include "../hook/vulkan_layer/vulkan_prerender_policy.h"
-#include "../hook/vulkan_layer/vulkan_reflex_limiter.h"
+#include "hook/vulkan_layer/overlay_submit_queue_policy.h"
+#include "hook/vulkan_layer/vulkan_prerender_policy.h"
+#include "hook/vulkan_layer/vulkan_reflex_limiter.h"
 #include "source_fragment_reader.h"
 
 #include <cstring>
 
-#include "../hook/common/custom_overlay_vk.h"
+#include "hook/overlay/custom_overlay_vk.h"
 
 // Regression coverage for the DOOM Eternal overlay disappearing after ~240
 // frames, session installed/captureengine/logs/20260819_030710.
@@ -651,7 +651,7 @@ TEST(OverlaySubmitQueuePolicySourceTest, ComputePresentCompositesOnThePresentQue
     const std::string compute = ReadProjectSource("hook/vulkan_layer/layer_overlay_compute.cpp");
     const std::string render = ReadProjectSource("hook/vulkan_layer/layer_overlay_render.cpp");
     const std::string shader = ReadProjectSource("hook/vulkan_layer/shaders/overlay_composite.comp");
-    const std::string spirv = ReadProjectSource("hook/common/overlay_shader_spirv.h");
+    const std::string spirv = ReadProjectSource("hook/overlay/overlay_shader_spirv.h");
     const std::string generator = ReadProjectSource("tools/compile_vulkan_overlay_shaders.py");
     ASSERT_FALSE(compute.empty());
     ASSERT_FALSE(render.empty());

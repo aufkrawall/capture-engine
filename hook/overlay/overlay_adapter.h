@@ -1,0 +1,273 @@
+/**
+ * Overlay Adapter
+ *
+ * Bridges the existing Overlay class with CustomOverlay backends.
+ * This allows gradual migration from ImGui to CustomOverlay.
+ *
+ * Usage:
+ * 1. Create appropriate backend based on graphics API
+ * 2. Call InitCustomOverlay() instead of/after InitImGui()
+ * 3. Call RenderCustomOverlay() instead of/after RenderUI()
+ *
+ * The adapter reads the same IPC config and metrics to render identical
+ * content.
+ */
+
+#pragma once
+
+#include <atomic>
+#include <mutex>
+#include "graph_scroll_policy.h"
+#include "common/overlay/recording_indicator_policy.h"
+#include "custom_overlay.h"
+#include "overlay_cpu_raster.h"
+#include "hook/metrics/benchmark_manager.h"
+#include "hook/runtime/ipc_client.h"
+#include "hook/metrics/performance_metrics.h"
+#include "hook/metrics/system_metrics.h"
+
+// Backend type enum
+enum class OverlayBackendType { None, DX8, DX9, DX10, DX11, DX12, OpenGL, Vulkan, CpuRaster };
+
+class OverlayAdapter {
+public:
+    OverlayAdapter() noexcept;
+    ~OverlayAdapter();
+
+    // Initialize with graphics API-specific parameters
+    bool InitDX8(void* device);   // IDirect3DDevice8*
+    bool InitDX9(void* device);   // IDirect3DDevice9*
+    bool InitDX10(void* device);  // ID3D10Device*
+    bool InitDX11(void* device,
+                  void* context);  // ID3D11Device*, ID3D11DeviceContext*
+    bool InitDX12(void* device, void* queue,
+                  int rtvFormat);  // ID3D12Device*, ID3D12CommandQueue*, DXGI_FORMAT
+    bool InitOpenGL();
+
+    // Headless backend: builds the shared draw list but does not draw it. The DirectDraw
+    // composite rasterizes that list on the CPU, so the route needs no graphics device.
+    bool InitCpuRaster();
+    bool InitVulkan(void* device, void* physDevice, void* queue, uint32_t queueFamily, void* deviceDispatch = nullptr,
+                    void* instanceDispatch = nullptr);  // VkDevice, VkPhysicalDevice, VkQueue,
+                                                        // DeviceDispatch*, InstanceDispatch*
+
+    // Initialize with a pre-created backend (for descriptor-free DX12, etc.)
+    bool InitCustom(CustomOverlay::RendererBackend* customBackend, OverlayBackendType type = OverlayBackendType::DX12);
+
+    void Shutdown();
+    void SetShutdownMode(bool skipDeviceRelease);  // Call before Shutdown when
+                                                   // device is being destroyed
+    bool IsInitialized() const {
+        return initialized.load(std::memory_order_acquire);
+    }
+    OverlayBackendType GetBackendType() const {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return backendType;
+    }
+
+    // Get the backend for Vulkan-specific operations (SetRenderContext, etc.)
+    CustomOverlay::RendererBackend* GetBackend() {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return backend;
+    }
+
+    // Set external data sources
+    void SetMetrics(PerformanceMetrics* m) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        metrics = m;
+    }
+    void SetIPCClient(IPCClient* ipc) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        this->ipc = ipc;
+    }
+    void SetHwnd(void* hwnd) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        this->hwnd = hwnd;
+        // Share a valid game window across ALL overlay adapters so an adapter that never gets SetHwnd
+        // (e.g. the descriptor-free DX12 backend) resolves the game's DPI instead of falling back to
+        // GetForegroundWindow() — which during startup can be a 96-DPI launcher/splash (overlay rendered
+        // at 100% instead of the Windows 150% scale; session 20260624_004915).
+        RememberDpiReferenceHwnd(hwnd);
+    }
+    // Remember a known-valid game window for cross-adapter DPI resolution (file-static; see .cpp).
+    static void RememberDpiReferenceHwnd(void* hwnd);
+    void SetGraphicsAPI(const char* api, const char* evidenceSource = nullptr);
+    void SetLatencyDevice(void* device);
+    void SetReserveInactiveFGSpace(bool reserve);
+    void InvalidateCachedFrame();
+    void SetDroppedFrames(uint32_t count) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        droppedFrames = count;
+    }
+    void SetHDR(bool enabled, int rtvFormat = 0) {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        isHDR = enabled;
+        renderTargetFormat = rtvFormat;
+    }
+
+    // DX12-specific: Set render target before RenderOverlay
+    void SetDX12RenderTarget(void* cmdList, void* rtvHandle);
+    void SetDX12UploadSlotFence(void* fence, uint64_t guardValue);
+    void SetDX12NextUploadSlot(int slot);
+    bool PrimeDX12Resources(void* cmdList);
+    bool HasPendingDX12Resources() const;
+
+    // Render the overlay (called after BeginFrame in hook's render path)
+    void RenderOverlay(int viewportWidth, int viewportHeight);
+
+    // Initializes and replays the current draw list through an auxiliary
+    // backend without replacing the adapter's primary backend. DirectDraw uses
+    // this to keep its always-available CPU renderer while a D3D7 sidecar draws
+    // inside the application's real scene.
+    bool InitializeAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary) const;
+    bool RenderWithAuxiliaryBackend(CustomOverlay::RendererBackend& auxiliary, int viewportWidth,
+                                    int viewportHeight, RECT* renderedBounds = nullptr) const;
+
+    // Bounding box, in viewport pixels, of the geometry the last rendered frame
+    // emitted. The legacy DirectDraw/DX6/DX7 CPU fallback moves only these
+    // pixels; a full 4K surface pass costs about 33 MB in each direction.
+    bool GetLastRenderedBounds(int viewportWidth, int viewportHeight, RECT& outBounds) const;
+
+    // Incremental rasterization for the DirectDraw CPU composite:
+    // primitives whose geometry did not move keep their cached pixels, and
+    // `changedBounds` (target-relative) is empty when the whole frame is
+    // already current. Rebuilding and re-rasterizing the static panel on every
+    // presentation is what held the composite at tens of milliseconds.
+    bool RenderRasterCache(ce::overlay_cpu_raster::CommandCache& cache, const ce::overlay_cpu_raster::Target& target,
+                           ce::overlay_cpu_raster::RasterStats& stats,
+                           ce::overlay_cpu_raster::PixelRect& changedBounds) const;
+
+private:
+    bool GetLastRenderedBoundsLocked(int viewportWidth, int viewportHeight, RECT& outBounds) const;
+
+    struct FrameLayoutSnapshot {
+        uint32_t rowMask = 0;
+        uint32_t rowCount = 0;
+        bool fgActive = false;
+        bool reserveFGSpace = false;
+        int fgMultiplier = 1;
+        char fgLabel[16] = "";
+        float fgBaseFPS = 0.0f;
+        float fgOutputFPS = 0.0f;
+        ce::system_latency::Snapshot systemLatency;
+        ce::recording_indicator::State recordingState = ce::recording_indicator::State::Idle;
+        // Media armed a screen-grab capture pipeline that records the composited screen,
+        // so this overlay's recording-start status must not be drawn into the game frames
+        // that capture is about to read. Cleared when the recording goes live.
+        bool recordingStatusDark = false;
+        bool recordingActive = false;
+        bool recordingAudioOnly = false;
+        uint64_t recordingSeconds = 0;
+        bool showOverloadWarning = false;
+        uint32_t recordingWarningKind = 0;
+        uint32_t recordingTargetFps = 0;
+        uint32_t recordingSustainFpsX100 = 0;
+        bool notificationVisible = false;
+        uint32_t notificationType = 0;
+        BenchmarkState benchmarkState = BenchmarkState::Idle;
+        char benchmarkTimerText[32] = "";
+        char benchmarkFpsText[48] = "";
+    };
+
+    bool InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
+                                 const char* backendName, float dpiScale);
+    void BindLatencyDeviceLocked(void* device);
+    void ApplyShutdownModeLocked(bool skipRelease);
+    void DestroyResourcesLocked(bool shutdownRenderer);
+    void ResetStateLocked();
+    void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
+                       const FrameLayoutSnapshot& frameLayout, bool refreshLayout);
+    uint32_t GetLoadColor(float load);
+
+    CustomOverlay::Renderer* renderer = nullptr;
+    CustomOverlay::RendererBackend* backend = nullptr;
+    OverlayBackendType backendType = OverlayBackendType::None;
+
+    PerformanceMetrics* metrics = nullptr;
+    IPCClient* ipc = nullptr;
+    void* hwnd = nullptr;
+    void* latencyDevice = nullptr;
+    char graphicsAPI[32] = "";
+    uint32_t droppedFrames = 0;
+    bool isHDR = false;
+    int renderTargetFormat = 0;
+    void* hdrPaperWhiteMonitor = nullptr;
+    float resolvedHdrPaperWhiteNits = 203.0f;
+    std::atomic<bool> initialized{false};
+    bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs (app is closing)
+    mutable std::mutex stateMutex;
+
+    // Cached values for throttled updates
+    DWORD lastUpdateTime = 0;
+    float cachedFPS = 0.0f;
+    float cachedAvgFPS = 0.0f;
+    float cached1PercentLow = 0.0f;
+    float cached01PercentLow = 0.0f;
+    ce::system_latency::Snapshot cachedSystemLatency;
+    SystemMetrics cachedSystemMetrics{};
+    char cachedCpuMetricsText[96] = "--";
+    char cachedGpuMetricsText[96] = "--";
+    char cachedCpuClocksText[48] = "";
+    char cachedGpuClocksText[64] = "";
+    // Byte offset at which the optional sensor readings start inside the two
+    // metrics strings, so the load percentage keeps its load color while the
+    // readings after it do not.
+    size_t cachedCpuSensorOffset = 0;
+    size_t cachedGpuSensorOffset = 0;
+
+    // Last logged digest of the metric rows plus their validity flags, so a row
+    // that alternates between a reading and "--" is visible in the log.
+    char lastLoggedRowDigest[320] = "";
+    uint32_t rowDigestChanges = 0;
+
+    // Encoder overload warning tracking (5-second display with extension)
+    uint64_t lastEncoderOverloadTick = 0;
+    uint32_t lastRecordingWarningKind = 0;
+
+    // Cached layout measurement (recomputed only on content updates, avoids
+    // per-frame snprintf+CalcTextSize overhead)
+    float cachedContentWidth = 0.0f;
+    bool layoutDirty = true;
+
+    // Throttled frame time display values (updated every 2 seconds)
+    DWORD lastMaxFrameTimeUpdateTime = 0;
+    float cachedMaxFrameTime = 0.0f;
+    float cachedAvgFrameTimeForColor = 0.0f;
+
+    // Scrolls the frame time graph by drawn frames rather than by sample
+    // arrival; see graph_scroll_policy.h.
+    GraphScrollCursor graphScroll;
+
+    // Cached overlay draw data can be reused between meaningful content updates.
+    int lastViewportWidth = 0;
+    int lastViewportHeight = 0;
+    bool hasCachedFrame = false;
+    bool hasRenderedConfig = false;
+    bool reserveInactiveFGSpace = false;
+    bool hasLastFrameLayout = false;
+    FrameLayoutSnapshot lastFrameLayout = {};
+    OverlayConfig lastRenderedConfig = {};
+    FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
+    DWORD lastFrameTimeSourceLogTime = 0;
+    bool hasObservedFrameTimeSource = false;
+    // Transitions the rate limit swallowed since the last line was written. A
+    // suppressed transition that left no trace made a flapping source look like
+    // a single late one, which is the shape a reader most needs to tell apart.
+    uint32_t suppressedFrameTimeSourceChanges = 0;
+    // Periodic cadence of whichever series the overlay is reporting from. The
+    // per-frame CSV already carries these columns, but a pacing regression that
+    // only moves the *shape* of the screen series - Portal RTX 20260913_184745,
+    // where forced FIFO took a metered generated batch from 0.43 ms to 6.91 ms
+    // of frame-time stddev while every present stayed identical - was invisible
+    // in the log until someone re-derived it from the CSV.
+    DWORD lastPacingHealthLogTime = 0;
+    DWORD lastSystemLatencySourceLogTime = 0;
+    DWORD lastNativeLatencyQueryTime = 0;
+    bool hasObservedSystemLatencySource = false;
+    // Latched so a configuration change that swaps the estimator is reported
+    // the moment it happens rather than up to a full log period later: the two
+    // sources are separate measurements and a comparison across the boundary
+    // is only meaningful if the boundary is visible.
+    ce::system_latency::Source lastLoggedSystemLatencySource = ce::system_latency::Source::Unavailable;
+};
+extern OverlayAdapter g_OverlayAdapter;

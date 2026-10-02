@@ -4,7 +4,7 @@
 #include <string>
 #include <utility>
 
-#include "../mediaengine/video_encoder_options.h"
+#include "mediaengine/video/video_encoder_options.h"
 
 namespace {
 

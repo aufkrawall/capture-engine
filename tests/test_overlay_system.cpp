@@ -14,10 +14,10 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include "../hook/common/custom_font.h"
-#include "../hook/common/custom_overlay.h"
-#include "../hook/common/legacy_overlay_cache.h"
-#include "../hook/common/overlay_layout_policy.h"
+#include "hook/overlay/custom_font.h"
+#include "hook/overlay/custom_overlay.h"
+#include "hook/overlay/legacy_overlay_cache.h"
+#include "hook/overlay/overlay_layout_policy.h"
 #include "source_fragment_reader.h"
 
 using namespace CustomOverlay;
@@ -572,7 +572,7 @@ TEST(OverlayHdrSourceTest, DirectXAndVulkanApplyTheSameRec709ToRec2020Transform)
 }
 
 TEST(OverlayHdrSourceTest, AutoPaperWhiteUsesWindowsPerMonitorCalibration) {
-    const std::string source = ReadOverlaySource("hook/common/overlay_adapter.cpp");
+    const std::string source = ReadOverlaySource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL"), std::string::npos);
     EXPECT_NE(source.find("80.0f / 1000.0f"), std::string::npos);
@@ -586,8 +586,8 @@ TEST(OverlayDpiSourceTest, InjectOverlayScaleUsesNearestMonitorEffectiveDpi) {
     // 3840x2160; warm backend reuse preserved the already-wrong font atlas. The inject
     // overlay must therefore resolve display DPI at initialization exactly like the
     // pseudo-overlay instead of consulting the game window's awareness-dependent value.
-    const std::string adapter = ReadOverlaySource("hook/common/overlay_adapter.cpp");
-    const std::string internalHeader = ReadOverlaySource("hook/common/overlay_adapter_internal.h");
+    const std::string adapter = ReadOverlaySource("hook/overlay/overlay_adapter.cpp");
+    const std::string internalHeader = ReadOverlaySource("hook/overlay/overlay_adapter_internal.h");
     ASSERT_FALSE(adapter.empty());
     ASSERT_FALSE(internalHeader.empty());
 
@@ -599,8 +599,8 @@ TEST(OverlayDpiSourceTest, InjectOverlayScaleUsesNearestMonitorEffectiveDpi) {
 }
 
 TEST(LegacyOverlayBackendSourceTest, DX8AndDX9ReuseStateBlocksButCaptureAndApplyEveryDraw) {
-    const std::string dx8 = ReadOverlaySource("hook/common/custom_overlay_dx8.cpp");
-    const std::string dx9 = ReadOverlaySource("hook/common/custom_overlay_dx9.cpp");
+    const std::string dx8 = ReadOverlaySource("hook/overlay/custom_overlay_dx8.cpp");
+    const std::string dx9 = ReadOverlaySource("hook/overlay/custom_overlay_dx9.cpp");
     ASSERT_FALSE(dx8.empty());
     ASSERT_FALSE(dx9.empty());
 
@@ -616,8 +616,8 @@ TEST(LegacyOverlayBackendSourceTest, DX8AndDX9ReuseStateBlocksButCaptureAndApply
 }
 
 TEST(LegacyOverlayBackendSourceTest, FailedUploadsReturnBeforeLegacyDrawSubmission) {
-    for (const char* path : {"hook/common/custom_overlay_dx8.cpp", "hook/common/custom_overlay_dx9.cpp",
-                             "hook/common/custom_overlay_dx10.cpp"}) {
+    for (const char* path : {"hook/overlay/custom_overlay_dx8.cpp", "hook/overlay/custom_overlay_dx9.cpp",
+                             "hook/overlay/custom_overlay_dx10.cpp"}) {
         const std::string source = ReadOverlaySource(path);
         SCOPED_TRACE(path);
         ASSERT_FALSE(source.empty());
@@ -636,7 +636,7 @@ TEST(LegacyOverlayBackendSourceTest, FailedUploadsReturnBeforeLegacyDrawSubmissi
 // A geometry/tessellation shader left bound by the application ran on the
 // overlay's triangles; the overlay binds none and restores the application's.
 TEST(OverlayBackendSourceTest, DX11OverlayOwnsEveryShaderStageAndViewportItTouches) {
-    const std::string source = ReadOverlaySource("hook/common/custom_overlay_dx11.cpp");
+    const std::string source = ReadOverlaySource("hook/overlay/custom_overlay_dx11.cpp");
     ASSERT_FALSE(source.empty());
     for (const char* stage : {"GS", "HS", "DS"}) {
         SCOPED_TRACE(stage);
@@ -656,8 +656,8 @@ TEST(OverlayBackendSourceTest, DX11OverlayOwnsEveryShaderStageAndViewportItTouch
 }
 
 TEST(LegacyOverlayBackendSourceTest, OpenGLLegacyPathPreservesSentinelsWithoutPerFrameErrorDrain) {
-    const std::string source = ReadOverlaySource("hook/common/custom_overlay_gl.cpp");
-    const std::string hookSource = ReadOverlaySource("hook/apis/opengl_hook.cpp");
+    const std::string source = ReadOverlaySource("hook/overlay/custom_overlay_gl.cpp");
+    const std::string hookSource = ReadOverlaySource("hook/opengl/opengl_hook.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(hookSource.empty());
 

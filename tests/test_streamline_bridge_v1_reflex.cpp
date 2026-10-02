@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../hook/apis/streamline_bridge_policy.h"
-#include "../hook/apis/streamline_bridge_v1_abi.h"
+#include "hook/streamline/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_bridge_v1_abi.h"
 
 // Session 20261001_040020 (Witcher 3, streamline_upgrade=true): DLSS SR sharp at rest but
 // aliased in motion, DLSS-G never generating (`eDLSSGStatusFailReflexNotDetectedAtRuntime ...

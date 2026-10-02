@@ -7,12 +7,12 @@
 #include <algorithm>
 
 #include "d3d11_device_wrap.h"
-#include "../apis/dx11_hook.h"
-#include "../apis/lod_helper.h"
-#include "../common/sampler_override_utils.h"
+#include "hook/d3d11/dx11_hook.h"
+#include "hook/ddraw/lod_helper.h"
+#include "hook/overrides/sampler_override_utils.h"
 #include "d3d11_devicecontext_wrap.h"
 #include "dxgi_device_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // ============================================================================
 // Constructor / Destructor

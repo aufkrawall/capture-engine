@@ -7,7 +7,7 @@
 #include "source_fragment_reader.h"
 
 // Source contract for the Present detour's stage accounting
-// (hook/common/present_stage_cost.h). The accounting is only as good as the
+// (hook/present/present_stage_cost.h). The accounting is only as good as the
 // placement of its scopes: a forward that escapes kForward bills the runtime's
 // Present to CE, and a region that loses its scope silently moves into
 // unattributed. These tests pin the placement.
@@ -57,8 +57,8 @@ TEST(PresentStageCostSourceTest, NoDetourPathForwardsPresentOutsideTheForwardSta
     const std::regex rawForward(
         R"(\b(presentBypass|recursiveBypass|bypass|dxgi_shared_oPresentTrampoline|dxgi_shared_oPresentBypass|)"
         R"(dxgi_shared_oPresent|externalPresent)\(pSwapChain)");
-    for (const char* file : {"hook/common/dxgi_shared_present.cpp", "hook/common/dxgi_shared_present_core.cpp",
-                             "hook/common/dxgi_shared_present_routing.cpp", "hook/common/dxgi_shared_steam.cpp"}) {
+    for (const char* file : {"hook/present/dxgi_shared_present.cpp", "hook/present/dxgi_shared_present_core.cpp",
+                             "hook/present/dxgi_shared_present_routing.cpp", "hook/present/dxgi_shared_steam.cpp"}) {
         const std::string source = ReadProjectSource(file);
         ASSERT_FALSE(source.empty()) << file;
         std::smatch match;
@@ -66,7 +66,7 @@ TEST(PresentStageCostSourceTest, NoDetourPathForwardsPresentOutsideTheForwardSta
         EXPECT_NE(source.find("ForwardPresentThrough("), std::string::npos) << file;
     }
 
-    const std::string internal = ReadProjectSource("hook/common/dxgi_shared_internal.h");
+    const std::string internal = ReadProjectSource("hook/present/dxgi_shared_internal.h");
     const std::string helper = FunctionBody(internal, "inline HRESULT ForwardPresentThrough(");
     ASSERT_FALSE(helper.empty());
     const size_t scope = helper.find("StageScope forwardStage(ce::present_stage_cost::Stage::kForward);");
@@ -75,7 +75,7 @@ TEST(PresentStageCostSourceTest, NoDetourPathForwardsPresentOutsideTheForwardSta
     ASSERT_NE(call, std::string::npos);
     EXPECT_LT(scope, call);
 
-    const std::string original = ReadProjectSource("hook/common/dxgi_shared_original.cpp");
+    const std::string original = ReadProjectSource("hook/present/dxgi_shared_original.cpp");
     const std::string callOriginal = FunctionBody(original, "HRESULT CallOriginalPresent(IDXGISwapChain*");
     ASSERT_FALSE(callOriginal.empty());
     const size_t originalScope = callOriginal.find("Stage::kForward");
@@ -87,7 +87,7 @@ TEST(PresentStageCostSourceTest, NoDetourPathForwardsPresentOutsideTheForwardSta
 // The recorder closes last, and the detour's own sequence advances through the
 // named stages in order around the calls they are named for.
 TEST(PresentStageCostSourceTest, DetourPresentAdvancesThroughItsStagesInOrder) {
-    const std::string source = ReadProjectSource("hook/common/dxgi_shared_present.cpp");
+    const std::string source = ReadProjectSource("hook/present/dxgi_shared_present.cpp");
     const std::string detour = FunctionBody(source, "HRESULT STDMETHODCALLTYPE DetourPresent(");
     ASSERT_FALSE(detour.empty());
     const char* ordered[] = {
@@ -120,7 +120,7 @@ TEST(PresentStageCostSourceTest, DetourPresentAdvancesThroughItsStagesInOrder) {
 }
 
 TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) {
-    const std::string core = ReadProjectSource("hook/common/dxgi_shared_present_core.cpp");
+    const std::string core = ReadProjectSource("hook/present/dxgi_shared_present_core.cpp");
     ASSERT_FALSE(core.empty());
     const char* file = "dxgi_shared_present_core.cpp";
     ExpectEveryCallScoped(core, "UpdateDXGIPresentMetricsAndPublish(", "CostStage::kMetrics", 2, file);
@@ -148,14 +148,14 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
 
 // The present threads never format or log: the hook service loop reports.
 TEST(PresentStageCostSourceTest, TheReportRunsOnTheHookServiceThreadOnly) {
-    const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
+    const std::string hookThread = ReadProjectSource("hook/runtime/main_hookthread.cpp");
     const size_t service = hookThread.find("ce::pacing_trace::Service();");
     const size_t report = hookThread.find("ce::present_stage_cost::ReportPresentStageCostIfDue();");
     ASSERT_NE(service, std::string::npos);
     ASSERT_NE(report, std::string::npos);
     EXPECT_LT(service, report);
-    for (const char* file : {"hook/common/dxgi_shared_present.cpp", "hook/common/dxgi_shared_present_core.cpp",
-                             "hook/common/dxgi_shared_present_routing.cpp"}) {
+    for (const char* file : {"hook/present/dxgi_shared_present.cpp", "hook/present/dxgi_shared_present_core.cpp",
+                             "hook/present/dxgi_shared_present_routing.cpp"}) {
         EXPECT_EQ(ReadProjectSource(file).find("ReportPresentStageCostIfDue"), std::string::npos) << file;
     }
 }

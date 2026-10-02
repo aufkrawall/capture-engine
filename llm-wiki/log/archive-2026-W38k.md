@@ -195,7 +195,7 @@ re-measuring per recording bought nothing and cost 3.2 s of the 3.6 s startup.
 
 **Fixed (three changes, all in one commit):**
 
-- `common/av_sync_latency_channel.{h,cpp}`: a controller-lifetime anonymous file mapping holding a
+- `common/ipc/av_sync_latency_channel.{h,cpp}`: a controller-lifetime anonymous file mapping holding a
   small (key -> latency) table, inherited by each media child via `--avsync-latency-handle=`. The
   child reads it before probing and writes a fresh measurement back, so the probe now costs once per
   CE session. No disk file - the `audio_latency_cache.ini` ban is unchanged, and the endpoint key

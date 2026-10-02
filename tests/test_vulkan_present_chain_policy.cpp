@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../hook/vulkan_layer/vulkan_present_chain_policy.h"
+#include "hook/vulkan_layer/vulkan_present_chain_policy.h"
 
 // Portal RTX sessions `20260830_175147` and `20260830_182939`: CE overrode the
 // swapchain's present mode to FIFO, the driver reported `presentMode=2`, and

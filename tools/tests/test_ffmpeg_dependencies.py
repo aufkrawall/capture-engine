@@ -638,7 +638,7 @@ class FfmpegSourcePinTest(unittest.TestCase):
         # was cut, so every released tag drops the encoder to twoloop and fails the
         # AAC tests with "Undefined constant ... 'nmr'". A tag pin is valid only
         # once an upstream release actually carries NMR.
-        # mediaengine/audio_encoder.cpp selects it explicitly.
+        # mediaengine/audio/audio_encoder.cpp selects it explicitly.
         if not build._is_commit_ref(build.FFMPEG_SOURCE_REF):
             self.fail(
                 "FFMPEG_SOURCE_REF is a release tag; confirm the tag contains the NMR "

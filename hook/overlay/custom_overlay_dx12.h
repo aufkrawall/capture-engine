@@ -1,0 +1,136 @@
+/**
+ * Custom Overlay - DX12 Backend
+ *
+ * Renders overlay using Direct3D 12.
+ * More complex than DX11 due to explicit resource management.
+ */
+
+#pragma once
+
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
+#include <atomic>
+#include <vector>
+#include "custom_overlay.h"
+#include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
+#include "hook/d3d12/dx12_overlay_policy/inline_upload_slots.h"
+#include "hook/d3d12/dx12_overlay_policy/upload_slot_arena.h"
+
+namespace CustomOverlay {
+
+using Microsoft::WRL::ComPtr;
+
+enum class DX12RenderProbeMode : int {
+    kNone = 0,
+    kStateSetupOnly = 1,
+};
+
+void SetDX12RenderProbeMode(DX12RenderProbeMode mode);
+DX12RenderProbeMode GetDX12RenderProbeMode();
+
+class DX12Backend : public RendererBackend {
+public:
+    DX12Backend(ID3D12Device* device, ID3D12CommandQueue* queue, DXGI_FORMAT rtvFormat);
+    virtual ~DX12Backend();
+
+    bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
+    void Shutdown() override;
+
+    void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
+                const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
+    bool PreferSolidTextGeometry() const override;
+
+    // Override to detect HDR10/PQ vs scRGB from render target format
+    void SetHDRParams(int mode, float nits) override {
+        if (mode > 0 && rtvFormat == DXGI_FORMAT_R10G10B10A2_UNORM)
+            mode = 2;  // HDR10/PQ
+        RendererBackend::SetHDRParams(mode, nits);
+    }
+
+    // DX12-specific: Set render target before rendering
+    void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
+    void SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue);
+    // Force the next Render call to use the upload slot associated with an externally owned backbuffer index.
+    // Used by FFX proxy rendering so AMD's buffer-reuse fence and CE's VB/IB slot have identical lifetimes.
+    void SetNextUploadSlot(int slot) override;
+    bool PrimeResources(ID3D12GraphicsCommandList* cmdList);
+    bool HasPendingResources() const {
+        return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
+    }
+    bool HasInlineUploadsInFlight() const;
+
+private:
+    friend void RetireDX12Backend(DX12Backend* backend);
+    friend void CollectRetiredDX12Backends();
+    bool CreateRootSignature();
+    bool CreatePipelineState();
+    bool CreateBuffers();
+    bool CreateFontTexture(int width, int height, const uint8_t* data);
+    bool UploadFontTextureIfNeeded(ID3D12GraphicsCommandList* cmdList);
+    bool ResizeVertexBuffer(int slot, size_t requiredBytes);
+    bool ResizeIndexBuffer(int slot, size_t requiredBytes);
+    bool IsUploadSlotReusable(int slot);
+    bool CreateInlineCompletionBuffer();
+    int AcquireInlineUploadSlot();
+    void MarkInlineUploadComplete(ID3D12GraphicsCommandList2* list, int slot);
+
+    ID3D12Device* device = nullptr;
+    ID3D12CommandQueue* commandQueue = nullptr;
+    DXGI_FORMAT rtvFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    ComPtr<ID3D12RootSignature> rootSignature;
+    ComPtr<ID3D12PipelineState> pipelineState;
+    ComPtr<ID3D12PipelineState> pipelineStateTexturedSdr;
+    ComPtr<ID3D12PipelineState> pipelineStateSolid;
+    ComPtr<ID3D12DescriptorHeap> srvHeap;
+    ComPtr<ID3D12Resource> fontTexture;
+    ComPtr<ID3D12Resource> uploadBuffer;  // For texture upload
+
+    // Per-frame buffer pool — prevents CPU/GPU data race on upload-heap buffers.
+    // Pool size matches the command allocator pool in dx12_hook.cpp so fence
+    // guarantees that slot N is GPU-idle before the CPU reuses it.
+    static constexpr int kFramePoolSize = ce::dx12_overlay_policy::kAllocatorCoupledUploadSlotCount;
+    // The ordinary fence/allocator ring stays at 16. Callback uploads may
+    // grow without waiting when those slots are still in flight.
+    static constexpr int kMaxUploadSlots = 128;
+    // The ring's initial VB/IB regions share one upload-heap allocation (slotArena); vertexBuffer/indexBuffer
+    // hold only per-slot replacements created when a slot outgrows its region. Draws bind the GPU addresses.
+    ComPtr<ID3D12Resource> slotArena;
+    ComPtr<ID3D12Resource> vertexBuffer[kMaxUploadSlots];
+    ComPtr<ID3D12Resource> indexBuffer[kMaxUploadSlots];
+    void* vertexBufferPtr[kMaxUploadSlots] = {};
+    void* indexBufferPtr[kMaxUploadSlots] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS vertexBufferGpu[kMaxUploadSlots] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS indexBufferGpu[kMaxUploadSlots] = {};
+    size_t vertexBufferSize[kMaxUploadSlots] = {};
+    size_t indexBufferSize[kMaxUploadSlots] = {};
+    ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding;
+    uint64_t slotFenceValue[kFramePoolSize] = {};
+    uint64_t nextSlotFenceValue = 0;
+    uint32_t inFlightSkipStreak = 0;
+    std::atomic<int> frameIdx{0};
+    std::atomic<int> nextForcedUploadSlot{-1};
+    ce::dx12_overlay_policy::InlineUploadSlots<kMaxUploadSlots> inlineSlots;
+    ComPtr<ID3D12Resource> inlineCompletionBuffer;
+    volatile uint32_t* inlineCompletions = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS inlineCompletionGpuVA = 0;
+    // Intrusive retirement avoids allocation when an adapter is replaced.
+    DX12Backend* retiredNext = nullptr;
+    ComPtr<ID3D12Device> retirementDevice;
+
+    ID3D12GraphicsCommandList* currentCmdList = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE currentRTV = {};
+
+    std::atomic<bool> fontUploaded{false};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fontTextureFootprint = {};
+    D3D12_RESOURCE_DESC fontTextureDesc = {};
+
+    bool initialized = false;
+};
+
+void RetireDX12Backend(DX12Backend* backend);
+// Called by the existing hook service thread; never waits for the GPU.
+void CollectRetiredDX12Backends();
+
+}  // namespace CustomOverlay

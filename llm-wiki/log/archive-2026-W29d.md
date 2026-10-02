@@ -19,9 +19,9 @@
   sources. The required full x64/x86 product build passed at `0.1.4702`; the canonical no-build run passed all 1,426
   native tests across 94 suites plus three Python tool self-tests at metadata `0.1.4703`. Analyzer syntax validation
   and `git diff --check` also passed. No synthetic capture harness, stimulus capture, matrix, or automated soak was run.
-- **Source anchors:** `common/capture_pipeline_policy.h`, `captureengine/media_main.cpp`,
-  `captureengine/mediaengine_loader.*`, `mediaengine/{mediaengine,video_encoder,app_audio_capture}.*`,
-  `mediaengine/process_tree_selection.h`, `tests/test_capture_pipeline_policy.cpp`,
+- **Source anchors:** `common/capture/capture_pipeline_policy.h`, `captureengine/media/media_main.cpp`,
+  `captureengine/app/mediaengine_loader.*`, `mediaengine/audio/app_audio_capture.*, mediaengine/engine/mediaengine.*, mediaengine/video/video_encoder.*`,
+  `mediaengine/audio/process_tree_selection.h`, `tests/test_capture_pipeline_policy.cpp`,
   `tests/test_capture_coordinator_source.cpp`, and `tests/test_process_tree_selection.cpp`.
 
 ### 2026-07-14 - Transactional CFR startup and codec-exact audio finalization
@@ -47,9 +47,9 @@
   native tests plus three Python self-tests at metadata `0.1.4698`. No synthetic capture matrix, stimulus capture, or
   automated real-time soak was run. Real WGC/DXGI/inject, VRR/stall, endpoint-churn, and long-runtime validation remains
   intentionally assigned to the user's manual recordings.
-- **Source anchors:** `common/capture_pipeline_policy.h`, `captureengine/media_main.cpp`,
-  `mediaengine/{mediaengine,audio_capture,app_audio_capture,audio_encoder,video_encoder,matroska_timing}.*`,
-  `mediaengine/process_loopback_*`, `tools/analyze_capture_av.py`, and the matching audio/CFR/mux tests.
+- **Source anchors:** `common/capture/capture_pipeline_policy.h`, `captureengine/media/media_main.cpp`,
+  `mediaengine/audio/{audio_capture.*,app_audio_capture.*,audio_encoder.*}, mediaengine/engine/mediaengine.*, mediaengine/mux/matroska_timing.*, mediaengine/video/video_encoder.*`,
+  `mediaengine/audio/process_loopback_*`, `tools/analyze_capture_av.py`, and the matching audio/CFR/mux tests.
 
 ### 2026-07-14 - Cursor composition follows captured content time across WGC, DXGI duplication, and inject
 
@@ -72,5 +72,5 @@
   clipping, out-of-order cursor samples, and bounded history eviction. The required full x64/x86 product build passed
   at `0.1.4695`; the canonical no-build run passed all 1,422 native tests plus three Python self-tests at metadata
   `0.1.4696`. Real WGC/DXGI/inject recordings remain required for visual cursor-latency, mixed-DPI, SDR, and HDR proof.
-- **Source anchors:** `common/{cursor_capture_state,frame_queue}.h`, `captureengine/{media_main,wgc_capture,dxgi_dup_capture}.*`,
-  `mediaengine/{cursor_renderer,cursor_geometry,video_encoder}.*`, and `tests/test_cursor_geometry.cpp`.
+- **Source anchors:** `common/capture/{cursor_capture_state,frame_queue}.h`, `captureengine/media/{media_main,wgc_capture,dxgi_dup_capture}.*`,
+  `mediaengine/video/{cursor_renderer,cursor_geometry,video_encoder}.*`, and `tests/test_cursor_geometry.cpp`.

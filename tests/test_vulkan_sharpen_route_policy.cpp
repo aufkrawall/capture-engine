@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/vulkan_layer/vulkan_sharpen_route_policy.h"
+#include "hook/vulkan_layer/vulkan_sharpen_route_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {

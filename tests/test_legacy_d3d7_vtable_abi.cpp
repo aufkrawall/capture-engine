@@ -17,7 +17,7 @@
 
 #include <gtest/gtest.h>
 
-#include "../common/mip_mapping_policy.h"
+#include "common/graphics/mip_mapping_policy.h"
 
 // The legacy Direct3D headers redefine enumerators that `d3d9.h` also defines,
 // so `ddraw_hook_internal.h` cannot include them and reaches the application's

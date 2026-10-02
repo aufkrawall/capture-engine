@@ -13,7 +13,7 @@ Measured from the real draw timestamps of the 4x MFG session (`perf_metrics_8480
 about two milliseconds and then idles, while the display consumes them 7.8 ms apart. So the graph updated at the
 base rate in three-to-four slot jumps while the screen updated at 128 Hz.
 
-`hook/common/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
+`hook/overlay/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
 sample stream instead of being driven by it. Two things fell out of building it that were not obvious up front:
 
 - **The cursor must slow, never rewind.** A first version let the correction pull backwards, and a stall then
@@ -149,7 +149,7 @@ same-layer PresentIds are in flight; source/layer-only matching can overwrite on
 version-1 payload's `TimeStamp` QPC is the generated transition. FrameType 50 and 100 therefore remain distinct
 display transitions, while a later HSync/VSync/eligible MMIO completion represents the application's transition.
 Generated types do not suppress that completion; a non-generated explicit payload does suppress its duplicate
-fallback. Anchors: `captureengine/display_timing_service.cpp`, `captureengine/display_timing_correlation.h`, and
+fallback. Anchors: `captureengine/display_timing/display_timing_service.cpp`, `captureengine/display_timing/display_timing_correlation.h`, and
 `tests/test_display_timing_correlation.cpp`.
 
 The 24 ms reorder watermark is deliberately only a bounded policy. Independent providers can deliver a matching

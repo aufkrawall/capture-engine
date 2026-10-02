@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-#include "../hook/common/ngx_feature_lifecycle.h"
+#include "hook/ngx/ngx_feature_lifecycle.h"
 #include "source_fragment_reader.h"
 
 TEST(NgxFeatureLifecycleTest, UsesTheOfficialNgxSuccessBitConvention) {
@@ -76,7 +76,7 @@ TEST(NgxFeatureLifecycleTest, ResolvesOfficialAndCompatibilityFrameGenerationPar
 
 TEST(NgxFeatureLifecycleTest, NvngxHookUsesTheOfficialNamespacedMultiFrameCountKey) {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook" / "apis" / "nvngx_hook_internal.h";
+        std::filesystem::current_path() / "hook" / "ngx" / "nvngx_hook_internal.h";
     ASSERT_TRUE(std::filesystem::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -89,9 +89,9 @@ TEST(NgxFeatureLifecycleTest, NvngxHookUsesTheOfficialNamespacedMultiFrameCountK
 
 TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_params.cpp";
+    const fs::path source = fs::current_path() / "hook" / "ngx" / "nvngx_hook_params.cpp";
     const fs::path factorSource =
-        fs::current_path() / "hook" / "apis" / "nvngx_hook_params_fg_factor.cpp";
+        fs::current_path() / "hook" / "ngx" / "nvngx_hook_params_fg_factor.cpp";
     ASSERT_TRUE(fs::exists(source));
     ASSERT_TRUE(fs::exists(factorSource));
 
@@ -109,7 +109,7 @@ TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
 
 TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationFactor) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_lifecycle.cpp";
+    const fs::path source = fs::current_path() / "hook" / "ngx" / "nvngx_hook_lifecycle.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -125,7 +125,7 @@ TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationF
 // hardcoding 2x, so late injection reports the game's real MFG factor.
 TEST(NgxFeatureLifecycleTest, CreateFeatureFGBranchesResolveTheMultiplierParameter) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "nvngx_hook_feature.cpp";
+    const fs::path source = fs::current_path() / "hook" / "ngx" / "nvngx_hook_feature.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);

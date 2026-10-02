@@ -188,7 +188,7 @@ the second time: commit 339eccf0 recorded the same gap as open. CE's external du
 by a 64-bit dumper, the x64 side, which holds only the syscall thunk. The dump loads, resolves
 symbols and prints registers, and cannot produce a single caller.
 
-`captureengine/dump_helper_wow64_stacks.{h,cpp}` supplies each thread's committed 32-bit stack
+`captureengine/diagnostics/dump_helper_wow64_stacks.{h,cpp}` supplies each thread's committed 32-bit stack
 through dbghelp's `MemoryCallback`. The stack pointers are read inside dbghelp's own thread callback,
 where the target is already frozen for the dump, so nothing is suspended twice and no context can be
 torn; a thread sweep covers a dbghelp that would ask for memory first. The walk follows adjacent

@@ -1,5 +1,5 @@
 // Regression tests for present-interposer output cadence
-// (hook/common/present_interposer_cadence.h).
+// (hook/present/present_interposer_cadence.h).
 //
 // Root cause these guard against: NVIDIA Smooth Motion status was inferred from command-list
 // work populations and Present gap pairing measured on whatever present stream CE happened to
@@ -19,9 +19,9 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/fg_runtime_state.h"
-#include "../hook/common/present_interposer_cadence.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/fg/fg_runtime_state.h"
+#include "hook/present/present_interposer_cadence.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -153,7 +153,7 @@ TEST(PresentInterposerCadenceTest, ResetDiscardsAPartialWindow) {
 TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
     namespace fs = std::filesystem;
     const std::string create = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(create.empty());
     // Every create site must classify the interposer's private chain before any CE side effect,
     // including the third-party-overlay branch that would otherwise capture its queue.
@@ -171,7 +171,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
     // The create must record the queue: that association is the only thing that makes the chain
     // compositable, and its absence is what forces the application-facing fallback.
     const std::string wrapPolicy = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_wrap_policy.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_wrap_policy.cpp");
     ASSERT_FALSE(wrapPolicy.empty());
     EXPECT_NE(wrapPolicy.find("DX12_RegisterPresentInterposerPrivateSwapchain(pSwapChain, outputQueue)"),
               std::string::npos);
@@ -186,7 +186,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
     // the classification has to happen before the api is branched on.
     for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
         const std::string present =
-            ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / presentUnit);
+            ce::test_source::ReadFile(ce::test_source::FindSource("hook", presentUnit));
         ASSERT_FALSE(present.empty()) << presentUnit;
         const size_t guard = present.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
         ASSERT_NE(guard, std::string::npos) << presentUnit;
@@ -211,7 +211,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 
     // The DX11 overlay must consult that scope, and must neither retain nor borrow on such a chain.
     const std::string dx11Overlay =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_overlay.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_overlay.cpp");
     ASSERT_FALSE(dx11Overlay.empty());
     EXPECT_NE(dx11Overlay.find("IsPresentOnPresentInterposerPrivateOutputChain()"), std::string::npos);
     EXPECT_NE(dx11Overlay.find("MayAdoptBoundRenderTargetAsOverlayTarget("), std::string::npos)
@@ -222,7 +222,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 
     // The overlay queue for that chain is the chain's own queue, never the application's.
     const std::string phase2 = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp");
     ASSERT_FALSE(phase2.empty());
     const size_t interposerRoute = phase2.find("ShouldUsePresentInterposerOutputQueue(");
     ASSERT_NE(interposerRoute, std::string::npos);
@@ -234,7 +234,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 
     // ...and it enters that queue's live ECL chain rather than the raw D3D12 entry.
     const std::string drawTail = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_tail.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_tail.cpp");
     ASSERT_FALSE(drawTail.empty());
     EXPECT_NE(drawTail.find("ShouldSubmitOverlayThroughHookedECLChain("), std::string::npos);
 
@@ -277,7 +277,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 TEST(PresentInterposerSourceTest, ForcedFifoIsStatedOnTheInterposersOwnFlip) {
     namespace fs = std::filesystem;
     const std::string pacing = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "common" / "dxgi_shared_present_pacing.cpp");
+        fs::current_path() / "hook" / "present" / "dxgi_shared_present_pacing.cpp");
     ASSERT_FALSE(pacing.empty());
     const size_t interposerBranch = pacing.find("DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)");
     ASSERT_NE(interposerBranch, std::string::npos);
@@ -296,7 +296,7 @@ TEST(PresentInterposerSourceTest, ForcedFifoIsStatedOnTheInterposersOwnFlip) {
 
     // The swapchain has to reach the decision at all.
     const std::string header = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "common" / "dxgi_shared.h");
+        fs::current_path() / "hook" / "present" / "dxgi_shared.h");
     ASSERT_FALSE(header.empty());
     EXPECT_NE(header.find("ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain"),
               std::string::npos);
@@ -346,7 +346,7 @@ TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
     // Classifying a present feeds the application stream as a side effect, so both streams reach
     // the tracker from the one place that resolves the source.
     const std::string tracking0 =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "present_interposer_tracking.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "present_interposer_tracking.cpp");
     ASSERT_FALSE(tracking0.empty());
     const size_t classify = tracking0.find("void ClassifyPresentInterposerPresentSource()");
     ASSERT_NE(classify, std::string::npos);
@@ -356,7 +356,7 @@ TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
     // The classifier's evidence comes from the game's own context, and counting must stay off
     // until an interposer exists so the ordinary draw path is untouched.
     const std::string fgDetection =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "fg_detection.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "fg" / "fg_detection.cpp");
     ASSERT_FALSE(fgDetection.empty());
     EXPECT_NE(fgDetection.find("IsApplicationSourcedInterposerPresent("), std::string::npos);
     // The classifier must gate the constant-1 record, not sit beside it: an unconditional
@@ -370,7 +370,7 @@ TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
         << "the neutral sample is the early-out; the classified record is what follows it";
 
     const std::string tracking =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "present_interposer_tracking.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "present_interposer_tracking.cpp");
     ASSERT_FALSE(tracking.empty());
     EXPECT_NE(tracking.find("SetApplicationSubmissionCountingEnabled(true)"), std::string::npos);
 }
@@ -384,7 +384,7 @@ TEST(PresentInterposerSourceTest, DX11FeedsBothCadenceStreams) {
 TEST(PresentInterposerSourceTest, TheFrameRateMetricSkipsGeneratedPresents) {
     namespace fs = std::filesystem;
     const std::string routing =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_steam_routing.cpp");
     ASSERT_FALSE(routing.empty());
     const size_t guard = routing.find("HasPresentInterposerPresentSourceClassification()");
     ASSERT_NE(guard, std::string::npos)
@@ -396,7 +396,7 @@ TEST(PresentInterposerSourceTest, TheFrameRateMetricSkipsGeneratedPresents) {
     // The source must be resolved BEFORE anything measures a rate from the present, in both entries.
     for (const char* presentUnit : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
         const std::string present =
-            ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / presentUnit);
+            ce::test_source::ReadFile(ce::test_source::FindSource("hook", presentUnit));
         ASSERT_FALSE(present.empty()) << presentUnit;
         const size_t classify = present.find("ClassifyPresentInterposerPresentSource()");
         ASSERT_NE(classify, std::string::npos) << presentUnit;
@@ -408,7 +408,7 @@ TEST(PresentInterposerSourceTest, TheFrameRateMetricSkipsGeneratedPresents) {
 
     // And it must be resolved exactly once: the submission counter is consumed by the read.
     const std::string dx11Device =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_device.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_device.cpp");
     ASSERT_FALSE(dx11Device.empty());
     EXPECT_NE(dx11Device.find("!DXGIShared::HasPresentInterposerPresentSourceClassification()"), std::string::npos)
         << "a second classification would consume the submission counter twice";

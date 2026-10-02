@@ -4,7 +4,7 @@
 
 #include "d3d9_wrap.h"
 #include "d3d9_device_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // GUID for wrapper identification
 static const GUID IID_CWrapDirect3D9 = {0xaabbccdd, 0x1122, 0x3344, {0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc}};

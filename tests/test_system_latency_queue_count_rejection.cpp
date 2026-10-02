@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/system_latency_metrics.h"
+#include "hook/metrics/system_latency_metrics.h"
 
 // GTA session 20260925_233000: after FSR FG switched on, AMD's runtime produced no display for ~500 ms while the
 // game presented 25-35 frames. The in-flight count (application presents minus displays / multiplier since the

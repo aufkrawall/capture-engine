@@ -7,10 +7,10 @@
 
 #include <windows.h>
 #include <algorithm>
-#include "../common/hook_common.h"
-#include "../common/logging.h"
+#include "hook/runtime/hook_common.h"
+#include "common/logging/logging.h"
 #include "d3dkmt_abi.h"
-#include "iat_hook.h"
+#include "hook/hooking/iat_hook.h"
 
 // NTSTATUS definitions
 #ifndef NT_SUCCESS

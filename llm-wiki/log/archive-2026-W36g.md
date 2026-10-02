@@ -14,7 +14,7 @@ jaggedness ~18-23 ms). Yet the display timing stream was flat (jaggedness ~450 u
 stream because a fraction of completions lacked a provenance label threw away the true screen
 measurements.
 
-Fix: in `hook/common/performance_metrics.cpp`, `PerformanceMetrics` now computes `windowJaggedness`
+Fix: in `hook/metrics/performance_metrics.cpp`, `PerformanceMetrics` now computes `windowJaggedness`
 (mean absolute difference between neighbouring intervals in arrival order). The display stream is
 accepted if either `provenSamples` passes the 900 permille share OR `flatterThanPresents`:
 `displayJaggednessUs <= allowedJaggednessUs` (with a 1.5x hysteresis band if already selected) and
@@ -147,7 +147,7 @@ that rides on it varies run to run - which is exactly "sometimes worse, sometime
 
 Fix, in three connected places:
 
-- `common/display_timing_shared.h` publishes what a timestamp *is* (`flags`,
+- `common/ipc/display_timing_shared.h` publishes what a timestamp *is* (`flags`,
   `kDisplayTimingScreenTimeResolved`, ABI 57). The producer knew; the ring did not carry
   it, so no consumer could tell a screen time from a latch time.
 - `PerformanceMetrics::ScreenTimeCadence` judges the stream over a decaying window and

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/capture_retarget_policy.h"
+#include "common/capture/capture_retarget_policy.h"
 
 namespace {
 

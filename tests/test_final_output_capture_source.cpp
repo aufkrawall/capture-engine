@@ -81,7 +81,7 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
         << "limiter source semantics must be known before pacing and the media inject handshake";
 
     const std::string correlator =
-        ReadSource("captureengine/media_main_encoder_inject_display_timing.cpp");
+        ReadSource("captureengine/media/media_main_encoder_inject_display_timing.cpp");
     ASSERT_FALSE(correlator.empty());
     EXPECT_NE(correlator.find("queuedFrame.frameIndex == observation.frameIndex"),
               std::string::npos)
@@ -94,7 +94,7 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
         << "a flip-latch timestamp is not a cadence; its residual must not reach the recording timeline";
 
     const std::string encoderLoopStart =
-        ReadSource("captureengine/media_main_encoder_01_loop_start.cpp");
+        ReadSource("captureengine/media/media_main_encoder_01_loop_start.cpp");
     ASSERT_FALSE(encoderLoopStart.empty());
     EXPECT_NE(encoderLoopStart.find("ShouldThrottleInjectProducer"), std::string::npos);
     EXPECT_EQ(encoderLoopStart.find("queueDepth >= queuePressureThreshold"),
@@ -103,7 +103,7 @@ TEST(FinalOutputCaptureSourceTest, VulkanGeneratedPresentsUseVirtualAndScheduled
 }
 
 TEST(FinalOutputCaptureSourceTest, DX12RecordingStartsWithFreshFinalOutputClock) {
-    const std::string timing = ReadSource("hook/apis/dx12_hook_final_output_capture.cpp");
+    const std::string timing = ReadSource("hook/d3d12/dx12_hook_final_output_capture.cpp");
     ASSERT_FALSE(timing.empty());
 
     const std::string plan = FunctionBody(
@@ -127,9 +127,9 @@ TEST(FinalOutputCaptureSourceTest, DX12RecordingStartsWithFreshFinalOutputClock)
 }
 
 TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSensorOverlayRows) {
-    const std::string recording = ReadSource("captureengine/main_recording.cpp");
-    const std::string controller = ReadSource("captureengine/main_internal.h");
-    const std::string sensor = ReadSource("captureengine/sensor_service.cpp");
+    const std::string recording = ReadSource("captureengine/app/main_recording.cpp");
+    const std::string controller = ReadSource("captureengine/app/main_internal.h");
+    const std::string sensor = ReadSource("captureengine/sensors/sensor_service.cpp");
     ASSERT_FALSE(recording.empty());
     ASSERT_FALSE(controller.empty());
     ASSERT_FALSE(sensor.empty());

@@ -12,8 +12,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "../hook/common/ddraw_present_policy.h"
-#include "../hook/common/overlay_cpu_raster.h"
+#include "hook/ddraw/ddraw_present_policy.h"
+#include "hook/overlay/overlay_cpu_raster.h"
 
 namespace raster = ce::overlay_cpu_raster;
 namespace policy = ce::ddraw_present_policy;

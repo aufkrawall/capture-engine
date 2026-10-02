@@ -59,8 +59,8 @@ TEST(DXGISharedTest, StreamlineWorkerMayServiceSteamOnlyInSteadyStateDLSSFG) {
 
 TEST(DXGISharedSourceTest, PresentSourceClassificationExcludesStreamlineWrapperCaller) {
     namespace fs = std::filesystem;
-    const fs::path presentCore = fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp";
-    const fs::path present1 = fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp";
+    const fs::path presentCore = fs::current_path() / "hook" / "present" / "dxgi_shared_present_core.cpp";
+    const fs::path present1 = fs::current_path() / "hook" / "present" / "dxgi_shared_present1.cpp";
     ASSERT_TRUE(fs::exists(presentCore));
     ASSERT_TRUE(fs::exists(present1));
     const std::string coreText = ce::test_source::ReadLogicalSource(presentCore);
@@ -94,7 +94,7 @@ TEST(DXGISharedSourceTest, PresentSourceClassificationExcludesStreamlineWrapperC
 
 TEST(DXGISharedSourceTest, GuardedSteamInvokeServicesSteadyStateStreamlineWorkers) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steamText = ce::test_source::ReadLogicalSource(steamSource);
 
@@ -114,8 +114,8 @@ TEST(DXGISharedSourceTest, GuardedSteamInvokeServicesSteadyStateStreamlineWorker
 
 TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntimeGeneratedPresents) {
     namespace fs = std::filesystem;
-    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    const fs::path dxgiSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    const fs::path dx12Source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
+    const fs::path dxgiSource = fs::current_path() / "hook" / "present" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(dx12Source));
     ASSERT_TRUE(fs::exists(dxgiSource));
     const std::string dx12Text = ce::test_source::ReadLogicalSource(dx12Source);
@@ -207,8 +207,8 @@ TEST(DXGISharedSourceTest, DX12PrerenderLimiterPinsTheGameQueueAndRejectsRuntime
 // overlay owner binding. Recovery uses the retained original game/producer queue before the proxy hook is live.
 TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHookInstallation) {
     namespace fs = std::filesystem;
-    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "ffx_hook.cpp";
-    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path ffxSource = fs::current_path() / "hook" / "ffx" / "ffx_hook.cpp";
+    const fs::path dx12Source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(ffxSource));
     ASSERT_TRUE(fs::exists(dx12Source));
     const std::string ffxText = ce::test_source::ReadLogicalSource(ffxSource);
@@ -375,7 +375,7 @@ TEST(DXGISharedTest, FFXUiOverlayTargetSubstitutesForDegenerateGameTexture) {
 TEST(DXGISharedSourceTest, AuthoritativeStreamlineHandoffRetiresStaleFSRBeforeOverlayPrewarm) {
     namespace fs = std::filesystem;
     const std::string dx12 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     ASSERT_FALSE(dx12.empty());
 
     const size_t capture = dx12.find("void CaptureSwapchainQueueFromCreateDevice(");
@@ -406,7 +406,7 @@ TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
         return text;
     };
 
-    const fs::path present = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    const fs::path present = fs::current_path() / "hook" / "present" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(present));
     const std::string presentText = readFile(present);
     ASSERT_FALSE(presentText.empty());
@@ -423,7 +423,7 @@ TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
     EXPECT_EQ(presentText.find("DX12_ResetNoCallbackBundleFrame"), std::string::npos)
         << "the per-frame bundle-append latch reset is retired with the bundle";
 
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = readFile(source);
     ASSERT_FALSE(text.empty());
@@ -454,7 +454,7 @@ TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
 // ---------------------------------------------------------------------------
 TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -501,7 +501,7 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
         return text;
     };
 
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     ASSERT_FALSE(dx12.empty());
     // DEADLOCK BOUNDARY: the composite wrapper is reachable from AMD's presenter thread (DetourPresent
     // fallback driver) and must NOT call the re-assert.
@@ -525,7 +525,7 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     // The re-registration is cleared when the substitute is released (dangling-desc safety).
     EXPECT_NE(dx12.find("FFXHook_ClearSubstituteUiReRegistration()"), std::string::npos);
 
-    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
+    const std::string ffx = readFile(fs::current_path() / "hook" / "ffx" / "ffx_hook.cpp");
     ASSERT_FALSE(ffx.empty());
     // The substitute register is stored ONLY on the degenerate-substitute path (inside the substitution block).
     const size_t prepare = ffx.find("DX12_PrepareFFXUiOverlayTarget(");
@@ -557,7 +557,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
         return text;
     };
 
-    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
+    const std::string ffx = readFile(fs::current_path() / "hook" / "ffx" / "ffx_hook.cpp");
     const size_t forward = ffx.find("const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded");
     const size_t commit = ffx.find("DX12_CommitFFXUiOverlayTarget(&uiTargetPreparation)", forward);
     const size_t store = ffx.find("StoreSubstituteUiReRegistration(ffx_hook_context, originalConfigure", forward);
@@ -570,7 +570,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
     EXPECT_LT(commit, store);
     EXPECT_LT(store, discard);
 
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     EXPECT_NE(dx12.find("COMMON/PRESENT is legitimately numeric zero"), std::string::npos);
     EXPECT_NE(dx12.find("g_CEUiSubstituteInitialState == initialState"), std::string::npos);
     EXPECT_NE(dx12.find("IsResourceOwnedByDevice(g_CEUiSubstituteTexture, device)"), std::string::npos);
@@ -579,7 +579,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
 
 TEST(DXGISharedSourceTest, FFXOwnerQueueRendererRetainsTargetsAndNeverCpuWaits) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_ffx_suspend_overlay.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_ffx_suspend_overlay.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
 
     EXPECT_NE(text.find("ComPtr<ID3D12Resource> inFlightTarget"), std::string::npos);
@@ -597,8 +597,8 @@ TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndL
         EXPECT_FALSE(text.empty()) << path.string();
         return text;
     };
-    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string ffx = readFile(fs::current_path() / "hook" / "ffx" / "ffx_hook.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
 
     EXPECT_NE(ffx.find("cachedRouteResult.routedRouteMask & kConfigureRouteBit"), std::string::npos);
     EXPECT_NE(ffx.find("ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true"), std::string::npos);
@@ -613,7 +613,7 @@ TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndL
 
 TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
 
     EXPECT_NE(text.find("g_FFXProxyPresentDetoursInFlight.fetch_add"), std::string::npos);
@@ -632,9 +632,9 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
         return text;
     };
 
-    const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
-    const std::string renderer = readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string streamline = readFile(fs::current_path() / "hook" / "streamline" / "streamline_hook.cpp");
+    const std::string renderer = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_streamline_ui_overlay.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
 
     EXPECT_NE(streamline.find("RegisterDynamicHookFiltered(\"slSetTag\""), std::string::npos)
         << "deprecated/global tagging remains used by real integrations such as Talos";
@@ -717,9 +717,9 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
         return text;
     };
 
-    const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
-    const std::string renderer = readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string streamline = readFile(fs::current_path() / "hook" / "streamline" / "streamline_hook.cpp");
+    const std::string renderer = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_streamline_ui_overlay.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
 
     const size_t getStateLookup = streamline.find("strcmp(streamline_hook_functionName, \"slDLSSGGetState\")");
     ASSERT_NE(getStateLookup, std::string::npos);

@@ -3,12 +3,12 @@
 Last cross-checked: 2026-09-19 (dynamic MFG validated on hardware; `vsync_mode` answered over the same channel)
 
 Primary sources:
-- `hook/common/ngx_drs_override{,_policy}.{h,cpp}`
-- `common/shared_defs_detail/dlss_frame_generation_policy.h`
-- `hook/common/{hook_common,reflex_limiter,streamline_runtime_policy}.*`
+- `hook/ngx/ngx_drs_override{,_policy}.{h,cpp}`
+- `common/ipc/shared_defs_detail/dlss_frame_generation_policy.h`
+- `hook/pacing/reflex_limiter.*, hook/runtime/hook_common.*, hook/streamline/streamline_runtime_policy.*`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
-- `hook/apis/streamline_hook_dlssg.cpp`
-- `hook/main_overlay_detect.cpp`
+- `hook/streamline/streamline_hook_dlssg.cpp`
+- `hook/runtime/main_overlay_detect.cpp`
 - `tests/{test_ngx_drs_override,test_config_override_dlss,test_streamline_runtime_policy_part2}.cpp`
 
 Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSettings.h` plus disassembly of
@@ -16,8 +16,8 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
 
 ## The five keys
 
-- **One unit, five keys.** `hook/common/ngx_drs_override_policy.h` (pure policy, unit-tested) and
-  `hook/common/ngx_drs_override.{h,cpp}` (state, detour, arming) answer five DLSS driver-settings reads
+- **One unit, five keys.** `hook/ngx/ngx_drs_override_policy.h` (pure policy, unit-tested) and
+  `hook/ngx/ngx_drs_override.{h,cpp}` (state, detour, arming) answer five DLSS driver-settings reads
   process-locally: the FG render preset plus the four keys NVIDIA Profile Inspector exposes as
   "DLSS-FG - Forced Mode" (`0x10308298`), "DLSS-MFG - Fixed Frame Generation Count" (`0x104D6667`),
   "DLSS-MFG - Dynamic Frame Generation Count" (`0x10562D0F`) and "DLSS-MFG - Target Dynamic Frame Rate"
@@ -41,7 +41,7 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   plain frame rate in 1..0x00FFFFFF; above that and non-zero it is logged as "Ignoring invalid dynamic target frame
   rate". CE normalizes to those ranges, so it can never emit a value the runtime would reject.
 - **`dlss_fg_mode=dynamic` and `dlss_fg_factor` are mutually exclusive.** `ResolveEffectiveDLSSFGFactor`
-  (`common/shared_defs_detail/dlss_frame_generation_policy.h`) returns 0 for the factor under dynamic mode, and every
+  (`common/ipc/shared_defs_detail/dlss_frame_generation_policy.h`) returns 0 for the factor under dynamic mode, and every
   consumer of the configured factor goes through it: the NGX parameter writes, the Streamline options override, the
   published overlay multiplier, and the Remix scheduler. Without it the runtime would be told "vary the cadence" by
   the driver and "it is exactly N" on every evaluation, and the outcome would depend on call ordering.
@@ -103,7 +103,7 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   is simply inert.
 - `NvAPI_DRS_GetSetting` is function id **0x73BF8338**, resolved by the snippet through `nvapi_QueryInterface`
   (nvapi64.dll exports only `nvapi_QueryInterface` and `nvapi_Direct_GetMethod`) and cached for the process on first
-  use. CE therefore wraps that one resolution: `hook/common/ngx_drs_override.cpp` returns a detour that forwards
+  use. CE therefore wraps that one resolution: `hook/ngx/ngx_drs_override.cpp` returns a detour that forwards
   every call and substitutes only the configured keys. A key with nothing configured passes through even while
   another one is armed, which matters because both readers pull several keys from the same loop.
 - Invariant: nvapi64.dll's code bytes are never patched. The interception is CE's existing filtered

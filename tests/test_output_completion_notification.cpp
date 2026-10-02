@@ -4,8 +4,8 @@
 #include <cstring>
 #include <string>
 
-#include "../common/output_completion_notification.h"
-#include "../common/pseudo_overlay_completion.h"
+#include "common/capture/output_completion_notification.h"
+#include "common/overlay/pseudo_overlay_completion.h"
 
 namespace oc = ce::output_completion;
 namespace pov = ce::pseudo_overlay;

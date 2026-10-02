@@ -9,13 +9,14 @@
 #include <sstream>
 #include <string>
 
-#include "../mediaengine/face_camera_shader.h"
+#include "mediaengine/video/face_camera_shader.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
 std::string ReadFaceCameraSource(const char* filename) {
     const std::filesystem::path path =
-        std::filesystem::current_path() / "mediaengine" / filename;
+        ce::test_source::FindSource("mediaengine", filename);
     std::ifstream stream(path, std::ios::binary);
     std::ostringstream contents;
     contents << stream.rdbuf();
@@ -200,7 +201,7 @@ TEST(FaceCameraSourceTest, CfrRepeatSourceIsCommittedOnlyAfterAcceptedInjectFram
 
 TEST(FaceCameraSourceTest, ConfigReloadComparisonIncludesCameraSettings) {
     const std::string reload =
-        ReadProjectSource(std::filesystem::path("captureengine") / "media_main_recording.cpp");
+        ReadProjectSource(std::filesystem::path("captureengine") / "media" / "media_main_recording.cpp");
     ASSERT_FALSE(reload.empty());
     EXPECT_NE(reload.find("lhs.faceCamera == rhs.faceCamera"), std::string::npos);
 }

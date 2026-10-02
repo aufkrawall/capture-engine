@@ -1,6 +1,6 @@
 #include "vulkan_final_output_capture.h"
 
-#include "../common/capture_pacing.h"
+#include "hook/pacing/capture_pacing.h"
 #include "layer_main.h"
 
 namespace {

@@ -10,8 +10,8 @@
   `GetSourcePid()` stayed stale after the exit. `TryHookScreenshot` saw the stale non-zero PID, published a request,
   and waited the full 15 s hook timeout on an event no process would ever signal; the controller message loop,
   overlay restore, and screenshot notification were blocked the whole time.
-- Fix: `captureengine/inject_main.cpp` detects the dead source PID in its main-loop monitor and clears
-  `sourcePid`/`luidSourcePid` plus the screenshot request protocol state; `captureengine/screenshot.cpp`
+- Fix: `captureengine/injection/inject_main.cpp` detects the dead source PID in its main-loop monitor and clears
+  `sourcePid`/`luidSourcePid` plus the screenshot request protocol state; `captureengine/media/screenshot.cpp`
   `TryHookScreenshot` verifies source-process liveness before publishing a request (dead source -> immediate desktop
   fallback with a clean protocol reset), and a failed/timed-out hook request now resets the full protocol state
   instead of leaving a stale Pending/Writing status that would make the next injected game's screenshot skip the
@@ -32,7 +32,7 @@
   presents - the runtime re-renders those buffers, so Steam's GUI is overwritten and never visible. The startup
   animation works because it renders pre-FG on directly displayed presents.
 - Fix (build 0.1.5901): `ShouldInvokeSteamOnStreamlineWorkerPresent` in
-  `hook/common/dxgi_shared_detail/types_and_state.h` allows `TryInvokeGuardedExternalSteamOverlayPresent` to service
+  `hook/present/dxgi_shared_detail/types_and_state.h` allows `TryInvokeGuardedExternalSteamOverlayPresent` to service
   Steam from a DLSS-G worker Present only in steady state: `streamlineFGRunning && postSLConfirmedRendering &&
   !startupTransitionWindowActive && !postSLConfirmedButStartupSettling && !runtimeOwnedNativeFGPresentPath &&
   !fsrRuntimeActive && !fsrApiActive`. The 20260809_015416 stall happened during the startup transition window and
@@ -81,7 +81,7 @@
   `STATUS_PROCESS_IS_TERMINATING`: the DLSS snippet worker's losing teardown race against the game's clean
   ExitProcess(0) - not a crash. CE's pre-termination policy classified it as crash-like purely by the NTSTATUS
   severity bits.
-- Fix (build 0.1.5899): `common/crash_dump_policy.h` adds `kProcessIsTerminatingExitCode = 0xC000004B` and exempts
+- Fix (build 0.1.5899): `common/crash/crash_dump_policy.h` adds `kProcessIsTerminatingExitCode = 0xC000004B` and exempts
   it in both `IsCrashLikeProcessExitCode` and `ShouldCapturePreTerminationDump` (including the active-FG fallback).
   Regression coverage in `tests/test_crash_dump_policy.cpp`.
 
@@ -111,7 +111,7 @@
   internal loads and the model-repository loads reach the redirect even without the preload. The
   LdrRegisterDllNotification callback now logs the resolved full path of every runtime-family and model-repository
   module load (`Loader: runtime module loaded: ...`), covering all load mechanisms. Classification and the model
-  segment mapping live in `hook/common/graphics_runtime_module_policy.h`; unit tests `GraphicsRuntimeModulePolicy.*`
+  segment mapping live in `hook/runtime/graphics_runtime_module_policy.h`; unit tests `GraphicsRuntimeModulePolicy.*`
   in `tests/test_graphics_runtime_module_policy.cpp`.
 - Coverage: incremental x64/x86 build + full unit suite + Python tool self-tests pass. Fresh Talos/RoboCop runtime
   validation is pending - the `Loader:` lines in a new RoboCop run must show the NPI paths for sl.interposer,
@@ -188,7 +188,7 @@
   **0x167340**, loaded by `mov rax,[rip+0xD348B]` immediately before `call rax` at
   `OverlayHookD3D3+0x13ebd` - not the legacy 0x1621d8 fallback. So the slot moves per Steam
   build and must be discovered from the code pattern.
-- Fix: proactive NULL-callback slot patching (`hook/common/dxgi_shared_steam.cpp`). Before any
+- Fix: proactive NULL-callback slot patching (`hook/present/dxgi_shared_steam.cpp`). Before any
   Steam transport runs, `EnsureSteamNullCallbacksPatched(bypass)` scans the Steam overlay for
   the `48 8B 05 <disp32> ... FF D0` (x64) / `A1|8B 05 <abs32> ... FF D0` (x86) Present-shaped
   callback pattern, caches the slot addresses per module version, and patches any slot whose

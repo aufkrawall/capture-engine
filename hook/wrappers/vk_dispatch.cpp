@@ -5,8 +5,8 @@
  */
 
 #include "vk_dispatch.h"
-#include "../common/hook_common.h"
-#include "../../common/secure_dll_loading.h"
+#include "hook/runtime/hook_common.h"
+#include "common/platform/secure_dll_loading.h"
 
 namespace VkDispatch {
 

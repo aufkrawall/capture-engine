@@ -10,10 +10,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
-#include "../../common/ansi_path.h"
-#include "../common/ipc_client.h"
-#include "../common/perf_logger.h"
-#include "../common/vulkan_renderer_policy.h"
+#include "common/platform/ansi_path.h"
+#include "hook/runtime/ipc_client.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/present/vulkan_renderer_policy.h"
 #include "layer_participation.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
@@ -28,7 +28,7 @@ char g_ProcessName[260] = "CaptureLayer";
 // doesn't) Actually system_metrics uses EarlyLog which we redirect. But does
 // system_metrics use g_LocalConfig directly? No, it uses EarlyLog.
 
-#include "../common/hook_common.h"  // For definitions if needed
+#include "hook/runtime/hook_common.h"  // For definitions if needed
 // Define globals from hook_common.h that we are missing because we don't link
 // hook_common.cpp
 std::atomic<bool> g_ShuttingDown{false};

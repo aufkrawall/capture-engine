@@ -3,7 +3,7 @@
  *
  * Defines the zero-copy capture mechanism using DXGI shared resources for the
  * D3D12 inject path. D3D11 and the legacy APIs publish through their own
- * producers (hook/apis/dx11_hook_capture_frame.cpp and friends).
+ * producers (hook/d3d11/dx11_hook_capture_frame.cpp and friends).
  */
 
 #pragma once
@@ -20,7 +20,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "../../common/shared_defs.h"
+#include "common/ipc/shared_defs.h"
 #include "capture_swapchain_binding.h"
 
 using Microsoft::WRL::ComPtr;

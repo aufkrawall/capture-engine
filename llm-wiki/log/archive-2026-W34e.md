@@ -9,8 +9,8 @@ Second step of the generation bridge, on top of the feasibility result below. `s
 folder's 2.x interposer by full path as a second, CE-owned runtime, initialises it with
 `pathsToPlugins` pinned and OTA off, and repoints the game's `sl.interposer` import slots at CE.
 The game's own 1.x runtime stays loaded and untouched. Policy in
-`hook/apis/streamline_bridge_policy.h` with 20 regression tests; runtime in
-`hook/apis/streamline_bridge.{h,cpp}`.
+`hook/streamline/streamline_bridge_policy.h` with 20 regression tests; runtime in
+`hook/streamline/streamline_bridge.{h,cpp}`.
 
 At this stage the eight Streamline calls are owned but not yet translated - each refuses politely, so
 a bridged game runs without Streamline features. The seven DXGI/D3D12 entry points the interposer
@@ -46,7 +46,7 @@ hook decisions; only the GetProcAddress route, which is keyed on the symbol name
 per module, takes a process-wide answer from `AuthoritativeProcessGeneration`.
 
 **How to actually take that measurement: run UNBRIDGED.** The recorder lives in
-`hook/apis/streamline_v1_feature_probe.{h,cpp}` and hooks the two 1.x calls, records the payload and
+`hook/streamline/streamline_v1_feature_probe.{h,cpp}` and hooks the two 1.x calls, records the payload and
 then forwards unchanged, so the game keeps driving its own Streamline exactly as it would without CE.
 That is deliberate: with `streamline_upgrade=on` the bridge refuses `slInit`, the game concludes
 Streamline is unavailable, and it never reaches `slSetFeatureConstants` at all - a bridged run would

@@ -28,7 +28,7 @@ contract is back, scoped instead of global.
 - `ShouldArmFinalDxgiPresent` arms only when the resident CE Vulkan layer is loaded and `vsync_mode` is `fifo` or
   `adaptive`. `RegisterDynamicFactoryHooks` now stores the decision with an unconditional `g_armed.exchange` (the
   old short-circuit never stored `false`), so disarm is the atomic gate; installed hooks are never live-unpatched.
-- New `hook/common/vulkan_dxgi_fifo_registry.h`: bounded 64-slot lock-free open-addressed table of raw swapchain
+- New `hook/present/vulkan_dxgi_fifo_registry.h`: bounded 64-slot lock-free open-addressed table of raw swapchain
   pointers, filled by the four creation detours on every successful targeted creation, no COM refs, refresh on
   address recreation, fail-closed when full. DetourPresent/Present1 rewrite only `ShouldForceFifoNow() &&
   registered`; foreign swapchains pass through with a bounded pass-through log.

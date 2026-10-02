@@ -1,6 +1,6 @@
 #include "layer_sharpen_state.h"
 
-#include "../common/sharpen_shader_spirv.h"
+#include "hook/sharpen/sharpen_shader_spirv.h"
 #include "overlay_swapchain_lifetime_policy.h"
 
 // Lifecycle half of the Vulkan sharpen pass: everything that is built once per

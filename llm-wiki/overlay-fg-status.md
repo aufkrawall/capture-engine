@@ -3,17 +3,17 @@
 Last cross-checked: 2026-09-14 (Smooth Motion status now comes from the present interposer's output cadence, not from command-list work populations or paired Present gaps; the 2026-07-29 heuristics survive only as the DX11/Vulkan fallback. PID-scoped Vulkan/DLSS FG publication and shared ABI 53 unchanged.)
 
 Primary sources:
-- `hook/common/present_interposer_cadence.h`
-- `hook/common/present_interposer_tracking.cpp`
-- `hook/common/overlay_metrics_publisher.cpp`
-- `hook/common/overlay_metrics_planner_publisher.cpp`
-- `hook/common/overlay_fg_metric_policy.h`
-- `hook/common/dx12_overlay_policy.h`
-- `hook/apis/dx11_hook.cpp`
+- `hook/present/present_interposer_cadence.h`
+- `hook/present/present_interposer_tracking.cpp`
+- `hook/overlay/overlay_metrics_publisher.cpp`
+- `hook/overlay/overlay_metrics_planner_publisher.cpp`
+- `hook/overlay/overlay_fg_metric_policy.h`
+- `hook/d3d12/dx12_overlay_policy.h`
+- `hook/d3d11/dx11_hook.cpp`
 - `hook/vulkan_layer/layer_overlay.cpp`
 - `build.py`
-- `hook/common/streamline_runtime_policy.h`
-- `hook/apis/{streamline_hook,streamline_hook_state}.cpp`
+- `hook/streamline/streamline_runtime_policy.h`
+- `hook/streamline/{streamline_hook,streamline_hook_state}.cpp`
 - `common/shared_defs_detail/{capture_state,shared_memory_layout}.h`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
@@ -110,7 +110,7 @@ This page records how the current tree publishes visible FG status to the overla
 - The current tree now treats an explicit native-FSR `frameGenerationEnabled=0` signal as authoritative during runtime-owned teardown: heuristic `FSR_FG` reactivation is suppressed until the runtime-owned swapchain ownership actually unwinds or native FSR explicitly turns back on. That keeps the visible overlay status from snapping back to stale `FSR FG` after a real `FSR_FG -> off` transition.
 - Talos `installed/captureengine/logs/20260423_215138` and the immediate build-`0.1.2565` rerun `installed/captureengine/logs/20260423_220858` showed a different upstream family: publication freshness was already correct, but CE missed the final authoritative `DLSS FG -> off` edge entirely because `slDLSSGSetOptions` inline hooking failed in that session and the first fallback only covered the core Streamline DLLs, not the later owner module backing the actual feature export.
 - The current tree now keeps the key Streamline FG exports reachable through four interception seams: inline hook on the export itself, wrapper substitution through `slGetFeatureFunction`, dynamic lookup hooks for direct `GetProcAddress` requests, and an owner-module direct-import fallback armed from the real returned feature-export pointer when export-inline patching fails. That means an explicit menu-side OFF can still clear the visible overlay state immediately even if the export-inline hook failed in that process.
-- Talos `installed/captureengine/logs/20260425_002642` showed why the owner-module fallback also has to be discovered from loaded feature DLLs, not only from a later intercepted feature lookup: `slDLSSGSetOptions` inline patching failed, `slDLSSGGetState` stayed active in the 2D menu, and no explicit OFF reached CE while the game setting was already off. `hook/apis/streamline_hook.cpp` now scans all loaded `sl.*.dll` modules, including feature owners such as `sl.dlss_g.dll`, and retries direct-import fallbacks on later module scans. `hook/wrappers/iat_hook.cpp` now no-ops already-patched import slots so these retries are idempotent and cannot corrupt the saved original function pointer.
+- Talos `installed/captureengine/logs/20260425_002642` showed why the owner-module fallback also has to be discovered from loaded feature DLLs, not only from a later intercepted feature lookup: `slDLSSGSetOptions` inline patching failed, `slDLSSGGetState` stayed active in the 2D menu, and no explicit OFF reached CE while the game setting was already off. `hook/streamline/streamline_hook.cpp` now scans all loaded `sl.*.dll` modules, including feature owners such as `sl.dlss_g.dll`, and retries direct-import fallbacks on later module scans. `hook/hooking/iat_hook.cpp` now no-ops already-patched import slots so these retries are idempotent and cannot corrupt the saved original function pointer.
 - Talos `installed/captureengine/logs/20260425_173428` showed a different stale-visible-state route during `FSR FG -> DLSS FG` in the 2D menu: CE did publish DLSS FG internally from `slDLSSGGetState`, but the overlay disappeared because PostSL stayed pending with `safeBootstrap=0`. The current DX12 policy now considers the fresh runtime-owned Streamline swapchain queue safe when it is also the live command queue and CE has a tracked ECL submit path for that queue. Fresh authoritative Streamline handoffs also become pending immediately, so the queue-change heuristic cannot briefly repaint the handoff as `FSR_FG` before DLSS FG wins.
 - Talos `installed/captureengine/logs/20260425_181251` showed no final authoritative OFF evidence after a menu-side `DLSS FG -> all FG off` request: Streamline `GetState` remained active and PostSL kept submitting, so publication correctly retained the last known DLSS FG runtime state. The current diagnostics now log fresh `sl.*.dll` load inspection, `slGetFeatureFunction` lookup outcomes, returned-wrapper fallback use, proactive hook gaps, and sampled `slDLSSGGetState` options/state so the next repro can distinguish a missed hook seam from the game simply delaying the real Streamline OFF call until 3D rendering resumes.
 - Talos `installed/captureengine/logs/20260425_191325` proved the next upstream stale-label seam: after a captured `slDLSSGSetOptions(ON)` on viewport `1`, the later menu-side off surfaced as an authoritative `slDLSSGGetState(optionsMode=off)` with capability and fence evidence on viewport `0`, not as another captured `SetOptions(OFF)`. The Streamline viewport aggregator now clears all cached DLSSG viewport runtime states on successful non-suppressed `SetOptions(OFF)` and on evidence-backed disabled `GetState` readbacks, so a stale active sibling viewport cannot keep the visible overlay label on `DLSS FG` in a 2D menu.

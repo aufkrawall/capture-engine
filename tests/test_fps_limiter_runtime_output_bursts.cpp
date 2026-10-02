@@ -9,12 +9,12 @@
 #include <memory>
 #include <mutex>
 
-#include "../hook/common/fg_detection.h"
-#include "../hook/common/fps_limiter_policy.h"
-#include "../hook/common/hook_common.h"
-#include "../hook/common/hook_context.h"
-#include "../hook/common/ipc_client.h"
-#include "../hook/common/reflex_limiter.h"
+#include "hook/fg/fg_detection.h"
+#include "hook/pacing/fps_limiter_policy.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/runtime/hook_context.h"
+#include "hook/runtime/ipc_client.h"
+#include "hook/pacing/reflex_limiter.h"
 
 // Load dependencies globally, then compile the real inline limiter in an
 // isolated namespace. Its unqualified clock/wait calls resolve to these fakes;
@@ -56,7 +56,7 @@ inline constexpr auto timeEndPeriod = [](UINT) -> MMRESULT {
     return TIMERR_NOERROR;
 };
 
-#include "../hook/common/fps_limiter.h"
+#include "hook/pacing/fps_limiter.h"
 
 class FpsLimiterRuntimeOutputBurstTest : public ::testing::Test {
 protected:

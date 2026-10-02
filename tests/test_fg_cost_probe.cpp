@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/fg_cost_probe.h"
+#include "hook/fg/fg_cost_probe.h"
 
 #include "source_fragment_reader.h"
 
@@ -59,29 +59,29 @@ TEST(FgCostProbeTest, BitsAreDistinctAndIndependentlySelectable) {
 // The probe is a measurement aid: every suppression site must read the mask
 // rather than a hard-coded constant, or a normal run stops being normal.
 TEST(FgCostProbeTest, EverySuppressionSiteIsGatedOnTheMask) {
-    const std::string bridge = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string bridge = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
     EXPECT_NE(bridge.find("ce::fg_cost_probe::kBridgeTailOff"), std::string::npos);
     EXPECT_NE(bridge.find("ce::fg_cost_probe::kBridgeOverlayOff"), std::string::npos);
     EXPECT_NE(bridge.find("ce::fg_cost_probe::kBridgeMirrorOff"), std::string::npos);
 
-    const std::string breadcrumbs = ReadSource("hook/apis/dx12_hook_overlay_breadcrumbs.cpp");
+    const std::string breadcrumbs = ReadSource("hook/d3d12/dx12_hook_overlay_breadcrumbs.cpp");
     EXPECT_NE(breadcrumbs.find("ce::fg_cost_probe::kBreadcrumbsOff"), std::string::npos);
 
-    EXPECT_NE(ReadSource("hook/apis/dx12_hook_ecl.cpp").find("ce::fg_cost_probe::kEclPassthrough"),
+    EXPECT_NE(ReadSource("hook/d3d12/dx12_hook_ecl.cpp").find("ce::fg_cost_probe::kEclPassthrough"),
               std::string::npos);
     // Both present entry points, or a game that uses Present1 measures nothing.
-    EXPECT_NE(ReadSource("hook/common/dxgi_shared_present.cpp").find("ce::fg_cost_probe::kPresentPassthrough"),
+    EXPECT_NE(ReadSource("hook/present/dxgi_shared_present.cpp").find("ce::fg_cost_probe::kPresentPassthrough"),
               std::string::npos);
-    EXPECT_NE(ReadSource("hook/common/dxgi_shared_present1.cpp").find("ce::fg_cost_probe::kPresentPassthrough"),
+    EXPECT_NE(ReadSource("hook/present/dxgi_shared_present1.cpp").find("ce::fg_cost_probe::kPresentPassthrough"),
               std::string::npos);
-    EXPECT_NE(ReadSource("hook/apis/ffx_hook_context.cpp").find("ce::fg_cost_probe::kFfxBridgeOff"),
+    EXPECT_NE(ReadSource("hook/ffx/ffx_hook_context.cpp").find("ce::fg_cost_probe::kFfxBridgeOff"),
               std::string::npos);
-    const std::string route = ReadSource("hook/apis/dx12_hook_postsl_route.cpp");
-    const std::string adoption = ReadSource("hook/apis/dx12_hook_queue_adoption.cpp");
+    const std::string route = ReadSource("hook/d3d12/dx12_hook_postsl_route.cpp");
+    const std::string adoption = ReadSource("hook/d3d12/dx12_hook_queue_adoption.cpp");
     EXPECT_NE(adoption.find("ce::fg_cost_probe::kQueueAdoptionOff"), std::string::npos);
     EXPECT_NE(adoption.find("ce::fg_cost_probe::kQueueDevicePublishOff"), std::string::npos);
     EXPECT_NE(route.find("ce::fg_cost_probe::kQueueVTableHookOff"), std::string::npos);
-    EXPECT_NE(ReadSource("hook/apis/dx12_sampler_hooks.cpp").find("ce::fg_cost_probe::kSamplerDeviceHooksOff"),
+    EXPECT_NE(ReadSource("hook/d3d12/dx12_sampler_hooks.cpp").find("ce::fg_cost_probe::kSamplerDeviceHooksOff"),
               std::string::npos);
     // Both the per-frame sequence bump and the per-op write must go, or the
     // "breadcrumbs off" run still pays for the buffer it no longer writes.

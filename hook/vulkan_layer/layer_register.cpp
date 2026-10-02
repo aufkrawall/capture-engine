@@ -11,8 +11,8 @@
 #include <iostream>
 #include <string>
 
-#include "../../common/vulkan_layer_registration.h"
-#include "../../common/vulkan_layer_target_list.h"
+#include "common/graphics/vulkan_layer_registration.h"
+#include "common/graphics/vulkan_layer_target_list.h"
 
 namespace {
 

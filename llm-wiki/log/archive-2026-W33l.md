@@ -25,7 +25,7 @@ Covers 2026-08-14. Newest-first.
   manual-only workflow).
 - `codeql-cpp.yml` traces the hardening-ci Linux cross-compile (`python build.py --skip-updates` on
   `ubuntu-latest`). Its first validation run exposed a pre-existing GCC incompatibility:
-  `inline template <typename T>` in `hook/apis/ffx_hook_internal.h:219/254` (clang tolerates it, GCC
+  `inline template <typename T>` in `hook/ffx/ffx_hook_internal.h:219/254` (clang tolerates it, GCC
   rejects it); fixed to `template <typename T> inline` in commit `53354b26` (Windows incremental
   build + unit tests + Python self-tests pass). The first validation run then succeeded with real
   coverage (1.2 GB extracted database vs. the empty default-setup database) and uploaded 29 findings

@@ -74,7 +74,7 @@ input-to-present as one base interval when no marker exists, which over-states a
 1.8 ms. That limitation is documented in `system_latency_frame_begin.h` and is unchanged here; it affects the
 absolute number, not the A/B.
 
-New units `hook/common/fps_limiter_detail/{front_load,cadence_diagnostics}.h` keep `apply.h` under the size ceiling.
+New units `hook/pacing/fps_limiter_detail/{front_load,cadence_diagnostics}.h` keep `apply.h` under the size ceiling.
 Tests: `tests/test_fps_limiter_front_load.cpp` (budget table incl. the not-measurable and does-not-fit cases, the
 eligibility truth table, the placement moving under a unique-present site, the cap surviving a skipped release, and
 duplicate-prone/FG sites keeping the back edge). Hardware run pending: a good run shows `frontLoad=1` with

@@ -676,7 +676,7 @@ The MinGW x86 toolchain (mingw32) does not provide ASan runtime libraries. The p
 ### Impact
 
 - Memory bugs (heap buffer overflow, use-after-free, stack buffer overflow) in x86 code paths cannot be detected by automated sanitizer runs.
-- x86-specific code paths include: `hook/apis/dx8_hook.cpp`, `hook/apis/ddraw_hook.cpp`, `hook/wrappers/inline_hook.cpp` (x86 `E9 rel32` JMP generation).
+- x86-specific code paths include: `hook/d3d8/dx8_hook.cpp`, `hook/ddraw/ddraw_hook.cpp`, `hook/hooking/inline_hook.cpp` (x86 `E9 rel32` JMP generation).
 
 ### Mitigations
 

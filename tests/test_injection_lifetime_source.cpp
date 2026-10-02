@@ -8,7 +8,7 @@
 #include "source_fragment_reader.h"
 
 TEST(InjectionLifetimeSourceTest, DelayedWorkersRemainOwnedUntilJoin) {
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "injection.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "injection" / "injection.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
@@ -26,7 +26,7 @@ TEST(InjectionLifetimeSourceTest, DelayedWorkersRemainOwnedUntilJoin) {
 }
 
 TEST(InjectionLifetimeSourceTest, PublicationCallbackPrecedesRealtimeProcessMonitoring) {
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "inject_main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "injection" / "inject_main.cpp";
     const std::string text = ce::test_source::ReadFile(source);
     ASSERT_FALSE(text.empty());
 
@@ -44,8 +44,10 @@ TEST(InjectionLifetimeSourceTest, PublicationCallbackPrecedesRealtimeProcessMoni
 
 TEST(InjectionLifetimeSourceTest, AsyncWmiFailureFallsBackOnlyFromTheManagerThread) {
     const std::string sink = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                                       "injection" /
                                                        "injection_wmi_events.cpp");
     const std::string manager = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                                          "injection" /
                                                           "injection_manager.cpp");
     ASSERT_FALSE(sink.empty());
     ASSERT_FALSE(manager.empty());
@@ -87,6 +89,7 @@ TEST(InjectionLifetimeSourceTest, AsyncWmiFailureFallsBackOnlyFromTheManagerThre
 
 TEST(InjectionLifetimeSourceTest, DuplicateProcessDiscoverySharesOneInjectionWorker) {
     const std::string manager = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                                          "injection" /
                                                           "injection_manager.cpp");
     ASSERT_FALSE(manager.empty());
 

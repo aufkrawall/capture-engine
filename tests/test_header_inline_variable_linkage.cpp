@@ -174,9 +174,9 @@ std::vector<Violation> FindSplitInlineVariables(const std::filesystem::path& hea
 // The anchor for the [StartupPerf] regression: this is the declaration that
 // split, and the shape the sweep below generalizes.
 TEST(HeaderInlineVariableLinkage, ControllerStartupTimingIsOneObjectForEveryTranslationUnit) {
-    const std::filesystem::path header = std::filesystem::current_path() / "captureengine" / "main_internal.h";
+    const std::filesystem::path header = std::filesystem::current_path() / "captureengine" / "app" / "main_internal.h";
     const std::string text = ce::test_source::ReadFile(header);
-    ASSERT_FALSE(text.empty()) << "captureengine/main_internal.h could not be read";
+    ASSERT_FALSE(text.empty()) << "captureengine/app/main_internal.h could not be read";
 
     EXPECT_NE(text.find("inline ControllerStartupTimingState main_g_ControllerStartupTiming;"), std::string::npos)
         << "main_g_ControllerStartupTiming must stay an inline variable so one object serves main_entry.cpp and "

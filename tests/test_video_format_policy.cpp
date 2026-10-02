@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../mediaengine/video_format_policy.h"
+#include "mediaengine/video/video_format_policy.h"
 
 namespace vf = ce::video_format;
 

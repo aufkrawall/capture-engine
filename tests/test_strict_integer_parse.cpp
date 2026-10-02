@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "strict_integer_parse.h"
+#include "common/platform/strict_integer_parse.h"
 
 #include <cstdint>
 #include <limits>

@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/vulkan_layer/overlay_swapchain_lifetime_policy.h"
+#include "hook/vulkan_layer/overlay_swapchain_lifetime_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {

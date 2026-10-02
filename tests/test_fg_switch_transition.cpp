@@ -6,7 +6,7 @@
 
 #include "source_fragment_reader.h"
 
-#include "../testapp/fg_switch_transition.h"
+#include "testapp/fg_switch_transition.h"
 
 using testapp::fg::CanCommitFsrPresentationBreak;
 using testapp::fg::FsrExitTransitionAction;

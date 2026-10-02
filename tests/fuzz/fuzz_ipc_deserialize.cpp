@@ -1,7 +1,7 @@
 // libFuzzer harness for IPC message validation.
 //
 // Target: ValidateProcessMessage(), the single trust boundary every pipe reader
-// funnels through (common/process_ipc.cpp). It covers the bytesRead bounds check,
+// funnels through (common/ipc/process_ipc.cpp). It covers the bytesRead bounds check,
 // magic/version/headerSize/totalSize consistency, sender identity, nonce, sequence
 // policy, and both payload validators. Do not target the file-local ValidatePayload
 // helpers directly: they have internal linkage and are deliberately not part of the
@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../../common/process_ipc.h"
+#include "common/ipc/process_ipc.h"
 
 namespace {
 

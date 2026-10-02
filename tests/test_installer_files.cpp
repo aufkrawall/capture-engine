@@ -1,14 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include "../installer/setup.h"
+#include "installer/setup.h"
 #include <winioctl.h>
 
 // Exercise the production file and shell-link implementations in a disposable
 // folder. The unit-test binary otherwise does not link the installer target.
-#include "../installer/util.cpp"
-#include "../installer/files.cpp"
-#include "../installer/shortcuts.cpp"
+#include "installer/util.cpp"
+#include "installer/files.cpp"
+#include "installer/shortcuts.cpp"
 
 namespace {
 

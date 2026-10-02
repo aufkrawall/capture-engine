@@ -12,7 +12,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../captureengine/service_lifetime_wait.h"
+#include "captureengine/elevation/service_lifetime_wait.h"
 #include "source_fragment_reader.h"
 
 namespace lifetime = ce::service_lifetime;
@@ -62,7 +62,7 @@ TEST(ServiceLifetimeWaitTest, HardControllerExitEndsTheServiceAndARestartIsWatch
 
 TEST(ServiceLifetimeWaitTest, LoggerWatchesTheControllerProcess) {
     const std::string logger =
-        ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" / "logger_service.cpp");
+        ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" / "diagnostics" / "logger_service.cpp");
     ASSERT_FALSE(logger.empty());
     EXPECT_NE(logger.find("OpenProcess(SYNCHRONIZE, FALSE, controllerPid)"), std::string::npos);
     EXPECT_NE(logger.find("WaitForServiceLifetime(hShutdownEvent, hControllerProcess, waitMs)"), std::string::npos);

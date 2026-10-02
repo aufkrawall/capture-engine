@@ -2,7 +2,7 @@
 
 #include <atomic>
 
-#include "../hook/common/reflex_limiter.h"
+#include "hook/pacing/reflex_limiter.h"
 
 // Only the manual sleep-mode rearm suites need this per-translation-unit recorder.
 namespace {

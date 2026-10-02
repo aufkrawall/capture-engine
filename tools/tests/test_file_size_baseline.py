@@ -69,21 +69,21 @@ class FileSizeBaselineTest(unittest.TestCase):
         self.assertEqual(build.count_source_lines(str(source)), 900)
 
     def test_collection_covers_cpp_and_python_but_skips_vendored_trees(self) -> None:
-        self.write_source("hook/apis/dx12_hook.cpp", 10)
-        self.write_source("common/shared_defs.h", 10)
+        self.write_source("hook/d3d12/dx12_hook.cpp", 10)
+        self.write_source("common/ipc/shared_defs.h", 10)
         self.write_source("tools/analyze_capture_av.py", 10)
         self.write_source("testapp/run_tests.py", 10)
         self.write_source("build.py", 10)
         self.write_source("hook/external/vendor.cpp", 10)
-        self.write_source("hook/common/imgui/imgui_draw.cpp", 10)
+        self.write_source("hook/overlay/imgui/imgui_draw.cpp", 10)
         self.write_source("hook/notes.md", 10)
 
         measured = set(build.collect_source_file_sizes())
         self.assertEqual(
             measured,
             {
-                "hook/apis/dx12_hook.cpp",
-                "common/shared_defs.h",
+                "hook/d3d12/dx12_hook.cpp",
+                "common/ipc/shared_defs.h",
                 "tools/analyze_capture_av.py",
                 "testapp/run_tests.py",
                 "build.py",
@@ -124,7 +124,7 @@ class FileSizeBaselineTest(unittest.TestCase):
         # The exact regression that went unnoticed: recent.md growing without
         # being archived. Would have failed on the first lint run past 800 lines.
         self.write_source("llm-wiki/log/recent.md", 6212)
-        self.evaluate({"hook/apis/dx12_hook.cpp": 900})  # seed a baseline
+        self.evaluate({"hook/d3d12/dx12_hook.cpp": 900})  # seed a baseline
         with self.assertRaises(SystemExit):
             self.evaluate(build.collect_source_file_sizes())
         self.assertTrue(self.logged("llm-wiki/log/recent.md"))

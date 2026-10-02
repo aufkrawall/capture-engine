@@ -3,15 +3,15 @@
 Last cross-checked: 2026-09-23 (tolerated late ReloadConfig/Ping replies and recording-safe media config reload)
 
 Primary sources:
-- `common/restricted_child_process.{h,cpp}`
-- `common/process_ipc.{h,cpp}`
-- `common/process_identity.{h,cpp}`
-- `common/shared_defs.h`
-- `captureengine/{main,inject_main,media_main}.cpp`
+- `common/platform/restricted_child_process.{h,cpp}`
+- `common/ipc/process_ipc.{h,cpp}`
+- `common/platform/process_identity.{h,cpp}`
+- `common/ipc/shared_defs.h`
+- `captureengine/app/main.cpp, captureengine/injection/inject_main.cpp, captureengine/media/media_main.cpp`
 - `captureengine/{ipc,logger_service,sensor_service}.cpp`
-- `captureengine/tray.{h,cpp}`
-- `hook/common/ipc_client.cpp`
-- `captureengine/inject_config_publication.{h,cpp}`
+- `captureengine/app/tray.{h,cpp}`
+- `hook/runtime/ipc_client.cpp`
+- `captureengine/injection/inject_config_publication.{h,cpp}`
 - `tests/test_process_ipc.cpp`
 - `tests/test_config_reload_reinit_policy.cpp`
 - `tests/test_process_identity.cpp`

@@ -27,8 +27,8 @@ Primary sources:
 ## Recommended Read Order
 - Start here to find the right page.
 - If you are about to understand or change code in an unfamiliar area, first
-  orient with `repo-map.md` (the code map: semantic units per subsystem, build
-  pipeline units, test matrix, important paths) before reading the topic page.
+  orient with `repo-map.md` (the code map: one table per module, `<module>/<subsystem>/`)
+  before reading the topic page.
 - Read `current.md` next for a compact current-state summary and routing.
 - Read `log/recent.md` after that when you need the recent historical genesis for a changing area. For older entries, consult the relevant `log/archive-YYYY-Www*.md` file.
 - For build, commit, and tooling questions, read `build.py.md`, `codestyle.md`, and `changelog-guidelines.md`.
@@ -61,7 +61,9 @@ Primary sources:
 - `process-ipc.md`
   - Restricted private child channels, accept-before-finalize disposable media stops with media-owned completion notification, recording-health publication, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI 38 publication/isolation, session log routing, shared-ring integrity, malformed/incompatible-message rejection, tolerated late `ReloadConfig`/`Ping` replies, and the media reload/config race; the limiter child process is retired. Last verified 2026-09-23.
 - `repo-map.md`
-  - **Code map**: top-level layout, semantic-unit inventory per subsystem (hook/captureengine/mediaengine/common/testapp/tools), the Python build pipeline units, and important paths. Re-point stale monolithic-file anchors here after splits. Last verified 2026-09-16.
+  - **Code map**: where every subsystem lives after the 2026-10-02 relayout (`<module>/<subsystem>/`), binaries to sources, build units, high-risk areas with their topic pages. Last verified 2026-10-02.
+- `refactor-roadmap.md`
+  - The refactor program: rules (mechanical vs behavioral waves, preprocess fingerprint proof), baseline metrics, wave status, library-boundary plan, and the measured log-volume evidence. Last verified 2026-10-02.
 - `d3d9-capture.md`
   - Native classic-D3D9 device preservation, opportunistic shared-ring probing, D3D9Ex incompatibilities, synchronization/reset lifetime, diagnostics, GPU-based WGC fallback, and Vulkan ownership for D3D9 translation/split RTX Remix bridges, including media's split-renderer inject frame admission. Last verified 2026-09-29.
 - `dx12-injection-bootstrap.md`

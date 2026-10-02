@@ -37,7 +37,7 @@ Covers 2026-09-28 - 2026-09-27. Newest first.
   above it (the ~6 s before that were encoded without a real GPU wait). Earlier generations were published before
   recording start (`ready=0`), so they used the shared slot and the bug stayed hidden.
 - Fix: `ce::PublishInjectFenceHandle` / `ce::InjectFenceUsesEncoderTextureSlot` in
-  `common/inject_transport_snapshot.h` hold the single slot rule for producer and media; the layer uses it and logs
+  `common/ipc/inject_transport_snapshot.h` hold the single slot rule for producer and media; the layer uses it and logs
   slot/usingEncoderTextures/ready. Tests: `CaptureBaseShmTest.FenceRepublishedAfterResizeReachesTheSlotMediaReads`,
   `FencePublishFollowsEncoderTextureAdoption`.
 - Follow-up (same day, static analysis only, no hardware run): the DXVK late-adoption path in

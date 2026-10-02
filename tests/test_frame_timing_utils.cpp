@@ -2,8 +2,8 @@
 #include <deque>
 #include <utility>
 #include <vector>
-#include "../common/frame_queue.h"
-#include "../common/frame_timing_utils.h"
+#include "common/capture/frame_queue.h"
+#include "common/capture/frame_timing_utils.h"
 
 TEST(FrameTimingUtilsTest, SelectFrameClosestToGridPrefersNearestTimestamp) {
     std::deque<QueuedFrame> frames;

@@ -1,6 +1,6 @@
 // The build's version string; see setup.h.
 
-#include "../common/build_version.h"
+#include "common/build_version.h"
 #include "setup.h"
 
 namespace ce::setup {

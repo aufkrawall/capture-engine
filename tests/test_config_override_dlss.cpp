@@ -1,5 +1,5 @@
-#include "../common/config.h"
-#include "../hook/common/ue5_cvar_override_policy.h"
+#include "common/config/config.h"
+#include "hook/overrides/ue5_cvar_override_policy.h"
 #include "test_config_override_fixture.h"
 
 #include <bit>

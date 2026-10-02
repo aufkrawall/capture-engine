@@ -7,16 +7,16 @@ limiter owns: the rational cadence grid, where in a period the wait is spent, ho
 Apply() entries mean, frame-generation output-group admission, and the native low-latency (Reflex) handoff.
 
 Primary sources:
-- `hook/common/{fps_limiter,fps_limiter_policy}.h`
-- `hook/common/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
-- `hook/common/reflex_limiter.h`
-- `hook/common/performance_metrics.cpp` (`ConsumeDisplayTiming` publishes present-to-display to the limiter)
-- `hook/common/{dxgi_shared_present_core,dxgi_shared_present1,dxgi_shared_present_routing}.cpp`
+- `hook/pacing/{fps_limiter,fps_limiter_policy}.h`
+- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
+- `hook/pacing/reflex_limiter.h`
+- `hook/metrics/performance_metrics.cpp` (`ConsumeDisplayTiming` publishes present-to-display to the limiter)
+- `hook/present/{dxgi_shared_present_core,dxgi_shared_present1,dxgi_shared_present_routing}.cpp`
 - `hook/wrappers/dxgi_swapchain_wrap_present.cpp`
 - `hook/vulkan_layer/{vulkan_layer_present,vulkan_layer_swapchain,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/vulkan_present_boundary.h`
-- `hook/apis/ddraw_hook_present_overrides.{h,cpp}`
-- `hook/common/ddraw_present_policy.h`
+- `hook/ddraw/ddraw_hook_present_overrides.{h,cpp}`
+- `hook/ddraw/ddraw_present_policy.h`
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 - `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp` (runtime-output rate and duplicate-filter contracts)
 - `tests/test_fps_limiter_sleep_mode_recorder.h` (manual rearm recorder, included only by its two consuming suites)
@@ -69,7 +69,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   `20260828_162056` proved the Vulkan present mode does not communicate that required generated-output contract. See
   `llm-wiki/log/recent.md` 2026-08-19 (DOOM Eternal) and 2026-08-28 (Portal shared-vtable crash).
 - **The flip-queue pacing wait is bounded and retires itself.** One implementation
-  (`DXGIShared::WaitFlipQueuePacingObject`, `hook/common/dxgi_shared_present_pacing.cpp`) serves every transport; the
+  (`DXGIShared::WaitFlipQueuePacingObject`, `hook/present/dxgi_shared_present_pacing.cpp`) serves every transport; the
   Present path's inlined 16 ms copy and `CWrapDXGISwapChain::WaitFrameLatency`'s `INFINITE` copy are gone. The ceiling
   is `ce::present_pacing_policy::kFlipQueuePacingWaitCeilingMs` (1000 ms), chosen to sit far *above* the slowest
   healthy wait (24 Hz x 6 queued frames is ~250 ms) so it cannot silently escape while GPU- or vblank-bound, and far
@@ -248,7 +248,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   works identically with FIFO vsync enabled or off: the wait happens before the driver call and the game's present
   mode is left untouched.
 - **FG-active real boundaries use deterministic multiplier-sized output-group admission, not a time window.**
-  `ce::fps_limiter_policy::OutputGroupAdmission` (`hook/common/fps_limiter_policy.h`) classifies each real
+  `ce::fps_limiter_policy::OutputGroupAdmission` (`hook/pacing/fps_limiter_policy.h`) classifies each real
   final-boundary callback (native-Vulkan present/acquire) by a pure ordinal: for an active FG multiplier m, exactly
   one callback per m consecutive callbacks owns a cadence slot (`pace_group`) and the remaining m-1 are the generated
   outputs of that already admitted group (`pass_generated_slot`, lock-free fast path that never touches the cadence

@@ -21,7 +21,7 @@ TEST(InjectSourceLifecycleTest, InjectorClearsStaleHookIdentityWhenSourceProcess
     // is the only component that can retire the hook-owned identity. A stale
     // sourcePid after a game exit makes the desktop screenshot path wait for
     // the full hook timeout on an event no one will ever signal.
-    const std::string source = ReadProjectSource("captureengine/inject_main.cpp");
+    const std::string source = ReadProjectSource("captureengine/injection/inject_main.cpp");
 
     const size_t monitor = source.find("// Monitor sourcePid for config reloads (CBT hook support)");
     const size_t liveness = source.find("!IsProcessAlive(currentSourcePid)", monitor);
@@ -37,7 +37,7 @@ TEST(InjectSourceLifecycleTest, InjectorClearsStaleHookIdentityWhenSourceProcess
 }
 
 TEST(InjectSourceLifecycleTest, StaleIdentityClearRetiresHookOwnedState) {
-    const std::string source = ReadProjectSource("captureengine/inject_main.cpp");
+    const std::string source = ReadProjectSource("captureengine/injection/inject_main.cpp");
 
     const size_t helper = source.find("static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory)");
     const size_t helperEnd = source.find("// Console control handler for graceful cleanup", helper);
@@ -58,7 +58,7 @@ TEST(InjectSourceLifecycleTest, StaleIdentityClearRetiresHookOwnedState) {
 }
 
 TEST(InjectSourceLifecycleTest, LivenessHelperTreatsProtectedProcessesAsAlive) {
-    const std::string source = ReadProjectSource("captureengine/inject_main.cpp");
+    const std::string source = ReadProjectSource("captureengine/injection/inject_main.cpp");
 
     const size_t helper = source.find("static bool IsProcessAlive(uint32_t processId)");
     const size_t helperEnd = source.find("static void ClearStaleHookSourceState", helper);

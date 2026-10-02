@@ -7,7 +7,7 @@
 #include <sstream>
 #include <string>
 
-#include "../hook/apis/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_bridge_policy.h"
 
 namespace {
 
@@ -251,8 +251,8 @@ TEST(StreamlineBridgePolicyTest, CreatesTheGameDeviceNativelyAndHandsItExplicitl
     // failures get one logged default-adapter retry rather than terminating the title. The
     // follow-up session showed that Witcher can make this request with a null optional output,
     // so the retry must not require ppDevice to be non-null.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
-    const std::string native = ReadProjectSource("hook/apis/streamline_bridge_native_device.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge.cpp");
+    const std::string native = ReadProjectSource("hook/streamline/streamline_bridge_native_device.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(native.empty());
 
@@ -278,8 +278,8 @@ TEST(StreamlineBridgePolicyTest, ReusesAProvenDeviceBeforeRedundantDriverCreatio
     // Session 20260822_174509: trying the driver first returned DEVICE_RESET and poisoned the
     // retained device before the recovery path inspected it. A compatible repeated request must
     // therefore reuse the proven object before D3D12 is entered at all.
-    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge_native_device.cpp");
-    const std::string cacheSource = ReadProjectSource("hook/apis/streamline_bridge_device_cache.cpp");
+    const std::string bridgeSource = ReadProjectSource("hook/streamline/streamline_bridge_native_device.cpp");
+    const std::string cacheSource = ReadProjectSource("hook/streamline/streamline_bridge_device_cache.cpp");
     ASSERT_FALSE(bridgeSource.empty());
     ASSERT_FALSE(cacheSource.empty());
 
@@ -306,7 +306,7 @@ TEST(StreamlineBridgePolicyTest, DeduplicatesDeviceHandoffsByComIdentity) {
     // QueryInterface may return a different pointer for ID3D12Device1 than ID3D12Device even
     // though both name the same object. Raw-pointer comparison would rebind SL2 on Witcher's
     // repeated Device1 request and violate the one-runtime-device invariant.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("Microsoft::WRL::ComPtr<IUnknown> g_lastDeviceIdentity"),
@@ -328,8 +328,8 @@ TEST(StreamlineBridgePolicyTest, TranslatesTagsImmediatelyAndSuppressesUnchanged
     // The same session showed SL2 warning on every repeated FG options call, so unchanged 1.x
     // per-frame constants must be suppressed at the bridge boundary (the DLSS-G option state
     // moved to streamline_bridge_dlssg.cpp with the notRenderingGameFrames gate).
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
-    const std::string dlssg = ReadProjectSource("hook/apis/streamline_bridge_dlssg.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
+    const std::string dlssg = ReadProjectSource("hook/streamline/streamline_bridge_dlssg.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(dlssg.empty());
 
@@ -357,10 +357,10 @@ TEST(StreamlineBridgePolicyTest, ReMarksPresentsTheTitleLeftWithoutAPresentStart
     // Session 20261001_093949: three dark flashes, each a second title present without a Reflex
     // PRESENT_START. 2.x DLSS-G compares sl.reflex's frame (latched only at that marker) with the
     // present count and skipped those presents ("ReflexNotDetectedAtRuntime 2667 != 2668").
-    const std::string present = ReadProjectSource("hook/apis/streamline_bridge_present.cpp");
-    const std::string runtime = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
-    const std::string reflex = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
-    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string present = ReadProjectSource("hook/streamline/streamline_bridge_present.cpp");
+    const std::string runtime = ReadProjectSource("hook/streamline/streamline_bridge_runtime.cpp");
+    const std::string reflex = ReadProjectSource("hook/streamline/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(runtime.empty());
     ASSERT_FALSE(reflex.empty());
@@ -445,8 +445,8 @@ TEST(StreamlineBridgePolicyTest, SynthesizesReflexActivationWhileBridgedFGIsOn) 
     // `eDLSSGStatusFailReflexNotDetectedAtRuntime` because the 1.x title kept its SL Reflex
     // mode at zero. A zero mode cannot be forwarded verbatim into a runtime that requires an
     // active Reflex signal before DLSS-G will produce frames.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
-    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(translate.empty());
 
@@ -461,8 +461,8 @@ TEST(StreamlineBridgePolicyTest, DrivesReflexRuntimeDetectionOncePerBridgedFGFra
     // report `eDLSSGStatusFailReflexNotDetectedAtRuntime`. The synthesized per-frame sleep is a
     // fallback for a title that drives none; once the title's own sleep arrives through
     // slEvaluateFeature(Reflex), a second sleep per frame would halve its frame rate.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_reflex.cpp");
-    const std::string translate = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge_reflex.cpp");
+    const std::string translate = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(translate.empty());
 
@@ -479,7 +479,7 @@ TEST(StreamlineBridgePolicyTest, ExplainsTheInertStaticImportInterposer) {
     // image stays mapped even though its plugins are unloaded and all live imports reach CE.
     // Saying so prevents the expected module-list entry from being mistaken for a second
     // initialised Streamline runtime.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge_runtime.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("statically imported 1.x sl.interposer.dll remains mapped"),
@@ -493,10 +493,10 @@ TEST(StreamlineBridgePolicyTest, RetiresLegacyNgxBeforeStartingTheReplacementRun
     // quiescence was pending, so 2.x acquired the old NGX images before slShutdown. The
     // safe post-shutdown release then could not unload them, and the loading screen ran
     // Streamline 2.12 against game SR 3.1.1 and DriverStore FG 310.2.1.
-    const std::string bridgeSource = ReadProjectSource("hook/apis/streamline_bridge.cpp");
-    const std::string runtimeSource = ReadProjectSource("hook/apis/streamline_bridge_runtime.cpp");
-    const std::string translationSource = ReadProjectSource("hook/apis/streamline_bridge_translate.cpp");
-    const std::string hookThreadSource = ReadProjectSource("hook/main_hookthread.cpp");
+    const std::string bridgeSource = ReadProjectSource("hook/streamline/streamline_bridge.cpp");
+    const std::string runtimeSource = ReadProjectSource("hook/streamline/streamline_bridge_runtime.cpp");
+    const std::string translationSource = ReadProjectSource("hook/streamline/streamline_bridge_translate.cpp");
+    const std::string hookThreadSource = ReadProjectSource("hook/runtime/main_hookthread.cpp");
     ASSERT_FALSE(bridgeSource.empty());
     ASSERT_FALSE(runtimeSource.empty());
     ASSERT_FALSE(translationSource.empty());
@@ -573,7 +573,7 @@ TEST(StreamlineBridgePolicyTest, RetiresLegacyNgxBeforeStartingTheReplacementRun
     ASSERT_NE(takeover, std::string::npos);
     EXPECT_LT(earlyNgx, takeover);
 
-    const std::string redirectSource = ReadProjectSource("hook/main_redirect.cpp");
+    const std::string redirectSource = ReadProjectSource("hook/runtime/main_redirect.cpp");
     ASSERT_FALSE(redirectSource.empty());
     const size_t earlyPreload = redirectSource.find("void PreloadConfiguredStreamlineBridgeNgxDlls()");
     ASSERT_NE(earlyPreload, std::string::npos);

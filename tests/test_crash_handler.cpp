@@ -5,10 +5,10 @@
 #include <iterator>
 #include <string>
 
-#include "../common/crash_dump_policy.h"
-#include "../common/crash_handler.h"
-#include "../common/crash_handler_internal.h"
-#include "../hook/common/freeze_watchdog.h"
+#include "common/crash/crash_dump_policy.h"
+#include "common/crash/crash_handler.h"
+#include "common/crash/crash_handler_internal.h"
+#include "hook/runtime/freeze_watchdog.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -293,7 +293,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings
 }
 
 TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "runtime" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;"), std::string::npos);
@@ -305,7 +305,7 @@ TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
 // fault is recorded rather than dumped.
 TEST(CrashHandlerSourceTest, FirstChanceFilterRecordsFaultsWithoutIoOrAllocation) {
     const std::string contents =
-        ReadSourceFile(std::filesystem::current_path() / "common" / "crash_dump_writer.cpp");
+        ReadSourceFile(std::filesystem::current_path() / "common" / "crash" / "crash_dump_writer.cpp");
     ASSERT_FALSE(contents.empty());
     const size_t filter = contents.find("LONG WINAPI CrashHandlerExceptionFilter(");
     const size_t classify = contents.find("ClassifyFirstChanceException(", filter);
@@ -334,7 +334,7 @@ TEST(CrashHandlerSourceTest, DumpWorkerOwnsItsExceptionStateAndTheAttemptFlag) {
     // EXCEPTION_RECORD and CONTEXT all live there, and that stack is reused as soon as some
     // SEH frame handles the exception and execution continues.
     const std::filesystem::path source =
-        std::filesystem::current_path() / "common" / "crash_dump_writer.cpp";
+        std::filesystem::current_path() / "common" / "crash" / "crash_dump_writer.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
@@ -361,7 +361,7 @@ TEST(CrashHandlerSourceTest, DumpWorkerOwnsItsExceptionStateAndTheAttemptFlag) {
 
 TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook_trampoline.cpp";
+        std::filesystem::current_path() / "hook" / "hooking" / "inline_hook_trampoline.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID"), std::string::npos);
@@ -398,7 +398,7 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
 // image, and the layers a request is forwarded through - are therefore cached
 // while the hooks are installed, and every decision is a plain range check.
 TEST(CrashHandlerSourceTest, TerminationOriginIsCachedAtInstallAndResolvedWithoutTheLoader) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "runtime" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
@@ -443,7 +443,7 @@ TEST(CrashHandlerSourceTest, TerminationOriginIsCachedAtInstallAndResolvedWithou
 // when the immediate caller only carries the request, the resolver walks the
 // stack for the frame that actually made it.
 TEST(CrashHandlerSourceTest, LayeredTerminationRequestIsAttributedByWalkingTheStack) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "runtime" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
@@ -471,7 +471,7 @@ TEST(CrashHandlerSourceTest, LayeredTerminationRequestIsAttributedByWalkingTheSt
 // never be silent - a lost artifact that leaves no trace is worse than a large
 // one, so the decision is logged with the caller that made it.
 TEST(CrashHandlerSourceTest, PreTerminationDumpResolvesOriginBeforeDecidingAndLogsASuppression) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "runtime" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
@@ -496,7 +496,7 @@ TEST(CrashHandlerSourceTest, PreTerminationDumpResolvesOriginBeforeDecidingAndLo
 }
 
 TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRouting) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "runtime" / "main.cpp";
     const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
@@ -518,7 +518,7 @@ TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRout
     EXPECT_NE(bootstrapBody.find("PatchIATAllModulesFiltered"), std::string::npos);
 
     const std::filesystem::path inlineSource =
-        std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
+        std::filesystem::current_path() / "hook" / "hooking" / "inline_hook.cpp";
     const std::string inlineContents = ReadSourceFile(inlineSource);
     ASSERT_FALSE(inlineContents.empty());
     const size_t livePatch = inlineContents.find("if (!WriteOwnedEntryPatch(target, detour");
@@ -554,7 +554,7 @@ TEST(FreezeWatchdogPolicyTest, FreezeDumpsPreferTheExternalHelperWheneverAvailab
     EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldPreferExternalFreezeDumpHelper(true));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldPreferExternalFreezeDumpHelper(false));
     const std::string dump =
-        ReadSourceFile(std::filesystem::current_path() / "hook" / "common" / "freeze_watchdog_dump.cpp");
+        ReadSourceFile(std::filesystem::current_path() / "hook" / "runtime" / "freeze_watchdog_dump.cpp");
     ASSERT_FALSE(dump.empty());
     EXPECT_NE(dump.find("ShouldPreferExternalFreezeDumpHelper(HasExternalCrashDumpCapture())"), std::string::npos);
 }
@@ -715,9 +715,9 @@ TEST(FreezeWatchdogPolicyTest, ADialogOwnedByTheRenderThreadExplainsItsOwnFreeze
 // the same string, and each parsed scope has to select its own dump type.
 TEST(FreezeWatchdogPolicyTest, EveryDumpScopeReachesTheExternalDumpHelper) {
     const std::string hookSide = ce::test_source::ReadLogicalSource(
-        std::filesystem::current_path() / "hook" / "main_fatal_dump.cpp");
+        std::filesystem::current_path() / "hook" / "runtime" / "main_fatal_dump.cpp");
     const std::string helperSide = ce::test_source::ReadLogicalSource(
-        std::filesystem::current_path() / "captureengine" / "dump_helper.cpp");
+        std::filesystem::current_path() / "captureengine" / "diagnostics" / "dump_helper.cpp");
     ASSERT_FALSE(hookSide.empty());
     ASSERT_FALSE(helperSide.empty());
 

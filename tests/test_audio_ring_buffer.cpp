@@ -3,7 +3,7 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include "../mediaengine/audio_ring_buffer.h"
+#include "mediaengine/audio/audio_ring_buffer.h"
 
 TEST(AudioRingBufferTest, InitialState) {
     AudioRingBuffer ring(8);

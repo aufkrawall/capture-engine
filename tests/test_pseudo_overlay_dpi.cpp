@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/pseudo_overlay_dpi_policy.h"
+#include "common/overlay/pseudo_overlay_dpi_policy.h"
 
 namespace podp = ce::pseudo_overlay;
 

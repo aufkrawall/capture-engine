@@ -7,8 +7,8 @@
 #include "root_signature_parser.h"
 #include <algorithm>
 #include <cstring>
-#include "../common/dx12_sampler_policy.h"
-#include "../common/hook_common.h"
+#include "hook/d3d12/dx12_sampler_policy.h"
+#include "hook/runtime/hook_common.h"
 
 namespace RootSignatureParser {
 

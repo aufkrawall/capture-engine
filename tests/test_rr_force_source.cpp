@@ -17,9 +17,9 @@ std::string ReadProjectSource(const std::filesystem::path& relativePath) {
 }  // namespace
 
 TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInsteadOfEngineVtableCalls) {
-    const std::string source = ReadProjectSource("hook/main_ue5.cpp");
-    const std::string policy = ReadProjectSource("hook/common/ue5_cvar_override_policy.h");
-    const std::string rrPolicy = ReadProjectSource("hook/common/ue5_rr_override_policy.h");
+    const std::string source = ReadProjectSource("hook/runtime/main_ue5.cpp");
+    const std::string policy = ReadProjectSource("hook/overrides/ue5_cvar_override_policy.h");
+    const std::string rrPolicy = ReadProjectSource("hook/overrides/ue5_rr_override_policy.h");
 
     EXPECT_NE(policy.find("r.NGX.DLSS.DenoiserMode"), std::string::npos);
     EXPECT_NE(policy.find("r.Lumen.Reflections.BilateralFilter"), std::string::npos);
@@ -35,7 +35,7 @@ TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInstead
 }
 
 TEST(RayReconstructionForceSourceTest, ObservesRealNgxCapabilityAndEvaluationLifecycleWithoutSpoofing) {
-    const std::string source = ReadProjectSource("hook/apis/nvngx_hook.cpp");
+    const std::string source = ReadProjectSource("hook/ngx/nvngx_hook.cpp");
 
     EXPECT_NE(source.find("SuperSamplingDenoising.Available"), std::string::npos);
     EXPECT_NE(source.find("SuperSamplingDenoising.FeatureInitResult"), std::string::npos);
@@ -49,11 +49,11 @@ TEST(RayReconstructionForceSourceTest, ObservesRealNgxCapabilityAndEvaluationLif
 }
 
 TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeHookUnload) {
-    const std::string host = ReadProjectSource("captureengine/inject_config.cpp");
+    const std::string host = ReadProjectSource("captureengine/injection/inject_config.cpp");
     // The shared-memory -> merged-config copies live in the config unit that was
     // split out of hook_common.cpp; the invariant is about those assignments.
-    const std::string hookCommon = ReadProjectSource("hook/common/hook_common_graphics_config.cpp");
-    const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
+    const std::string hookCommon = ReadProjectSource("hook/overrides/hook_common_graphics_config.cpp");
+    const std::string hookThread = ReadProjectSource("hook/runtime/main_hookthread.cpp");
 
     EXPECT_NE(host.find("graphics.forceRayReconstruction = config.graphics.forceRayReconstruction"),
               std::string::npos);
@@ -71,7 +71,7 @@ TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeH
 }
 
 TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExpensiveEngineDiscovery) {
-    const std::string hookThread = ReadProjectSource("hook/main_hookthread.cpp");
+    const std::string hookThread = ReadProjectSource("hook/runtime/main_hookthread.cpp");
 
     const size_t initialHookInstall = hookThread.find("CheckAndInstallHooks();");
     const size_t initialRRRefresh = hookThread.find("RefreshOverrides(initialGraphicsConfig)");
@@ -87,7 +87,7 @@ TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExp
 }
 
 TEST(RayReconstructionForceSourceTest, CountsCandidateReferencesInOneCombinedExecutableScan) {
-    const std::string source = ReadProjectSource("hook/main_ue5.cpp");
+    const std::string source = ReadProjectSource("hook/runtime/main_ue5.cpp");
 
     const size_t layoutValidation = source.find("ValidateCandidateLayout(image, candidate);");
     const size_t invalidLayoutFilter = source.find("candidates.erase(std::remove_if");
@@ -103,7 +103,7 @@ TEST(RayReconstructionForceSourceTest, CountsCandidateReferencesInOneCombinedExe
 }
 
 TEST(RayReconstructionForceSourceTest, ScansTheMonolithicGameModuleBeforeDependencies) {
-    const std::string source = ReadProjectSource("hook/main_ue5.cpp");
+    const std::string source = ReadProjectSource("hook/runtime/main_ue5.cpp");
 
     const size_t mainModule = source.find("HMODULE mainModule = GetModuleHandleW(nullptr);");
     const size_t mainModuleScan = source.find("ScanModule(mainModule, &seenLiterals)", mainModule);

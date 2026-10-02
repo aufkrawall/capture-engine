@@ -75,7 +75,7 @@ the 230-line rolling-memory ceiling.
   normal overlay backend's preserved/stale RTV target. The exact-target, in-flight-retaining FSR-suspend renderer
   (`dx12_ffx_suspend_overlay`) is the transport for this fix.
 - Fix: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR`
-  (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`). When CE is below
+  (`hook/d3d12/dx12_overlay_policy/ffx_routing.h`, `hook/d3d12/dx12_hook_ffx_owner_queue.cpp`). When CE is below
   a foreign Present chain with a live, un-stalled FFX present callback (not no-callback composition, not the
   explicit FSR-off teardown window, not protected startup), `DrawSkipAndCounters` draws a second topmost overlay
   onto the presented swapchain's exact current backbuffer on the swapchain-owning queue — the queue Steam's own

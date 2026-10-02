@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../testapp/fg_switch_config.h"
-#include "../testapp/vulkan_fg_policy.h"
+#include "testapp/fg_switch_config.h"
+#include "testapp/vulkan_fg_policy.h"
 
 namespace {
 

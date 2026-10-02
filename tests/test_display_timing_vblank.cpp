@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../captureengine/display_timing_vblank.h"
+#include "captureengine/display_timing/display_timing_vblank.h"
 
 namespace {
 constexpr int64_t kStart = 1'000'000;

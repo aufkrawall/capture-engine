@@ -2,9 +2,9 @@
 
 #include <filesystem>
 
-#include "../common/config.h"
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/streamline_runtime_policy.h"
+#include "common/config/config.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -34,8 +34,8 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleUnloadDispatchesHookInvalidati
 // reports DLSS 2x.
 TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHookingModules) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
-    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
+    const fs::path source = fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h";
     ASSERT_TRUE(fs::exists(source));
     ASSERT_TRUE(fs::exists(headerSource));
 
@@ -76,9 +76,9 @@ TEST(StreamlineRuntimePolicyTest, LoadedModuleScanResolvesFeatureHooksAfterHooki
 TEST(StreamlineRuntimePolicyTest, PclMarkerHookFeedsLatencyProviderWithoutSyntheticMarkers) {
     namespace fs = std::filesystem;
     const std::string pcl =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "streamline_hook_pcl.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "streamline" / "streamline_hook_pcl.cpp");
     const std::string native =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "system_latency_native_d3d.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "metrics" / "system_latency_native_d3d.cpp");
     ASSERT_FALSE(pcl.empty());
     ASSERT_FALSE(native.empty());
 
@@ -110,9 +110,9 @@ TEST(StreamlineRuntimePolicyTest, PclMarkerHookFeedsLatencyProviderWithoutSynthe
 TEST(StreamlineRuntimePolicyTest, RediscoveredLiveInlineHooksReconcileWithoutFailureSpam) {
     namespace fs = std::filesystem;
     const std::string header = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h");
+        fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h");
     const std::string inlineHook = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "wrappers" / "inline_hook.cpp");
+        fs::current_path() / "hook" / "hooking" / "inline_hook.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(inlineHook.empty());
 
@@ -143,10 +143,10 @@ TEST(StreamlineRuntimePolicyTest, RediscoveredLiveInlineHooksReconcileWithoutFai
 // module is already gone.
 TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
-    const fs::path hookSource = fs::current_path() / "hook" / "apis" / "streamline_hook.cpp";
-    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
-    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
+    const fs::path installSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp";
+    const fs::path hookSource = fs::current_path() / "hook" / "streamline" / "streamline_hook.cpp";
+    const fs::path resolveSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_resolve.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h";
     ASSERT_TRUE(fs::exists(installSource));
     ASSERT_TRUE(fs::exists(hookSource));
     ASSERT_TRUE(fs::exists(resolveSource));
@@ -227,9 +227,9 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionSkipsStreamlineTeardownRace) 
 // belongs to a loaded module.
 TEST(StreamlineRuntimePolicyTest, FeatureResolutionLatchesTeardownInFlightUntilNextStreamlineLoad) {
     namespace fs = std::filesystem;
-    const fs::path hookSource = fs::current_path() / "hook" / "apis" / "streamline_hook.cpp";
-    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
-    const fs::path headerSource = fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h";
+    const fs::path hookSource = fs::current_path() / "hook" / "streamline" / "streamline_hook.cpp";
+    const fs::path resolveSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_resolve.cpp";
+    const fs::path headerSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h";
     ASSERT_TRUE(fs::exists(hookSource));
     ASSERT_TRUE(fs::exists(resolveSource));
     ASSERT_TRUE(fs::exists(headerSource));
@@ -267,9 +267,9 @@ TEST(StreamlineRuntimePolicyTest, FeatureResolutionLatchesTeardownInFlightUntilN
 TEST(StreamlineRuntimePolicyTest, SuccessfulExplicitStreamlineEnableRetiresAbandonedFFXStartup) {
     namespace fs = std::filesystem;
     const std::string dlssg = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "streamline_hook_dlssg.cpp");
+        fs::current_path() / "hook" / "streamline" / "streamline_hook_dlssg.cpp");
     const std::string startup = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_startup.cpp");
     ASSERT_FALSE(dlssg.empty());
     ASSERT_FALSE(startup.empty());
 
@@ -296,11 +296,11 @@ TEST(StreamlineRuntimePolicyTest, SuccessfulExplicitStreamlineEnableRetiresAband
 TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritativeExit) {
     namespace fs = std::filesystem;
     const std::string startup = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_startup.cpp");
     const std::string tracking = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
     const std::string ffxContext = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "ffx_hook_context.cpp");
+        fs::current_path() / "hook" / "ffx" / "ffx_hook_context.cpp");
     ASSERT_FALSE(startup.empty());
     ASSERT_FALSE(tracking.empty());
     ASSERT_FALSE(ffxContext.empty());
@@ -335,7 +335,7 @@ TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritati
     // DLSS-G can be raised through GetState alone, without an explicit enable and without a new
     // authoritative swapchain; the Streamline-FG-ON edge is the last retirement opportunity.
     const std::string transition = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_streamline_fg_transition.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_streamline_fg_transition.cpp");
     ASSERT_FALSE(transition.empty());
     EXPECT_NE(
         transition.find("DX12_RetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(\"Streamline FG ON\")"),
@@ -417,7 +417,7 @@ TEST(StreamlineRuntimePolicyTest, HookSlotIsNotRetargetedWhileTheInstalledTarget
 TEST(StreamlineRuntimePolicyTest, InlineHookInstallConsultsTheRetargetGuard) {
     namespace fs = std::filesystem;
     const std::string header =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_internal.h");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h");
     ASSERT_FALSE(header.empty());
 
     const size_t installer = header.find("bool InstallInlineHookOnce(void* target, void* detour");
@@ -441,7 +441,7 @@ TEST(StreamlineRuntimePolicyTest, InlineHookInstallConsultsTheRetargetGuard) {
 TEST(StreamlineRuntimePolicyTest, StreamlineFeatureQueryPinsByAddressNotByPath) {
     namespace fs = std::filesystem;
     const std::string resolve =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook_resolve.cpp");
     ASSERT_FALSE(resolve.empty());
 
     const size_t pin = resolve.find("HMODULE PinLoadedStreamlineModule(HMODULE module)");
@@ -535,9 +535,9 @@ TEST(StreamlineRuntimePolicyTest, ConfiguredMfgFactorIsPublishedDuringHalfArmedS
 TEST(StreamlineRuntimePolicyTest, ReflexWrappersCoalesceNestedNativeSleepPacing) {
     namespace fs = std::filesystem;
     const std::string streamline = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "apis" / "streamline_hook_api.cpp");
+        fs::current_path() / "hook" / "streamline" / "streamline_hook_api.cpp");
     const std::string reflex = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "common" / "reflex_limiter.h");
+        fs::current_path() / "hook" / "pacing" / "reflex_limiter.h");
     ASSERT_FALSE(streamline.empty());
     ASSERT_FALSE(reflex.empty());
 
@@ -680,8 +680,8 @@ TEST(StreamlineRuntimePolicyTest, ShouldRetryRuntimeReflexResolutionBoundsAttemp
 
 TEST(StreamlineRuntimePolicyTest, RuntimeReflexRetryEnforcesBoundedAttemptsAndQuiescenceGuardrails) {
     namespace fs = std::filesystem;
-    const fs::path resolveSource = fs::current_path() / "hook" / "apis" / "streamline_hook_resolve.cpp";
-    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    const fs::path resolveSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_resolve.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp";
     ASSERT_TRUE(fs::exists(resolveSource));
     ASSERT_TRUE(fs::exists(installSource));
 

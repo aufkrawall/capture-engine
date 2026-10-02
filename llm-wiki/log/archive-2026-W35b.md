@@ -21,7 +21,7 @@ threads of the same process**, and the association was keyed on `ThreadId` alone
 D3D11/D3D12 submit the present packet from a runtime worker thread, not from the thread that called Present.
 
 Fix: key the outstanding presents by process and let the thread only refine the choice within it -
-`SelectDisplaySubmissionPresent` (`captureengine/display_timing_policy.h`) prefers an exact thread match so
+`SelectDisplaySubmissionPresent` (`captureengine/display_timing/display_timing_policy.h`) prefers an exact thread match so
 several render threads keep their own order, and otherwise takes that process's oldest outstanding present.
 Same run afterwards: `runtimePresents=1348 submitAssociations=1347 queued=1338 published=1335 suppressed=0
 regressed=0`, and both overlays reached `display-change (sensorStatus=2)`. Vulkan is the same path - NVIDIA's

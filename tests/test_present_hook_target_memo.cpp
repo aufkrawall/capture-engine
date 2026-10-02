@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/present_hook_target_memo.h"
+#include "hook/present/present_hook_target_memo.h"
 #include "source_fragment_reader.h"
 
 // GTA session 20260925_233000: DetectSLPresentHook resolved the module of a foreign JMP target on dxgi!Present
@@ -48,7 +48,7 @@ std::string ReadSource(const char* relativePath) {
 }
 
 TEST(PresentHookTargetMemoSource, MemoIsConsultedBeforeTheModuleLookupAndOnlyWithLoaderNotifications) {
-    const std::string routing = ReadSource("hook/common/dxgi_shared_steam_routing.cpp");
+    const std::string routing = ReadSource("hook/present/dxgi_shared_steam_routing.cpp");
     ASSERT_FALSE(routing.empty());
     const size_t fn = routing.find("void DetectSLPresentHook()");
     ASSERT_NE(fn, std::string::npos);
@@ -64,7 +64,7 @@ TEST(PresentHookTargetMemoSource, MemoIsConsultedBeforeTheModuleLookupAndOnlyWit
 }
 
 TEST(PresentHookTargetMemoSource, StreamlineModuleSnapshotRerunsOnlyOnAModuleSetChange) {
-    const std::string init = ReadSource("hook/apis/streamline_hook.cpp");
+    const std::string init = ReadSource("hook/streamline/streamline_hook.cpp");
     ASSERT_FALSE(init.empty());
     const size_t fn = init.find("void Init() {");
     ASSERT_NE(fn, std::string::npos);

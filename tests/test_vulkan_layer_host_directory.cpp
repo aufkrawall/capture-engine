@@ -8,8 +8,8 @@
 
 #include "source_fragment_reader.h"
 
-#include "../common/vulkan_layer_host_directory.h"
-#include "../common/vulkan_layer_registration.h"
+#include "common/graphics/vulkan_layer_host_directory.h"
+#include "common/graphics/vulkan_layer_registration.h"
 
 namespace host_dir = ce::vulkan_layer_host_directory;
 
@@ -240,7 +240,7 @@ TEST(VulkanLayerHostDirectorySourceTest, BootstrapLoadsTheHookFromTheRecordedHos
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_renderer_bootstrap.cpp");
     const std::string ipc = ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_ipc.cpp");
     const std::string header = ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_main.h");
-    const std::string registration = ce::test_source::ReadFile(root / "common" / "vulkan_layer_registration.cpp");
+    const std::string registration = ce::test_source::ReadFile(root / "common" / "graphics" / "vulkan_layer_registration.cpp");
     ASSERT_FALSE(bootstrap.empty());
     ASSERT_FALSE(ipc.empty());
     ASSERT_FALSE(header.empty());

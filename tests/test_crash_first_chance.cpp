@@ -5,7 +5,7 @@
 #include <atomic>
 #include <thread>
 
-#include "../common/crash_first_chance.h"
+#include "common/crash/crash_first_chance.h"
 
 namespace {
 

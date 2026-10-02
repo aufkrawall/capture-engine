@@ -7,9 +7,9 @@
 #include <map>
 #include <vector>
 
-#include "../hook/common/vulkan_dxgi_fifo_policy.h"
-#include "../hook/common/vulkan_dxgi_fifo_registry.h"
-#include "../hook/common/vulkan_wsi_surface_table.h"
+#include "hook/present/vulkan_dxgi_fifo_policy.h"
+#include "hook/present/vulkan_dxgi_fifo_registry.h"
+#include "hook/present/vulkan_wsi_surface_table.h"
 
 namespace {
 

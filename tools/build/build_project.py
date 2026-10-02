@@ -10,15 +10,15 @@
 HOOK_DLL_EXCLUDED_SOURCES = (
     "hook/wrappers/d3d12_device_wrap.cpp",
     "hook/wrappers/d3d12_commandqueue_wrap.cpp",
-    "hook/apis/dx12_hook_stable.cpp",
+    "hook/d3d12/dx12_hook_stable.cpp",
 )
 
 
 def should_warn_tests_only_uncovered_source(src_path: str, product_obj_path: str) -> bool:
     """True when a tests-only build will not recompile a modified product source.
 
-    The tests-only compile set covers tests/, common/, mediaengine/, hook/common,
-    hook/wrappers/hook_system.cpp, and a small captureengine subset. Every other product source is
+    The tests-only compile set covers tests/, common/, mediaengine/, the hook core
+    (hook_test_linked_sources()), hook/hooking/hook_system.cpp, and a small captureengine subset. Every other product source is
     compiled only by the product build; when such a source is newer than its product object (or has
     no product object yet), the focused tests can pass while the product source no longer compiles.
     """
@@ -34,21 +34,19 @@ def log_tests_only_uncompiled_product_sources() -> None:
     product_obj_dir = os.path.join(OBJ_DIR, "x64")
     uncovered = []
     covered_captureengine = set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
-    for root_rel in ("hook/apis", "hook/wrappers", "hook/capture", "captureengine"):
-        root = os.path.join(PROJECT_ROOT, root_rel)
-        if not os.path.isdir(root):
+    test_linked = set(hook_test_linked_sources())
+    candidates = [src for src in hook_dll_sources() if src not in test_linked] + module_sources("captureengine")
+    for src in candidates:
+        rel_path = os.path.relpath(src, PROJECT_ROOT).replace("\\", "/")
+        if rel_path == "hook/hooking/hook_system.cpp":
             continue
-        for src in glob.glob(os.path.join(root, "*.cpp")):
-            rel_path = os.path.relpath(src, PROJECT_ROOT).replace("\\", "/")
-            if rel_path == "hook/wrappers/hook_system.cpp":
-                continue
-            if rel_path in HOOK_DLL_EXCLUDED_SOURCES:
-                continue
-            if root_rel == "captureengine" and os.path.basename(src) in covered_captureengine:
-                continue
-            obj = os.path.join(product_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
-            if should_warn_tests_only_uncovered_source(src, obj):
-                uncovered.append(rel_path)
+        if rel_path in HOOK_DLL_EXCLUDED_SOURCES:
+            continue
+        if rel_path.startswith("captureengine/") and os.path.basename(src) in covered_captureengine:
+            continue
+        obj = os.path.join(product_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
+        if should_warn_tests_only_uncovered_source(src, obj):
+            uncovered.append(rel_path)
     if not uncovered:
         return
     shown = ", ".join(uncovered[:3])
@@ -202,9 +200,7 @@ def compile_project(
 
         # 1. Compile Common (ImGui removed - using custom overlay)
         log(f"Compiling Common {arch}...")
-        common_src = glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")) + glob.glob(
-            os.path.join(PROJECT_ROOT, "common", "utils", "*.cpp")
-        )
+        common_src = module_sources("common")
         common_objs: List[str] = []
         src_obj_pairs: List[tuple[str, str]] = []
         for src in common_src:
@@ -216,14 +212,7 @@ def compile_project(
 
         # 3. Compile Hook DLL
         log(f"Compiling Hook DLL {arch}...")
-        hk_src = (
-            glob.glob(os.path.join(PROJECT_ROOT, "hook", "*.cpp"))
-            + glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
-            + glob.glob(os.path.join(PROJECT_ROOT, "hook", "apis", "*.cpp"))
-            + glob.glob(os.path.join(PROJECT_ROOT, "hook", "capture", "*.cpp"))
-            + glob.glob(os.path.join(PROJECT_ROOT, "hook", "wrappers", "*.cpp"))
-            # safe_hook.cpp REMOVED: Using custom_hook instead
-        )
+        hk_src = hook_dll_sources()
 
         excluded_files = [os.path.join(PROJECT_ROOT, rel.replace("/", os.sep)) for rel in HOOK_DLL_EXCLUDED_SOURCES]
         hk_src = [f for f in hk_src if f not in excluded_files]
@@ -338,10 +327,6 @@ def compile_project(
             hook_base_cflags
             + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
             + [  # Vulkan hooks now in layer
-                "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
-                "-I" + os.path.join(PROJECT_ROOT, "hook", "apis"),
-                "-I" + os.path.join(PROJECT_ROOT, "hook", "capture"),
-                "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
                 # The Streamline SDK headers, for the generation bridge only.
                 #
                 # The bridge translates a 1.x game's calls into 2.x ones, which means
@@ -434,7 +419,7 @@ def compile_project(
         # 4. MediaEngine (x64 only for now as requested)
         if arch == "x64":
             log("Compiling MediaEngine x64...")
-            me_src = glob.glob(os.path.join(PROJECT_ROOT, "mediaengine", "*.cpp"))
+            me_src = module_sources("mediaengine")
             if me_src:
                 # Get FFmpeg flags
                 if IS_LINUX:
@@ -470,7 +455,7 @@ def compile_project(
                 # For shared build, linking usually requires -Lpath -lavcodec.
                 # We need to make sure the DLLs are findable at runtime.
                 # FFmpeg shared libraries stay isolated under bin/ffmpeg.
-                # captureengine/mediaengine_loader.cpp sets SetDllDirectoryA(<exeDir>\ffmpeg)
+                # captureengine/app/mediaengine_loader.cpp sets SetDllDirectoryA(<exeDir>\ffmpeg)
                 # before loading mediaengine.dll, so these delay-loaded imports resolve from there.
 
                 me_dll = os.path.join(BIN_DIR, "mediaengine.dll")
@@ -594,7 +579,7 @@ def compile_project(
 
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")
-    ce_src = glob.glob(os.path.join(PROJECT_ROOT, "captureengine", "*.cpp"))
+    ce_src = module_sources("captureengine")
     if ce_src:
         ce_exe = os.path.join(BIN_DIR, "captureengine.exe")
         me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
@@ -705,7 +690,7 @@ def compile_project(
         # x64 common objects
         x64_common_objs = [
             os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
-            for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+            for s in common_sources()
         ]
         temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
         safe_delete_file(temp_ce_exe)

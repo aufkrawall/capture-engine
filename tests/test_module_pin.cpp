@@ -6,7 +6,7 @@
 // then inside D3D11CreateDeviceAndSwapChain itself, where d3d11's detach had
 // already torn the NVIDIA UMD adapter cache down underneath CE's thread.
 //
-// See hook/common/module_pin.h.
+// See hook/hooking/module_pin.h.
 
 #include <gtest/gtest.h>
 
@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/module_pin.h"
-#include "../hook/common/module_pin_policy.h"
+#include "hook/hooking/module_pin.h"
+#include "hook/hooking/module_pin_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -176,7 +176,7 @@ TEST(ModulePinTest, PinOwnerOfAddressResolvesImageBackedCodeOnly) {
 }
 
 TEST(ModulePinSourceTest, GraphicsRuntimeExportCaptureResolvesThroughAPin) {
-    const std::string source = ReadSource("hook/wrappers/iat_hook_init.cpp");
+    const std::string source = ReadSource("hook/hooking/iat_hook_init.cpp");
     ASSERT_FALSE(source.empty());
 
     // Each of these caches export addresses in long-lived globals and hands them
@@ -192,7 +192,7 @@ TEST(ModulePinSourceTest, GraphicsRuntimeExportCaptureResolvesThroughAPin) {
 }
 
 TEST(ModulePinSourceTest, ExportHookPinsTheModuleItSavesAnOriginalFrom) {
-    const std::string source = ReadSource("hook/wrappers/custom_hook.cpp");
+    const std::string source = ReadSource("hook/hooking/custom_hook.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body = FunctionBody(source, "Status HookExport(const char* moduleName", "Status HookExportW(");
     ASSERT_FALSE(body.empty());
@@ -202,7 +202,7 @@ TEST(ModulePinSourceTest, ExportHookPinsTheModuleItSavesAnOriginalFrom) {
 }
 
 TEST(ModulePinSourceTest, DX11InstallCommitsOnlyAfterPinningWhatItPatches) {
-    const std::string source = ReadSource("hook/main_install.cpp");
+    const std::string source = ReadSource("hook/runtime/main_install.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body = FunctionBody(source, "if (dx11CondAll) {", "// For other APIs, skip if D3D12");
     ASSERT_FALSE(body.empty());
@@ -225,7 +225,7 @@ TEST(ModulePinSourceTest, DX11InstallCommitsOnlyAfterPinningWhatItPatches) {
 }
 
 TEST(ModulePinSourceTest, DX11InitPinsItsModulesAndGuardsEveryEntryProbe) {
-    const std::string source = ReadSource("hook/apis/dx11_hook.cpp");
+    const std::string source = ReadSource("hook/d3d11/dx11_hook.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body = FunctionBody(source, "void DX11Hook::Init() {", "void DX11Hook::Shutdown() {");
     ASSERT_FALSE(body.empty());
@@ -249,7 +249,7 @@ TEST(ModulePinSourceTest, DX11InitPinsItsModulesAndGuardsEveryEntryProbe) {
 }
 
 TEST(ModulePinSourceTest, InlinePatchingValidatesItsTargetWithoutPinningForeignPlugins) {
-    const std::string installSource = ReadSource("hook/wrappers/inline_hook.cpp");
+    const std::string installSource = ReadSource("hook/hooking/inline_hook.cpp");
     ASSERT_FALSE(installSource.empty());
     const size_t guard = installSource.find("ce::module_pin::IsReadableCode(target, PATCH_SIZE)");
     const size_t firstByteRead = installSource.find("code[i]");
@@ -262,7 +262,7 @@ TEST(ModulePinSourceTest, InlinePatchingValidatesItsTargetWithoutPinningForeignP
     EXPECT_EQ(installSource.find("ce::module_pin::PinOwnerOfAddress(target)"), std::string::npos);
     EXPECT_EQ(installSource.find("ce::module_pin::PinByName"), std::string::npos);
 
-    const std::string deepSource = ReadSource("hook/wrappers/inline_hook_deep.cpp");
+    const std::string deepSource = ReadSource("hook/hooking/inline_hook_deep.cpp");
     ASSERT_FALSE(deepSource.empty());
     const std::string bypass = FunctionBody(deepSource, "void* CreateBypassTrampoline(void* target) {",
                                             "\n}  // namespace InlineHook");

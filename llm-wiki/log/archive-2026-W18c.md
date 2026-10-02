@@ -11,8 +11,8 @@
   4. The earlier GTA/DLSS FG safety work still matters: game-owned Reflex handoff must not be re-enabled just because CE can push a limit, or GTA Reflex/DLSS FG switching can regress.
 
 - **Fix**:
-  1. Added `hook/common/fps_limiter_policy.h` to make the decision explicit and testable: game-owned handoff requires fresh stable game sleep and no present-gap churn; explicit Reflex mode without observed game sleep uses CE local cadence.
-  2. `hook/common/fps_limiter.h` now shares the local cadence helper between capture-sync pacing and explicit Reflex pacing. In explicit Reflex mode, CE waits to the configured frame boundary and then calls CE-owned `NvAPI_D3D_Sleep` for the Reflex low-latency path instead of relying on the driver sleep duration alone.
+  1. Added `hook/pacing/fps_limiter_policy.h` to make the decision explicit and testable: game-owned handoff requires fresh stable game sleep and no present-gap churn; explicit Reflex mode without observed game sleep uses CE local cadence.
+  2. `hook/pacing/fps_limiter.h` now shares the local cadence helper between capture-sync pacing and explicit Reflex pacing. In explicit Reflex mode, CE waits to the configured frame boundary and then calls CE-owned `NvAPI_D3D_Sleep` for the Reflex low-latency path instead of relying on the driver sleep duration alone.
   3. Diagnostics now distinguish `Apply: REFLEX local cadence ...` from game-owned handoff and timer fallback, and periodic stats include local cadence wait plus CE-owned sleep wait.
   4. `tests/test_fps_limiter.cpp` locks both halves: explicit Reflex with no game sleep still uses local cadence across present-gap churn, while game-owned handoff still requires a stable fresh sleep streak without a gap.
   5. The lingering `ProcessIPCTest.*` failures were fixed rather than waived. `tests/test_process_ipc.cpp` now uses unique override pipe names, `ProcessIPCServer`/`ProcessIPCClient` support override names, the override pipe security descriptor permits the test token to open read/write, and `ProcessIPCClient::Connect()` now tries `CreateFileW` directly before retrying only the expected busy/not-found races.
@@ -22,7 +22,7 @@
   2. Full canonical verification passed: `python build.py --skip-updates --run-tests` ran all 661 unit tests successfully and completed the product build.
   3. Canonical compile also passed after the final code changes: `python build.py --skip-updates` produced build `0.1.2658` successfully before the full test run, and the full test command rebuilt/passed again.
 
-- **Files changed**: `hook/common/fps_limiter.h`, `hook/common/fps_limiter_policy.h`, `tests/test_fps_limiter.cpp`, `common/process_ipc.h`, `common/process_ipc.cpp`, `tests/test_process_ipc.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/fps_limiter.h`, `hook/pacing/fps_limiter_policy.h`, `tests/test_fps_limiter.cpp`, `common/ipc/process_ipc.h`, `common/ipc/process_ipc.cpp`, `tests/test_process_ipc.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until fresh Talos runtime validation confirms the overlay trace shows `REFLEX local cadence` and a real 60 fps cap with low NVIDIA overlay latency, and GTA validation confirms Reflex / DLSS FG on/off switching still stays stable with no accidental game-owned handoff.
 
@@ -55,7 +55,7 @@
   3. `status=-9` is NvAPI incompatible-struct-version. CE had modeled the sleep-mode booleans as 32-bit fields, so `NV_SET_SLEEP_MODE_PARAMS_VER` became `0x00010038` (56 bytes). The observed/game-compatible sleep-mode ABI is still 44 bytes (`version=0x0001002C`) with one-byte boolean fields.
 
 - **Fix**:
-  1. `hook/common/reflex_defs.h` now uses one-byte `NvAPI_Bool` fields for `NV_SET_SLEEP_MODE_PARAMS_V1`, restoring the 44-byte ABI while keeping `bUseMinQueueTime` and the reserved tail.
+  1. `hook/pacing/reflex_defs.h` now uses one-byte `NvAPI_Bool` fields for `NV_SET_SLEEP_MODE_PARAMS_V1`, restoring the 44-byte ABI while keeping `bUseMinQueueTime` and the reserved tail.
   2. Static assertions lock the struct size and important field offsets so future ABI edits fail at compile time instead of silently regressing the Reflex limiter.
   3. `tests/test_fps_limiter.cpp` adds `FpsLimiterTest.ReflexSleepModeParamsMatchNvApiAbi` to pin the runtime-facing size/version/offsets. Broader formatter noise in that file was left out of this fix to avoid unrelated line-ending churn.
   4. No NvAPI prologue/inline-hook path was reintroduced; explicit Reflex mode still uses CE-owned direct NvAPI calls with the published device, preserving the GTA/DLSS FG safety direction.
@@ -67,7 +67,7 @@
   3. Canonical compile passed: `python build.py --skip-updates` completed successfully.
   4. `python build.py --lint --skip-updates` still fails before code-specific Python checks because `pyright`, `flake8`, and `black` are not installed and pip cannot resolve package hosts from this environment. The same run also reports repo-wide clang-format batches, including pre-existing formatting/line-ending noise in `tests/test_fps_limiter.cpp`; unrelated formatter churn was left out of the commit.
 
-- **Files changed**: `hook/common/reflex_defs.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/reflex_defs.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium until fresh Talos validation confirms the explicit Reflex limiter logs successful native pushes or CE-owned NvAPI Sleep instead of `status=-9` / timer fallback, and GTA validation confirms DLSS FG on/off switching remains stable with `inlineHooks=0`.
 
@@ -88,7 +88,7 @@
   1. `python build.py --run-tests --skip-updates --gtest-filter=ConfigTest.*` passed 15/15 config tests and produced build `0.1.2624`.
   2. `python build.py --skip-updates` produced build `0.1.2625`; `build/verification/latest_summary.txt` reports `success=1`, `step.build=passed`, and `step.compile_commands=passed`.
 
-- **Files changed**: `common/config.h`, `common/config.cpp`, `captureengine/config.ini.template`, `captureengine/wgc_capture.h`, `captureengine/wgc_capture.cpp`, `captureengine/media_main.cpp`, `tests/test_config.cpp`, `llm-wiki/index.md`, `llm-wiki/current.md`, `llm-wiki/wgc-capture.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `common/config/config.h`, `common/config/config.cpp`, `captureengine/config.ini.template`, `captureengine/media/wgc_capture.h`, `captureengine/media/wgc_capture.cpp`, `captureengine/media/media_main.cpp`, `tests/test_config.cpp`, `llm-wiki/index.md`, `llm-wiki/current.md`, `llm-wiki/wgc-capture.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until real WGC load validation compares `wgc_skip_split_device_flush=0/1` and optional `wgc_same_device_capture=1` under CPU/GPU saturation, watching `FreshMiss`, `NoFresh`, `BufMin`, `DropPool`, `KMFail`, `Flush`, encoder queue/overload, corruption, device removal, and output smoothness.
 
@@ -103,13 +103,13 @@
 - **Timeline**: Our vtable hooks on the D3D9 device (Present, EndScene, etc.) were installed at T+0ms. DDrawHook::Init called `DirectDrawCreateEx` at T+326ms, triggering the crash in gameoverlayrenderer at T+326ms. Previously (session `20260430_002536`) a similar crash occurred but ddraw.dll was NOT loaded then — that crash may have been a separate timing/vtable race.
 
 - **Fixes applied** (current commit):
-  1. `hook/apis/ddraw_hook.cpp` `DDrawHook::Init()`: Added early guard to skip DDraw hook init when `d3d9.dll` or `d3d8.dll` is already loaded — the primary fix. With clear log message including which DLLs are present.
-  2. `hook/main.cpp` `CheckAndInstallHooks()`: Added the same guard before creating a `DDrawHook` instance, plus an `else if` log explaining why DDraw hooks were skipped. This prevents DDrawHook from being constructed at all in DX9/DX8 games.
+  1. `hook/ddraw/ddraw_hook.cpp` `DDrawHook::Init()`: Added early guard to skip DDraw hook init when `d3d9.dll` or `d3d8.dll` is already loaded — the primary fix. With clear log message including which DLLs are present.
+  2. `hook/runtime/main.cpp` `CheckAndInstallHooks()`: Added the same guard before creating a `DDrawHook` instance, plus an `else if` log explaining why DDraw hooks were skipped. This prevents DDrawHook from being constructed at all in DX9/DX8 games.
   3. `llm-wiki/log/recent.md`: Updated with full crash analysis.
 
 - **X86 hook init constraint**: The project targets `i686-w64-windows-gnu` (MinGW). `__try/__except` (MSVC SEH) is NOT available. Any future crash-safe init wrapping must use VEH + `setjmp`/`longjmp`.
 
-- **Files changed**: `hook/apis/ddraw_hook.cpp`, `hook/main.cpp`
+- **Files changed**: `hook/ddraw/ddraw_hook.cpp`, `hook/runtime/main.cpp`
 
 - **Stale risk**: Low. The fix is conservative (only skips DDraw when a higher-level D3D API is present). Pure DDraw games (no d3d9/d3d8) still get DDraw hooks. The gameoverlayrenderer.dll crash in non-DDraw games should now be completely avoided. If new Steam overlay crashes appear in DDraw-only games, consider adding a Steam-overlay-specific guard or VEH wrapping around `DirectDrawCreateEx`.
 
@@ -121,15 +121,15 @@
 
 - **Fix 1 — Inline hook on `NvAPI_D3D_SetSleepMode`/`Sleep` prologues** (`hook/common/reflex_limiter_query_hook.inl`): Added `EnsureNvAPIHooksInstalled()` call in `EnsureGameOwnedReflexHooks()`. This installs inline hooks on the SetSleepMode/Sleep function PROLOGUES in nvapi64.dll, intercepting ALL direct calls regardless of how the game resolved pointers. Once intercepted: `InterceptSetSleepMode()` fires → interval overridden, low-latency forwarded; `ReflexDetour_Sleep` fires → hybrid pacing + game sleep detection → `gameSleepObserved_=true` → game sleep handoff activates after 3+ Sleep calls → RTSS-level latency.
 
-- **Fix 2 — Skip CE-owned Sleep when game has Reflex** (`hook/common/fps_limiter.h`): Added `reflexPostPresentSkipSleep_` flag. When `PushFpsLimit` succeeds in explicit Reflex mode, skip CE-owned `NvAPI_D3D_Sleep` in `ApplyPostPresent()`. Only `RunLocalCadence` runs for timing. Avoids double-Sleep until the inline hook causes full handoff.
+- **Fix 2 — Skip CE-owned Sleep when game has Reflex** (`hook/pacing/fps_limiter.h`): Added `reflexPostPresentSkipSleep_` flag. When `PushFpsLimit` succeeds in explicit Reflex mode, skip CE-owned `NvAPI_D3D_Sleep` in `ApplyPostPresent()`. Only `RunLocalCadence` runs for timing. Avoids double-Sleep until the inline hook causes full handoff.
 
 - **Fix 3 — Swapchain crash re-entrancy guard** (`hook/wrappers/dxgi_swapchain_wrap.{cpp,h}`): Crash at `dxgi.dll+0x45A59` in `SetPrivateDataHelper` hash table find (RDX=0, RCX=4, accessing NULL+0x28). Stack: `sl_interposer → capture_hook_x64 → dxgi!CDXGISwapChain::SetPrivateData → CRASH`. Root cause: during D3D12 shutdown, `m_pReal->Release()` triggers DXGI swapchain destruction which frees the private-data hash table. D3D12/DXGI cleanup cascades through Streamline interposer callbacks back into the wrapper's `SetPrivateData` — accessing the freed hash table. Fix: added `m_Releasing` atomic flag set in `Release()` when external refs reach 0, BEFORE calling `m_pReal->Release()`. `IsWrapperZombie()` checks `m_Releasing` alongside `m_RefCount==0`, `m_DestructorCalled`, and `g_WrapperShutdown`. Any re-entrant forwarding method call during swapchain destruction now returns `DXGI_ERROR_DEVICE_REMOVED`. Also null out `m_pReal*` before releasing in destructor.
 
-- **Fix 4 — Diagnostic logging** (`hook/common/fps_limiter.h`, `reflex_limiter.h`): Added periodic stats logging to show `gameActivated`, `gameSleepRecent`, `gameSleepCount`, `inlineHooks` state in every cadence stats frame (~120 frames). Added `ReflexDetour_Sleep` interception logging (first 10 calls with device/forward/hook state). Added timer fallback periodic diagnostic (every 600 frames).
+- **Fix 4 — Diagnostic logging** (`hook/pacing/fps_limiter.h`, `reflex_limiter.h`): Added periodic stats logging to show `gameActivated`, `gameSleepRecent`, `gameSleepCount`, `inlineHooks` state in every cadence stats frame (~120 frames). Added `ReflexDetour_Sleep` interception logging (first 10 calls with device/forward/hook state). Added timer fallback periodic diagnostic (every 600 frames).
 
 - **New member variables**: `directQueryInterfaceHooked_`, `directQueryInterfaceTrampoline_` in `reflex_limiter.h`; `reflexPostPresentSkipSleep_` in `fps_limiter.h`.
 
-- **Files changed**: `hook/common/reflex_limiter.h`, `hook/common/reflex_limiter_query_hook.inl`, `hook/common/fps_limiter.h`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `hook/wrappers/dxgi_swapchain_wrap.h`
+- **Files changed**: `hook/pacing/reflex_limiter.h`, `hook/common/reflex_limiter_query_hook.inl`, `hook/pacing/fps_limiter.h`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `hook/wrappers/dxgi_swapchain_wrap.h`
 
 - **Testing**: Latency confirmed fixed in Talos (~40ms at 60 FPS Reflex mode). **GTA V Enhanced DLSS FG switching regression tests are PENDING** — not yet confirmed unregressed. Build succeeds, unit tests pass.
 

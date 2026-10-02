@@ -6,7 +6,7 @@
 // (layer_gate.cpp, the library the implicit-layer manifest names, loaded into
 // every Vulkan process on the machine) and the full layer (layer_main.cpp,
 // loaded by the gate only for a process it admits). The policy itself is
-// documented in common/vulkan_layer_target_list.h.
+// documented in common/graphics/vulkan_layer_target_list.h.
 //
 // Nothing here may depend on the full layer's runtime (IPC client, logging,
 // Vulkan dispatch): the gate links this unit alone, so a declined process never
@@ -16,13 +16,13 @@
 
 #include <cstddef>
 
-#include "../../common/shared_defs.h"
+#include "common/ipc/shared_defs.h"
 
 namespace ce::vulkan_layer_participation {
 
 // The executable's base name in UTF-16 - the one name source every
 // participation match runs on. The host whitelist (UTF-8, converted once per
-// entry in common/vulkan_layer_target_list.h) and the persisted list (UTF-16)
+// entry in common/graphics/vulkan_layer_target_list.h) and the persisted list (UTF-16)
 // both match against this spelling.
 void GetCurrentProcessBaseNameWide(wchar_t* out, size_t outSize);
 

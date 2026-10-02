@@ -10,10 +10,10 @@
 #include <type_traits>
 #include <vector>
 
-#include "dx12_overlay_policy/overlay_submission.h"
-#include "process_thread_walk.h"
+#include "hook/d3d12/dx12_overlay_policy/overlay_submission.h"
+#include "hook/runtime/process_thread_walk.h"
 #include "source_fragment_reader.h"
-#include "window_text_safe.h"
+#include "hook/runtime/window_text_safe.h"
 
 // Regressions for the three startup paths that could stall a game for an
 // unbounded or system-load-dependent amount of time:
@@ -177,14 +177,14 @@ TEST(ProcessThreadWalkTest, VisitorIsANonAllocatingViewBecauseTheWalkRunsWithPee
     static_assert(std::is_trivially_copyable_v<ce::process_threads::ThreadVisitor>,
                   "ThreadVisitor must not own anything it has to destroy");
 
-    const std::string header = ReadSource("hook/common/process_thread_walk.h");
+    const std::string header = ReadSource("hook/runtime/process_thread_walk.h");
     ASSERT_FALSE(header.empty());
     EXPECT_EQ(header.find("std::function<"), std::string::npos);
     EXPECT_EQ(header.find("#include <functional>"), std::string::npos);
 }
 
 TEST(ProcessThreadWalkSourceTest, QuiescencePrefersTheProcessScopedWalkAndKeepsTheSnapshotFallback) {
-    const std::string source = ReadSource("hook/wrappers/hook_patch_transaction.cpp");
+    const std::string source = ReadSource("hook/hooking/hook_patch_transaction.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t scoped = source.find("WalkCurrentProcessThreads(currentThreadId");
@@ -249,7 +249,7 @@ TEST(TempSwapchainBootstrapPolicyTest, ProcessWithoutLegacyModulesIsUnaffected) 
 }
 
 TEST(TempSwapchainBootstrapSourceTest, GuardedRouteRefusesBeforeSpendingAnAttempt) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_main.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_main.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t refusal = source.find("TempSwapchainRefusedForLegacyPresentationProcess()");
@@ -260,7 +260,7 @@ TEST(TempSwapchainBootstrapSourceTest, GuardedRouteRefusesBeforeSpendingAnAttemp
 }
 
 TEST(TempSwapchainBootstrapSourceTest, ExpensiveRoutineRefusesBeforeCreatingAnything) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t refusal = source.find("if (TempSwapchainRefusedForLegacyPresentationProcess())");
@@ -310,12 +310,12 @@ TEST(BoundedWindowTextTest, DegenerateArgumentsAreRejectedWithoutASend) {
 }
 
 TEST(BoundedWindowTextSourceTest, InProcessTitleReadersUseTheBoundedReader) {
-    const std::string watchdog = ReadSource("hook/common/freeze_watchdog.cpp");
+    const std::string watchdog = ReadSource("hook/runtime/freeze_watchdog.cpp");
     ASSERT_FALSE(watchdog.empty());
     EXPECT_NE(watchdog.find("ce::window_text::ReadWindowTitleBounded"), std::string::npos);
     EXPECT_EQ(watchdog.find("GetWindowTextA(hwnd"), std::string::npos);
 
-    const std::string moduleTable = ReadSource("hook/common/overlay_compat_detail/module_table.h");
+    const std::string moduleTable = ReadSource("hook/overlay/overlay_compat_detail/module_table.h");
     ASSERT_FALSE(moduleTable.empty());
     EXPECT_NE(moduleTable.find("ce::window_text::ReadWindowTitleBounded"), std::string::npos);
     EXPECT_EQ(moduleTable.find("GetWindowTextA(hwnd"), std::string::npos);

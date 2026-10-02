@@ -4,20 +4,20 @@ Last cross-checked: 2026-09-15 (DirectDraw Flip and full-surface Blt presentatio
 native borderless Blt versus DXGI flip/VRR ownership)
 
 Primary sources:
-- `common/config.{h,cpp}`
-- `common/mip_mapping_policy.h`
-- `common/mip_bias_limits.h`
-- `common/strict_float_parse.h`
-- `common/shared_defs.h`
-- `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils,dlss_indicator_spoof}.*`
-- `hook/common/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
+- `common/config/config.{h,cpp}`
+- `common/graphics/mip_mapping_policy.h`
+- `common/graphics/mip_bias_limits.h`
+- `common/platform/strict_float_parse.h`
+- `common/ipc/shared_defs.h`
+- `hook/ngx/dlss_indicator_spoof.*, hook/overrides/sampler_override_utils.*, hook/pacing/{fps_limiter.*,fps_limiter_policy.*}, hook/present/dxgi_shared.*, hook/runtime/hook_common.*`
+- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
 - `hook/common/{ngx_module_policy.h,ngx_feature_lifecycle.h,ngx_fg_preset_override.*,remix_frame_generation_policy.h,reflex_limiter.h,ue5_rr_override_policy.h,ue5_cvar_override_policy.h}`
-- `captureengine/{display_timing_service.cpp,display_timing_policy.h,display_timing_correlation.h}`
-- `hook/main_ue5*.cpp`
+- `captureengine/display_timing/{display_timing_service.cpp,display_timing_policy.h,display_timing_correlation.h}`
+- `hook/runtime/main_ue5*.cpp`
 - `hook/wrappers/{iat_hook.h,iat_hook_init.cpp}`
-- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,nvngx_hook_lifecycle,remix_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override,streamline_hook_api,streamline_hook_state}.cpp`
-- `hook/apis/ddraw_hook_{detours,install,present_overrides}.cpp`
-- `hook/common/ddraw_present_policy.h`
+- `hook/d3d11/dx11_hook.cpp, hook/d3d12/{dx12_hook.cpp,dx12_sampler_hooks.cpp}, hook/d3d9/{dx9_hook.cpp,dx9_sampler_state.cpp}, hook/ddraw/legacy_d3d_sampler_state.cpp, hook/ngx/{nvngx_hook.cpp,nvngx_hook_lifecycle.cpp,remix_hook.cpp}, hook/opengl/{opengl_hook.cpp,opengl_sampler_override.cpp,opengl_texture_storage_override.cpp}, hook/streamline/{streamline_hook_api.cpp,streamline_hook_state.cpp}`
+- `hook/ddraw/ddraw_hook_{detours,install,present_overrides}.cpp`
+- `hook/ddraw/ddraw_present_policy.h`
 - `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_mip_bias_limits,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
@@ -37,7 +37,7 @@ Primary sources:
   bilinear means linear MIN/MAG plus nearest-mip, and trilinear means linear MIN/MAG plus linear-mip. The override
   never enables mipmapping for an application state or object that has no usable mip range.
 - `mip_bias_min` / `mip_bias_max = default|-16..15.99` bound the application's own sampler bias instead of replacing
-  it (`common/mip_bias_limits.h`, shared by the host loader, the hook and the Vulkan layer). The application still
+  it (`common/graphics/mip_bias_limits.h`, shared by the host loader, the hook and the Vulkan layer). The application still
   chooses which samplers get a bias and how much. A bound is the last step of the pipeline: after `mip_bias`
   (strict/offset/base), SGSSAA and the Unity -0.5 clamp, inside `FinalizeMipBias`. `force_mip_bias_clamp` keeps
   precedence. A minimum above the maximum is rejected at load (both reset to `default`) and ignored defensively by
@@ -48,7 +48,7 @@ Primary sources:
   the game applies in the shader (`SampleBias`) instead of in the sampler descriptor is out of reach. DX12
   diagnostics (independent of the 16-entry fingerprint log): `sampler mip bias application=A effective=B
   decision=...` once per distinct pair (up to 48), and `sampler mip bias range now application=[min..max]
-  effective=[min..max]` whenever either range widens (lock-free `hook/common/mip_bias_range.h`, up to 32 lines).
+  effective=[min..max]` whenever either range widens (lock-free `hook/overrides/mip_bias_range.h`, up to 32 lines).
   The range covers CREATED samplers, not per-draw binding; tracking DX12 descriptor-heap use per draw would cost
   the hot path. Validated in W3 DX12 (`20261001_103142`): material samplers request -4.0, clamped to -0.1 / -2.0
   as configured; the +2.0 comparison and -0.75 clamp-address samplers stay untouched. Shared ABI 67
@@ -340,7 +340,7 @@ Primary sources:
   and decline the override entirely when the surface capabilities cannot be queried (an over-maximum request fails
   swapchain creation outright, which is a harder failure than skipping the override).
 - This is the same rule `ApplyDX11BackbufferCountOverride` already applies on the D3D flip model
-  (`hook/apis/dx11_hook_helpers.cpp`, "BufferCount override skipped ... (flip model)"). D3D recovers the latency
+  (`hook/d3d11/dx11_hook_helpers.cpp`, "BufferCount override skipped ... (flip model)"). D3D recovers the latency
   intent through the waitable object; on Vulkan the equivalent knob is `cpu_prerender_limit`, which the layer
   applies on the game's own queue.
 - Every `vkCreateSwapchainKHR` logs `images=%u (game asked minImageCount=%u, CE requested %u)`, so a session that
@@ -428,7 +428,7 @@ Reflex handoff rules.
   long after CE's hook thread runs. Any one-shot IAT patch taken at hook-install time therefore never reaches them.
   The answer must be an inline hook on the shared implementation, installed once and independent of module load order,
   import style, and `GetProcAddress` resolution.
-- `hook/common/dlss_indicator_spoof.cpp` hooks **`kernelbase!RegQueryValueExW` and `kernelbase!RegGetValueW`**, not the
+- `hook/ngx/dlss_indicator_spoof.cpp` hooks **`kernelbase!RegQueryValueExW` and `kernelbase!RegGetValueW`**, not the
   advapi32 exports: `advapi32!RegQueryValueExW` is only a 7-byte `48 FF 25` thunk (followed by `int3` padding) that
   jumps into kernelbase, so it is both a poor trampoline target and blind to api-set importers. kernelbase's bodies
   begin with exactly 14 relocation-free prologue bytes. advapi32 remains a documented fallback in the module list.
@@ -449,7 +449,7 @@ Reflex handoff rules.
   strings and reaches NGX through `sl.common.dll`.
 - Consequence: neither IAT patching nor CE's `GetProcAddress` dynamic-hook table can reach a Streamline game. Both are
   snapshots of the modules loaded when they ran (`PatchIATAllModules`), and `sl.common.dll` loads about ten seconds
-  into a session, after the last pass. `hook/common/ngx_module_policy.h` + `InstallNGXExportInlineHooks()` therefore
+  into a session, after the last pass. `hook/ngx/ngx_module_policy.h` + `InstallNGXExportInlineHooks()` therefore
   **inline-hook the export bodies in nvngx.dll itself**, driven from `NotifyHookModuleLoaded` so the patch lands inside
   the caller's `LoadLibrary`, before the first `GetProcAddress`. This is resolution-method and load-order independent.
 - Invariant: when an export is inline-hooked, the captured trampoline **overwrites** any `nvngx_hook_o*` pointer an
@@ -484,8 +484,8 @@ Reflex handoff rules.
 
 - The per-profile override paths (`dlss_sr_dll_path`, `dlss_fg_dll_path`, `dlss_rr_dll_path`, `streamline_dll_path`)
   redirect loads of the NGX snippets and the Streamline stack to the configured folder (e.g. NVIDIA Profile
-  Inspector's `sl` runtime) via `GetRedirectedPath()` in `hook/main_redirect.cpp` + the loader hooks in
-  `hook/main_loadlibrary.cpp`. This is how a newer `nvngx_dlss.dll` (preset letters) or `sl.dlss_g.dll` reaches a game
+  Inspector's `sl` runtime) via `GetRedirectedPath()` in `hook/runtime/main_redirect.cpp` + the loader hooks in
+  `hook/runtime/main_loadlibrary.cpp`. This is how a newer `nvngx_dlss.dll` (preset letters) or `sl.dlss_g.dll` reaches a game
   that ships an older runtime.
 - Coverage limit (root cause of "override works in Talos but not RoboCop"): the redirect only fires when the load
   goes through CE's hooked LoadLibrary* imports. The IAT pass (`InitializeKernel32Hooks` -> `PatchIATAllModules`) is a
@@ -497,7 +497,7 @@ Reflex handoff rules.
   Streamline loads internally came from the game's own folder. Talos ships a Streamline 2.x stack close enough to the
   override that presets/RR still worked; RoboCop ships an older stack, so SR preset M / RR never took effect there.
   The debug HUD is independent (registry spoof at `kernelbase!RegQueryValueExW`), which is why it works everywhere.
-- Fix (build 0.1.5896): `PreloadConfiguredGraphicsRuntimeDlls()` in `hook/main_redirect.cpp` loads the configured
+- Fix (build 0.1.5896): `PreloadConfiguredGraphicsRuntimeDlls()` in `hook/runtime/main_redirect.cpp` loads the configured
   override stack at hook-thread start (sl.interposer, sl.common, sl.dlss, sl.dlss_g, sl.dlss_d, nvngx_dlss,
   nvngx_dlssg, nvngx_dlssd), through the original loader entry, in dependency order. Once a base name is registered,
   every later name-based load - including Streamline's internal loads - resolves to the override copy. The preload
@@ -541,7 +541,7 @@ Reflex handoff rules.
   full path** from the LdrRegisterDllNotification callback (`Loader: runtime module loaded: <name> -> <path>`), which
   covers LoadLibrary, LdrLoadDll, and dependent loads. This is the authoritative answer to "which physical DLL did the
   game actually load"; the `Redirecting ... to:` lines only prove the redirect decision. Classification lives in
-  `hook/common/graphics_runtime_module_policy.h` (`ce::graphics_runtime::IsRuntimeModuleBaseName`), pinned by
+  `hook/runtime/graphics_runtime_module_policy.h` (`ce::graphics_runtime::IsRuntimeModuleBaseName`), pinned by
   `tests/test_graphics_runtime_module_policy.cpp`; its sl.* prefix rule deliberately mirrors `GetRedirectedPath`.
 - **NGX model repository:** NVIDIA's driver stores Streamline plugins in
   `C:\ProgramData\NVIDIA\NGX\models\sl_<name>_<id>\versions\<v>\files\` with every file literally named
@@ -557,7 +557,7 @@ Reflex handoff rules.
   present maps a duplicate image instead of returning the loaded one. The Streamline/NGX runtimes are process-global
   singletons: a duplicate gets its own uninitialised plugin registry and cannot take effect, but CE's own export
   hooks *do* find it and forward the live instance's calls into it. `RedirectWouldDuplicateLoadedModule` in
-  `hook/main_redirect.cpp` guards **both** redirect decisions (the NGX-model branch returns early with its own
+  `hook/runtime/main_redirect.cpp` guards **both** redirect decisions (the NGX-model branch returns early with its own
   path), backed by `ce::graphics_runtime::WouldRedirectDuplicateLoadedModule`. This generalizes the rule the preload
   already followed. The override still wins every load it can actually win — a name that is not loaded yet, and a
   repeat load of the override copy itself.
@@ -583,7 +583,7 @@ Reflex handoff rules.
 - **Consequence for CE's own loader calls:**** the `LdrLoadDll` hook is process-global, so CE's own
   `LoadLibrary`-by-path calls are redirected too. Anything that means "pin this exact mapped image" must resolve by
   address (`GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`), never by re-loading a path — see
-  `PinLoadedStreamlineModule` in `hook/apis/streamline_hook_resolve.cpp` and the Cyberpunk 20260816_045933 entry in
+  `PinLoadedStreamlineModule` in `hook/streamline/streamline_hook_resolve.cpp` and the Cyberpunk 20260816_045933 entry in
   `log/recent.md`.
 
 ## Persistent UE5 CVar override policy
@@ -659,8 +659,8 @@ Reflex handoff rules.
 - The shared flag occupies one byte of the existing alignment gap between `msaaSamples` and `prerenderLimit`;
   compile-time offset/size assertions prove the IPC layout and ABI signature are unchanged. Host config updates,
   initial publication, the hook, and the Vulkan layer all consume the same resolved per-process value.
-- Source anchors: `hook/common/nv_lod_spread_override.{h,cpp}`, the pre-device calls in
-  `hook/vulkan_layer/vulkan_layer_hooks.cpp`, inject fallback in `hook/main_{hookthread,overlay_detect}.cpp`, and
+- Source anchors: `hook/ngx/nv_lod_spread_override.{h,cpp}`, the pre-device calls in
+  `hook/vulkan_layer/vulkan_layer_hooks.cpp`, inject fallback in `hook/runtime/main_{hookthread,overlay_detect}.cpp`, and
   coverage in `tests/test_nv_lod_spread_override.cpp`.
 - **Split-architecture titles are patched where the Vulkan device is, not where the game is.** NVIDIA RTX Remix runs
   the 32-bit game (`hl2.exe` for Portal RTX) as a thin client and does every bit of rendering in the 64-bit

@@ -353,7 +353,7 @@ TEST(DXGISharedTest, SwapchainColorSpaceTrackingNeverPatchesSharedVtableSlot) {
         return ce::test_source::ReadLogicalSource(path);
     };
     const std::string shared =
-        readSource(std::filesystem::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+        readSource(std::filesystem::current_path() / "hook" / "present" / "dxgi_shared.cpp");
     const std::string wrapper =
         readSource(std::filesystem::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp");
     ASSERT_FALSE(shared.empty());
@@ -373,10 +373,10 @@ TEST(DXGISharedTest, RuntimeOwnedOverlayRoutesUseCachedPresentationContractAndRe
         return ce::test_source::ReadLogicalSource(path);
     };
     const auto root = std::filesystem::current_path();
-    const std::string dx12 = readSource(root / "hook" / "apis" / "dx12_hook.cpp");
-    const std::string streamlineHook = readSource(root / "hook" / "apis" / "streamline_hook.cpp");
+    const std::string dx12 = readSource(root / "hook" / "d3d12" / "dx12_hook.cpp");
+    const std::string streamlineHook = readSource(root / "hook" / "streamline" / "streamline_hook.cpp");
     const std::string streamlineRenderer =
-        readSource(root / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
+        readSource(root / "hook" / "d3d12" / "dx12_streamline_ui_overlay.cpp");
     ASSERT_FALSE(dx12.empty());
     ASSERT_FALSE(streamlineHook.empty());
     ASSERT_FALSE(streamlineRenderer.empty());

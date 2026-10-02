@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/graphics_api_identity.h"
+#include "hook/runtime/graphics_api_identity.h"
 
 namespace {
 using ce::graphics_api_identity::D3D10Label;

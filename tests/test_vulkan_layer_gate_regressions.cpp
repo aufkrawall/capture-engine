@@ -4,9 +4,9 @@
 #include <fstream>
 #include <string>
 
-#include "../common/vulkan_layer_registration.h"
-#include "../common/vulkan_layer_target_list.h"
-#include "../hook/vulkan_layer/vulkan_present_thread_policy.h"
+#include "common/graphics/vulkan_layer_registration.h"
+#include "common/graphics/vulkan_layer_target_list.h"
+#include "hook/vulkan_layer/vulkan_present_thread_policy.h"
 #include "source_fragment_reader.h"
 
 namespace targets = ce::vulkan_layer_targets;
@@ -75,7 +75,7 @@ TEST(VulkanLayerGateRegression, NonAsciiNameMatchesBothWhitelistsThroughOneConve
 // locale-dependent compare must not come back.
 TEST(VulkanLayerGateRegression, NameMatchingIsWideEndToEndWithOneConversion) {
     const std::string targetList = ce::test_source::ReadFile(
-        std::filesystem::current_path() / "common" / "vulkan_layer_target_list.h");
+        std::filesystem::current_path() / "common" / "graphics" / "vulkan_layer_target_list.h");
     ASSERT_FALSE(targetList.empty());
     EXPECT_NE(targetList.find("MultiByteToWideChar(CP_UTF8"), std::string::npos)
         << "the one conversion: UTF-8 published entries into the UTF-16 match";

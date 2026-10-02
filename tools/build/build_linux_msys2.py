@@ -237,7 +237,7 @@ FFMPEG_URL = FFMPEG_URLS[0]  # retained for callers expecting a single URL
 # apart were not the same product.
 #
 # This is a master COMMIT rather than a release tag, deliberately. The native AAC
-# encoder's NMR coder - which CE selects explicitly (mediaengine/audio_encoder.cpp,
+# encoder's NMR coder - which CE selects explicitly (mediaengine/audio/audio_encoder.cpp,
 # `aac_coder=nmr`) - landed on master after the 9.0 release branch was cut, so it
 # exists in NO released FFmpeg. Building n9.0 drops the encoder to twoloop and
 # fails the AAC unit tests with "Undefined constant ... 'nmr'". Revisit only when

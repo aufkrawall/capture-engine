@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/capture_policy/inject_lineage.h"
+#include "common/capture/capture_policy/inject_lineage.h"
 
 namespace {
 

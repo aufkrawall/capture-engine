@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <limits>
 #include <vector>
-#include "../mediaengine/audio_encoder.h"
-#include "../mediaengine/audio_fault_accounting.h"
+#include "mediaengine/audio/audio_encoder.h"
+#include "mediaengine/audio/audio_fault_accounting.h"
 
 extern "C" {
 #include <libavutil/intreadwrite.h>

@@ -12,7 +12,7 @@
   `CWrapD3D11Device::CreateSamplerState` (which doesn't enable AF because it can't inspect
   SRVs at create time).
 - **Changes**:
-  1. **Expose `ApplyPrerenderLimit`** (`hook/apis/dx11_hook.h`): Removed `static` from
+  1. **Expose `ApplyPrerenderLimit`** (`hook/d3d11/dx11_hook.h`): Removed `static` from
      `ApplyPrerenderLimit` in `dx11_hook.cpp`, declared it in `dx11_hook.h`. The wrapper
      Present calls it directly.
   2. **Wrapper prerender limit** (`hook/wrappers/dxgi_swapchain_wrap.cpp:1008-1023`):
@@ -30,7 +30,7 @@
   4. **Wrapper create-time AF** (`hook/wrappers/d3d11_device_wrap.cpp`): Already had
      `ApplySamplerOverrides` at create-time (AF off + mip bias), but it was missing
      the mip-bias logging. The bind-time path now handles AF enablement.
-- **Files changed**: `hook/apis/dx11_hook.h`, `hook/apis/dx11_hook.cpp`,
+- **Files changed**: `hook/d3d11/dx11_hook.h`, `hook/d3d11/dx11_hook.cpp`,
   `hook/wrappers/d3d11_devicecontext_wrap.cpp`, `hook/wrappers/dxgi_swapchain_wrap.cpp`,
   `llm-wiki/log/recent.md`
 - **Verification**: Build `0.1.2781`: `success=1`, all unit tests passed.
@@ -42,13 +42,13 @@
 
 - **Motivation**: BioShock Infinite (DX11) showed misleading DX9 hook messages and no debug
   visibility for anisotropic filtering and prerender limit overrides.
-- **DX9 false detection fix** (`hook/apis/dx9_hook.cpp:6399-6406`): Added `d3d11.dll` to
+- **DX9 false detection fix** (`hook/d3d9/dx9_hook.cpp:6399-6406`): Added `d3d11.dll` to
   the DX9 hook `skipReason` check. When d3d11.dll is loaded, DX9 hooks are now skipped
   with reason `"d3d11.dll (DX11 game)"` instead of proceeding to create a dummy D3D9 device.
-- **DX9 hook creation skip** (`hook/main.cpp:1529`): Added `!dx11DllLoaded` guard to prevent
+- **DX9 hook creation skip** (`hook/runtime/main.cpp:1529`): Added `!dx11DllLoaded` guard to prevent
   creating the DX9Hook object at all when d3d11.dll is present. The skip log now includes
   `dx11Loaded` field.
-- **D3D11 AF debug logging** (`hook/apis/dx11_hook.cpp`):
+- **D3D11 AF debug logging** (`hook/d3d11/dx11_hook.cpp`):
   - `SamplerAllowsForcedAF()`: Rate-limited logs for each skip reason (no mips, border
     address, reduction filter, comparison func) with `g_DiagSamplerSkip*` counters.
   - `ShouldForceAnisotropyForStageSlot()`: Rate-limited logs for slot>=8, no SRV bound,
@@ -59,7 +59,7 @@
   - `GetOrCreateReplacementSampler11()`: Rate-limited logs on creation success (filter,
     anisotropy, bias, stage, slot — up to 48) and failure.
   - `DetourCreateSamplerState()`: Now logs on successful modification (not just failure).
-- **D3D11 prerender debug logging** (`hook/apis/dx11_hook.cpp`):
+- **D3D11 prerender debug logging** (`hook/d3d11/dx11_hook.cpp`):
   - `ApplyPrerenderLimit()`: Logs ring buffer creation with limit value, serial/buffered
     wait times in microseconds (up to 12), fractional idle gap calculation (up to 6),
     GetDevice failure.
@@ -67,7 +67,7 @@
 - **Diagnostic summary** (`DX11Hook::Shutdown()` and `OnHostDisconnect()`): Logs aggregated
   counters for all AF skip reasons, AF applies, replacements, mip bias/override events,
   prerender frames and waits in a single compact line.
-- **Files changed**: `hook/apis/dx11_hook.cpp`, `hook/apis/dx9_hook.cpp`, `hook/main.cpp`,
+- **Files changed**: `hook/d3d11/dx11_hook.cpp`, `hook/d3d9/dx9_hook.cpp`, `hook/runtime/main.cpp`,
   `llm-wiki/log/recent.md`
 - **Verification**: Build `0.1.2778`: `success=1`, all unit tests passed.
 - **Stale risk**: Low. The DX9 skipReason change only affects DX11 games that load d3d9.dll

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/monitor_selection.h"
+#include "common/platform/monitor_selection.h"
 
 namespace monitor = ce::monitor_selection;
 

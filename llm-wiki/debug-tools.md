@@ -70,13 +70,13 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
   loads, resolves symbols, and reports registers, and then cannot produce one
   caller: every session before 2026-09-16 (both crashes in commit 339eccf0 and
   Gothic II `20260916_000027`) had to be attributed from opcodes and register
-  values alone. `captureengine/dump_helper_wow64_stacks.{h,cpp}` now supplies
+  values alone. `captureengine/diagnostics/dump_helper_wow64_stacks.{h,cpp}` now supplies
   each thread's committed 32-bit stack through dbghelp's `MemoryCallback`, with
   the pointers read inside the thread callback where the target is already
   frozen for the dump. `crash.log` records `DumpHelper: WoW64 target - added N
   32-bit thread stack range(s)`; a run reporting zero means the stacks are
   absent again and the dump is only good for the faulting instruction.
-  Range arithmetic and its caps: `common/wow64_stack_range_policy.h`,
+  Range arithmetic and its caps: `common/crash/wow64_stack_range_policy.h`,
   `tests/test_wow64_stack_range_policy.cpp`.
 
 - **A hung WoW64 process can be dumped with CE's own helper, without a debugger attach:**
@@ -97,7 +97,7 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
   0xE06D7363. The minimal dump normally does NOT contain the thrown exception
   object, so the message is unreadable from the dump; the crash handler now logs
   the object bytes + decoded message to crash.log (see
-  common/cpp_exception_message.{h,cpp}).
+  common/crash/cpp_exception_message.{h,cpp}).
 
 - Installed Windows tools for `.dmp`, symbol, PE/COFF, Sysinternals, and media/capture analysis:
 
@@ -149,7 +149,7 @@ Both tools are installed (2026-08-11): gitleaks 8.30.1 via winget (`Gitleaks.Git
 
 ## DX12 DRED GPU-fault diagnostics (device-hung / `0x887A0006`)
 
-- The hook arms **DRED** (Device Removed Extended Data) auto-breadcrumbs + page-fault in `Wrapped_D3D12CreateDevice` before the game's device is created (`hook/common/dx12_dred.cpp`). It is the primary tool for any `DXGI_ERROR_DEVICE_HUNG/REMOVED` (e.g. the x86 DX12 focus/mode-switch freeze): a bare HRESULT is not actionable, DRED names the hung command list and the faulting GPU VA.
+- The hook arms **DRED** (Device Removed Extended Data) auto-breadcrumbs + page-fault in `Wrapped_D3D12CreateDevice` before the game's device is created (`hook/d3d12/dx12_dred.cpp`). It is the primary tool for any `DXGI_ERROR_DEVICE_HUNG/REMOVED` (e.g. the x86 DX12 focus/mode-switch freeze): a bare HRESULT is not actionable, DRED names the hung command list and the faulting GPU VA.
 - **Default OFF (opt-in)**; enable page-fault-only mode with an empty `ce_dx12_dred` file or env `CE_DX12_DRED=pf`, and full breadcrumbs with `CE_DX12_DRED=1` / `full` only while actively diagnosing a real device-removal. Auto-breadcrumbs (`SetAutoBreadcrumbsEnablement(FORCED_ON)`) make the APPLICATION's every `ID3D12GraphicsCommandList::Reset()` allocate a breadcrumb buffer via a KERNEL GPU allocation (`NtGdiDdDDICreateAllocation/DestroyAllocation`); during the Alt+Tab iflip<->composited mode switch that stalls the present thread for seconds and itself trips the 2 s TDR — i.e. leaving full DRED on caused the very freeze it was meant to capture (`logs/20260606_145929`: `CGraphicsCommandList::Reset -> Dred::AllocateBreadcrumbBuffer -> NtGdiDdDDIDestroyAllocation2`, gap=2646ms). Decision via `ce::dx12_overlay_policy::DecideDredArmMode`. Freeze dumps still capture the CPU-side present-thread stack without DRED.
 - On device removal (the two `ProcessFrame` device-removed sites and the freeze watchdog dump) the hook log (`installed/captureengine/logs/<ts>/hook_debug.log`) gets a block:
   - `DX12 DRED: ===== device-removed extended data (<reason>) =====`
@@ -161,7 +161,7 @@ Both tools are installed (2026-08-11): gitleaks 8.30.1 via winget (`Gitleaks.Git
 - **Current x86 DX12 no-vsync fixed signature (v13)**: healthy 32-bit `dx12_test.exe` logs show `DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text + upload-slot per-frame fence`, `DX12 Overlay: x86 solid-span text path enabled`, and `DX12 DIAG: Texture2D command ... textured=0`. A reappearance of `textured=1` in the x86 no-FG path is a regression.
 
 ## DX12 always-on present/ECL timing diagnostics (`DX12 DIAG:` in hook_debug.log)
-Built-in, ALWAYS-ON (no env/flag/install), written via `HookLogImportant` to `hook_debug.log`. Added 2026-06-06 to localize x86 DX12 present/ECL stalls; see `dx12-overlay-third-party-coexistence.md` and `handoff-dx12-32bit-crash.md` for the current v13 fixed state. Source: `hook/apis/dx12_hook_main.cpp`, `hook/common/custom_overlay_dx12.cpp`, and `hook/common/dxgi_shared.cpp`.
+Built-in, ALWAYS-ON (no env/flag/install), written via `HookLogImportant` to `hook_debug.log`. Added 2026-06-06 to localize x86 DX12 present/ECL stalls; see `dx12-overlay-third-party-coexistence.md` and `handoff-dx12-32bit-crash.md` for the current v13 fixed state. Source: `hook/d3d12/dx12_hook_main.cpp`, `hook/overlay/custom_overlay_dx12.cpp`, and `hook/present/dxgi_shared.cpp`.
 
 - `DX12 DIAG: ExecuteCommandLists SLOW Xms (queue=.. overlayQueue=.. lists=.. devRemoved=0x..)` — a single ECL ≥2 ms (the call includes the real forward where the NV driver's `AllocateCB → NtGdiDdDDICreateAllocation` happens). `devRemoved` non-zero = post-removal spinning, ignore. One early run maxed at 9.5 ms, while a later mid-stall watchdog dump caught an app ECL blocked in the NVIDIA GPU-VA map path; treat the timing window as run-specific rather than using it alone to assign root cause.
 - `DX12 DIAG: ECL timing/1s: count=.. maxMs=.. avgMs=..` — per-second ECL stats for steady-state 32-bit vs 64-bit comparison (note: count/avg inflate AFTER a freeze because the app spins on the dead device).

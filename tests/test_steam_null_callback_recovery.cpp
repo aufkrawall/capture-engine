@@ -8,7 +8,7 @@
 #include <string>
 #include <thread>
 
-#include "../hook/common/dxgi_shared_internal.h"
+#include "hook/present/dxgi_shared_internal.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -87,8 +87,7 @@ TEST(SteamNullCallbackRecoveryTest, HandlerRegistrationIsProcessLifetimeAndIdemp
     EXPECT_TRUE(DXGIShared::EnsureSteamNullCallbackRecoveryHandlerRegistered());
 
     namespace fs = std::filesystem;
-    const std::string guard = ce::test_source::ReadFile(fs::current_path() / "hook" / "common" /
-                                                        "dxgi_shared_internal.h");
+    const std::string guard = ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_internal.h");
     ASSERT_FALSE(guard.empty());
     EXPECT_EQ(guard.find("AddVectoredExceptionHandler"), std::string::npos)
         << "the per-Present guard must not add and remove a process-wide handler";
@@ -100,7 +99,7 @@ TEST(SteamNullCallbackRecoveryTest, HandlerRegistrationIsProcessLifetimeAndIdemp
 TEST(SteamNullCallbackRecoveryTest, HandlerNeverWritesAFixedSteamRva) {
     namespace fs = std::filesystem;
     const std::string handler =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_steam_veh.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_steam_veh.cpp");
     ASSERT_FALSE(handler.empty());
     EXPECT_EQ(handler.find("kSteamCallbackRva"), std::string::npos);
     EXPECT_EQ(handler.find("steamStart + 0x"), std::string::npos);
@@ -173,7 +172,7 @@ TEST(SteamNullCallbackRecoveryTest, GuardRegistersItsThreadAndAnOuterGuardKeepsT
 TEST(SteamNullCallbackRecoveryTest, HandlerAsksTheArmedThreadSetBeforeTouchingThreadLocalState) {
     namespace fs = std::filesystem;
     const std::string handler =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_steam_veh.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_steam_veh.cpp");
     ASSERT_FALSE(handler.empty());
     const size_t entry = handler.find("LONG CALLBACK SteamOverlayInitVehHandler(");
     ASSERT_NE(entry, std::string::npos);

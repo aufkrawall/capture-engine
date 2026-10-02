@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "../hook/common/third_party_load_policy.h"
+#include "hook/runtime/third_party_load_policy.h"
 
 namespace {
 

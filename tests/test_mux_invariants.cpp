@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../mediaengine/matroska_timing.h"
-#include "../mediaengine/mux_invariants.h"
+#include "mediaengine/mux/matroska_timing.h"
+#include "mediaengine/mux/mux_invariants.h"
 
 namespace {
 

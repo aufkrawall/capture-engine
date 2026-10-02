@@ -126,7 +126,7 @@ Rotated from `recent.md` on 2026-08-07 (newest-first).
 - **DX10 fix**: per-slot `copyQueryIssued[]` in `DX11Capture`, reset in
   `Cleanup()` and at query creation, set right after `End()`. Readiness now goes
   through the shared, unit-testable `ClassifyCaptureCopyQuerySlot()` in
-  `common/capture_base.h`: a never-issued query is trivially ready, `S_FALSE` is
+  `common/capture/capture_base.h`: a never-issued query is trivially ready, `S_FALSE` is
   busy, and any other HRESULT is `QueryUnusable` - treated as reusable with a
   bounded log, because a query that cannot answer must never wedge capture.
   Slot starvation is now reported (`No capture texture slot available

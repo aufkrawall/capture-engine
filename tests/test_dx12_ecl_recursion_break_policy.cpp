@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy/ecl_recursion_break.h"
+#include "hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h"
 
 #include "source_fragment_reader.h"
 
@@ -111,7 +111,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, ProxyQueuesOnlyForwardThroughTheirOwnOrigi
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, RecursionBreakUsesResolvedTargetAndNeverBlindGlobal) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t recursionGuard = source.find("if (ce::dx12_ecl_forward::recursionDepth > 0)");
@@ -134,7 +134,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, RecursionBreakUsesResolvedTargetAndNeverBl
     const std::string breakBlock = source.substr(recursionGuard, outerDepthIncrement - recursionGuard);
     EXPECT_EQ(breakBlock.find("oExecuteCommandLists(pThis"), std::string::npos);
 
-    const std::string transparentForward = ReadSource("hook/apis/dx12_hook_ecl_forward.cpp");
+    const std::string transparentForward = ReadSource("hook/d3d12/dx12_hook_ecl_forward.cpp");
     ASSERT_FALSE(transparentForward.empty());
     EXPECT_NE(transparentForward.find("recursionDepth >= 2"), std::string::npos);
     EXPECT_NE(transparentForward.find("ResolveRecursionBreakTarget(queue)"), std::string::npos);
@@ -143,7 +143,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, RecursionBreakUsesResolvedTargetAndNeverBl
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, QueueVTableHookPublishesNativeOriginalEagerly) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t originalSave = source.find("dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;");
@@ -154,7 +154,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, QueueVTableHookPublishesNativeOriginalEage
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, NullVtableForwardPrefersResolvedNativeEcl) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t nullVtableForward = source.find("real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);");
@@ -165,7 +165,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, NullVtableForwardPrefersResolvedNativeEcl)
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, SignalTraceDetourForwardsPerVtableOriginalNotBlindGlobal) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t detourBegin =
@@ -192,7 +192,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, SignalTraceDetourForwardsPerVtableOriginal
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, SignalVTableHookStoresPerVtableOriginalAndPublishesNativeSignal) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t originalSave = source.find("dx12_hook_g_CommandQueueSignalOriginalByVTable[vtbl] = origSignal;");

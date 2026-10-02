@@ -10,10 +10,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <thread>
-#include "../hook/common/fps_limiter.h"
-#include "../hook/common/fps_limiter_policy.h"
-#include "../hook/common/freeze_watchdog.h"
-#include "../hook/common/overlay_compat.h"
+#include "hook/pacing/fps_limiter.h"
+#include "hook/pacing/fps_limiter_policy.h"
+#include "hook/runtime/freeze_watchdog.h"
+#include "hook/overlay/overlay_compat.h"
 
 // Call-site contracts under test. See ce::fps_limiter_policy::PresentSite.
 inline constexpr ce::fps_limiter_policy::PresentSite kFinalOutputSite =

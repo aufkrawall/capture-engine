@@ -5,8 +5,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../common/ansi_path.h"
-#include "../hook/common/dll_utils.h"
+#include "common/platform/ansi_path.h"
+#include "hook/runtime/dll_utils.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -139,7 +139,7 @@ TEST(AnsiPathLookupTest, LoadedModuleVersionIsReadFromTheMappingNotTheFile) {
     EXPECT_FALSE(VersionResourceFileVersionParts(std::string(), &mappedParts[0], nullptr, nullptr));
 
     // The HMODULE forms never derive a path to re-open.
-    const std::string dllUtils = ReadSource("hook/common/dll_utils.h");
+    const std::string dllUtils = ReadSource("hook/runtime/dll_utils.h");
     for (const char* form : {"static inline bool ModuleVersionStringContains(HMODULE module",
                              "static inline bool ModuleFileVersionParts(HMODULE module"}) {
         const std::string body = Between(dllUtils, form, "\n}\n");
@@ -158,7 +158,7 @@ TEST(AnsiPathLookupTest, LoadedModuleVersionIsReadFromTheMappingNotTheFile) {
 // the module/game folder stay off GetModuleFileNameA. Base-name attribution in
 // log lines is deliberately left narrow (the file name itself is ASCII).
 TEST(AnsiPathLookupTest, PathDerivingLookupsStayOffTheAnsiModuleName) {
-    const std::string hookCommon = ReadSource("hook/common/hook_common.cpp");
+    const std::string hookCommon = ReadSource("hook/runtime/hook_common.cpp");
     const std::string logsFallback =
         Between(hookCommon, "bool GetSessionLogsDirectory(", "int written = snprintf(outDir");
     ASSERT_FALSE(logsFallback.empty());
@@ -174,37 +174,37 @@ TEST(AnsiPathLookupTest, PathDerivingLookupsStayOffTheAnsiModuleName) {
     EXPECT_NE(layerIpc.find("ce::ansi_path::ModuleDirectoryAnsi(nullptr)"), std::string::npos);
     EXPECT_EQ(layerIpc.find("GetModuleFileNameA("), std::string::npos);
 
-    const std::string dred = ReadSource("hook/common/dx12_dred.cpp");
+    const std::string dred = ReadSource("hook/d3d12/dx12_dred.cpp");
     EXPECT_EQ(dred.find("GetModuleFileNameA("), std::string::npos);
     EXPECT_EQ(dred.find("CreateFileA("), std::string::npos);
-    const std::string trace = Between(ReadSource("hook/apis/dx12_hook_helpers.cpp"), "bool Dx12TraceEnabled()",
+    const std::string trace = Between(ReadSource("hook/d3d12/dx12_hook_helpers.cpp"), "bool Dx12TraceEnabled()",
                                       "return s_enabled;");
     ASSERT_FALSE(trace.empty());
     EXPECT_EQ(trace.find("GetModuleFileNameA("), std::string::npos);
 
-    const std::string redirect = Between(ReadSource("hook/main_redirect.cpp"), "bool StreamlineShipsWithApplication()",
+    const std::string redirect = Between(ReadSource("hook/runtime/main_redirect.cpp"), "bool StreamlineShipsWithApplication()",
                                          "return shipped;");
     ASSERT_FALSE(redirect.empty());
     EXPECT_EQ(redirect.find("GetModuleFileNameA("), std::string::npos);
     EXPECT_NE(redirect.find("GetFileAttributesW"), std::string::npos);
 
-    const std::string fatal = Between(ReadSource("hook/main_fatal_dump.cpp"),
+    const std::string fatal = Between(ReadSource("hook/runtime/main_fatal_dump.cpp"),
                                       "std::filesystem::path GetInstalledCaptureEnginePath()", "\n}\n");
     ASSERT_FALSE(fatal.empty());
     EXPECT_EQ(fatal.find("GetModuleFileNameA("), std::string::npos);
 
-    const std::string dllUtils = ReadSource("hook/common/dll_utils.h");
+    const std::string dllUtils = ReadSource("hook/runtime/dll_utils.h");
     EXPECT_EQ(dllUtils.find("GetModuleFileNameA("), std::string::npos);
     EXPECT_EQ(dllUtils.find("GetFileVersionInfoA("), std::string::npos);
     // The layer used to carry a private narrow copy of the same helpers.
     const std::string layerHeader = ReadSource("hook/vulkan_layer/layer_main.h");
     EXPECT_EQ(layerHeader.find("GetFileVersionInfoSizeA("), std::string::npos);
-    EXPECT_NE(layerHeader.find("#include \"../common/dll_utils.h\""), std::string::npos);
+    EXPECT_NE(layerHeader.find("#include \"hook/runtime/dll_utils.h\""), std::string::npos);
 
-    const std::string generation = ReadSource("hook/common/streamline_api_generation.h");
+    const std::string generation = ReadSource("hook/streamline/streamline_api_generation.h");
     EXPECT_EQ(generation.find("GetModuleFileNameA("), std::string::npos);
     EXPECT_NE(generation.find("ModuleFileMajorVersion(interposer)"), std::string::npos);
-    for (const char* file : {"hook/main_overlay_detect.cpp", "hook/main_thirdparty_load.cpp"}) {
+    for (const char* file : {"hook/runtime/main_overlay_detect.cpp", "hook/runtime/main_thirdparty_load.cpp"}) {
         const std::string source = ReadSource(file);
         ASSERT_FALSE(source.empty()) << file;
         EXPECT_EQ(source.find("DllVersionStringContains(path"), std::string::npos) << file;

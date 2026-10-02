@@ -1,0 +1,33 @@
+#pragma once
+
+// Hook-specific capture base - includes shared base and adds IPCClient
+// integration
+#include "common/capture/capture_base.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/runtime/ipc_client.h"
+
+// Extended CaptureBase for hook usage with IPCClient convenience methods
+class HookCaptureBase : public CaptureBase {
+public:
+    // Publish shared handles - accepts IPCClient for backward compatibility
+    void PublishToSharedMemory(IPCClient* ipc) {
+        if (ipc && ipc->GetSharedMem()) {
+            CaptureBase::PublishToSharedMemory(ipc->GetSharedMem());
+            HookLog("CaptureBase: Published to shared memory (%ux%u, format %u)", width, height, format);
+        }
+    }
+
+    // Signal frame ready - accepts IPCClient for backward compatibility
+    bool SignalFrameReady(IPCClient* ipc, int textureIndex, int64_t timestamp, uint64_t gpuFenceValue) {
+        if (ipc && ipc->GetSharedMem()) {
+            bool transitionedFromEmpty = false;
+            const bool published = CaptureBase::SignalFrameReady(ipc->GetSharedMem(), textureIndex, timestamp,
+                                                                 gpuFenceValue, &transitionedFromEmpty);
+            if (published && transitionedFromEmpty) {
+                ipc->SignalInjectFrameReady();
+            }
+            return published;
+        }
+        return false;
+    }
+};

@@ -4,9 +4,9 @@
 
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
-#include "../apis/dx11_hook.h"
+#include "hook/d3d11/dx11_hook.h"
 #include "dxgi_device_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // ============================================================================
 // Constructor / Destructor

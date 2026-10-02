@@ -4,7 +4,7 @@
 #include <memory>
 #include <thread>
 
-#include "../common/atomic_shared_owner.h"
+#include "common/platform/atomic_shared_owner.h"
 
 namespace {
 

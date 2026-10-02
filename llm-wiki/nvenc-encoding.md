@@ -3,12 +3,12 @@
 Last cross-checked: 2026-08-01
 
 Primary sources:
-- `common/config.{h,cpp}`
-- `common/capture_policy/recording_health.h`
+- `common/config/config.{h,cpp}`
+- `common/capture/capture_policy/recording_health.h`
 - `captureengine/config.ini.template`
-- `mediaengine/video_encoder.{h,cpp}`
-- `mediaengine/video_encoder_options.{h,cpp}`
-- `mediaengine/video_metadata.{h,cpp}`
+- `mediaengine/video/video_encoder.{h,cpp}`
+- `mediaengine/video/video_encoder_options.{h,cpp}`
+- `mediaengine/video/video_metadata.{h,cpp}`
 - `tools/patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
 - `tools/patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`

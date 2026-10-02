@@ -3,9 +3,9 @@
 #include <mutex>
 #include <vector>
 
-#include "../../common/sharpen_policy.h"
-#include "../common/sharpen_constants.h"
-#include "../common/sharpen_pass_log.h"
+#include "common/graphics/sharpen_policy.h"
+#include "hook/sharpen/sharpen_constants.h"
+#include "hook/sharpen/sharpen_pass_log.h"
 #include "layer_main.h"
 #include "layer_sharpen.h"
 #include "vulkan_layer.h"

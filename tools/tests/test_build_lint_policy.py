@@ -23,30 +23,30 @@ import build
 class ChangedSourceLintScopeTest(unittest.TestCase):
     def test_changed_source_filter_keeps_only_listed_relative_paths(self) -> None:
         sources = [
-            os.path.join(build.PROJECT_ROOT, "hook", "apis", "dx12_hook.cpp"),
-            os.path.join(build.PROJECT_ROOT, "common", "config.cpp"),
+            os.path.join(build.PROJECT_ROOT, "hook", "d3d12", "dx12_hook.cpp"),
+            os.path.join(build.PROJECT_ROOT, "common", "config", "config.cpp"),
             os.path.join(build.PROJECT_ROOT, "tests", "test_config.cpp"),
         ]
         kept = build.filter_sources_by_relative_paths(
-            sources, {"hook/apis/dx12_hook.cpp", "tests/test_config.cpp"}, build.PROJECT_ROOT
+            sources, {"hook/d3d12/dx12_hook.cpp", "tests/test_config.cpp"}, build.PROJECT_ROOT
         )
         self.assertEqual(kept, [sources[0], sources[2]])
 
     def test_changed_source_filter_accepts_native_separators(self) -> None:
-        sources = [os.path.join(build.PROJECT_ROOT, "hook", "common", "custom_overlay.cpp")]
-        native = "hook" + os.sep + "common" + os.sep + "custom_overlay.cpp"
+        sources = [os.path.join(build.PROJECT_ROOT, "hook", "overlay", "custom_overlay.cpp")]
+        native = "hook" + os.sep + "overlay" + os.sep + "custom_overlay.cpp"
         self.assertEqual(
             build.filter_sources_by_relative_paths(sources, {native}, build.PROJECT_ROOT), sources
         )
 
     def test_changed_source_filter_ignores_unknown_and_absolute_paths(self) -> None:
-        sources = [os.path.join(build.PROJECT_ROOT, "common", "config.cpp")]
+        sources = [os.path.join(build.PROJECT_ROOT, "common", "config", "config.cpp")]
         self.assertEqual(
             build.filter_sources_by_relative_paths(
                 sources,
                 {
                     "common/other.cpp",
-                    str(os.path.join(build.PROJECT_ROOT, "common", "config.cpp")),
+                    str(os.path.join(build.PROJECT_ROOT, "common", "config", "config.cpp")),
                 },
                 build.PROJECT_ROOT,
             ),
@@ -83,7 +83,7 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
 
         analyzed = [
             r"C:\Users\dev\Programme\build\captureproject\common\capture_policy\constants.h",
-            r"C:/Users/dev/Programme/build/captureproject/hook/common/fps_limiter.h",
+            r"C:/Users/dev/Programme/build/captureproject/hook/pacing/fps_limiter.h",
             r"C:\proj\captureproject\testapp\dx12_fg_switch_runtime.inl",
         ]
         for path in analyzed:

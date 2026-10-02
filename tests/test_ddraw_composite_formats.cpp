@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/ddraw_present_policy.h"
+#include "hook/ddraw/ddraw_present_policy.h"
 #include "source_fragment_reader.h"
 
 // The CPU overlay composite's surface-format policy. 8-bit palettized is THE
@@ -124,7 +124,7 @@ TEST(DdrawCompositeFormat, TheCompositeFetchesThePalettePerWritePass) {
     // policy helpers taking the snapshot as a parameter is the other half of
     // that guarantee.
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_overlay_composite.cpp";
+        ce::test_source::FindSource("hook", "ddraw_hook_overlay_composite.cpp");
     const std::string contents = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(contents.empty()) << source.string();
     EXPECT_NE(contents.find("FetchSurfacePalette(surface"), std::string::npos);

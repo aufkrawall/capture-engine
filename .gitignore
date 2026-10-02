@@ -10,7 +10,7 @@
 # Third-party generated dependency bundle. Everything under external/ is
 # fetched or generated and stays out of the repository, with one deliberate
 # exception: the vendored MIT FidelityFX GPU headers, which the CAS/RCAS sharpen
-# shaders and hook/common/sharpen_constants.cpp compile against. They are source
+# shaders and hook/sharpen/sharpen_constants.cpp compile against. They are source
 # the build needs, not a fetched bundle - see external/fidelityfx/README.md.
 /external/*
 !/external/fidelityfx/
@@ -84,8 +84,8 @@ common/build_version.h
 # CLAUDE.md is an absolute-path symlink to AGENTS.md, so it cannot be tracked.
 CLAUDE.md
 tests/logs/session_manifest.txt
-common/config.h.tmp0
-hook/common/hook_common.h.tmp0
+common/config/config.h.tmp0
+hook/runtime/hook_common.h.tmp0
 # Audit artifacts (reports and plans) are working documents, not tracked files.
 /audit/
 

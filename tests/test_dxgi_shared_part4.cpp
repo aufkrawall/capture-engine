@@ -3,9 +3,9 @@
 TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershipOnExplicitUpgrade) {
     namespace fs = std::filesystem;
     const std::string streamline =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook.cpp");
     const std::string dx12 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     ASSERT_FALSE(streamline.empty());
     ASSERT_FALSE(dx12.empty());
 
@@ -44,7 +44,7 @@ TEST(DXGISharedSourceTest, GetStateFirstPostFSRComebackClearsStaleNativeOwnershi
 TEST(DXGISharedSourceTest, ExactPostSLOffKeepAliveRunsBeforeEveryTopLevelDX12PresentRoute) {
     namespace fs = std::filesystem;
     const std::string text =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "present" / "dxgi_shared.cpp");
     ASSERT_FALSE(text.empty());
 
     const size_t present = text.find(

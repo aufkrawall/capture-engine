@@ -17,9 +17,9 @@ void ExpectFinalOutputVSyncBeforeBypass(const std::string& source, const char* f
 
 TEST(DXGISharedSourceTest, RecoveredStreamlineFinalOutputsApplyConfiguredVSyncAtThePhysicalBoundary) {
     const std::string present = ce::test_source::ReadFile(
-        std::filesystem::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp");
+        std::filesystem::current_path() / "hook" / "present" / "dxgi_shared_present_routing.cpp");
     const std::string present1 = ce::test_source::ReadFile(
-        std::filesystem::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp");
+        std::filesystem::current_path() / "hook" / "present" / "dxgi_shared_present1.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(present1.empty());
 

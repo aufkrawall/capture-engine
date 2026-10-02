@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/resize_reference_holders.h"
+#include "hook/present/resize_reference_holders.h"
 #include "source_fragment_reader.h"
 
 namespace holders = ce::resize_reference_holders;
@@ -169,7 +169,7 @@ TEST(ResizeReferenceHoldersTest, TheScanStopsAtItsTimeBudget) {
 
 TEST(ResizeReferenceHoldersTest, TheWalkChecksTheBudgetPerChunkAndReportsACut) {
     const std::string scan = ce::test_source::ReadFile(std::filesystem::current_path() /
-                                                       "hook/common/resize_reference_holders.cpp");
+                                                       "hook/present/resize_reference_holders.cpp");
     ASSERT_FALSE(scan.empty());
     const size_t chunkLoop = scan.find("for (uintptr_t chunkStart = regionBase;");
     const size_t budget = scan.find("IsScanBudgetExhausted(elapsedUs())", chunkLoop);
@@ -184,7 +184,7 @@ TEST(ResizeReferenceHoldersTest, TheWalkChecksTheBudgetPerChunkAndReportsACut) {
 
 // Wired into the failed-resize diagnostics, once, after the reference probe.
 TEST(ResizeReferenceHoldersTest, TheFailedResizeDiagnosticsRunTheScanOnce) {
-    const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string resize = ReadSource("hook/present/dxgi_shared_resize.cpp");
     ASSERT_FALSE(resize.empty());
     const size_t begin = resize.find("void EndD3D12ResizeDiagnostics(");
     ASSERT_NE(begin, std::string::npos);

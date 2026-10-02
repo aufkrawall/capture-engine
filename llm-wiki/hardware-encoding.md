@@ -3,12 +3,12 @@
 Last cross-checked: 2026-07-21
 
 Primary sources:
-- `common/config.{h,cpp}`
+- `common/config/config.{h,cpp}`
 - `captureengine/{config.ini.template,media_main.cpp}`
-- `mediaengine/video_encoder.{h,cpp}`
-- `mediaengine/video_metadata.{h,cpp}`
-- `mediaengine/video_encoder_options.{h,cpp}`
-- `mediaengine/video_encoder_backend_options.{h,cpp}`
+- `mediaengine/video/video_encoder.{h,cpp}`
+- `mediaengine/video/video_metadata.{h,cpp}`
+- `mediaengine/video/video_encoder_options.{h,cpp}`
+- `mediaengine/video/video_encoder_backend_options.{h,cpp}`
 - `tests/test_{config,video_encoder_hardware_options,video_encoder_source,video_metadata}.cpp`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{amfenc,qsvenc,mfenc}*`
 - `ffmpeg_build/working/ffmpeg/libavutil/hwcontext_qsv.c`

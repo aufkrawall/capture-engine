@@ -1,6 +1,6 @@
 #include "test_dxgi_shared_shared.h"
 
-#include "../hook/common/dxgi_shared_detail/steam_null_callback.h"
+#include "hook/present/dxgi_shared_detail/steam_null_callback.h"
 
 #include <cstdint>
 #include <cstring>
@@ -17,7 +17,7 @@ using DXGIShared::detail::FindSteamNullCallbackSlotCandidates;
 // Pin that the recovery-reinit proof feeds the keep-live decision and vetoes that teardown.
 TEST(DXGISharedSourceTest, NativeFSRGameSwapchainRecoveryReinitKeepsOverlayLiveAcrossLateOuterOff) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -59,7 +59,7 @@ TEST(DXGISharedSourceTest, NativeFSRGameSwapchainRecoveryReinitKeepsOverlayLiveA
 // the ABA-reused game-created recovery swapchain detectable as a new lifetime.
 TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIsConsumedOnce) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -102,7 +102,7 @@ TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIs
 // replacement.
 TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofClearedAtRecoveryQueueResetSites) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -151,7 +151,7 @@ TEST(DXGISharedTest, KeepsOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
 // observer (session 20260813_162959: 203 ms PostSL dormancy after the outer teardown).
 TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffPreserveKeepsOverlayLiveAcrossLateOuterOff) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -227,9 +227,9 @@ TEST(DXGISharedTest, EagerDrawCoversStreamlineStartupBypassWindow) {
 // must feed the explicit-SetOptions provenance into it (session 20260813_170318).
 TEST(DXGISharedSourceTest, StartupBypassEagerDrawConsultsLiveBackendProof) {
     namespace fs = std::filesystem;
-    const fs::path steamRoutingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp";
-    const fs::path presentRoutingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp";
-    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path steamRoutingSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam_routing.cpp";
+    const fs::path presentRoutingSource = fs::current_path() / "hook" / "present" / "dxgi_shared_present_routing.cpp";
+    const fs::path dx12Source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(steamRoutingSource));
     ASSERT_TRUE(fs::exists(presentRoutingSource));
     ASSERT_TRUE(fs::exists(dx12Source));
@@ -454,8 +454,8 @@ TEST(DXGISharedSourceTest, SteamNullCallbackScannerDoesNotTruncateAtSmallCap) {
 // slots to decide whether invoking Steam is safe - but the write must not come back.
 TEST(DXGISharedSourceTest, CENeverWritesIntoSteamCallbackSlots) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
@@ -484,7 +484,7 @@ TEST(DXGISharedSourceTest, CENeverWritesIntoSteamCallbackSlots) {
 
     // The crash-time recovery stays: it resolves the EXACT faulting slot from the fault
     // context instead of writing into slots Steam has not dispatched through.
-    const fs::path vehSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_veh.cpp";
+    const fs::path vehSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam_veh.cpp";
     ASSERT_TRUE(fs::exists(vehSource));
     const std::string veh = ce::test_source::ReadFile(vehSource);
     ASSERT_FALSE(veh.empty());
@@ -530,7 +530,7 @@ TEST(DXGISharedSourceTest, LateHandoffLiveSwapchainFallbackPolicy) {
 
 TEST(DXGISharedSourceTest, LateHandoffLiveSwapchainFallbackPrecedesMissingLog) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_startup.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadFile(source);
     ASSERT_FALSE(text.empty());
@@ -552,7 +552,7 @@ TEST(DXGISharedSourceTest, LateHandoffLiveSwapchainFallbackPrecedesMissingLog) {
 // Recognition must fall back to the Streamline plugin API exports.
 TEST(DXGISharedSourceTest, StreamlineModuleRecognitionFallsBackToPluginExports) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path source = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadFile(source);
     ASSERT_FALSE(text.empty());
@@ -578,7 +578,7 @@ TEST(DXGISharedSourceTest, StreamlineModuleRecognitionFallsBackToPluginExports) 
 // route; otherwise the overlay starves after the first confirmed frame.
 TEST(DXGISharedSourceTest, LateHandoffFallbackConsumesTopLevelBootstrap) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_startup.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadFile(source);
     ASSERT_FALSE(text.empty());
@@ -604,7 +604,7 @@ TEST(DXGISharedSourceTest, LateHandoffFallbackConsumesTopLevelBootstrap) {
 // ---------------------------------------------------------------------------
 TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRClear) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -658,7 +658,7 @@ TEST(DXGISharedSourceTest, DeferredPresentHookInstallStillTriesTheGuardedTempSwa
     // entry patch (so it enters no overlay handler), while the unguarded
     // historical fallback stays deferred.
     const std::string mainSrc =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook_main.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "d3d12" / "dx12_hook_main.cpp");
     ASSERT_FALSE(mainSrc.empty());
 
     const std::size_t postponeCheck = mainSrc.find("ShouldPostponeDeferredTempSwapchainPresentHookInstall");
@@ -676,7 +676,7 @@ TEST(DXGISharedSourceTest, DeferredPresentHookInstallStillTriesTheGuardedTempSwa
 
     // The guarded-only mode must exist and refuse the unguarded fallback.
     const std::string install =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "d3d12" / "dx12_hook_hook_install.cpp");
     ASSERT_FALSE(install.empty());
     EXPECT_NE(install.find("guardedSystemRouteOnly"), std::string::npos)
         << "the temp-swapchain installer needs a mode that stops before the unguarded fallback";

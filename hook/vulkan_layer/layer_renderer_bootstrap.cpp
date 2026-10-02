@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "../../common/secure_dll_loading.h"
-#include "../../common/vulkan_layer_host_directory.h"
+#include "common/platform/secure_dll_loading.h"
+#include "common/graphics/vulkan_layer_host_directory.h"
 
 namespace {
 

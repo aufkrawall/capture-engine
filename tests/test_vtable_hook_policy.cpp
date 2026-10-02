@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/wrappers/vtable_hook_policy.h"
+#include "hook/hooking/vtable_hook_policy.h"
 
 namespace policy = ce::vtable_hook_policy;
 

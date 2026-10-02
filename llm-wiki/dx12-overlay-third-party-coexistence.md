@@ -3,29 +3,29 @@
 Last cross-checked: 2026-10-01 (SetColorSpace1 entry ownership and its system-DXGI prolog verified against code and Microsoft symbols; hardware validation pending. Other runtime evidence retains its stated dates; object-wrapping proxy layering remains open.)
 
 Primary sources:
-- `hook/common/overlay_compat.h`
-- `hook/common/overlay_compat_detail/module_table.h`
-- `hook/common/dx12_overlay_policy.h`
-- `hook/apis/dx12_hook_main.cpp`
-- `hook/apis/ffx_hook.cpp`
-- `hook/main.cpp`
-- `hook/main_host_lifecycle.cpp`
-- `hook/main_overlay_detect.cpp`
-- `hook/wrappers/inline_hook.cpp`
-- `hook/wrappers/inline_hook_deep.cpp`
-- `hook/wrappers/inline_hook_pristine_image.h`
-- `hook/wrappers/hook_patch_transaction.cpp`
-- `hook/wrappers/iat_hook.cpp`
-- `hook/wrappers/vtable_hook.cpp`
-- `hook/common/dxgi_shared.cpp`
-- `hook/common/dxgi_shared_hooks.cpp`
-- `hook/common/dxgi_color_space_hook_policy.h`
-- `hook/common/dxgi_shared_present_core.cpp`
-- `hook/common/dxgi_shared_original.cpp`
-- `hook/common/dxgi_shared_steam.cpp`
-- `hook/common/dxgi_shared_detail/types_and_state.h`
-- `hook/apis/dx12_hook_process.cpp`
-- `hook/apis/dx12_hook_process_session_phase2.cpp`
+- `hook/overlay/overlay_compat.h`
+- `hook/overlay/overlay_compat_detail/module_table.h`
+- `hook/d3d12/dx12_overlay_policy.h`
+- `hook/d3d12/dx12_hook_main.cpp`
+- `hook/ffx/ffx_hook.cpp`
+- `hook/runtime/main.cpp`
+- `hook/runtime/main_host_lifecycle.cpp`
+- `hook/runtime/main_overlay_detect.cpp`
+- `hook/hooking/inline_hook.cpp`
+- `hook/hooking/inline_hook_deep.cpp`
+- `hook/hooking/inline_hook_pristine_image.h`
+- `hook/hooking/hook_patch_transaction.cpp`
+- `hook/hooking/iat_hook.cpp`
+- `hook/hooking/vtable_hook.cpp`
+- `hook/present/dxgi_shared.cpp`
+- `hook/present/dxgi_shared_hooks.cpp`
+- `hook/present/dxgi_color_space_hook_policy.h`
+- `hook/present/dxgi_shared_present_core.cpp`
+- `hook/present/dxgi_shared_original.cpp`
+- `hook/present/dxgi_shared_steam.cpp`
+- `hook/present/dxgi_shared_detail/types_and_state.h`
+- `hook/d3d12/dx12_hook_process.cpp`
+- `hook/d3d12/dx12_hook_process_session_phase2.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_dxgi_color_space_hook_policy.cpp`
 - `tests/test_dxgi_shared_part8.cpp`
@@ -112,7 +112,7 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 
 **Fix: a deep hook in the `dxgi!Present` body, at the verified resume offset past the foreign five-byte entry patch.** Steam and RTSS both only save/restore/re-patch those five entry bytes, and their trampolines resume exactly at that offset, so CE's body patch is invisible to them, cannot be clobbered by their re-hook cycles, and is not part of anyone's saved chain. Order becomes game → Steam → RTSS → **CE** → real body: all three overlays draw, CE composites last, and the entry bytes stay entirely foreign.
 
-- `InstallPresentBodyHooksBelowForeignChain` (`hook/common/dxgi_shared_hooks_present.cpp`) runs inside the leave-entry branch and covers `Present` and `Present1` alike.
+- `InstallPresentBodyHooksBelowForeignChain` (`hook/present/dxgi_shared_hooks_present.cpp`) runs inside the leave-entry branch and covers `Present` and `Present1` alike.
 
 **The entry bytes are volatile — one sample is not evidence.** RTSS restores the original entry bytes, calls through, and re-patches on every present, so byte 0 reads clean roughly half the time on an entry that is very much hooked. Session `installed/captureengine/logs/20260812_150918` holds the contradiction three log lines apart: `2 third-party overlays already share the Present entry (E9 at 00007FFD5C049960 …)`, then `DeepHook: No external hook at byte 0 of 00007FFD5C049960 (byte=0x48)` — 0x48 being the original first byte — then `deep body hook … FAILED`. `Present1` installed, `Present` did not, and `Present` is the entry the game uses, so CE was blind again.
 
@@ -148,7 +148,7 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
   (`ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor`), runs every post-destruction
   diagnostic under it, and drops it last — that `Release` return value is the residual foreign-pin count.
   The E_ACCESSDENIED pin diagnostics stopped probing tracked pointers entirely (they are raw by design and
-  nothing removes them when a chain dies) and read `hook/common/swapchain_liveness.h`, the ledger the
+  nothing removes them when a chain dies) and read `hook/present/swapchain_liveness.h`, the ledger the
   destructor writes, instead. Markers: `post-destruction real refcount=`, `post-destruction refcount probe
   skipped`, `residualRefsAtCeRelease=`.
 - Internal D3D10/11 hook-discovery swapchains are thread-locally excluded from the DX12 global factory detour. RTSS's
@@ -181,7 +181,7 @@ CE re-invited a chain that had already run above it; RTSS hit its own reentrancy
 
 Note what enabled it: recovering `callerFromStreamlineModule` unlocked the `callerFromStreamlineModule && !s_slRoutingActive && steamOverlayLoaded` external-overlay transport. The provenance recovery is right; inviting Steam from below the chain never is.
 
-**Hot-path cost rule for that provenance walk.** Address→module resolution takes the loader lock, so the recovery is a single bounded walk (`ResolvePresentOriginatorBelowForeignChain`, `hook/common/dxgi_shared_present.cpp`) that steps over CE's own frames, the tracked foreign overlays, and DXGI/D3D dispatch, then classifies the **first** real originator and stops — typically three to five resolutions, one pass answering both FG questions. Never a full-stack scan per module (`HasStreamlineModuleInCurrentStack` + `HasFFXFrameGenerationModuleInStack` would be up to 40 loader-lock resolutions per present). Regression test: `NoForeignOverlayHandlerIsInvokedWhileCEInterceptsBelowTheChain` and the resolver assertions in `PresentProvenanceIsNotTakenFromTheImmediateCallerBelowAForeignChain`.
+**Hot-path cost rule for that provenance walk.** Address→module resolution takes the loader lock, so the recovery is a single bounded walk (`ResolvePresentOriginatorBelowForeignChain`, `hook/present/dxgi_shared_present.cpp`) that steps over CE's own frames, the tracked foreign overlays, and DXGI/D3D dispatch, then classifies the **first** real originator and stops — typically three to five resolutions, one pass answering both FG questions. Never a full-stack scan per module (`HasStreamlineModuleInCurrentStack` + `HasFFXFrameGenerationModuleInStack` would be up to 40 loader-lock resolutions per present). Regression test: `NoForeignOverlayHandlerIsInvokedWhileCEInterceptsBelowTheChain` and the resolver assertions in `PresentProvenanceIsNotTakenFromTheImmediateCallerBelowAForeignChain`.
 - Superseded by 0.1.5960 for the "single foreign overlay keeps the prepend" half: a single overlay now also goes below the chain (draw order), with the prepend kept only as the refusal fallback. The rest of this bullet stands. With a loaded FG interposer, CE wraps the Streamline runtime-owned swapchain with the **non-retaining wrapper** (0.1.5946) and then removes its own entry prepend ownership-checked, so the entry is left to the foreign chain in FG games too. The non-retaining wrapper borrows the runtime's CreateSwapChain reference and mirrors no refs, so Streamline's release/recreate on FG transitions is byte-identical to a process without CE (a retaining wrapper pins the old swapchain and breaks the DLSS-G handoff with `E_ACCESSDENIED`). While CE still owns the entry it is a pure passthrough (delegates to the detour hook); in leave-entry mode it drives ProcessFrame plus the gated PostSL callback (confirmed-standalone AND unconfirmed startup family) and feeds `g_PresentCallCounter` so the Streamline present-stall detector cannot false-positive. Log markers: `Wrapped Streamline runtime swapchain`, `CE left the Present entry to the foreign overlay chain`, `DetourPresent(wrapper): Invoking PostSL on wrapped Streamline runtime Present`.
 - Regression tests: `tests/test_overlay_compat.cpp` (overlay-subset counting excludes `sl.interposer`/render-only modules; the entry-chain policy matrix), `tests/test_dxgi_shared.cpp` (`SwapchainVTableStaysPristineWhileTheForeignPresentChainOwnsTheEntry`), `tests/test_dxgi_shared_part11.cpp` (install skips the prepend before `InstallPublished`, forwards run the live entry first, and **no tool-specific handler resolution may return**).
 
@@ -241,9 +241,9 @@ All four were implemented, shipped, and measured; each excluded a different over
 ## RESOLVED: Third-party proxy queue re-entry in the ECL/Signal trace hooks (Talos + ReShade, builds 0.1.5991 / 0.1.5995)
 
 - ReShade's D3D12 command queue is a proxy object: its ExecuteCommandLists/Signal thunks lock a private mutex at `queue+0x58` and forward through `_orig` (the real queue) at `queue+0x10`. CE's per-API "first captured original" globals (`oExecuteCommandLists`, `oTraceCommandQueueSignal`) were taken from the first queue vtable CE hooked — a ReShade proxy — so the layered chain was `game -> CE -> ReShade thunk(proxy) -> CE (real queue) -> global(real queue)`. Calling ReShade's thunk with the REAL queue (a) threw `std::system_error(EDEADLK)` from its non-recursive mutex re-lock in ExecuteCommandLists (session `20260813_041416`) and (b) jumped through a garbage `_orig` vtable slot `-1` in the Signal thunk (session `20260813_050515`).
-- The ECL recursion-break resolver (`ResolveECLRecursionBreakTarget` in `hook/apis/dx12_hook_ecl.cpp`, policy `hook/common/dx12_overlay_policy/ecl_recursion_break.h`) now classifies every candidate by owning module and is type-safe by construction: a native D3D12 runtime ECL is only used for a queue whose vtable is native, and a proxy queue is only forwarded through the original taken from its exact vtable. Known foreign overlay hooks and CE's own detour are never re-entered; a recursion-depth bound drops the submission instead of looping.
+- The ECL recursion-break resolver (`ResolveECLRecursionBreakTarget` in `hook/d3d12/dx12_hook_ecl.cpp`, policy `hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h`) now classifies every candidate by owning module and is type-safe by construction: a native D3D12 runtime ECL is only used for a queue whose vtable is native, and a proxy queue is only forwarded through the original taken from its exact vtable. Known foreign overlay hooks and CE's own detour are never re-entered; a recursion-depth bound drops the submission instead of looping.
 - Native originals are published eagerly as `dx12_hook_g_RealD3D12ECL` / `dx12_hook_g_RealD3D12Signal` whenever a queue vtable hook still exposes a d3d12/d3d12core slot (`TryPublishRealD3D12*Candidate` called from `DX12_HookQueueVTable`).
-- The Signal trace forward now resolves per-vtable originals (`dx12_hook_g_CommandQueueSignalOriginalByVTable`) and falls back to the queue's live vtable slot, the resolved native Signal, then the legacy global — never the blind global first (`DetourTraceCommandQueueSignal`, `hook/apis/dx12_hook_ecl_install.cpp`).
+- The Signal trace forward now resolves per-vtable originals (`dx12_hook_g_CommandQueueSignalOriginalByVTable`) and falls back to the queue's live vtable slot, the resolved native Signal, then the legacy global — never the blind global first (`DetourTraceCommandQueueSignal`, `hook/d3d12/dx12_hook_ecl_install.cpp`).
 - Regression coverage: `tests/test_dx12_ecl_recursion_break_policy.cpp` (classification/selection policy plus source pins for the ECL break path, the per-vtable Signal forward, and eager native publication).
 
 ## RESOLVED: x86 DX12 overlay DEVICE_HUNG (dx12_test) — fixed 2026-06-09
@@ -266,12 +266,12 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 - Third-party overlay swapchains and private queues are not allowed to become authoritative game state just because they call into our hooks.
 - If an immediate caller looks like a third-party overlay but FFX FG stack or module evidence is present, the FFX evidence can override the misleading caller identity.
 - Dynamic `GetProcAddress` caller filtering has a narrow FFX exception: generic D3D/DXGI hooks are still hidden from third-party overlay callers, but `ffxCreateContext`, `ffxDestroyContext`, and `ffxConfigure` stay visible when the target module is an official FFX runtime. GTA/EOS can route native FSR startup through an overlay-looking caller, and hiding those FFX APIs prevents CE from installing the real present-callback bridge before overlay GPU work resumes.
-- FFX dynamic export hooks must be registered before process-wide `GetProcAddress` interception is enabled. Otherwise an early FSR preload can call `GetProcAddress(ffxConfigure)` while the router is active but before the FFX names are registered, cache AMD's original function pointer, and later run native FSR without CE's callback bridge. `hook/main.cpp` calls `FFXHook::RegisterDynamicHooks()` before `IATHook::InitializeGetProcAddressHook()` so official AMD modules can use the IAT/dynamic route from the first preload.
+- FFX dynamic export hooks must be registered before process-wide `GetProcAddress` interception is enabled. Otherwise an early FSR preload can call `GetProcAddress(ffxConfigure)` while the router is active but before the FFX names are registered, cache AMD's original function pointer, and later run native FSR without CE's callback bridge. `hook/runtime/main.cpp` calls `FFXHook::RegisterDynamicHooks()` before `IATHook::InitializeGetProcAddressHook()` so official AMD modules can use the IAT/dynamic route from the first preload.
 - IAT/dynamic FFX routing is not sufficient for every official SDK integration. `installed/captureengine/logs/20260530_234519` showed the switch app entering protected official FFX startup and then staying quiesced while app-side FSR callbacks were firing because CE never saw `ffxConfigure`. Official AMD DX12 modules therefore also arm a guarded re-arming `ffxConfigure` VEH fallback that catches SDK dispatch-table or intra-module calls while standard inline JMP hooks remain disabled. Healthy logs include either `GetProcAddress: Intercepted FFX API ffxConfigure` or `FFX Hook: Armed VEH breakpoint for ...!ffxConfigure`, followed by `Direct FFX API confirmation established from ffxConfigure ENABLED`.
 - Dynamic `GetProcAddress` filtering also has a narrow Streamline proxy exception: `CreateDXGIFactory*` exports from `sl.interposer.dll` must remain the real Streamline proxy exports. Hiding them behind CE wrappers makes the application create a CE/raw DXGI factory, prevents Streamline from owning its swapchain interposer, and can later crash the DLSS-G handoff path. This exception is only for Streamline's proxy DXGI factory exports; CE still hooks Streamline feature APIs such as `slDLSSGSetOptions` / `slDLSSGGetState` through the feature-hook paths.
 - **Synchronous foreign-Present calls require source-thread provenance whenever a runtime can Present from workers.** Talos session `installed/captureengine/logs/20260809_015416` supplied two dumps five seconds apart with the same `sl.dlssg` worker blocked in `WaitForSingleObjectEx -> gameoverlayrenderer64 -> capture_hook_x64!TryInvokeGuardedExternalSteamOverlayPresent`. CE had called Steam with reason `SL startup bypass`; game/render/RHI progress then waited downstream for 51 seconds. The Streamline plugin-lookup and Steam NULL-callback VEH guards prevent two crash/re-entrancy families, but cannot make an unbounded third-party handler thread-safe or nonblocking. `TryInvokeGuardedExternalSteamOverlayPresent` checks every runtime-owned presentation signal and permits Steam only when the current thread equals the previously proven `DX12_GetGamePresentThreadId`; unknown or worker provenance fails closed to the existing DXGI bypass. The tracker itself refreshes only from calls already classified as application-source Presents, so neither Streamline nor FFX workers can promote themselves by overwriting provenance. Never replace this with a timeout, cancellation, or dispatch to another worker. **2026-08-09 refinement (build 0.1.5900):** `applicationSourcePresent` must be derived from `ce::dx12_overlay_policy::IsRuntimeGeneratedFrame` (no-callback FSR, Streamline FG active, runtime-owned swapchain, FFX caller, runtime-owned native FSR), NOT from the broad `frameGenerationPresentationActive` set that includes `callerFromStreamlineModule`. The interposer forwards the game's own real-frame presents even while FG is off; classifying them as runtime-generated permanently prevents the tracker from ever latching, leaving `sourceTid=0` and making the Steam overlay invisible for the whole session (observed in every retained DLSS session before 0.1.5900; `tests/test_dxgi_shared_part10.cpp` pins the classification and the wiring).
-- **The natural Steam E9 transport in `CallOriginalPresent`'s SL fast-path got the same protections on 2026-08-09 (RoboCop crash).** RoboCop: Rogue City session `installed/captureengine/logs/20260809_140551` crashed the RHI thread with RIP=0: once DLSS FG turned on, `CallOriginalPresent`'s SL fast-path (`slLoaded && presentOriginal && presentOriginal != DetourPresent`) called `dxgi!Present` through Steam's E9 JMP, and `gameoverlayrenderer64!OverlayHookD3D3` called a NULL internal rendering callback (the temp-swapchain pre-init initializes Steam's "next" handler but not the rendering callback on the real swapchain; the gameoverlayrenderer64 build was 2026-08-03). Until then this path had neither the source-thread provenance rule nor the NULL-callback VEH recovery that every other Steam transport carries. It now (a) fails closed to the bypass trampoline when a worker-capable FG runtime presents from a non-source thread, and (b) runs under `ScopedSteamNullCallbackRecoveryGuard`, so a NULL callback is patched to CE's DXGI bypass and retried instead of crashing. Source-thread presents with a valid Steam callback (Talos) are unchanged. Source anchors: `hook/common/dxgi_shared_original.cpp` (SL fast-path), `tests/test_dxgi_shared_part11.cpp` (`SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamTransport`).
-- **Streamline runtime recognition is name-independent (2026-08-09).** NVIDIA Streamline can load its runtime DLLs under obfuscated hashed names (`1B0_E658703.dll` in RoboCop, confirmed in the crash dumps), which contain none of the `sl.*` path tokens. `IsStreamlineModuleHandle` (`hook/common/dxgi_shared_steam.cpp`) therefore also matches modules that export the Streamline plugin API (`slGetPluginFunction` / `slGetFeatureFunction`), with a small per-module cache because the check runs on the Present classification path. Without this, `callerFromStreamlineModule` stays false for every runtime-originated Present, PostSL routing cannot classify them, and the overlay starves after the first confirmed frame (RoboCop session `20260809_144640`). The late-handoff PostSL activation fallback additionally marks `streamlineStartupTopLevelPresentConsumed` when it retains the live swapchain, so the 8-frame confirmed-startup settling window is covered by the keep-startup route instead of deadlocking (the create-time arming never ran because origGame was unknown at swapchain create).
+- **The natural Steam E9 transport in `CallOriginalPresent`'s SL fast-path got the same protections on 2026-08-09 (RoboCop crash).** RoboCop: Rogue City session `installed/captureengine/logs/20260809_140551` crashed the RHI thread with RIP=0: once DLSS FG turned on, `CallOriginalPresent`'s SL fast-path (`slLoaded && presentOriginal && presentOriginal != DetourPresent`) called `dxgi!Present` through Steam's E9 JMP, and `gameoverlayrenderer64!OverlayHookD3D3` called a NULL internal rendering callback (the temp-swapchain pre-init initializes Steam's "next" handler but not the rendering callback on the real swapchain; the gameoverlayrenderer64 build was 2026-08-03). Until then this path had neither the source-thread provenance rule nor the NULL-callback VEH recovery that every other Steam transport carries. It now (a) fails closed to the bypass trampoline when a worker-capable FG runtime presents from a non-source thread, and (b) runs under `ScopedSteamNullCallbackRecoveryGuard`, so a NULL callback is patched to CE's DXGI bypass and retried instead of crashing. Source-thread presents with a valid Steam callback (Talos) are unchanged. Source anchors: `hook/present/dxgi_shared_original.cpp` (SL fast-path), `tests/test_dxgi_shared_part11.cpp` (`SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamTransport`).
+- **Streamline runtime recognition is name-independent (2026-08-09).** NVIDIA Streamline can load its runtime DLLs under obfuscated hashed names (`1B0_E658703.dll` in RoboCop, confirmed in the crash dumps), which contain none of the `sl.*` path tokens. `IsStreamlineModuleHandle` (`hook/present/dxgi_shared_steam.cpp`) therefore also matches modules that export the Streamline plugin API (`slGetPluginFunction` / `slGetFeatureFunction`), with a small per-module cache because the check runs on the Present classification path. Without this, `callerFromStreamlineModule` stays false for every runtime-originated Present, PostSL routing cannot classify them, and the overlay starves after the first confirmed frame (RoboCop session `20260809_144640`). The late-handoff PostSL activation fallback additionally marks `streamlineStartupTopLevelPresentConsumed` when it retains the live swapchain, so the 8-frame confirmed-startup settling window is covered by the keep-startup route instead of deadlocking (the create-time arming never ran because origGame was unknown at swapchain create).
 - **CE must never write into Steam's Present-shaped callback slots (2026-08-12; REVERSES the 2026-08-09 proactive patch).** The 2026-08-09 `EnsureSteamNullCallbacksPatched` scanned `gameoverlayrenderer64.dll` for `mov (e)ax,[slot] ... call (e)ax` sites and pre-filled every still-NULL slot (20 of them in both Strange Brigade and Talos) with CE's DXGI bypass, to stop a NULL dispatch from faulting. Those slots are **Steam's own hook-install outputs**: `gameoverlayrenderer64+0x8da00` receives `&slot`, and each call site tests `cmpq $0, slot` immediately afterwards, so Steam initializes them lazily and treats non-NULL as "already installed". Pre-filling therefore makes Steam skip its own install **and** turns its "call original" into a raw `dxgi!Present` copy that skips every hook chained BELOW Steam. Talos + DLSS FG + RTSS (`installed/captureengine/logs/20260812_022607`): frame 1 ran `sl.dlss_g -> CE -> Steam -> RTSS` with all three overlays drawing; from frame 2 every guarded invoke reported `steamCallback=<CE's own bypass>` and RTSS submitted nothing for the rest of the session (RTSS 1 ECL, Steam 77, game 200). The write is removed. The NULL dispatch is handled by the two sound mechanisms that were already present: `ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState` refuses the invoke unless the recovery is armed, and `SteamOverlayInitVehHandler` resolves the **exact** faulting slot from the fault context (`ResolveSteamNullCallbackSlotFromFault`) and recovers only that one. Slot discovery stays, read-only, to feed the gate. Coverage: `tests/test_dxgi_shared_part12.cpp` (`CENeverWritesIntoSteamCallbackSlots`). **Invariant: CE may inspect another tool's internal state, never speculatively write it.**
 - On Steam's E9/vtable topology, `DetectSLPresentHook()` intentionally cannot establish physical SL routing and `s_slRoutingActive` remains false after PostSL is stable. The `callerFromStreamlineModule && !s_slRoutingActive && steamOverlayLoaded` block is consequently a lifetime external-overlay **transport guard**, not evidence of startup state. Source Presents may service Steam there; generated worker Presents must bypass Steam while retaining CE's established PostSL draw.
 - If the effective runtime mode is FSR FG, SL routing must stay suppressed even if the SL hook remains physically present on `Present`/`Present1`. Re-enabling SL routing in that state can deadlock the render thread inside the FFX runtime.
@@ -330,12 +330,12 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 - **Root cause**: Treating the older hardcoded Steam slot as the only relevant callback was stale. Also, patching a Present-shaped Steam slot to a no-op avoids a NULL crash but prevents Steam from chaining to the real Present path, so later policy sees only CE's dummy and bypasses Steam forever.
 - **Fix**: `SteamOverlayInitVehHandler` now resolves the exact faulting Steam global slot from the call-site bytes, patches NULL slots to CE's DXGI bypass Present when available, and retries the call. The non-Streamline steady Steam E9 path is now protected by the same scoped recovery guard, not just the first init call. The no-op dummy remains only as a last fallback when no bypass trampoline exists.
 - **Validation**: `python build.py --skip-updates` passed with build `0.1.3612`; `python build.py --no-build --run-tests --skip-updates` passed 830 tests with metadata `0.1.3613`. Fresh manual Strange Brigade and Talos Steam-overlay validation is still needed.
-- **Source anchors**: `hook/common/dxgi_shared.cpp`, `hook/common/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260531_141812_strangebrigadedx12crash`, `installed/captureengine/logs/20260531_141924_talossteamoverlaydoesnotwork`.
+- **Source anchors**: `hook/present/dxgi_shared.cpp`, `hook/present/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260531_141812_strangebrigadedx12crash`, `installed/captureengine/logs/20260531_141924_talossteamoverlaydoesnotwork`.
 
 ### Build 0.1.2904 — Force bypass for non-SL Steam overlay
 - When Steam overlay is loaded without Streamline or NvPresent (e.g. Strange Brigade DX12), `ShouldForceSteamDX12BypassForState` returns `true`. This routes `CallOriginalPresent` through the bypass trampoline instead of calling `oPresent` (dxgi!Present with Steam's E9 JMP), which would re-enter Steam's overlay handler and crash because `vtable[8] = DetourPresent`.
 - A safety net in `CallOriginalPresent` fallback path also handles this case directly: when `!slLoaded && presentBypass && IsSteamOverlayModule`, the bypass trampoline is used.
-- Source anchors: `hook/common/dxgi_shared.h:239-244`, `hook/common/dxgi_shared.cpp:3111-3128`.
+- Source anchors: `hook/present/dxgi_shared.h:239-244`, `hook/present/dxgi_shared.cpp:3111-3128`.
 - Regression test: `SteamDX12BypassForNonSLSteamOverlay` in `tests/test_dxgi_shared.cpp`.
 
 ### Build 0.1.2906 — Fix: don't invoke Steam overlay hook from forced-bypass path without Streamline
@@ -345,18 +345,18 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   - Gets `DetourPresent` → can't resolve a valid handler → calls through NULL → RIP=0
 - **Fix at that time**: Added `if (slLoaded)` around `TryInvokeGuardedExternalSteamOverlayPresent` in `CallOriginalPresent`. The old claim that a Streamline-stack guard alone made direct invocation safe is superseded: current code also requires the verified source Present thread and bypasses runtime workers.
 - Also added improved debug logging: explicit "skipping Steam overlay invoke" log and updated "forcing DXGI bypass" log to include `slLoaded` state.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3035-3055` (call-site fix with `slLoaded` guard + logging), `tests/test_dxgi_shared.cpp` (regression test `StrangeBrigadeSteamOverlayCrashWithoutStreamline`).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3035-3055` (call-site fix with `slLoaded` guard + logging), `tests/test_dxgi_shared.cpp` (regression test `StrangeBrigadeSteamOverlayCrashWithoutStreamline`).
 - **Edge cases covered**: (a) NvPresent loaded without Streamline also benefits from the same fix, (b) no bypass trampoline case unchanged (fundamental failure), (c) inline hook path (trampoline exists) unchanged.
 
 ### Build 0.1.2920 — Missing VirtualProtect around vtable[8]/[22] fixup (Strange Brigade crash regression)
 
 - **Problem**: Strange Brigade DX12 with Steam overlay (no Streamline/FG) crashes on first Present with `0xC0000005` (AV-WRITE) at `vtable[8]`. The game never renders, CE overlay never appears.
 - **Root cause**: The vtable[8]/[22] fixup code introduced in build 0.1.2908 writes to the swapchain vtable **without `VirtualProtect`**. CE's `InstallPresentInlineHooks` made the vtable writable, wrote hooks (`DetourPresent`/`DetourPresent1`), then restored the page to read-only. When the fixup code later writes `oPresentBypass` to vtable[8], it crashes on the read-only page. Every other vtable write site in the file uses `VirtualProtect`.
-- **Fix** (`hook/common/dxgi_shared.cpp`):
+- **Fix** (`hook/present/dxgi_shared.cpp`):
   1. `CallOriginalPresent` (lines 3077-3086): Wrap vtable[8] save/write/restore with `VirtualProtect(PAGE_READWRITE)`/restore. If `VirtualProtect` fails, fall through to bypass trampoline.
   2. `CallOriginalPresent1` (lines 3263-3274): Same for vtable[22].
 - **Regression test**: `CallOriginalPresentVtableFixupRequiresVirtualProtect` in `tests/test_dxgi_shared.cpp` validates the pattern on a read-only simulated vtable page.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3076-3102`, `:3268-3297`, `tests/test_dxgi_shared.cpp:2536-2619`.
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3076-3102`, `:3268-3297`, `tests/test_dxgi_shared.cpp:2536-2619`.
 - **Stale-risk**: Low. VirtualProtect pattern matches all other vtable write sites; regression test catches removal.
 
 ### Build 0.1.5914 — locked slot reads fault on the read-only class vftable (20260811_192706 crash fallout)
@@ -376,8 +376,8 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   on the observation path. The same latent pattern was introduced in
   `DetachOwnedVTableSlot` and the Steam phase-A vtable[8] save in
   `CallOriginalPresent` (`dxgi_shared_original.cpp`).
-- **Fix** (`hook/common/dxgi_shared_hooks_present.cpp`,
-  `hook/common/dxgi_shared_original.cpp`): slot observation is a plain
+- **Fix** (`hook/present/dxgi_shared_hooks_present.cpp`,
+  `hook/present/dxgi_shared_original.cpp`): slot observation is a plain
   volatile read again in `repairRestoredSlot`, `DetachOwnedVTableSlot`, and
   the Steam vtable save. Atomic compare-exchange writes stay inside the
   existing VirtualProtect regions; CAS still preserves a concurrent foreign
@@ -408,7 +408,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   `gameoverlayrenderer64!OverlayHookD3D3`. On the fresh FSR swapchain Steam's
   lazy NULL rendering callback faults there with no VEH recovery active - the
   one Steam transport that had never been guarded.
-- **Fix** (`hook/common/dxgi_shared_steam.cpp`, `dxgi_shared_original.cpp`,
+- **Fix** (`hook/present/dxgi_shared_steam.cpp`, `dxgi_shared_original.cpp`,
   `dxgi_shared_internal.h`):
   1. `TrampolineChainsToExternalOverlay(trampoline, externalHook)` recognizes
      an `E9` or x64 `FF25` entry jump at the trampoline start and either
@@ -536,7 +536,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 
 ### Build 0.1.2908 (SUPERSEDED by 0.1.2922) — Steam overlay visible: invoke directly with vtable[8] fixup (non-SL case)
 - **Problem**: The 0.1.2906 fix prevented the crash but also made Steam overlay permanently invisible in the non-Streamline case. The bypass trampoline jumped over Steam's E9 JMP entirely.
-- **Original fix** (`hook/common/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
+- **Original fix** (`hook/present/dxgi_shared.cpp`): In `CallOriginalPresent`'s forced-bypass block, when `slLoaded=0`, invoke Steam's overlay handler directly with vtable[8] fixup:
   1. Save vtable[8], set it to the bypass trampoline (valid forwarding target)
   2. Increment `s_externalOverlayPresentInvokeDepth` (activates recursion guard)
   3. Call `g_externalOverlayPresentHook` directly
@@ -551,7 +551,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 - **Root cause (superseded by 0.1.2923 analysis)**: The 0.1.2922 analysis incorrectly assumed Steam's OverlayHookD3D3 reads vtable[8] and successfully uses DetourPresent as a forwarding target. In reality, Steam lazily initializes its internal "next" Present handler on first E9 JMP entry by reading vtable[8], and the initialization VALIDATES the pointer — if it points to anything other than the real dxgi!Present (e.g. DetourPresent), Steam's validation fails and sets "next" = NULL → RIP=0 crash.
 - **Fix**: Routing through `oPresent` (dxgi!Present with Steam's E9 JMP) with the expectation that Steam would initialize its internal pointer from vtable[8] (= DetourPresent) and call it back into DetourPresent's reentrancy guard.
 - **WHY SUPERSEDED**: The 0.1.2922 approach crashes because Steam's OverlayHookD3D3 does NOT accept DetourPresent as a valid "next" handler during initialization. Steam reads vtable[8], finds DetourPresent, validation fails, sets "next" = NULL, and the crash occurs inside Steam's overlay code before any reentrancy guard can catch it. The oPresent → DetourPresent → reentrancy guard → bypass chain never completes because Steam's internal init fails immediately on first entry. Replaced by the one-time vtable unhook approach in build 0.1.2923.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3063-3118` (original fix), `:3254-3304` (original Present1 fix).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3063-3118` (original fix), `:3254-3304` (original Present1 fix).
 - **Stale-risk**: SUPERSEDED. Do not restore the oPresent routing approach — it relies on an incorrect assumption about Steam's initialization mechanism.
 
 ### Build 0.1.2923 (SUPERSEDED by 0.1.2928) — One-time vtable[8] unhook for Steam DX12 overlay init (Strange Brigade DX12 fix — DID NOT WORK)
@@ -582,7 +582,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   - CE's vtable hook (vtable[8] = DetourPresent) prevents Steam's E9 JMP from ever firing on a real game swapchain, so the callback never gets initialized.
   - The temp swapchain pre-init (build 0.1.2928) doesn't fix this because Steam only initializes the callback when rendering on a real game swapchain with a visible window.
   - The vtable unhook safety net (build 0.1.2923, AttemptSteamDX12OverlayInit) also crashes because it calls through the E9 JMP which triggers Steam's overlay to try to render → NULL callback → crash.
-- **Fix** (`hook/common/dxgi_shared.cpp`):
+- **Fix** (`hook/present/dxgi_shared.cpp`):
   1. Added `SteamDummyRenderingCallback` — a no-op callback that returns `S_OK`, serving as a safe placeholder.
   2. Added `SteamOverlayInitVehHandler` — a VEH handler that catches the NULL callback crash (RIP=0, RAX=0, return address in gameoverlayrenderer64):
      - Identifies the crash by checking RIP=0, RAX=0, and return address inside gameoverlayrenderer64.dll
@@ -602,7 +602,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   8. VEH handler removed, vtable[8] re-hooked to DetourPresent
   9. Subsequent frames route through E9 JMP normally — callback is no longer NULL (Steam may overwrite the dummy with its own function during the first E9 JMP entry, or the dummy stays as a safe no-op that prevents crashing)
 - **Architecture support**: The VEH handler is compiled for both x64 and x86 (uses `#ifdef _WIN64` for Rip/Rax/Rsp vs Eip/Eax/Esp register names, and different Steam DLL names).
-- **Source anchors**: `hook/common/dxgi_shared.cpp:305-381` (dummy callback + VEH handler), `:3236-3238` (VEH-wrapped call in AttemptSteamDX12OverlayInit).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:305-381` (dummy callback + VEH handler), `:3236-3238` (VEH-wrapped call in AttemptSteamDX12OverlayInit).
 - **Verification**: All 696 unit tests pass build 0.1.2930.
   8. Clean flow: DetourPresent → CallOriginalPresent → oPresent → Steam overlay → real Present. No re-entrancy into DetourPresent.
 - **Why this is safe**:
@@ -614,7 +614,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   - No re-entrancy into DetourPresent: after init, Steam's "next" handler points to real Present, not DetourPresent
   - No stack overflow: at most one level of reentrancy during the init phase (DetourPresent → CallOriginalPresent → init helper → oPresent → Steam → real Present → return)
 - **Fallback**: If `AttemptSteamDX12OverlayInit()` crashes (Steam overlay removed or init fails silently), `s_steamInitCrashed = true` and all subsequent calls use bypass trampoline (Steam overlay not visible, but game doesn't crash).
-- **Source anchors**: `hook/common/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
+- **Source anchors**: `hook/present/dxgi_shared.cpp` (AttemptSteamDX12OverlayInit, CallOriginalPresent init block), `tests/test_dxgi_shared.cpp` (SteamDX12InitVtableUnhookRestorePattern, SteamDX12InitVtableRehookFailureSafety).
 - **Verification**: All unit tests pass. Regression tests cover the VirtualProtect unhook → call → re-hook pattern on read-only vtable pages (SteamDX12InitVtableUnhookRestorePattern) and safe behavior if re-hook fails (SteamDX12InitVtableRehookFailureSafety).
 
 ### Build 0.1.2948 — vtable[8] restore before Steam overlay invoke (Strange Brigade DX12)
@@ -624,7 +624,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 - **Fix**: Before invoking `TryInvokeGuardedExternalSteamOverlayPresent`, temporarily set vtable[8] back to the original `dxgi!Present` (which has Steam's E9 JMP). After Steam's handler returns, re-hook to `DetourPresent`. This ensures Steam's internal Present calls flow through the natural E9 JMP → Steam handler (re-entrant) → Steam's saved "next" → real Present body.
 - **Invariant**: The vtable[8] restore/re-hook window is per-frame and microsecond-scale. If vtable[8] was modified by another component during Steam's handler execution, the re-hook is skipped (logged).
 - **Fallback**: If `TryInvokeGuardedExternalSteamOverlayPresent` is declined (guard conditions not met), use bypass trampoline which preserves game content + CE overlay but disables Steam overlay.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3507-3537` (Phase A: vtable restore), `3540-3562` (Phase B: Steam invoke), `3565-3601` (Phase C: vtable re-hook), `3608-3619` (Phase E: bypass fallback).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3507-3537` (Phase A: vtable restore), `3540-3562` (Phase B: Steam invoke), `3565-3601` (Phase C: vtable re-hook), `3608-3619` (Phase E: bypass fallback).
 - **Pending test**: Strange Brigade DX12 with Steam overlay. Check all three outcomes: (1) all overlays visible, (2) bypass fallback with CE+game visible, (3) black screen (further analysis needed).
 
 ### Build 0.1.2960-2963 — ECL-hook-based deferred CE overlay submission (Strange Brigade DX12 black screen fix)
@@ -641,7 +641,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   7. Non-hook build stubs in `dxgi_shared.cpp` — `ResolveDX12SetDeferOverlay`, `ResolveDX12SubmitSteamDeferredOverlay`, `ResolveDX12IsDeferOverlayPending` via `GetModuleHandleA`/`GetProcAddress`
 - **Key design decisions**: Automatic (no env vars), non-SL only (`steamOverlayLoaded && !IsSLInterposerLoaded()`), `GetOriginalExecuteCommandLists` over vtable fallback, fallback safety for frames where Steam doesn't call ECL.
 - **Diagnostic logging**: "non-SL Steam path — deferring overlay" with SyncInterval/Flags, "Deferring overlay ECL submit to Steam ECL hook #N", "ECL hook detected Steam with deferred overlay pending" vs "no deferred overlay pending", "Submitting Steam-deferred overlay ECL to queue %p (cmdList=%p, allocIdx=%d)", "Deferred overlay submitted #N (queue=%p, fence=%llu)", fallback submit log, "Post-Steam fence wait took X us (wasPending=%d)", fence-already-complete with mode info.
-- **Source anchors**: `hook/apis/dx12_hook_main.cpp` (~line 955-1080: state struct, exports, SubmitSteamDeferredOverlay, IsSteamOverlayModulePath, ProcessFrame skip logic, DetourExecuteCommandLists ECL hook detection), `hook/common/dxgi_shared.cpp` (~line 1970-2150: deferral flag set, skip fence wait, post-CallOriginalPresent fallback + fence wait + clear).
+- **Source anchors**: `hook/d3d12/dx12_hook_main.cpp` (~line 955-1080: state struct, exports, SubmitSteamDeferredOverlay, IsSteamOverlayModulePath, ProcessFrame skip logic, DetourExecuteCommandLists ECL hook detection), `hook/present/dxgi_shared.cpp` (~line 1970-2150: deferral flag set, skip fence wait, post-CallOriginalPresent fallback + fence wait + clear).
 - **Verification**: Build 0.1.2963 compiles, all 696 unit tests pass.
 - **Open questions / stale-risk**:
   - ECL hook fires ~1 in 50+ frames — fallback path submits after Present, too late for current frame
@@ -665,7 +665,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
   - **PE-read COM method**: Read original `IDXGISwapChain::Present` COM method from `dxgi.dll` PE `.rdata` section, find the method that does kernel state management before calling `dxgi!Present`.
   - **Skip CE overlay when Steam is active**: Let Steam own the Present call, render CE overlay separately via a different GPU queue or post-present mechanism.
   - **Separate overlay device/queue**: Create a separate D3D12 device and command queue for CE overlay rendering that doesn't touch the game swapchain buffers; composite via shared textures.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3499-3515`.
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3499-3515`.
 - **Verification**: All 696 unit tests pass. Build 0.1.2947.
 
 ### Build 0.1.2943 — Black screen fix (corrected): explicit Steam overlay invoke instead of E9 JMP — s_originalVtable8Present was a no-op (Strange Brigade DX12)
@@ -675,7 +675,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 - **Fix**: Replace the `s_originalVtable8Present` / E9 JMP path with `TryInvokeGuardedExternalSteamOverlayPresent`. This calls Steam's overlay handler directly via `g_externalOverlayPresentHook` (the resolved E9 JMP target, saved during `InstallPresentInlineHooks` at line 2992-2996). Steam renders its overlay, calls "next" (original dxgi!Present body or re-entrant DetourPresent → bypass), and presents normally. CE's overlay submission + fence wait happens in `DetourPresent` before `CallOriginalPresent`.
 - **Historical wrapper observation, not a nonblocking guarantee**: `CWrapDXGISwapChain::Present` sets `g_InWrapperPresent = false` before delegating to the detour hook. That only clears the wrapper-policy rejection; source-thread provenance is still mandatory whenever a runtime can Present from workers.
 - **Fallback**: bypass trampoline (game content + CE overlay visible, Steam overlay dropped for that frame).
-- **Source anchors**: `hook/common/dxgi_shared.cpp:3475-3516` (non-SL explicit Steam invoke), `dxgi_swapchain_wrap.cpp:916-920` (g_InWrapperPresent = false during delegation).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:3475-3516` (non-SL explicit Steam invoke), `dxgi_swapchain_wrap.cpp:916-920` (g_InWrapperPresent = false during delegation).
 - **Verification**: All 696 unit tests pass. Build 0.1.2943.
 
 
@@ -686,7 +686,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
 
 The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the native FSR FG app-callback route re-created the same symptom one layer deeper. Session `20260813_061015` (Talos + Steam overlay + official FFX FSR FG, build 0.1.5995) shows why: CE's FFX present callback composites the overlay into the runtime output buffer, the runtime presents that buffer through DXGI afterwards, and Steam's entry hook composites on top of it. CE's deep body hook below the foreign chain runs on that same present every frame — the `[OVERLAY LAYER] deep-body-below-foreign-chain` note fired — but `ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain` routed the actual draw away because the runtime-owned native-FSR path must normally keep CE's separate GPU work suppressed.
 
-- **Fix**: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR` (`hook/common/dx12_overlay_policy/ffx_routing.h`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`, invoked at the start of `DrawOverlayFrame` in `hook/apis/dx12_hook_process_session_phase5.cpp`). When CE is below a foreign chain, at least one tracked overlay is loaded, the FFX present callback is live and un-stalled, and none of the no-callback/teardown/protected-startup/deviceremoved states apply, the deep body hook draws a second overlay composite onto the presented swapchain's exact current backbuffer on the swapchain-owning queue. In the repro that is the queue Steam's own ECL went through (`scQueue=000001A1FA0B1440`), so queue order is Steam -> CE and CE's overlay is topmost. This independent route must run before the normal `overlayInit && syncInit` gate: app-callback routing intentionally invalidates that normal backend, and nesting the dedicated renderer behind it makes the topmost route unreachable.
+- **Fix**: `DecideBelowForeignChainFSRDeepDraw` + `DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR` (`hook/d3d12/dx12_overlay_policy/ffx_routing.h`, `hook/d3d12/dx12_hook_ffx_owner_queue.cpp`, invoked at the start of `DrawOverlayFrame` in `hook/d3d12/dx12_hook_process_session_phase5.cpp`). When CE is below a foreign chain, at least one tracked overlay is loaded, the FFX present callback is live and un-stalled, and none of the no-callback/teardown/protected-startup/deviceremoved states apply, the deep body hook draws a second overlay composite onto the presented swapchain's exact current backbuffer on the swapchain-owning queue. In the repro that is the queue Steam's own ECL went through (`scQueue=000001A1FA0B1440`), so queue order is Steam -> CE and CE's overlay is topmost. This independent route must run before the normal `overlayInit && syncInit` gate: app-callback routing intentionally invalidates that normal backend, and nesting the dedicated renderer behind it makes the topmost route unreachable.
 - **Why it is safe where 0.1.5970-0.1.5972 were not**: the draw uses `dx12_ffx_suspend_overlay` — the exact-current-buffer RTV per frame (the normal backend's preserved RTV heap can still reference the pre-FG buffers, the stale-target shape of the 0.1.5972 FG-off device removal), per-slot in-flight refusal without waiting/overwriting, and retained target resources until completion proof. It is the swapchain-owning queue (not the idle game queue of the 0.1.5970 save-load "never landed" case). The callback baseline remains until the first successful deep submit; each success arms exactly the next callback to yield, and that callback consumes the proof. If deep Presents stop or a submit is refused, no stale latch survives to suppress the following callback.
 - **Route value**: `DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR` (`below-foreign-chain-runtime-owned-fsr`); the layering diagnostic is `[OVERLAY LAYER] ... site=deep-body-below-foreign-chain-runtime-owned-fsr ...`. The FG-UI-composition `[OVERLAY LAYER]` note no longer claims the callback is the only runtime-safe channel unconditionally.
 - **Explicitly excluded**: no-callback internal composition (the documented ffxQuery wedge / 0x887A002B boundary), explicit FSR-off teardown, stalled callbacks (the existing stall fallback rules own that state), protected startup quiescence, DLSS/Streamline, and any frame where the routed queue is not the swapchain queue.
@@ -696,8 +696,8 @@ The 0.1.5960 rule fixed draw order for ordinary and DLSS-FG presents, but the na
   renderer state is keyed by the PRESENTED FFX swapchain while the FFX teardown only retired the registered
   game-facing proxy states — the deep-draw command lists/backbuffer refs survived the FFX swapchain teardown.
   `RetireAllForNativeFSRTeardown` now retires every live suspend-overlay state at both the Streamline-enable prep
-  and FFX context-destroy boundaries (`hook/apis/dx12_ffx_suspend_overlay.cpp`,
-  `hook/apis/dx12_hook_fg_state.cpp`, `hook/apis/dx12_hook_ffx_owner_queue.cpp`); in-flight states stay retained
+  and FFX context-destroy boundaries (`hook/d3d12/dx12_ffx_suspend_overlay.cpp`,
+  `hook/d3d12/dx12_hook_fg_state.cpp`, `hook/d3d12/dx12_hook_ffx_owner_queue.cpp`); in-flight states stay retained
   until their own fence completes. See the guardrails invariant and `log/recent.md` for the dump evidence.
 
 ## VALIDATED: no-callback FSR learns the final GPU batch and joins it last (2026-08-14)
@@ -753,9 +753,9 @@ submit later ECL batches before the deep system Present, so the UI-resource rout
   duplicate it, and normal-backend init/early-return policy cannot change visible ownership.
 - Warm raw-keyed renderer states pin their swapchain identity until retirement; real replacement/context teardown
   remains authoritative. Stable site/HDR diagnostics are stateful rather than performing per-output file I/O.
-- **Sources/tests**: `hook/apis/dx12_hook_ffx_topmost_batch.cpp`, `hook/apis/dx12_hook_ffx_overlay_adapter.cpp`,
-  `hook/apis/dx12_hook_ffx_metrics.cpp`,
-  `hook/common/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/apis/dx12_ffx_suspend_overlay.cpp`,
+- **Sources/tests**: `hook/d3d12/dx12_hook_ffx_topmost_batch.cpp`, `hook/d3d12/dx12_hook_ffx_overlay_adapter.cpp`,
+  `hook/d3d12/dx12_hook_ffx_metrics.cpp`,
+  `hook/d3d12/dx12_overlay_policy/ffx_topmost_batch.h`, `hook/d3d12/dx12_ffx_suspend_overlay.cpp`,
   and `tests/test_ffx_topmost_batch_policy.cpp`. Focused pacing-policy/source tests and the complete 0.1.6057
   `--verify` gate pass.
   **Open**: fresh on-hardware validation of stable translucency after the pre-Phase3 correction,

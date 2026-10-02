@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "reserved_capture_output.h"
+#include "common/capture/reserved_capture_output.h"
 
 #include <windows.h>
 #include <knownfolders.h>

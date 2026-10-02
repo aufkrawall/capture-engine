@@ -6,8 +6,8 @@
 #include <sstream>
 #include <utility>
 
-#include "../hook/common/dx12_sampler_policy.h"
-#include "../hook/common/sampler_override_utils.h"
+#include "hook/d3d12/dx12_sampler_policy.h"
+#include "hook/overrides/sampler_override_utils.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -285,9 +285,9 @@ TEST(DX12SamplerPolicyTest, RuntimeCoverageIncludesDynamicExportsAndPrecompiledR
     const auto root = std::filesystem::current_path();
     // The IAT engine is split between the patching primitives and the per-API
     // installation that registers the dynamic exports; assert over both.
-    const std::string iat = ReadTextFile(root / "hook" / "wrappers" / "iat_hook.cpp") + "\n" +
-                            ReadTextFile(root / "hook" / "wrappers" / "iat_hook_init.cpp");
-    const std::string hooks = ReadTextFile(root / "hook" / "apis" / "dx12_sampler_hooks.cpp");
+    const std::string iat = ReadTextFile(root / "hook" / "hooking" / "iat_hook.cpp") + "\n" +
+                            ReadTextFile(root / "hook" / "hooking" / "iat_hook_init.cpp");
+    const std::string hooks = ReadTextFile(root / "hook" / "d3d12" / "dx12_sampler_hooks.cpp");
 
     EXPECT_NE(iat.find("RegisterDynamicHook(\"D3D12CreateDevice\""), std::string::npos);
     EXPECT_NE(iat.find("RegisterDynamicHook(\"D3D12SerializeVersionedRootSignature\""), std::string::npos);

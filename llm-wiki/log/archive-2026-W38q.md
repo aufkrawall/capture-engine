@@ -154,7 +154,7 @@ and sharpening was off for the session, logging only "every command buffer is st
 `SHADER_READ_ONLY_OPTIMAL` for an image still in `UNDEFINED`; and `layer_sharpen_g_States[device]`
 inserted an entry before the dispatch-table null check.
 
-**New:** `hook/common/sharpen_gpu_timeline.h` holds those rules as pure logic, the way
+**New:** `hook/sharpen/sharpen_gpu_timeline.h` holds those rules as pure logic, the way
 `sharpen_policy.h` holds the decision rules — ordering bugs are exactly what can be checked without a
 GPU. `tests/test_sharpen_gpu_timeline.cpp` covers them; the failed-submit ring case fails on the
 previous revision.

@@ -16,10 +16,10 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
-#include "../apis/dx11_hook.h"
-#include "../common/sampler_override_utils.h"
+#include "hook/d3d11/dx11_hook.h"
+#include "hook/overrides/sampler_override_utils.h"
 #include "d3d11_device_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // ============================================================================
 // IUnknown

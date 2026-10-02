@@ -3,8 +3,8 @@
 #include <fstream>
 #include <vector>
 
-#include "benchmark_html_report.h"
-#include "benchmark_manager.h"
+#include "hook/metrics/benchmark_html_report.h"
+#include "hook/metrics/benchmark_manager.h"
 
 TEST(BenchmarkManagerTest, IdleFramesNeedNoSensorSnapshotButToggleAndDelayDo) {
     auto& manager = BenchmarkManager::Get();

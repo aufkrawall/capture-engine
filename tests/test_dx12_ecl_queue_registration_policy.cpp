@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy/ecl_queue_registration.h"
+#include "hook/d3d12/dx12_overlay_policy/ecl_queue_registration.h"
 
 #include "source_fragment_reader.h"
 
@@ -108,7 +108,7 @@ TEST(Dx12EclQueueRegistrationPolicyTest, IsAPureFunctionOfTheTwoInputs) {
 // test, and it must still report registrations so a return of the regression is
 // visible in the log rather than only in the frame rate.
 TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyAndCountsRegistrations) {
-    const std::string ecl = ReadSource("hook/apis/dx12_hook_ecl.cpp");
+    const std::string ecl = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
     EXPECT_NE(ecl.find("ShouldRegisterCommandQueueFromExecuteCommandLists"), std::string::npos);
     EXPECT_NE(ecl.find("g_EclQueueRegistrationsThisWindow"), std::string::npos);
     EXPECT_NE(ecl.find("registrations=%u"), std::string::npos);
@@ -154,7 +154,7 @@ TEST(Dx12EclQueueRegistrationPolicyTest, WithoutACallbackVerdictTheCommandListCo
 // The wrapper must not re-derive an application-only gate from the verdict's
 // generated bit: that bit feeds diagnostics only.
 TEST(Dx12EclQueueRegistrationPolicyTest, CaptureWrapperDoesNotFilterGeneratedOutputs) {
-    const std::string forward = ReadSource("hook/apis/dx12_hook_ecl_forward.cpp");
+    const std::string forward = ReadSource("hook/d3d12/dx12_hook_ecl_forward.cpp");
     const size_t begin = forward.find("bool IsPresentedFrameForCapture(");
     ASSERT_NE(begin, std::string::npos);
     const size_t end = forward.find("return capture;", begin);
@@ -169,7 +169,7 @@ TEST(Dx12EclQueueRegistrationPolicyTest, CaptureWrapperDoesNotFilterGeneratedOut
 // decide capture through the policy; the plain `!isInterpolatedFrame` gate is
 // what starved callback-owned FSR recordings.
 TEST(Dx12EclQueueRegistrationPolicyTest, ProcessFrameCaptureUsesTheCallbackVerdict) {
-    const std::string process = ReadSource("hook/apis/dx12_hook_process.cpp");
+    const std::string process = ReadSource("hook/d3d12/dx12_hook_process.cpp");
     size_t consumed = 0;
     for (size_t at = process.find("ConsumePresentFrameVerdict()"); at != std::string::npos;
          at = process.find("ConsumePresentFrameVerdict()", at + 1)) {

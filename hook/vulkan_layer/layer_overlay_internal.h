@@ -11,12 +11,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../common/custom_overlay_vk.h"  // For VulkanBackend access
-#include "../common/ipc_client.h"
-#include "../common/overlay_adapter.h"
-#include "../common/overlay_metrics_publisher.h"
-#include "../common/perf_logger.h"
-#include "../common/performance_metrics.h"
+#include "hook/overlay/custom_overlay_vk.h"  // For VulkanBackend access
+#include "hook/runtime/ipc_client.h"
+#include "hook/overlay/overlay_adapter.h"
+#include "hook/overlay/overlay_metrics_publisher.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/metrics/performance_metrics.h"
 #include "layer_main.h"
 #include "overlay_submit_queue_policy.h"
 #include "vulkan_layer.h"

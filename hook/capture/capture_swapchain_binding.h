@@ -8,7 +8,7 @@
 //
 // A reference on a flip-model swapchain keeps it alive after the game released
 // it, and DXGI then refuses every replacement swapchain on that HWND with
-// E_ACCESSDENIED (see hook/common/swapchain_liveness.h). The capture used to
+// E_ACCESSDENIED (see hook/present/swapchain_liveness.h). The capture used to
 // keep two (IDXGISwapChain3 plus its IUnknown identity) for as long as its
 // generation lived, which outlasts the recording: in Talos Reawakened a
 // recording made under DLSS FG pinned Streamline's swapchain, the later

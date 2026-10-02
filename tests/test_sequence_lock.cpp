@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../common/sequence_lock.h"
+#include "common/platform/sequence_lock.h"
 
 namespace {
 struct TestSequenceConfig {

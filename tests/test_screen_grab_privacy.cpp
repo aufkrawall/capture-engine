@@ -4,7 +4,7 @@
 #include <cstring>
 #include <thread>
 #include <wrl/client.h>
-#include "../common/screen_grab_privacy.h"
+#include "common/capture/screen_grab_privacy.h"
 
 namespace privacy = ce::screen_grab_privacy;
 using Microsoft::WRL::ComPtr;

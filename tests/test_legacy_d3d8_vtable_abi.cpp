@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include "../common/mip_mapping_policy.h"
+#include "common/graphics/mip_mapping_policy.h"
 
 // D3D8 is wrapped through locally declared ABI-compatible interfaces so the
 // production hook can coexist with the D3D9 SDK headers. Keep every numeric

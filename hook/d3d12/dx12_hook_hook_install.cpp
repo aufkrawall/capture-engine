@@ -1,0 +1,686 @@
+#include "dx12_hook_internal.h"
+
+#include "common/logging/log_meter.h"
+#include "dx12_factory_slot_policy.h"
+#include "dx12_device_creation_report.h"
+
+namespace {
+
+void PublishCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
+    dx12_hook_s_oCreateSCForHwndInline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
+}
+
+void PublishDeepCreateSwapChainForHwndTrampoline(void* trampoline, void*) {
+    dx12_hook_s_deepHookTrampoline = reinterpret_cast<PFN_CreateSwapChainForHwnd>(trampoline);
+}
+
+// Create a swapchain through `factory`'s OWN CreateSwapChainForHwnd, entering NO foreign code.
+//
+// `dx12_hook_oCreateSwapChainForHwndGlobal` must not be called blindly here: it is the value CE
+// saved from whichever factory vtable it hooked, and a proxy-wrapped factory is a different C++
+// class with a different vtable. Calling its method with a real factory `this` is type confusion.
+// The slot is therefore read live, and CE's saved predecessor is substituted only when the slot
+// really holds CE's own detour — i.e. when it is the same vtable CE hooked.
+//
+// CRASH BOUNDARY (session 20260812_201336, first launch): calling this slot as found reproduced
+// the documented Steam NULL-callback crash with a new stack —
+// `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64 -> gameoverlayrenderer64!
+// OverlayHookD3D3 -> 0x0`, DEP execute at address 0, RAX=0. Steam's overlay dispatches through
+// callback slots that stay NULL until Steam has rendered on a real game swapchain, so CE must
+// never enter its handler — least of all during hook install. The second launch of the same
+// build survived only because Steam happened to be initialized by then; that is a race, not a
+// fix. Two rules, both provable before the call:
+//   * the slot must resolve into the system DXGI image (a foreign module owning the slot itself
+//     is refused outright — the caller then falls back to its historical path), and
+//   * a foreign ENTRY patch on the real function is skipped with a bypass trampoline rather than
+//     executed. RTSS and Steam both hook by patching function code, and this temp swapchain is a
+//     hidden 2x2 dummy no overlay has any business seeing.
+HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queue, HWND hwnd,
+                                          const DXGI_SWAP_CHAIN_DESC1* desc, IDXGISwapChain1** out) {
+    if (!factory || !out) {
+        return E_FAIL;
+    }
+    void** vtable = *reinterpret_cast<void***>(factory);
+    if (!vtable) {
+        return E_FAIL;
+    }
+    MEMORY_BASIC_INFORMATION vtableMemory = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(&vtable[15]), &vtableMemory, sizeof(vtableMemory)) == 0 ||
+        vtableMemory.State != MEM_COMMIT) {
+        return E_FAIL;
+    }
+    auto slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(vtable[15]);
+    if (reinterpret_cast<void*>(slot) == reinterpret_cast<void*>(DetourCreateSwapChainForHwndGlobal)) {
+        slot = dx12_hook_oCreateSwapChainForHwndGlobal;
+    }
+    if (!slot) {
+        return E_FAIL;
+    }
+    if (!DXGIShared::IsAddressInsideSystemDXGI(reinterpret_cast<const void*>(slot))) {
+        char slotOwner[MAX_PATH] = {};
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(reinterpret_cast<const void*>(slot), slotOwner,
+                                                            sizeof(slotOwner));
+        HookLogImportant(
+            "DX12: Refusing the system-DXGI temp swapchain — CreateSwapChainForHwnd slot %p belongs to %s, not the "
+            "system image; entering a foreign overlay handler during hook install is the documented NULL-callback "
+            "crash. Falling back to the historical temp swapchain.",
+            (void*)slot, slotOwner[0] ? slotOwner : "an unresolved module");
+        return E_FAIL;
+    }
+    if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(slot))) {
+        void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(slot));
+        if (!bypass) {
+            HookLogImportant(
+                "DX12: Refusing the system-DXGI temp swapchain — CreateSwapChainForHwnd at %p carries a foreign entry "
+                "patch that CE cannot bypass; running it would enter that overlay's handler",
+                (void*)slot);
+            return E_FAIL;
+        }
+        HookLogImportant(
+            "DX12: Bypassing the foreign entry patch on CreateSwapChainForHwnd at %p (trampoline=%p) so the temp "
+            "swapchain creation enters no overlay handler",
+            (void*)slot, bypass);
+        slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(bypass);
+    }
+    return slot(factory, queue, hwnd, desc, nullptr, nullptr, out);
+}
+
+// The factories InstallGlobalVTableHooks creates exist only to read the shared CDXGIFactory
+// vtable, and must not run an overlay's CreateDXGIFactory1 handler. Steam installs its DXGI
+// method hooks from inside that handler and is not safe against two threads doing so at once:
+// with CE's hook thread entering it while the game initialized, Steam hooked
+// CreateSwapChainForHwnd twice (`20261001_044010`: relay stubs ...0380 on the entry and ...03C0
+// as the saved original, which jumps back to ...038A - the game's first swapchain create
+// recursed in OverlayHookD3D3+0x14bc4 until the stack was gone; `20261001_042335` left the
+// second slot null instead). Same rule as the temp swapchain and the WARP device: a CE-only
+// object never enters a foreign handler.
+using PFN_CreateDXGIFactory1Export = HRESULT(WINAPI*)(REFIID, void**);
+
+PFN_CreateDXGIFactory1Export GenuineCreateDXGIFactory1ForDiscovery(PFN_CreateDXGIFactory1Export exported) {
+    if (!exported || !ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(exported))) {
+        return exported;
+    }
+    void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(exported));
+    if (!bypass) {
+        HookLogImportant("DX12: Could not bypass the foreign entry patch on CreateDXGIFactory1 at %p - the factory "
+                         "vtable discovery runs through the overlay's handler as before",
+                         reinterpret_cast<void*>(exported));
+        return exported;
+    }
+    HookLogImportant("DX12: Bypassing the foreign entry patch on CreateDXGIFactory1 at %p (trampoline=%p) so the "
+                     "factory vtable discovery enters no overlay handler",
+                     reinterpret_cast<void*>(exported), bypass);
+    return reinterpret_cast<PFN_CreateDXGIFactory1Export>(bypass);
+}
+
+// IDXGIFactory4/6 normally share the IDXGIFactory2 vtable; a distinct one gets the same per-slot decision.
+template <typename FactoryT>
+void HookFactoryCreateSwapchainSlotsOfVersion(PFN_CreateDXGIFactory1Export createFactory, void** baseVtable,
+                                              const char* name, bool hookCreateSCSlot, bool hookCreateSCForHwndSlot) {
+    FactoryT* factory = nullptr;
+    if (FAILED(createFactory(IID_PPV_ARGS(&factory))) || !factory) {
+        HookLog("DX12: %s not available", name);
+        return;
+    }
+    void** versionVtable = *(void***)factory;
+    HookLog("DX12: %s available, vtable=%p (IDXGIFactory2=%p, same=%d)", name, versionVtable, baseVtable,
+            (int)(versionVtable == baseVtable));
+    if (versionVtable != baseVtable) {  // Different vtable pointer
+        if (hookCreateSCSlot) {
+            VTableHook::Create(reinterpret_cast<void*>(&versionVtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                               nullptr);
+        }
+        if (hookCreateSCForHwndSlot) {
+            VTableHook::Create(reinterpret_cast<void*>(&versionVtable[15]),
+                               (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
+        }
+        HookLog("DX12: Hooked %s vtable[10]=%d and vtable[15]=%d", name, hookCreateSCSlot ? 1 : 0,
+                hookCreateSCForHwndSlot ? 1 : 0);
+    }
+    factory->Release();
+}
+
+}  // namespace
+
+
+void InstallGlobalVTableHooks() {
+    // Fast-app coverage: the HookThread installs these hooks as its FIRST action (before any
+    // module scans / IPC waits), so a game that creates its swapchain within the first second
+    // (dx12_fg_switch_test via Steam + RTSS, session 20260812_044326) cannot slip past them.
+    // DX12Hook::Init retries here when dxgi.dll was not loaded yet; only a completed install
+    // latches the flag.
+    static std::atomic<bool> s_installed{false};
+    if (s_installed.load(std::memory_order_acquire)) {
+        return;
+    }
+HookLog("DX12: InstallGlobalVTableHooks called");
+
+// CRITICAL: Install global factory vtable hooks to catch swapchain creation
+// even for factories created before our IAT hooks were installed.
+// This ensures ALL swapchains get wrapped regardless of timing.
+
+HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+if (!hDXGI) {
+    HookLog("DX12: DXGI module not loaded, skipping factory vtable hooks");
+    return;
+}
+
+// Get CreateDXGIFactory1 export to create a temp factory
+const PFN_CreateDXGIFactory1Export pCreateFactory = GenuineCreateDXGIFactory1ForDiscovery(
+    reinterpret_cast<PFN_CreateDXGIFactory1Export>(GetProcAddress(hDXGI, "CreateDXGIFactory1")));
+if (!pCreateFactory) {
+    HookLog("DX12: CreateDXGIFactory1 not found");
+    return;
+}
+
+// Create a temp factory to get its vtable
+IDXGIFactory2* pFactory = nullptr;
+HRESULT hr = pCreateFactory(IID_PPV_ARGS(&pFactory));
+if (FAILED(hr) || !pFactory) {
+    HookLog("DX12: Failed to create temp factory for vtable extraction");
+    return;
+}
+
+// Get the vtable - ALL IDXGIFactory instances share this vtable
+void** vtable = *(void***)pFactory;
+HookLog("DX12: Factory vtable at %p", vtable);
+
+// Save the real CreateSwapChainForHwnd address BEFORE vtable patching
+void* realCreateSCForHwndAddr = vtable[15];
+dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
+// The saved slot value belongs to this exact vtable. The temp-swapchain
+// installer may only invoke it with factory objects that carry this vtable
+// (see dx12_factory_slot_policy.h); a proxied factory is a different class.
+dx12_hook_s_savedCreateSwapChainForHwndVtable = vtable;
+
+// Sampled before CE patches anything: whether another overlay already owns the CreateSwapChainForHwnd
+// entry. A loaded overlay owns it even while the sample still reads clean
+// (IsCreateSwapChainForHwndEntryForeignOwned), and owns the factory SLOTS as well: Steam hooks whatever
+// function each slot points to and skips a slot that leads out of dxgi (ShouldHookFactoryCreateSwapchainSlot).
+const bool foreignCreateSCForHwndEntry =
+    realCreateSCForHwndAddr && ce::dx12_factory_slot::HasForeignEntryJump(realCreateSCForHwndAddr);
+const size_t loadedOverlayCount =
+    ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+const bool createSCForHwndEntryForeignOwned =
+    ce::dx12_factory_slot::IsCreateSwapChainForHwndEntryForeignOwned(foreignCreateSCForHwndEntry, loadedOverlayCount);
+
+// Install DEEP hook on CreateSwapChainForHwnd.
+// When Streamline hooks CreateSwapChainForHwnd at byte 0 and uses a saved
+// trampoline for internal calls (bypassing both our vtable and inline hooks),
+// the deep hook patches the function body past Streamline's JMP so ALL
+// callers are intercepted — including Streamline's linkSwapchainToCmdQueue.
+// The full wrapper pre-releases stale swapchains AND post-tracks new ones,
+// ensuring SL's shadow swapchains are tracked for subsequent releases.
+bool belowChainHookInstalled = false;
+if (realCreateSCForHwndAddr) {
+    void* trampoline = InlineHook::InstallDeepHookPublished(
+        realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd,
+        PublishDeepCreateSwapChainForHwndTrampoline, nullptr,
+        ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan(foreignCreateSCForHwndEntry,
+                                                                         loadedOverlayCount));
+    if (trampoline) {
+        belowChainHookInstalled = true;
+        HookLog("DX12: Installed DEEP hook on CreateSwapChainForHwnd at %p (trampoline=%p)",
+                realCreateSCForHwndAddr, trampoline);
+    } else {
+        HookLog("DX12: Deep hook not needed or failed for CreateSwapChainForHwnd");
+    }
+}
+
+// CreateSwapChain does not route through the public CreateSwapChainForHwnd entry, so leaving its slot
+// to an overlay needs a body hook of its own. Without an overlay the slot detour covers it as before.
+bool createSCBelowChainHookInstalled = false;
+if (loadedOverlayCount > 0) {
+    createSCBelowChainHookInstalled = InstallCreateSwapChainBelowChainHook(vtable[10], loadedOverlayCount);
+}
+const bool hookCreateSCSlot =
+    ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, createSCBelowChainHookInstalled);
+const bool hookCreateSCForHwndSlot =
+    ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot(loadedOverlayCount, belowChainHookInstalled);
+
+// Hook CreateSwapChain (vtable[10] for IDXGIFactory)
+// Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
+// A slot left to an overlay keeps its pre-patch value in the same globals: the temp swapchain and the
+// access-denied retry call it as "the slot's function", which is exactly what it still is.
+if (!hookCreateSCSlot) {
+    dx12_hook_oCreateSwapChainGlobal = reinterpret_cast<PFN_CreateSwapChain>(vtable[10]);
+} else if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                              (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
+    dx12_hook_s_createSCSlotHooked.store(true, std::memory_order_release);
+    HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
+}
+
+if (!hookCreateSCForHwndSlot) {
+    dx12_hook_oCreateSwapChainForHwndGlobal = reinterpret_cast<PFN_CreateSwapChainForHwnd>(realCreateSCForHwndAddr);
+    dx12_hook_s_createSCForHwndSlotLeftToOverlay.store(true, std::memory_order_release);
+} else if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
+                              (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success) {
+    dx12_hook_s_createSCForHwndSlotHooked.store(true, std::memory_order_release);
+    HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
+}
+if (!hookCreateSCSlot || !hookCreateSCForHwndSlot) {
+    const char* overlayName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+    HookLogImportant("DX12: Factory vtable slots left to the loaded overlay %s (CreateSwapChain[10]=%s "
+                     "CreateSwapChainForHwnd[15]=%s) - it hooks the functions the slots point to and skips a slot "
+                     "that leads out of dxgi; CE intercepts those creates with body hooks below its chain",
+                     overlayName ? overlayName : "none", hookCreateSCSlot ? "CE" : "overlay",
+                     hookCreateSCForHwndSlot ? "CE" : "overlay");
+}
+
+pFactory->Release();
+
+// Also hook IDXGIFactory4 and IDXGIFactory6 vtables to catch games that
+// QueryInterface for higher factory versions (different vtable pointers).
+// CreateSwapChainForHwnd is at the same slot (15) in all factory versions
+// because IDXGIFactory4 inherits from IDXGIFactory3 → IDXGIFactory2.
+HookFactoryCreateSwapchainSlotsOfVersion<IDXGIFactory4>(pCreateFactory, vtable, "IDXGIFactory4", hookCreateSCSlot,
+                                                        hookCreateSCForHwndSlot);
+HookFactoryCreateSwapchainSlotsOfVersion<IDXGIFactory6>(pCreateFactory, vtable, "IDXGIFactory6", hookCreateSCSlot,
+                                                        hookCreateSCForHwndSlot);
+
+// Install inline hook on CreateSwapChainForHwnd in dxgi.dll - unless a foreign overlay already
+// patched the entry and CE holds the below-chain view: overwriting that patch races the other
+// hooker's own install (see ShouldPrependCreateSwapChainForHwndEntry).
+if (realCreateSCForHwndAddr && !dx12_hook_s_oCreateSCForHwndInline) {
+    if (!ce::dx12_factory_slot::ShouldPrependCreateSwapChainForHwndEntry(createSCForHwndEntryForeignOwned,
+                                                                         belowChainHookInstalled)) {
+        const auto* entryBytes = static_cast<const unsigned char*>(realCreateSCForHwndAddr);
+        int32_t rel32 = 0;
+        memcpy(&rel32, entryBytes + 1, sizeof(rel32));
+        const void* foreignTarget = entryBytes[0] == 0xE9 ? entryBytes + 5 + rel32 : nullptr;
+        const char* overlayName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
+        HookLogImportant("DX12: CreateSwapChainForHwnd entry at %p is owned by a foreign patch (%02X %02X %02X %02X "
+                         "%02X -> %p, foreignJumpVisibleNow=%d loadedOverlay=%s); CE leaves it intact and intercepts "
+                         "below the chain (deep trampoline=%p)",
+                         realCreateSCForHwndAddr, entryBytes[0], entryBytes[1], entryBytes[2], entryBytes[3],
+                         entryBytes[4], foreignTarget, foreignCreateSCForHwndEntry ? 1 : 0,
+                         overlayName ? overlayName : "none", reinterpret_cast<void*>(dx12_hook_s_deepHookTrampoline));
+    } else {
+        void* trampoline = nullptr;
+        if (InlineHook::InstallPublished(realCreateSCForHwndAddr, (void*)DetourCreateSwapChainForHwndInline,
+                                         &trampoline, PublishCreateSwapChainForHwndTrampoline, nullptr)) {
+            dx12_hook_s_createSCForHwndEntryPrependInstalled.store(true, std::memory_order_release);
+            HookLog("DX12: Installed INLINE hook on CreateSwapChainForHwnd at %p (foreignEntry=%d foreignOwned=%d "
+                    "belowChain=%d)",
+                    realCreateSCForHwndAddr, foreignCreateSCForHwndEntry ? 1 : 0,
+                    createSCForHwndEntryForeignOwned ? 1 : 0, belowChainHookInstalled ? 1 : 0);
+        } else {
+            HookLog("DX12: FAILED to install inline hook on CreateSwapChainForHwnd");
+        }
+    }
+}
+
+HookLog("DX12: Global factory vtable hooks installed");
+s_installed.store(true, std::memory_order_release);
+}
+
+
+// Install inline hooks on Present/Present1 via temp swapchain creation.
+// Inline hooks patch the function code in memory, creating a trampoline that
+// bypasses the hook entirely. This solves the re-entry problem with vtable
+// hooks. presentOnly: if true, only install Present hooks (defer ResizeBuffers
+// for Strange Brigade)
+
+
+// Both dxgi.dll and d3d12.dll being mapped is not evidence that this process
+// presents through either of them; Windows maps both into plenty of processes
+// transitively. Answer once per call so the guarded route can refuse before it
+// spends one of its bounded attempts, and so the expensive routine below can
+// refuse whatever reaches it directly.
+bool TempSwapchainRefusedForLegacyPresentationProcess() {
+    const bool refuse = ce::dx12_overlay_policy::ShouldSkipTempSwapchainForLegacyPresentationProcess(
+        GetModuleHandleA("ddraw.dll") != nullptr || GetModuleHandleA("d3d8.dll") != nullptr,
+        GetModuleHandleA("d3d11.dll") != nullptr || GetModuleHandleA("d3d10.dll") != nullptr ||
+            GetModuleHandleA("d3d10_1.dll") != nullptr,
+        WasD3D11Or10DeviceCreated(), WasD3D12DeviceCreated());
+    if (!refuse)
+        return false;
+    static std::atomic<bool> s_loggedLegacySkip{false};
+    if (!s_loggedLegacySkip.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Refusing the temp-swapchain Present-hook bootstrap - this process maps ddraw/d3d8 with no "
+            "D3D11/D3D10 module and no D3D11/D3D12 device, so a throwaway WARP device, command queue and window "
+            "would buy no Present coverage. Re-evaluated on every service pass.");
+    }
+    return true;
+}
+
+void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly) {
+HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+if (!hDXGI || !hD3D12)
+    return;
+
+if (TempSwapchainRefusedForLegacyPresentationProcess())
+    return;
+
+typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void**);
+typedef HRESULT(WINAPI * PFN_D3D12CreateDevice)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+
+PFN_CreateDXGIFactory1 pCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+PFN_D3D12CreateDevice pD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hD3D12, "D3D12CreateDevice");
+if (!pCreateFactory || !pD3D12CreateDevice)
+    return;
+
+// A loader-injected factory-proxying tool (ReShade 6.8, Special K) hooks the
+// CreateDXGIFactory1 export and hands callers a proxy object. The temp
+// swapchain must come from the genuine dxgi factory: the historical fallback
+// below invokes the raw saved slot function, which interprets its first
+// argument as a CDXGIFactory. Skip the foreign entry patch so the real export
+// runs; the vtable guard below still refuses any object that is not the
+// factory class the saved slot was captured from.
+if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pCreateFactory))) {
+    void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pCreateFactory));
+    if (bypass) {
+        HookLogImportant(
+            "DX12: Bypassing foreign entry patch on CreateDXGIFactory1 at %p (trampoline=%p) so the temp "
+            "swapchain factory is the genuine dxgi object",
+            reinterpret_cast<void*>(pCreateFactory), bypass);
+        pCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(bypass);
+    } else {
+        HookLogImportant(
+            "DX12: Could not bypass foreign entry patch on CreateDXGIFactory1 at %p - refusing the synthetic "
+            "bootstrap rather than entering a third-party factory handler",
+            reinterpret_cast<void*>(pCreateFactory));
+        return;
+    }
+}
+
+// The synthetic WARP device is not an application device and must not enter a
+// Steam/RTSS/vendor interposer's D3D12CreateDevice handler. Apart from avoiding
+// false device state in that overlay, this keeps its graphics-startup work out
+// of the exact launch window this bootstrap is intended to leave untouched.
+if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pD3D12CreateDevice))) {
+    void* bypass = InlineHook::CreateBypassTrampoline(reinterpret_cast<void*>(pD3D12CreateDevice));
+    if (!bypass) {
+        HookLogImportant(
+            "DX12: Could not bypass foreign entry patch on D3D12CreateDevice at %p - refusing the synthetic "
+            "WARP bootstrap rather than entering a third-party device handler",
+            reinterpret_cast<void*>(pD3D12CreateDevice));
+        return;
+    }
+    HookLogImportant(
+        "DX12: Bypassing foreign entry patch on D3D12CreateDevice at %p (trampoline=%p) so the synthetic WARP "
+        "device enters no third-party handler",
+        reinterpret_cast<void*>(pD3D12CreateDevice), bypass);
+    pD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(bypass);
+}
+
+// These three failures used to return in silence, which made a dead Present-hook
+// bootstrap indistinguishable from one that never ran: Witcher 3 session
+// 20260820_142322 logged "Installing Present hooks eagerly" and then nothing at
+// all for 65 ms. Report the HRESULT - a failing temp device is a first-order
+// event about the process's D3D12 state, not a detail.
+IDXGIFactory2* pFactory = nullptr;
+HRESULT factoryHr = pCreateFactory(IID_PPV_ARGS(&pFactory));
+if (FAILED(factoryHr) || !pFactory) {
+    HookLogImportant("DX12: Temp-swapchain bootstrap: CreateDXGIFactory1 failed (hr=0x%08X)", (unsigned)factoryHr);
+    return;
+}
+
+// A terminal WARP creation failure does not become S_OK later in the process.
+// Keep the existing bounded retry so a genuinely early runtime failure can
+// recover without rebuilding this synthetic software stack indefinitely.
+if (!ce::dx12_device_creation_report::ShouldAttemptTempDeviceCreation()) {
+    pFactory->Release();
+    return;
+}
+
+// Scope suppression to this bootstrap thread. A process-global flag can hide a
+// real game swapchain created concurrently and misclassify this synthetic WARP
+// device as application D3D12 use.
+DX12_BeginInternalDXGISwapchainProbe();
+CE_SCOPE_EXIT(DX12_EndInternalDXGISwapchainProbe());
+
+// This device exists only to expose stable system-DXGI Present and D3D12 queue
+// method addresses. Never ask the game's hardware adapter/UMD to create it:
+// doing so concurrently with the application's first real device can alter
+// driver-global startup state and FSR FG's initial pacing calibration. WARP
+// supplies the same public D3D12/DXGI method surfaces without entering the
+// vendor graphics driver.
+IDXGIFactory4* pWarpFactory = nullptr;
+IDXGIAdapter* pWarpAdapter = nullptr;
+const HRESULT warpFactoryHr = pFactory->QueryInterface(IID_PPV_ARGS(&pWarpFactory));
+const HRESULT warpAdapterHr =
+    SUCCEEDED(warpFactoryHr) && pWarpFactory
+        ? pWarpFactory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter))
+        : warpFactoryHr;
+if (pWarpFactory) {
+    pWarpFactory->Release();
+}
+if (FAILED(warpAdapterHr) || !pWarpAdapter) {
+    HookLogImportant(
+        "DX12: Temp-swapchain bootstrap: EnumWarpAdapter failed (factoryHr=0x%08X adapterHr=0x%08X) - refusing "
+        "to create a synthetic hardware device in the game process",
+        static_cast<unsigned>(warpFactoryHr), static_cast<unsigned>(warpAdapterHr));
+    pFactory->Release();
+    return;
+}
+
+ID3D12Device* pDevice = nullptr;
+HRESULT deviceHr = pD3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&pDevice));
+pWarpAdapter->Release();
+ce::dx12_device_creation_report::NoteTempDeviceCreationResult(deviceHr);
+if (FAILED(deviceHr) || !pDevice) {
+    HookLogImportant(
+        "DX12: Temp-swapchain bootstrap: WARP D3D12CreateDevice failed (hr=0x%08X) - Present hooks now depend "
+        "on intercepting the game's own CreateSwapChainForHwnd",
+        (unsigned)deviceHr);
+    if (pDevice) {
+        pDevice->Release();
+    }
+    pFactory->Release();
+    return;
+}
+HookLogImportant(
+    "DX12: Temp-swapchain bootstrap: WARP D3D12 device created; synthetic hardware-adapter creation remains "
+    "disabled");
+
+D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+ID3D12CommandQueue* pQueue = nullptr;
+HRESULT queueHr = pDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&pQueue));
+if (FAILED(queueHr) || !pQueue) {
+    HookLogImportant("DX12: Temp-swapchain bootstrap: CreateCommandQueue failed (hr=0x%08X)", (unsigned)queueHr);
+    pDevice->Release();
+    pFactory->Release();
+    return;
+}
+
+// Create a minimal hidden window
+WNDCLASSEXW wc = {sizeof(wc)};
+wc.lpfnWndProc = DefWindowProcW;
+wc.hInstance = GetModuleHandleW(nullptr);
+wc.lpszClassName = L"CE_Temp";
+RegisterClassExW(&wc);
+
+HWND hwnd = CreateWindowExW(0, L"CE_Temp", L"", WS_POPUP, 0, 0, 2, 2, nullptr, nullptr, wc.hInstance, nullptr);
+
+// Create temp swapchain
+DXGI_SWAP_CHAIN_DESC1 scd = {};
+scd.Width = 2;
+scd.Height = 2;
+scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+scd.SampleDesc.Count = 1;
+scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+scd.BufferCount = 2;
+scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+
+IDXGISwapChain1* pSwapChain = nullptr;
+HRESULT hr = E_FAIL;
+IDXGIFactory2* pTerminalFactory = nullptr;
+
+// The vtable this temp swapchain carries decides WHERE every CE Present hook lands, and a proxy
+// `dxgi.dll` in the game directory (ReShade, SpecialK, OptiScaler) makes the obvious answer the
+// wrong one: it wraps the swapchain OBJECT, so slot 8 is the proxy's own Present method. A hook
+// there — entry patch or deep body patch alike — runs at the START of the proxy's Present, i.e.
+// BEFORE its post-processing pass and ABOVE every overlay that patched the real dxgi!Present the
+// proxy forwards to. Session 20260812_195840 is exactly that: CE's deep body hook installed and
+// correctly reported itself "below the foreign chain", yet Steam still drew on top, because
+// Steam's patch sits on the system function further down (`no visible jump at 00007FF95309C140`
+// — CE's own entry had no foreign patch at all, and `presentAddr … is in module:
+// …\Talos1\Binaries\Win64\dxgi.dll`).
+//
+// So the temp swapchain is created from the SYSTEM dxgi factory first, which yields the terminal
+// `dxgi!CDXGISwapChain::Present`. The result is accepted only when that Present really lands
+// inside the system image, so a proxy that also hooks real factory vtables cannot silently put
+// CE back above it — that case falls through to the historical path unchanged.
+HMODULE hSystemDXGI = DXGIShared::GetSystemDXGIModuleHandle();
+const bool proxyDXGILoaded = hSystemDXGI != nullptr && hSystemDXGI != hDXGI;
+if (proxyDXGILoaded) {
+    char proxyPath[MAX_PATH] = {};
+    GetModuleFileNameA(hDXGI, proxyPath, sizeof(proxyPath));
+    auto pSystemCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hSystemDXGI, "CreateDXGIFactory1");
+    if (pSystemCreateFactory && SUCCEEDED(pSystemCreateFactory(IID_PPV_ARGS(&pTerminalFactory))) &&
+        pTerminalFactory) {
+        hr = CreateTempSwapChainViaFactorySlot(pTerminalFactory, pQueue, hwnd, &scd, &pSwapChain);
+        if (SUCCEEDED(hr) && pSwapChain) {
+            void* terminalPresent = (*reinterpret_cast<void***>(pSwapChain))[8];
+            if (DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)) {
+                HookLogImportant(
+                    "DX12: Created temp swapchain via the SYSTEM dxgi factory (Present=%p) — Present hooks target "
+                    "the terminal dxgi!CDXGISwapChain::Present, below the swapchain-wrapping proxy %s",
+                    terminalPresent, proxyPath[0] ? proxyPath : "dxgi.dll");
+            } else {
+                HookLogImportant(
+                    "DX12: System-DXGI temp swapchain still resolves Present to %p outside the system image — the "
+                    "proxy %s wraps real factories too; keeping the proxy-level Present view (CE's overlay stays "
+                    "above that proxy)",
+                    terminalPresent, proxyPath[0] ? proxyPath : "dxgi.dll");
+                pSwapChain->Release();
+                pSwapChain = nullptr;
+                hr = E_FAIL;
+            }
+        } else {
+            HookLogImportant("DX12: System-DXGI temp swapchain creation failed (hr=0x%08X); using the live factory",
+                             hr);
+        }
+    }
+} else if (hSystemDXGI && guardedSystemRouteOnly) {
+    // No proxy dxgi.dll is loaded, so `pFactory` above ALREADY is a genuine system factory:
+    // it came from the real CreateDXGIFactory1 export, with any foreign entry patch bypassed.
+    //
+    // What makes this route safe to run next to a third-party overlay is the guarded creation
+    // itself — it refuses a CreateSwapChainForHwnd slot owned by a foreign module and steps
+    // over a foreign entry patch, so no overlay handler is entered — not the presence of a
+    // proxy. Requiring a proxy left the third-party-overlay deferral with NO usable route at
+    // all in the ordinary no-proxy case: Cyberpunk 20260816_045933 (Steam overlay loaded
+    // before the game's first D3D12 device, swapchain created after injection) retried this
+    // every service pass forever, reported hr=E_FAIL because nothing had run, and never got
+    // Present hooks or an overlay.
+    hr = CreateTempSwapChainViaFactorySlot(pFactory, pQueue, hwnd, &scd, &pSwapChain);
+    if (SUCCEEDED(hr) && pSwapChain) {
+        void* terminalPresent = (*reinterpret_cast<void***>(pSwapChain))[8];
+        if (DXGIShared::IsAddressInsideSystemDXGI(terminalPresent)) {
+            HookLogImportant(
+                "DX12: Created temp swapchain via the guarded system dxgi factory (Present=%p) — no dxgi proxy is "
+                "loaded, so this already is the terminal dxgi!CDXGISwapChain::Present",
+                terminalPresent);
+        } else {
+            HookLogImportant(
+                "DX12: Guarded temp swapchain resolves Present to %p outside the system image — refusing it rather "
+                "than hooking a foreign swapchain wrapper",
+                terminalPresent);
+            pSwapChain->Release();
+            pSwapChain = nullptr;
+            hr = E_FAIL;
+        }
+    } else {
+        static std::atomic<uint32_t> s_guardedNoProxyFailures{0};
+        const uint32_t failures = s_guardedNoProxyFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(failures, 5, 120)) {
+            HookLogImportant("DX12: Guarded system-dxgi temp swapchain creation failed (hr=0x%08X attempt=%u)", hr,
+                             failures);
+        }
+    }
+}
+
+// CRITICAL: Call the ORIGINAL CreateSwapChainForHwnd to get an unwrapped
+// swapchain We must use oCreateSwapChainForHwndGlobal directly to bypass our
+// wrapper If the original is not available, skip vtable hook installation
+if (!pSwapChain && guardedSystemRouteOnly) {
+    // Called from the third-party-overlay deferral. Only the system-DXGI route
+    // above is provably safe there: it refuses a slot owned by a foreign module
+    // and bypasses a foreign entry patch, so it enters no overlay handler. The
+    // historical path below has neither guarantee and is what recursed to death
+    // through Steam's NULL dispatch slots, so it stays deferred.
+    static std::atomic<bool> s_guardedOnlyRefusedLogged{false};
+    if (!s_guardedOnlyRefusedLogged.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "DX12: Guarded system-DXGI temp swapchain unavailable while a third-party overlay owns the "
+            "creation path — leaving Present hooks deferred rather than entering the unguarded fallback");
+    }
+} else if (!pSwapChain) {
+    const bool factoryMatchesSavedSlotVtable =
+        ce::dx12_factory_slot::ShouldInvokeSavedCreateSwapChainForHwndSlot(
+            static_cast<const void*>(dx12_hook_s_savedCreateSwapChainForHwndVtable), pFactory);
+    if (factoryMatchesSavedSlotVtable && dx12_hook_oCreateSwapChainForHwndGlobal) {
+        // Call original directly - bypasses our wrapper
+        hr = dx12_hook_oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr, nullptr, &pSwapChain);
+        if (SUCCEEDED(hr) && pSwapChain) {
+            HookLog(
+                "DX12: Created temp swapchain via original "
+                "CreateSwapChainForHwnd (unwrapped)");
+        }
+    } else if (dx12_hook_oCreateSwapChainForHwndGlobal) {
+        static std::atomic<bool> s_proxyFactorySkipLogged{false};
+        if (!s_proxyFactorySkipLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Skipping the raw CreateSwapChainForHwnd temp-swapchain call - factory %p is a "
+                "third-party proxy (vtable=%p, saved-slot vtable=%p). Passing it to the saved slot function "
+                "would corrupt dxgi factory state; the real-swapchain retry paths take over.",
+                (void*)pFactory, pFactory ? (void*)*reinterpret_cast<void***>(pFactory) : nullptr,
+                (void*)dx12_hook_s_savedCreateSwapChainForHwndVtable);
+        }
+    } else {
+        HookLog(
+            "DX12: oCreateSwapChainForHwndGlobal not available, skipping "
+            "Present vtable hooks");
+    }
+}
+
+if (SUCCEEDED(hr) && pSwapChain) {
+    HookLog("DX12: Installing Present inline hooks via temp swapchain");
+    if (DXGIShared::InstallPresentInlineHooks(pSwapChain)) {
+        HookLog("DX12: Present inline hooks installed successfully");
+    } else {
+        HookLog("DX12: Failed to install Present inline hooks");
+    }
+    // All DXGI swapchains share one CDXGISwapChain vtable, so claiming the
+    // resize slots on the bootstrap chain establishes the reconciliation before
+    // the application creates its own. That ordering is what lets the creation
+    // path decide, rather than assume, whether it may add the waitable object.
+    DXGIShared::InstallResizeReconciliationHooks(pSwapChain, "DX12 temp swapchain bootstrap");
+    pSwapChain->Release();
+} else {
+    HookLog("DX12: Failed to create temp swapchain (hr=0x%08X)", hr);
+}
+
+// Hook ExecuteCommandLists on the temp queue's vtable.
+// All DX12 command queues share the same vtable, so this hooks ALL queues
+// (including the game's pre-existing queue). When ECL fires, it calls
+// DX12_SetCommandQueue which captures the game's actual queue pointer.
+DX12_HookQueueVTable(pQueue);
+
+// Same reasoning for the device: ID3D12Device is one D3D12Core class, so
+// claiming CreateRootSignature/CreateSampler here covers the game's device even
+// though CE never saw it being created.
+//
+// This is the only point early enough for the mip-bias/AF overrides to matter.
+// Strange Brigade DX12 session `20260921_175749` built every root signature it
+// uses during renderer init, before it created the command queue CE discovers
+// its device from: the hooks came up at 17:58:01.068 and then observed exactly
+// two static samplers for the whole session, both of them CE's own overlay root
+// signature, while the game rendered 10288 frames with untouched samplers.
+DX12_HookDeviceVTable(pDevice);
+
+// Cleanup
+if (hwnd)
+    DestroyWindow(hwnd);
+UnregisterClassW(L"CE_Temp", wc.hInstance);
+pQueue->Release();
+pDevice->Release();
+if (pTerminalFactory)
+    pTerminalFactory->Release();
+pFactory->Release();
+}

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/ddraw_present_policy.h"
+#include "hook/ddraw/ddraw_present_policy.h"
 #include "source_fragment_reader.h"
 
 // DDLOCK_NOSYSLOCK is not an optimization. Without it a DDLOCK_WAIT lock takes
@@ -191,7 +191,7 @@ TEST(DDrawLockFlagsTest, AnUnlockAttemptAlwaysResolvesTheLockTracking) {
     // The bookkeeping only helps while every Unlock detour feeds it on every
     // attempt, failed or not - that unconditionality is the whole fix.
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours_surface_access.cpp";
+        ce::test_source::FindSource("hook", "ddraw_hook_detours_surface_access.cpp");
     const std::string contents = ce::test_source::ReadFile(source);
     ASSERT_FALSE(contents.empty()) << source.string();
     EXPECT_EQ(CountOccurrences(contents, "CompleteDirectDrawSurfaceLock(surface, SUCCEEDED(hr), "), 3u)
@@ -213,7 +213,7 @@ TEST(DDrawLockFlagsTest, AnUnlockAttemptAlwaysResolvesTheLockTracking) {
 TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
     // The whole DirectDraw hook family, not one unit: the Surface4 generation
     // lives in its own translation unit and its guards count the same.
-    const std::filesystem::path source = std::filesystem::current_path() / "hook/apis" / "ddraw_hook.cpp";
+    const std::filesystem::path source = ce::test_source::FindSource("hook", "ddraw_hook.cpp");
     const std::string contents = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(contents.empty()) << source.string();
 
@@ -247,7 +247,7 @@ TEST(DDrawLockFlagsTest, EveryPresentationDetourRefusesToReenterItself) {
 // are validated against ddraw.dll's module range before they are kept.
 TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_present_reentry.cpp";
+        ce::test_source::FindSource("hook", "ddraw_hook_present_reentry.cpp");
     const std::string contents = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(contents.empty()) << source.string();
 
@@ -259,7 +259,7 @@ TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
     EXPECT_NE(contents.find("DescribeCodeAddress"), std::string::npos);
     // The snapshot has to happen before CE patches the slot, or it records CE.
     const std::string installer =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/apis" / "ddraw_hook_install.cpp");
+        ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", "ddraw_hook_install.cpp"));
     ASSERT_FALSE(installer.empty());
     const size_t record = installer.find("RecordDirectDrawPresentEntryPoints(surfaceVTable)");
     const size_t patch = installer.find("VTableHook::Create", record);
@@ -274,7 +274,7 @@ TEST(DDrawLockFlagsTest, TheCycleEscapeOnlyAcceptsDirectDrawOwnedCode) {
 // primary surface and every one was dropped, so the screen kept the last image
 // it had while the game ran on.
 TEST(DDrawLockFlagsTest, ANestedPresentationRunsTheRealImplementationThroughABypass) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook/apis" / "ddraw_hook.cpp";
+    const std::filesystem::path source = ce::test_source::FindSource("hook", "ddraw_hook.cpp");
     const std::string contents = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(contents.empty()) << source.string();
 
@@ -290,7 +290,7 @@ TEST(DDrawLockFlagsTest, ANestedPresentationRunsTheRealImplementationThroughAByp
     // The answer itself is shared by all three DirectDraw generations, so it
     // lives in the classification header rather than in any one unit.
     const std::filesystem::path shared =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_blit_classification.h";
+        ce::test_source::FindSource("hook", "ddraw_hook_blit_classification.h");
     const std::string sharedContents = ce::test_source::ReadLogicalSource(shared);
     ASSERT_FALSE(sharedContents.empty()) << shared.string();
     EXPECT_NE(sharedContents.find("NestedPresentationMayRunRealImplementation"), std::string::npos);
@@ -395,7 +395,7 @@ TEST(DDrawLockFlagsTest, AmbiguousOrFailedUnlocksNeverLeaveDepthBehind) {
 
     // Every Unlock detour skips a Deferred result as a presentation.
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_detours_surface_access.cpp";
+        ce::test_source::FindSource("hook", "ddraw_hook_detours_surface_access.cpp");
     const std::string contents = ce::test_source::ReadFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_EQ(CountOccurrences(contents, "access != DirectDrawLockAccess::Deferred"), 3u);

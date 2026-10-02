@@ -5,7 +5,7 @@
 
 #include <atomic>
 
-#include "../common/vulkan_wsi_surface_table.h"
+#include "hook/present/vulkan_wsi_surface_table.h"
 #include "layer_main.h"
 
 namespace {

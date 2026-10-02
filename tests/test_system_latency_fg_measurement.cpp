@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/performance_metrics.h"
-#include "../hook/common/system_latency_frame_begin.h"
-#include "../hook/common/system_latency_metrics.h"
+#include "hook/metrics/performance_metrics.h"
+#include "hook/metrics/system_latency_frame_begin.h"
+#include "hook/metrics/system_latency_metrics.h"
 
 namespace {
 

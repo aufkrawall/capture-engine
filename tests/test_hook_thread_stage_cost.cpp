@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/hook_thread_stage_cost.h"
+#include "hook/metrics/hook_thread_stage_cost.h"
 
 TEST(HookThreadStageCostWindowTest, OptionalStageCostsAreNotDilutedByIdlePasses) {
     ce::HookThreadStageCostWindow<3> costs;

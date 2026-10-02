@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/resize_reference_probe.h"
+#include "hook/present/resize_reference_probe.h"
 #include "source_fragment_reader.h"
 
 namespace probe = ce::resize_reference_probe;
@@ -134,7 +134,7 @@ TEST(ResizeReferenceProbeTest, CaptureStagesLogABaselineThenOnlyCopiesThatAddRef
 // is copying from a chain still has to let it go before the resize forwards,
 // and the back buffers are logged after that.
 TEST(ResizeReferenceProbeTest, EveryResizeDetourReleasesTheCaptureBeforeForwarding) {
-    const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string resize = ReadSource("hook/present/dxgi_shared_resize.cpp");
     ASSERT_FALSE(resize.empty());
 
     const std::string prepare = FunctionBody(resize, "D3D12ResizePreparation PrepareD3D12Resize(");

@@ -289,7 +289,7 @@ TEST(DXGISharedSourceTest, PresentPerfRowIsDedupedAcrossOuterAndInnerLoggers) {
         return text;
     };
 
-    const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+    const std::string shared = readFile(fs::current_path() / "hook" / "present" / "dxgi_shared.cpp");
     ASSERT_FALSE(shared.empty());
     const size_t beginScope = shared.find("PerfLogger::BeginPresentRowScope()");
     ASSERT_NE(beginScope, std::string::npos) << "DetourPresent must open the present-row scope";
@@ -302,7 +302,7 @@ TEST(DXGISharedSourceTest, PresentPerfRowIsDedupedAcrossOuterAndInnerLoggers) {
     EXPECT_NE(wrap.find("PerfLogger::BeginPresentRowScope()"), std::string::npos);
     EXPECT_NE(wrap.find("!PerfLogger::InnerRowLoggedInPresentRowScope()"), std::string::npos);
 
-    const std::string logger = readFile(fs::current_path() / "hook" / "common" / "perf_logger.cpp");
+    const std::string logger = readFile(fs::current_path() / "hook" / "metrics" / "perf_logger.cpp");
     ASSERT_FALSE(logger.empty());
     // Every logged row marks the scope (inner rows win; outer catch-alls defer).
     const size_t logFrame = logger.find("void PerfLogger::LogFrame(");
@@ -323,7 +323,7 @@ TEST(DXGISharedSourceTest, StartupTransportRetainSitesGatedAndHandoffReleasesRet
         return text;
     };
 
-    const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+    const std::string shared = readFile(fs::current_path() / "hook" / "present" / "dxgi_shared.cpp");
     ASSERT_FALSE(shared.empty());
     // Every transport retain (bypass/overlayless-handoff sources) is gated by the confirmation policy:
     // count gate occurrences >= count of transport retain sources.
@@ -335,7 +335,7 @@ TEST(DXGISharedSourceTest, StartupTransportRetainSitesGatedAndHandoffReleasesRet
     }
     EXPECT_GE(gates, 6u) << "all six startup-transport retain sites must consult the confirmation gate";
 
-    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     ASSERT_FALSE(dx12.empty());
     // The post-FSR runtime-handoff create releases CE's retained activation swapchain BEFORE forwarding.
     EXPECT_NE(dx12.find("pre post-FSR Streamline runtime swapchain create"), std::string::npos)

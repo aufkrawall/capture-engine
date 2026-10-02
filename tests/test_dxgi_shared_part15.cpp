@@ -41,7 +41,7 @@ TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
         return text;
     };
 
-    const std::string overlay = readFile(fs::current_path() / "hook" / "apis" / "dx12_ffx_suspend_overlay.cpp");
+    const std::string overlay = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_ffx_suspend_overlay.cpp");
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("void RetireAllForNativeFSRTeardown("), std::string::npos)
         << "the teardown retire-all entry point must exist";
@@ -50,7 +50,7 @@ TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
     EXPECT_NE(overlay.find("for (const auto& entry : *states)"), std::string::npos)
         << "teardown must retire every live state, including either presented-swapchain draw key";
 
-    const std::string fgState = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_fg_state.cpp");
+    const std::string fgState = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_state.cpp");
     ASSERT_FALSE(fgState.empty());
     const size_t prep = fgState.find("DX12_PrepareForStreamlineEnableTransition");
     ASSERT_NE(prep, std::string::npos);
@@ -65,7 +65,7 @@ TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
         EXPECT_LT(retire, invalidate) << "states must be retired before the game tears the FFX swapchain down";
     }
 
-    const std::string ownerQueue = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_ffx_owner_queue.cpp");
+    const std::string ownerQueue = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_ffx_owner_queue.cpp");
     ASSERT_FALSE(ownerQueue.empty());
     const size_t unregister = ownerQueue.find("DX12_UnregisterNativeFSRSwapchainPresentationQueue");
     ASSERT_NE(unregister, std::string::npos);
@@ -73,7 +73,7 @@ TEST(DXGISharedSourceTest, NativeFSRTeardownRetiresEverySuspendOverlayState) {
         << "FFX context destruction must retire orphaned presented-swapchain renderer states";
 
     const std::string policy =
-        readFile(fs::current_path() / "hook" / "common" / "dx12_overlay_policy" / "ffx_routing.h");
+        readFile(fs::current_path() / "hook" / "d3d12" / "dx12_overlay_policy" / "ffx_routing.h");
     ASSERT_FALSE(policy.empty());
     EXPECT_NE(policy.find("ShouldRetireNativeFSRSuspendOverlayStatesBeforeStreamlineEnable("), std::string::npos)
         << "the boundary gate must live in the shared overlay policy";
@@ -93,7 +93,7 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
         return text;
     };
 
-    const std::string lifecycle = readFile(fs::current_path() / "hook" / "main_host_lifecycle.cpp");
+    const std::string lifecycle = readFile(fs::current_path() / "hook" / "runtime" / "main_host_lifecycle.cpp");
     ASSERT_FALSE(lifecycle.empty());
     EXPECT_NE(lifecycle.find("SetCrashDumpDirectory(sessionLogsDir, /*archiveInstalledSymbols=*/false)"),
               std::string::npos)
@@ -104,12 +104,12 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     EXPECT_NE(lifecycle.find("g_SharedFpsLimiter.ResetTraceLogPath()"), std::string::npos)
         << "reactivation must drop the cached fps_limiter_trace.log path";
 
-    const std::string perfHeader = readFile(fs::current_path() / "hook" / "common" / "perf_logger.h");
+    const std::string perfHeader = readFile(fs::current_path() / "hook" / "metrics" / "perf_logger.h");
     ASSERT_FALSE(perfHeader.empty());
     EXPECT_NE(perfHeader.find("void Init(const char* logPath, bool forceRebind = false);"), std::string::npos)
         << "PerfLogger must expose the force-rebind entry point";
 
-    const std::string perfLogger = readFile(fs::current_path() / "hook" / "common" / "perf_logger.cpp");
+    const std::string perfLogger = readFile(fs::current_path() / "hook" / "metrics" / "perf_logger.cpp");
     ASSERT_FALSE(perfLogger.empty());
     const size_t initPos = perfLogger.find("void PerfLogger::Init(");
     ASSERT_NE(initPos, std::string::npos);
@@ -118,7 +118,7 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     EXPECT_NE(perfLogger.find("frameCount_.store(0", initPos), std::string::npos)
         << "force rebind must restart the CSV frame sequence";
 
-    const std::string limiterHeader = readFile(fs::current_path() / "hook" / "common" / "fps_limiter.h");
+    const std::string limiterHeader = readFile(fs::current_path() / "hook" / "pacing" / "fps_limiter.h");
     ASSERT_FALSE(limiterHeader.empty());
     EXPECT_NE(limiterHeader.find("void ResetTraceLogPath();"), std::string::npos)
         << "FpsLimiter must expose the trace-path reset entry point";
@@ -159,7 +159,7 @@ TEST(DXGISharedTest, DestroyedFFXSwapchainContextRetiresUnconfirmedOfficialFFXSt
 // before the indirect call, so a future policy change cannot make it reachable.
 TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
     ASSERT_FALSE(steam.empty());
@@ -297,8 +297,8 @@ TEST(DXGISharedTest, ExactPrewarmedStreamlineHandoffIsNotHeldQuietByStalePostFSR
 
 TEST(DXGISharedSourceTest, SwapchainChangeEndsPostFSRRecoveryBeforeConsumingProofOrCoolingDown) {
     namespace fs = std::filesystem;
-    const fs::path phase1 = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase1.cpp";
-    const fs::path phase2 = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp";
+    const fs::path phase1 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase1.cpp";
+    const fs::path phase2 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp";
     ASSERT_TRUE(fs::exists(phase1));
     ASSERT_TRUE(fs::exists(phase2));
     const std::string gate = ce::test_source::ReadLogicalSource(phase1);
@@ -358,9 +358,9 @@ TEST(DXGISharedTest, GameSwapchainReturnOnOriginalQueueRetiresProtectedFFXStartu
 
 TEST(DXGISharedSourceTest, GameSwapchainReturnRetiresProtectedFFXStartupBeforeItsFirstPresent) {
     namespace fs = std::filesystem;
-    const fs::path tracking = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp";
-    const fs::path startup = fs::current_path() / "hook" / "apis" / "dx12_hook_fg_startup.cpp";
-    const fs::path ffxStartup = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx_startup.cpp";
+    const fs::path tracking = fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp";
+    const fs::path startup = fs::current_path() / "hook" / "d3d12" / "dx12_hook_fg_startup.cpp";
+    const fs::path ffxStartup = fs::current_path() / "hook" / "d3d12" / "dx12_hook_ffx_startup.cpp";
     ASSERT_TRUE(fs::exists(tracking));
     ASSERT_TRUE(fs::exists(startup));
     ASSERT_TRUE(fs::exists(ffxStartup));
@@ -441,8 +441,8 @@ TEST(DXGISharedTest, NativeFSRCallbackRetiringRouteEndsPostFSRRecoveryOnTheFresh
 
 TEST(DXGISharedSourceTest, FreshStreamlineHandoffJudgesRetiringOverlayByCoverage) {
     namespace fs = std::filesystem;
-    const fs::path route = fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_route.cpp";
-    const fs::path tracking = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp";
+    const fs::path route = fs::current_path() / "hook" / "d3d12" / "dx12_hook_postsl_route.cpp";
+    const fs::path tracking = fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp";
     ASSERT_TRUE(fs::exists(route));
     ASSERT_TRUE(fs::exists(tracking));
     const std::string text = ce::test_source::ReadLogicalSource(route);
@@ -533,8 +533,8 @@ TEST(DXGISharedTest, PreSLOverlayKeptLiveOnlyUntilPostSLConfirms) {
 // through a separate flag.
 TEST(DXGISharedSourceTest, DLSSToggleOnPreSLDrawSurvivesTheTransitionCooldown) {
     namespace fs = std::filesystem;
-    const fs::path transition = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_transition.cpp";
-    const fs::path drawMain = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_main.cpp";
+    const fs::path transition = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_transition.cpp";
+    const fs::path drawMain = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_main.cpp";
     ASSERT_TRUE(fs::exists(transition));
     ASSERT_TRUE(fs::exists(drawMain));
     const std::string transitionText = ce::test_source::ReadLogicalSource(transition);

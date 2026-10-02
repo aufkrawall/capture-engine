@@ -1,0 +1,20 @@
+#pragma once
+
+// DX12 overlay policy: the decision logic behind Post-SL/FFX overlay routing, barrier
+// modes, queue selection, and FG transition handling.
+//
+// Header-only and inline by design so the present path pays no call overhead. This
+// file is the umbrella; the topic headers below hold the code.
+
+#include "hook/d3d12/dx12_overlay_policy/overlay_submission.h"
+#include "hook/d3d12/dx12_overlay_policy/ffx_routing.h"
+#include "hook/d3d12/dx12_overlay_policy/ffx_topmost_batch.h"
+#include "hook/d3d12/dx12_overlay_policy/fg_metrics_and_transitions.h"
+#include "hook/d3d12/dx12_overlay_policy/streamline_ownership.h"
+#include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
+#include "hook/d3d12/dx12_overlay_policy/postsl_queue_selection.h"
+#include "hook/d3d12/dx12_overlay_policy/postsl_keepalive.h"
+#include "hook/d3d12/dx12_overlay_policy/protected_ffx_startup.h"
+#include "hook/d3d12/dx12_overlay_policy/swapchain_present_ledger.h"
+#include "hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h"
+#include "hook/d3d12/dx12_overlay_policy/ecl_queue_registration.h"

@@ -6,7 +6,7 @@
 
 #include <cstring>
 #include <vector>
-#include "../common/fps_limiter.h"
+#include "hook/pacing/fps_limiter.h"
 #include "layer_main.h"
 #include "vulkan_layer_internal.h"
 

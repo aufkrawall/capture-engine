@@ -5,7 +5,7 @@
 #include <sstream>
 #include <string>
 
-#include "../common/secure_dll_loading.h"
+#include "common/platform/secure_dll_loading.h"
 
 namespace {
 
@@ -37,9 +37,9 @@ TEST(SecureDllLoadingTest, LoadsNamedSystemLibrariesOnlyFromSystem32) {
 
 TEST(SecureDllLoadingSourceTest, PrivateRuntimeLoadersNeverMutateTheLegacyDllDirectory) {
     const std::filesystem::path root = std::filesystem::current_path();
-    const std::string loader = ReadSource(root / "captureengine" / "mediaengine_loader.cpp");
-    const std::string screenshot = ReadSource(root / "captureengine" / "screenshot.cpp");
-    const std::string workerHost = ReadSource(root / "captureengine" / "process_loopback_worker_host.cpp");
+    const std::string loader = ReadSource(root / "captureengine" / "app" / "mediaengine_loader.cpp");
+    const std::string screenshot = ReadSource(root / "captureengine" / "media" / "screenshot.cpp");
+    const std::string workerHost = ReadSource(root / "captureengine" / "media" / "process_loopback_worker_host.cpp");
 
     for (const std::string* source : {&loader, &screenshot, &workerHost}) {
         ASSERT_FALSE(source->empty());

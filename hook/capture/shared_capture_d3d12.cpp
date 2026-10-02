@@ -18,10 +18,10 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
-#include "../../common/capture_base.h"
-#include "../apis/dx11_hook.h"
-#include "../common/hook_common.h"
-#include "../common/resize_reference_probe.h"
+#include "common/capture/capture_base.h"
+#include "hook/d3d11/dx11_hook.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/present/resize_reference_probe.h"
 
 // ============================================================================
 // SharedCaptureD3D12 Implementation

@@ -10,16 +10,16 @@
 #include <iterator>
 #include <string>
 
-#include "../captureengine/injection_policy.h"
-#include "../captureengine/process_start_poll.h"
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/dxgi_factory_policy.h"
-#include "../hook/common/dxgi_shared.h"
-#include "../hook/common/ffx_api_parsing.h"
-#include "../hook/wrappers/iat_hook.h"
-#include "../hook/wrappers/inline_hook_policy.h"
-#include "../hook/wrappers/hook_patch_transaction.h"
-#include "../hook/wrappers/vtable_hook_policy.h"
+#include "captureengine/injection/injection_policy.h"
+#include "captureengine/injection/process_start_poll.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/present/dxgi_factory_policy.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/ffx/ffx_api_parsing.h"
+#include "hook/hooking/iat_hook.h"
+#include "hook/hooking/inline_hook_policy.h"
+#include "hook/hooking/hook_patch_transaction.h"
+#include "hook/hooking/vtable_hook_policy.h"
 #include "source_fragment_reader.h"
 
 

@@ -16,7 +16,7 @@
   3. By deferring hook installation until the user actually sets a target FPS, nvapi64.dll remains pristine during the critical DLSS FG init window in GTA.
 
 - **Fix**:
-  1. `hook/common/reflex_limiter.h` renames `HookNvAPIEntryPoints()` to `EnsureNvAPIHooksInstalled()` and makes it conditional: hooks are only installed when `targetIntervalUs_.load() > 0`. If called while no cap is configured, it logs once `ReflexLimiter: Deferring SetSleepMode/Sleep inline hooks — no FPS cap configured` and returns early.
+  1. `hook/pacing/reflex_limiter.h` renames `HookNvAPIEntryPoints()` to `EnsureNvAPIHooksInstalled()` and makes it conditional: hooks are only installed when `targetIntervalUs_.load() > 0`. If called while no cap is configured, it logs once `ReflexLimiter: Deferring SetSleepMode/Sleep inline hooks — no FPS cap configured` and returns early.
   2. `Init()` still calls `EnsureNvAPIHooksInstalled()` after resolving function pointers, but now the hooks will only actually install if a cap was already configured (unlikely at game startup). In the normal case they are deferred.
   3. `SetTargetFps()` now calls `EnsureNvAPIHooksInstalled()` after storing the new target interval, so configuring an FPS cap in CE immediately installs the hooks.
   4. `PushFpsLimit()` now calls `EnsureNvAPIHooksInstalled()` as a safety net, so any code path that tries to push a limit first ensures hooks are present.
@@ -26,11 +26,11 @@
 
 - **Verification**:
   - Re-checked GTA `installed/captureengine/logs/20260422_031956/{hook_debug.log,fps_limiter_trace.log}` and confirmed the limiter was inactive (`capReq=0`) and the hooks were unnecessary.
-  - Re-read `hook/common/reflex_limiter.h` and verified `EnsureNvAPIHooksInstalled()` is conditional, `SetTargetFps()` and `PushFpsLimit()` call it, and the improved forwarding logs are present.
+  - Re-read `hook/pacing/reflex_limiter.h` and verified `EnsureNvAPIHooksInstalled()` is conditional, `SetTargetFps()` and `PushFpsLimit()` call it, and the improved forwarding logs are present.
   - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2533`.
   - Ran `& ".\tests\unit_tests.exe"`; all 632 tests passed, 0 failed.
 
-- **Files changed**: `hook/common/reflex_limiter.h`, `llm-wiki/log.md`, `llm-wiki/current.md`
+- **Files changed**: `hook/pacing/reflex_limiter.h`, `llm-wiki/log.md`, `llm-wiki/current.md`
 
 - **Stale risk**: The next GTA check on build `0.1.2533+` is that the pure-DLSS `all FG off -> DLSS FG` family no longer shows the transient pink tint when the FPS limiter is inactive. If the user explicitly configures a Reflex-based FPS cap, the hooks will install at that point and the same validation may still trigger; the proper fix for active limiting may require a different interception mechanism (e.g. IAT hook on game imports rather than inline patch on nvapi64.dll). Talos should keep its already healthy behavior in both inactive and active limiting cases.
 
@@ -69,7 +69,7 @@
 - **Comparison that narrowed the seam**:
   1. The inline hook on `nvapi_QueryInterface` succeeded in GTA but failed in Talos (RIP-relative out of range). Our `ReflexDetour_QueryInterface` was returning our own wrapper pointers (`&ReflexDetour_SetSleepMode` / `&ReflexDetour_Sleep`) instead of the original NVAPI driver pointers.
   2. Streamline / DLSS FG internally queries `nvapi_QueryInterface` to obtain these pointers for its own Reflex integration; receiving non-`nvapi64.dll` addresses causes it to abort Reflex initialization. This produces the pink-tint diagnostic and causes the game to fall back to non-FG mode.
-  3. `hook/common/reflex_defs.h` defined `NV_SET_SLEEP_MODE_PARAMS` as 40 bytes, but the current NVAPI SDK defines the struct as 56 bytes (added `bUseMinQueueTime` and `rsvd[30]`). While the offsets of fields we read/write are unchanged, our own `PushFpsLimit()` constructs a struct with version `0x10028` (old 40-byte V1), which a modern driver may reject.
+  3. `hook/pacing/reflex_defs.h` defined `NV_SET_SLEEP_MODE_PARAMS` as 40 bytes, but the current NVAPI SDK defines the struct as 56 bytes (added `bUseMinQueueTime` and `rsvd[30]`). While the offsets of fields we read/write are unchanged, our own `PushFpsLimit()` constructs a struct with version `0x10028` (old 40-byte V1), which a modern driver may reject.
 
 - **Root cause refinement**:
   1. `ReflexDetour_QueryInterface` intercepted `NVAPI_ID_D3D_SetSleepMode` and `NVAPI_ID_D3D_Sleep` and returned `&ReflexDetour_SetSleepMode` / `&ReflexDetour_Sleep`. Any caller (including Streamline's internal Reflex integration) that validates the returned pointer against the `nvapi64.dll` module range will see a non-module address and treat the API as unavailable.
@@ -77,8 +77,8 @@
   3. The struct size mismatch is latent: our `InterceptSetSleepMode` copies `lastSleepModeParams_ = *pParams` assuming the struct is the size we declared, but the game may pass a 56-byte struct. Because the fields we read/write (`minimumIntervalUs`, `bLowLatencyMode`) are at unchanged offsets, the copy does not corrupt adjacent memory. However, `PushFpsLimit()` constructs a fresh struct with `params.version = NV_SET_SLEEP_MODE_PARAMS_VER` where `VER` is derived from `sizeof(NV_SET_SLEEP_MODE_PARAMS_V1)`. If the driver expects the 56-byte V1, a 40-byte version tag may be rejected.
 
 - **Fix**:
-  1. `hook/common/reflex_defs.h` now expands `NV_SET_SLEEP_MODE_PARAMS_V1` to 56 bytes: adds `uint32_t bUseMinQueueTime` and `uint8_t rsvd[30]` to match the current NVAPI SDK. The version tag `NV_SET_SLEEP_MODE_PARAMS_VER1` is now `0x1038` (56 | (1 << 16)). Offsets of existing fields are unchanged.
-  2. `hook/common/reflex_limiter.h` now changes `ReflexDetour_QueryInterface` to return `limiter.origSetSleepMode_` / `limiter.origSleep_` when available, falling back to the wrapper pointers only when the originals are not yet resolved. This lets Streamline/DLSS FG obtain valid `nvapi64.dll` addresses for its own Reflex integration.
+  1. `hook/pacing/reflex_defs.h` now expands `NV_SET_SLEEP_MODE_PARAMS_V1` to 56 bytes: adds `uint32_t bUseMinQueueTime` and `uint8_t rsvd[30]` to match the current NVAPI SDK. The version tag `NV_SET_SLEEP_MODE_PARAMS_VER1` is now `0x1038` (56 | (1 << 16)). Offsets of existing fields are unchanged.
+  2. `hook/pacing/reflex_limiter.h` now changes `ReflexDetour_QueryInterface` to return `limiter.origSetSleepMode_` / `limiter.origSleep_` when available, falling back to the wrapper pointers only when the originals are not yet resolved. This lets Streamline/DLSS FG obtain valid `nvapi64.dll` addresses for its own Reflex integration.
   3. The same header now adds diagnostic logging in `InterceptSetSleepMode` for version mismatches (first 5 occurrences), forward failures (first 5 occurrences), and original-pointer returns (once per ID). The `PushFpsLimit()` path already logs interval and boost values on first success.
 
 - **Why this is generic**: This is not a GTA-only carve-out. Any game where Streamline internally queries `nvapi_QueryInterface` for Reflex pointers would see the same abort if CE returns non-module wrapper addresses. Returning the original driver pointer is safe because the direct inline hook on the original address still intercepts every actual call. The struct size fix is also generic: any modern NVAPI driver may reject the old 40-byte version tag.
@@ -86,12 +86,12 @@
 - **Verification**:
   - Re-checked GTA `installed/captureengine/logs/20260422_010709/hook_debug.log` and confirmed the pink-tint symptom correlates with the DLSS FG enable attempt from an all-FG-off state.
   - Re-checked Talos `installed/captureengine/logs/20260421_165756_talosnocrash_multipleswitching/hook_debug.log` and confirmed the same `nvapi_QueryInterface` inline hook fails with RIP-relative out-of-range, so Talos was unaffected by the wrapper-pointer bug.
-  - Re-read `hook/common/reflex_limiter.h` `ReflexDetour_QueryInterface` implementation and verified it now returns `origSetSleepMode_` / `origSleep_` with wrapper fallback.
-  - Re-read `hook/common/reflex_defs.h` and verified `NV_SET_SLEEP_MODE_PARAMS_V1` now contains 56 bytes and `NV_SET_SLEEP_MODE_PARAMS_VER1` evaluates to `0x1038`.
+  - Re-read `hook/pacing/reflex_limiter.h` `ReflexDetour_QueryInterface` implementation and verified it now returns `origSetSleepMode_` / `origSleep_` with wrapper fallback.
+  - Re-read `hook/pacing/reflex_defs.h` and verified `NV_SET_SLEEP_MODE_PARAMS_V1` now contains 56 bytes and `NV_SET_SLEEP_MODE_PARAMS_VER1` evaluates to `0x1038`.
   - Ran `python build.py --skip-updates`; full rebuild passed and `build/verification/latest_summary.txt` reports success for build `0.1.2528`.
   - Ran `& ".\tests\unit_tests.exe"`; all 632 tests passed, 0 failed.
 
-- **Files changed**: `hook/common/reflex_defs.h`, `hook/common/reflex_limiter.h`, `llm-wiki/current.md`, `llm-wiki/log.md`
+- **Files changed**: `hook/pacing/reflex_defs.h`, `hook/pacing/reflex_limiter.h`, `llm-wiki/current.md`, `llm-wiki/log.md`
 
 - **Stale risk**: The next GTA check on build `0.1.2528+` is that the pure-DLSS `all FG off -> DLSS FG` family no longer shows the transient pink tint and no longer falls back to non-FG FPS after enable. Talos should keep its already healthy behavior. The `nvapi_QueryInterface` inline hook failure in Talos (RIP-relative out of range) is a separate watch-item that may need a different hook mechanism if we ever need activation detection there.
 
@@ -113,10 +113,10 @@
   3. On GTA `20260421_235555`, the later scene-gap cooldown widened the time between `Post-SL overlay SUBMIT #2` and `FG transition cooldown complete`. Once that cooldown hit zero, the narrower helper contract let CE clear the startup-handoff protection exactly while the startup was still inside the repo's own settling window, so the next standalone Streamline Present lost its normal-route protection and fell back into `synthetic re-entrant #1`.
 
 - **Fix**:
-  1. `hook/common/dx12_overlay_policy.h` now broadens `ShouldKeepSyntheticStartupStateUntilConfirmedRender(...)`: once PostSL has confirmed rendering, the helper now remains true only while `postSLConfirmedButStartupSettling` is still true. Impossible/stale combinations like `confirmed=1 settling=0 pending=1` are no longer treated as protected.
+  1. `hook/d3d12/dx12_overlay_policy.h` now broadens `ShouldKeepSyntheticStartupStateUntilConfirmedRender(...)`: once PostSL has confirmed rendering, the helper now remains true only while `postSLConfirmedButStartupSettling` is still true. Impossible/stale combinations like `confirmed=1 settling=0 pending=1` are no longer treated as protected.
   2. The same header now broadens `ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(...)` using that stronger helper.
   3. The same header also broadens `ShouldSuppressSceneTransitionCooldownDuringSyntheticPostSLStartup(...)` so the short confirmed-startup-settling window is still protected from a new scene-gap overlay cooldown, and the helper likewise rejects impossible stale combinations once `confirmed=1 settling=0`.
-  4. `hook/apis/dx12_hook.cpp` now threads `HookIsPostSLOverlayConfirmedButStartupSettling()` through all the pure-DLSS cooldown/reinit/callback-registration seams that previously asked only `(startupPending, activeButUnconfirmed, confirmedRendering)` when deciding whether to preserve startup state, keep `streamlineStartupHandoffPending`, or call `ResetStreamlineStartupTransitionState()`.
+  4. `hook/d3d12/dx12_hook.cpp` now threads `HookIsPostSLOverlayConfirmedButStartupSettling()` through all the pure-DLSS cooldown/reinit/callback-registration seams that previously asked only `(startupPending, activeButUnconfirmed, confirmedRendering)` when deciding whether to preserve startup state, keep `streamlineStartupHandoffPending`, or call `ResetStreamlineStartupTransitionState()`.
   5. The scene-gap suppression log now includes `settling=%d`, so future traces show explicitly when the cooldown was skipped because the startup was already confirmed but still inside the settling window rather than because it was still half-armed pre-confirmation.
   6. `tests/test_dxgi_shared.cpp` now extends the existing focused policy coverage so the settling-window family is explicit: `SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup`, `FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed`, `SyntheticStartupStateStaysHalfArmedUntilConfirmedRender`, and `ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState` now all cover the `confirmed=1 settling=1` case too.
 
@@ -129,6 +129,6 @@
   - Ran `python build.py --run-tests --tests-only --skip-updates --gtest-filter="DXGISharedTest.SceneTransitionCooldownIsSuppressedDuringHalfArmedSyntheticStartup:DXGISharedTest.FreshStreamlineStartupHandoffStaysPendingWhileSyntheticStartupIsHalfArmed:DXGISharedTest.SyntheticStartupStateStaysHalfArmedUntilConfirmedRender:DXGISharedTest.ReinitCooldownAlsoPreservesHalfArmedSyntheticStartupState:DXGISharedTest.ActivePostSLStartupAlsoStaysActiveDuringRemainingFGCooldown"`; the focused build/test path passed.
   - Ran `& ".\tests\unit_tests.exe" --gtest_filter=DXGISharedTest.*`; all 175 `DXGISharedTest.*` cases passed.
 
-- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
+- **Files changed**: `hook/d3d12/dx12_overlay_policy.h`, `hook/d3d12/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation-switching.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log.md`
 
 - **Stale risk**: Fresh runtime validation is still required. The next GTA check on build `0.1.2526+` is that the same pure-DLSS `all FG off -> DLSS FG` family on fresh runtime-owned `scQueue=0000012B0C058750` no longer logs `Scene transition detected ... overlay cooldown 30 frames` while PostSL is still inside confirmed-startup settling, no longer clears startup-handoff protection when the remaining FG cooldown completes, and therefore no longer falls back to `Treating Streamline-originated Present as synthetic re-entrant #1` right after the first confirmed PostSL submits. Talos should keep its already healthy pure-DLSS startup behavior.

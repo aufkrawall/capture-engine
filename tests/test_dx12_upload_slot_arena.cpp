@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy/upload_slot_arena.h"
+#include "hook/d3d12/dx12_overlay_policy/upload_slot_arena.h"
 #include "source_fragment_reader.h"
 
 // GTA session 20260925_225006: every overlay renderer created 32 committed upload buffers (~6 ms), and at FSR FG
@@ -51,8 +51,8 @@ std::string ReadSource(const char* relativePath) {
 }
 
 TEST(DX12UploadSlotArenaSource, RingIsOneAllocationAndDrawsBindSlotAddresses) {
-    const std::string backend = ReadSource("hook/common/custom_overlay_dx12.cpp");
-    const std::string render = ReadSource("hook/common/custom_overlay_dx12_render.cpp");
+    const std::string backend = ReadSource("hook/overlay/custom_overlay_dx12.cpp");
+    const std::string render = ReadSource("hook/overlay/custom_overlay_dx12_render.cpp");
     ASSERT_FALSE(backend.empty());
     ASSERT_FALSE(render.empty());
     const size_t start = backend.find("bool DX12Backend::CreateBuffers()");

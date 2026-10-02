@@ -34,7 +34,7 @@ device/instance extensions (`VK_KHR_external_memory_win32`, `external_semaphore_
 `gdi32` swap-entry inline hooks, and CE's `GetProcAddress` router (traced: it never intercepts the ICD's own
 lookups) - all stayed native.
 - **Fix**: `ce::graphics_runtime::ShouldPlaceStreamlinePluginSet` + `PlaceStreamlinePluginSet` in
-  `hook/main_redirect.cpp`. The sl.* set is placed only once the process shows Streamline use - the core is
+  `hook/runtime/main_redirect.cpp`. The sl.* set is placed only once the process shows Streamline use - the core is
   already mapped, `sl.interposer.dll` ships beside the process image, or a sl.* load/request has been observed
   (`NoteStreamlineUseObserved`, latched from `GetRedirectedPath` and `NoteRuntimeModuleLoadedForOverridePolicy`).
   The deferred half runs from the hook thread's 100 ms monitor loop (`PlaceConfiguredStreamlinePluginSetIfObserved`),

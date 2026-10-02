@@ -5,9 +5,9 @@
 #include <limits>
 #include <string>
 
-#include "../common/capture_pipeline_policy.h"
-#include "../common/cfr_rational_grid.h"
-#include "../common/frame_timing_utils.h"
+#include "common/capture/capture_pipeline_policy.h"
+#include "common/capture/cfr_rational_grid.h"
+#include "common/capture/frame_timing_utils.h"
 #include "source_fragment_reader.h"
 
 namespace grid = ce::cfr_grid;
@@ -113,7 +113,7 @@ TEST(CfrRationalGridTest, OutputAndSelectionGridsHaveNoLongRunDrift) {
 // encoder session must use the exact grid; the truncated interval is a duration only.
 TEST(CfrRationalGridTest, EncoderSessionNeverStridesTheTruncatedInterval) {
     const std::string source = ce::test_source::ReadLogicalSource(std::filesystem::current_path() /
-                                                                   "captureengine" / "media_main.cpp");
+                                                                   "captureengine" / "media" / "media_main.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_EQ(source.find("nextSampleTime.QuadPart += targetIntervalTicks"), std::string::npos);
     EXPECT_EQ(source.find("nextSampleTime.QuadPart = now.QuadPart + targetIntervalTicks"), std::string::npos);

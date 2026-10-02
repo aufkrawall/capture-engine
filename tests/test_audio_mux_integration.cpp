@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "audio_encoder.h"
-#include "matroska_timing.h"
+#include "mediaengine/audio/audio_encoder.h"
+#include "mediaengine/mux/matroska_timing.h"
 
 #include <mmreg.h>
 #include <windows.h>

@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <iterator>
 
-#include "../hook/common/ddraw_native_overlay_damage.h"
-#include "../hook/common/ddraw_present_policy.h"
+#include "hook/ddraw/ddraw_native_overlay_damage.h"
+#include "hook/ddraw/ddraw_present_policy.h"
 
 namespace policy = ce::ddraw_present_policy;
 namespace native_damage = ce::ddraw_native_overlay;

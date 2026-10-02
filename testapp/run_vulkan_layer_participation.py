@@ -42,7 +42,7 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 PROJECT_ROOT = SCRIPT_DIR.parent
 TESTAPP_BIN = PROJECT_ROOT / "installed" / "testapp"
 CAPTURE_BIN = PROJECT_ROOT / "installed" / "captureengine"
-ABI_HEADER = PROJECT_ROOT / "common" / "shared_defs_detail" / "abi_constants_and_config.h"
+ABI_HEADER = PROJECT_ROOT / "common" / "ipc" / "shared_defs_detail" / "abi_constants_and_config.h"
 
 PROBE_EXE = "vulkan_test.exe"
 UNLISTED_EXE = "ce_layer_probe_unlisted.exe"
@@ -118,7 +118,7 @@ def discovery_published(name: str) -> bool:
         try:
             fields = (ctypes.c_uint32 * 4).from_address(view)
             # Magic and layout signature stay zero until the host has fully
-            # published, whitelist included (captureengine/inject_main.cpp).
+            # published, whitelist included (captureengine/injection/inject_main.cpp).
             return fields[1] == DISCOVERY_MAGIC and fields[3] != 0
         finally:
             kernel32.UnmapViewOfFile(view)

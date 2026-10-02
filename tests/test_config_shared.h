@@ -5,9 +5,9 @@
 
 #include <gtest/gtest.h>
 #include <windows.h>
-#include "../common/config.h"
-#include "../common/sharpen_policy.h"
-#include "../hook/common/nvngx_parameter_abi.h"
+#include "common/config/config.h"
+#include "common/graphics/sharpen_policy.h"
+#include "hook/ngx/nvngx_parameter_abi.h"
 
 namespace {
 std::string MakeTestPath(const char* filename) {

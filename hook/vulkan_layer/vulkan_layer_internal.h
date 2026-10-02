@@ -28,19 +28,19 @@ struct FrameLimitState;
 
 #include <vector>
 
-#include "../../common/mip_mapping_policy.h"
+#include "common/graphics/mip_mapping_policy.h"
 
-#include "../../common/strict_float_parse.h"
+#include "common/platform/strict_float_parse.h"
 
-#include "../common/capture_pacing.h"
+#include "hook/pacing/capture_pacing.h"
 
-#include "../common/fps_limiter.h"
+#include "hook/pacing/fps_limiter.h"
 
-#include "../common/perf_logger.h"
+#include "hook/metrics/perf_logger.h"
 
-#include "../common/performance_metrics.h"
+#include "hook/metrics/performance_metrics.h"
 
-#include "../common/screenshot_hook.h"
+#include "hook/capture/screenshot_hook.h"
 
 #include "layer_main.h"  // For LayerLog and g_LayerState
 

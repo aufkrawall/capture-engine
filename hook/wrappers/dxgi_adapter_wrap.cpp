@@ -5,8 +5,8 @@
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_output_wrap.h"
-#include "dxgi_video_memory_log_policy.h"
-#include "hook_common.h"
+#include "hook/present/dxgi_video_memory_log_policy.h"
+#include "hook/runtime/hook_common.h"
 
 #include <algorithm>
 #include <array>

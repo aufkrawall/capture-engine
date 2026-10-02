@@ -97,7 +97,7 @@ Covers 2026-08-15. Newest-first.
 - Reviewing Talos session `20260815_191332` (31/40 installed, exactly as documented) turned up a **crash-on-restore
   bug**: the data-pointer redirect stored its undo pointer as `nullptr`, so `RestoreOverride` compare-exchanged null
   into the live console object on config disable, single-CVar disable, or hook shutdown. 20 of Talos's 31 overrides
-  used that path. The undo contract is now a pure, unit-tested plan (`hook/common/ue5_redirect_plan.h`): no redirect
+  used that path. The undo contract is now a pure, unit-tested plan (`hook/overrides/ue5_redirect_plan.h`): no redirect
   is installed unless the pointer it replaces has been recorded.
 - Data-pointer installs now also mirror CE's value into the storage the original pointer addressed (`writeThrough=1`)
   and restore it on undo. Engine code generated for `FAutoConsoleVariableRef` CVars reads that global directly rather

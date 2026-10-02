@@ -29,7 +29,7 @@ redirect is refused, which is why `20260919_194818` shows five OTA-store plugins
 
 **The fix, with the infrastructure already present.** `streamlineDllPath` and the three
 `dlss*DllPath`s have always been in `SharedGraphicsConfig`, published by the injector before the
-game starts - the same channel `ngxOtaMode` uses. New `hook/common/published_graphics_config.*`
+game starts - the same channel `ngxOtaMode` uses. New `hook/overrides/published_graphics_config.*`
 reads them once in `DllMain`; `main_redirect.cpp` gained `Configured*DllPath()` accessors that
 prefer the hook thread's config and fall back to the published copy. `NeedsLoaderRedirectionHook`
 and the model-store branch stop being gated on `g_pLocalConfig` too.

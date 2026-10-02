@@ -5,9 +5,9 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/dxgi_shared.h"
-#include "../hook/common/present_pacing_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/present/present_pacing_policy.h"
 #include "source_fragment_reader.h"
 
 // Regression coverage for the DOOM Eternal (Vulkan) startup deadlock,
@@ -136,7 +136,7 @@ TEST(PresentPacingPolicySourceTest, NoUnboundedFlipQueuePacingWaitRemains) {
     // Commit ccbdeac5 fixed this freeze once; commit dd30a5b6 reverted the
     // ceiling to INFINITE and it came back in DOOM Eternal. Assert the shape so
     // a third round cannot land silently.
-    const std::string pacing = ReadProjectSource("hook/common/dxgi_shared_present_pacing.cpp");
+    const std::string pacing = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
     ASSERT_FALSE(pacing.empty());
     const size_t wait = pacing.find("WaitForSingleObject(");
     ASSERT_NE(wait, std::string::npos);
@@ -149,7 +149,7 @@ TEST(PresentPacingPolicySourceTest, NoUnboundedFlipQueuePacingWaitRemains) {
     // The two transports that used to carry their own copy must delegate now:
     // one kept an INFINITE wait, the other a 16 ms ceiling that sat below a
     // healthy wait and silently escaped the pacing.
-    const std::string original = ReadProjectSource("hook/common/dxgi_shared_original.cpp");
+    const std::string original = ReadProjectSource("hook/present/dxgi_shared_original.cpp");
     ASSERT_FALSE(original.empty());
     EXPECT_EQ(original.find("GetFrameLatencyWaitableObject"), std::string::npos)
         << "CallOriginalPresent must pace through WaitBackbufferFrameLatency";
@@ -170,20 +170,20 @@ TEST(PresentPacingPolicySourceTest, NoUnboundedFlipQueuePacingWaitRemains) {
 }
 
 TEST(PresentPacingPolicySourceTest, PacingHonoursThePublishedVulkanDecision) {
-    const std::string pacing = ReadProjectSource("hook/common/dxgi_shared_present_pacing.cpp");
+    const std::string pacing = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
     ASSERT_FALSE(pacing.empty());
     EXPECT_NE(pacing.find("ShouldWaitForFlipQueueRoom"), std::string::npos);
     EXPECT_NE(pacing.find("ShouldApplyCePresentationPolicy"), std::string::npos)
         << "SetMaximumFrameLatency on the Vulkan runtime's transport swapchain is what shrank its "
            "flip queue to a depth the pacing wait could block on";
 
-    const std::string resize = ReadProjectSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string resize = ReadProjectSource("hook/present/dxgi_shared_resize.cpp");
     ASSERT_FALSE(resize.empty());
     EXPECT_NE(resize.find("ShouldApplyCePresentationPolicy"), std::string::npos);
 }
 
 TEST(PresentPacingPolicySourceTest, SwapchainCreateFeedsTheVulkanDecisionIntoTheDescriptorRule) {
-    const std::string ffxStartup = ReadProjectSource("hook/apis/dx12_hook_ffx_startup.cpp");
+    const std::string ffxStartup = ReadProjectSource("hook/d3d12/dx12_hook_ffx_startup.cpp");
     ASSERT_FALSE(ffxStartup.empty());
     const size_t rule = ffxStartup.find("ShouldApplySwapchainDescriptorOverridesForCreate(\n");
     ASSERT_NE(rule, std::string::npos);
@@ -215,7 +215,7 @@ TEST(PresentPacingPolicyTest, NativeFGOutputVSyncRequiresBothOwnershipAndTheSour
 }
 
 TEST(PresentPacingPolicySourceTest, NativeFGReceivesVSyncBeforeEitherProxyPresentForward) {
-    const std::string proxy = ReadProjectSource("hook/apis/dx12_hook_ffx_proxy_present.cpp");
+    const std::string proxy = ReadProjectSource("hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
     for (const char* method : {"DX12_FFXProxyDetourPresent(", "DX12_FFXProxyDetourPresent1("}) {
         const size_t start = proxy.find(method);
         ASSERT_NE(start, std::string::npos);
@@ -230,16 +230,16 @@ TEST(PresentPacingPolicySourceTest, NativeFGReceivesVSyncBeforeEitherProxyPresen
 }
 
 TEST(PresentPacingPolicySourceTest, AllInnerDXGIVSyncPathsRespectNativeFGOutputOwnership) {
-    for (const char* file : {"hook/common/dxgi_shared_present_core.cpp",
-                             "hook/common/dxgi_shared_present_routing.cpp",
-                             "hook/common/dxgi_shared_present1.cpp",
+    for (const char* file : {"hook/present/dxgi_shared_present_core.cpp",
+                             "hook/present/dxgi_shared_present_routing.cpp",
+                             "hook/present/dxgi_shared_present1.cpp",
                              "hook/wrappers/dxgi_swapchain_wrap_present.cpp"}) {
         const std::string source = ReadProjectSource(file);
         ASSERT_FALSE(source.empty());
         EXPECT_EQ(source.find("ProcessVSyncOverride("), std::string::npos) << file;
         EXPECT_NE(source.find("ProcessPresentVSyncOverride("), std::string::npos) << file;
     }
-    const std::string pacing = ReadProjectSource("hook/common/dxgi_shared_present_pacing.cpp");
+    const std::string pacing = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
     const size_t policy = pacing.find("void ProcessPresentVSyncOverride(");
     ASSERT_NE(policy, std::string::npos);
     const size_t preserve = pacing.find("ShouldPreserveNativeFGOutputVSync(", policy);
@@ -272,8 +272,8 @@ TEST(PresentPacingPolicySourceTest, DXGIPresentBoundariesGateEveryApplyOnTheCade
         int expectedSites;
     };
     const Boundary boundaries[] = {
-        {"hook/common/dxgi_shared_present_core.cpp", 1},
-        {"hook/common/dxgi_shared_present1.cpp", 1},
+        {"hook/present/dxgi_shared_present_core.cpp", 1},
+        {"hook/present/dxgi_shared_present1.cpp", 1},
         {"hook/wrappers/dxgi_swapchain_wrap_present.cpp", 2},
     };
 

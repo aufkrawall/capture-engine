@@ -29,7 +29,7 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 
 TEST(DX12TempSwapchainDiagnosticsTest, EveryAbandonedBootstrapStepReportsItsHResult) {
     const std::string source = ce::test_source::ReadLogicalSource(std::filesystem::current_path() /
-                                                                  "hook/apis/dx12_hook_hook_install.cpp");
+                                                                  "hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body =
         FunctionBody(source, "void HookSwapchainVTableViaTempSwapchain(bool presentOnly, bool guardedSystemRouteOnly)",

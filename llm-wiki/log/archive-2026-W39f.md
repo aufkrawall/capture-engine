@@ -41,7 +41,7 @@ Covers 2026-09-26. Newest first.
   `recording_degraded=`, the finalization log `degraded=`, mediaengine logs `[OutputHealth] ... scope=`.
 - `OverlayNotificationType` 11-14 (saved/stream-ended x audio/audio+video); 5/9 keep meaning video.
   SHARED_MEMORY_VERSION 64->65 (layout unchanged, but an old hook would drop 11-14 silently).
-- Texts in one table (`common/output_completion_notification.h`) for hook and pseudo overlay; hook width list
+- Texts in one table (`common/capture/output_completion_notification.h`) for hook and pseudo overlay; hook width list
   iterates it. Found in passing: the hook's idle-only check was a numeric range 3..10 that would have let 11-14
   cover an active recording; now `IsRecordingFinalizationNotification`.
 - Hardware check pending: an audio-only loss should show "Recording saved - audio degraded" in both overlays.

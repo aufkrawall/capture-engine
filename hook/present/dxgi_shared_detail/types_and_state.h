@@ -1,0 +1,709 @@
+#pragma once
+
+#include <dxgi1_4.h>
+#include <windows.h>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <mutex>
+
+#include "hook/present/dxgi_presentation_color.h"
+#include "hook/fg/fg_runtime_state.h"
+
+// Forward declaration
+class PerformanceMetrics;
+
+// Post-SL overlay rendering callback.  Invoked during re-entrant Present
+// (after Streamline's FG pipeline finishes) so the overlay renders AFTER FG
+// interpolation - matching the standard inject-overlay approach for FG compatibility.
+using PostSLOverlayRenderFn = void (*)(IDXGISwapChain* pSwapChain);
+using PostSLStartupActivationServiceFn = bool (*)(const char* source, bool clearStartupWindow);
+
+// API/present types and the shared DXGI swapchain state declarations.
+
+namespace DXGIShared {
+
+enum class APIType {
+    Unknown,
+    D3D10,
+    D3D11,
+    D3D12,
+    Vulkan  // For WSI-DXGI interop
+};
+
+enum class SteamNullCallbackRecoveryPatchTarget {
+    DummyNoPresent,
+    DXGIBypassPresent,
+};
+
+inline SteamNullCallbackRecoveryPatchTarget SelectSteamNullCallbackRecoveryPatchTarget(bool bypassPresentAvailable) {
+    return bypassPresentAvailable ? SteamNullCallbackRecoveryPatchTarget::DXGIBypassPresent
+                                  : SteamNullCallbackRecoveryPatchTarget::DummyNoPresent;
+}
+
+// Some runtimes expose lower-version compatibility interfaces on higher-version
+// swapchains (for example DX11-on-DXVK can answer ID3D10 queries). Always prefer
+// the highest actual device API so DX11 swapchains do not fall back to DX10 code
+// paths just because compatibility interfaces are present.
+inline APIType SelectPrimarySwapChainAPIType(bool hasD3D12Device, bool hasD3D11Device, bool hasD3D10Device) {
+    if (hasD3D12Device) {
+        return APIType::D3D12;
+    }
+    // On Windows 10+ the D3D10 runtime is implemented on top of D3D11
+    // (D3D10-on-D3D11).  A D3D10 device's swapchain will QI for both
+    // ID3D11Device (translation layer) and ID3D10Device (native), while a
+    // native D3D11 device's swapchain will QI for ID3D11Device but NOT for
+    // ID3D10Device.  When both succeed the device is D3D10-on-D3D11 —
+    // functionally D3D10 — so prefer D3D10 over D3D11.
+    if (hasD3D10Device) {
+        return APIType::D3D10;
+    }
+    if (hasD3D11Device) {
+        return APIType::D3D11;
+    }
+    return APIType::Unknown;
+}
+
+struct SharedState {
+    std::atomic<bool> swapchainInvalid{false};
+    std::atomic<bool> fsr4RecreationPending{false};
+    std::atomic<int> wrapperResizeDepth{0};
+    std::atomic<uint32_t> presentInFlightDepth{0};
+    // GetTickCount64() when a Present last left CE's hook (0 = never). A stall
+    // detector measures "no presents" from here: ProcessFrame runs before the
+    // forward, so its tick alone also counts the time a Present spent inside.
+    std::atomic<ULONGLONG> lastPresentReturnTickMs{0};
+    std::atomic<uint64_t> frameCount{0};
+    std::atomic<bool> deviceRemovedFatal{false};
+    std::atomic<uint64_t> presentCallCount{0};
+    std::chrono::steady_clock::time_point lastSwapchainCreation;
+    std::atomic<bool> inPresentHook{false};
+    std::atomic<bool> fgRuntimeOwnsSwapchain{false};
+    std::atomic<bool> streamlineStartupHandoffPending{false};
+    std::atomic<bool> streamlineStartupTopLevelPresentConsumed{false};
+    std::atomic<ULONGLONG> streamlineStartupTransitionUntilMs{0};
+    std::atomic<bool> postSLSyntheticStartupActivationPending{false};
+};
+
+extern SharedState g_SharedState;
+extern std::mutex g_SharedMutex;
+
+// Callback for post-SL FG overlay rendering (set by dx12_hook.cpp).
+extern std::atomic<PostSLOverlayRenderFn> g_PostSLOverlayRenderCallback;
+
+// Marks callbacks invoked for a real Streamline runtime Present. PostSL also
+// has retained-swapchain startup/warmup service calls that may draw successfully
+// but do not represent a new output and therefore must not be recorded. The
+// callback is a final generated output while DLSS-G runs and a base output while
+// that same runtime route is suspended.
+void InvokePostSLCallbackForFinalOutputPresent(PostSLOverlayRenderFn callback, IDXGISwapChain* swapChain);
+bool IsPostSLFinalOutputPresentCallback();
+
+// Service for forcing a pending PostSL startup activation with a valid retained
+// swapchain when the normal ProcessFrame path has stalled behind Streamline.
+extern std::atomic<PostSLStartupActivationServiceFn> g_PostSLStartupActivationService;
+
+// Direct Streamline FG active signal — set by streamline_hook.cpp when
+// slDLSSGSetOptions transitions FG on/off.  More immediate than heuristic
+// FG type detection.  Used by DX12 hook for pre-SL vs post-SL routing.
+extern std::atomic<bool> g_StreamlineFGRunning;
+
+// Present/Present1 call counter for bypass detection by SL hook.
+extern std::atomic<uint64_t> g_PresentCallCounter;
+
+// Records that ProcessFrame already performed the exact-proxy PostSL
+// explicit-OFF keep-alive draw for the current top-level Present. The wrapper
+// owns the outer scope across ProcessFrame and its real Present; nested detour
+// scopes preserve the marker so one displayed frame never receives the overlay
+// twice even if the DLSS suspend edge occurs inside the real Present call.
+void BeginPostSLOffKeepAlivePresentScope();
+void EndPostSLOffKeepAlivePresentScope();
+void MarkPostSLOffKeepAlivePrePresentDrawn();
+bool WasPostSLOffKeepAlivePrePresentDrawn();
+void MarkPostSLPresentedOutputCaptureRouted();
+bool WasPostSLPresentedOutputCaptureRouted();
+
+// Initialization
+void Init();
+
+// The unified hook installer
+bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly = false);
+
+// Claims only the ResizeBuffers/ResizeBuffers1 swapchain vtable slots, so the
+// flags CE added at creation stay invisible to the application even when CE
+// leaves the Present entry and the swapchain identity untouched.
+bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* source);
+
+// True once CE can rewrite the flags of application resize calls. Gates whether
+// CE may add a creation flag the application does not know about.
+bool ReconcilesApplicationResizeFlags();
+
+inline bool DoesFGRuntimeOwnSwapchain() {
+    return g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire);
+}
+
+inline bool IsStreamlineStartupHandoffPending() {
+    return g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
+}
+
+static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 3000;
+
+inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
+    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    g_SharedState.streamlineStartupTransitionUntilMs.store(GetTickCount64() + durationMs, std::memory_order_release);
+}
+
+inline void ExtendStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
+    const ULONGLONG extendedUntilMs = GetTickCount64() + durationMs;
+    ULONGLONG currentUntilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+
+    while (currentUntilMs < extendedUntilMs &&
+           !g_SharedState.streamlineStartupTransitionUntilMs.compare_exchange_weak(
+               currentUntilMs, extendedUntilMs, std::memory_order_acq_rel, std::memory_order_acquire)) {}
+}
+
+inline void ClearStreamlineStartupTransitionWindow() {
+    // Window expiry alone must not erase the one-shot bootstrap latch. Startup can
+    // remain half-armed after the timer ends, and the next Streamline-originated
+    // Present still needs to know that the top-level handoff bootstrap already ran.
+    g_SharedState.streamlineStartupTransitionUntilMs.store(0, std::memory_order_release);
+}
+
+inline void ResetStreamlineStartupTransitionState() {
+    g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
+    ClearStreamlineStartupTransitionWindow();
+}
+
+inline bool IsStreamlineStartupTransitionWindowActive() {
+    const ULONGLONG untilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
+    return untilMs != 0 && GetTickCount64() < untilMs;
+}
+
+// Set pending swapchain for lazy hook installation (called from DX12 hook)
+void SetPendingSwapChainForLazyHook(IDXGISwapChain* pSwapChain);
+
+// Verify and re-install vtable hooks if they were overwritten by
+// third-party software (e.g. Streamline during FG re-activation).
+void RepairVTableHooksIfNeeded();
+
+// Common helpers
+bool IsVulkanPrimary();
+bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace,
+                               bool* changed = nullptr);
+bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace);
+HRESULT SetSwapChainColorSpaceFromWrapper(IDXGISwapChain3* callableSwapChain, IDXGISwapChain* identitySwapChain,
+                                          DXGI_COLOR_SPACE_TYPE colorSpace);
+ce::presentation_color::Encoding ResolveSwapChainPresentationEncoding(IDXGISwapChain* swapChain,
+                                                                      DXGI_FORMAT format,
+                                                                      DXGI_COLOR_SPACE_TYPE* trackedColorSpace = nullptr,
+                                                                      bool* hasTrackedColorSpace = nullptr);
+PerformanceMetrics* GetPerformanceMetrics();
+uint32_t GetLatestSourceFrameIndex();
+void SetLatestSourceFrameIndex(uint32_t frameIndex);
+void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
+void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain);
+bool WaitFlipQueuePacingObject(HANDLE waitable, const char* context);
+DWORD GetThreadStuckInsideCePresentHook();
+
+// Experimental: skip CE overlay rendering when Steam handler is invoked.
+// When enabled, DetourPresent skips HandleDX12ProcessFrame and CallOriginalPresent
+// calls Steam's handler directly.  This isolates whether Steam's handler alone
+// (without CE overlay) causes the black screen.
+inline std::atomic<bool>& GetSteamOnlyOverlayExperimentalFlag() {
+    static std::atomic<bool> s_flag{false};
+    return s_flag;
+}
+
+// Exported handlers for specific APIs (implemented in their respective hook
+// files)
+void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
+void HandleDX12ProcessFrame(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
+                            bool frameGenerationPresentationActive);
+void HandleDX12ResizeBegin();
+void HandleDX12ResizeEnd();
+void HandleDX11ResizeBegin();
+
+// True when the overlay backend is live and safe to draw on the current Streamline startup-handoff
+// bypass Present (prewarmed/preserved handoff backend or the explicit-enable pure-DLSS proof).
+// Implemented in dx12-land; the Present path must not draw without this proof (GTA startup-churn
+// protection stays intact for GetState-only enables).
+bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
+                                                              bool streamlineFGRunning,
+                                                              bool postSLConfirmedRendering, bool hadFSRFGPhase,
+                                                              bool explicitSetOptionsActivation);
+
+// Opt-in kill-switch (env var CE_DLSS_TOGGLE_OVERLAY_EAGER, default OFF): when set, CE draws the
+// overlay present-time (RTSS-style) right before the Streamline-startup Present bypass so the frame
+// that DLSS-G freezes on during a runtime DLSS-FG toggle-ON still carries the overlay. See Round 4
+// (llm-wiki/frame-generation/guardrails.md).
+bool IsDlssToggleEagerOverlayEnabled();
+
+// Remove Present/Present1 vtable hooks (called when COM wrapper takes over)
+void RemovePresentHooks();
+
+// Disable SL Present routing so Present calls go through the trampoline
+// directly instead of through SL's hook chain. Called when FSR FG takes over
+// to avoid SL/FSR Present chain conflicts.
+void DisableSLPresentRouting();
+
+// Remove all swapchain vtable hooks (Present, Present1, ResizeBuffers,
+// ResizeBuffers1)
+void RemoveSwapchainVTableHooks();
+
+// Install inline hooks on Present/Present1 (instead of vtable hooks)
+// Inline hooks patch the function code in memory, creating a trampoline that
+// bypasses the hook - preventing re-entry issues with wrapped swapchains
+bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);
+bool HasPresentInlineHooks();
+bool HasPresentDetourHooks();
+// True only when CE's Present view is an entry patch CE itself owns. False in the
+// left-to-foreign-chain mode, where the view is a deep hook in the function body and the
+// entry bytes belong entirely to the foreign overlays.
+bool HasPrependedPresentEntryHook();
+
+// Handle of the SYSTEM dxgi.dll, resolved by full path under GetSystemDirectory (WOW64-aware,
+// so a 32-bit process gets the SysWOW64 image). Never by name: ReShade, SpecialK and OptiScaler
+// all ship their proxy as `dxgi.dll` in the game directory, and `GetModuleHandleA("dxgi.dll")`
+// then returns whichever of the two the loader lists first. Null when the system image is not
+// loaded (it always is once DXGI is in use — a proxy forwards to it).
+HMODULE GetSystemDXGIModuleHandle();
+
+// True when `address` lies inside that image, i.e. it is terminal DXGI runtime code rather than
+// a proxy's wrapper method. This is what decides whether a Present hook lands below or above a
+// swapchain-wrapping proxy.
+bool IsAddressInsideSystemDXGI(const void* address);
+
+// Where CE's overlay is composited relative to a foreign Present chain. Every participant in
+// such a chain draws BEFORE it forwards, so the site alone decides whether CE's overlay ends
+// up on top of Steam's/RTSS's or underneath them. Each semantic site is reported once because
+// FSR may legitimately alternate UI-composition and deep-Present observations every output;
+// ownership-edge diagnostics report later route changes without synchronous per-frame logging.
+enum class OverlayCompositeSite {
+    kPresentEntry,        // CE's own entry patch: CE draws first, foreign overlays draw on top.
+    kBelowForeignChain,   // deep body hook: CE draws after every entry patcher, so it is topmost.
+    kSwapchainWrapper,    // CWrapDXGISwapChain: above the entry, so foreign overlays draw on top.
+    // Inside the FG runtime's own UI composition (AMD's present callback, or the registered UI
+    // resource). Both composite into the runtime's output buffer BEFORE the runtime presents it
+    // through DXGI, which is the present a foreign overlay patches — so those overlays draw on
+    // top of CE there. It is also the only AMD-safe channel while the runtime owns presentation
+    // (submitting onto AMD's backbuffer/present queue is the documented AV and freeze boundary),
+    // so this is a structural ordering, not a bug in the interception.
+    kFrameGenerationRuntimeUiComposition,
+};
+void NoteOverlayCompositeSite(OverlayCompositeSite site, const char* source);
+// Short alias for the call sites inside the FG-runtime composite units, whose lines are
+// already deeply nested.
+constexpr OverlayCompositeSite kFGRuntimeUiCompositeSite =
+    OverlayCompositeSite::kFrameGenerationRuntimeUiComposition;
+void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason);
+
+// Returns true when DXGI swapchain hooks should be installed despite a
+// third-party overlay being loaded.  Third-party overlays (e.g. Steam) may
+// install inline hooks on the Present function code in dxgi.dll.  Our vtable
+// hooks on the swapchain object bypass those inline hooks entirely, so there
+// is no recursion risk — the vtable path is safe regardless of overlay presence.
+//
+// The one exception is the left-to-foreign-chain mode: once CE has deliberately
+// kept its bytes out of a Present entry that two or more foreign overlays share,
+// the swapchain vtable must stay pristine too.  Steam resolves its own "next
+// Present" from that slot, so a CE detour there re-inserts CE into exactly the
+// chain the mode exists to stay out of.
+inline bool ShouldInstallSwapchainHooksWithThirdPartyOverlay(bool /*thirdPartyOverlayLoaded*/,
+                                                             bool /*hasPresentDetourHooks*/,
+                                                             bool presentEntryLeftToForeignChain) {
+    return !presentEntryLeftToForeignChain;
+}
+
+// Present coverage is per method. Games call Present or Present1, and a view of one says
+// nothing about the other. Accepting either as "hooked" let a failed Present install hide
+// behind a successful Present1 install: the real-swapchain retry stopped, the leave-entry mode
+// forbids the vtable fallback, and a game presenting through plain Present stayed uncovered for
+// the whole session.
+struct PresentMethodViews {
+    bool presentEntryTrampoline = false;   // CE's prepend on the Present entry
+    bool present1EntryTrampoline = false;  // CE's prepend on the Present1 entry
+    bool presentDeepBody = false;          // deep body hook below a foreign Present chain
+    bool present1DeepBody = false;
+    bool swapchainVTableClaimed = false;   // CE claimed the swapchain class vtable slots
+};
+
+inline bool CoversPresentMethod(const PresentMethodViews& views) {
+    return views.presentEntryTrampoline || views.presentDeepBody || views.swapchainVTableClaimed;
+}
+
+inline bool CoversPresent1Method(const PresentMethodViews& views) {
+    return views.present1EntryTrampoline || views.present1DeepBody || views.swapchainVTableClaimed;
+}
+
+// A real swapchain event retries the inline install while either method lacks a view. The
+// retry installs only the missing method. `present1EntryKnown` is false when the swapchain
+// exposes no Present1 entry, which then cannot be missing.
+inline bool ShouldRetryPresentHookInstall(const PresentMethodViews& views, bool present1EntryKnown) {
+    return !CoversPresentMethod(views) || (present1EntryKnown && !CoversPresent1Method(views));
+}
+
+// Live per-method views, from the published trampolines and the vtable claim.
+PresentMethodViews GetPresentMethodViews();
+// True when CE has a detour view of that one method (Present1 when `present1`).
+bool HasPresentMethodDetourHook(bool present1);
+// False once every exposed method has a view, or after CE deliberately moved to wrapper-only
+// interception (MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain).
+bool ShouldRetryPresentInlineHookInstall();
+
+inline bool ShouldRefreshLivePresentHooksForSwapchainPath(bool hasReadableVtable, bool trackedVtableMatchesCurrent,
+                                                           bool presentHookInstalled, bool present1HookInstalled,
+                                                           bool presentEntryLeftToForeignChain) {
+    if (!hasReadableVtable || presentEntryLeftToForeignChain) {
+        return false;
+    }
+
+    return !trackedVtableMatchesCurrent || !presentHookInstalled || !present1HookInstalled;
+}
+
+inline bool ShouldRunSharedD3D10Or11ProcessFrame(APIType api) {
+    return api == APIType::D3D10 || api == APIType::D3D11;
+}
+
+inline bool ShouldApplyUnfocusedFlipModelDoNotWait(bool isD3D12Swapchain, bool isFullscreen, bool isForeground,
+                                                   UINT presentFlags) {
+    if (isForeground || isFullscreen) {
+        return false;
+    }
+
+    // D3D12 engines often keep building GPU work while unfocused. Forcing
+    // DO_NOT_WAIT there can create an unbounded ECL/Present loop and has caused
+    // x86 DX12 device hangs during Alt+Tab. Let DXGI's normal pacing stall
+    // instead; CE keeps overlay resources alive so the overlay can resume on the
+    // first drawable frame.
+    if (isD3D12Swapchain) {
+        return false;
+    }
+
+    constexpr UINT kAllowTearing = 0x00000200U;
+    constexpr UINT kRestart = 0x00000004U;
+    return (presentFlags & (kAllowTearing | kRestart)) == 0;
+}
+
+inline bool ShouldWaitOnD3D12FocusLossFrameLatency(bool isD3D12Swapchain, bool isFullscreen, bool processHasForeground,
+                                                   bool isIconic, bool hasZeroSize, bool presentSucceeded,
+                                                   bool frameGenerationActive, bool runtimeOwnedPresentation,
+                                                   bool hasFrameLatencyWaitable) {
+    (void)isD3D12Swapchain;
+    (void)isFullscreen;
+    (void)processHasForeground;
+    (void)isIconic;
+    (void)hasZeroSize;
+    (void)presentSucceeded;
+    (void)frameGenerationActive;
+    (void)runtimeOwnedPresentation;
+    (void)hasFrameLatencyWaitable;
+    // `20260602_213952` proved the waitable stays immediately signaled during
+    // the failing focus churn, so it is not a correctness gate. Keep the wrapper
+    // on a pure Present path for D3D12 focus loss; focus/reacquire safety is
+    // handled by the DX12 overlay policy.
+    return false;
+}
+
+inline bool ShouldDeferVTableRepairDuringStreamlineStartup(bool streamlineFGRunning,
+                                                           bool streamlineStartupHandoffPending,
+                                                           bool streamlineStartupTransitionWindowActive,
+                                                           bool postSLConfirmedRendering) {
+    if (!streamlineFGRunning) {
+        return false;
+    }
+
+    // Confirmation belongs to a specific swapchain/queue epoch. A fresh
+    // Streamline startup handoff can still have an older confirmed PostSL proof
+    // while DLSSG is rebuilding its internal swapchain path, so keep vtable
+    // repair out of both the unconfirmed and explicitly fresh-startup windows.
+    return !postSLConfirmedRendering || streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive;
+}
+
+inline bool ShouldTreatEarlyPresentRecursionAsForwardable(bool hasPresentTrampoline, bool hasPresentBypass,
+                                                          bool inWrapperPresent, bool isWrappedSwapChain,
+                                                          bool streamlineFGRunning) {
+    // The thread-local fast recursion guard exists to break Steam/overlay
+    // stack-overflow loops before the heavier Present ownership tracking runs.
+    // But during startup on the non-wrapper DX12 path we can legally re-enter
+    // the detour before any inline trampoline exists. In that specific case,
+    // treating the call as already-forwardable starves the first real Present of
+    // normal ProcessFrame/overlay bootstrap. Only take the fast-path when we
+    // already have a safe forwarding target or are in a known nested Present
+    // topology.
+    return hasPresentTrampoline || hasPresentBypass || inWrapperPresent || isWrappedSwapChain || streamlineFGRunning;
+}
+
+inline bool ShouldCaptureQueueWhenSkippingWrapForStreamline(bool streamlineLoaded) {
+    // When Streamline is present we skip swapchain wrapping, but the non-wrapper
+    // DX12 overlay path still needs the swapchain queue/device captured on the
+    // create path that actually fired. Steam can block our inline
+    // CreateSwapChainForHwnd hook, and some games use CreateSwapChain instead of
+    // CreateSwapChainForHwnd entirely.
+    return streamlineLoaded;
+}
+
+inline bool ShouldKeepSLPresentRoutingDisabledForNativeFG(bool effectiveFSRRuntime,
+                                                          bool runtimeOwnedNativeFGPresentPath) {
+    // Streamline's Present-hook chain must stay detached not only while the
+    // effective runtime mode already says FSR_FG, but also through the native
+    // FSR teardown window where the runtime still owns presentation even though
+    // ffxConfigure(frameGenerationEnabled=0) has temporarily published Off.
+    return effectiveFSRRuntime || runtimeOwnedNativeFGPresentPath;
+}
+
+inline bool ShouldKeepSLPresentRoutingDisabledForRuntimeState(ce::fg_runtime::RuntimeMode runtimeMode,
+                                                              bool runtimeOwnedNativeFGPresentPath) {
+    // Streamline's Present hook is required for DLSS-G frames, but a
+    // Streamline-owned "no FG" phase should behave like an ordinary DXGI
+    // Present path. Routing the no-FG startup/menu phase through SL's global
+    // Present hook can hand NVIDIA's driver a partially transitioned swapchain
+    // while CE is also in the hook chain.
+    if (runtimeMode == ce::fg_runtime::RuntimeMode::kStreamlineNoFG) {
+        return true;
+    }
+
+    return ShouldKeepSLPresentRoutingDisabledForNativeFG(ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode),
+                                                         runtimeOwnedNativeFGPresentPath);
+}
+
+// External Present entry hooks can recurse back through our detour. Some paths
+// need a bypass trampoline available at install time so re-entrant Present can
+// still reach the real DXGI implementation.
+bool CanSafelyInstallExternalPresentDetourPath(bool requiresBypassTrampoline, bool bypassTrampolineAvailable);
+
+inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
+                                               bool inWrapperPresent, bool isWrappedSwapChain, bool streamlineLoaded,
+                                               ce::fg_runtime::RuntimeMode runtimeMode, bool streamlineFGRunning,
+                                               bool nvPresentLoaded) {
+    if (!bypassAvailable || !isSteamOverlay || !isD3D12SwapChain) {
+        return false;
+    }
+    if (inWrapperPresent || isWrappedSwapChain) {
+        return false;
+    }
+    const bool unsafeSteamStartupWindow = streamlineLoaded || nvPresentLoaded;
+    if (!unsafeSteamStartupWindow) {
+        // When Steam overlay is loaded without Streamline or NvPresent (e.g.
+        // Strange Brigade DX12), calling oPresent (dxgi!Present with Steam's
+        // E9 JMP) re-enters Steam's overlay handler which crashes because
+        // vtable[8] = DetourPresent and Steam can't resolve a "next" handler.
+        // The bypass trampoline skips all in-memory hooks and calls the real
+        // DXGI Present directly, which is safe.
+        return true;
+    }
+
+    const bool streamlineNeedsBypass = streamlineLoaded && !streamlineFGRunning;
+    const bool smoothMotionNeedsBypass = nvPresentLoaded;
+    return streamlineNeedsBypass || smoothMotionNeedsBypass;
+}
+
+inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+    bool externalPresentHookAvailable, bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
+    bool inWrapperPresent, bool isWrappedSwapChain, bool externalOverlayPresentInvokeInProgress,
+    bool streamlineStackActive, bool synchronousPresentThreadAllowed, bool streamlinePluginLookupGuardAvailable,
+    bool steamNullCallbackRecoveryAvailable = true) {
+    // Directly calling Steam's saved Present hook is only safe when CE has a
+    // bypass trampoline available for any recursive Present that Steam may issue
+    // internally.  Wrapped swapchains already have their own cooperation path.
+    if (!externalPresentHookAvailable || !bypassAvailable || !isSteamOverlay || !isD3D12SwapChain || inWrapperPresent ||
+        isWrappedSwapChain || externalOverlayPresentInvokeInProgress) {
+        return false;
+    }
+
+    // A foreign Present handler is an unbounded synchronous call. Frame-
+    // generation runtimes can issue Present from workers that are not valid
+    // application/overlay presentation threads; entering Steam there can wait
+    // on application-thread work while the application waits for that worker.
+    if (!synchronousPresentThreadAllowed) {
+        return false;
+    }
+
+    if (streamlineStackActive && (!streamlinePluginLookupGuardAvailable || !steamNullCallbackRecoveryAvailable)) {
+        // Steam may query Streamline while rendering its overlay, and it may
+        // also call through its own lazily initialized NULL callback. The
+        // Streamline plugin guard and Steam NULL-callback VEH guard protect
+        // different failure modes; both must be present before CE directly
+        // invokes Steam from a Streamline-originated stack.
+        return false;
+    }
+
+    return true;
+}
+
+inline bool ShouldInvokeSynchronousExternalOverlayPresentForThreadState(
+    bool runtimeCanPresentFromWorker, uint32_t trackedSourcePresentThreadId, uint32_t currentThreadId) {
+    if (!runtimeCanPresentFromWorker) {
+        return true;
+    }
+
+    // Unknown provenance fails closed. A later non-FG/source Present can
+    // establish or refresh the tracked thread without ever risking a foreign
+    // handler call from a runtime-owned worker.
+    return trackedSourcePresentThreadId != 0 && trackedSourcePresentThreadId == currentThreadId;
+}
+
+// Steam may be entered from a DLSS-G worker Present only in steady-state
+// Streamline FG. During FG the frames actually displayed are the worker's
+// generated-output presents; Steam's overlay GUI drawn on the game thread's
+// source-frame presents is overwritten by the runtime's re-render of those
+// buffers and stays invisible. The 2026-08-09 Talos stall (20260809_015416)
+// happened when CE called Steam from the worker during the startup transition
+// window, so that window stays strict: only a confirmed, settled, non-startup
+// DLSS-FG epoch may service Steam from the worker. Native-FSR paths (no-callback
+// composition, runtime-owned native FSR present) keep the strict game-thread
+// rule - they have their own compositing invariants.
+inline bool ShouldInvokeSteamOnStreamlineWorkerPresent(
+    bool streamlineFGRunning, bool postSLConfirmedRendering, bool startupTransitionWindowActive,
+    bool postSLConfirmedButStartupSettling, bool runtimeOwnedNativeFGPresentPath, bool fsrRuntimeActive,
+    bool fsrApiActive) {
+    return streamlineFGRunning && postSLConfirmedRendering && !startupTransitionWindowActive &&
+           !postSLConfirmedButStartupSettling && !runtimeOwnedNativeFGPresentPath && !fsrRuntimeActive &&
+           !fsrApiActive;
+}
+
+inline bool CanRuntimePresentFromWorkerForExternalOverlay(
+    bool isD3D12SwapChain, bool streamlineStackActive, bool streamlineFGRunning, bool postSLConfirmedRendering,
+    bool fsrRuntimeActive, bool fsrApiActive, bool runtimeOwnedNativeFGPresentPath, bool runtimeOwnsSwapchain) {
+    return isD3D12SwapChain &&
+           (streamlineStackActive || streamlineFGRunning || postSLConfirmedRendering || fsrRuntimeActive ||
+            fsrApiActive || runtimeOwnedNativeFGPresentPath || runtimeOwnsSwapchain);
+}
+
+inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
+    bool basePolicyAllowsInvoke, bool steamCallbackSlotReadable, bool steamCallbackIsNull, bool steamCallbackIsCEDummy,
+    bool steamCallbackIsInvalidLowAddress, bool steamNullCallbackRecoveryAvailable) {
+    if (!basePolicyAllowsInvoke) {
+        return false;
+    }
+
+    if (!steamCallbackSlotReadable) {
+        // Unknown Steam builds may move the callback slot. Preserve the older
+        // guarded behavior when CE cannot inspect the slot.
+        return true;
+    }
+
+    if (steamCallbackIsCEDummy || steamCallbackIsInvalidLowAddress) {
+        // CE installs the dummy only after proving Steam's callback slot was
+        // absent. Re-entering Steam while the slot still points at that no-op,
+        // or at an invalid sentinel, can drive Steam/Streamline into a partial
+        // overlay path with no real renderer behind it.
+        return false;
+    }
+
+    if (steamCallbackIsNull) {
+        // A NULL Present-shaped callback slot means Steam's own overlay hook has not
+        // finished initializing. Entering its handler in that state dispatches through an
+        // uninitialized function pointer: Talos + DLSS FG + RTSS crashed twice that way
+        // (sessions 20260812_024730 and _030202, DEP execute violation on a heap address,
+        // RAX=0, `steamCallback=0000000000000000` logged on the very invoke that faulted).
+        //
+        // The crash-time VEH is NOT a licence to enter anyway. It only recognizes the exact
+        // `call rax` / RIP=0 shape, and the dispatch that actually faults here happens
+        // several jumps deep inside Steam with a garbage pointer, so the handler declines
+        // and the process dies. Control-flow decisions must not be delegated to an
+        // exception handler.
+        //
+        // Fail closed to CE's clean DXGI bypass instead. This is self-correcting: Steam
+        // still initializes on its own natural path (the game's presents reach its handler
+        // through the entry it owns), and CE resumes servicing it as soon as the slot reads
+        // like a real renderer. CE must never write the slot itself to make this check pass
+        // - that makes Steam skip its own install and drops every overlay below it.
+        return false;
+    }
+
+    return true;
+}
+
+inline bool ShouldInvokeGuardedSteamPresentDuringForcedBypass(bool streamlineLoaded, bool streamlineFGRunning,
+                                                              bool nativeFSRPresentationActive = false) {
+    // When Streamline is merely loaded but FG has not actually started, Talos'
+    // Steam hook chain can accept direct calls without advancing Present. Repeating
+    // that partial third-party hook path is unsafe; the DXGI bypass trampoline is
+    // the stable transport until an FG runtime owns the Present chain. Native
+    // FSR is not Streamline FG, but it is an FG-owned presentation path; keep
+    // Steam visible there by invoking it through the guarded path first.
+    return !streamlineLoaded || streamlineFGRunning || nativeFSRPresentationActive;
+}
+
+inline bool ShouldFallbackGuardedExternalSteamOverlayPresentForResult(bool bypassAvailable, HRESULT steamPresentHr,
+                                                                      bool backbufferIndexMeasured,
+                                                                      bool backbufferAdvanced) {
+    if (!bypassAvailable) {
+        return false;
+    }
+    if (FAILED(steamPresentHr)) {
+        return true;
+    }
+    return backbufferIndexMeasured && !backbufferAdvanced;
+}
+
+inline bool ShouldBypassRecursiveExternalOverlayPresent(bool externalOverlayPresentInvokeInProgress,
+                                                        bool bypassAvailable) {
+    return externalOverlayPresentInvokeInProgress && bypassAvailable;
+}
+
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool startupTopLevelCandidate) {
+    // The first recovered top-level Streamline Present after an FSR-owned epoch
+    // can still hit Steam's stale Present hook chain even after Streamline has
+    // already flipped back to DLSS FG. The older Steam startup bypass helper is
+    // intentionally narrower and goes inactive once DLSS FG is live, so keep a
+    // separate transport-risk signal for this one protected post-FSR handoff.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && startupTopLevelCandidate;
+}
+
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool keepStartupPresentOnNormalRoute) {
+    // The same stale Steam Present-hook chain can survive past the one-shot
+    // startup-handoff Present and still be live on the later decisive
+    // synthetic-startup normal-route callbacks that keep PostSL progressing on a
+    // recovered post-FSR swapchain.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && keepStartupPresentOnNormalRoute;
+}
+
+inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStandaloneNormalRoute(
+    bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain, bool inWrapperPresent, bool isWrappedSwapChain,
+    bool hadFSRFGPhase, bool invokePostSLOnConfirmedStandaloneNormalRoute) {
+    // Once startup has settled, some runtimes surface the live generated-frame
+    // callback as a confirmed standalone Streamline Present on the recovered
+    // swapchain. That later branch still needs the bypass trampoline when the
+    // stale Steam hook chain is present.
+    return bypassAvailable && isSteamOverlay && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
+           hadFSRFGPhase && invokePostSLOnConfirmedStandaloneNormalRoute;
+}
+
+inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
+                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
+                                                      bool bypassAvailable, ce::fg_runtime::RuntimeMode runtimeMode,
+                                                      bool streamlineFGRunning) {
+    if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
+        return false;
+    }
+
+    // The startup compatibility pass forwards Present through a safe trampoline
+    // (oPresentTrampoline) or the bypass trampoline (oPresentBypass). When the
+    // vtable-hook path was chosen (inline hooks skipped due to external E9 JMP),
+    // the inline trampoline is null. Without a bypass trampoline available,
+    // CallOriginalPresent has no safe forwarding path — it would route through
+    // the external overlay's E9 JMP, causing re-entrant crashes (RIP=0).
+    if (!bypassAvailable) {
+        return false;
+    }
+
+    const bool actualFrameGenerationActive = streamlineFGRunning ||
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+
+    // The startup compatibility pass exists to let third-party overlays settle
+    // before we start driving our own DX12 startup routing. Once Steam's
+    // dedicated bypass path already owns the call chain, consuming the first
+    // top-level Presents here just starves HandleDX12ProcessFrame and the
+    // overlay never bootstraps.
+    return !actualFrameGenerationActive && !steamBypassShouldOwnPath;
+}
+
+}  // namespace DXGIShared

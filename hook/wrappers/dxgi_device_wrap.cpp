@@ -6,7 +6,7 @@
 
 #include "dxgi_adapter_wrap.h"
 #include "dxgi_factory_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 CWrapDXGIDevice::CWrapDXGIDevice(IDXGIDevice* pReal) : m_pReal(pReal) {
     if (m_pReal) {

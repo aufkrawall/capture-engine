@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/capture_handoff_state.h"
+#include "common/capture/capture_handoff_state.h"
 
 namespace handoff = ce::capture_handoff;
 

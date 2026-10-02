@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "../hook/common/pacing_health_telemetry.h"
+#include "hook/pacing/pacing_health_telemetry.h"
 
 // Regression coverage for the start-to-start FSR FG frame pacing investigation
 // (logs/talosfullfsrfgbaddlssfggoodfsrfgbadrestartfsrfggood, build 0.1.6491).

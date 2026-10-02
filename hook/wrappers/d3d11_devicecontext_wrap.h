@@ -9,7 +9,7 @@
 
 #include <d3d11_4.h>
 #include <cstdint>
-#include "../common/sampler_override_utils.h"
+#include "hook/overrides/sampler_override_utils.h"
 #include "wrapper_base.h"
 
 // Forward declarations

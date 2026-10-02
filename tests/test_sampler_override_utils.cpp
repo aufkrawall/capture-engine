@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../common/config.h"
-#include "../hook/common/sampler_override_utils.h"
+#include "common/config/config.h"
+#include "hook/overrides/sampler_override_utils.h"
 
 namespace {
 

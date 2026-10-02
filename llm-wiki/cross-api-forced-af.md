@@ -3,10 +3,10 @@
 Last cross-checked: 2026-09-24 (D3D9 state-block snapshots and below-the-slot sampler re-arm; no hardware run)
 
 Primary sources:
-- `hook/common/sampler_override_utils.h`
-- `common/mip_mapping_policy.h`
-- `hook/apis/{dx9_sampler_state,legacy_d3d_sampler_state,opengl_sampler_override,opengl_texture_storage_override}.*`
-- `hook/apis/{ddraw_hook,dx8_hook,dx9_hook,dx11_hook,opengl_hook}.cpp`
+- `hook/overrides/sampler_override_utils.h`
+- `common/graphics/mip_mapping_policy.h`
+- `hook/d3d9/dx9_sampler_state.*, hook/ddraw/legacy_d3d_sampler_state.*, hook/opengl/{opengl_sampler_override.*,opengl_texture_storage_override.*}`
+- `hook/d3d11/dx11_hook.cpp, hook/d3d8/dx8_hook.cpp, hook/d3d9/dx9_hook.cpp, hook/ddraw/ddraw_hook.cpp, hook/opengl/opengl_hook.cpp`
 - `hook/wrappers/{d3d9_device_wrap,d3d10_device_wrap}.*`
 - `tests/{test_mip_mapping_policy,test_sampler_override_utils,test_inject_capture_source}.cpp`
 - `tests/{test_legacy_d3d7_vtable_abi,test_legacy_d3d8_vtable_abi}.cpp`

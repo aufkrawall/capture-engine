@@ -27,7 +27,7 @@ std::string Between(const std::string& source, const std::string& begin, const s
 }
 
 TEST(FFXCreateObservationSourceTest, CreateBreakpointIsArmedBeforeModuleLoadReturnsAndBeforeSlowRoutes) {
-    const std::string install = ReadSource("hook/apis/ffx_hook_install.cpp");
+    const std::string install = ReadSource("hook/ffx/ffx_hook_install.cpp");
     ASSERT_FALSE(install.empty());
     const std::string body = Between(install, "bool ffx_hook_InstallHooksForModule(", "\nbool WriteFfxExportEntryByte(");
     ASSERT_FALSE(body.empty());
@@ -46,7 +46,7 @@ TEST(FFXCreateObservationSourceTest, CreateBreakpointIsArmedBeforeModuleLoadRetu
 }
 
 TEST(FFXCreateObservationSourceTest, TrappedCreateResumesInTheDetourInsteadOfRunningInsideTheHandler) {
-    const std::string breakpoint = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string breakpoint = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     ASSERT_FALSE(breakpoint.empty());
     const std::string veh = Between(breakpoint, "LONG WINAPI FfxCreateContextBreakpointVEH(", "\n#endif");
     ASSERT_FALSE(veh.empty());
@@ -69,8 +69,8 @@ TEST(FFXCreateObservationSourceTest, TrappedCreateResumesInTheDetourInsteadOfRun
 }
 
 TEST(FFXCreateObservationSourceTest, EveryCreateForwardPausesTheBreakpointAndReArmsAfterwards) {
-    const std::string context = ReadSource("hook/apis/ffx_hook_context.cpp");
-    const std::string breakpoint = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string context = ReadSource("hook/ffx/ffx_hook_context.cpp");
+    const std::string breakpoint = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     ASSERT_FALSE(context.empty());
     ASSERT_FALSE(breakpoint.empty());
 
@@ -99,7 +99,7 @@ TEST(FFXCreateObservationSourceTest, EveryCreateForwardPausesTheBreakpointAndReA
 }
 
 TEST(FFXCreateObservationSourceTest, ArmingProvesTheTargetIsStillTheLoadedModulesExport) {
-    const std::string breakpoint = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string breakpoint = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     ASSERT_FALSE(breakpoint.empty());
     const std::string pin = Between(breakpoint, "bool PinLiveCreateContextExport(", "\n}\n");
     EXPECT_NE(pin.find("owner != expectedModule"), std::string::npos);
@@ -116,7 +116,7 @@ TEST(FFXCreateObservationSourceTest, ArmingProvesTheTargetIsStillTheLoadedModule
 }
 
 TEST(FFXCreateObservationSourceTest, SuspensionPinsTheImageAcrossRestorationOutsideTheMutex) {
-    const std::string source = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string source = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     const std::string suspend = Between(source, "void SuspendFfxCreateContextBreakpoint(",
                                         "void ResumeFfxCreateContextBreakpoint(");
     const size_t pin = suspend.find("ModulePin pin(");
@@ -136,7 +136,7 @@ TEST(FFXCreateObservationSourceTest, SuspensionPinsTheImageAcrossRestorationOuts
 }
 
 TEST(FFXCreateObservationSourceTest, RetargetPinsThePreviousImageBeforeRestoringItsByte) {
-    const std::string source = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string source = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     const std::string arm = Between(source, "bool ArmFfxCreateContextBreakpoint(", "ffxReturnCode_t CallFfx");
     const size_t pin = arm.find("ModulePin previousPin(");
     const size_t restore = arm.find("RestoreCreateBreakpointLocked(previousTarget, previousPin.Get(),");
@@ -148,7 +148,7 @@ TEST(FFXCreateObservationSourceTest, RetargetPinsThePreviousImageBeforeRestoring
 }
 
 TEST(FFXCreateObservationSourceTest, DormantAndShutdownRestoreTheCreateEntryByte) {
-    const std::string api = ReadSource("hook/apis/ffx_hook_api.cpp");
+    const std::string api = ReadSource("hook/ffx/ffx_hook_api.cpp");
     ASSERT_FALSE(api.empty());
     const std::string dormant = Between(api, "void EnterDormant()", "void ReactivateResidentHooks()");
     EXPECT_NE(dormant.find("SuspendFfxCreateContextBreakpoint("), std::string::npos);
@@ -164,7 +164,7 @@ TEST(FFXCreateObservationSourceTest, DormantAndShutdownRestoreTheCreateEntryByte
 }
 
 TEST(FFXCreateObservationSourceTest, UnseenContextsAreAdoptedOnEverySuccessfulConfigurePath) {
-    const std::string context = ReadSource("hook/apis/ffx_hook_context.cpp");
+    const std::string context = ReadSource("hook/ffx/ffx_hook_context.cpp");
     ASSERT_FALSE(context.empty());
     const std::string configure = Between(context, "ffxReturnCode_t Hooked_ffxConfigure(", "\n}\n");
     ASSERT_FALSE(configure.empty());
@@ -188,7 +188,7 @@ TEST(FFXCreateObservationSourceTest, UnseenContextsAreAdoptedOnEverySuccessfulCo
 }
 
 TEST(FFXCreateObservationSourceTest, AdoptedDX12FrameGenerationContextsFeedTheDestroyTeardownCount) {
-    const std::string adoption = ReadSource("hook/apis/ffx_hook_context_adoption.cpp");
+    const std::string adoption = ReadSource("hook/ffx/ffx_hook_context_adoption.cpp");
     ASSERT_FALSE(adoption.empty());
     const size_t emplace = adoption.find("ffx_hook_g_ContextTypeMap.emplace(contextHandle, adoption.effectId).second");
     const size_t count = adoption.find("ffx_hook_g_FGContextCount.fetch_add(1");
@@ -204,7 +204,7 @@ TEST(FFXCreateObservationSourceTest, AdoptedDX12FrameGenerationContextsFeedTheDe
 // 80 ms after GTA had unloaded that image. Only the unmapped page stopped the write; an image mapped there next
 // would have received a 0xCC mid-code. Arming and restoring must prove the address is still the export.
 TEST(FFXCreateObservationSourceTest, ConfigureBreakpointProvesTheExportBeforeEveryWriteAndDeferral) {
-    const std::string install = ReadSource("hook/apis/ffx_hook_install.cpp");
+    const std::string install = ReadSource("hook/ffx/ffx_hook_install.cpp");
     ASSERT_FALSE(install.empty());
 
     const std::string proof = Between(install, "static bool IsProvenLiveFfxConfigureExportLocked(", "\n}\n");
@@ -236,9 +236,9 @@ TEST(FFXCreateObservationSourceTest, ConfigureBreakpointProvesTheExportBeforeEve
 }
 
 TEST(FFXCreateObservationSourceTest, FFXRuntimeUnloadDisarmsBothBreakpointsFromTheLoaderNotification) {
-    const std::string notify = ReadSource("hook/main_overlay_detect.cpp");
-    const std::string api = ReadSource("hook/apis/ffx_hook_api.cpp");
-    const std::string breakpoint = ReadSource("hook/apis/ffx_hook_create_breakpoint.cpp");
+    const std::string notify = ReadSource("hook/runtime/main_overlay_detect.cpp");
+    const std::string api = ReadSource("hook/ffx/ffx_hook_api.cpp");
+    const std::string breakpoint = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     ASSERT_FALSE(notify.empty());
     ASSERT_FALSE(api.empty());
     ASSERT_FALSE(breakpoint.empty());

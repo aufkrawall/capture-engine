@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/vulkan_layer/overlay_submit_queue_policy.h"
+#include "hook/vulkan_layer/overlay_submit_queue_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {

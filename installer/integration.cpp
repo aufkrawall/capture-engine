@@ -2,7 +2,7 @@
 // autostart role, the PawnIO driver role, and launching it again as the user.
 //
 // Capture Engine owns its service staging, its startup registration and its
-// driver setup (captureengine/elevation_setup.cpp, startup_autostart.cpp,
+// driver setup (captureengine/elevation/elevation_setup.cpp, startup_autostart.cpp,
 // pawnio_setup.cpp). Setup deliberately calls the installed program's own roles
 // instead of re-implementing them, so an installation and the tray toggles can
 // never disagree about what "service enabled" means.
@@ -11,7 +11,7 @@
 
 #include <userenv.h>
 
-#include "../common/elevation_windows.h"
+#include "common/ipc/elevation_windows.h"
 
 namespace ce::setup {
 namespace {

@@ -11,20 +11,20 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 
 | Concern | Where |
 | --- | --- |
-| Policy (activation, feature/buffer maps, preference flags) | `hook/apis/streamline_bridge_policy.h` (unit-tested) |
-| Runtime (import takeover, fallback, 1.x quiesce) | `hook/apis/streamline_bridge.{h,cpp}` |
-| Core-export grouped hook publication | `hook/apis/streamline_inline_hook_batch.{h,cpp}` |
-| 2.x bring-up (load by full path, `slInit`, inventory) | `hook/apis/streamline_bridge_runtime.{h,cpp}` |
-| Native D3D12 device continuity | `hook/apis/streamline_bridge_device_cache.{h,cpp}` |
-| Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/apis/streamline_bridge_native_device.{h,cpp}` |
-| 1.x -> 2.x call translation | `hook/apis/streamline_bridge_translate.{h,cpp}` (x64 only) |
-| Reflex: options, settings, markers, sleep | `hook/apis/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
-| DLSS-G options, the `notRenderingGameFrames` gate, persistent present-time tags | `hook/apis/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
-| Present-marker guard (re-marks a title present without PRESENT_START) | `hook/apis/streamline_bridge_present.{h,cpp}` (x64 only), policy `PresentMarkerLedger` in `streamline_bridge_dlssg_gate.h` |
-| Swapchain call serializer (sl.dlss_g Present/Present1 vs SetFullscreenStatePre/Resize(1)SwapChainPre) | `hook/apis/streamline_bridge_swapchain_serial.h` (unit-tested, `tests/test_streamline_bridge_swapchain_serial.cpp`), hooks in `streamline_bridge_present.cpp` |
-| The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
-| Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
-| Generation classification | `hook/common/streamline_api_generation.h` |
+| Policy (activation, feature/buffer maps, preference flags) | `hook/streamline/streamline_bridge_policy.h` (unit-tested) |
+| Runtime (import takeover, fallback, 1.x quiesce) | `hook/streamline/streamline_bridge.{h,cpp}` |
+| Core-export grouped hook publication | `hook/streamline/streamline_inline_hook_batch.{h,cpp}` |
+| 2.x bring-up (load by full path, `slInit`, inventory) | `hook/streamline/streamline_bridge_runtime.{h,cpp}` |
+| Native D3D12 device continuity | `hook/streamline/streamline_bridge_device_cache.{h,cpp}` |
+| Native D3D12 device creation (adapter normalization, probe answers, retry) | `hook/streamline/streamline_bridge_native_device.{h,cpp}` |
+| 1.x -> 2.x call translation | `hook/streamline/streamline_bridge_translate.{h,cpp}` (x64 only) |
+| Reflex: options, settings, markers, sleep | `hook/streamline/streamline_bridge_reflex.{h,cpp}` (x64 only), `streamline_bridge_diag.h` |
+| DLSS-G options, the `notRenderingGameFrames` gate, persistent present-time tags | `hook/streamline/streamline_bridge_dlssg.{h,cpp}` (x64 only), policy `streamline_bridge_dlssg_gate.h` (unit-tested) |
+| Present-marker guard (re-marks a title present without PRESENT_START) | `hook/streamline/streamline_bridge_present.{h,cpp}` (x64 only), policy `PresentMarkerLedger` in `streamline_bridge_dlssg_gate.h` |
+| Swapchain call serializer (sl.dlss_g Present/Present1 vs SetFullscreenStatePre/Resize(1)SwapChainPre) | `hook/streamline/streamline_bridge_swapchain_serial.h` (unit-tested, `tests/test_streamline_bridge_swapchain_serial.cpp`), hooks in `streamline_bridge_present.cpp` |
+| The measured 1.x structures | `hook/streamline/streamline_bridge_v1_abi.h` (x64 only) |
+| Passive layout recorder | `hook/streamline/streamline_v1_feature_probe.{h,cpp}` |
+| Generation classification | `hook/streamline/streamline_api_generation.h` |
 | Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_activation.cpp`, `tests/test_streamline_bridge_debug_layer.cpp`, `tests/test_streamline_bridge_v1_reflex.cpp` |
 | Config | `streamline_upgrade` (default off), alongside `streamline_dll_path` |
 

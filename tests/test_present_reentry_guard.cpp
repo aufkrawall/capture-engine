@@ -7,7 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "../hook/common/present_reentry_guard.h"
+#include "hook/present/present_reentry_guard.h"
 #include "source_fragment_reader.h"
 
 // The shared re-entry guard for the DX8/DX9/OpenGL present detours. The proven
@@ -275,10 +275,10 @@ TEST(PresentReentryGuard, EveryNamedPresentDetourKeepsItsReentryGuard) {
         // dx9_hook.cpp's logical source is the whole dx9_hook_* family
         // (dx9_hook_internal.h plus every dx9_hook_*.cpp sibling), so it spans
         // both DX9 present routes: three vtable detours and three inline ones.
-        {"hook/apis/dx9_hook.cpp", 6, 6},
-        {"hook/apis/dx9_hook_present_detours.cpp", 3, 3},
-        {"hook/apis/dx8_hook_detours.cpp", 1, 1},
-        {"hook/apis/opengl_hook_capture.cpp", 3, 3},
+        {"hook/d3d9/dx9_hook.cpp", 6, 6},
+        {"hook/d3d9/dx9_hook_present_detours.cpp", 3, 3},
+        {"hook/d3d8/dx8_hook_detours.cpp", 1, 1},
+        {"hook/opengl/opengl_hook_capture.cpp", 3, 3},
     };
     for (const auto& expectation : expectations) {
         const std::string contents = ce::test_source::ReadLogicalSource(root / expectation.path);

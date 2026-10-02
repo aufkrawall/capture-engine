@@ -5,7 +5,7 @@
 #include <cmath>
 #include <utility>
 
-#include "../testapp/av_sync_stimulus.h"
+#include "testapp/av_sync_stimulus.h"
 
 namespace avs = testapp::avsync;
 

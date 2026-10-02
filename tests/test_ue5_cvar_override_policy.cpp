@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "../hook/common/ue5_cvar_override_policy.h"
+#include "hook/overrides/ue5_cvar_override_policy.h"
 
 namespace {
 

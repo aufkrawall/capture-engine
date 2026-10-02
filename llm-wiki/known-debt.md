@@ -98,8 +98,8 @@ were fixed:
 The identical four-line FPS / 1% low / 0.1% low / frame-time-std-dev conversion block
 appears in four backends:
 
-- `hook/apis/dx11_hook.cpp:2383`
-- `hook/apis/dx12_hook_main*.cpp` (line anchors predate the semantic-unit split; see repo-map.md)
+- `hook/d3d11/dx11_hook.cpp:2383`
+- `hook/d3d12/dx12_hook_main*.cpp` (line anchors predate the semantic-unit split; see repo-map.md)
 - `hook/vulkan_layer/vulkan_layer.cpp:1281`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp:1088`
 
@@ -110,12 +110,12 @@ candidate if that area is touched for another reason.
 ## Module/test mapping
 
 Several mid-size production modules have no dedicated test file:
-`captureengine/wgc_capture.cpp` (5,281), `mediaengine/app_audio_capture.cpp` (1,749),
-`captureengine/dxgi_dup_capture.cpp` (625), `mediaengine/process_loopback_capture.cpp`
+`captureengine/media/wgc_capture.cpp` (5,281), `mediaengine/audio/app_audio_capture.cpp` (1,749),
+`captureengine/media/dxgi_dup_capture.cpp` (625), `mediaengine/audio/process_loopback_capture.cpp`
 (597).
 
 This is **partly by design**: the project extracts decision logic into testable policy
-headers and tests those instead — `common/capture_pipeline_policy.h` (3,476 lines) is
+headers and tests those instead — `common/capture/capture_pipeline_policy.h` (3,476 lines) is
 covered by `tests/test_capture_pipeline_policy.cpp` (3,178 lines). Close the gap only
 where behaviour is not already reachable through a policy header; do not add
 file-per-file tests for their own sake.
@@ -126,7 +126,7 @@ file-per-file tests for their own sake.
 
 ### SPSC ring buffers: `DropOld`/`Overwrite` fail closed
 
-`common/ring_buffer.h` (`LockFreeRingBuffer` and `DynamicRingBuffer`) documents
+`common/platform/ring_buffer.h` (`LockFreeRingBuffer` and `DynamicRingBuffer`) documents
 and enforces a `DropNew`-only concurrency contract. Replacing the oldest
 element would require advancing the read index before writing the reclaimed
 slot, which lets a concurrent consumer read a torn element (data race), so the
@@ -158,14 +158,14 @@ sync) is not missed. Keep the 1 s poll and the baseline-on-first-check rule.
 
 Checked during the 2026-07-24 audit and confirmed **not** defects:
 
-- **IPC deserialization over-read.** `common/process_ipc.cpp:302-310` cross-checks
+- **IPC deserialization over-read.** `common/ipc/process_ipc.cpp:302-310` cross-checks
   `bytesRead` against `totalSize` and `headerSize + payloadSize`, bounds `payloadSize`
   by `PROCESS_MAX_PAYLOAD`, and enforces NUL-termination. `ProcessMessage` is a fixed
   308-byte struct with an inline payload array. Now pinned by
   `tests/test_ipc_message_validation.cpp`.
 - **The 19 `bugprone-incorrect-roundings` "timing bugs".** Every `(double + 0.5)` cast
   sits on a guaranteed-non-negative value: the four backend telemetry blocks above, and
-  `mediaengine/video_encoder.cpp:145`, which is guarded by an explicit negative-input
+  `mediaengine/video/video_encoder.cpp:145`, which is guarded by an explicit negative-input
   early return.
-- **`mediaengine/video_encoder.cpp:6801-6802` integer division.** `outputDesc.Width / 2`
+- **`mediaengine/video/video_encoder.cpp:6801-6802` integer division.** `outputDesc.Width / 2`
   computes a chroma-plane viewport for P010, whose dimensions are even by construction.

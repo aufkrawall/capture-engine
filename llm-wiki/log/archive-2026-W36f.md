@@ -45,7 +45,7 @@ the worktree. The scratchpad patch scripts and the measurement runs were what su
 Added comprehensive in-game benchmark functionality for inject overlay:
 - **Configuration & Hotkey (`[Benchmark]` section & default `CTRL+7`):**
   Added `[Benchmark]` section in `config.ini.template` with options `start_delay_seconds` (countdown before recording), `duration_seconds` (auto-stop timer, or `0` for manual toggle), and `output_dir` (default: `benchmarks` folder). Added `benchmark=CTRL+7` in `[Hotkeys]`.
-- **Three-Phase Cycle State Machine (`BenchmarkManager` in `hook/common/benchmark_manager.*`):**
+- **Three-Phase Cycle State Machine (`BenchmarkManager` in `hook/metrics/benchmark_manager.*`):**
   State machine cycles `Idle -> Delaying (countdown) -> Recording -> Results -> Idle`.
   - Press 1: Starts countdown delay (if configured) or begins recording immediately.
   - Press 2: Stops recording, calculates stats, writes standalone HTML report, and renders summary card on screen.
@@ -56,7 +56,7 @@ Added comprehensive in-game benchmark functionality for inject overlay:
   Calculates Average FPS, Max FPS, Min FPS, 1% Low FPS, 0.1% Low FPS, and Average Frame Time ms for both Presentation (`Classic Frame Start`) and display cadence (`msBetweenDisplayChange`).
 - **Telemetry & Hardware Sensor Capture:**
   Captures per-frame CPU load, max core load, CPU/GPU temperatures, powers, core & memory clocks, fan speeds, core voltages, and RAM/VRAM usages. Computes averages and peaks across all active sensors.
-- **Standalone Offline Interactive HTML Report (`hook/common/benchmark_html_report.*`):**
+- **Standalone Offline Interactive HTML Report (`hook/metrics/benchmark_html_report.*`):**
   Generates modern dark-themed self-contained HTML reports named after profile/executable with timestamp (`<name>_YYYY-MM-DD_HH-MM-SS.html`). Includes live interactive timing mode switcher, responsive KPI cards, hardware telemetry table, and HTML5 Canvas timeline chart with synchronized hover crosshair and real-time telemetry inspection HUD.
 - **In-Game Overlay Rendering (`hook/common/benchmark_overlay_render.*`):**
   Renders live countdown banner, recording badge with pulsating indicator, and post-run results card directly in game overlay, dismissing cleanly on the next hotkey press.
@@ -75,7 +75,7 @@ The evidence was one line in `sensors.log`: `Screen-change timing startup failed
 `20260903_220337` still had `source=presentation/display estimate value=12.1ms`; every session after it read
 `unavailable`, which is when the count crossed the machine's limit.
 
-`captureengine/display_timing_session_reclaim.*` now sweeps before opening: it enumerates ETW sessions, keeps only
+`captureengine/display_timing/display_timing_session_reclaim.*` now sweeps before opening: it enumerates ETW sessions, keeps only
 names matching `CE_DisplayTiming_%08X`, and stops the ones whose owning process is gone - never a live owner's,
 never a stranger's. The sweep runs on every service start, so the leak cannot accumulate at all, and again if the
 open is refused anyway. The 1450 case also names its own cause in the log now instead of printing a bare number.
@@ -110,7 +110,7 @@ Three instruments were built, and each of them is worth more than the answer it 
 - **Board power at a fixed clock.** `nvidia-smi` needs no elevation and settles "more GPU work" versus "starved
   GPU" in one sample: 152 W -> 119 W at an unchanged 2.9 GHz while frames fall 29%. The PDH `GPU Engine`
   utilisation counter, by contrast, reads ~92% in every configuration and discriminates nothing.
-- **A per-behaviour kill switch.** `hook/common/fg_cost_probe.h` reads `CE_FG_COST_PROBE` once and each bit removes
+- **A per-behaviour kill switch.** `hook/fg/fg_cost_probe.h` reads `CE_FG_COST_PROBE` once and each bit removes
   exactly one thing CE does per present. Thirteen bits and two config settings were run; the overlay draw, both
   draw sites together, the whole DXGI present hook (`ProcessFrame` provably never ran), installing the FFX bridge
   at all, the ECL caller-module lookup, the Streamline-UI ECL observers, the startup block, the ECL diagnostics,
@@ -163,7 +163,7 @@ frame-generation swapchain paces itself.
 Two instruments were needed, and both are worth keeping:
 
 - **Wall time is the wrong unit for a hook that wraps a blocking call.** A forwarded `Present` blocks for pacing the
-  game would have paid anyway, so it looks expensive while costing the frame nothing. `hook/common/hook_cpu_cost.h`
+  game would have paid anyway, so it looks expensive while costing the frame nothing. `hook/metrics/hook_cpu_cost.h`
   measures `QueryThreadCycleTime` across the hook and subtracts the cycles the forwarded runtime call consumed, via
   a thread-local tally that nested scopes restore rather than clear.
 - **A hook's own share has to be separated from the runtime's.** Timing the FFX present-callback bridge against the

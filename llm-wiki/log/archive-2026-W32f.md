@@ -20,7 +20,7 @@ Rotated from `recent.md` on 2026-08-10 (newest-first).
   Steam's "next" handler but not the rendering callback; gameoverlayrenderer64 build
   2026-08-03), so Steam's handler called through NULL and crashed. Talos did not hit this
   because its Steam callback is already initialized.
-- Fix (`hook/common/dxgi_shared_original.cpp`): the SL fast-path now carries the same two
+- Fix (`hook/present/dxgi_shared_original.cpp`): the SL fast-path now carries the same two
   protections as `TryInvokeGuardedExternalSteamOverlayPresent` — (1) when a worker-capable FG
   runtime is active, Steam is only touched on the verified `DX12_GetGamePresentThreadId`;
   unknown/worker provenance fails closed to the DXGI bypass trampoline (extends the
@@ -51,7 +51,7 @@ Rotated from `recent.md` on 2026-08-10 (newest-first).
   overlay pipeline stayed dead. Talos is unaffected because vulkan-1.dll is not loaded
   there, which is why the failure looked title-specific.
 - Fix: one evidence-based Vulkan decision shared by hook installation and the DXGI
-  present/resize paths. `hook/common/vulkan_renderer_policy.h` provides
+  present/resize paths. `hook/present/vulkan_renderer_policy.h` provides
   `HasD3DUsageEvidence` (D3D12/11 device creation, d3d12.dll/d3d11.dll presence, legacy
   D3D modules; under DXVK only a real D3D12 device counts) and
   `ShouldTreatVulkanAsActiveRenderer` (Vulkan layer ownership, or vulkan-1.dll without D3D
@@ -236,7 +236,7 @@ Rotated from `recent.md` on 2026-08-10 (newest-first).
   `DetourGetProcAddress`'s system-module caller bypass never fires. A driver-store `nvngx.dll` sits under
   `\System32\DriverStore\`, which the bypass does catch - that is why GTA V Enhanced had not hit this. Any title
   bundling `_nvngx.dll` would.
-- **Fix**: `ce::ngx::ShouldInterceptNgxExportLookup` (`hook/common/ngx_module_policy.h`) plus
+- **Fix**: `ce::ngx::ShouldInterceptNgxExportLookup` (`hook/ngx/ngx_module_policy.h`) plus
   `RegisterDynamicHookFiltered` in `nvngx_hook_feature.cpp` - export-name interception now applies to the core provider
   only. This also stops the shared `original` from hiding the snippet's real entry point.
 - **Validated on hardware**: `dx12_dlss_fg_test.exe` on build 0.1.5864 now runs indefinitely with zero crash dumps, and
@@ -362,7 +362,7 @@ Rotated from `recent.md` on 2026-08-10 (newest-first).
   nvngx.dll/_nvngx.dll, driven from `NVNGXHook::OnModuleLoaded` in `NotifyHookModuleLoaded` so the patch lands inside
   sl.common's own `LoadLibrary`, before its first `GetProcAddress`. Hooking the body is authoritative: it does not care
   how or when the caller obtained the pointer. Also called ahead of the `m_Installed` latch on the periodic path, and
-  the provider search no longer accepts Streamline plugins (`hook/common/ngx_module_policy.h`).
+  the provider search no longer accepts Streamline plugins (`hook/ngx/ngx_module_policy.h`).
 - The captured trampoline **overwrites** `nvngx_hook_o*` unconditionally: an earlier IAT pass may have stored the raw
   export address, which after inline hooking would re-enter our own detour.
 - Rejected: inline-hooking `GetProcAddress`. `kernel32!GetProcAddress` is a `4c 8b 04 24` + `48 ff 25` caller-forwarding
@@ -393,9 +393,9 @@ Rotated from `recent.md` on 2026-08-10 (newest-first).
 - **Second, independent bug** in the old detour: it wrote the payload but never set `*lpType` or `*lpcbData`, and it
   bailed out entirely on the `lpData == nullptr` size probe. Even a correctly placed patch would have handed NGX a
   DWORD with an unset type.
-- **Fix**: new `hook/common/dlss_indicator_spoof.{h,cpp}` inline-hooks `kernelbase!RegQueryValueExW` and
+- **Fix**: new `hook/ngx/dlss_indicator_spoof.{h,cpp}` inline-hooks `kernelbase!RegQueryValueExW` and
   `kernelbase!RegGetValueW` once (advapi32 as fallback), with the pure decision logic split out for tests.
-  `hook/main_redirect.cpp`'s `HookedRegQueryValueExW`, its globals, and `IATHook::InitializeAdvapi32Hooks` are deleted.
+  `hook/runtime/main_redirect.cpp`'s `HookedRegQueryValueExW`, its globals, and `IATHook::InitializeAdvapi32Hooks` are deleted.
 - **Why kernelbase, not advapi32**: `advapi32!RegQueryValueExW` is a 7-byte `48 FF 25 <rel32>` thunk into kernelbase
   followed by `int3` padding - a bad 14-byte-patch target, and invisible to api-set importers. kernelbase's bodies
   start with exactly 14 relocation-free prologue bytes (`48 8b c4 4c 89 48 20 48 89 48 08 53 56 57`), and advapi32's

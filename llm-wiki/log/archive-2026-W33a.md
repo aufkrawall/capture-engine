@@ -23,9 +23,9 @@
   (functional file test) and
   `DXGISharedSourceTest.ResidentHookReactivationRebindsSessionDiagnostics`
   (source invariant).
-- Source anchors: `hook/main_host_lifecycle.cpp`,
-  `hook/common/perf_logger.{h,cpp}`, `hook/common/fps_limiter.h`,
-  `hook/common/fps_limiter_detail/lifecycle.h`, `hook/common/hook_common.{h,cpp}`,
+- Source anchors: `hook/runtime/main_host_lifecycle.cpp`,
+  `hook/metrics/perf_logger.{h,cpp}`, `hook/pacing/fps_limiter.h`,
+  `hook/pacing/fps_limiter_detail/lifecycle.h`, `hook/runtime/hook_common.{h,cpp}`,
   `hook/vulkan_layer/layer_ipc.cpp`.
 
 ### 2026-08-11 - Fix false FSR_FG ECL-pattern latch on late inject (Strange Brigade DX12)
@@ -49,8 +49,8 @@
   `ECLPatternHeuristicRequiresCountThresholdsForDetection`,
   `HeuristicECLPatternDeactivatesAfterSustainedRealOnlyRun` in
   `tests/test_dxgi_shared_part5.cpp`.
-- Source anchors: `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`,
-  `hook/apis/dx12_hook_process.cpp`.
+- Source anchors: `hook/d3d12/dx12_overlay_policy/fg_metrics_and_transitions.h`,
+  `hook/d3d12/dx12_hook_process.cpp`.
 
 ### 2026-08-11 - Trace-level media-log reduction pass (sessions 20260811_032044, 20260810_224930)
 
@@ -96,7 +96,7 @@
 - Fix: `ResolveAnchorInfo` now resolves the scale from the anchor monitor's effective
   DPI (`GetDpiForMonitor(MDT_EFFECTIVE_DPI)` via `GetMonitorEffectiveDpi`), with
   `GetDpiForSystem()`/96 fallbacks; `stickyAnchorDpi_` removed. Pure policy in
-  `common/pseudo_overlay_dpi_policy.h` + tests in `tests/test_pseudo_overlay_dpi.cpp`.
+  `common/overlay/pseudo_overlay_dpi_policy.h` + tests in `tests/test_pseudo_overlay_dpi.cpp`.
 - Build-tooling: `find_process_locking_file` crashed the build with an uncaught
   PermissionError when `handle.exe` could not be spawned; it now degrades gracefully
   (advisory-only helper).
@@ -123,7 +123,7 @@
   session); inline-hook per-instruction trace dumps limited to first 4 installs
   + every 100th; NVNGX `UpdatePresetHint` logs only on value change and
   `SetI: Overriding` is deduped.
-- Added `common/log_meter.h` (`ce::log_meter::ShouldLogCadence`) +
+- Added `common/logging/log_meter.h` (`ce::log_meter::ShouldLogCadence`) +
   `tests/test_log_meter.cpp`; conventions documented in
   `regression-testing-and-logging.md` ("Log metering conventions").
 - Session `logs/20260810_214302` (build 0.1.5904, trace level, ~8 min game)

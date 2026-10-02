@@ -10,7 +10,7 @@
 namespace {
 
 std::string ReadSource(const char* filename) {
-    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / filename);
+    return ce::test_source::ReadLogicalSource(ce::test_source::FindSource("mediaengine", filename));
 }
 
 std::string ReadProjectSource(const std::filesystem::path& relativePath) {
@@ -170,7 +170,7 @@ TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHa
     const std::string mediaSource = ReadSource("mediaengine.cpp");
     const std::string proxySource = ReadSource("process_loopback_capture.cpp");
     const std::string workerSource = ReadSource("process_loopback_worker.cpp");
-    const std::string workerHostSource = ReadProjectSource("captureengine/process_loopback_worker_host.cpp");
+    const std::string workerHostSource = ReadProjectSource("captureengine/media/process_loopback_worker_host.cpp");
     ASSERT_FALSE(mediaSource.empty());
     ASSERT_FALSE(proxySource.empty());
     ASSERT_FALSE(workerSource.empty());

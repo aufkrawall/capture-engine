@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-#include "../hook/apis/streamline_bridge_dlssg_gate.h"
-#include "../hook/apis/streamline_bridge_present_timeline.h"
+#include "hook/streamline/streamline_bridge_dlssg_gate.h"
+#include "hook/streamline/streamline_bridge_present_timeline.h"
 
 // Session 20261001_090234 (Witcher 3, streamline_upgrade=true, 4x MFG): heavy DLSS-G artifacts
 // for the first seconds after a save game loaded. The bridge dropped 1.x

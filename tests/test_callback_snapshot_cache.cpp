@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/callback_snapshot_cache.h"
+#include "hook/runtime/callback_snapshot_cache.h"
 
 namespace {
 using Cache = ce::CallbackSnapshotCache<int>;

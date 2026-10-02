@@ -12,7 +12,7 @@ How `[Overlay] frametime_source=display_change` turns ETW graphics events into t
 overlay reports FPS, frame time, lows and variance from. Inject recording also activates this collector regardless
 of the overlay's selected source so final DLSS-G output frames can be correlated to scheduled screen time without
 changing the displayed metric. The sensor child publishes into a 512-slot shared ring
-(`common/display_timing_shared.h`); the overlay source defaults on and falls back to presentation timing when the
+(`common/ipc/display_timing_shared.h`); the overlay source defaults on and falls back to presentation timing when the
 stream is unavailable, denied, failed, or two seconds stale.
 
 ## Correlation and providers
@@ -20,7 +20,7 @@ stream is unavailable, denied, failed, or two seconds stale.
 - `[Overlay] frametime_source=display_change` measures actual displayed transitions. Runtime presents are associated
   with graphics-kernel submissions by process, with thread ID only refining the choice; a worker-thread submission
   must not be rejected merely because it differs from the thread that called Present (`SelectDisplaySubmissionPresent`
-  in `captureengine/display_timing_policy.h`).
+  in `captureengine/display_timing/display_timing_policy.h`).
 - Every published display sample retains the associated runtime `PresentStart` selected by that reducer. The PC-latency
   marker matcher uses it as a causal upper bound, preventing a newer application marker from being paired with an older
   generated frame that reaches the screen later through DLSS-G's asynchronous pacer. A missing association intentionally
@@ -59,7 +59,7 @@ stream is unavailable, denied, failed, or two seconds stale.
   lists no NVIDIA entry among its 1171, and `TdhGetEventInformation` answers `ERROR_NOT_FOUND` (1168) for every
   event. PresentMon's `NVTraceConsumer` reads `alloc`/`vidPnSourceId`/`ts`/`token` by name and therefore cannot
   work here either; a first attempt at this fix did the same and logged `undecodable=5550` of 5550 events.
-- `captureengine/display_timing_nvidia.h` reads the payload positionally instead, and **locates the field by what it
+- `captureengine/display_timing/display_timing_nvidia.h` reads the payload positionally instead, and **locates the field by what it
   is** rather than hardcoding an offset a driver update may move: the announcement is the only payload slot holding
   a QPC near the timestamp of the event carrying it. A slot must satisfy that in 58 of 64 samples before it is
   locked; until then a payload with exactly one plausible slot is already unambiguous and is used, so there is no
@@ -78,7 +78,7 @@ stream is unavailable, denied, failed, or two seconds stale.
 
 - The `Intel-PresentMon` `FlipFrameType` event stays enabled for Intel XeSS-FG and AMD AFMF. It is correlated to the
   MPO event by the exact `(VidPnSourceId, LayerIndex, PresentId)` tuple. Source and layer alone are insufficient while
-  multiple PresentIds are in flight; `captureengine/display_timing_correlation.h` keeps each association separate and
+  multiple PresentIds are in flight; `captureengine/display_timing/display_timing_correlation.h` keeps each association separate and
   never lets one payload overwrite another.
 - A version-1 `FlipFrameType` payload's `TimeStamp` QPC is the generated-transition timestamp. Generated frame types 50
   and 100 are distinct output transitions and do **not** suppress the application's later HSync/VSync/eligible
@@ -97,7 +97,7 @@ stream is unavailable, denied, failed, or two seconds stale.
   out-of-window rejection, short/absent payload, relocation after the layout moves, reset) and the pairing tracker
   (burst-programmed paced flips resolving to an even screen series, past announcements, insert-never-overwrite,
   whole-table consumption, unmatched threads, prune, and the no-announcement pass-through).
-- Source layout: `captureengine/display_timing_etw.h` holds provider identity and real-time session plumbing,
+- Source layout: `captureengine/display_timing/display_timing_etw.h` holds provider identity and real-time session plumbing,
   `display_timing_nvidia.h` the NVIDIA announcement reducer, `display_timing_correlation.h` the FrameType reducer,
   `display_timing_submissions.h` the runtime-present/kernel-submission association, `display_timing_vblank.h` the
   diagnostic vertical-blank summary, `display_timing_intervals.h` the per-window interval statistics,
@@ -205,7 +205,7 @@ recording correlator and pacing traces keep the kernel time.
   6.945 ms, and the mean was exactly 6.945 ms, so every real interval was 6.945 ms: the kernel reports
   one frame of each pair when the driver takes it, not when it is scanned out. RTSS draws the same
   pattern because it reads the same events. Talos does not show it.
-- **Rule** (`captureengine/display_timing_refresh_bound.h`): only for a kernel **Sync** completion of a
+- **Rule** (`captureengine/display_timing/display_timing_refresh_bound.h`): only for a kernel **Sync** completion of a
   runtime Present with `SyncInterval >= 1` (read from the DXGI `Present_Start` event and carried
   through `SubmitAssociation::syncInterval`), when the report is more than `period/16` sooner than one
   display period after the previous graph time. The graph time then becomes
@@ -285,10 +285,10 @@ recording correlator and pacing traces keep the kernel time.
   AMD's [1.1.4 implementation](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v1.1.4/sdk/src/backends/dx12/FrameInterpolationSwapchain/FrameInterpolationSwapchainDX12.cpp)
   takes `entry.vsync` from the application Present and derives physical sync/tearing flags from it.
   This establishes the input/output contract; it does not prove the shipped game DLL is identical.
-- `hook/apis/dx12_hook_ffx_proxy_present.cpp` now applies user VSync intent at the outermost
+- `hook/d3d12/dx12_hook_ffx_proxy_present.cpp` now applies user VSync intent at the outermost
   application input, before AMD records its output group. Test Presents and dormant/quiescing
   forwards remain unchanged. `DXGIShared::ProcessPresentVSyncOverride` in
-  `hook/common/dxgi_shared_present_pacing.cpp` preserves native-FG output parameters while the
+  `hook/present/dxgi_shared_present_pacing.cpp` preserves native-FG output parameters while the
   source hook is installed and native ownership persists, including suspended FG. Streamline
   FG and native recovery retain the prior final-output rule. This adds no GPU work or waits.
 - Diagnostics: `FFX proxy VSync: input(...) forwarded(...)` reports bounded input-policy changes;
@@ -327,7 +327,7 @@ recording correlator and pacing traces keep the kernel time.
   (each output buffer is separate; skipping = 50% overlay flicker). The
   `CE_FG_COST_PROBE=0x20000` bit exists only to measure that share on hardware.
 - Current instrumentation: `ce::pacing_health` time-stamped/tagged rings
-  (`hook/common/pacing_health_telemetry.*`) fed by both metric series. `[FSRPacingHealth]`
+  (`hook/pacing/pacing_health_telemetry.*`) fed by both metric series. `[FSRPacingHealth]`
   reports exact disjoint wall-clock windows, excludes pre-FSR/off/DLSS samples and
   transition-spanning intervals, tolerates Talos's brief periodic off/on configures by
   aggregating tagged FSR segments, and emits `signature=healthy/downstream-jitter/mixed-jitter`
@@ -391,14 +391,14 @@ recording correlator and pacing traces keep the kernel time.
 2026-09-07 code audit: pre-FSR ECL discovery repeatedly replaced the global queue between two
 same-device DIRECT queues in the supplied runs. Discovery now preserves an established same-device
 queue; explicit bindings and proven device changes can still replace it. See
-`hook/apis/dx12_hook_queue_adoption.cpp`. This repairs a definite last-submitter-wins ownership
+`hook/d3d12/dx12_hook_queue_adoption.cpp`. This repairs a definite last-submitter-wins ownership
 defect, not a proven attribution of the Talos jitter. Runtime-owned overlay routes and exact
 swapchain queue selection remain separate and unchanged. A new hardware run must distinguish
 successful queue stabilization from successful pacing repair.
 
 ## Bounded suspect-episode trace (2026-09-08)
 
-`hook/common/pacing_trace.{h,cpp}` reserves 49,152 core events and 16,384 submission events while
+`hook/pacing/pacing_trace.{h,cpp}` reserves 49,152 core events and 16,384 submission events while
 trace diagnostics are enabled. Independent rings prevent high-rate ECL traffic from evicting
 callback/display/completion history. Version-2 files merge both by QPC; submission history may
 start later than core history, so an absent old submission is not evidence of a missing submit.
@@ -676,7 +676,7 @@ millisecond CPU handoff stall in that trace, not CE GPU interference or an FSR/g
   by four (mean 1.00, stddev 2.18). The graph therefore animated at the base frame rate in three-to-four slot jumps
   while the screen updated at the display rate. The sawtooth in the line had been masking it; once the line went
   flat, the stepping was the only motion left.
-- `hook/common/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
+- `hook/overlay/graph_scroll_policy.h` advances the cursor one slot per drawn frame and pulls it gently toward the
   sample stream instead of being driven by it, so a burst no longer steps the plot. The cursor **slows but never
   rewinds** - a graph that steps backwards reads as a glitch, not as a correction - and re-arms rather than scrolling
   backwards when the stream itself restarts (source switch, history reset).

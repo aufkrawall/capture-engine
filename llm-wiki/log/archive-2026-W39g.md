@@ -12,7 +12,7 @@ Covers 2026-09-26. Newest first.
   baseline is unproven: no probe existed then and UE logs no ResizeBuffers on success.
 - Noted but not causal-proven: every failing run injected early (CE DXGI factory wrapper created at startup, CE
   preloaded `sl.dlss_g.dll`); the one "working" run injected late. The game's and npi `sl.*` DLLs are byte-identical.
-- Holder diagnostics: `hook/common/resize_reference_holders.{h,cpp}`. First refused D3D12 resize with foreign refs
+- Holder diagnostics: `hook/present/resize_reference_holders.{h,cpp}`. First refused D3D12 resize with foreign refs
   -> reads all committed writable private/image memory via `ReadProcessMemory(self)` (skips WC/NOCACHE/guard/mapped,
   skips its own buffer), logs every slot holding a back-buffer pointer with the nearest preceding code-image pointer
   (vtable -> owning module) or `global:<module>`, then `slots by owner:`. dxgi/d3d12core owners include DXGI's own
@@ -28,7 +28,7 @@ Covers 2026-09-26. Newest first.
 - Follow-up same day: user-confirmed the resize works WITHOUT CE. `logs/20260926_191350` (0.1.6838) and `_192017`
   (overlay hidden + sharpen off): still [3,3,3]. Pointer scan found only raw pointers (47 in a vtable-less 32-byte
   record ring in a private region; driver/runtime tracking), so it cannot identify counted holders. Added
-  `hook/common/backbuffer_reference_trace.{h,cpp}`: after every successful D3D12 resize, hooks the buffers' resource
+  `hook/present/backbuffer_reference_trace.{h,cpp}`: after every successful D3D12 resize, hooks the buffers' resource
   vtable (QI/AddRef/Release) and the DXGI swapchain vtable GetBuffer (slot 9; nested refs inside GetBuffer belong to
   its caller), tallies per return address for the registered buffers only; a refused resize logs
   `BackBufferRefTrace: bbN <module>+rva acq= rel=` and `net references by module`. Hook DLL is pinned, so the
@@ -104,7 +104,7 @@ Covers 2026-09-26. Newest first.
   any handle store; producers stamp `FrameSlot::transportGeneration` (CaptureBase `PublishToSharedMemory`, DX12
   on new capture generation or a mapping whose generation is not ours, Vulkan `LayerIPC_SetTextures/SetFence` +
   `LayerIPC_BeginTransportGeneration` before `encoderTextures.SetFenceHandle`). Media ingest reads
-  gen/handles/gen (`common/inject_transport_snapshot.h`) and drops a frame whose stamp is not current (log
+  gen/handles/gen (`common/ipc/inject_transport_snapshot.h`) and drops a frame whose stamp is not current (log
   `Dropping frame=... from transport generation`); encoder `MediaEngine_SetInjectTransportGeneration` drops its
   opened textures/fence on change (log `Inject transport generation a -> b`).
 - Invariant: only the stamping producer may begin a generation; media must never bump (it would strand every

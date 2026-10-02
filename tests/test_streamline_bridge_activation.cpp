@@ -4,7 +4,7 @@
 #include <set>
 #include <string>
 
-#include "../hook/apis/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_bridge_policy.h"
 
 namespace {
 

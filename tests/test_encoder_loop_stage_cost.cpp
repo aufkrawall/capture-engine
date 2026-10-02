@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../captureengine/encoder_loop_stage_cost.h"
+#include "captureengine/media/encoder_loop_stage_cost.h"
 #include "source_fragment_reader.h"
 
 namespace cost = ce::encoder_loop_cost;
@@ -14,6 +14,7 @@ constexpr int64_t kFrameInterval = 83'333;  // 120 fps at a 10 MHz QPC
 
 std::string ReadSessionSource() {
     return ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                     "media" /
                                      "media_main_encoder_00_session.cpp");
 }
 

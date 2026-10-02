@@ -1,6 +1,6 @@
 #include "layer_capture_internal.h"
 
-#include "../../common/inject_transport_snapshot.h"
+#include "common/ipc/inject_transport_snapshot.h"
 
 bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
                   uint32_t swapchainImageIndex, const VkSemaphore* waitSemaphores,

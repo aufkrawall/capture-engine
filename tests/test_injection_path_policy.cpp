@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "../captureengine/injection_path_policy.h"
+#include "captureengine/injection/injection_path_policy.h"
 
 // Locks the containment semantics of the injection DLL path gate: a shared
 // string prefix alone must never pass, otherwise "C:\appdir2\evil.dll" would be

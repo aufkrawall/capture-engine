@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "../hook/common/sharpen_gpu_timeline.h"
+#include "hook/sharpen/sharpen_gpu_timeline.h"
 
 // Regressions for the GPU-completion rules the sharpen passes run on. Each case
 // here failed before the fix and describes a symptom that was observed or is

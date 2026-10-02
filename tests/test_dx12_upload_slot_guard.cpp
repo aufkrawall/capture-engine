@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -178,7 +178,7 @@ TEST(DX12UploadSlotGuardTest, DetachHandsOwnershipToTheCaller) {
 }
 
 TEST(DX12UploadSlotGuardTest, DescFreeBackendClearsGuardsOnRebind) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_types_impl.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_types_impl.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t rebind = source.find("slotGuardBinding_.RebindIfNeeded(dx12_hook_s_descFreeSlotFence)");
@@ -189,7 +189,7 @@ TEST(DX12UploadSlotGuardTest, DescFreeBackendClearsGuardsOnRebind) {
 }
 
 TEST(DX12UploadSlotGuardTest, TexturedBackendClearsGuardsOnFenceRebind) {
-    const std::string source = ReadSource("hook/common/custom_overlay_dx12.cpp");
+    const std::string source = ReadSource("hook/overlay/custom_overlay_dx12.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t rebind = source.find("slotGuardBinding.RebindIfNeeded(fence)");
@@ -227,12 +227,12 @@ TEST(DX12UploadSlotGuardTest, AllocatorCoupledSlotsCannotWrapInsideTheInFlightAl
 }
 
 TEST(DX12UploadSlotGuardTest, PostSLBindsUploadStorageToAllocatorAndItsExactSignal) {
-    const std::string types = ReadSource("hook/apis/dx12_hook_types.h");
-    const std::string backend = ReadSource("hook/apis/dx12_hook_types_impl.cpp");
-    const std::string adapter = ReadSource("hook/common/overlay_adapter.cpp");
-    const std::string route = ReadSource("hook/apis/dx12_hook_postsl_render_route.cpp");
-    const std::string submit = ReadSource("hook/apis/dx12_hook_postsl_render_submit.cpp");
-    const std::string normalRoute = ReadSource("hook/apis/dx12_hook_process_session_draw_submit.cpp");
+    const std::string types = ReadSource("hook/d3d12/dx12_hook_types.h");
+    const std::string backend = ReadSource("hook/d3d12/dx12_hook_types_impl.cpp");
+    const std::string adapter = ReadSource("hook/overlay/overlay_adapter.cpp");
+    const std::string route = ReadSource("hook/d3d12/dx12_hook_postsl_render_route.cpp");
+    const std::string submit = ReadSource("hook/d3d12/dx12_hook_postsl_render_submit.cpp");
+    const std::string normalRoute = ReadSource("hook/d3d12/dx12_hook_process_session_draw_submit.cpp");
     ASSERT_FALSE(types.empty());
     ASSERT_FALSE(backend.empty());
     ASSERT_FALSE(adapter.empty());
@@ -273,9 +273,9 @@ std::string ExtractFunctionBody(const std::string& source, const std::string& si
 // generating, and each Present spent the full 1 s upload-slot wait on the game's
 // present thread (1 fps for 10 s). Neither backend may block on a slot again.
 TEST(DX12UploadSlotGuardTest, UploadSlotChecksNeverBlockThePresentThread) {
-    const std::string descFree = ExtractFunctionBody(ReadSource("hook/apis/dx12_hook_types_impl.cpp"),
+    const std::string descFree = ExtractFunctionBody(ReadSource("hook/d3d12/dx12_hook_types_impl.cpp"),
                                                      "bool DX12DescFreeBackend::IsUploadSlotReusable(int slot)");
-    const std::string textured = ExtractFunctionBody(ReadSource("hook/common/custom_overlay_dx12_buffers.cpp"),
+    const std::string textured = ExtractFunctionBody(ReadSource("hook/overlay/custom_overlay_dx12_buffers.cpp"),
                                                      "bool DX12Backend::IsUploadSlotReusable(int slot)");
     ASSERT_FALSE(descFree.empty());
     ASSERT_FALSE(textured.empty());
@@ -286,7 +286,7 @@ TEST(DX12UploadSlotGuardTest, UploadSlotChecksNeverBlockThePresentThread) {
         EXPECT_NE(body->find("draw skipped this frame"), std::string::npos);
         EXPECT_NE(body->find("retiring again after"), std::string::npos);
     }
-    EXPECT_EQ(ReadSource("hook/apis/dx12_hook_types.h").find("kSlotWaitTimeoutMs"), std::string::npos);
+    EXPECT_EQ(ReadSource("hook/d3d12/dx12_hook_types.h").find("kSlotWaitTimeoutMs"), std::string::npos);
 }
 
 // Models the GTA handoff: every CE submission lands on a queue that stops

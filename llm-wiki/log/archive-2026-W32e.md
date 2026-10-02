@@ -177,7 +177,7 @@ Rotated from `recent.md` on 2026-08-08 (newest-first).
 - **n9.0 was tried and rejected - it has no NMR AAC coder.** NMR landed on master after
   the 9.0 release branch was cut, so it is in *no* released FFmpeg (n9.0 is the newest
   tag). Building it drops `aac_coder` to twoloop and fails 11 unit tests with
-  `Undefined constant or missing '(' in 'nmr'`; `mediaengine/audio_encoder.cpp:262`
+  `Undefined constant or missing '(' in 'nmr'`; `mediaengine/audio/audio_encoder.cpp:262`
   selects it explicitly. Pin is therefore master commit
   `86940d45aff7d59810794df3ab2b39b7b83b478c` - the last verified-green source.
   `FfmpegSourcePinTest.test_pin_keeps_the_nmr_aac_coder_available` fails if anyone

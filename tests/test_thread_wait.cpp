@@ -4,7 +4,7 @@
 #include <chrono>
 #include <thread>
 
-#include "../common/thread_wait.h"
+#include "common/platform/thread_wait.h"
 
 namespace {
 

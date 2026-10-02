@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "../mediaengine/audio_resampler.h"
+#include "mediaengine/audio/audio_resampler.h"
 
 namespace {
 

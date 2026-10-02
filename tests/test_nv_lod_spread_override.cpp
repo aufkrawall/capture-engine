@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/nv_lod_spread_override.h"
+#include "hook/ngx/nv_lod_spread_override.h"
 #include "source_fragment_reader.h"
 
 namespace {

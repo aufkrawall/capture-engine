@@ -1,7 +1,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <atomic>
-#include "../common/hook_common.h"
+#include "hook/runtime/hook_common.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
 

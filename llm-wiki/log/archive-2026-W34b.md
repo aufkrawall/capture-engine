@@ -73,7 +73,7 @@ watchdog was right, and its dump contained the whole answer. Fixed in the same s
   `INFINITE` with a 16 ms ceiling; commit dd30a5b6 (2026-07-12) reverted it to `INFINITE` because 16 ms sits
   *below* a healthy wait and silently escaped the pacing whenever the game was GPU- or vblank-bound. Both
   are true, which is why the fix needed both halves.
-- **Fix.** New `hook/common/present_pacing_policy.h` + `hook/common/dxgi_shared_present_pacing.cpp`
+- **Fix.** New `hook/present/present_pacing_policy.h` + `hook/present/dxgi_shared_present_pacing.cpp`
   (`ResolvePresentFrameLatencyOverride`, `WaitBackbufferFrameLatency`, `ApplyPresentFrameLatencyOverrides`
   moved out of the 778-line `dxgi_shared.cpp`). (1) All four presentation-policy sites now honour
   `IsVulkanActive()`; the create-time rule rides on the existing
@@ -118,7 +118,7 @@ overlay all injected. Session `sbdx12crashonclose` (build 0.1.6162). Ours, not t
   anything (`ShouldHoldRealSwapchainDiagnosticReferenceDuringWrapperDestructor`: only when a promoted
   reference is held or the base release will run, never for the non-retaining Streamline wrapper), runs
   refcount/vtable/attribution diagnostics under it, then drops it last — and that `Release` return value
-  is the authoritative residual pin count, recorded in the new `hook/common/swapchain_liveness.h` ledger.
+  is the authoritative residual pin count, recorded in the new `hook/present/swapchain_liveness.h` ledger.
   Nothing dereferences the chain afterwards.
 - **Second instance of the same bug, also fixed.** `LogAccessDeniedSwapchainPinDiagnostics` probed the
   `dx12_hook_s_hwndSwapchainMap` pointers the same way. Those are raw by design (pinning is what causes

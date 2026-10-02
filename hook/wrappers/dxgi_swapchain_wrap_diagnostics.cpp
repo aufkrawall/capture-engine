@@ -1,6 +1,6 @@
 #include "dxgi_swapchain_wrap_internal.h"
 
-#include "../common/dxgi_shared_internal.h"
+#include "hook/present/dxgi_shared_internal.h"
 
 namespace {
 
@@ -40,7 +40,7 @@ const char* ModuleBaseNameOfCodeAddress(const void* address, char* buffer, size_
 // site owns the chain, and the wrapper destructor holds its diagnostic reference. The AddRef/Release
 // pair below is net-zero only on a LIVE object; on a released one it destroys the object a second
 // time, and no runtime check can tell the two apart, because a freed heap block stays committed with
-// a plausible vtable (session 20260819_000437, see hook/common/swapchain_liveness.h). The
+// a plausible vtable (session 20260819_000437, see hook/present/swapchain_liveness.h). The
 // VirtualQuery below therefore only rejects wholly unmapped garbage; it is NOT a liveness test.
 void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stage) {
     if (!realChain || !stage) {

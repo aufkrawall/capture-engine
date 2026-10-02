@@ -2,11 +2,11 @@
 
 #include <deque>
 
-#include "../common/capture_pipeline_policy.h"
-#include "../captureengine/display_timing_policy.h"
-#include "../hook/common/capture_pacing.h"
-#include "../hook/common/fg_cost_probe.h"
-#include "../hook/common/dxgi_shared.h"
+#include "common/capture/capture_pipeline_policy.h"
+#include "captureengine/display_timing/display_timing_policy.h"
+#include "hook/pacing/capture_pacing.h"
+#include "hook/fg/fg_cost_probe.h"
+#include "hook/present/dxgi_shared.h"
 
 namespace policy = ce::capture_policy;
 

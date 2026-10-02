@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../captureengine/screenshot_encoding.h"
-#include "../common/logging.h"
+#include "captureengine/media/screenshot_encoding.h"
+#include "common/logging/logging.h"
 
 #include <windows.h>
 

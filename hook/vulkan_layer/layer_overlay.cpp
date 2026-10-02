@@ -8,8 +8,8 @@
 
 #include "layer_overlay_internal.h"
 
-#include "../common/dxgi_shared.h"
-#include "../common/system_metrics.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/metrics/system_metrics.h"
 #include "overlay_swapchain_lifetime_policy.h"
 #include "vulkan_formatless_storage.h"
 #include "vulkan_presentation_color.h"

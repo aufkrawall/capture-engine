@@ -24,7 +24,7 @@ is the low half of a live command list. The 1.x prologue proves the shape:
 `bool` in AL. `slSetTag` was the same bug one arming away: it walks `tags[i]` out of what 1.x passes
 as a small `BufferType` enum, and only survived because DLSS-G never armed the UI-tag path.
 
-**Fix (0.1.6192).** `hook/common/streamline_api_generation.h` classifies the interposer from
+**Fix (0.1.6192).** `hook/streamline/streamline_api_generation.h` classifies the interposer from
 generation-exclusive exports - 1.x has `slSetFeatureConstants`, `slGetFeatureSettings`,
 `slSetFeatureEnabled`, `slIsFeatureEnabled`, `slGetFeatureConfiguration`; 2.x has `slSetTagForFrame`,
 `slGetNewFrameToken`, `slGetFeatureRequirements`, `slSetD3DDevice`, `slGetFeatureFunction`,
@@ -34,7 +34,7 @@ guesses a foreign calling convention. The classification gates the inline hooks,
 the GetProcAddress-time dynamic routes, which is why the two ABI-sensitive dynamic registrations
 moved out of `RegisterDynamicHooksOnce` into `RegisterAbiSensitiveDynamicHooksOnce`.
 
-`hook/apis/streamline_hook_v1.cpp` restores the capability rather than only removing the crash:
+`hook/streamline/streamline_hook_v1.cpp` restores the capability rather than only removing the crash:
 1.x-shaped `slSetTag`/`slEvaluateFeature` hooks that forward their arguments verbatim and return
 `bool`. Because 1.x `slSetTag` carries no command buffer, the UI record is deferred to the next
 `slEvaluateFeature`, which supplies one and still runs before the present DLSS-G consumes.
@@ -102,7 +102,7 @@ observable from outside the driver.
 refused the same way and logged `hr=0x887A0004` thirty times in five seconds - each attempt a real ~48 ms
 driver load. Two changes came out of this:
 
-- `hook/common/d3d12_device_creation_policy.h` + `hook/apis/dx12_device_creation_report.cpp`: a failing
+- `hook/d3d12/d3d12_device_creation_policy.h` + `hook/d3d12/dx12_device_creation_report.cpp`: a failing
   device creation now emits one report - entry-byte integrity and jump-target owner for
   `D3D12CreateDevice` / `D3D12GetInterface` / `D3D12EnableExperimentalFeatures` / `CreateDXGIFactory1` /
   `CreateDXGIFactory2`, the loaded `D3D12Core.dll` and any declared Agility SDK, the non-Windows modules in
@@ -150,7 +150,7 @@ export's entry byte faulted on the unmapped image, and being inside `D3D11Create
 because d3d11's `DLL_PROCESS_DETACH` had already destroyed `CCreateDeviceCache` and dropped the NVIDIA UMD
 underneath CE's thread. Same race, two landing points.
 
-**Fix (`hook/common/module_pin.{h,cpp}`, `module_pin_policy.h`).** A module CE inline-patches must be
+**Fix (`hook/hooking/module_pin.{h,cpp}`, `module_pin_policy.h`).** A module CE inline-patches must be
 reference-held, because CE never withdraws the patch or the "original" pointers taken alongside it.
 `ce::module_pin::PinByName` resolves with `GET_MODULE_HANDLE_EX_FLAG_PIN`, which also closes the
 check-then-use window: `GetModuleHandleEx` runs under the loader lock and either pins a live module or

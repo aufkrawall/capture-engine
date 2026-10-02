@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <string>
 
-#include "../hook/apis/ffx_export_lifetime.h"
+#include "hook/ffx/ffx_export_lifetime.h"
 
 namespace {
 

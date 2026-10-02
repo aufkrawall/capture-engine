@@ -5,7 +5,7 @@
 #include <limits>
 #include <string>
 
-#include "../hook/common/ddraw_present_policy.h"
+#include "hook/ddraw/ddraw_present_policy.h"
 #include "source_fragment_reader.h"
 
 namespace policy = ce::ddraw_present_policy;
@@ -126,11 +126,11 @@ TEST(DDrawPresentOverridePolicyTest, EveryHookedFlipAndFullSurfaceBlitUsesTheSha
     // The whole DirectDraw hook family: the Surface4 generation has its own
     // translation unit, and its three presentations use the same owner.
     const std::string detours =
-        ce::test_source::ReadLogicalSource(root / "hook" / "apis" / "ddraw_hook.cpp");
+        ce::test_source::ReadLogicalSource(root / "hook" / "ddraw" / "ddraw_hook.cpp");
     const std::string overrides = ce::test_source::ReadFile(
-        root / "hook" / "apis" / "ddraw_hook_present_overrides.cpp");
+        root / "hook" / "ddraw" / "ddraw_hook_present_overrides.cpp");
     const std::string install =
-        ce::test_source::ReadFile(root / "hook" / "apis" / "ddraw_hook_install.cpp");
+        ce::test_source::ReadFile(root / "hook" / "ddraw" / "ddraw_hook_install.cpp");
     ASSERT_FALSE(detours.empty());
     ASSERT_FALSE(overrides.empty());
     ASSERT_FALSE(install.empty());

@@ -17,7 +17,7 @@ ever posted. Registration itself had succeeded (`RegisterHotkeys=0.029 ms`, no e
   that window is foreground - system hotkeys such as Alt+Tab keep working. No process gets `WM_HOTKEY`, so
   no amount of controller-side work on the `RegisterHotKey` path could have recovered the press. This is
   also why idTech titles are widely reported to swallow the Windows key.
-- **The fix: a second delivery path that sits ahead of the suppression.** `captureengine/hotkey_input_hook.cpp`
+- **The fix: a second delivery path that sits ahead of the suppression.** `captureengine/app/hotkey_input_hook.cpp`
   installs a `WH_KEYBOARD_LL` hook on a thread that does nothing but pump messages, and posts a match to the
   controller thread as `main_kMsgHotkeyFromInputHook`. `main_entry.cpp` routes that message and `WM_HOTKEY`
   into one `DispatchHotkey(id)`, so the actions are shared by construction.
@@ -32,7 +32,7 @@ ever posted. Registration itself had succeeded (`RegisterHotkeys=0.029 ms`, no e
   through when the table is being republished; a low-level hook that blocks stalls input for every process
   on the desktop and the system drops hooks that answer slowly. Key bookkeeping still runs in that case, so
   the next press is not misread as auto-repeat. `MOD_NOREPEAT` parity, exact modifier match, and consuming
-  the release of a consumed press are all in `common/hotkey_matcher.h` and covered by 20 unit tests.
+  the release of a consumed press are all in `common/overlay/hotkey_matcher.h` and covered by 20 unit tests.
 - **Scope.** Fixes every hotkey in every application that suppresses hotkeys, injected or not - the WGC and
   DXGI-duplication paths need no injection and are covered too. `tests/test_hotkey_matcher.cpp` pins the
   semantics and the wiring; `ProcessIPCTest.OverlayToggleHotkeyIsWiredEndToEnd` was updated for the shared

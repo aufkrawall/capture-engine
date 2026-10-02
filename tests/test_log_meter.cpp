@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/log_meter.h"
+#include "common/logging/log_meter.h"
 
 namespace log_meter = ce::log_meter;
 

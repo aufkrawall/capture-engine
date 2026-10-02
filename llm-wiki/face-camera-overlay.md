@@ -10,17 +10,17 @@ The compositor is D3D11-native. A new camera frame is copied or uploaded to the 
 
 Primary sources:
 
-- `common/face_camera_config.h`
-- `common/capture_policy/cfr_overload_recovery.h`
-- `common/config_load_face_camera.cpp`
-- `mediaengine/face_camera_capture.{h,cpp}`
-- `mediaengine/face_camera_renderer.{h,cpp}`
-- `mediaengine/face_camera_shader.h`
-- `mediaengine/video_encoder_face_camera.cpp`
-- `mediaengine/video_encoder_convert_bgra.cpp`
-- `mediaengine/video_encoder_textures.cpp`
-- `mediaengine/video_encoder_framegrab.cpp`
-- `mediaengine/video_encoder_encode.cpp`
+- `common/config/face_camera_config.h`
+- `common/capture/capture_policy/cfr_overload_recovery.h`
+- `common/config/config_load_face_camera.cpp`
+- `mediaengine/video/face_camera_capture.{h,cpp}`
+- `mediaengine/video/face_camera_renderer.{h,cpp}`
+- `mediaengine/video/face_camera_shader.h`
+- `mediaengine/video/video_encoder_face_camera.cpp`
+- `mediaengine/video/video_encoder_convert_bgra.cpp`
+- `mediaengine/video/video_encoder_textures.cpp`
+- `mediaengine/video/video_encoder_framegrab.cpp`
+- `mediaengine/video/video_encoder_encode.cpp`
 - `captureengine/config.ini.template`
 - `tests/test_face_camera_config.cpp`
 - `tests/test_face_camera_source.cpp`

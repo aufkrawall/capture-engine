@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../common/cursor_capture_state.h"
-#include "../mediaengine/cursor_geometry.h"
+#include "common/capture/cursor_capture_state.h"
+#include "mediaengine/video/cursor_geometry.h"
 
 namespace cg = ce::cursor_geometry;
 

@@ -24,15 +24,15 @@ struct VulkanCaptureState;
 
 #include <vector>
 
-#include "../../common/capture_base.h"
+#include "common/capture/capture_base.h"
 
-#include "../../common/secure_dll_loading.h"
+#include "common/platform/secure_dll_loading.h"
 
-#include "../../common/shared_defs.h"
+#include "common/ipc/shared_defs.h"
 
-#include "../common/hook_common.h"
+#include "hook/runtime/hook_common.h"
 
-#include "../common/screenshot_hook.h"
+#include "hook/capture/screenshot_hook.h"
 
 #include "layer_main.h"
 

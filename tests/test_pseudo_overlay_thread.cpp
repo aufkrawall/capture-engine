@@ -2,7 +2,7 @@
 
 #include <windows.h>
 
-#include "../captureengine/pseudo_overlay.h"
+#include "captureengine/pseudo_overlay/pseudo_overlay.h"
 
 TEST(PseudoOverlayThreadTest, DisabledOverlayProcessesStateAndShutsDownCleanly) {
     PseudoOverlay overlay;

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/rate_window_utils.h"
+#include "common/capture/rate_window_utils.h"
 
 namespace rate_window = ce::rate_window;
 

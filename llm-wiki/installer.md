@@ -21,7 +21,7 @@ nothing with this one.
 - `installer/registration.cpp`, `shortcuts.cpp`, `integration.cpp`: Installed Apps record, shortcuts, ACLs, the program's own roles.
 - `installer/ui_*.cpp`, `wizard.h`: window, pages, theme, custom button/checkbox control.
 - `installer/main.cpp`: CLI, self-elevation, silent mode, uninstaller hop to a temp copy.
-- `common/installer_setup_policy.h` + `captureengine/startup_control.cpp` (`TryRunInstallerSetup`): the elevated role.
+- `common/setup/installer_setup_policy.h` + `captureengine/elevation/startup_control.cpp` (`TryRunInstallerSetup`): the elevated role.
 - `tools/build/build_installer.py`, `tools/installer_payload.py`: compile, payload packer, assembly and verification.
 - Tests: `tests/test_installer_policy.cpp`, `tests/test_installer_files.cpp`,
   `tools/tests/test_installer_{payload,build,native,ui}.py`. The native unit fixtures use the real file and shell-link units

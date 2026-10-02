@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/fg_session_state.h"
-#include "../hook/common/overlay_metrics_publisher.h"
-#include "../hook/common/performance_metrics.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/fg/fg_session_state.h"
+#include "hook/overlay/overlay_metrics_publisher.h"
+#include "hook/metrics/performance_metrics.h"
 #include "source_fragment_reader.h"
 
 void TestStubSetPreferredOverlayFGPublicationState(bool valid, bool active, ce::fg_runtime::RuntimeMode runtimeMode);
@@ -189,7 +189,7 @@ TEST(OverlayFGStatusPublicationTest, PlannerDrivenPublicationLetsNewerPlannerOff
 TEST(OverlayFGStatusPublicationSourceTest, DirectX11AndVulkanPublishDetectedStatusBeforeOverlayRendering) {
     const auto projectRoot = std::filesystem::current_path();
     const std::string dx11Source =
-        ce::test_source::ReadLogicalSource(projectRoot / "hook" / "apis" / "dx11_hook.cpp");
+        ce::test_source::ReadLogicalSource(projectRoot / "hook" / "d3d11" / "dx11_hook.cpp");
     const std::string vulkanSource =
         ce::test_source::ReadLogicalSource(projectRoot / "hook" / "vulkan_layer" / "layer_overlay.cpp");
     const std::string vulkanPresentSource =

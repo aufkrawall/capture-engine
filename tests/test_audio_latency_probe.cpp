@@ -4,7 +4,7 @@
 #include <random>
 #include <vector>
 
-#include "../mediaengine/audio_latency_probe.h"
+#include "mediaengine/audio/audio_latency_probe.h"
 
 using namespace ce::audio;
 

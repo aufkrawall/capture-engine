@@ -7,21 +7,21 @@ Last source verification: 2026-10-01. Runtime verification remains in progress.
 Three independent, default-off tray settings control a protected elevation service,
 administrator requests on the next launch, and Windows autostart.
 
-- captureengine/startup_control.*: early bootstrap, authenticated UAC context
+- captureengine/elevation/startup_control.*: early bootstrap, authenticated UAC context
   transfer, asynchronous tray setup and preference transaction.
-- captureengine/pawnio_workers.*: tracked driver setup UI/helpers and joined shutdown.
-- captureengine/startup_preferences.*, common/startup_policy.h: original-user
+- captureengine/sensors/pawnio_workers.*: tracked driver setup UI/helpers and joined shutdown.
+- captureengine/elevation/startup_preferences.*, common/setup/startup_policy.h: original-user
   SID ownership, atomic preferences and account-based registration policy.
-- captureengine/startup_autostart.cpp: native Task Scheduler COM and user Run key.
-- captureengine/elevation_setup.cpp, elevation_runtime.cpp: protected staging,
+- captureengine/elevation/startup_autostart.cpp: native Task Scheduler COM and user Run key.
+- captureengine/elevation/elevation_setup.cpp, elevation_runtime.cpp: protected staging,
   pinned hashes, service ACL, rollback and actual process-exit/removal.
-- common/elevation_protocol.h, elevation_windows.h, elevation_lifetime.h:
+- common/ipc/elevation_protocol.h, elevation_windows.h, elevation_lifetime.h:
   bounded protocol, overlapped cancellation/draining and terminal client lifetime.
 - elevationservice/*: minimal x64 LocalSystem service, authenticated pipe,
   isolated CLR/LHM bridge and privileged ETW ownership.
-- captureengine/elevation_client.*, sensor_broker.*, sensor_plugin.*:
+- captureengine/elevation/elevation_client.*, sensor_broker.*, sensor_plugin.*:
   preferred broker backend with existing validation/freshness and local fallback.
-- captureengine/display_timing_service*, sensor_service.cpp: ordinary ETW
+- captureengine/display_timing/display_timing_service*, sensor_service.cpp: ordinary ETW
   consumption, desktop monitor queries, correlation and shared-ring publication.
 - tools/build/build_elevation_service.py: separate target without media/FFmpeg linkage.
 
@@ -29,7 +29,7 @@ administrator requests on the next launch, and Windows autostart.
 
 `captureengine.exe --ce-installer-setup --owner-sid=... --owner-admin=0|1 --prefs=0-7 --service=install|remove|keep
 --autostart=apply|keep` is run by the installer (see `installer.md`). It requires an elevated process whose parent is
-also a live, older, elevated process, validates every argument (`common/installer_setup_policy.h`), then reuses
+also a live, older, elevated process, validates every argument (`common/setup/installer_setup_policy.h`), then reuses
 `Apply()` so service, startup registration and the preference record behave exactly like the tray toggles.
 
 ## Invariants

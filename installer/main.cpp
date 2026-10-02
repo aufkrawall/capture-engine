@@ -6,7 +6,7 @@
 // prompt and can be exercised by tools.
 
 #include "wizard.h"
-#include "../common/elevation_windows.h"
+#include "common/ipc/elevation_windows.h"
 
 #include <shellapi.h>
 #include <tlhelp32.h>

@@ -20,32 +20,32 @@ struct ScopedResizeGuard;
 
 #include <mutex>
 
-#include "../../common/logging.h"
+#include "common/logging/logging.h"
 
-#include "../../common/raii_helpers.h"
+#include "common/platform/raii_helpers.h"
 
-#include "../apis/graphics_hook.h"
+#include "hook/runtime/graphics_hook.h"
 
 // ResolveCurrentProcessForeground is declared once, with default arguments, in
-// common/hook_common.h (defined in hook/apis/dx12_hook_helpers.cpp) so a translation unit that
+// common/hook_common.h (defined in hook/d3d12/dx12_hook_helpers.cpp) so a translation unit that
 // includes both this wrapper-internal header and the dx12 hook internal header no longer trips
 // over duplicate default arguments.
 
 
 
-#include "../common/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
 
-#include "../common/dxgi_shared.h"
+#include "hook/present/dxgi_shared.h"
 
-#include "../common/swapchain_liveness.h"
+#include "hook/present/swapchain_liveness.h"
 
-#include "../common/overlay_compat.h"
+#include "hook/overlay/overlay_compat.h"
 
 // Defined in dxgi_swapchain_wrap_diagnostics.cpp. Diagnostic-only and rate-limited. CALLER
 // CONTRACT: the caller must hold a reference on realChain for the duration of the call. The
 // refcount probe inside is net-zero on a LIVE object only; nothing can make it safe on a released
 // one, because a freed COM object's heap block stays committed and keeps a plausible vtable (see
-// hook/common/swapchain_liveness.h).
+// hook/present/swapchain_liveness.h).
 void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stage);
 
 // Defined in dxgi_swapchain_wrap_attribution.cpp. Diagnostic-only AddRef/Release vtable forwarding
@@ -55,11 +55,11 @@ void LogSwapChainLifetimeDiagnostics(IDXGISwapChain* realChain, const char* stag
 void TryInstallSwapchainLifetimeAttribution(IDXGISwapChain* realChain);
 void FinishSwapchainLifetimeAttribution(IDXGISwapChain* realChain);
 
-#include "../common/perf_logger.h"
+#include "hook/metrics/perf_logger.h"
 
-#include "../common/performance_metrics.h"
+#include "hook/metrics/performance_metrics.h"
 
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // External overlay functions (implemented in dx11_hook.cpp / dx12_hook.cpp)
 extern void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
@@ -104,11 +104,11 @@ extern "C" __declspec(dllimport) void DX12_NoteWrappedD3D12PresentResult(const c
 extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
 
 // FG detection for FSR FG/DLSS FG compatibility
-#include "../common/fg_detection.h"
+#include "hook/fg/fg_detection.h"
 
-#include "../common/fps_limiter.h"
+#include "hook/pacing/fps_limiter.h"
 
-#include "../common/freeze_watchdog.h"
+#include "hook/runtime/freeze_watchdog.h"
 
 #include <cstdint>
 

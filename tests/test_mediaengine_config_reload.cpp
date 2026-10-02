@@ -13,9 +13,9 @@ namespace fs = std::filesystem;
 // recording thread a freed buffer. A reload during recording is now parked and
 // applied (with the same assign-only semantics) when the next recording starts.
 TEST(MediaEngineConfigReloadSourceTest, ReloadDuringRecordingIsDeferredNotAssigned) {
-    const std::string config = ce::test_source::ReadFile(fs::current_path() / "mediaengine" / "mediaengine_config.cpp");
+    const std::string config = ce::test_source::ReadFile(fs::current_path() / "mediaengine" / "engine" / "mediaengine_config.cpp");
     const std::string start =
-        ce::test_source::ReadFile(fs::current_path() / "mediaengine" / "mediaengine_recording_start.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "mediaengine" / "engine" / "mediaengine_recording_start.cpp");
     ASSERT_FALSE(config.empty());
     ASSERT_FALSE(start.empty());
 

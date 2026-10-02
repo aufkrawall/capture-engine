@@ -17,9 +17,9 @@
 #include <mutex>
 #include <string>
 
-#include "../common/dll_utils.h"
-#include "../common/ipc_client.h"
-#include "../common/shared_defs.h"
+#include "hook/runtime/dll_utils.h"
+#include "hook/runtime/ipc_client.h"
+#include "common/ipc/shared_defs.h"
 #include "vulkan_layer.h"
 
 // One-shot report that a CaptureEngine discovery mapping was found but its
@@ -81,7 +81,7 @@ void LayerLog(const char* fmt, ...);
 // DXVK / VKD3D-Proton Detection Utilities
 // ============================================================================
 
-// Shared with the hook DLL; see hook/common/dll_utils.h.
+// Shared with the hook DLL; see hook/runtime/dll_utils.h.
 
 // Global IPC Client
 extern IPCClient g_IPCClient;

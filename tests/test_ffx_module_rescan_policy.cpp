@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/ffx_module_rescan_policy.h"
+#include "hook/ffx/ffx_module_rescan_policy.h"
 #include "source_fragment_reader.h"
 
 // GTA session 20260925_225006: the hook thread repeated the FFX install pass's IAT walks and cached-slot scan
@@ -95,7 +95,7 @@ std::string Between(const std::string& source, const std::string& begin, const s
 }
 
 TEST(FFXModuleRescanSource, BothSweepsAreGatedAndInputsAreSampledBeforeThem) {
-    const std::string install = ReadSource("hook/apis/ffx_hook_install.cpp");
+    const std::string install = ReadSource("hook/ffx/ffx_hook_install.cpp");
     const std::string body = Between(install, "bool ffx_hook_InstallHooksForModule(", "\nbool WriteFfxExportEntryByte(");
     ASSERT_FALSE(body.empty());
 
@@ -123,7 +123,7 @@ TEST(FFXModuleRescanSource, BothSweepsAreGatedAndInputsAreSampledBeforeThem) {
 }
 
 TEST(FFXModuleRescanSource, SweepBookkeepingSamplesBeforeAndCommitsOnlyCompletedSweeps) {
-    const std::string sweep = ReadSource("hook/apis/ffx_hook_module_sweep.cpp");
+    const std::string sweep = ReadSource("hook/ffx/ffx_hook_module_sweep.cpp");
     ASSERT_FALSE(sweep.empty());
     const std::string decide = Between(sweep, "FfxModuleSweep ffx_hook_DecideModuleSweep(", "\n}\n");
     const std::string complete = Between(sweep, "void ffx_hook_CompleteModuleSweep(", "\n}\n");
@@ -141,8 +141,8 @@ TEST(FFXModuleRescanSource, SweepBookkeepingSamplesBeforeAndCommitsOnlyCompleted
 }
 
 TEST(FFXModuleRescanSource, BothBreakpointPathsRecordUnroutedCallEvidence) {
-    const std::string context = ReadSource("hook/apis/ffx_hook_context.cpp");
-    const std::string install = ReadSource("hook/apis/ffx_hook_install.cpp");
+    const std::string context = ReadSource("hook/ffx/ffx_hook_context.cpp");
+    const std::string install = ReadSource("hook/ffx/ffx_hook_install.cpp");
     const std::string create =
         Between(context, "ffxReturnCode_t Hooked_ffxCreateContext(", "ffxReturnCode_t Hooked_ffxDestroyContext(");
     const std::string configureVeh = Between(install, "LONG WINAPI FfxConfigureBreakpointVEH(", "\n}\n");
@@ -153,7 +153,7 @@ TEST(FFXModuleRescanSource, BothBreakpointPathsRecordUnroutedCallEvidence) {
 }
 
 TEST(FFXModuleRescanSource, CachedSlotScanReadsWithoutALockedWriteBack) {
-    const std::string router = ReadSource("hook/apis/ffx_cached_pointer_router.cpp");
+    const std::string router = ReadSource("hook/ffx/ffx_cached_pointer_router.cpp");
     const std::string scan = Between(router, "size_t RouteWritableRange(", "\n}\n");
     ASSERT_FALSE(scan.empty());
     EXPECT_EQ(scan.find("InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), nullptr, nullptr)"),

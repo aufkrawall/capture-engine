@@ -4,7 +4,7 @@
 #include <thread>
 #include <vector>
 
-#include "../common/sequence_lock.h"
+#include "common/platform/sequence_lock.h"
 
 namespace {
 

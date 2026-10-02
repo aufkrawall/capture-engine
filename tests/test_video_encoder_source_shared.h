@@ -15,30 +15,30 @@
 #include <sstream>
 #include <string>
 
-#include "../common/raii_helpers.h"
-#include "../mediaengine/video_color_conversion_shader.h"
+#include "common/platform/raii_helpers.h"
+#include "mediaengine/video/video_color_conversion_shader.h"
 #include "source_fragment_reader.h"
 
 namespace {
 
 std::string ReadVideoEncoderSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadCursorRendererSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "cursor_renderer.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "cursor_renderer.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadVideoColorShaderSource() {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "mediaengine" / "video_color_conversion_shader.h";
+        std::filesystem::current_path() / "mediaengine" / "video" / "video_color_conversion_shader.h";
     return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadVideoMetadataSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_metadata.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "video_metadata.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
 

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/d3d12_device_creation_policy.h"
+#include "hook/d3d12/d3d12_device_creation_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -208,7 +208,7 @@ TEST(D3D12DeviceCreationPolicyTest, ReportsOncePerDistinctHresultUnderAHardCap) 
 }
 
 TEST(D3D12DeviceCreationPolicyTest, BootstrapConsultsTheBudgetBeforePayingForDeviceCreation) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t budget = source.find("ShouldAttemptTempDeviceCreation()");
@@ -226,7 +226,7 @@ TEST(D3D12DeviceCreationPolicyTest, BootstrapConsultsTheBudgetBeforePayingForDev
 }
 
 TEST(D3D12DeviceCreationPolicyTest, ReportProbesCapabilityWithoutCreatingADevice) {
-    const std::string source = ReadSource("hook/apis/dx12_device_creation_report.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_device_creation_report.cpp");
     ASSERT_FALSE(source.empty());
 
     // The whole point of the matrix is that it costs nothing: a null ppDevice makes D3D12
@@ -241,7 +241,7 @@ TEST(D3D12DeviceCreationPolicyTest, ReportProbesCapabilityWithoutCreatingADevice
 }
 
 TEST(D3D12DeviceCreationPolicyTest, ReportAsksD3D11OnlyWhenTheAnswerChangesTheVerdict) {
-    const std::string source = ReadSource("hook/apis/dx12_device_creation_report.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_device_creation_report.cpp");
     ASSERT_FALSE(source.empty());
 
     // A healthy process must not pay for a D3D11 device it does not need, and a report that

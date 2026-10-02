@@ -2,7 +2,7 @@
 #include "vulkan_present_boundary.h"
 #include "vulkan_swapchain_result_policy.h"
 
-#include "../../common/log_meter.h"
+#include "common/logging/log_meter.h"
 
 namespace swapchain_result = ce::vulkan_swapchain_result_policy;
 static_assert(swapchain_result::kSuboptimal == VK_SUBOPTIMAL_KHR);

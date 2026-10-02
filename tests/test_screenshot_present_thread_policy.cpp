@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/screenshot_hook.h"
-#include "../hook/common/screenshot_worker.h"
+#include "hook/capture/screenshot_hook.h"
+#include "hook/capture/screenshot_worker.h"
 
 #include <windows.h>
 
@@ -167,7 +167,7 @@ TEST(ScreenshotDx12ReadbackTest, MovingHandsOverEveryReferenceExactlyOnce) {
 }
 
 TEST(ScreenshotPresentThreadPolicyTest, TheD3D12ProducerSubmitsTheCopyWithoutWaitingForIt) {
-    const std::string source = ReadSource(std::filesystem::path("hook") / "common" / "screenshot_hook.cpp");
+    const std::string source = ReadSource(std::filesystem::path("hook") / "capture" / "screenshot_hook.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t function = source.find("bool SaveDX12TextureAsScreenshotRaw(");
@@ -191,9 +191,9 @@ TEST(ScreenshotPresentThreadPolicyTest, TheD3D12ProducerSubmitsTheCopyWithoutWai
 
 TEST(ScreenshotPresentThreadPolicyTest, DirectDrawConsumesTheRequestAtItsPresentationBoundary) {
     const std::string presentation =
-        ReadSource(std::filesystem::path("hook") / "apis" / "ddraw_hook_capture.cpp");
+        ReadSource(std::filesystem::path("hook") / "ddraw" / "ddraw_hook_capture.cpp");
     const std::string capture =
-        ReadSource(std::filesystem::path("hook") / "apis" / "ddraw_hook_capture_frame.cpp");
+        ReadSource(std::filesystem::path("hook") / "ddraw" / "ddraw_hook_capture_frame.cpp");
     ASSERT_FALSE(presentation.empty());
     ASSERT_FALSE(capture.empty());
 
@@ -218,7 +218,7 @@ TEST(ScreenshotPresentThreadPolicyTest, DirectDrawConsumesTheRequestAtItsPresent
 }
 
 TEST(ScreenshotPresentThreadPolicyTest, OnlyTheWorkerWaitsAndItNeverWaitsForever) {
-    const std::string worker = ReadSource(std::filesystem::path("hook") / "common" / "screenshot_worker.cpp");
+    const std::string worker = ReadSource(std::filesystem::path("hook") / "capture" / "screenshot_worker.cpp");
     ASSERT_FALSE(worker.empty());
 
     EXPECT_NE(worker.find("WaitForSingleObject(fenceEvent, kReadbackWaitSliceMs)"), std::string::npos);
@@ -276,7 +276,7 @@ std::vector<std::string> SplitLines(const std::string& text) {
 
 TEST(ScreenshotPresentThreadPolicyTest, EveryPostSLOverlaySubmitCapturesTheOverlayFreeFrameFirst) {
     const std::string source =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_postsl_render_submit.cpp");
     ASSERT_FALSE(source.empty());
 
     const std::vector<std::string> lines = SplitLines(source);
@@ -298,7 +298,7 @@ TEST(ScreenshotPresentThreadPolicyTest, EveryPostSLOverlaySubmitCapturesTheOverl
 }
 
 TEST(ScreenshotPresentThreadPolicyTest, ProcessFrameYieldsBothScreenshotVariantsToThePostSLRoute) {
-    const std::string source = ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process.cpp");
+    const std::string source = ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process.cpp");
     ASSERT_FALSE(source.empty());
 
     // PostSL runs earlier in the same Present. Taking the overlay-free shot here
@@ -315,12 +315,12 @@ TEST(ScreenshotPresentThreadPolicyTest, ProcessFrameYieldsBothScreenshotVariants
 
 TEST(ScreenshotPresentThreadPolicyTest, FinalStreamlineRecordingCoversGeneratedOutputsAndBothOverlayModes) {
     const std::string submit =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
-    const std::string process = ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_postsl_render_submit.cpp");
+    const std::string process = ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process.cpp");
     const std::string finalRoute =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_final_output_capture.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_final_output_capture.cpp");
     const std::string startup =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_fg_startup.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_fg_startup.cpp");
     ASSERT_FALSE(submit.empty());
     ASSERT_FALSE(process.empty());
     ASSERT_FALSE(finalRoute.empty());
@@ -352,16 +352,16 @@ TEST(ScreenshotPresentThreadPolicyTest, FinalStreamlineRecordingCoversGeneratedO
 
 TEST(ScreenshotPresentThreadPolicyTest, SuspendedStreamlineOutputKeepsCaptureOrderedButReturnsToBaseClock) {
     const std::string capture =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_final_output_capture.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_final_output_capture.cpp");
     const std::string submit =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_postsl_render_submit.cpp");
     const std::string phase4 =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process_session_phase4.cpp");
-    const std::string process = ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_phase4.cpp");
+    const std::string process = ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process.cpp");
     const std::string prePresent =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_overlay_present.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_overlay_present.cpp");
     const std::string phase1 =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_process_session_phase1.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_phase1.cpp");
     ASSERT_FALSE(capture.empty());
     ASSERT_FALSE(submit.empty());
     ASSERT_FALSE(phase4.empty());
@@ -396,9 +396,9 @@ TEST(ScreenshotPresentThreadPolicyTest, SuspendedStreamlineOutputKeepsCaptureOrd
 
 TEST(ScreenshotPresentThreadPolicyTest, D3D12ScreenshotUsesTheExactSwapchainResourceDeviceAndQueueIdentity) {
     const std::string source =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_screenshot.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_screenshot.cpp");
     const std::string submit =
-        ReadSource(std::filesystem::path("hook") / "apis" / "dx12_hook_postsl_render_submit.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_postsl_render_submit.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(submit.empty());
 

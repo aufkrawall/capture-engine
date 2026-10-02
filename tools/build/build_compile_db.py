@@ -455,7 +455,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     # the cache back and forth and could link test-flag objects into CaptureEngine.
     common_objs = []
     common_src_obj_pairs = []
-    for src in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")):
+    for src in common_sources():
         if os.path.basename(src) == "build_identity.cpp":
             continue
         rel_path = os.path.relpath(src, PROJECT_ROOT)
@@ -464,7 +464,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         common_objs.append(obj)
     compile_tasks.extend((test_base_cflags, src, obj) for src, obj in common_src_obj_pairs)
 
-    # Link against gtest, common, hook/common sources, mediaengine, and FFmpeg.
+    # Link against gtest, common, the hook core, mediaengine, and FFmpeg.
     # Keep this aligned with the actual hook/mediaengine linker inputs to avoid
     # dragging in stale transitive dependencies that are not shipped in MSYS2.
     ldflags_test = (
@@ -519,7 +519,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     append_windows_pdb_linker_flag(ldflags_test, test_exe)
 
     # 2. Compile MediaEngine objects for tests
-    me_src = glob.glob(os.path.join(PROJECT_ROOT, "mediaengine", "*.cpp"))
+    me_src = module_sources("mediaengine")
     me_objs = []
     src_obj_pairs = []
     strict_fp_src_obj_pairs = []
@@ -546,9 +546,6 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + ffmpeg_cflags
         + [
             "-DCE_UNIT_TESTS",
-            "-I" + os.path.join(PROJECT_ROOT, "mediaengine"),
-            "-I" + os.path.join(PROJECT_ROOT, "hook", "wrappers"),
-            "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
             "-I" + os.path.join(msys2_dir, "clang64", "include"),
         ]
     )  # Ensure we can include audio_encoder.h and hook headers for stubs
@@ -570,7 +567,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     ):
         extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
         obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
-        compile_tasks.append((test_cflags + extra, os.path.join(PROJECT_ROOT, "captureengine", name), obj))
+        compile_tasks.append((test_cflags + extra, find_module_source("captureengine", name), obj))
         captureengine_test_objs.append(obj)
 
     service_security_source = os.path.join(PROJECT_ROOT, "elevationservice", "service_security.cpp")
@@ -578,8 +575,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     compile_tasks.append((test_cflags, service_security_source, service_security_object))
     captureengine_test_objs.append(service_security_object)
 
-    # 4. Compile hook/common for tests
-    hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
+    # 4. Compile the hook core for tests
+    hook_common_src = hook_test_linked_sources()
     hook_common_objs = []
     src_obj_pairs = []
     for src in hook_common_src:
@@ -589,7 +586,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         hook_common_objs.append(obj)
     compile_tasks.extend((test_base_cflags, src, obj) for src, obj in src_obj_pairs)
 
-    hook_wrapper_test_src = [os.path.join(PROJECT_ROOT, "hook", "wrappers", "hook_system.cpp")]
+    hook_wrapper_test_src = [os.path.join(PROJECT_ROOT, "hook", "hooking", "hook_system.cpp")]
     hook_wrapper_test_objs = []
     src_obj_pairs = []
     for src in hook_wrapper_test_src:

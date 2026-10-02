@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <thread>
-#include "../hook/common/swapchain_create_recovery.h"
+#include "hook/present/swapchain_create_recovery.h"
 #include "source_fragment_reader.h"
 #include <filesystem>
 
@@ -43,7 +43,7 @@ TEST(SwapchainCreateRecoveryTest, CompletedCallDoesNotSuppressNextCall) {
 }
 
 TEST(SwapchainCreateRecoveryTest, BothHookLayersGateRecoveryAndHaveNoSleepRetries) {
-    for (const char* file : {"hook/apis/dx12_hook_swapchain_create.cpp", "hook/apis/dx12_hook_swapchain_tracking.cpp"}) {
+    for (const char* file : {"hook/d3d12/dx12_hook_swapchain_create.cpp", "hook/d3d12/dx12_hook_swapchain_tracking.cpp"}) {
         const auto source = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / file);
         EXPECT_NE(source.find("RecoveryScope recoveryScope(hWnd)"), std::string::npos);
         EXPECT_NE(source.find("hr == E_ACCESSDENIED && hWnd && recoveryScope.OwnsRecovery()"), std::string::npos);

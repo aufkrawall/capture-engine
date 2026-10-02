@@ -3,15 +3,15 @@
 Last cross-checked: 2026-08-13
 
 Primary sources:
-- `common/config.h` (`ThirdPartyConfig`, `AppConfig::thirdParty`)
-- `common/config_load_third_party.cpp`
-- `common/config_load.cpp` (loader call order)
-- `hook/common/third_party_load_policy.h`
-- `hook/main_thirdparty_load.cpp`
-- `hook/main_hookthread.cpp` (call site)
-- `hook/main_loadlibrary.cpp` (`LoadRuntimeDllViaOriginal`)
-- `hook/main_overlay_detect.cpp` (shared proxy-name matcher)
-- `hook/common/overlay_compat_detail/module_table.h`
+- `common/config/config.h` (`ThirdPartyConfig`, `AppConfig::thirdParty`)
+- `common/config/config_load_third_party.cpp`
+- `common/config/config_load.cpp` (loader call order)
+- `hook/runtime/third_party_load_policy.h`
+- `hook/runtime/main_thirdparty_load.cpp`
+- `hook/runtime/main_hookthread.cpp` (call site)
+- `hook/runtime/main_loadlibrary.cpp` (`LoadRuntimeDllViaOriginal`)
+- `hook/runtime/main_overlay_detect.cpp` (shared proxy-name matcher)
+- `hook/overlay/overlay_compat_detail/module_table.h`
 - `tests/test_config_third_party.cpp`
 - `tests/test_third_party_load_policy.cpp`
 - `tests/test_inject_capture_source_part2.cpp`
@@ -120,7 +120,7 @@ once those tools are loaded.
   AV inside `dxgi!FindIndex<SAdapterDesc,...>`). Fixed by bypassing the foreign
   entry patch on `CreateDXGIFactory1` for the temp factory and by guarding the
   raw slot call with the saved-slot vtable match
-  (`hook/common/dx12_factory_slot_policy.h`). A factory object whose vtable is
+  (`hook/d3d12/dx12_factory_slot_policy.h`). A factory object whose vtable is
   not the vtable the saved slot was captured from is refused; the
   real-swapchain retry paths then install the Present hooks.
 - On game close with a ReShade swapchain proxy, CE's swapchain wrapper
@@ -212,5 +212,5 @@ once those tools are loaded.
   needs to be performed on a game/test-app target.
 - If field testing finds games that create D3D devices before WMI injection
   lands, the documented follow-up is an opt-in "inject at start event without
-  settle logic" fast path in `captureengine/injection_manager.cpp`; the
+  settle logic" fast path in `captureengine/injection/injection_manager.cpp`; the
   hook-side loader needs no rework for it.

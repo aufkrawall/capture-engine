@@ -5,7 +5,7 @@
 #include <sstream>
 #include <string>
 
-#include "../hook/vulkan_layer/vulkan_sampler_policy.h"
+#include "hook/vulkan_layer/vulkan_sampler_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {

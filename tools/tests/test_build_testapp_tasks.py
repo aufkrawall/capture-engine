@@ -29,7 +29,7 @@ def scan_native_handle_uses(project_root: Path) -> list[str]:
     tolerant for the same reason: the token searched for is pure ASCII, so a
     stray byte in a first-party file must not abort the scan either.
     """
-    allowed = project_root / "common" / "thread_wait.h"
+    allowed = project_root / "common" / "platform" / "thread_wait.h"
     offenders: list[str] = []
     for directory_name in SOURCE_DIRS:
         directory = project_root / directory_name
@@ -203,7 +203,7 @@ class TestAppTaskTest(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "use ce::Win32ThreadHandle() from common/thread_wait.h instead of std::thread::native_handle(): "
+            "use ce::Win32ThreadHandle() from common/platform/thread_wait.h instead of std::thread::native_handle(): "
             + ", ".join(offenders),
         )
 

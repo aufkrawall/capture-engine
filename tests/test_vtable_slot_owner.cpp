@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/vtable_slot_owner.h"
+#include "hook/hooking/vtable_slot_owner.h"
 #include "source_fragment_reader.h"
 
 namespace owner = ce::vtable_slot_owner;
@@ -54,7 +54,7 @@ TEST(VTableSlotOwnerTest, CoversTheSlotsAnOverlayHooksToDrawAndFollowResizes) {
 
 // Logged at every refused resize, and for the first resizes as the baseline.
 TEST(VTableSlotOwnerTest, RefusedResizeLogsTheSwapchainSlotOwners) {
-    const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string resize = ReadSource("hook/present/dxgi_shared_resize.cpp");
     const size_t begin = resize.find("void EndD3D12ResizeDiagnostics(");
     ASSERT_NE(begin, std::string::npos);
     const size_t owners = resize.find("LogSwapchainVTableSlotOwners(pSwapChain, source, FAILED(hr)", begin);

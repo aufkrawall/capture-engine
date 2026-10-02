@@ -1,6 +1,6 @@
 #include "layer_capture_internal.h"
 
-#include "../../common/inject_transport_snapshot.h"
+#include "common/ipc/inject_transport_snapshot.h"
 
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,

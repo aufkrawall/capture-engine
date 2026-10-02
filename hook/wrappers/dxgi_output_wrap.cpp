@@ -4,7 +4,7 @@
 
 #include "dxgi_output_wrap.h"
 #include "dxgi_adapter_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // ============================================================================
 // Constructor / Destructor

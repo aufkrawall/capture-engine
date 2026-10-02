@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../mediaengine/process_tree_selection.h"
+#include "mediaengine/audio/process_tree_selection.h"
 
 namespace policy = ce::process_loopback;
 

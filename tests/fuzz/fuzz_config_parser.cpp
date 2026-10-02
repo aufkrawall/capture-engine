@@ -1,9 +1,9 @@
 // libFuzzer harness for the configuration parser.
 //
 // Target: LoadConfig(), which parses an untrusted .ini file off disk
-// (common/config.cpp). LoadConfig takes a path rather than a buffer, so each
+// (common/config/config.cpp). LoadConfig takes a path rather than a buffer, so each
 // iteration materialises the fuzz input into a private temp file. The UTF-8
-// INI reader (common/config_ini_reader.cpp) is also driven directly on the raw
+// INI reader (common/config/config_ini_reader.cpp) is also driven directly on the raw
 // bytes: LoadConfig only reaches it for input that is valid UTF-8 or carries a
 // BOM, and the grammar must hold for every byte sequence.
 //
@@ -17,8 +17,8 @@
 #include <string_view>
 #include <vector>
 
-#include "../../common/config.h"
-#include "../../common/config_ini_reader.h"
+#include "common/config/config.h"
+#include "common/config/config_ini_reader.h"
 
 namespace {
 

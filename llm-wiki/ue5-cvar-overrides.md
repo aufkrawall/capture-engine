@@ -7,12 +7,12 @@ value storage, which layouts it accepts, what it refuses, and every setting the 
 out of `graphics-overrides-and-frame-pacing.md` on 2026-08-21, which had reached the file-size ceiling.
 
 Primary sources:
-- `hook/common/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h,rr_handoff_gate.h}`
-- `hook/main_ue5.cpp` (policy/lifecycle/service pass), `hook/main_ue5_scan.cpp` (literal + candidate discovery),
-  `hook/main_ue5_install.cpp` (install, refresh, read-back verification, restore), `hook/main_ue5_layout.cpp`
-  (layout classification and console-object install), `hook/main_ue5_memory.cpp` (process-memory/PE primitives),
-  `hook/main_ue5_registry.cpp` (resolution through UE's console-object map)
-- `common/config_load_ue5.cpp`, `common/config.h`, `common/shared_defs_detail/abi_constants_and_config.h`
+- `hook/ngx/rr_handoff_gate.h, hook/overrides/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h}`
+- `hook/runtime/main_ue5.cpp` (policy/lifecycle/service pass), `hook/runtime/main_ue5_scan.cpp` (literal + candidate discovery),
+  `hook/runtime/main_ue5_install.cpp` (install, refresh, read-back verification, restore), `hook/runtime/main_ue5_layout.cpp`
+  (layout classification and console-object install), `hook/runtime/main_ue5_memory.cpp` (process-memory/PE primitives),
+  `hook/runtime/main_ue5_registry.cpp` (resolution through UE's console-object map)
+- `common/config/config_load_ue5.cpp`, `common/config/config.h`, `common/ipc/shared_defs_detail/abi_constants_and_config.h`
 - `captureengine/config.ini.template` (the user-facing contract for every key)
 - `tests/{test_ue5_cvar_override_policy,test_ue5_rr_handoff,test_ue5_console_layout,test_ue5_console_registry,test_ue5_rr_override_policy,test_config_ue5}.cpp`
 
@@ -52,7 +52,7 @@ Primary sources:
   duplicates are deduplicated by data pointer, a validated pointer-model candidate is preferred when present, and
   <!-- keep the data-pointer install contract next to the layout it depends on -->
   a redirect is only installed when the pointer it replaces has been recorded (`ce::ue5_redirect::MakePlan` /
-  `CanInstall` in `hook/common/ue5_redirect_plan.h`). Until 2026-08-15 the data-pointer path left that record
+  `CanInstall` in `hook/overrides/ue5_redirect_plan.h`). Until 2026-08-15 the data-pointer path left that record
   default-initialised, so restoring on config disable or hook shutdown compare-exchanged **null** into the live
   console object and the engine dereferenced it on its next read; 20 of Talos's 31 overrides used this path.
   The install also mirrors CE's value into the storage the original pointer addressed (`writeThrough=1` in the
@@ -86,14 +86,14 @@ Primary sources:
   objects. Film grain, motion blur, and chromatic aberration are already covered by `r.FilmGrain`,
   `r.MotionBlurQuality`, and `r.SceneColorFringeQuality`; vignette is the one post-processing effect that needs the
   registry path below, which does resolve it (both games, since 20260815_210850).
-- **Console-registry resolution** (`hook/main_ue5_registry.cpp`, decoders in `hook/common/ue5_console_registry.h`)
+- **Console-registry resolution** (`hook/runtime/main_ue5_registry.cpp`, decoders in `hook/overrides/ue5_console_registry.h`)
   is the answer to both runtime-composed names and per-title layouts the candidate scoring rejects. `FConsoleManager`
   keeps a `TMap<FString, IConsoleObject*>` of every registered variable, so the composed name is present as an
   ordinary heap FString next to its object. CE does not hard-code that map's layout: it takes CVars the module scan
   already installed as **anchors**, walks committed private RW regions for a qword equal to a known object, and only
   accepts an element whose neighbouring FString also decodes to that CVar's name. That proves the key-to-value
   distance, after which the same allocation is re-read for the missing names and the resolved object is **probed for
-  its layout** before anything is written (`InstallConsoleObjectOverride` in `hook/main_ue5_layout.cpp`, logged as
+  its layout** before anything is written (`InstallConsoleObjectOverride` in `hook/runtime/main_ue5_layout.cpp`, logged as
   `installed via console registry`).
   Constraints that keep it safe: every read is `ReadProcessMemory` rather than a raw dereference (a live game frees
   heap regions mid-walk, and the kernel-checked copy fails instead of raising); and it never runs before an anchor
@@ -116,7 +116,7 @@ Primary sources:
   than a discrete block exceeds `kMaxAllocationExpansionBytes` (256 MB), claims nothing, and leaves the whole-heap
   sweep as the fallback.
 - **The sweep is resumable, and only a finished sweep may support an absence verdict** (`SweepProgress` and its
-  predicates in `hook/common/ue5_console_registry.h`). The 400 ms / 768 MB bound is *per pass*, not per sweep:
+  predicates in `hook/overrides/ue5_console_registry.h`). The 400 ms / 768 MB bound is *per pass*, not per sweep:
   Industria 2 (20260815_214219) covered 218 MB in 406 ms, stopped mid-heap with 31 of 34 anchors placed, and the
   old code then froze that partial result - once `g_map.valid` was set the search never ran again, so all 90 retry
   passes re-read the same two regions and the regions the walk never reached stayed unexamined for the session.
@@ -144,7 +144,7 @@ Primary sources:
   20260816_161158 Talos session reported the identical `object+0x58` qword `0x00007FF73B3A16F0` - an address inside
   the exe's writable data - for all four ShowFlag objects. A per-variable `{game, render}` shadow pair cannot be
   identical across four different variables; a shared mask pointer is exactly that.
-  CE now classifies the object before writing (`hook/common/ue5_console_layout.h`, unit-tested in
+  CE now classifies the object before writing (`hook/overrides/ue5_console_layout.h`, unit-tested in
   `tests/test_ue5_console_layout.cpp`) across three shapes: **reference pointer** (`FConsoleVariableRef<T>`,
   accepted only when the shadow pair actually mirrors the global the pointer addresses - the check the ShowFlag
   objects fail), **inline pair** (`FConsoleVariable<T>`, only at the proven `+0x50` value offset because zeroed
@@ -252,7 +252,7 @@ mode is a visibly broken frame in the user's game.
   defect above showed, says nothing about readers that cached the shadow pair instead. **No data-pointer-mode
   override has an equivalent end-to-end proof yet**, which is what the write-through and the read-back verification
   below exist for.
-- **Read-back verification** (`VerifyOverrides` in `hook/main_ue5_install.cpp`, once a second from
+- **Read-back verification** (`VerifyOverrides` in `hook/runtime/main_ue5_install.cpp`, once a second from
   `RefreshOverrides`) closes the gap between "the write succeeded" and "the value is live". It re-reads the redirect
   slot, CE's shadow, and the write-through storage for every installed override. A slot no longer pointing at CE's
   shadow means the game re-registered the variable: the record is retired, the mirrored value handed back, and a
@@ -271,7 +271,7 @@ mode is a visibly broken frame in the user's game.
   `internalFpsLimit` and `internalAnisotropicFiltering`). `t.MaxFPS` is a `TAutoConsoleVariable<float>` in UE5, so
   the spec uses the float value type and the scan log prints it as a float; the two AF CVars are
   `TAutoConsoleVariable<int32>`. The literal scanner previously skipped first characters other than `r`/`s`
-  (`FindRequestedLiterals` in `hook/main_ue5_scan.cpp`); `t` is now admitted for `t.MaxFPS`. The FPS limit and AF
+  (`FindRequestedLiterals` in `hook/runtime/main_ue5_scan.cpp`); `t` is now admitted for `t.MaxFPS`. The FPS limit and AF
   settings are independent of the RR/post-processing bundles and of each other.
 - Third-party overlay coexistence at DX12 hook install: CE reads the Present vtable from a temp 2x2 swapchain,
   and creating it can enter an overlay that hooked the creation path first. Steam dispatches through callback
@@ -379,7 +379,7 @@ mode is a visibly broken frame in the user's game.
 
 Three override families were added on top of the mechanism above. They change no machinery: each is a spec in
 `ce::ue5_cvar::kSpecs` with its own `Activation`, resolved from `Settings` and installed by the same validated
-redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue5.cpp` (split out of
+redirect. Configuration lives in `[UE5]` and is parsed by `common/config/config_load_ue5.cpp` (split out of
 `config_load_core.cpp` in the same change, so the whole `[UE5]` vocabulary is one unit).
 
 | Setting | CVar(s) written | Type | Notes |
@@ -431,7 +431,7 @@ redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue
 - **ABI:** the nine new fields are appended to `SharedGraphicsConfig` (`sizeof` 384 -> 420) and
   `SHARED_MEMORY_VERSION` moved 43 -> 44, which also renames the shared mappings so an older hook or Vulkan layer
   can never open the new layout. `kUE5DlssScreenPercentageMin/Max` live next to the mip-bias helpers in
-  `common/shared_defs_detail/abi_constants_and_config.h` and are pinned against the hook-side policy constants by
+  `common/ipc/shared_defs_detail/abi_constants_and_config.h` and are pinned against the hook-side policy constants by
   `ConfigTest.UE5ConfigBoundsAgreeWithTheHookSidePolicy`.
 
 ### Open questions / stale-risk for the new overrides
@@ -458,7 +458,7 @@ redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue
   the game/plugin's own Streamline integration: a CVar override cannot reach it, and loading newer
   `sl.interposer.dll`/`sl.dlss_d.dll` (e.g. the 2.14.1 set in `Programme/npi/sl`) does not make an older plugin tag
   an input it was not compiled to send. CE interposes `slSetTag`/`slSetTagForFrame`/`slEvaluateFeature`
-  (`hook/apis/streamline_bridge.cpp`), so appending the tag is technically conceivable, but the mask's per-pixel
+  (`hook/streamline/streamline_bridge.cpp`), so appending the tag is technically conceivable, but the mask's per-pixel
   content is renderer knowledge CE does not have (a constant mask is an unvalidated global bias), the sign/scale
   semantics are not publicly documented, and the 68/69 renumbering makes cross-version tagging a UI/FG hazard when CE
   pins newer SL DLLs under older plugins. Cheapest first step if this is ever pursued: log whether the game already
@@ -526,7 +526,7 @@ The `light` entries `Reflections.ScreenSpaceReconstruction`, `Reflections.Tempor
 DLSS RR is demonstrably rendering, and the game's own value otherwise. Before, the preset wrote them unconditionally,
 so TSR, plain DLSS SR, an RR->SR fallback, or RR switched off in a game menu left raw, undenoised reflections.
 
-- **Evidence:** `ce::rr_handoff::Gate` (`hook/common/rr_handoff_gate.h`) samples monotonic counters bumped by every
+- **Evidence:** `ce::rr_handoff::Gate` (`hook/ngx/rr_handoff_gate.h`) samples monotonic counters bumped by every
   successful NGX Feature 13 / Feature 1 evaluation (`nvngx_hook_lifecycle.cpp`) and Streamline `kFeatureDLSS_RR` /
   `kFeatureDLSS` (2.x) and DLSS (1.x) evaluation, plus `DXGIShared::g_PresentCallCounter`. Any RR evaluation in a
   window = rendering (so RR-on-one-view/SR-on-another never flaps); SR only = not rendering; none = not rendering

@@ -2,9 +2,9 @@
 
 #include <vector>
 
-#include "../hook/common/dx12_fg_transition_model.h"
-#include "../hook/common/fg_detection.h"
-#include "../hook/common/fg_session_state.h"
+#include "hook/d3d12/dx12_fg_transition_model.h"
+#include "hook/fg/fg_detection.h"
+#include "hook/fg/fg_session_state.h"
 
 namespace {
 

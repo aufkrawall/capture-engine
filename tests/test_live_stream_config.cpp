@@ -1,7 +1,7 @@
 #include "test_config_shared.h"
 
-#include "../common/live_stream_config.h"
-#include "../mediaengine/video_encoder_options.h"
+#include "common/config/live_stream_config.h"
+#include "mediaengine/video/video_encoder_options.h"
 
 #include <limits>
 

@@ -4,10 +4,10 @@
 def compile_elevation_service(env, clang_exe, cflags):
     log("Compiling elevation service x64...")
     source_names = [
-        "captureengine/sensor_plugin.cpp",
-        "captureengine/sensor_bridge_host.cpp",
-        "captureengine/sensor_bridge_lhm.cpp",
-        "captureengine/clr_interop.cpp",
+        "captureengine/sensors/sensor_plugin.cpp",
+        "captureengine/sensors/sensor_bridge_host.cpp",
+        "captureengine/sensors/sensor_bridge_lhm.cpp",
+        "captureengine/sensors/clr_interop.cpp",
     ]
     sources = [os.path.join(PROJECT_ROOT, name) for name in source_names]
     sources += sorted(glob.glob(os.path.join(PROJECT_ROOT, "elevationservice", "*.cpp")))
@@ -19,7 +19,7 @@ def compile_elevation_service(env, clang_exe, cflags):
     parallel_compile(env, clang_exe, cflags + ["-DCE_ELEVATION_SERVICE=1"], pairs)
     common_objects = [
         os.path.join(OBJ_DIR, "x64", os.path.relpath(source, PROJECT_ROOT).replace(".cpp", ".o"))
-        for source in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
+        for source in common_sources()
     ]
     resource = os.path.join(OBJ_DIR, "elevation", "service.res.o")
     run_command([get_windres_exe("x64"), os.path.join(PROJECT_ROOT, "elevationservice", "service.rc"),

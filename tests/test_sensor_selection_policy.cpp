@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../captureengine/sensor_selection_policy.h"
+#include "captureengine/sensors/sensor_selection_policy.h"
 
 // The selection rules used to live inside the first-party PowerShell bridge and
 // were therefore untestable. They are native now, so every branch that a real

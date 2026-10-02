@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "../../captureengine/sensor_plugin.h"
+#include "captureengine/sensors/sensor_plugin.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const auto* text = size == 0 ? "" : reinterpret_cast<const char*>(data);

@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/present_pacing_policy.h"
-#include "../hook/common/swapchain_flag_apply.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/present/present_pacing_policy.h"
+#include "hook/present/swapchain_flag_apply.h"
 #include "source_fragment_reader.h"
 
 // GTA V Enhanced, session installed/captureengine/logs/20261002_060100: the
@@ -143,10 +143,10 @@ TEST(FrameLatencyWaitableOwnershipSourceTest, EveryDescriptorOverrideSiteTagsIts
     // Each create that can add the waitable flag must tag the swapchain it
     // created, or `backbuffer_count` silently stops pacing that chain.
     const Site sites[] = {
-        {"hook/apis/dx12_hook_swapchain_create.cpp", "ApplyBackbufferCountOverrideToDesc("},
-        {"hook/apis/dx12_hook_swapchain_tracking.cpp", "ApplyBackbufferCountOverrideToDesc("},
+        {"hook/d3d12/dx12_hook_swapchain_create.cpp", "ApplyBackbufferCountOverrideToDesc("},
+        {"hook/d3d12/dx12_hook_swapchain_tracking.cpp", "ApplyBackbufferCountOverrideToDesc("},
         {"hook/wrappers/dxgi_factory_wrap.cpp", "ApplyBackbufferCountOverrideToDesc("},
-        {"hook/apis/dx11_hook_detours.cpp", "ApplyDX11BackbufferCountOverride("},
+        {"hook/d3d11/dx11_hook_detours.cpp", "ApplyDX11BackbufferCountOverride("},
         {"hook/wrappers/wrapper_hooks_devices.cpp", "ApplyD3D11CreateDeviceSwapChainBackbufferOverride("},
     };
     for (const Site& site : sites) {
@@ -159,7 +159,7 @@ TEST(FrameLatencyWaitableOwnershipSourceTest, EveryDescriptorOverrideSiteTagsIts
 }
 
 TEST(FrameLatencyWaitableOwnershipSourceTest, BothPacingTransportsAskWhoAddedTheWaitable) {
-    const std::string shared = ReadProjectSource("hook/common/dxgi_shared_present_pacing.cpp");
+    const std::string shared = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
     ASSERT_FALSE(shared.empty());
     const size_t sharedWait = shared.find("void WaitBackbufferFrameLatency(");
     ASSERT_NE(sharedWait, std::string::npos);
@@ -204,7 +204,7 @@ TEST(PureDLSSStartupStallDumpTest, SilenceSinceTheLastPresentStillDumps) {
 }
 
 TEST(PureDLSSStartupStallDumpSourceTest, PresentReturnIsRecordedOnEveryTransport) {
-    for (const char* file : {"hook/common/dxgi_shared_present_routing.cpp", "hook/common/dxgi_shared_present1.cpp",
+    for (const char* file : {"hook/present/dxgi_shared_present_routing.cpp", "hook/present/dxgi_shared_present1.cpp",
                              "hook/wrappers/dxgi_swapchain_wrap_present.cpp"}) {
         const std::string source = ReadProjectSource(file);
         ASSERT_FALSE(source.empty()) << file;
@@ -216,7 +216,7 @@ TEST(PureDLSSStartupStallDumpSourceTest, PresentReturnIsRecordedOnEveryTransport
         ASSERT_NE(leave, std::string::npos) << file;
         EXPECT_LT(stamp, leave) << file << ": stamp before leaving, so depth 0 never reads a stale return";
     }
-    const std::string ecl = ReadProjectSource("hook/apis/dx12_hook_ecl.cpp");
+    const std::string ecl = ReadProjectSource("hook/d3d12/dx12_hook_ecl.cpp");
     ASSERT_FALSE(ecl.empty());
     const size_t policy = ecl.find("ShouldRequestImmediateDumpForPureDLSSStartupWrapperOnlyStall(");
     ASSERT_NE(policy, std::string::npos);

@@ -16,7 +16,7 @@ the 230-line rolling-memory ceiling.
   real queue read `_orig` at `queue+0x10` and jumped through garbage vtable slot `-1` (AV at
   `reshade+0x112467`).
 - Fix (builds 0.1.5991/0.1.5995): type-safe per-vtable original resolution — policy
-  `hook/common/dx12_overlay_policy/ecl_recursion_break.h` classifies candidates by owning module, native
+  `hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h` classifies candidates by owning module, native
   D3D12 runtime ECL is only used for native-vtable queues, proxy queues only forward through their exact
   vtable original, and foreign/self hooks are never re-entered (recursion-depth bound drops instead of
   looping). Native originals are published eagerly (`TryPublishRealD3D12ECLCandidate` /

@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-#include "../hook/vulkan_layer/vulkan_sharpen_route_policy.h"
-#include "../hook/vulkan_layer/vulkan_sharpen_state_registry.h"
+#include "hook/vulkan_layer/vulkan_sharpen_route_policy.h"
+#include "hook/vulkan_layer/vulkan_sharpen_state_registry.h"
 #include "source_fragment_reader.h"
 
 namespace {

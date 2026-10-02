@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "../hook/common/custom_overlay.h"
+#include "hook/overlay/custom_overlay.h"
 
 using namespace CustomOverlay;
 

@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/fg_detection.h"
-#include "../hook/common/fg_runtime_state.h"
+#include "hook/fg/fg_detection.h"
+#include "hook/fg/fg_runtime_state.h"
 
 #include <filesystem>
 
-#include "../common/log_meter.h"
+#include "common/logging/log_meter.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -248,7 +248,7 @@ TEST(FGRuntimeStateTest, RuntimeModeHelpersMatchClassification) {
 // burst-then-heartbeat rather than a blanket suppression.
 TEST(FGRuntimeStateTest, DlssFGMultiplierTransitionLogIsMetered) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "common" / "fg_detection.cpp";
+    const fs::path source = fs::current_path() / "hook" / "fg" / "fg_detection.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());

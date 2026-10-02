@@ -8,7 +8,7 @@
 namespace {
 
 std::string ReadScreenshotSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "screenshot.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "media" / "screenshot.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();

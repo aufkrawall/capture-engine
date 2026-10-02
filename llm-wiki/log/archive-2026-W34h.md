@@ -51,7 +51,7 @@ What is worth remembering from the work itself:
   `r.HDR.UI.Level` was not added as a fallback because it is a multiplier, not nits, and the equivalence is
   unmeasured.
 - ABI: nine appended `SharedGraphicsConfig` fields, `sizeof` 384 -> 420, `SHARED_MEMORY_VERSION` 43 -> 44 (mapping
-  names renamed with it). `common/config_load_ue5.cpp` was split out of `config_load_core.cpp` so the `[UE5]`
+  names renamed with it). `common/config/config_load_ue5.cpp` was split out of `config_load_core.cpp` so the `[UE5]`
   vocabulary is one unit.
 - Stale-risk: **nothing has run in a game yet.** Proven from binaries, unit tests, and the engine's own registered
   help text only. First run should check the install/verify summary for the new names, and whether forcing

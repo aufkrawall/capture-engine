@@ -38,7 +38,7 @@
   4. That means the first fallback idea was only half-complete: it covered the core Streamline DLLs (`sl.interposer.dll` / `sl.common.dll`), but the actual failing `slDLSSGSetOptions` / `slDLSSGGetState` pointers live in the later feature-owner module behind the returned export address. The later menu-side OFF could therefore still bypass CE through that owner DLL even though the wrapper path had already seen an earlier ON.
 
 - **Fix**:
-  1. `hook/apis/streamline_hook.cpp` now records a per-feature "owner-module fallback attempted" target for `slDLSSGSetOptions`, `slDLSSGGetState`, and `slReflexSetConstants`.
+  1. `hook/streamline/streamline_hook.cpp` now records a per-feature "owner-module fallback attempted" target for `slDLSSGSetOptions`, `slDLSSGGetState`, and `slReflexSetConstants`.
   2. When `MaybeHook...` sees a real feature-export pointer and export-inline hooking fails, CE now resolves the owning DLL of that pointer via `GetModuleHandleEx(... FROM_ADDRESS ...)` / `GetModuleFileNameA(...)`.
   3. CE then installs the direct-import fallback against that real owner module instead of waiting on the core Streamline module names alone. New logs now say `Direct import fallback unavailable for ... owner=... target=...` when even that owner-module path cannot be armed, so future traces show the remaining seam directly.
 
@@ -47,7 +47,7 @@
   2. `python build.py --skip-updates` passed and produced build `0.1.2567`; `build/verification/latest_summary.txt` reports `success=1`.
   3. The build still logged the repo's existing pip-bootstrap permission noise plus `%LOCALAPPDATA%\\Temp` rename failures while compiling x86 test apps, but the main build summary/manifest still marked the product build successful.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-low. The new change stays generic and still does not alter FG routing or disable any runtime path. Fresh Talos validation is still required after build `0.1.2567` to confirm the later owner-module fallback now catches the menu-side `DLSS FG -> off` edge and that the existing explicit-OFF reducer keeps stale `GetState` reactivation suppressed until a real explicit re-enable.
 
@@ -63,7 +63,7 @@
   5. Once CE missed that final explicit OFF edge, the overlay publication layer had no newer state to publish. The stale `DLSS FG` label was therefore a real observation gap upstream of the publisher, not another label-mapping bug.
 
 - **Fix**:
-  1. `hook/apis/streamline_hook.cpp` now registers dynamic hooks for `slDLSSGSetOptions`, `slDLSSGGetState`, and `slReflexSetConstants` in addition to the existing `slGetFeatureFunction` / `slSetD3DDevice` coverage.
+  1. `hook/streamline/streamline_hook.cpp` now registers dynamic hooks for `slDLSSGSetOptions`, `slDLSSGGetState`, and `slReflexSetConstants` in addition to the existing `slGetFeatureFunction` / `slSetD3DDevice` coverage.
   2. The same file now adds `InstallFeatureImportFallbackIfPresent(...)`, which installs direct-import fallback IAT hooks for those feature exports whenever a loaded Streamline module exports them, while still preserving the real export pointer in the original-function slot.
   3. New high-signal logs now say `Streamline Hook: Installed direct import fallback for ... via ...` so future traces immediately show whether CE had a generic recovery path after an export-inline failure.
 
@@ -72,7 +72,7 @@
   2. `python build.py --skip-updates` passed and produced build `0.1.2565`; `build/verification/latest_summary.txt` reports `success=1`.
   3. There is not yet a dedicated unit test that emulates PE import tables for this new direct-import fallback seam. The current unit harness covers the Streamline runtime-policy layer, while this change itself is a Windows module-hooking integration path, so runtime logs remain the main diagnostic proof for this exact family.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-low. The change is generic and intentionally narrow: it improves how CE observes Streamline feature calls when a specific export-inline hook fails, without changing FG routing or disabling any runtime path. Fresh Talos and GTA validation is still required after build `0.1.2565` to confirm that menu-side `DLSS FG -> off` now logs and clears the overlay immediately even when `slDLSSGSetOptions` export inline hooking fails.
 
@@ -87,8 +87,8 @@
   4. The new Talos menu repro is exactly the kind of shutdown-adjacent churn where that second seam matters, especially because the session also still logged `Failed to inline hook slDLSSGSetOptions`, so some final visibility corrections may depend on which state source updated most recently rather than on every path seeing a perfectly matched OFF edge.
 
 - **Fix**:
-  1. `hook/common/hook_common.h` + `hook/apis/dx12_hook.cpp` — Added a shared overlay-publication sequence allocator and extended the preferred visible-state cache with a comparable `sequence` field. Every preferred-state update now records one globally ordered publication sequence and logs it (`FG publication preferred state: ... sequence=...`).
-  2. `hook/common/overlay_metrics_publisher.cpp` — Planner state changes now also allocate from that same publication sequence. When the planner and preferred visible state disagree, the shared publisher now lets the newer sequence win instead of unconditionally trusting the preferred cache. Override logs now say which side won and include both sequence numbers.
+  1. `hook/runtime/hook_common.h` + `hook/d3d12/dx12_hook.cpp` — Added a shared overlay-publication sequence allocator and extended the preferred visible-state cache with a comparable `sequence` field. Every preferred-state update now records one globally ordered publication sequence and logs it (`FG publication preferred state: ... sequence=...`).
+  2. `hook/overlay/overlay_metrics_publisher.cpp` — Planner state changes now also allocate from that same publication sequence. When the planner and preferred visible state disagree, the shared publisher now lets the newer sequence win instead of unconditionally trusting the preferred cache. Override logs now say which side won and include both sequence numbers.
   3. `tests/test_overlay_fg_status_publication.cpp` + `tests/test_stubs.cpp` — Regression coverage now locks both directions:
      - a stale planner `DLSS FG` publication is overridden by a newer preferred visible `FSR FG` / `off` state
      - a newer planner `off` update beats an older cached preferred `DLSS FG` state
@@ -97,7 +97,7 @@
   1. `python build.py --skip-updates --tests-only --run-tests --gtest-filter=OverlayFGStatusPublicationTest.*` passed all 8 focused tests and produced build `0.1.2561`.
   2. The focused run still logged the repo's existing pip-bootstrap permission noise in `%LOCALAPPDATA%\\Temp`, but the actual build/test step completed successfully.
 
-- **Files changed**: `hook/common/hook_common.h`, `hook/apis/dx12_hook.cpp`, `hook/common/overlay_metrics_publisher.cpp`, `tests/test_overlay_fg_status_publication.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/runtime/hook_common.h`, `hook/d3d12/dx12_hook.cpp`, `hook/overlay/overlay_metrics_publisher.cpp`, `tests/test_overlay_fg_status_publication.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-low. The change stays tightly scoped to publication ordering and debug logging, not FG routing or queue ownership. Runtime validation is still important because this area depends on real call ordering across Streamline, FFX, DXGI, and menu/shutdown churn.
 
@@ -112,8 +112,8 @@
   4. The same Talos session also logged `Failed to inline hook slDLSSGSetOptions`, which makes it even more important that shared publication paths prefer the latest DX12-visible state instead of assuming the planner publication order will always self-correct on the next frame.
 
 - **Fix**:
-  1. `hook/common/hook_common.h` + `hook/apis/dx12_hook.cpp` — Added a shared DX12-exported preferred overlay-publication state cache. `DX12::ProcessFrame` now updates it with the locally-computed visible FG state, and the Streamline transition callback plus native-FSR callback path update it too so immediate refreshes have a current visible state even before the next `ProcessFrame`.
-  2. `hook/common/overlay_metrics_publisher.cpp` — The planner-driven publication overload now asks DX12 for that preferred visible state and overrides stale planner publications when they disagree. New logs (`FG publication preferred override: ...`) make future repaint races explicit in traces.
+  1. `hook/runtime/hook_common.h` + `hook/d3d12/dx12_hook.cpp` — Added a shared DX12-exported preferred overlay-publication state cache. `DX12::ProcessFrame` now updates it with the locally-computed visible FG state, and the Streamline transition callback plus native-FSR callback path update it too so immediate refreshes have a current visible state even before the next `ProcessFrame`.
+  2. `hook/overlay/overlay_metrics_publisher.cpp` — The planner-driven publication overload now asks DX12 for that preferred visible state and overrides stale planner publications when they disagree. New logs (`FG publication preferred override: ...`) make future repaint races explicit in traces.
   3. `tests/test_overlay_fg_status_publication.cpp` + `tests/test_stubs.cpp` — Added regression coverage for planner-driven publication overriding a stale planner `DLSS FG` state with the latest DX12-visible `FSR FG` and then `off`.
 
 - **Verification**:
@@ -121,7 +121,7 @@
   2. `python build.py --skip-updates` passed and produced build `0.1.2557`; `build/verification/latest_summary.txt` reports `success=1`.
   3. The full build still carried the existing pip-bootstrap permission noise and x86 test-app `%LOCALAPPDATA%\\Temp` rename failures, but the verification manifest marked the main build successful and produced the expected product artifacts.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/common/hook_common.h`, `hook/common/overlay_metrics_publisher.cpp`, `tests/test_overlay_fg_status_publication.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `hook/runtime/hook_common.h`, `hook/overlay/overlay_metrics_publisher.cpp`, `tests/test_overlay_fg_status_publication.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The fix is intentionally small and only changes publication-state preference, not FG detection/routing, but this area still depends on call ordering across multiple DX12 / DXGI refresh paths and should be re-checked after future planner/publication churn.
 
@@ -135,7 +135,7 @@
   3. Because `DetourPresent` calls `UpdateDXGIPresentMetricsAndPublish` (also using the raw plan) *before* `HandleDX12ProcessFrame`, the final per-frame state was whatever `ProcessFrame` published. As long as `ProcessFrame` kept publishing the stale plan every frame, the overlay stayed wrong for the entire grace period.
 
 - **Fix**:
-  1. `hook/apis/dx12_hook.cpp` — `ProcessFrame` now publishes `currentFGActive`/`currentRuntimeMode` directly via `PublicationInput` instead of the raw `FGActionPlan`.
+  1. `hook/d3d12/dx12_hook.cpp` — `ProcessFrame` now publishes `currentFGActive`/`currentRuntimeMode` directly via `PublicationInput` instead of the raw `FGActionPlan`.
   2. Added a divergence log (`DX12::ProcessFrame overlay divergence: plan(...) vs local(...)`) whenever the local suppressed state disagrees with the global plan, making future grace-period issues self-explanatory from logs alone.
   3. Also fixed a secondary edge case where `currentSLFGRunning && !currentFGActive` forced `currentFGActive=true` but left `currentRuntimeMode=kOff`, which would trigger an invariant violation inside `PublishOverlayFGMetrics`. The force now also sets `currentRuntimeMode=kDLSSFG` when the current mode is not already an active FG mode.
 
@@ -143,7 +143,7 @@
   1. `python build.py --skip-updates` passed and produced build `0.1.2555`.
   2. Full `tests\unit_tests.exe` ran 641 tests; all passed.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `llm-wiki/overlay-fg-status.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Low. The change is strictly scoped to the publication block inside `ProcessFrame`. No detection, routing, or transition logic is affected.
 
@@ -160,16 +160,16 @@
   6. Result: `postSLSyntheticStartupActivationPending` stayed true forever, `startupHalfArmed` stayed true, and every Present kept bypassing indefinitely.
 
 - **Fix**:
-  1. `hook/common/dx12_overlay_policy.h` — `ShouldDelayPostSLActivationUntilSafeBootstrapPath` now allows proceeding when `hasSLWrapperQueue=true` even if `hasRealD3D12ECL=false`. PostSL can bootstrap through the SL wrapper path (which then captures the real queue behind it on the first submit).
-  2. `hook/common/dxgi_shared.h` — `ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute` no longer requires `explicitSetOptionsActivation`. For post-FSR comebacks, `safePostFSRBootstrapPath` alone is sufficient to invoke the callback on the normal route. This aligns the callback gate with the ECL fallback, which already did not require explicit SetOptions.
-  3. `hook/common/dxgi_shared.cpp` — Added skip-callback diagnostic logs in `DetourPresent` and `DetourPresent1` when the normal route keeps the startup present but decides not to invoke PostSL, making future deadlock diagnosis self-explanatory.
+  1. `hook/d3d12/dx12_overlay_policy.h` — `ShouldDelayPostSLActivationUntilSafeBootstrapPath` now allows proceeding when `hasSLWrapperQueue=true` even if `hasRealD3D12ECL=false`. PostSL can bootstrap through the SL wrapper path (which then captures the real queue behind it on the first submit).
+  2. `hook/present/dxgi_shared.h` — `ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute` no longer requires `explicitSetOptionsActivation`. For post-FSR comebacks, `safePostFSRBootstrapPath` alone is sufficient to invoke the callback on the normal route. This aligns the callback gate with the ECL fallback, which already did not require explicit SetOptions.
+  3. `hook/present/dxgi_shared.cpp` — Added skip-callback diagnostic logs in `DetourPresent` and `DetourPresent1` when the normal route keeps the startup present but decides not to invoke PostSL, making future deadlock diagnosis self-explanatory.
   4. `tests/test_dxgi_shared.cpp` — Updated `PostSLActivationWaitsForSafeBootstrapPathAfterFSRPhase` and `ConfirmedStartupSettlingCanStillInvokePostSLWithoutSyntheticBypass` to match the relaxed policy expectations.
 
 - **Verification**:
   1. `python build.py --skip-updates` passed and produced build `0.1.2554`.
   2. Full `tests\unit_tests.exe` ran 641 tests; all passed.
 
-- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_overlay_policy.h`, `hook/present/dxgi_shared.h`, `hook/present/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Low. The relaxation is tightly bounded: it only affects post-FSR sessions where the SL wrapper queue is already captured but realECL has not yet been reprobed, and it only removes the `explicitSetOptionsActivation` requirement from the Present-path callback gate (the ECL path already lacked it). The core safety invariant — `safePostFSRBootstrapPath` must still be true — is unchanged.
 
@@ -185,7 +185,7 @@
   5. The secondary effect was that `SetDLSSFGActive(true)` could also be blocked if the stale heuristic survived into the DLSS reactivation window, because the existing suppression logic returns early when `heuristicFSRFGActive && !streamlineFGSignal`.
 
 - **Fix**:
-  1. `hook/common/fg_detection.cpp` — `SetFSRFGActive(false)` now explicitly clears `heuristicFSRFGActive` with a diagnostic log: `FG: Clearing heuristic FSR FG state — authoritative FSR FG turned OFF`. This ensures that any heuristic latched during an earlier queue-change window is invalidated when the authoritative API says FSR is off.
+  1. `hook/fg/fg_detection.cpp` — `SetFSRFGActive(false)` now explicitly clears `heuristicFSRFGActive` with a diagnostic log: `FG: Clearing heuristic FSR FG state — authoritative FSR FG turned OFF`. This ensures that any heuristic latched during an earlier queue-change window is invalidated when the authoritative API says FSR is off.
   2. `tests/test_fps_limiter.cpp` — Added two regression tests:
      - `AuthoritativeFSROffClearsStaleHeuristic`: verifies that `SetFSRFGActive(false)` clears a pre-existing heuristic flag.
      - `StaleHeuristicFSRClearedByAuthoritativeFSROffAllowsDLSSReactivation`: verifies the full FSR→off→DLSS sequence works correctly.
@@ -194,7 +194,7 @@
   1. `python build.py --skip-updates` passed and produced build `0.1.2553`.
   2. Full `.	ests	ests.exe` ran 641 tests; all passed.
 
-- **Files changed**: `hook/common/fg_detection.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/fg/fg_detection.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Low. The fix is a single clear inside the authoritative FSR OFF path. No other callers are affected. The `SetDLSSFGActive(true)` suppression logic was intentionally left unchanged to preserve the existing heuristic-priority-over-transient-DLSS behavior; the stale heuristic is now prevented at the source (`SetFSRFGActive(false)`) rather than by weakening the DLSS guard.
 
@@ -210,8 +210,8 @@
   5. When DLSS later turned OFF, there was no `lastWorkingQ` to preserve and no `scQueue`, leaving the recovery path stranded despite the primary game queue being perfectly valid.
 
 - **Fix**:
-  1. `hook/common/dx12_overlay_policy.h` — `ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown` now evaluates `commandQueueMatchesPrimaryGameQueue` **even when `hasSwapchainQueue` is false**. If the current command queue matches the primary game queue, deferral is skipped. This prevents indefinite deferral when the only proven-safe queue is the primary game queue.
-  2. `hook/apis/dx12_hook.cpp` — Added a one-shot diagnostic log that fires when the primary-queue escape hatch allows overlay init despite missing `scQueue` and `lastWorkingQ`, making future post-FSR recovery traces self-explanatory.
+  1. `hook/d3d12/dx12_overlay_policy.h` — `ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown` now evaluates `commandQueueMatchesPrimaryGameQueue` **even when `hasSwapchainQueue` is false**. If the current command queue matches the primary game queue, deferral is skipped. This prevents indefinite deferral when the only proven-safe queue is the primary game queue.
+  2. `hook/d3d12/dx12_hook.cpp` — Added a one-shot diagnostic log that fires when the primary-queue escape hatch allows overlay init despite missing `scQueue` and `lastWorkingQ`, making future post-FSR recovery traces self-explanatory.
   3. `tests/test_dxgi_shared.cpp` — Added `EXPECT_FALSE` test case in `PostFSRStreamlineTeardownWithoutSwapchainQueueWaitsForLiveNonWrapperQueue` for the new primary-queue behavior.
 
 - **Crash context**:
@@ -221,6 +221,6 @@
   1. `python build.py --skip-updates` passed and produced build `0.1.2552`.
   2. Full `.	ests	ests.exe` ran 639 tests; all passed.
 
-- **Files changed**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_overlay_policy.h`, `hook/d3d12/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Low. The new branch is tightly scoped: it only triggers when both `scQueue` and `lastWorkingQ` are null, and only if the current queue is the primary game queue. If a title uses a different queue during teardown, the old deferral behavior is preserved.

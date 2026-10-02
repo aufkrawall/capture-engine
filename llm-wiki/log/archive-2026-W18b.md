@@ -33,9 +33,9 @@
   6. `DrawDX10Overlay()` exists specifically for this case but was never reached because the detection returned `D3D11`.
 
 - **Fix** (3 files):
-  1. `DetectSwapChainAPITypeForDX11Hook()` in `hook/apis/dx11_hook.cpp`: removed the `if (!hasD3D11Device)` guard on the D3D10 QI. Always try all three QI's independently.
-  2. `DetectDXGISwapChainAPIType()` in `hook/common/dxgi_shared.cpp`: same fix — always try all three QI's without short-circuiting.
-  3. `SelectPrimarySwapChainAPIType()` in `hook/common/dxgi_shared.h`: reversed the priority — prefer `D3D10` over `D3D11` when both succeed. When both QI's succeed the device is D3D10-on-D3D11 (functionally D3D10). A native D3D11 device only QI's for D3D11. A native D3D10 device only QI's for D3D10 (no D3D11 translation on pre-Win8 systems).
+  1. `DetectSwapChainAPITypeForDX11Hook()` in `hook/d3d11/dx11_hook.cpp`: removed the `if (!hasD3D11Device)` guard on the D3D10 QI. Always try all three QI's independently.
+  2. `DetectDXGISwapChainAPIType()` in `hook/present/dxgi_shared.cpp`: same fix — always try all three QI's without short-circuiting.
+  3. `SelectPrimarySwapChainAPIType()` in `hook/present/dxgi_shared.h`: reversed the priority — prefer `D3D10` over `D3D11` when both succeed. When both QI's succeed the device is D3D10-on-D3D11 (functionally D3D10). A native D3D11 device only QI's for D3D11. A native D3D10 device only QI's for D3D10 (no D3D11 translation on pre-Win8 systems).
 
 - **Test changes**:
   - Updated `SelectPrimarySwapChainAPITypePrefersHighestDeviceVersion` to expect `D3D10` (was `D3D11`) for `(false, true, true)`.
@@ -44,7 +44,7 @@
 
 - **Verification**: Build `0.1.2726`: `success=1`, 668 tests passed (was 667 before, 1 new regression test added).
 
-- **Files changed**: `hook/apis/dx11_hook.cpp`, `hook/common/dxgi_shared.cpp`, `hook/common/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d11/dx11_hook.cpp`, `hook/present/dxgi_shared.cpp`, `hook/present/dxgi_shared.h`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. The D3D10 overlay needs fresh end-to-end validation with the fixed detection to confirm `DrawDX10Overlay` is called and the overlay appears on screen. The fix is generic and applies to any D3D10 game on Windows 10+.
 
@@ -69,7 +69,7 @@
   1. Full canonical regression passed: `python build.py --skip-updates --run-tests` ran all 669 unit tests successfully and completed the product build (`build_version=0.1.2725`, `success=1`).
   2. The full build produced both x64 and x86 hook DLLs plus all test apps and the Vulkan layer.
 
-- **Files changed**: `hook/apis/dx11_hook.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d11/dx11_hook.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until fresh DX10 test app validation confirms no more `0xC00000FD` from the D3D11 create path. The same IAT-vs-export-hook overlap pattern could theoretically affect `D3D11CreateDevice` (also hooked by both wrapper and DX11 hook), but only `D3D11CreateDeviceAndSwapChain` has a `HookExport` call, so the risk is isolated. Also applies to x86 builds of functionally identical 32-bit DX10/11 games.
 
@@ -86,7 +86,7 @@
   6. The 32-bit process did not have `nvspcap64.dll` loaded (64-bit only DLL), so `ShouldDeferEarlyDX12TempSwapchainPresentHookInstall` returned `false`, Present hooks were installed eagerly via temp swapchain, and the overlay worked.
 
 - **Fix**:
-  1. `FindAndWrapPreExistingSwapchains()` in `hook/apis/dx12_hook.cpp` now detects when Present hooks are missing (`HasPresentInlineHooks()` / `HasPresentDetourHooks()`) and retries installation via a postponed temp swapchain.
+  1. `FindAndWrapPreExistingSwapchains()` in `hook/d3d12/dx12_hook.cpp` now detects when Present hooks are missing (`HasPresentInlineHooks()` / `HasPresentDetourHooks()`) and retries installation via a postponed temp swapchain.
   2. The `g_CreatingTempSwapchain` guard prevents re-entrant side effects; calling `oCreateSwapChainForHwndGlobal` bypasses CE's own hooks. By this point the overlay's startup hook chain is settled, so the recursion risk that motivated the original deferral is minimal.
   3. If the postponed temp swapchain succeeds, log `DX12: Present hooks installed via postponed temp swapchain`; if it also fails, log `Postponed temp swapchain also failed — pre-existing swapchains will not have overlay...`.
   4. Fixed the misleading `DX12Hook: Initialized (factory + Present hooks installed)` log message — now accurately reports `(factory hooks installed; Present hooks deferred to FindAndWrapPreExistingSwapchains)` when hooks are missing.
@@ -96,7 +96,7 @@
   1. Full canonical regression passed: `python build.py --skip-updates --run-tests` ran all 668 unit tests successfully and completed the product build (`build_version=0.1.2723`, `success=1`).
   2. The full build produced both x64 and x86 hook DLLs plus all test apps and the Vulkan layer.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: High until fresh 64-bit dx12_test.exe validation confirms the hook_debug.log shows `DX12: Present hooks installed via postponed temp swapchain` and the perf_metrics CSV has frame data. The fix is generic: any 64-bit DX12 game with fast startup that has nvspcap64.dll loaded (NVIDIA Capture SDK) could hit the same timing window.
 
@@ -110,7 +110,7 @@
   3. The filtered `nvapi_QueryInterface` hook was registered only when `g_ReflexLimiter.Init()` ran after NvAPI loaded at `19:20:19.288`, more than two seconds after the hook thread started. That left a startup window where Talos could cache original NvAPI Reflex pointers before CE armed the manual low-latency handoff.
 
 - **Fix**:
-  1. `hook/main.cpp` now arms the filtered QueryInterface/GetProcAddress hook immediately after local `config.ini` load when manual Reflex mode is configured, and again after shared-memory sync if shared memory is the first source that proves manual Reflex is wanted.
+  1. `hook/runtime/main.cpp` now arms the filtered QueryInterface/GetProcAddress hook immediately after local `config.ini` load when manual Reflex mode is configured, and again after shared-memory sync if shared memory is the first source that proves manual Reflex is wanted.
   2. The existing caller filter remains the safety boundary: game callers can receive CE's SetSleepMode/Sleep wrappers only while manual Reflex is configured or active, while Streamline/FFX runtimes, third-party overlays, system modules, and CE modules still receive original driver pointers.
   3. Manual Reflex config detection is now centralized in `ce::fps_limiter_policy::IsManualReflexLimiterConfigured(...)` and covered by a focused regression test, so the early-arm condition matches the runtime/shared-memory condition used by the Reflex limiter itself.
   4. Diagnostics now include `ReflexLimiter: Early filtered nvapi_QueryInterface hook armed from config.ini...` (or shared memory), making fresh Talos traces prove whether the QueryInterface handoff was armed before NvAPI readiness.
@@ -120,7 +120,7 @@
   2. Full canonical regression passed: `python build.py --skip-updates --run-tests` ran all 666 unit tests and completed the product build (`build_version=0.1.2694`, `success=1`).
   3. Direct touched-file formatter check passed for the edited C++/test files, and the required direct compile `python build.py --skip-updates` completed successfully afterward (`build_version=0.1.2695`).
 
-- **Files changed**: `hook/main.cpp`, `hook/common/fps_limiter_policy.h`, `hook/common/reflex_limiter_query_hook.inl`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/runtime/main.cpp`, `hook/pacing/fps_limiter_policy.h`, `hook/common/reflex_limiter_query_hook.inl`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: High until fresh Talos validation confirms the new early-arm log appears before NvAPI readiness and the run transitions to `Returning Sleep wrapper...` / `Game called Reflex Sleep via NvAPI` with latency near the game's own limiter. GTA validation should still confirm Reflex / DLSS FG switching because the manual limiter remains disabled there and sensitive runtime callers still receive original driver pointers.
 
@@ -141,9 +141,9 @@
 - **Verification**:
   1. Focused limiter coverage passed: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=FpsLimiterTest.ManualReflexFirstPushRearmsLowLatencyModeBeforeLimit:FpsLimiterTest.NonManualReflexPushDoesNotForceLowLatencyReset:ReflexFpsLimiterPolicyTest.*`.
   2. Full canonical regression passed: `python build.py --skip-updates --run-tests` ran all 665 unit tests and completed the product build (`build_version=0.1.2692`, `success=1`).
-  3. Direct touched-file `clang-format --dry-run -Werror` passed for `hook/common/reflex_limiter.h` and `tests/test_fps_limiter.cpp`.
+  3. Direct touched-file `clang-format --dry-run -Werror` passed for `hook/pacing/reflex_limiter.h` and `tests/test_fps_limiter.cpp`.
 
-- **Files changed**: `hook/common/reflex_limiter.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/reflex_limiter.h`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: High until fresh Talos validation confirms the automatic re-arm gets the low-latency result immediately at startup without the manual config toggle, and GTA validation confirms Reflex / DLSS FG switching remains stable with CE's manual limiter disabled.
 
@@ -169,7 +169,7 @@
   3. `python build.py --skip-updates --lint` now reports C++ Style OK and clang-tidy with 0 warnings, but cannot complete Python lint/type checks because `pyright`, `flake8`, and `black` are missing and pip cannot resolve PyPI from this environment.
   4. The exact `python build.py` command was run as requested. The sandboxed run failed immediately with an MSYS2 bash signal-pipe permission error; the elevated run reached lint and then failed only on the same missing Python tooling / PyPI DNS problem. A later exact rerun was rejected by the platform's elevated-execution limit, so the closest complete verification remains the successful `--skip-updates --run-tests` build plus the lint evidence above.
 
-- **Files changed**: `build.py`, `common/crash_handler.cpp`, `common/crash_handler.h`, `hook/apis/dx11_hook.cpp`, `hook/apis/dx12_hook.cpp`, `hook/apis/dx12_hook.h`, `hook/apis/ffx_hook.cpp`, `hook/apis/ffx_hook.h`, `hook/apis/streamline_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `hook/common/dxgi_shared.cpp`, `hook/common/fps_limiter.h`, `hook/common/fps_limiter_policy.h`, `hook/common/hook_common.h`, `hook/common/overlay_compat.h`, `hook/common/overlay_metrics_publisher.cpp`, `hook/common/reflex_limiter.h`, `hook/common/reflex_limiter_query_hook.inl`, `hook/common/streamline_runtime_policy.h`, `hook/wrappers/iat_hook.cpp`, `tests/test_crash_dump_policy.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_ffx_api_parsing.cpp`, `tests/test_fps_limiter.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `build.py`, `common/crash/crash_handler.cpp`, `common/crash/crash_handler.h`, `hook/d3d11/dx11_hook.cpp`, `hook/d3d12/dx12_hook.cpp`, `hook/d3d12/dx12_hook.h`, `hook/ffx/ffx_hook.cpp`, `hook/ffx/ffx_hook.h`, `hook/streamline/streamline_hook.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `hook/present/dxgi_shared.cpp`, `hook/pacing/fps_limiter.h`, `hook/pacing/fps_limiter_policy.h`, `hook/runtime/hook_common.h`, `hook/overlay/overlay_compat.h`, `hook/overlay/overlay_metrics_publisher.cpp`, `hook/pacing/reflex_limiter.h`, `hook/common/reflex_limiter_query_hook.inl`, `hook/streamline/streamline_runtime_policy.h`, `hook/hooking/iat_hook.cpp`, `tests/test_crash_dump_policy.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_ffx_api_parsing.cpp`, `tests/test_fps_limiter.cpp`, `tests/test_streamline_runtime_policy.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: High until fresh Talos validation confirms the manual Reflex limiter holds 60 fps with latency near the game's own limiter, including when DLSS FG is active, and fresh GTA validation confirms Reflex / DLSS FG on/off switching still stays stable with CE's manual limiter disabled.
 
@@ -195,7 +195,7 @@
   2. Focused coverage passed: `python build.py --run-tests --tests-only --skip-updates --gtest-filter=ReflexFpsLimiterPolicyTest.*:FpsLimiterTest.*` ran 26/26 tests successfully.
   3. Full canonical regression passed: `python build.py --skip-updates --run-tests` ran all 662 unit tests successfully and completed the product build.
 
-- **Files changed**: `hook/common/fps_limiter.h`, `hook/common/fps_limiter_policy.h`, `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/dx11_hook.cpp`, `hook/apis/dx12_hook.cpp`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/fps_limiter.h`, `hook/pacing/fps_limiter_policy.h`, `hook/present/dxgi_shared.h`, `hook/present/dxgi_shared.cpp`, `hook/d3d11/dx11_hook.cpp`, `hook/d3d12/dx12_hook.cpp`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until fresh Talos runtime validation confirms the same 60 fps cap with NVIDIA overlay latency near the game's own limiter, and fresh GTA validation confirms Reflex / DLSS FG on/off switching stays crash-free when CE's manual limiter remains disabled.
 
@@ -211,8 +211,8 @@
 - **Fix**:
   1. `FpsLimiter::Apply(bool allowPostPresentReflexCadence)` can now arm explicit CE-owned Reflex cadence during the pre-Present phase without doing the wait yet.
   2. `FpsLimiter::ApplyPostPresent()` performs the local cadence wait and CE-owned `NvAPI_D3D_Sleep` after `Present` returns. This blocks the game before it starts the next simulation/render frame, preserving the 60 fps cap while avoiding the stale-frame latency added by pre-Present sleeping.
-  3. DXGI/DX12 Present and Present1 paths in `hook/common/dxgi_shared.cpp` and `hook/wrappers/dxgi_swapchain_wrap.cpp` opt into the two-phase path and call `ApplyPostPresent()` only after a successful Present. Non-DXGI call sites keep the previous single-phase behavior unless they explicitly opt in later.
-  4. `hook/common/fps_limiter_policy.h` now exposes the post-present phase decision for focused tests. Game-owned Reflex handoff still requires fresh stable game sleep and no recent present gap, so GTA Reflex / DLSS FG switching remains guarded.
+  3. DXGI/DX12 Present and Present1 paths in `hook/present/dxgi_shared.cpp` and `hook/wrappers/dxgi_swapchain_wrap.cpp` opt into the two-phase path and call `ApplyPostPresent()` only after a successful Present. Non-DXGI call sites keep the previous single-phase behavior unless they explicitly opt in later.
+  4. `hook/pacing/fps_limiter_policy.h` now exposes the post-present phase decision for focused tests. Game-owned Reflex handoff still requires fresh stable game sleep and no recent present gap, so GTA Reflex / DLSS FG switching remains guarded.
   5. Diagnostics now distinguish `Apply: REFLEX post-present armed`, `Apply: REFLEX post-present cadence ...`, and `Apply: REFLEX post-present stats ...` from the older pre-Present local cadence path.
 
 - **Verification**:
@@ -221,6 +221,6 @@
   3. Canonical compile passed after the final code changes: `python build.py --skip-updates` produced build `0.1.2670` successfully.
   4. Lint/LSP status was rechecked: touched C++ files pass direct `clang-format --dry-run -Werror`, and `python build.py --lint --skip-updates` reports clang-tidy with 0 warnings, but the repo-wide lint command still cannot complete because it reports 5 clang-format batches outside the direct touched-file check and host Python packages `pyright`, `flake8`, and `black` are missing while pip DNS lookup fails. The installed npm/Node pyright path also crashes before analysis with the local `ncrypto::CSPRNG(nullptr, 0)` Node assertion. No Python type errors were reported by an actual analyzer in this run because the analyzer could not start.
 
-- **Files changed**: `hook/common/fps_limiter.h`, `hook/common/fps_limiter_policy.h`, `hook/common/dxgi_shared.cpp`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/index.md`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/pacing/fps_limiter.h`, `hook/pacing/fps_limiter_policy.h`, `hook/present/dxgi_shared.cpp`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `tests/test_fps_limiter.cpp`, `llm-wiki/index.md`, `llm-wiki/current.md`, `llm-wiki/regression-testing-and-logging.md`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium-high until fresh Talos runtime validation confirms `REFLEX post-present cadence` holds 60 fps with NVIDIA overlay latency well below 70 ms, and fresh GTA validation confirms Reflex / DLSS FG on/off switching still avoids accidental game-owned handoff and stays crash-free.

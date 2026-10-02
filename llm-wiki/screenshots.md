@@ -3,16 +3,16 @@
 Last cross-checked: 2026-09-16 (combined HDR-plus-SDR publication of one capture under a shared name seed, DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
 
 Primary sources:
-- `common/shared_defs.h`
-- `hook/common/screenshot_hook.{h,cpp}`
-- `hook/apis/ddraw_hook_capture{,_frame}.cpp`
-- `hook/apis/ddraw_hook_overlay_route.cpp`
-- `hook/apis/dx12_hook_screenshot.cpp`
-- `hook/apis/dx12_hook_postsl_render_submit.cpp`
-- `captureengine/screenshot.{h,cpp}`
-- `captureengine/screenshot_encoding.{h,cpp}`
-- `captureengine/screenshot_hdr_encoding.cpp`
-- `common/reserved_capture_output.{h,cpp}`
+- `common/ipc/shared_defs.h`
+- `hook/capture/screenshot_hook.{h,cpp}`
+- `hook/ddraw/ddraw_hook_capture{,_frame}.cpp`
+- `hook/ddraw/ddraw_hook_overlay_route.cpp`
+- `hook/d3d12/dx12_hook_screenshot.cpp`
+- `hook/d3d12/dx12_hook_postsl_render_submit.cpp`
+- `captureengine/media/screenshot.{h,cpp}`
+- `captureengine/media/screenshot_encoding.{h,cpp}`
+- `captureengine/media/screenshot_hdr_encoding.cpp`
+- `common/capture/reserved_capture_output.{h,cpp}`
 - `tests/test_screenshot_encoding.cpp`
 - `tests/test_screenshot_source.cpp`
 - `tests/test_screenshot_hook_worker.cpp`

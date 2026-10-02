@@ -57,9 +57,9 @@ TEST(DXGISharedTest, DedicatedOverlayQueueSubmitRequiresOffscreenList) {
 // the dedicated-queue device removal).
 TEST(DXGISharedSourceTest, DedicatedOverlayQueueSubmitGuardsBackbufferLists) {
     namespace fs = std::filesystem;
-    const fs::path tailSource = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_tail.cpp";
-    const fs::path renderSource = fs::current_path() / "hook" / "apis" / "dx12_hook_overlay_render.cpp";
-    const fs::path policySource = fs::current_path() / "hook" / "apis" / "dx12_hook_overlay_dedicated_queue.cpp";
+    const fs::path tailSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_tail.cpp";
+    const fs::path renderSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_overlay_render.cpp";
+    const fs::path policySource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_overlay_dedicated_queue.cpp";
     ASSERT_TRUE(fs::exists(tailSource));
     ASSERT_TRUE(fs::exists(renderSource));
     ASSERT_TRUE(fs::exists(policySource));
@@ -228,7 +228,7 @@ TEST(DXGISharedTest, DeepHookPrologRefusesAFrameSetupWithoutTheCallersRbpOnTheSt
 // tool rewrites, so an unobservable patch must use the widest recognized form.
 TEST(DXGISharedTest, DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleReadsClean) {
     namespace fs = std::filesystem;
-    const fs::path deepSource = fs::current_path() / "hook" / "wrappers" / "inline_hook_deep.cpp";
+    const fs::path deepSource = fs::current_path() / "hook" / "hooking" / "inline_hook_deep.cpp";
     ASSERT_TRUE(fs::exists(deepSource));
     const std::string deep = ce::test_source::ReadFile(deepSource);
     ASSERT_FALSE(deep.empty());
@@ -245,7 +245,7 @@ TEST(DXGISharedTest, DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleRe
     // With no observation at all the strict refusal stays.
     EXPECT_NE(deep.find("No external hook at byte 0 of %p", detection), std::string::npos);
 
-    const fs::path header = fs::current_path() / "hook" / "wrappers" / "inline_hook.h";
+    const fs::path header = fs::current_path() / "hook" / "hooking" / "inline_hook.h";
     const std::string headerText = ce::test_source::ReadFile(header);
     ASSERT_FALSE(headerText.empty());
     EXPECT_NE(headerText.find("int minimumExternalPatchSize = 0"), std::string::npos);
@@ -257,8 +257,8 @@ TEST(DXGISharedTest, DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleRe
 // the real session directory stages its own copy moments later.
 TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
     namespace fs = std::filesystem;
-    const fs::path entrySource = fs::current_path() / "captureengine" / "main_entry.cpp";
-    const fs::path handlerSource = fs::current_path() / "common" / "crash_handler.cpp";
+    const fs::path entrySource = fs::current_path() / "captureengine" / "app" / "main_entry.cpp";
+    const fs::path handlerSource = fs::current_path() / "common" / "crash" / "crash_handler.cpp";
     ASSERT_TRUE(fs::exists(entrySource));
     ASSERT_TRUE(fs::exists(handlerSource));
     const std::string entry = ce::test_source::ReadFile(entrySource);
@@ -286,8 +286,8 @@ TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
 // the overlay reports ~288 instead of ~144 FPS and the graph alternates tiny/normal frame times.
 TEST(DXGISharedTest, FFXFrameTimingHasExactlyOneDisplayedOutputObserver) {
     namespace fs = std::filesystem;
-    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx_metrics.cpp";
-    const fs::path callbackSource = fs::current_path() / "hook" / "apis" / "dx12_hook_ffx.cpp";
+    const fs::path ffxSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_ffx_metrics.cpp";
+    const fs::path callbackSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_ffx.cpp";
     ASSERT_TRUE(fs::exists(ffxSource));
     ASSERT_TRUE(fs::exists(callbackSource));
     const std::string ffx = ce::test_source::ReadFile(ffxSource);
@@ -326,7 +326,7 @@ TEST(DXGISharedTest, FFXFrameTimingHasExactlyOneDisplayedOutputObserver) {
 // overlays, because with two the prepend is what corrupts their saved chains.
 TEST(DXGISharedSourceTest, BelowChainViewFallsBackToThePrependOnlyAgainstASingleOverlay) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string install = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(install.empty());
@@ -367,7 +367,7 @@ TEST(DXGISharedSourceTest, BelowChainViewFallsBackToThePrependOnlyAgainstASingle
 // now allowed into this mode it must be refused outright.
 TEST(DXGISharedSourceTest, StreamlinePresentRoutingIsRefusedBelowAForeignChain) {
     namespace fs = std::filesystem;
-    const fs::path routingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam_routing.cpp";
+    const fs::path routingSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam_routing.cpp";
     ASSERT_TRUE(fs::exists(routingSource));
     const std::string routing = ce::test_source::ReadFile(routingSource);
     ASSERT_FALSE(routing.empty());
@@ -394,7 +394,7 @@ TEST(DXGISharedSourceTest, StreamlinePresentRoutingIsRefusedBelowAForeignChain) 
 // the foreign-jump verdict was accidental in both directions.
 TEST(DXGISharedSourceTest, ForeignPresentJumpIsClassifiedAgainstThePresentOwningModule) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string install = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(install.empty());
@@ -425,7 +425,7 @@ TEST(DXGISharedSourceTest, ForeignPresentJumpIsClassifiedAgainstThePresentOwning
 // the historical view instead of silently regressing.
 TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAProxy) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_hook_install.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string install = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(install.empty());
@@ -454,7 +454,7 @@ TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAP
     EXPECT_LT(guardedSubstitution, install.find("slot = dx12_hook_oCreateSwapChainForHwndGlobal;", slotHelper));
 
     // The system module is resolved by FULL PATH, never by base name: the proxy shares it.
-    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp";
+    const fs::path hooksSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks.cpp";
     ASSERT_TRUE(fs::exists(hooksSource));
     const std::string hooks = ce::test_source::ReadFile(hooksSource);
     ASSERT_FALSE(hooks.empty());
@@ -479,7 +479,7 @@ TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAP
 // foreign module is refused, and a foreign entry patch on the real function is bypassed.
 TEST(DXGISharedSourceTest, TempSwapChainCreationNeverEntersAForeignOverlayHandler) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_hook_install.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string install = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(install.empty());
@@ -526,9 +526,9 @@ TEST(DXGISharedSourceTest, TempSwapChainCreationNeverEntersAForeignOverlayHandle
 TEST(DXGISharedSourceTest, GuardedTempSwapchainRouteRunsWithoutADXGIProxy) {
     namespace fs = std::filesystem;
     const std::string install =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_hook_install.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_hook_install.cpp");
     const std::string main =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_main.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_main.cpp");
     ASSERT_FALSE(install.empty());
     ASSERT_FALSE(main.empty());
 
@@ -554,9 +554,9 @@ TEST(DXGISharedSourceTest, GuardedTempSwapchainRouteRunsWithoutADXGIProxy) {
     // A bypass trampoline is a pure function of (target, disk bytes, resume offset), so retries
     // reuse it instead of reserving a new executable pool per attempt.
     const std::string deep =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "inline_hook_deep.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "hooking" / "inline_hook_deep.cpp");
     const std::string pristine =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "inline_hook_pristine_image.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "hooking" / "inline_hook_pristine_image.cpp");
     ASSERT_FALSE(deep.empty());
     ASSERT_FALSE(pristine.empty());
     // Gothic II/SystemPack exposed the x86 failure mode: dxgi.dll loaded at
@@ -628,10 +628,10 @@ TEST(DXGISharedTest, PartialPresentInstallStaysUnlatchedAndRetriesOnlyTheMissing
     namespace fs = std::filesystem;
     const fs::path root = fs::current_path();
     const std::string install =
-        ce::test_source::ReadFile(root / "hook" / "common" / "dxgi_shared_hooks_present.cpp");
+        ce::test_source::ReadFile(root / "hook" / "present" / "dxgi_shared_hooks_present.cpp");
     const std::string tracking =
-        ce::test_source::ReadFile(root / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
-    const std::string shared = ce::test_source::ReadFile(root / "hook" / "common" / "dxgi_shared.cpp");
+        ce::test_source::ReadFile(root / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
+    const std::string shared = ce::test_source::ReadFile(root / "hook" / "present" / "dxgi_shared.cpp");
     const std::string wrapInternal =
         ce::test_source::ReadFile(root / "hook" / "wrappers" / "dxgi_swapchain_wrap_internal.h");
     const std::string wrapPresent =

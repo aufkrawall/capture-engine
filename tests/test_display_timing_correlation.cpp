@@ -1,4 +1,4 @@
-#include "../captureengine/display_timing_correlation.h"
+#include "captureengine/display_timing/display_timing_correlation.h"
 #include <gtest/gtest.h>
 namespace { DisplayLayerPresentKey Key(uint64_t id) { return {3, 2, id}; } DisplayPendingFrameTypeFlip Payload(int64_t t, uint8_t type) { return {t, t, type}; } }
 

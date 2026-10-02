@@ -20,7 +20,7 @@ recording.
 
 ## Compatibility profile
 
-The policy in `common/live_stream_config.*` preserves the selected hardware
+The policy in `common/config/live_stream_config.*` preserves the selected hardware
 backend but changes its codec family to H.264 (`h264_nvenc`, `h264_amf`,
 `h264_qsv`, or `h264_mf`). It then selects:
 
@@ -104,14 +104,14 @@ protocol/configure change requires a
 
 ## Source anchors
 
-- `common/live_stream_config.{h,cpp}`: URL validation, service defaults,
+- `common/config/live_stream_config.{h,cpp}`: URL validation, service defaults,
   backend-preserving profile, queue-budget policy.
-- `common/config_load_streaming.cpp`: `[Streaming]` load and fail-closed policy.
-- `mediaengine/video_encoder_streaming.cpp`: I/O deadline/interrupt, redaction,
+- `common/config/config_load_streaming.cpp`: `[Streaming]` load and fail-closed policy.
+- `mediaengine/video/video_encoder_streaming.cpp`: I/O deadline/interrupt, redaction,
   terminal failure publication.
-- `mediaengine/video_encoder_{encode,write,lifecycle,finalize}.cpp`: open/mux,
+- `mediaengine/video/video_encoder_{encode,write,lifecycle,finalize}.cpp`: open/mux,
   queue behavior, stop/finalize, live result selection.
-- `mediaengine/mediaengine_config.cpp`: local fallback for audio-only output.
+- `mediaengine/engine/mediaengine_config.cpp`: local fallback for audio-only output.
 - `tools/build/build_ffmpeg.py`: minimal native RTMP/RTMPS protocol closure.
 - `tests/test_live_stream_config.cpp` and
   `tools/tests/test_ffmpeg_dependencies.py`: regression coverage.

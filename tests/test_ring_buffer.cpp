@@ -1,11 +1,11 @@
 /**
- * Unit tests for LockFreeRingBuffer and DynamicRingBuffer (common/ring_buffer.h)
+ * Unit tests for LockFreeRingBuffer and DynamicRingBuffer (common/platform/ring_buffer.h)
  */
 
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
-#include "../common/ring_buffer.h"
+#include "common/platform/ring_buffer.h"
 
 using namespace ce;
 

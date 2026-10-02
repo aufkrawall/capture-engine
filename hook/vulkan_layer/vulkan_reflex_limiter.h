@@ -2,10 +2,10 @@
 
 #include "vulkan_layer.h"
 
-#include "../common/fps_limiter.h"
-#include "../common/perf_logger.h"
-#include "../common/system_latency_frame_begin.h"
-#include "../common/system_latency_metrics.h"
+#include "hook/pacing/fps_limiter.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/metrics/system_latency_frame_begin.h"
+#include "hook/metrics/system_latency_metrics.h"
 #include "layer_main.h"
 
 #include <cstdint>

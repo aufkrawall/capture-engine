@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dxgi_color_space_hook_policy.h"
-#include "../hook/wrappers/inline_hook_policy.h"
+#include "hook/present/dxgi_color_space_hook_policy.h"
+#include "hook/hooking/inline_hook_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -62,7 +62,7 @@ TEST(DxgiColorSpaceHookPolicyTest, SystemDxgiPrologCanBeUndoneBeyondTheFourteenB
 }
 
 TEST(DxgiColorSpaceHookPolicyTest, InstallerSamplesOwnershipAndPublishesTheBodyHookBeforeAnyEntryFallback) {
-    const std::string source = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string source = ReadSource("hook/present/dxgi_shared_hooks.cpp");
     ASSERT_FALSE(source.empty());
     const size_t install = source.find("bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain,");
     ASSERT_NE(install, std::string::npos);
@@ -104,7 +104,7 @@ TEST(DxgiColorSpaceHookPolicyTest, InstallerSamplesOwnershipAndPublishesTheBodyH
 }
 
 TEST(DxgiColorSpaceHookPolicyTest, BodyHookUsesTheExistingColorTrackingAndRemovalPaths) {
-    const std::string source = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string source = ReadSource("hook/present/dxgi_shared_hooks.cpp");
     const size_t deep = source.find("InlineHook::InstallDeepHookPublished(");
     ASSERT_NE(deep, std::string::npos);
     EXPECT_NE(source.find("reinterpret_cast<void*>(DetourSetColorSpace1)", deep), std::string::npos);
@@ -116,7 +116,7 @@ TEST(DxgiColorSpaceHookPolicyTest, BodyHookUsesTheExistingColorTrackingAndRemova
                           detour),
               std::string::npos);
 
-    const std::string teardown = ReadSource("hook/common/dxgi_shared_hooks_present_vtable.cpp");
+    const std::string teardown = ReadSource("hook/present/dxgi_shared_hooks_present_vtable.cpp");
     for (const char* function : {"void RemovePresentHooks() {", "void RemoveSwapchainVTableHooks() {"}) {
         const size_t remove = teardown.find(function);
         ASSERT_NE(remove, std::string::npos);
@@ -126,7 +126,7 @@ TEST(DxgiColorSpaceHookPolicyTest, BodyHookUsesTheExistingColorTrackingAndRemova
         ASSERT_NE(clear, std::string::npos);
         EXPECT_LT(all, clear);
     }
-    const std::string inlineHook = ReadSource("hook/wrappers/inline_hook.cpp");
+    const std::string inlineHook = ReadSource("hook/hooking/inline_hook.cpp");
     const size_t removeAll = inlineHook.find("void RemoveAll() {");
     ASSERT_NE(removeAll, std::string::npos);
     EXPECT_NE(inlineHook.find("RemoveAllDeepHooksLocked();", removeAll), std::string::npos);

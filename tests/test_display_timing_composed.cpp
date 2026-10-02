@@ -1,6 +1,6 @@
-#include "../captureengine/display_timing_composed.h"
-#include "../captureengine/display_timing_compositor.h"
-#include "../captureengine/display_timing_submissions.h"
+#include "captureengine/display_timing/display_timing_composed.h"
+#include "captureengine/display_timing/display_timing_compositor.h"
+#include "captureengine/display_timing/display_timing_submissions.h"
 
 #include "source_fragment_reader.h"
 
@@ -157,6 +157,7 @@ TEST(DisplayTimingComposedTest, CompositorIsTheOneInTheTargetSession) {
 // times its flips, and lets only the game's own flips end the composed state.
 TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPath) {
     const std::string service = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                                                  "display_timing" /
                                                                   "display_timing_service.cpp");
     ASSERT_FALSE(service.empty());
     // Both split units are part of the logical source.
@@ -177,6 +178,7 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
     EXPECT_NE(service.find("composed_.Begin(processId, FindCompositorProcessId(processId))"), std::string::npos);
 
     const std::string startup = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                                          "display_timing" /
                                                           "display_timing_startup.cpp");
     EXPECT_NE(startup.find("dte::kQueuePacketStop"), std::string::npos);
 }

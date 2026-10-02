@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/ngx_module_policy.h"
+#include "hook/ngx/ngx_module_policy.h"
 
 namespace {
 

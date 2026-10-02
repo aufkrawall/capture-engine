@@ -3,7 +3,7 @@
 #include <thread>
 #include <vector>
 
-#include "../hook/common/lifecycle.h"
+#include "hook/runtime/lifecycle.h"
 
 namespace {
 

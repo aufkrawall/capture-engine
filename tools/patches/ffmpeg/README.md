@@ -88,7 +88,7 @@ path. In the pinned FFmpeg 8.1.2 source, `av1_nvenc` defaults `s12m_tc` on and
 routes timecode side data through a payload builder whose syntax is not valid
 for an AV1 timecode metadata OBU. Current NVIDIA drivers also have a separate
 byte-alignment limitation in that metadata path. CaptureEngine does not attach
-S12M timecode side data, so `mediaengine/video_encoder_options.cpp` explicitly
+S12M timecode side data, so `mediaengine/video/video_encoder_options.cpp` explicitly
 forces `s12m_tc=0` for AV1 NVENC after custom options. This avoids the unsafe,
 unused path without disabling generic SEI, closed-caption, or future HDR
 metadata handling and without changing video quality, cadence, or latency.

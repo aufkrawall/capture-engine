@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "../common/inject_frame_ring_lease.h"
+#include "common/capture/inject_frame_ring_lease.h"
 
 namespace {
 

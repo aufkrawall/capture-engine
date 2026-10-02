@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <vector>
 
-#include "../captureengine/display_timing_publication.h"
-#include "../captureengine/display_timing_refresh.h"
-#include "../captureengine/display_timing_refresh_bound.h"
-#include "../captureengine/display_timing_submissions.h"
-#include "../captureengine/display_timing_vblank.h"
-#include "../common/display_timing_shared.h"
+#include "captureengine/display_timing/display_timing_publication.h"
+#include "captureengine/display_timing/display_timing_refresh.h"
+#include "captureengine/display_timing/display_timing_refresh_bound.h"
+#include "captureengine/display_timing/display_timing_submissions.h"
+#include "captureengine/display_timing/display_timing_vblank.h"
+#include "common/ipc/display_timing_shared.h"
 
 namespace {
 constexpr int64_t kPeriod = 6945;  // 144 Hz

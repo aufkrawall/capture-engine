@@ -42,7 +42,7 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 // parked the RHI thread inside DetourPresent until UE5 declared "GameThread
 // timed out waiting for RenderThread after 120.00 secs" and terminated Talos.
 TEST(ConfigReloadReinitPolicyTest, Dx12SharpenOffPathReleasesThroughTheUnlockedBody) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_sharpen.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
 
     const std::string presented =
         FunctionBody(source, "void SharpenDX12PresentedFrame(", "ID3D12Device* device = g_Device.load");
@@ -58,7 +58,7 @@ TEST(ConfigReloadReinitPolicyTest, Dx12SharpenOffPathReleasesThroughTheUnlockedB
 }
 
 TEST(ConfigReloadReinitPolicyTest, Dx12SharpenLockingReleaseIsOnlyAWrapper) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_sharpen.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
 
     // The public entry point is for callers that do not hold the mutex
     // (DX12OverlayState::Cleanup). It must take the lock and do nothing else,
@@ -101,7 +101,7 @@ TEST(ConfigReloadReinitPolicyTest, VulkanSharpenOffPathReleasesThroughTheUnlocke
 // and respawned it. The prewarm itself is kept (see test_ngx_ota_policy.cpp) and
 // moved onto its own thread.
 TEST(ConfigReloadReinitPolicyTest, BaseConfigPublicationQueuesTheWhitelistSweepInsteadOfRunningIt) {
-    const std::string source = ReadSource("captureengine/inject_config_publication.cpp");
+    const std::string source = ReadSource("captureengine/injection/inject_config_publication.cpp");
 
     const std::string setBase =
         FunctionBody(source, "void SetPublicationBaseConfig(", "void StopPublicationWarmup(");
@@ -119,7 +119,7 @@ TEST(ConfigReloadReinitPolicyTest, BaseConfigPublicationQueuesTheWhitelistSweepI
 }
 
 TEST(ConfigReloadReinitPolicyTest, PrewarmNeverHoldsThePublicationMutexAcrossAResolve) {
-    const std::string source = ReadSource("captureengine/inject_config_publication.cpp");
+    const std::string source = ReadSource("captureengine/injection/inject_config_publication.cpp");
 
     const std::string loop =
         FunctionBody(source, "void PublicationWarmupLoop(", "void QueueWarmTargetLocked(");
@@ -144,7 +144,7 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmNeverHoldsThePublicationMutexAcrossARe
 }
 
 TEST(ConfigReloadReinitPolicyTest, PrewarmIsAnOptimizationTheOnDemandPathDoesNotDependOn) {
-    const std::string source = ReadSource("captureengine/inject_config_publication.cpp");
+    const std::string source = ReadSource("captureengine/injection/inject_config_publication.cpp");
 
     // A target the sweep has not reached yet must still resolve correctly, or
     // the prewarm stops being an optimization and becomes a correctness input.
@@ -159,7 +159,7 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmIsAnOptimizationTheOnDemandPathDoesNot
 // A thread that outlives the config it reads, or the mapping it publishes into,
 // is a shutdown crash waiting for a slow disk.
 TEST(ConfigReloadReinitPolicyTest, PrewarmWorkerIsJoinedBeforeInjectTearsDownItsState) {
-    const std::string publication = ReadSource("captureengine/inject_config_publication.cpp");
+    const std::string publication = ReadSource("captureengine/injection/inject_config_publication.cpp");
     const std::string stop =
         FunctionBody(publication, "void StopPublicationWarmup(", "void PublishResolvedConfig(");
     ASSERT_FALSE(stop.empty());
@@ -167,7 +167,7 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmWorkerIsJoinedBeforeInjectTearsDownIts
     EXPECT_NE(stop.find("publication.warmSignal.notify_all()"), std::string::npos);
     EXPECT_NE(stop.find("publication.warmWorker.join()"), std::string::npos);
 
-    const std::string injectMain = ReadSource("captureengine/inject_main.cpp");
+    const std::string injectMain = ReadSource("captureengine/injection/inject_main.cpp");
     const size_t cleanup = injectMain.find("LogInfo(\"[Inject] Cleaning up...\")");
     const size_t join = injectMain.find("StopPublicationWarmup()", cleanup);
     const size_t unmap = injectMain.find("UnmapViewOfFile(pSharedMem)", cleanup);
@@ -181,7 +181,7 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmWorkerIsJoinedBeforeInjectTearsDownIts
 // config map: the map is lazy now, so an injection decision that consulted it
 // would depend on whether some earlier publish happened to warm the entry.
 TEST(ConfigReloadReinitPolicyTest, WhitelistCacheIsIndependentOfResolvedTargetConfigs) {
-    const std::string source = ReadSource("captureengine/inject_config_publication.cpp");
+    const std::string source = ReadSource("captureengine/injection/inject_config_publication.cpp");
 
     const std::string populate =
         FunctionBody(source, "void PopulateWhitelistCache(", "\n}\n");

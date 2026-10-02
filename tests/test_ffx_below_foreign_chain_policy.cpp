@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
 
 namespace {
 

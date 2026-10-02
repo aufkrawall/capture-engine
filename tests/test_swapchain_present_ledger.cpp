@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -115,11 +115,11 @@ TEST(SwapchainPresentLedgerTest, EvictionKeepsTheDepartingChainForTheNextHandoff
 // one scope per physical Present, accounting inside a scope merges, and swapchain creation
 // starts a new visibility lifetime.
 TEST(SwapchainPresentLedgerTest, PresentDetoursMergeAccountingIntoOnePhysicalPresent) {
-    const std::string present = ReadSource("hook/common/dxgi_shared_present.cpp");
-    const std::string present1 = ReadSource("hook/common/dxgi_shared_present1.cpp");
-    const std::string coverage = ReadSource("hook/apis/dx12_hook_overlay_coverage.cpp");
-    const std::string create = ReadSource("hook/apis/dx12_hook_swapchain_create.cpp");
-    const std::string eclInstall = ReadSource("hook/apis/dx12_hook_ecl_install.cpp");
+    const std::string present = ReadSource("hook/present/dxgi_shared_present.cpp");
+    const std::string present1 = ReadSource("hook/present/dxgi_shared_present1.cpp");
+    const std::string coverage = ReadSource("hook/d3d12/dx12_hook_overlay_coverage.cpp");
+    const std::string create = ReadSource("hook/d3d12/dx12_hook_swapchain_create.cpp");
+    const std::string eclInstall = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(present1.empty());
     ASSERT_FALSE(coverage.empty());

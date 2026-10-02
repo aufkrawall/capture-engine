@@ -6,10 +6,10 @@
 #include <iterator>
 #include <string>
 
-#include "../captureengine/sensor_bridge_host.h"
-#include "../captureengine/sensor_plugin.h"
-#include "../captureengine/sensor_selection_policy.h"
-#include "../hook/common/overlay_layout_policy.h"
+#include "captureengine/sensors/sensor_bridge_host.h"
+#include "captureengine/sensors/sensor_plugin.h"
+#include "captureengine/sensors/sensor_selection_policy.h"
+#include "hook/overlay/overlay_layout_policy.h"
 
 namespace {
 
@@ -235,7 +235,7 @@ TEST(HardwareSensorOverlayTest, ReservesAClockRowOnlyWhenItHasAValue) {
 }
 
 TEST(HardwareSensorOverlayTest, FormatsOnlyWhenTheCachedOverlayLayoutRefreshes) {
-    const std::string implementation = ReadProjectFile("hook/common/overlay_adapter_render.cpp");
+    const std::string implementation = ReadProjectFile("hook/overlay/overlay_adapter_render.cpp");
     ASSERT_FALSE(implementation.empty());
     EXPECT_EQ(CountOccurrences(implementation, "FormatCpuMetricsValue("), 1u);
     EXPECT_EQ(CountOccurrences(implementation, "FormatGpuMetricsValue("), 1u);
@@ -251,7 +251,7 @@ TEST(HardwareSensorOverlayTest, FormatsOnlyWhenTheCachedOverlayLayoutRefreshes) 
 // The whole GPU row used to be drawn in one load-derived color, so at 99% load
 // the temperature, power and fan readings turned red with it.
 TEST(HardwareSensorOverlayTest, DrawsSensorReadingsOutsideTheLoadColoredSpan) {
-    const std::string implementation = ReadProjectFile("hook/common/overlay_adapter_render.cpp");
+    const std::string implementation = ReadProjectFile("hook/overlay/overlay_adapter_render.cpp");
     ASSERT_FALSE(implementation.empty());
     EXPECT_NE(implementation.find("Colors::SensorValue"), std::string::npos);
     EXPECT_NE(implementation.find("DrawMetricsRowValue(cachedGpuMetricsText, cachedGpuSensorOffset"),
@@ -268,8 +268,8 @@ TEST(HardwareSensorOverlayTest, DrawsSensorReadingsOutsideTheLoadColoredSpan) {
 // the CPU and GPU visitors are enabled, the poll wait stays interruptible, and
 // no interpreter is involved anywhere.
 TEST(HardwareSensorBridgeTest, NativeBridgeUsesDirectCpuGpuVisitorsAndAnInterruptibleWait) {
-    const std::string bridge = ReadProjectFile("captureengine/sensor_bridge_lhm.cpp");
-    const std::string host = ReadProjectFile("captureengine/sensor_bridge_host.cpp");
+    const std::string bridge = ReadProjectFile("captureengine/sensors/sensor_bridge_lhm.cpp");
+    const std::string host = ReadProjectFile("captureengine/sensors/sensor_bridge_host.cpp");
     ASSERT_FALSE(bridge.empty());
     ASSERT_FALSE(host.empty());
     EXPECT_NE(bridge.find("IsCpuEnabled"), std::string::npos);
@@ -296,7 +296,7 @@ TEST(HardwareSensorBridgeTest, NativeBridgeUsesDirectCpuGpuVisitorsAndAnInterrup
 // Nothing in the shipped tree may reintroduce an interpreted bridge: the
 // integration must need no file beyond the user-supplied library.
 TEST(HardwareSensorBridgeTest, NoInterpretedBridgeRemainsAnywhere) {
-    const std::string implementation = ReadProjectFile("captureengine/sensor_plugin.cpp");
+    const std::string implementation = ReadProjectFile("captureengine/sensors/sensor_plugin.cpp");
     const std::string finalize = ReadProjectFile("tools/build/build_project_finalize.py");
     const std::string packaging = ReadProjectFile("tools/build/build_packaging.py");
     ASSERT_FALSE(implementation.empty());
@@ -317,7 +317,7 @@ TEST(HardwareSensorBridgeTest, NoInterpretedBridgeRemainsAnywhere) {
 // It bundles the official Microsoft-signed PawnIO installer and verifies its
 // Authenticode signature and pinned SHA-256 digest before executing under UAC.
 TEST(HardwareSensorBridgeTest, PawnIoSetupVerifiesBundledInstallerLocally) {
-    const std::string setup = ReadProjectFile("captureengine/pawnio_setup.cpp");
+    const std::string setup = ReadProjectFile("captureengine/sensors/pawnio_setup.cpp");
     ASSERT_FALSE(setup.empty());
     EXPECT_EQ(setup.find(".sys"), std::string::npos);
     EXPECT_EQ(setup.find("urlopen"), std::string::npos);
@@ -335,7 +335,7 @@ TEST(HardwareSensorBridgeTest, PawnIoSetupVerifiesBundledInstallerLocally) {
 }
 
 TEST(HardwareSensorBridgeTest, PawnIoPromptOffersThreeDistinctAnswers) {
-    const std::string setup = ReadProjectFile("captureengine/pawnio_setup.cpp");
+    const std::string setup = ReadProjectFile("captureengine/sensors/pawnio_setup.cpp");
     const std::string manifest = ReadProjectFile("captureengine/captureengine.manifest");
     ASSERT_FALSE(setup.empty());
     ASSERT_FALSE(manifest.empty());
@@ -358,7 +358,7 @@ TEST(HardwareSensorBridgeTest, PawnIoPromptOffersThreeDistinctAnswers) {
 // based IDispatch, which the runtime answers with E_NOTIMPL for these types and
 // which LibreHardwareMonitor's internal hardware classes do not expose at all.
 TEST(HardwareSensorBridgeTest, ClrInteropBindsOnlyTheFrozenMscorlibContracts) {
-    const std::string interop = ReadProjectFile("captureengine/clr_interop.cpp");
+    const std::string interop = ReadProjectFile("captureengine/sensors/clr_interop.cpp");
     ASSERT_FALSE(interop.empty());
     EXPECT_NE(interop.find("CLRCreateInstance"), std::string::npos);
     EXPECT_NE(interop.find("v4.0.30319"), std::string::npos);
@@ -373,8 +373,8 @@ TEST(HardwareSensorBridgeTest, ClrInteropBindsOnlyTheFrozenMscorlibContracts) {
 }
 
 TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHandles) {
-    const std::string implementation = ReadProjectFile("captureengine/sensor_plugin.cpp");
-    const std::string service = ReadProjectFile("captureengine/sensor_service.cpp");
+    const std::string implementation = ReadProjectFile("captureengine/sensors/sensor_plugin.cpp");
+    const std::string service = ReadProjectFile("captureengine/sensors/sensor_service.cpp");
     ASSERT_FALSE(implementation.empty());
     ASSERT_FALSE(service.empty());
     EXPECT_NE(implementation.find("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"), std::string::npos);
@@ -398,7 +398,7 @@ TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHa
 }
 
 TEST(HardwareSensorBridgeTest, RuntimeAndSetupAgreeOnTheFourInstalledFiles) {
-    const std::string implementation = ReadProjectFile("captureengine/sensor_plugin.cpp");
+    const std::string implementation = ReadProjectFile("captureengine/sensors/sensor_plugin.cpp");
     const std::string setup = ReadProjectFile("plugins/LibreHardwareMonitor/README.txt");
     const std::string fetch = ReadProjectFile("tools/build/build_lhm_plugin.py");
     ASSERT_FALSE(implementation.empty());

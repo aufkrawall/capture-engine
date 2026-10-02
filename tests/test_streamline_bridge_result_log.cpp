@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "../hook/apis/streamline_bridge_result_log.h"
+#include "hook/streamline/streamline_bridge_result_log.h"
 
 // Session 20261002_043740: `slEvaluateFeature returned sl::Result=38` was logged once and whether
 // DLSS kept failing until the game crashed nine seconds later could not be told from the log.

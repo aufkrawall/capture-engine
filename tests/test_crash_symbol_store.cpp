@@ -6,7 +6,7 @@
 #include <fstream>
 #include <string>
 
-#include "../common/crash_symbol_store.h"
+#include "common/crash/crash_symbol_store.h"
 
 namespace fs = std::filesystem;
 

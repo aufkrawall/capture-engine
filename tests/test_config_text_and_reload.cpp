@@ -6,10 +6,10 @@
 #include <fstream>
 #include <string>
 
-#include "../common/config.h"
-#include "../common/config_reload_policy.h"
-#include "../common/config_text_encoding.h"
-#include "../common/path_utils.h"
+#include "common/config/config.h"
+#include "common/config/config_reload_policy.h"
+#include "common/config/config_text_encoding.h"
+#include "common/platform/path_utils.h"
 #include "source_fragment_reader.h"
 
 namespace text = ce::config_text;
@@ -158,7 +158,7 @@ TEST(ConfigReloadPolicyTest, MissingFileIsNeverAppliedAndAnOlderTimestampStillCo
 
 TEST(ConfigReloadPolicyTest, ControllerReloadsThroughTheDebounce) {
     const std::string source =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/main_entry.cpp");
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/app/main_entry.cpp");
     ASSERT_FALSE(source.empty());
     const size_t observe = source.find("ce::config_reload::Observe(g_ConfigReloadState, identity)");
     const size_t load = source.find("LoadConfig(main_g_ConfigPath, candidateConfig);", observe);

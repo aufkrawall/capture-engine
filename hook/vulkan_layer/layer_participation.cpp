@@ -6,8 +6,8 @@
 #include <string>
 #include <string_view>
 
-#include "../../common/vulkan_layer_target_list.h"
-#include "../common/vulkan_renderer_policy.h"
+#include "common/graphics/vulkan_layer_target_list.h"
+#include "hook/present/vulkan_renderer_policy.h"
 
 namespace ce::vulkan_layer_participation {
 namespace {

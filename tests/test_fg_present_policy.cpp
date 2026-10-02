@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../testapp/fg_present_policy.h"
+#include "testapp/fg_present_policy.h"
 
 using testapp::fg::ProxyPresentPolicy;
 using testapp::fg::ResolveProxyPresentPolicy;

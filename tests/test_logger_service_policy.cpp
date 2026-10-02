@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../captureengine/logger_service_policy.h"
+#include "captureengine/diagnostics/logger_service_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -56,7 +56,7 @@ TEST(LoggerServicePolicyTest, UnsaturatedLogDrainKeepsItsPreviousPacing) {
 // numbers has to have a line in the log explaining it.
 TEST(LoggerServicePolicySourceTest, EveryDroppedLogLineIsCounted) {
     const std::string hookCommon =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/common/hook_common.cpp");
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/runtime/hook_common.cpp");
     ASSERT_FALSE(hookCommon.empty());
 
     const size_t tryLock = hookCommon.find("if (!lock.try_lock())");
@@ -70,7 +70,7 @@ TEST(LoggerServicePolicySourceTest, EveryDroppedLogLineIsCounted) {
         << "the counted drops must be reported by the next writer";
 
     const std::string service =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/logger_service.cpp");
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/diagnostics/logger_service.cpp");
     ASSERT_FALSE(service.empty());
     EXPECT_NE(service.find("logs.overflowCount.load"), std::string::npos)
         << "overflowCount existed from the start and nothing ever read it";
@@ -83,7 +83,7 @@ TEST(LoggerServicePolicySourceTest, EveryDroppedLogLineIsCounted) {
 // mid-row for exactly that reason, so the termination hooks finalize it.
 TEST(LoggerServicePolicySourceTest, PerfCsvIsFinalizedOnHardProcessExit) {
     const std::string hooks =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/main_fatal_hooks.cpp");
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/runtime/main_fatal_hooks.cpp");
     ASSERT_FALSE(hooks.empty());
 
     for (const char* exitPath : {"TerminateProcess", "ExitProcess", "RtlExitUserProcess", "NtTerminateProcess"}) {
@@ -98,7 +98,7 @@ TEST(LoggerServicePolicySourceTest, PerfCsvIsFinalizedOnHardProcessExit) {
     EXPECT_NE(hooks.find("PerfLogger::Get().FlushForTermination", flush), std::string::npos);
 
     const std::string perf =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/common/perf_logger.cpp");
+        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/metrics/perf_logger.cpp");
     ASSERT_FALSE(perf.empty());
     const size_t impl = perf.find("void PerfLogger::FlushForTermination(");
     ASSERT_NE(impl, std::string::npos);

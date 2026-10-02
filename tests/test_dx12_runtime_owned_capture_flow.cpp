@@ -28,7 +28,7 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 }  // namespace
 
 TEST(DX12RuntimeOwnedCaptureFlowTest, Phase3RuntimeOwnedDeferralSkipsOnlyOverlayInit) {
-    const std::string phase3 = ReadSource("hook/apis/dx12_hook_process_session_phase3.cpp");
+    const std::string phase3 = ReadSource("hook/d3d12/dx12_hook_process_session_phase3.cpp");
     ASSERT_FALSE(phase3.empty());
     const size_t skip = phase3.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)");
     ASSERT_NE(skip, std::string::npos);
@@ -38,7 +38,7 @@ TEST(DX12RuntimeOwnedCaptureFlowTest, Phase3RuntimeOwnedDeferralSkipsOnlyOverlay
 }
 
 TEST(DX12RuntimeOwnedCaptureFlowTest, Phase4RuntimeOwnedSyncInitDeferralReachesCaptureDecision) {
-    const std::string phase4 = ReadSource("hook/apis/dx12_hook_process_session_phase4.cpp");
+    const std::string phase4 = ReadSource("hook/d3d12/dx12_hook_process_session_phase4.cpp");
     ASSERT_FALSE(phase4.empty());
     const size_t deferral = phase4.find("if (stagedSyncInitOwnedByRuntime) {");
     const size_t staged = phase4.find("if (stagedSyncInitPending && !stagedSyncInitOwnedByRuntime) {");
@@ -53,8 +53,8 @@ TEST(DX12RuntimeOwnedCaptureFlowTest, Phase4RuntimeOwnedSyncInitDeferralReachesC
 }
 
 TEST(DX12RuntimeOwnedCaptureFlowTest, OverlayFreeCaptureIsPublishedWhenTheDrawChainDidNotRun) {
-    const std::string drawMain = ReadSource("hook/apis/dx12_hook_process_session_draw_main.cpp");
-    const std::string drawTail = ReadSource("hook/apis/dx12_hook_process_session_draw_tail.cpp");
+    const std::string drawMain = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
+    const std::string drawTail = ReadSource("hook/d3d12/dx12_hook_process_session_draw_tail.cpp");
     ASSERT_FALSE(drawMain.empty());
     ASSERT_FALSE(drawTail.empty());
 

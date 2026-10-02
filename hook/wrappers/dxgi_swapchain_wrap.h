@@ -11,8 +11,8 @@
 #include <dxgi1_6.h>
 #include <atomic>
 #include <mutex>
-#include "../common/dx12_overlay_policy.h"
-#include "../common/hook_common.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/runtime/hook_common.h"
 #include "wrapper_base.h"
 
 // Streamline base interface GUID - blocks NV DLSS/FSR FG from unwrapping

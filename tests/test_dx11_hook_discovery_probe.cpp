@@ -11,7 +11,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/d3d10_vtable_slots.h"
+#include "hook/d3d11/d3d10_vtable_slots.h"
 #include "source_fragment_reader.h"
 
 // DX11Hook::Init discovers d3d11/d3d10/dxgi vtables from throwaway objects it
@@ -93,7 +93,7 @@ HRESULT CreateD3D11Probe(D3D_DRIVER_TYPE driverType, HWND hwnd, D3D11Probe& out)
 }  // namespace
 
 TEST(DX11HookDiscoveryProbeTest, TempProbeNeverCreatesAHardwareDevice) {
-    const std::string source = ReadSource("hook/apis/dx11_hook.cpp");
+    const std::string source = ReadSource("hook/d3d11/dx11_hook.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t probeBegin = source.find("DX11: Scanning for pre-existing swapchains...");

@@ -4,8 +4,8 @@
 #include <cstring>
 #include <limits>
 
-#include "../common/sharpen_policy.h"
-#include "../hook/common/sharpen_constants.h"
+#include "common/graphics/sharpen_policy.h"
+#include "hook/sharpen/sharpen_constants.h"
 
 using namespace ce::sharpen;
 

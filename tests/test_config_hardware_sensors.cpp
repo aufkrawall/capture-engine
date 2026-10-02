@@ -106,9 +106,9 @@ TEST_F(ConfigTest, DefaultTemplateDocumentsEveryHardwareSensorControl) {
 
 TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
     const std::string mainInternal =
-        ReadTextFile((std::filesystem::current_path() / "captureengine" / "main_internal.h").string());
+        ReadTextFile((std::filesystem::current_path() / "captureengine" / "app" / "main_internal.h").string());
     const std::string mainEntry =
-        ReadTextFile((std::filesystem::current_path() / "captureengine" / "main_entry.cpp").string());
+        ReadTextFile((std::filesystem::current_path() / "captureengine" / "app" / "main_entry.cpp").string());
     ASSERT_FALSE(mainInternal.empty());
     ASSERT_FALSE(mainEntry.empty());
     EXPECT_NE(mainInternal.find("HardwareSensorServiceConfigEquals"), std::string::npos);
@@ -127,7 +127,7 @@ TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
     EXPECT_NE(mainEntry.find("SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig)"), std::string::npos);
 
     const std::string sensorService =
-        ReadTextFile((std::filesystem::current_path() / "captureengine" / "sensor_service.cpp").string());
+        ReadTextFile((std::filesystem::current_path() / "captureengine" / "sensors" / "sensor_service.cpp").string());
     ASSERT_FALSE(sensorService.empty());
     EXPECT_NE(sensorService.find("hardwareSensorPluginActive && effectiveHardwareSensors.pollIntervalMs < 1000"),
               std::string::npos);

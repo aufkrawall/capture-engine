@@ -5,7 +5,7 @@
 #include "d3d12_commandqueue_wrap.h"
 #include <mutex>
 #include "d3d12_device_wrap.h"
-#include "hook_common.h"
+#include "hook/runtime/hook_common.h"
 
 // ============================================================================
 // Constructor / Destructor

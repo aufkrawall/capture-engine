@@ -7,7 +7,7 @@
 #include <iterator>
 #include <string>
 
-#include "../common/process_identity.h"
+#include "common/platform/process_identity.h"
 
 namespace {
 
@@ -33,8 +33,8 @@ TEST(ProcessIdentityTest, FailureCannotReturnAPartiallyOverwrittenSentinel) {
 }
 
 TEST(ProcessIdentityTest, ProductionIdentityQueryDoesNotRequestTargetMemoryAccess) {
-    const std::string source = ReadSource("common/process_identity.cpp");
-    const std::string inject = ReadSource("captureengine/inject_main.cpp");
+    const std::string source = ReadSource("common/platform/process_identity.cpp");
+    const std::string inject = ReadSource("captureengine/injection/inject_main.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(inject.empty());
     EXPECT_NE(source.find("PROCESS_QUERY_LIMITED_INFORMATION"), std::string::npos);

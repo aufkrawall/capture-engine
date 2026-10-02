@@ -12,7 +12,7 @@
 #include <fstream>
 #include <vector>
 
-#include "../common/process_ipc.h"
+#include "common/ipc/process_ipc.h"
 
 namespace {
 

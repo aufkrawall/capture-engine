@@ -3,7 +3,7 @@
 namespace {
 
 std::string ReadHookSource(const char* name) {
-    return ce::test_source::ReadFile(std::filesystem::current_path() / "hook" / "common" / name);
+    return ce::test_source::ReadFile(ce::test_source::FindSource("hook", name));
 }
 
 // Asserts that, inside the branch starting at `finalBranch` and ending at

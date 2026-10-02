@@ -9,9 +9,9 @@
 #include <cstring>
 #include <filesystem>
 
-#include "../../common/ansi_path.h"
-#include "../../common/log_privacy.h"
-#include "../../common/vulkan_layer_target_list.h"
+#include "common/platform/ansi_path.h"
+#include "common/logging/log_privacy.h"
+#include "common/graphics/vulkan_layer_target_list.h"
 #include "layer_participation.h"
 
 #include <atomic>
@@ -246,7 +246,7 @@ void LayerLog(const char* fmt, ...) {
 
 static bool PerformEarlyWhitelistCheck();
 
-// Decided once per process; see common/vulkan_layer_target_list.h. The gate
+// Decided once per process; see common/graphics/vulkan_layer_target_list.h. The gate
 // (layer_gate.cpp) made the same decision before loading this image. Deciding
 // again keeps this image correct on its own, and a host that appeared in
 // between adds eligibility here as well - while never masking the persisted

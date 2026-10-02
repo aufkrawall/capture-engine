@@ -231,7 +231,7 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
     // The swapchain-tracking unit (queue-capture / present-hook refresh path) calls the prewarm and
     // immediately arms the proof; generic swapchain cleanup in the same unit must come later.
     const std::string tracking =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_swapchain_tracking.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_swapchain_tracking.cpp");
     ASSERT_FALSE(tracking.empty()) << "swapchain-tracking unit missing";
     const size_t prewarmCall =
         tracking.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
@@ -247,30 +247,30 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
 
     // The prewarm implementation lives in the helpers unit.
     const std::string helpers =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_helpers.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_helpers.cpp");
     ASSERT_FALSE(helpers.empty()) << "helpers unit missing";
     EXPECT_NE(helpers.find("PrewarmPostSLOverlayForFreshStreamlineHandoff("), std::string::npos);
 
     // The process-session phases decide swapchain replacement (phase 1) and exact-backend preservation
     // (phase 2) before the generic cleanup paths (overlay unit) can run.
     const std::string phase1 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_process_session_phase1.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_phase1.cpp");
     const std::string phase2 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_process_session_phase2.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_phase2.cpp");
     ASSERT_FALSE(phase1.empty());
     ASSERT_FALSE(phase2.empty());
     EXPECT_NE(phase1.find("ShouldProcessLogicalSwapchainReplacement("), std::string::npos);
     EXPECT_NE(phase2.find("ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent("), std::string::npos);
 
     const std::string overlay =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/apis/dx12_hook_overlay.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_overlay.cpp");
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("void CleanupRTVs() {"), std::string::npos);
 }
 
 TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProof) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty()) << source.string();
 
@@ -363,7 +363,7 @@ TEST(DXGISharedTest, ConfirmedRenderThisEpochBypassesRemainingReactivationWarmup
 // recovery paths must release it before retrying.
 TEST(DXGISharedSourceTest, RetainedStartupActivationSwapchainReleasedOnChurnOffAndAccessDeniedRecovery) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -415,7 +415,7 @@ TEST(DXGISharedTest, ExactConfirmedPostSLProxySurvivesOuterOffWithoutDrainOrRein
 
 TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTransitionDraw) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -670,7 +670,7 @@ TEST(DXGISharedTest, LiveOverlayKeepsDrawingThroughFGTransitionCooldown) {
 // re-ON warm-resume; the normal route still draws during the suspension.
 TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAlive) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -700,7 +700,7 @@ TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAli
 // ---------------------------------------------------------------------------
 TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -727,7 +727,7 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
 // ---------------------------------------------------------------------------
 TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueForPassthroughRoutes) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -768,7 +768,7 @@ TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueF
 
 TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedInternalQueue) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
 
     const size_t processFrameQueueRouting = text.find("FSR FG: FSR creates a NEW swapchain");

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../common/pseudo_overlay_profile_policy.h"
-#include "../common/pseudo_overlay_visibility.h"
+#include "common/overlay/pseudo_overlay_profile_policy.h"
+#include "common/overlay/pseudo_overlay_visibility.h"
 
 namespace pov = ce::pseudo_overlay;
 

@@ -98,8 +98,8 @@ text as solid glyph-span geometry.
 - **`ce_dx12_dred` flag file (empty = page-fault-only, low perturbation; `1`/`full` = auto-breadcrumbs) or env
   `CE_DX12_DRED=pf|1`** → DRED on device-removed: `DX12 DRED: pageFaultVA=.. [existing]/[recently-freed] ..`
   (+ breadcrumb op in full mode). **Page-fault-only is the right tool for the steady-state DEVICE_HUNG** (full
-  auto-breadcrumbs perturb timing and can mask it). Code: `ce::dx12_dred` (`hook/common/dx12_dred.cpp`),
-  `DredArmMode`/`DecideDredArmMode` (`hook/common/dx12_overlay_policy.h`).
+  auto-breadcrumbs perturb timing and can mask it). Code: `ce::dx12_dred` (`hook/d3d12/dx12_dred.cpp`),
+  `DredArmMode`/`DecideDredArmMode` (`hook/d3d12/dx12_overlay_policy.h`).
 - `[Overlay] dx12_focus_analysis=true` (config) → in-process residency flight recorder + present-gap + CPU
   VA-space probe (`vaspace committedMB/freeMB/largestFreeBlockMB`, ~1/s and at the stall). **RESULT: VA is
   FLAT through the stall — the 32-bit VA/command-buffer-pool exhaustion hypothesis is RULED OUT.** Still
@@ -128,9 +128,9 @@ crash), `20260608_163139` (observer-only: no freeze), `20260608_170854` (clean G
 - 64-bit DX12 remains on the normal textured text path unless a separate 64-bit issue proves otherwise.
 
 ## Source Anchors
-- `hook/common/custom_font.{h,cpp}`: glyph span extraction.
-- `hook/common/custom_overlay.{h,cpp}`: solid text geometry path and `PreferSolidTextGeometry`.
-- `hook/common/custom_overlay_dx12.{h,cpp}`: x86 solid text preference and font SRV upload skip.
-- `hook/common/dx12_overlay_policy.h`: x86 backend/text policy helpers.
-- `hook/apis/dx12_hook_main.cpp`: v13 policy marker and removed focus-transition offscreen branch.
+- `hook/overlay/custom_font.{h,cpp}`: glyph span extraction.
+- `hook/overlay/custom_overlay.{h,cpp}`: solid text geometry path and `PreferSolidTextGeometry`.
+- `hook/overlay/custom_overlay_dx12.{h,cpp}`: x86 solid text preference and font SRV upload skip.
+- `hook/d3d12/dx12_overlay_policy.h`: x86 backend/text policy helpers.
+- `hook/d3d12/dx12_hook_main.cpp`: v13 policy marker and removed focus-transition offscreen branch.
 - `tests/test_overlay_system.cpp`, `tests/test_dxgi_shared.cpp`, `tests/test_crash_handler.cpp`: regression coverage.

@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "../common/installer_setup_policy.h"
-#include "../installer/install_policy.h"
-#include "../installer/payload_format.h"
+#include "common/setup/installer_setup_policy.h"
+#include "installer/install_policy.h"
+#include "installer/payload_format.h"
 
 namespace {
 
@@ -504,7 +504,7 @@ TEST(InstallerShortcutTest, OnlyALinkToTheInstalledExecutableIsOurs) {
 }
 
 // ---------------------------------------------------------------------------
-// Elevated role contract (common/installer_setup_policy.h)
+// Elevated role contract (common/setup/installer_setup_policy.h)
 // ---------------------------------------------------------------------------
 
 std::vector<std::wstring> RoleArguments(const std::wstring& sid, const std::wstring& admin, const std::wstring& prefs,

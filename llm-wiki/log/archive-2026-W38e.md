@@ -41,7 +41,7 @@ Follow-up question from the same Portal RTX run: with the rendered-rate ceiling 
 **36.0 groups/s against 47.8 at 3x** (measured from the present bursts in `perf_metrics_1620.csv` of
 `20260914_120049`) - a quarter of the render work removed - and the overlay's GPU load did not move off ~100%.
 
-`captureengine/host_metrics.cpp` summed **every** non-video `\GPU Engine(*)\Utilization Percentage` instance on the
+`captureengine/app/host_metrics.cpp` summed **every** non-video `\GPU Engine(*)\Utilization Percentage` instance on the
 adapter and clamped the total to 100. Those instances are per (process, adapter, physical engine) and the engines
 run **concurrently**, so the sum is not a fraction of elapsed time. Frame generation is the case that makes it
 unreadable: the generator's work is on compute, the game's raster on 3D, and the two add up past the clamp whatever

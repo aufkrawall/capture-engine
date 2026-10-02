@@ -4,7 +4,7 @@
 #include <fstream>
 #include <string>
 
-#include "../captureengine/pawnio_setup.h"
+#include "captureengine/sensors/pawnio_setup.h"
 
 namespace {
 

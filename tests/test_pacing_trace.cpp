@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <thread>
-#include "../hook/common/pacing_trace.h"
+#include "hook/pacing/pacing_trace.h"
 #include "source_fragment_reader.h"
 #include <filesystem>
 
@@ -118,13 +118,13 @@ TEST(PacingTraceTest, MultipleProducersKeepRecordsCoherent) {
 
 TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     const auto root = std::filesystem::current_path();
-    const auto upload = ce::test_source::ReadLogicalSource(root / "hook/common/custom_overlay_dx12_inline_upload.cpp");
+    const auto upload = ce::test_source::ReadLogicalSource(root / "hook/overlay/custom_overlay_dx12_inline_upload.cpp");
     EXPECT_NE(upload.find("const uint32_t observed = inlineCompletions[index]"), std::string::npos);
     EXPECT_NE(upload.find("Kind::MarkerObserved"), std::string::npos);
     EXPECT_NE(upload.find("inlineSlots.LastCommitted()"), std::string::npos);
     EXPECT_NE(upload.find("ce::pacing_trace::Enabled() && latest < inlineSlots.Count()"), std::string::npos);
     EXPECT_NE(upload.find("inlineSlots.Guard(latest), latest, 1"), std::string::npos);
-    const auto trace = ce::test_source::ReadLogicalSource(root / "hook/common/pacing_trace.cpp");
+    const auto trace = ce::test_source::ReadLogicalSource(root / "hook/pacing/pacing_trace.cpp");
     EXPECT_EQ(trace.find("->GetCompletedValue("), std::string::npos);
     EXPECT_EQ(trace.find("->Signal("), std::string::npos);
     EXPECT_EQ(trace.find("Sleep("), std::string::npos);
@@ -138,25 +138,25 @@ TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     EXPECT_NE(trace.find("auto history = History()"), std::string::npos);
     EXPECT_EQ(trace.find("std::sort(events.begin()"), std::string::npos);
     EXPECT_NE(trace.find("std::stable_sort(events.begin()"), std::string::npos);
-    const auto loop = ce::test_source::ReadLogicalSource(root / "hook/main_hookthread.cpp");
+    const auto loop = ce::test_source::ReadLogicalSource(root / "hook/runtime/main_hookthread.cpp");
     EXPECT_NE(loop.find("ce::pacing_trace::Service()"), std::string::npos);
 }
 
 TEST(PacingTraceTest, PresentBoundariesCoverBothVariantsWithoutChangingForwardedArguments) {
     const auto root = std::filesystem::current_path();
     const auto read = [&](const char* path) { return ce::test_source::ReadLogicalSource(root / path); };
-    const auto proxy = read("hook/apis/dx12_hook_ffx_proxy_present.cpp");
+    const auto proxy = read("hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
     EXPECT_NE(proxy.find("PresentStage::Proxy, self, SyncInterval, Flags"), std::string::npos);
     EXPECT_NE(proxy.find("PresentStage::Proxy1, self, SyncInterval, Flags"), std::string::npos);
     EXPECT_NE(proxy.find("trace.Forward(SyncInterval, Flags);\n    const HRESULT hr = original(self, SyncInterval, Flags);"), std::string::npos);
     EXPECT_NE(proxy.find("trace.Forward(SyncInterval, Flags);\n    const HRESULT hr = original(self, SyncInterval, Flags, pParams);"), std::string::npos);
     EXPECT_NE(proxy.find("trace.Finish(static_cast<uint32_t>(hr));"), std::string::npos);
-    const auto detour = read("hook/common/dxgi_shared_present.cpp");
+    const auto detour = read("hook/present/dxgi_shared_present.cpp");
     EXPECT_NE(detour.find("PresentStage::Detour, pSwapChain, SyncInterval, Flags"), std::string::npos);
     EXPECT_NE(detour.find("static ce::PresentHeartbeat heartbeat"), std::string::npos);
     EXPECT_EQ(detour.find("static LARGE_INTEGER s_lastPresentTime"), std::string::npos);
     EXPECT_EQ(detour.find("static int s_entryCount"), std::string::npos);
-    EXPECT_NE(read("hook/common/dxgi_shared_present1.cpp").find("PresentStage::Detour1"), std::string::npos);
-    EXPECT_NE(read("hook/common/dxgi_shared_original.cpp").find("PresentStage::Forward"), std::string::npos);
-    EXPECT_NE(read("hook/common/dxgi_shared_original_present1.cpp").find("PresentStage::Forward1"), std::string::npos);
+    EXPECT_NE(read("hook/present/dxgi_shared_present1.cpp").find("PresentStage::Detour1"), std::string::npos);
+    EXPECT_NE(read("hook/present/dxgi_shared_original.cpp").find("PresentStage::Forward"), std::string::npos);
+    EXPECT_NE(read("hook/present/dxgi_shared_original_present1.cpp").find("PresentStage::Forward1"), std::string::npos);
 }

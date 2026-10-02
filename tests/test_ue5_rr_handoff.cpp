@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <string_view>
 
-#include "../hook/common/rr_handoff_gate.h"
-#include "../hook/common/ue5_cvar_override_policy.h"
+#include "hook/ngx/rr_handoff_gate.h"
+#include "hook/overrides/ue5_cvar_override_policy.h"
 
 namespace {
 

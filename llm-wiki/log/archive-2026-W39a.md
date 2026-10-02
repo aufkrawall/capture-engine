@@ -5,7 +5,7 @@ Covers 2026-09-22 - 2026-09-21. Newest first.
 ### 2026-09-22 - Nothing CE runs may make other applications' keystrokes wait
 
 Review for "other applications register keyboard input delayed". The controller's
-`WH_KEYBOARD_LL` hook (0.1.6181, `captureengine/hotkey_input_hook.cpp`) is the one CE thread
+`WH_KEYBOARD_LL` hook (0.1.6181, `captureengine/app/hotkey_input_hook.cpp`) is the one CE thread
 every keystroke on the desktop waits on, up to `LowLevelHooksTimeout` (300 ms default, 1 s cap).
 Its callback path was mostly clean (Try-lock, `PostThreadMessage`), but:
 
@@ -21,7 +21,7 @@ Its callback path was mostly clean (Try-lock, `PostThreadMessage`), but:
   timeout is bookkept but never consumed - the app already has that key, and consuming its
   key-down would leave the key-up unpaired.
 - **A controller crash dump suspended the hook thread.** `RegisterCrashPreDumpCallback` (new,
-  `common/crash_handler.h`) removes the hook before the dump worker starts.
+  `common/crash/crash_handler.h`) removes the hook before the dump worker starts.
 
 **The limiter process was dead weight, and dangerous.** Since 91103513 (2026-05-05) the hook
 paces in-process and never signals `CE_LQ_*`, so `captureengine/limiter_main.cpp` only waited -
@@ -56,7 +56,7 @@ nobody can download.
 The first dispatch (`0.1.6767`, run 35629107044) failed 74 seconds in, inside the verification
 preflight, and behind that one failure sat two more:
 
-- `hook/common/hook_common.cpp` at 813 lines. Split into `hook_common_graphics_config.cpp`
+- `hook/runtime/hook_common.cpp` at 813 lines. Split into `hook_common_graphics_config.cpp`
   (485 + 339): the shared-memory/local config merge, the cached per-thread view, and the DLSS
   driver-settings values derived from it. The two source-policy tests asserting on those merge
   assignments now read the new unit. It deliberately does not include `fps_limiter.h` - that
@@ -93,7 +93,7 @@ detour. Steam owned the dxgi Present entry, so CE logged
 game the real swapchain, and installed neither. The mutation was unconditional, the compensation was
 not - and it was duplicated across six creation paths, which is how they drifted apart.
 
-Fixed in e07c3222: `hook/common/swapchain_flag_policy.h` holds the rule once, the reconciliation
+Fixed in e07c3222: `hook/present/swapchain_flag_policy.h` holds the rule once, the reconciliation
 reads the live `GetDesc().Flags` instead of re-deriving intent from the config (a stale "add the
 bit" is as fatal as a missing one), a reconcile-only ResizeBuffers claim is installed at the DX12
 and DX11 bootstrap independently of the Present-ownership question, and the flag is withheld when

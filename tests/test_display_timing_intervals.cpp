@@ -1,4 +1,4 @@
-#include "../captureengine/display_timing_intervals.h"
+#include "captureengine/display_timing/display_timing_intervals.h"
 #include <gtest/gtest.h>
 
 namespace {

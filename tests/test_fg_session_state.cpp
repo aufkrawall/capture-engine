@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/fg_detection.h"
-#include "../hook/common/fg_session_state.h"
+#include "hook/fg/fg_detection.h"
+#include "hook/fg/fg_session_state.h"
 
 namespace {
 

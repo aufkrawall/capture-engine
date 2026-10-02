@@ -115,7 +115,7 @@ The cost made it worse. Every composite moved the whole 3840x2160 surface up and
 66 MB per present; the session's composite counter advanced 112 times in 6.4 s, roughly 17 presents per second,
 and the window in which the frame was on screen without the overlay was about 10-25 ms wide.
 
-`hook/common/ddraw_present_policy.h` now names what each hooked call publishes. `Flip` publishes the flip chain's
+`hook/ddraw/ddraw_present_policy.h` now names what each hooked call publishes. `Flip` publishes the flip chain's
 back buffer (or the caller's explicit target), a full-surface blit onto a **single-buffered** scanout surface
 publishes its source, and an `Unlock` of the primary is already visible. The overlay goes into the image the
 present is about to publish, before the call reaches the runtime; when that image cannot be resolved CE composites

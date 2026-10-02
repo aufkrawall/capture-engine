@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/streamline_runtime_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -45,7 +45,7 @@ TEST(Dx12FgWiring, FreshHandoffExemptionIsAcceptedByBothInitDeferralGates) {
 // swapchain's own tracked submit path — the global realECL pointer proves nothing about it and a
 // handoff queue CE has never submitted on must not qualify.
 TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
-    const std::string ownership = ReadSource("hook/common/dx12_overlay_policy/streamline_ownership.h");
+    const std::string ownership = ReadSource("hook/d3d12/dx12_overlay_policy/streamline_ownership.h");
     ASSERT_FALSE(ownership.empty());
     const size_t gateA = ownership.find("inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(");
     const size_t gateB =
@@ -63,7 +63,7 @@ TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
               std::string::npos)
         << "the queue-settle defer must accept the same fresh-handoff exemption";
 
-    const std::string phase3 = ReadSource("hook/apis/dx12_hook_process_session_phase3.cpp");
+    const std::string phase3 = ReadSource("hook/d3d12/dx12_hook_process_session_phase3.cpp");
     ASSERT_FALSE(phase3.empty());
     EXPECT_NE(phase3.find("deferInactiveRuntimeOwnedInit(freshStreamlineHandoffOnSubmittableQueue)"),
               std::string::npos);
@@ -89,7 +89,7 @@ TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
 // listed at the cooldown and reinit gates but missing from the drain gate, so every such switch ran a
 // blocking WaitForSingleObject(drainEvent, 200) on the Present thread for an overlay state kept live.
 TEST(Dx12FgWiring, OuterSLFGOffKeepLiveExceptionsAreSharedByAllThreeGates) {
-    const std::string phase5 = ReadSource("hook/apis/dx12_hook_process_session_phase5.cpp");
+    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_phase5.cpp");
     ASSERT_FALSE(phase5.empty());
 
     const size_t sharedDef = phase5.find("const bool keepOverlayLiveAcrossOuterOff =");
@@ -205,7 +205,7 @@ TEST(Dx12FgWiring, GetStateOnlyBlockRetiresOnSustainedAdvancingGenerationEvidenc
 // Source invariant: the GetState hook must retire the persistent suppression BEFORE evaluating it,
 // so a sustained-generation retire takes effect on the same poll instead of one frame late.
 TEST(Dx12FgWiring, GetStateHookRetiresTheSuppressionBeforeEvaluatingIt) {
-    const std::string dlssg = ReadSource("hook/apis/streamline_hook_dlssg.cpp");
+    const std::string dlssg = ReadSource("hook/streamline/streamline_hook_dlssg.cpp");
     ASSERT_FALSE(dlssg.empty());
     const size_t retire = dlssg.find("MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(");
     const size_t evaluate = dlssg.find("ShouldSuppressNewGetStateActivation();");
@@ -233,7 +233,7 @@ TEST(Dx12FgWiring, DeferredFenceSignalAccountingNeverCommitsAValueTheFenceCannot
 // and commit the accounting through the failure-accounting policy — never through the raw
 // dx12_hook_g_State.fence pointer again.
 TEST(Dx12FgWiring, DeferredSignalFlushPinsTheFenceUnderTheOverlayLock) {
-    const std::string flushUnit = ReadSource("hook/apis/dx12_hook_streamline_fg_transition.cpp");
+    const std::string flushUnit = ReadSource("hook/d3d12/dx12_hook_streamline_fg_transition.cpp");
     ASSERT_FALSE(flushUnit.empty());
     const size_t flushFn = flushUnit.find("bool DX12_FlushDeferredSignalWithInfo(");
     ASSERT_NE(flushFn, std::string::npos);
@@ -279,7 +279,7 @@ TEST(Dx12FgWiring, PresentInterposerPrivateChainWithoutSafeQueueFailsClosed) {
 // Source invariant: the fail-closed guard must run before generic queue routing and skip the draw
 // outright, or the first submit on the private chain's backbuffers from a foreign queue returns.
 TEST(Dx12FgWiring, PresentInterposerFailClosedGuardRunsBeforeGenericQueueRouting) {
-    const std::string phase2 = ReadSource("hook/apis/dx12_hook_process_session_phase2.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_phase2.cpp");
     ASSERT_FALSE(phase2.empty());
     const size_t failClosed = phase2.find("ShouldPassThroughPresentInterposerPrivateChainWithoutOverlayDraw(");
     const size_t routing = phase2.find("DecideSwapchainOverlayRouting(");

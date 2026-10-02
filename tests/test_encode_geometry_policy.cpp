@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../mediaengine/cursor_geometry.h"
-#include "../mediaengine/encode_geometry_policy.h"
+#include "mediaengine/video/cursor_geometry.h"
+#include "mediaengine/video/encode_geometry_policy.h"
 #include "source_fragment_reader.h"
 
 namespace geo = ce::encode_geometry;
@@ -78,8 +78,8 @@ TEST(EncodeGeometryPolicyTest, CursorLandsInsideTheFittedRectangle) {
 
 TEST(EncodeGeometryPolicyTest, EncoderRoutesSourceChangesThroughThePolicy) {
     const auto root = std::filesystem::current_path();
-    const std::string encode = ce::test_source::ReadLogicalSource(root / "mediaengine/video_encoder_encode.cpp");
-    const std::string framegrab = ce::test_source::ReadLogicalSource(root / "mediaengine/video_encoder_framegrab.cpp");
+    const std::string encode = ce::test_source::ReadLogicalSource(root / "mediaengine/video/video_encoder_encode.cpp");
+    const std::string framegrab = ce::test_source::ReadLogicalSource(root / "mediaengine/video/video_encoder_framegrab.cpp");
     ASSERT_FALSE(encode.empty());
     ASSERT_FALSE(framegrab.empty());
     for (const std::string* source : {&encode, &framegrab}) {

@@ -1,6 +1,6 @@
 #include "dxgi_swapchain_wrap_internal.h"
 
-#include "../common/dxgi_shared_internal.h"
+#include "hook/present/dxgi_shared_internal.h"
 
 #include <algorithm>
 #include <cstdio>

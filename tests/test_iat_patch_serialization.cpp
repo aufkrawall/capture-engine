@@ -55,8 +55,8 @@ size_t CountOccurrences(const std::string& haystack, const std::string& needle) 
 class IatPatchSerializationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        source_ = ReadSource("hook/wrappers/iat_hook.cpp");
-        ASSERT_FALSE(source_.empty()) << "hook/wrappers/iat_hook.cpp could not be read";
+        source_ = ReadSource("hook/hooking/iat_hook.cpp");
+        ASSERT_FALSE(source_.empty()) << "hook/hooking/iat_hook.cpp could not be read";
     }
 
     std::string source_;
@@ -107,7 +107,7 @@ TEST_F(IatPatchSerializationTest, TheOtherTwoSlotWritersAlreadyHoldTheLockThroug
     ASSERT_NE(restoreUnprotect, std::string::npos);
     EXPECT_LT(restoreLock, restoreUnprotect);
 
-    const std::string shutdown = ReadSource("hook/wrappers/iat_hook_init.cpp");
+    const std::string shutdown = ReadSource("hook/hooking/iat_hook_init.cpp");
     ASSERT_FALSE(shutdown.empty());
     const std::string shutdownBody = FunctionBody(shutdown, "void ShutdownIATHooks()");
     ASSERT_FALSE(shutdownBody.empty()) << "ShutdownIATHooks could not be located";

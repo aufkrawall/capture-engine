@@ -4,13 +4,13 @@ Last verified: 2026-09-14 (build 0.1.6559, Strange Brigade DX12 sessions `202609
 The output-chain topology below is NOT yet hardware-confirmed: the app-facing fallback was, in 0.1.6555/0.1.6556.)
 
 Primary sources:
-- `hook/common/overlay_compat_detail/module_table.h` (`IsPresentInterposerModulePath` and friends)
-- `hook/common/overlay_compat_detail/routing_policy.h`
-- `hook/common/present_interposer_cadence.h`
-- `hook/common/present_interposer_tracking.cpp`
-- `hook/common/dxgi_shared.cpp` (`IsSwapchainPresentCoveredByDeepBodyHook`, the private-chain registry)
-- `hook/common/dxgi_shared_present.cpp`, `dxgi_shared_present1.cpp`, `dxgi_shared_present_core.cpp`
-- `hook/apis/dx12_hook_swapchain_create.cpp`, `dx12_hook_swapchain_wrap_policy.cpp`
+- `hook/overlay/overlay_compat_detail/module_table.h` (`IsPresentInterposerModulePath` and friends)
+- `hook/overlay/overlay_compat_detail/routing_policy.h`
+- `hook/present/present_interposer_cadence.h`
+- `hook/present/present_interposer_tracking.cpp`
+- `hook/present/dxgi_shared.cpp` (`IsSwapchainPresentCoveredByDeepBodyHook`, the private-chain registry)
+- `hook/present/dxgi_shared_present.cpp`, `dxgi_shared_present1.cpp`, `dxgi_shared_present_core.cpp`
+- `hook/d3d12/dx12_hook_swapchain_create.cpp`, `dx12_hook_swapchain_wrap_policy.cpp`
 - `hook/wrappers/dxgi_factory_wrap.cpp`, `dxgi_swapchain_wrap_present.cpp`, `dxgi_swapchain_wrap_internal.h`
 - `tests/test_present_interposer_cadence.cpp`, `tests/test_overlay_compat.cpp`, `tests/test_dxgi_shared_part11.cpp`
 
@@ -219,7 +219,7 @@ bootstrap (`dx12-injection-bootstrap.md`). The harvested vtables live in d3d11/d
 hook-discovery device is WARP`. Not yet hardware-validated in Witcher 3.
 
 The same audit found the D3D10 sampler hook writing `ID3D10Device` slot 9, which is `Draw`;
-`CreateSamplerState` is slot 86 (`hook/common/d3d10_vtable_slots.h`).
+`CreateSamplerState` is slot 86 (`hook/d3d11/d3d10_vtable_slots.h`).
 
 ## Open questions / stale-risk
 - CE still installs DX11 hooks in this DX12 process, because a driver-loaded `d3d11.dll` counts as DX11 presence

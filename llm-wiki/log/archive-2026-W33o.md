@@ -117,8 +117,8 @@
   mask, which is where the long-standing `prevValue=0` came from), decided it was a plausible value, and
   CAS-replaced the mask pointer with CE's 8-byte shadow. The engine then read CE's storage as the mask: the write
   reached nothing, and the object lost its route to the real mask. Inert in every title and engine version so far.
-- **Fix (0.1.6128):** classify before writing. `hook/common/ue5_console_layout.h` decides between reference
-  pointer / inline pair / bit reference from what the caller read, `hook/main_ue5_layout.cpp` does the reading and
+- **Fix (0.1.6128):** classify before writing. `hook/overrides/ue5_console_layout.h` decides between reference
+  pointer / inline pair / bit reference from what the caller read, `hook/runtime/main_ue5_layout.cpp` does the reading and
   owns the three install modes, and an object matching nothing (or one shape twice) is left untouched with its
   first 0x80 bytes dumped. The reference shape is now accepted only when the shadow pair actually mirrors the
   global the pointer addresses - the check the ShowFlag objects fail.

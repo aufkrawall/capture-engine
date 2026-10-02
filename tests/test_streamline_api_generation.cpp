@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/streamline_api_generation.h"
+#include "hook/streamline/streamline_api_generation.h"
 
 #include "source_fragment_reader.h"
 
@@ -124,13 +124,13 @@ TEST(StreamlineApiGenerationTest, TheUiBufferTypeAgreesWithTheTwoDotXConstant) {
     // 23, which is also 2.x's kBufferTypeUIColorAndAlpha. The 1.x hook and the 2.x hook must
     // therefore agree on the number.
     EXPECT_EQ(api::kV1BufferTypeUIColorAndAlpha, 23u);
-    const std::string internals = ReadSource("hook/apis/streamline_hook_internal.h");
+    const std::string internals = ReadSource("hook/streamline/streamline_hook_internal.h");
     ASSERT_FALSE(internals.empty());
     EXPECT_NE(internals.find("streamline_hook_kSLBufferTypeUIColorAndAlpha = 23"), std::string::npos);
 }
 
 TEST(StreamlineApiGenerationTest, InstallerGatesBothAbiSensitiveHooksOnTheDetectedGeneration) {
-    const std::string source = ReadSource("hook/apis/streamline_hook_install.cpp");
+    const std::string source = ReadSource("hook/streamline/streamline_hook_install.cpp");
     ASSERT_FALSE(source.empty());
 
     // The generation has to be resolved before anything is patched.
@@ -158,7 +158,7 @@ TEST(StreamlineApiGenerationTest, InstallerGatesBothAbiSensitiveHooksOnTheDetect
 }
 
 TEST(StreamlineApiGenerationTest, TheV1HooksKeepTheOneDotXCallingConvention) {
-    const std::string header = ReadSource("hook/apis/streamline_hook_v1.h");
+    const std::string header = ReadSource("hook/streamline/streamline_hook_v1.h");
     ASSERT_FALSE(header.empty());
 
     // 1.x returns bool in AL, takes the command buffer FIRST in slEvaluateFeature, and takes
@@ -170,7 +170,7 @@ TEST(StreamlineApiGenerationTest, TheV1HooksKeepTheOneDotXCallingConvention) {
                           "uint32_t frameIndex, uint32_t id)"),
               std::string::npos);
 
-    const std::string source = ReadSource("hook/apis/streamline_hook_v1.cpp");
+    const std::string source = ReadSource("hook/streamline/streamline_hook_v1.cpp");
     ASSERT_FALSE(source.empty());
     // Arguments are forwarded verbatim - the whole bug was a re-pack that truncated one.
     EXPECT_NE(source.find("original(resource, bufferType, id, extent)"), std::string::npos);
@@ -187,7 +187,7 @@ TEST(StreamlineApiGenerationTest, TheV1HooksKeepTheOneDotXCallingConvention) {
 }
 
 TEST(StreamlineApiGenerationTest, TheV1HooksAreFreeWhileTheUiRouteIsDormant) {
-    const std::string source = ReadSource("hook/apis/streamline_hook_v1.cpp");
+    const std::string source = ReadSource("hook/streamline/streamline_hook_v1.cpp");
     ASSERT_FALSE(source.empty());
 
     // slSetTag runs several times per frame and slEvaluateFeature at least once. Neither may
@@ -212,7 +212,7 @@ TEST(StreamlineApiGenerationTest, TheV1HooksAreFreeWhileTheUiRouteIsDormant) {
 }
 
 TEST(StreamlineApiGenerationTest, TheDllOverrideRefusesACrossGenerationSubstitution) {
-    const std::string source = ReadSource("hook/main_redirect.cpp");
+    const std::string source = ReadSource("hook/runtime/main_redirect.cpp");
     ASSERT_FALSE(source.empty());
 
     // Both redirect routes - the plain sl.* name match and the NGX model repository - must

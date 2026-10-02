@@ -6,8 +6,8 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../hook/common/ue5_console_layout.h"
-#include "../hook/common/ue5_cvar_override_policy.h"
+#include "hook/overrides/ue5_console_layout.h"
+#include "hook/overrides/ue5_cvar_override_policy.h"
 
 namespace {
 

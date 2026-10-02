@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHADER_DIR = ROOT / "hook" / "vulkan_layer" / "shaders"
-OUTPUT_HEADER = ROOT / "hook" / "common" / "overlay_shader_spirv.h"
+OUTPUT_HEADER = ROOT / "hook" / "overlay" / "overlay_shader_spirv.h"
 TOOL_DIR = ROOT / "build" / "msys64" / "clang64" / "bin"
 
 SHADERS = (

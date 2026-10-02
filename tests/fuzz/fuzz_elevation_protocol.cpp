@@ -1,4 +1,4 @@
-#include "../../common/elevation_protocol.h"
+#include "common/ipc/elevation_protocol.h"
 #include <cstring>
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {

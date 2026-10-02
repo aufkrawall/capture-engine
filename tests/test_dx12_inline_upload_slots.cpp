@@ -3,7 +3,7 @@
 #include <array>
 #include <filesystem>
 
-#include "../hook/common/dx12_overlay_policy/inline_upload_slots.h"
+#include "hook/d3d12/dx12_overlay_policy/inline_upload_slots.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -103,20 +103,20 @@ TEST(DX12InlineUploadSlotsTest, CallbackCompletionUsesTheOriginalListAndServiceT
     const auto read = [](const char* path) {
         return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / path);
     };
-    const auto backend = read("hook/common/custom_overlay_dx12.cpp");
+    const auto backend = read("hook/overlay/custom_overlay_dx12.cpp");
     EXPECT_NE(backend.find("AcquireInlineUploadSlot()"), std::string::npos);
     EXPECT_NE(backend.find("D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT"), std::string::npos);
     EXPECT_NE(backend.find("MarkInlineUploadComplete(inlineList.Get(), slot)"), std::string::npos);
-    const auto marker = read("hook/common/custom_overlay_dx12_inline_upload.cpp");
+    const auto marker = read("hook/overlay/custom_overlay_dx12_inline_upload.cpp");
     EXPECT_EQ(marker.find("->Signal("), std::string::npos);
     EXPECT_EQ(marker.find("->ExecuteCommandLists("), std::string::npos);
     EXPECT_EQ(marker.find("WaitForSingleObject("), std::string::npos);
-    const auto adapter = read("hook/common/overlay_adapter.cpp");
+    const auto adapter = read("hook/overlay/overlay_adapter.cpp");
     EXPECT_NE(adapter.find("retiringDX12->HasInlineUploadsInFlight()"), std::string::npos);
     EXPECT_NE(adapter.find("CustomOverlay::RetireDX12Backend(retiringDX12)"), std::string::npos);
-    const auto worker = read("hook/main_hookthread.cpp");
+    const auto worker = read("hook/runtime/main_hookthread.cpp");
     EXPECT_NE(worker.find("CustomOverlay::CollectRetiredDX12Backends()"), std::string::npos);
-    const auto callback = read("hook/apis/dx12_hook_ffx_overlay_adapter.cpp");
+    const auto callback = read("hook/d3d12/dx12_hook_ffx_overlay_adapter.cpp");
     EXPECT_LT(callback.find("CanReuseWarmDX12OverlayBackend"), callback.find("queueLock(g_CommandQueueMutex)"));
 }
 

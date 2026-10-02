@@ -3,7 +3,7 @@
 ### 2026-07-30 - Preserve the exact DXGI hardware-pointer timeline independently of desktop frames
 
 - **Evidence / root cause:** supplied 3840x2160 120-fps AV1 recording `capture_20260730T003820372Z_p23688_s2.mkv` kept ordinary scene motion smooth while the separate hardware cursor advanced in conspicuous held steps. Session `installed/captureengine/logs/20260730_000812` ended with 130,104 desktop frames but 458,535 pointer-only acquisitions over about 1,008 seconds; the old sink counted and discarded all pointer-only events, then the CFR resolver queried Windows at encoder wake time and assigned the result to the scheduled grid QPC. Irregular/catch-up encoder service could therefore collapse several real pointer observations into one held position even while independently timestamped source pixels remained smooth.
-- **Fix / invariants / coverage:** every nonzero DXGI `LastMouseUpdateTime`, including `LastPresentTime == 0`, now crosses the source epoch into the bounded cursor history with its exact QPC, coordinate convention, visibility, and embedded ownership. CFR selects this authoritative stream at the delayed content target for fresh/catch-up/repeat output and never inserts synthetic grid-time samples after the exact stream activates; existing WGC/inject sampling is unchanged. Equal timestamps replace metadata and the DXGI history holds 8192 states. The live cursor stays in the Windows hardware plane; encoded composition retains the cached small-rectangle GPU path with no full-frame copy, readback, GPU wait, game-process work, timing workaround, or software-cursor substitution. Timeline regressions prove duplicate replacement and 1000-Hz history advancing every delayed 120-fps tick; coordinator coverage proves forwarding precedes no-texture discard, enforces source epoch, and gates exact selection on a published sample. Watch `[Cursor] DXGI QPC pointer timeline active`, `samples=dxgi-qpc`, and advancing `DupPtrUpdates` / `DupPtrForwarded` / `DupPtrPublished`; historical `DropCursor` remains the pointer-only acquisition count, not lost pointer state. Focused tests pass; build `0.1.5256` passed the complete 293.8-second gate: clean product/test-app builds and packaging, full native/Python suites, file-size/clang-tidy ratchets, and x64 ASan/UBSan. Source anchors: `captureengine/{dxgi_dup_capture,wgc_capture,media_main}.*`, `common/cursor_capture_state.h`, `tests/{test_cursor_geometry,test_capture_coordinator_source}.cpp`, and `llm-wiki/wgc-capture.md`.
+- **Fix / invariants / coverage:** every nonzero DXGI `LastMouseUpdateTime`, including `LastPresentTime == 0`, now crosses the source epoch into the bounded cursor history with its exact QPC, coordinate convention, visibility, and embedded ownership. CFR selects this authoritative stream at the delayed content target for fresh/catch-up/repeat output and never inserts synthetic grid-time samples after the exact stream activates; existing WGC/inject sampling is unchanged. Equal timestamps replace metadata and the DXGI history holds 8192 states. The live cursor stays in the Windows hardware plane; encoded composition retains the cached small-rectangle GPU path with no full-frame copy, readback, GPU wait, game-process work, timing workaround, or software-cursor substitution. Timeline regressions prove duplicate replacement and 1000-Hz history advancing every delayed 120-fps tick; coordinator coverage proves forwarding precedes no-texture discard, enforces source epoch, and gates exact selection on a published sample. Watch `[Cursor] DXGI QPC pointer timeline active`, `samples=dxgi-qpc`, and advancing `DupPtrUpdates` / `DupPtrForwarded` / `DupPtrPublished`; historical `DropCursor` remains the pointer-only acquisition count, not lost pointer state. Focused tests pass; build `0.1.5256` passed the complete 293.8-second gate: clean product/test-app builds and packaging, full native/Python suites, file-size/clang-tidy ratchets, and x64 ASan/UBSan. Source anchors: `captureengine/media/{dxgi_dup_capture,wgc_capture,media_main}.*`, `common/capture/cursor_capture_state.h`, `tests/{test_cursor_geometry,test_capture_coordinator_source}.cpp`, and `llm-wiki/wgc-capture.md`.
 
 ### 2026-07-29 - Retire suspended FSR transport at the authoritative Streamline swapchain handoff
 
@@ -29,7 +29,7 @@
   trace-replay, FG-session, and Streamline-policy suites pass. Build `0.1.5255` passed the complete 263.403-second
   gate: clean x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan,
   packaging/PE checks, file-size and clang-tidy ratchets, flake8, and pyright.
-- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+- **Source anchors:** `hook/d3d12/dx12_overlay_policy/protected_ffx_startup.h`,
   `hook/apis/dx12_hook_part_{001,014,015}.inl`, `tests/test_dxgi_shared_part{3,8,10}.cpp`, and
   `llm-wiki/frame-generation/guardrails.md`.
 
@@ -52,7 +52,7 @@
   separately. There is no copy, extra queue, reinit, wait, delay, polling, title branch, or active-FG work.
 - **Coverage:** policy tests prove both marker states, and the source contract requires the marker/policy decision to
   precede the fallback submit. The focused `DXGISharedTest.*:DXGISharedSourceTest.*` development loop passes.
-- **Source anchors:** `hook/common/dx12_overlay_policy/postsl_keepalive.h`,
+- **Source anchors:** `hook/d3d12/dx12_overlay_policy/postsl_keepalive.h`,
   `hook/apis/dx12_hook_part_026.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
   `llm-wiki/frame-generation/guardrails.md`.
 
@@ -72,7 +72,7 @@
 - **Coverage:** the focused policy regression proves the independent no-callback-only state is sufficient and that
   both absent signals remain a no-op; the source contract proves the live cleanup samples that route before clearing
   it. The required full verification result is recorded with the completing commit.
-- **Source anchors:** `hook/common/dx12_overlay_policy/protected_ffx_startup.h`,
+- **Source anchors:** `hook/d3d12/dx12_overlay_policy/protected_ffx_startup.h`,
   `hook/apis/dx12_hook_part_015.inl`, `tests/test_dxgi_shared_part{3,8}.cpp`, and
   `llm-wiki/frame-generation/guardrails.md`.
 
@@ -92,7 +92,7 @@
   nested attempts. This adds no copy, queue, wait, timeout, polling, title branch, or active-FG steady-state work.
 - **Coverage:** focused ownership/source regressions and the broader `DX12FGTransitionSequencesFixture`,
   `DX12FGTraceReplayFixture`, `DXGISharedTest`, `DXGISharedSourceTest`, and `StreamlineRuntimePolicyTest` suites pass.
-- **Source anchors:** `hook/apis/{dx12_hook,streamline_hook}.*`, `hook/common/dxgi_shared.cpp`,
+- **Source anchors:** `hook/d3d12/dx12_hook.*, hook/streamline/streamline_hook.*`, `hook/present/dxgi_shared.cpp`,
   `tests/test_dxgi_shared_part3.cpp`, and `llm-wiki/frame-generation/guardrails.md`.
 
 ### 2026-07-29 - Keep DX12 prerender pacing off FG runtime presenter threads
@@ -113,7 +113,7 @@
   minimal path, and the eager-startup rejection. Build `0.1.5251` passed the complete 279.5-second gate: clean
   x64/x86 hooks and product, the full native and sixteen-group Python suites, x64 ASan/UBSan, packaging/PE checks,
   file-size and clang-tidy ratchets, flake8, and pyright.
-- **Source anchors:** `hook/common/{dx12_overlay_policy,dxgi_shared}.*`, `hook/apis/dx12_hook.cpp`,
+- **Source anchors:** `hook/d3d12/dx12_overlay_policy.*, hook/present/dxgi_shared.*`, `hook/d3d12/dx12_hook.cpp`,
   `tests/test_dxgi_shared_part{3,10}.cpp`, and `llm-wiki/{graphics-overrides-and-frame-pacing,index}.md`.
 
 ### 2026-07-29 - Publish NVIDIA Smooth Motion status on every supported overlay API path
@@ -154,9 +154,9 @@
   confirmed-session latch. Build `0.1.5250` passed the complete clean gate: x64/x86 hooks and Vulkan layers, the full
   native suite, all sixteen Python groups, lint/ratchets, packaging/PE checks, and x64 ASan/UBSan. Fresh Strange
   Brigade DX12 and native DX11/Vulkan driver validation remains manual.
-- **Source anchors:** `hook/common/overlay_fg_metric_policy.h`,
-  `hook/common/overlay_metrics_publisher.{h,cpp}`, `hook/common/overlay_metrics_planner_publisher.cpp`,
-  `hook/common/fg_detection.{h,cpp}`, `hook/apis/dx11_hook.cpp`,
+- **Source anchors:** `hook/overlay/overlay_fg_metric_policy.h`,
+  `hook/overlay/overlay_metrics_publisher.{h,cpp}`, `hook/overlay/overlay_metrics_planner_publisher.cpp`,
+  `hook/fg/fg_detection.{h,cpp}`, `hook/d3d11/dx11_hook.cpp`,
   `hook/vulkan_layer/{vulkan_layer.cpp,layer_overlay.cpp}`, `build.py`,
   `tests/test_overlay_fg_status_publication.cpp`, and `llm-wiki/overlay-fg-status.md`.
 
@@ -190,8 +190,8 @@
 - **Behavior:** opt-in `[Capture] black_when_no_fullscreen_focus=false`, including `Capture.*` profile overrides, gates only the active WGC/DXGI path. Exact-root fullscreen focus is required for window capture; monitor capture requires a fullscreen-like foreground root on the captured monitor. Missing, changing, invalid, minimized, cross-monitor, or ambiguous state fails closed to opaque black. Inject capture is unchanged.
 - **Safety / reliability boundary:** CaptureEngine uses only documented passive foreground/window/monitor geometry queries and performs no process opens, memory inspection, messages, input, event/Windows hooks, DLL injection, or anti-cheat bypass. A non-injected profile should still use `dll_injection=never`. Windows can misreport focus or bounds during transitions, so the setting is best-effort rather than a guaranteed privacy/redaction boundary and may occasionally mask or reveal incorrectly.
 - **Pipeline contract:** focus loss masks immediately; reacquisition stays black until normal selection reaches a source QPC captured after the successful observation. Fresh, repeat, CFR catch-up, and VFR blackout output share the gate and an empty cursor. The cached opaque-black BGRA8/R10/FP16 texture is created and cleared on GPU from the authoritative source descriptor. Only a known-black media cache may recover a failed black encode; otherwise the recording fails closed. Source consumption, audio samples, PTS/CFR grid, synchronization, mixing, duration, and finalization remain unchanged.
-- **Coverage / structure:** pure policy tests cover geometry tolerance, root/monitor matching, ambiguity, retarget/reset, reacquisition threshold, disabled/inject behavior, and opaque GPU pixels for BGRA8/R10/FP16. Coordinator source tests cover every output shape, cursor suppression, cache-failure safety, and the passive-API boundary. The duplicated fullscreen classifier moved to `common/screen_grab_privacy.*`; runtime glue lives in `captureengine/screen_grab_privacy_runtime.*`, and cadence diagnostics moved out of `media_main.cpp` so existing file-size baselines did not grow. Focused privacy/config/coordinator tests and the complete `--verify` gate passed in build 5228.
-- **Source anchors:** `common/{config,screen_grab_privacy}.{h,cpp}`, `captureengine/{config.ini.template,media_main,pseudo_overlay,screen_grab_privacy_runtime}.{h,cpp}`, `tests/{test_config,test_screen_grab_privacy,test_capture_coordinator_source}.cpp`, and `llm-wiki/{configuration,wgc-capture,index,log/recent}.md`.
+- **Coverage / structure:** pure policy tests cover geometry tolerance, root/monitor matching, ambiguity, retarget/reset, reacquisition threshold, disabled/inject behavior, and opaque GPU pixels for BGRA8/R10/FP16. Coordinator source tests cover every output shape, cursor suppression, cache-failure safety, and the passive-API boundary. The duplicated fullscreen classifier moved to `common/capture/screen_grab_privacy.*`; runtime glue lives in `captureengine/media/screen_grab_privacy_runtime.*`, and cadence diagnostics moved out of `media_main.cpp` so existing file-size baselines did not grow. Focused privacy/config/coordinator tests and the complete `--verify` gate passed in build 5228.
+- **Source anchors:** `common/capture/{screen_grab_privacy.h,screen_grab_privacy.cpp}, common/config/{config.h,config.cpp}`, `captureengine/{config.ini.template,media_main,pseudo_overlay,screen_grab_privacy_runtime}.{h,cpp}`, `tests/{test_config,test_screen_grab_privacy,test_capture_coordinator_source}.cpp`, and `llm-wiki/{configuration,wgc-capture,index,log/recent}.md`.
 
 ### 2026-07-27 - Preserve WGC/DXGI startup and visual liveness at the repeat-service boundary
 
@@ -199,7 +199,7 @@
 - **Root causes:** prewarm filled the finite pool with history that was stale by the time the mux/encoder opened; recovery and low-water exceptions bypassed the nominal soft reserve; wall-time pruning deleted frames still needed by an older immutable grid target; and the 95%-budget pacer boundary could disarm the only mechanism distributing fresh work just before repeats approached the real frame interval.
 - **Fix / boundary:** after first deferred prewarm, WGC/DXGI retire prewarm-era frames and re-arm the barrier before constructing a wall-anchored delayed timeline contract. The copy-pool reserve is now authoritative. Debt pruning preserves the newest predecessor of the concrete grid target and yields bulk wall pruning while shortfall has no target. Pacing treats shortfall as pressure, uses 75% of marginal repeat headroom near the interval, applies a 5% fresh-liveness floor when repeats themselves exceed real time, requires a meaningful repeat saving, and waits eight recovered decisions before exit. This changes neither encoder settings nor CFR PTS, audio samples/cursors, compensation, mixing, or finalization; Inject remains separate.
 - **Coverage:** policy tests cover wall-anchored contracts, authoritative reserve behavior across every former bypass, grid-predecessor pruning, marginal/degraded pacing, fresh-within-effective-budget suppression, repeat-value rejection, and recovery hysteresis. Source-integration tests require post-prewarm barrier refresh, virtual timeline origin without source-QPC rebase, target-aware debt cleanup, and shortfall-safe bulk pruning. Focused capture-policy/coordinator tests pass; the required closure is `python build.py --verify --skip-updates --concise`.
-- **Source anchors:** `common/capture_policy/{constants,cfr_startup,cfr_scheduling,ingress_and_active_delay,live_debt}.h`, `captureengine/media_main.cpp`, `mediaengine/mediaengine.cpp`, `tests/test_capture_{pipeline_policy,pipeline_policy_part3,pipeline_policy_part4,coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
+- **Source anchors:** `common/capture_policy/{constants,cfr_startup,cfr_scheduling,ingress_and_active_delay,live_debt}.h`, `captureengine/media/media_main.cpp`, `mediaengine/engine/mediaengine.cpp`, `tests/test_capture_{pipeline_policy,pipeline_policy_part3,pipeline_policy_part4,coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
 
 ### 2026-07-27 - Prevent feasible WGC/DXGI encoder overload from collapsing into a long static hold
 
@@ -207,7 +207,7 @@
 - **Root cause:** the immutable-grid/deep-debt fix correctly refused to put future pixels on old PTS, but a small sustained fresh-service deficit could escape retained history before recovery. Once all retained frames were newer than the old grid target, sync protection had to hold the last frame until packet-backed repeat catch-up regained coverage. The result was structurally perfect A/V but needlessly clustered visual loss.
 - **Fix / boundary:** the shared WGC/DXGI scheduler now measures fresh and repeat service separately. After eight samples of each, authoritative capacity pressure, healthy non-starved source evidence, target coverage, and a valid repeat cache, it computes the fresh fraction for a 95% service budget and distributes the minimum feasible repeats with a credit accumulator. Natural source holds credit the next fresh slot; covered candidates stay buffered. Paced repeats are not mislabeled as source starvation. The policy does not change encoder options and never changes CFR PTS, selection targets, audio samples/cursors, compensation, mixing, or finalization. Inject remains on its separate policy. If repeats themselves cannot fit the budget, no fake real-time solution is asserted.
 - **Diagnostics / coverage:** rate-limited enter/exit logs and `[WGC CFR OVERLOAD PACER]` expose fresh/repeat EMAs and samples, budget/fraction, decisions/emitted repeats, and maximum run; `[WGC CFR SUMMARY] Pacer=` separates emitted capacity repeats from `DupReason(src=...)`. A 7,744-tick regression using the observed `9.21/5.48 ms` shape grants about 5,059 evenly distributed fresh slots instead of 19, keeps maximum proactive repeat run at one, and stays inside the service budget. Guard tests cover missing pressure/source/cache/samples, infeasible mixes, natural holds, pressure-flag hysteresis, and clean exit. Focused policy/source-integration tests pass; the required closure is `python build.py --verify --skip-updates --concise`.
-- **Source anchors:** `common/capture_policy/{constants,cfr_scheduling}.h`, `captureengine/media_main.cpp`, `tests/{test_capture_pipeline_policy_part4,test_capture_coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
+- **Source anchors:** `common/capture_policy/{constants,cfr_scheduling}.h`, `captureengine/media/media_main.cpp`, `tests/{test_capture_pipeline_policy_part4,test_capture_coordinator_source}.cpp`, and `llm-wiki/{current,cfr-capture-sync,wgc-capture,index,log/recent}.md`.
 
 ### 2026-07-27 - Oversized-source refactor: hook/wrappers, shared_capture, crash_handler, screenshot_encoding, process_ipc
 
@@ -218,7 +218,7 @@
 - **Trap - the file-size ratchet also governs `build.py` itself.** Adding the strict-FP registry pushed `build.py` from 8297 to 8310 and failed lint. Folding the adjacent near-duplicate `pseudo_overlay` block into the same loop paid for the addition and returned the file to 8297, which is better than conceding baseline space via `--update-lint-baseline`.
 - **Where cuts were better than expected:** for `screenshot_encoding.cpp`, measuring the actual cross-region references showed the HDR half reaches the per-pixel converters only through the *public* API, so the PQ/ST-2084 maths did not have to move into a shared header at all — five shared symbols instead of ~14, and nothing hot crossing a TU boundary. For `process_ipc.cpp`, cutting at `ProcessIPCClient` rather than mid-server leaves the fuzzed trust boundary `ValidateProcessMessage` whole and in place. Measure before trusting a planned cut.
 - **Anonymous namespaces:** when most of one is shared across the cut, dissolving it and marking the remainder `static` is cleaner than interleaved segment surgery. Only `bugprone-*` and `performance-*` are enabled, so `misc-use-anonymous-namespace` does not object.
-- **Source anchors:** `common/{crash_handler,crash_dump_writer,crash_handler_internal.h,process_ipc,process_ipc_client,process_ipc_internal.h}`, `captureengine/{screenshot_encoding,screenshot_hdr_encoding,screenshot_encoding_internal.h}`, `build.py` (`STRICT_FP_SCREENSHOT_SOURCES`, `compile_tests`), `tools/tests/test_build_flags.py`, `tests/test_process_ipc.cpp`, and `llm-wiki/known-debt.md`.
+- **Source anchors:** `common/crash/{crash_handler,crash_dump_writer,crash_handler_internal.h}, common/ipc/{process_ipc,process_ipc_client,process_ipc_internal.h}`, `captureengine/media/{screenshot_encoding,screenshot_hdr_encoding,screenshot_encoding_internal.h}`, `build.py` (`STRICT_FP_SCREENSHOT_SOURCES`, `compile_tests`), `tools/tests/test_build_flags.py`, `tests/test_process_ipc.cpp`, and `llm-wiki/known-debt.md`.
 - **Gate:** `python build.py --verify --run-fuzz --skip-updates --concise`, `success=1` in 471 s (sanitizers, full native suite, twelve Python self-tests, clean product build, clang-tidy, both fuzz targets).
 
 ### 2026-07-26 - Keep deep encoder debt on the immutable audio-aligned content grid
@@ -227,4 +227,4 @@
 - **Root cause:** `IsWgcUniformPlayoutAntiFreezeFloorSyncSafe` compared oldest-frame wall age with configured content delay. A frame can be hundreds of milliseconds old by wall time yet seconds ahead of an encoder grid that fell further behind, so wall age cannot establish file-timeline content sync. The July 1 floor also predated the packet-backed two/four-slot held-repeat catch-up added on July 24, which now provides a convergent recovery path without target motion.
 - **Fix / boundary:** uniform WGC/DXGI playout no longer raises its audio-aligned selection target to retained history. If all history is too new, it repeats the prior frame while bounded catch-up advances the immutable CFR grid; safe grid-matched historical surplus may still replace a hold under the existing service/reservoir gates. Fresh selection resumes once the target reaches retained history. No encoder setting is changed automatically, and audio targets, samples, compensation, resampling, PTS, and finalization are untouched. Sustained throughput below the requested FPS still has unavoidable repeats.
 - **Diagnostics / coverage:** rate-limited `[WGC CFR] Uniform playout grid-debt sync hold` and summary `GridDebtSyncHolds` / `GridDebtLeadMax` expose the state. Regression coverage proves that the removed wall-age shape is rejected and that a simulated 24-tick debt reaches zero through held repeats, resumes monotonic fresh output, and never exceeds the grid-relative selection tolerance. Focused uniform-playout, catch-up, and source-integration tests pass.
-- **Source anchors:** `captureengine/media_main.cpp`, `common/capture_policy/cfr_nearest_playout.h`, `tests/{test_capture_pipeline_policy_part2,test_capture_coordinator_source}.cpp`, `tests/test_capture_pipeline_policy_shared.h`, and `llm-wiki/{wgc-capture,cfr-capture-sync,current,index,log/recent}.md`.
+- **Source anchors:** `captureengine/media/media_main.cpp`, `common/capture/capture_policy/cfr_nearest_playout.h`, `tests/{test_capture_pipeline_policy_part2,test_capture_coordinator_source}.cpp`, `tests/test_capture_pipeline_policy_shared.h`, and `llm-wiki/{wgc-capture,cfr-capture-sync,current,index,log/recent}.md`.

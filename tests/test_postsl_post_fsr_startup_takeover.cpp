@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -51,7 +51,7 @@ TEST(PostSLPostFSRStartupTakeoverTest, SafePostFSRPathSkipsCountdownAndWarmup) {
 }
 
 TEST(PostSLPostFSRStartupTakeoverTest, EntryPassesTheProofAndKeepsMakeBeforeBreak) {
-    const std::string entry = ReadSource("hook/apis/dx12_hook_postsl_render_entry.cpp");
+    const std::string entry = ReadSource("hook/d3d12/dx12_hook_postsl_render_entry.cpp");
     ASSERT_FALSE(entry.empty());
 
     const size_t proof = entry.find("ce::dx12_overlay_policy::HasExplicitPostFSRSafeBootstrapStartupProof(");

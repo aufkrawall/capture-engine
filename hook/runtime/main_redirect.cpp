@@ -1,0 +1,772 @@
+#include "main_internal.h"
+
+#include "common/platform/module_enumeration.h"
+#include "hook/streamline/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_ota_preferences.h"
+#include "hook/ngx/ngx_ota_policy.h"
+#include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/overrides/published_graphics_config.h"
+#include "common/platform/ansi_path.h"
+#include "dll_utils.h"
+#include "hook/streamline/streamline_api_generation.h"
+
+#include <atomic>
+
+namespace {
+
+// True when honouring a redirect to `finalPath` would map a SECOND instance of
+// that module base name, because the name is already loaded from a different
+// file. See ce::graphics_runtime::WouldRedirectDuplicateLoadedModule for why a
+// duplicate Streamline/NGX instance is fatal rather than merely useless.
+//
+// GetModuleHandleA/GetModuleFileNameA take the loader lock, which this thread
+// already owns when the call arrives through HookedLdrLoadDll; the lock is
+// re-entrant for its owner, and the surrounding redirect resolution already
+// touches the file system here.
+bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::string* loadedPathForReuse) {
+  const char *baseName = ce::graphics_runtime::ModuleFileName(finalPath.c_str());
+  if (!baseName || !baseName[0]) {
+    return false;
+  }
+  const HMODULE loaded = GetModuleHandleA(baseName);
+  if (!loaded) {
+    return false;
+  }
+  char loadedPath[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameA(loaded, loadedPath, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    loadedPath[0] = '\0';
+  }
+  if (!ce::graphics_runtime::WouldRedirectDuplicateLoadedModule(finalPath.c_str(), true, loadedPath)) {
+    return false;
+  }
+
+  if (loadedPathForReuse) {
+    // Returning an empty redirect would merely replay an already-absolute
+    // request for finalPath and map the duplicate anyway. Route the loader to
+    // the existing physical image instead; a bare name is sufficient when the
+    // loader path could not be resolved.
+    *loadedPathForReuse = loadedPath[0] ? loadedPath : baseName;
+  }
+
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalDuplicateModule);
+  static std::atomic<uint32_t> refusalLogs{0};
+  const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant("Loader redirect refused for %s: %s is already loaded from %s, so redirecting would map a "
+                     "SECOND instance of a process-global runtime; routing this load to the loaded copy",
+                     finalPath.c_str(), baseName, loadedPath[0] ? loadedPath : "an unresolved path");
+  }
+  return true;
+}
+
+// Latched the moment an image providing the Streamline core (sl.common) is seen
+// from anywhere other than the configured override location. See
+// ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect.
+std::atomic<bool> g_ForeignStreamlineCoreObserved{false};
+
+// Latched the moment this process asks for, or maps, any sl.* module. Placing
+// CE's own sl.* copies before that costs a Vulkan game its native present path;
+// see ce::graphics_runtime::ShouldPlaceStreamlinePluginSet.
+std::atomic<bool> g_StreamlineUseObserved{false};
+
+void NoteStreamlineUseObserved(const char *evidence) {
+  if (g_StreamlineUseObserved.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  HookLogImportant("Streamline use observed (%s): the configured sl.* override copies may now be placed",
+                   evidence ? evidence : "unspecified");
+}
+
+// Builds the override path for `filename` from an override setting that may name
+// either a directory or a specific file. Shared by the redirect decision and by
+// the "is this resolved path our override copy" test so the two can never drift.
+std::string BuildOverridePath(const std::string &overridePath, const std::string &filename) {
+  if (overridePath.empty() || filename.empty()) {
+    return "";
+  }
+  const size_t overrideLastSlash = overridePath.find_last_of("\\/");
+  const size_t overrideLastDot = overridePath.find_last_of('.');
+  const bool hasExtension =
+      (overrideLastDot != std::string::npos &&
+       (overrideLastSlash == std::string::npos || overrideLastDot > overrideLastSlash));
+
+  if (!hasExtension) {
+    if (overridePath.back() == '\\' || overridePath.back() == '/') {
+      return overridePath + filename;
+    }
+    return overridePath + "\\" + filename;
+  }
+
+  // The setting names a file. Use it directly when it is the requested file,
+  // otherwise take its parent folder and append the requested name.
+  std::string cfgFilename = overrideLastSlash != std::string::npos
+                                ? overridePath.substr(overrideLastSlash + 1)
+                                : overridePath;
+  if (ce::graphics_runtime::EqualsIgnoreCase(cfgFilename.c_str(), filename.c_str())) {
+    return overridePath;
+  }
+  if (overrideLastSlash != std::string::npos) {
+    return overridePath.substr(0, overrideLastSlash) + "\\" + filename;
+  }
+  return filename;
+}
+
+// Streamline generation of the interposer this process is actually running, taken from the
+// loaded module's own file so it is available before CE has hooked anything.
+// The implementation is shared: the ngx_ota slInit route needs the same answer
+// at the same point, and two copies of it would be two things to keep true.
+ce::streamline_api::Generation LiveStreamlineGeneration() {
+  return ce::streamline_api::LiveGenerationFromLoadedInterposer();
+}
+
+// Gate for every sl.* redirect: CE may only place override plugins while it owns
+// the Streamline core. Once the core is foreign, the remaining plugins must stay
+// with the distribution the runtime already chose.
+bool StreamlineOverrideRedirectAllowed(const char *targetDllName) {
+  // Only the sl.* plugin set shares one distribution. nvngx_deepdvc /
+  // nvlowlatencyvk merely live in the same override folder and are negotiated by
+  // NGX and the Vulkan loader independently, so they are never gated on it.
+  if (targetDllName && !ce::graphics_runtime::HasPrefixIgnoreCase(
+                           ce::graphics_runtime::ModuleFileName(targetDllName), "sl.")) {
+    return true;
+  }
+  // An active generation bridge already owns the configured folder, as a second
+  // CE-owned 2.x runtime. Substituting the game's own 1.x plugins out of that
+  // same folder would leave the 1.x interposer resolving 2.x plugins - the
+  // version mixing this whole gate exists to prevent - so the bridge and the
+  // substitution are mutually exclusive by construction.
+  if (ce::streamline_bridge::StreamlineRedirectSuppressedByBridge(
+          ce::streamline_bridge::IsActive())) {
+    static std::atomic<bool> loggedOnce{false};
+    if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {
+      HookLogImportant(
+          "Streamline override redirect stood down for the sl.* set: the generation bridge owns this process's "
+          "Streamline and the configured folder is its 2.x runtime, not a replacement for the game's plugins");
+    }
+    return false;
+  }
+  if (ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect(
+          true, g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire))) {
+    return true;
+  }
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalForeignStreamlineCore);
+  static std::atomic<uint32_t> refusalLogs{0};
+  const uint32_t logIndex = refusalLogs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant(
+        "Streamline override redirect refused for %s: the runtime already resolved a foreign sl.common core, so "
+        "overriding this plugin alone would mix Streamline versions in one runtime",
+        targetDllName ? targetDllName : "an sl.* plugin");
+  }
+  return false;
+}
+
+// Refuse an sl.* substitution that would mix Streamline generations.
+//
+// A game linked against Streamline 1.x cannot be upgraded to 2.x by replacing DLLs. It
+// imports `slSetFeatureConstants`, `slGetFeatureSettings`, `slSetFeatureEnabled`,
+// `slIsFeatureEnabled` and `slGetFeatureConfiguration`, none of which a 2.x interposer
+// exports, so the loader fails the import and the process dies before its first frame; and
+// where the names do survive, `slSetTag` and `slEvaluateFeature` have entirely different
+// signatures, so every surviving call truncates its own arguments. Handing the game a
+// mismatched plugin is the same trap one module deeper. The upgrade that does work on a
+// 1.x title is the NGX runtime - `dlss_sr_dll_path` / `dlss_fg_dll_path` - which is
+// generation-independent.
+bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const char *filename) {
+  if (finalPath.empty()) {
+    return true;
+  }
+  const ce::streamline_api::Generation process = LiveStreamlineGeneration();
+  const ce::streamline_api::Generation replacement =
+      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(finalPath.c_str()));
+  if (ce::streamline_api::MayRedirectStreamlineModuleAcrossGenerations(process, replacement)) {
+    return true;
+  }
+  PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalGenerationMismatch);
+  static std::atomic<uint32_t> mismatchLogs{0};
+  const uint32_t logIndex = mismatchLogs.fetch_add(1, std::memory_order_relaxed);
+  if (logIndex < 8 || (logIndex % 1000) == 0) {
+    HookLogImportant(
+        "Streamline override redirect refused for %s: this process runs %s but %s is %s. Streamline generations "
+        "are not interchangeable - the 1.x-only exports a 1.x game imports do not exist in 2.x, and slSetTag / "
+        "slEvaluateFeature have different signatures in each, so a path override cannot upgrade one to the other. "
+        "Changing generation needs a translation shim that exports the old API and calls the new one, installed "
+        "ahead of the game's own import. Within one generation this override works; across generations, upgrade "
+        "the NGX runtimes instead (dlss_sr_dll_path / dlss_fg_dll_path), which are generation-independent",
+        filename ? filename : "an sl.* module", ce::streamline_api::Describe(process), finalPath.c_str(),
+        ce::streamline_api::Describe(replacement));
+  }
+  return false;
+}
+
+// The configured override paths, preferring the hook thread's own config and
+// falling back to what the injector published before the game started.
+//
+// The fallback is the whole point. CE's loader hook goes in during DllMain, but
+// `g_pLocalConfig` does not exist until the hook thread has read config.ini -
+// 19:48:28.860 vs ~19:48:29.25 in session 20260919_194818. Every load in that
+// ~400 ms window reached CE's hook and was answered "no override", because the
+// policy was missing rather than because it said no. `sl.common` is loaded
+// dynamically by `sl.interposer` (which imports nothing but kernel32), exactly
+// once, and losing it disables the entire sl.* redirect family - so a one-shot
+// load landing in that window costs the whole feature. CE's own note on the
+// Cyberpunk case measured the core arriving "463 ms before CE's loader redirect
+// was armed", which is this window, not CE's absence.
+const char *ConfiguredDlssSrDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssSrDllPath.c_str()
+             : ce::published_config::EarlyDlssSrDllPath();
+}
+
+const char *ConfiguredDlssRrDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssRrDllPath.c_str()
+             : ce::published_config::EarlyDlssRrDllPath();
+}
+
+const char *ConfiguredDlssFgDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.dlssFgDllPath.c_str()
+             : ce::published_config::EarlyDlssFgDllPath();
+}
+
+const char *ConfiguredStreamlineDllPath() {
+  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
+             ? g_pLocalConfig->graphics.streamlineDllPath.c_str()
+             : ce::published_config::EarlyStreamlineDllPath();
+}
+
+}  // namespace
+
+// Records which physical image provides a Streamline plugin, from the loader
+// notification that resolves every load's full path.
+//
+// Cyberpunk 20260816_153027: NVIDIA's NGX cache loaded sl.common 2.11
+// (`...\models\sl_common_0\...\1B0_E658703.dll`) 463 ms before CE's loader
+// redirect was armed, so Streamline had already resolved its core. Every LATER
+// plugin load did reach the redirect and became the override copy, leaving
+// sl.interposer 2.7.1 + sl.common 2.11 + sl.reflex/sl.dlss_g/sl.dlss_d/sl.pcl
+// 2.12 in one runtime. sl.reflex 2.12 asked that sl.common for an interface it
+// does not provide and called through the null result. A partially applied
+// Streamline override is worse than none, so losing the core disables the whole
+// sl.* redirect family.
+void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
+  if (!resolvedPath || !resolvedPath[0] || !g_pLocalConfig) {
+    return;
+  }
+  const std::string overridePath = ConfiguredStreamlineDllPath();
+  if (overridePath.empty()) {
+    return;
+  }
+  char providedName[MAX_PATH] = {};
+  const bool resolvedStreamlineName =
+      ce::graphics_runtime::ResolveStreamlineProvidedDllName(resolvedPath, providedName, sizeof(providedName));
+  // Any sl.* image mapping - the game's own or CE's redirected copy - proves
+  // this process runs Streamline, which is what releases the plugin placement.
+  if (resolvedStreamlineName &&
+      ce::graphics_runtime::HasPrefixIgnoreCase(ce::graphics_runtime::ModuleFileName(providedName), "sl.")) {
+    NoteStreamlineUseObserved(providedName);
+  }
+  if (g_ForeignStreamlineCoreObserved.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!resolvedStreamlineName || !ce::graphics_runtime::IsStreamlineCoreProvidedDllName(providedName)) {
+    return;
+  }
+  std::string expected = BuildOverridePath(overridePath, providedName);
+  // The loader reports a canonical path; a configured override may be relative or
+  // carry ".." segments. Canonicalize before comparing so a spelling difference
+  // cannot latch CE's own copy as foreign. GetFullPathNameA is pure string work.
+  char canonicalExpected[MAX_PATH] = {};
+  const DWORD canonicalLength = GetFullPathNameA(expected.c_str(), MAX_PATH, canonicalExpected, nullptr);
+  if (canonicalLength > 0 && canonicalLength < MAX_PATH) {
+    expected.assign(canonicalExpected);
+  }
+  if (ce::graphics_runtime::EqualsModulePathIgnoreCase(resolvedPath, expected.c_str())) {
+    return;  // CE's own override copy is the core: the override owns the stack.
+  }
+  if (!g_ForeignStreamlineCoreObserved.exchange(true, std::memory_order_acq_rel)) {
+    PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalForeignStreamlineCore);
+    // Say, at the one moment it is decidable, why the ngx_ota=off preference
+    // strip did or did not get a chance to prevent this. Without the pairing,
+    // "route installed" and "route effective" look identical in a log.
+    if (ce::ngx_ota::ShouldClearStreamlineOtaPreferences(ce::ngx_ota::CurrentMode())) {
+      const bool installed = ce::streamline_ota::WasSlInitRouteInstalled();
+      const bool observed = ce::streamline_ota::WasSlInitObserved();
+      HookLogImportant(
+          "NGX OTA: the OTA core won with ngx_ota=off - slInit route installed=%d, slInit seen through CE=%d. %s",
+          installed ? 1 : 0, observed ? 1 : 0,
+          !installed  ? "The route was never installed, so the interposer was not mapped when CE looked."
+          : !observed ? "The route was installed but the call never came through it - the game reached slInit "
+                        "before CE, or through a path the import patch does not cover."
+                      : "CE saw the call and still lost, so the core was chosen by something other than these flags.");
+    }
+    HookLogImportant(
+        "Streamline override disabled: the runtime resolved its core (%s) to %s, not to the configured override "
+        "%s. Redirecting only the remaining plugins would build a version-mixed Streamline stack, so every sl.* "
+        "redirect is refused from here on and the game keeps its own coherent set",
+        providedName, resolvedPath, expected.empty() ? overridePath.c_str() : expected.c_str());
+  }
+}
+
+// Startup answer for the same question when CE injected after the core was
+// already mapped: the loader notification never saw that load.
+void ScanLoadedModulesForForeignStreamlineCore() {
+  if (!ConfiguredStreamlineDllPath()[0]) {
+    return;
+  }
+  std::vector<HMODULE> modules;
+  if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+    return;
+  }
+  for (HMODULE module : modules) {
+    char path[MAX_PATH] = {};
+    if (GetModuleFileNameA(module, path, MAX_PATH)) {
+      NoteRuntimeModuleLoadedForOverridePolicy(path);
+    }
+  }
+}
+
+// DLL Redirection Helper
+std::string GetRedirectedPath(const std::string &requestedPath) {
+  if (requestedPath.empty() || !CurrentProcessOwnsProcessLocalRuntimeOverrides())
+    return "";
+
+  try {
+    // Basic path parsing without std::filesystem
+    std::string filename;
+    size_t lastSlash = requestedPath.find_last_of("\\/");
+    if (lastSlash != std::string::npos) {
+      filename = requestedPath.substr(lastSlash + 1);
+    } else {
+      filename = requestedPath;
+    }
+
+    std::string filenameLower = filename;
+    std::transform(filenameLower.begin(), filenameLower.end(),
+                   filenameLower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    std::string overridePath;
+    bool isStreamlineMatch = false;
+
+    // NVIDIA's NGX model repository (C:\ProgramData\NVIDIA\NGX\models\...) is
+    // the driver-managed Streamline plugin store: the plugins are stored under
+    // hashed file names (e.g. 1B0_E658703.dll) in folders such as
+    // "sl_dlss_g_0\versions\133888\files\". The loader-visible base name
+    // carries no sl.* token, so the base-name matching below cannot see it.
+    // Map the model folder to the real Streamline DLL and redirect it to the
+    // configured override directory when one is set.
+    const char *streamlineOverride = ConfiguredStreamlineDllPath();
+    if (overridePath.empty() && streamlineOverride[0] &&
+        ce::graphics_runtime::IsNgxModelRepositoryPath(requestedPath.c_str())) {
+      char modelDllName[MAX_PATH] = {};
+      char segmentBuf[MAX_PATH] = {};
+      if (ce::graphics_runtime::NgxModelSegment(requestedPath.c_str(), segmentBuf, sizeof(segmentBuf)) &&
+          ce::graphics_runtime::ModelSegmentToDllName(segmentBuf, modelDllName, sizeof(modelDllName))) {
+        if (!StreamlineOverrideRedirectAllowed(modelDllName)) {
+          return "";
+        }
+        std::string modelFinal = BuildOverridePath(streamlineOverride, modelDllName);
+        if (!modelFinal.empty() &&
+            GetFileAttributesA(modelFinal.c_str()) != INVALID_FILE_ATTRIBUTES) {
+          std::string loadedPath;
+          if (RedirectWouldDuplicateLoadedModule(modelFinal, &loadedPath)) {
+            return loadedPath;
+          }
+          if (!StreamlineOverrideGenerationMatches(modelFinal, modelDllName)) {
+            return "";
+          }
+          HookLog("Redirecting %s (NGX model %s) to: %s", filename.c_str(), segmentBuf,
+                  modelFinal.c_str());
+          return modelFinal;
+        }
+        HookLog("Streamline model DLL %s not found at redirect path %s - "
+                "falling back to default load path",
+                modelDllName, modelFinal.c_str());
+      }
+    }
+
+    // 1. DLSS/Streamline Logic - Only if no custom detour set
+    if (overridePath.empty()) {
+      if (filenameLower == "nvngx_dlss.dll") {
+        overridePath = ConfiguredDlssSrDllPath();
+      }
+      // 2. DLSS Frame Generation
+      else if (filenameLower == "nvngx_dlssg.dll") {
+        overridePath = ConfiguredDlssFgDllPath();
+      }
+      // 3. DLSS Ray Reconstruction (Denoiser)
+      else if (filenameLower == "nvngx_dlssd.dll") {
+        overridePath = ConfiguredDlssRrDllPath();
+      }
+      // 4. Streamline and related components
+      else if (filenameLower.find("sl.") == 0 ||
+               filenameLower == "nvngx_deepdvc.dll" ||
+               filenameLower == "nvlowlatencyvk.dll") {
+        overridePath = streamlineOverride;
+        isStreamlineMatch = true;
+        // The request itself is the earliest proof that this process runs
+        // Streamline, and it arrives before the module maps.
+        if (filenameLower.find("sl.") == 0 && !overridePath.empty()) {
+          NoteStreamlineUseObserved(filename.c_str());
+        }
+      }
+    }
+
+    if (!overridePath.empty()) {
+      if (isStreamlineMatch && !StreamlineOverrideRedirectAllowed(filename.c_str())) {
+        return "";
+      }
+
+      std::string finalPath = BuildOverridePath(overridePath, filename);
+
+      // For streamline DLLs, verify the file exists at the redirect path.
+      // If absent, fall back gracefully to the default load path.
+      if (isStreamlineMatch && !finalPath.empty()) {
+        if (GetFileAttributesA(finalPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+          HookLog("Streamline DLL %s not found at redirect path %s - "
+                  "falling back to default load path",
+                  filename.c_str(), finalPath.c_str());
+          return "";
+        }
+      }
+
+      std::string loadedPath;
+      if (RedirectWouldDuplicateLoadedModule(finalPath, &loadedPath)) {
+        return loadedPath;
+      }
+
+      if (isStreamlineMatch && !StreamlineOverrideGenerationMatches(finalPath, filename.c_str())) {
+        return "";
+      }
+
+      static std::atomic<uint32_t> redirectLogs{0};
+      const uint32_t logIndex = redirectLogs.fetch_add(1, std::memory_order_relaxed);
+      if (logIndex < 8 || (logIndex % 1000) == 0) {
+        HookLog("Redirecting %s to: %s", filename.c_str(), finalPath.c_str());
+      }
+      return finalPath;
+    }
+
+  } catch (...) {
+    // Never let a redirect-resolution failure escape into the game's loader.
+    // Falling back to the default load path is correct, but silently doing so
+    // hid why a Streamline/FG DLL was not redirected.
+    HookLog("Loader redirect resolution threw for %s - falling back to "
+            "default load path",
+            requestedPath.c_str());
+  }
+  return "";
+}
+
+bool NeedsLoaderRedirectionHook() {
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    return false;
+  }
+
+  // Deliberately not gated on g_pLocalConfig. Before the hook thread's config
+  // load the injector's published paths are the answer, and they are exactly
+  // what the early window needs - see ConfiguredStreamlineDllPath above.
+  return ConfiguredDlssSrDllPath()[0] || ConfiguredDlssFgDllPath()[0] ||
+         ConfiguredDlssRrDllPath()[0] || ConfiguredStreamlineDllPath()[0];
+}
+
+bool NeedsLowLevelModuleLoadObservationHook() {
+  // Some launchers and overlays load native FG runtimes through ntdll directly.
+  // Observing LdrLoadDll lets us arm FFX/Streamline hooks before the game can
+  // cache API pointers such as ffxConfigure.
+  return true;
+}
+
+namespace {
+
+// Loads one override DLL from `directory` under its plain file name. Skips
+// silently when the directory is unset, the file is absent, or a module with
+// the same base name is already loaded (name-based loads would keep returning
+// that existing instance; adding the override as a second copy would not take
+// effect and could confuse the runtime).
+void PreloadOverrideDll(const std::string& directory, const char* fileName) {
+  if (directory.empty() || !fileName || !fileName[0]) {
+    return;
+  }
+  if (GetModuleHandleA(fileName)) {
+    HookLog("Runtime preload: %s already loaded; keeping the existing copy", fileName);
+    return;
+  }
+
+  const std::string fullPath = BuildOverridePath(directory, fileName);
+  if (GetFileAttributesA(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    HookLog("Runtime preload: %s not found at %s - skipping", fileName, fullPath.c_str());
+    return;
+  }
+
+  const int wideLen = MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, nullptr, 0);
+  if (wideLen <= 0) {
+    return;
+  }
+  std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, wide.data(), wideLen);
+  if (!wide.empty() && wide.back() == L'\0') {
+    wide.pop_back();
+  }
+
+  const HMODULE hMod = LoadRuntimeDllViaOriginal(wide.c_str(), fullPath.c_str());
+  HookLogImportant("Runtime preload: %s %s (module=%p)", fileName, hMod ? "loaded" : "FAILED",
+                   reinterpret_cast<void*>(hMod));
+}
+
+// True when sl.interposer.dll ships next to the process image, i.e. the
+// application is built against Streamline and will load it by name. Resolved
+// once: the executable's own folder cannot change while the process runs.
+bool StreamlineShipsWithApplication() {
+  static const bool shipped = [] {
+    // UTF-16: a game folder outside the code page came back '?'-mangled from
+    // GetModuleFileNameA, so a Streamline title there was taken for one that
+    // does not ship Streamline.
+    const std::wstring directory = ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(nullptr));
+    if (directory.empty()) {
+      return false;
+    }
+    const std::wstring candidate = directory + L"\\sl.interposer.dll";
+    return GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES;
+  }();
+  return shipped;
+}
+
+ce::graphics_runtime::StreamlineUseEvidence CollectStreamlineUseEvidence() {
+  ce::graphics_runtime::StreamlineUseEvidence evidence = {};
+  evidence.coreAlreadyMapped =
+      GetModuleHandleA("sl.interposer.dll") != nullptr || GetModuleHandleA("sl.common.dll") != nullptr;
+  evidence.coreShippedWithApplication = StreamlineShipsWithApplication();
+  evidence.loadObserved = g_StreamlineUseObserved.load(std::memory_order_acquire);
+  return evidence;
+}
+
+// The sl.* half of the runtime preload. Split from the NGX half because the two
+// have different costs: the NGX snippets are inert to the Vulkan present path,
+// while mapping the Streamline core takes the native presenter away from a game
+// that never asked for Streamline. Returns true once the set is placed (or is
+// permanently refused), so the caller can stop re-evaluating.
+bool PlaceStreamlinePluginSet() {
+  const auto& gfx = g_pLocalConfig->graphics;
+  if (gfx.streamlineDllPath.empty()) {
+    return true;
+  }
+  if (!StreamlineOverrideRedirectAllowed("sl.* plugin set")) {
+    return true;  // Foreign core / active bridge: already logged, and final.
+  }
+
+  const ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
+  if (!ce::graphics_runtime::ShouldPlaceStreamlinePluginSet(true, false, evidence)) {
+    static std::atomic<bool> loggedOnce{false};
+    if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {
+      HookLogImportant(
+          "Runtime preload: sl.* plugin set held back - this process shows no Streamline use yet (mapped=%d "
+          "shippedWithApplication=%d loadObserved=%d). Mapping sl.interposer.dll makes NVIDIA's Vulkan WSI "
+          "abandon its native present path for a layered DXGI swapchain, so the copies are placed only once the "
+          "process actually asks for Streamline; the loader redirect covers that first request either way",
+          evidence.coreAlreadyMapped ? 1 : 0, evidence.coreShippedWithApplication ? 1 : 0,
+          evidence.loadObserved ? 1 : 0);
+    }
+    return false;
+  }
+
+  // Streamline stack first: sl.interposer pulls sl.common as a dependent from
+  // the same directory; then the feature plugins. Once a name is registered,
+  // every later name-based load (including Streamline's own internal loads)
+  // resolves to these override copies.
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.interposer.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.common.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_g.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_d.dll");
+  return true;
+}
+
+std::atomic<bool> g_StreamlinePluginSetPlaced{false};
+
+}  // namespace
+
+void PreloadConfiguredGraphicsRuntimeDlls() {
+  if (!g_pLocalConfig) {
+    return;
+  }
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    const uint64_t claim = PublishedInheritedRendererClaim();
+    HookLogImportant(
+        "Runtime preload: skipped because inherited child renderer PID %lu owns "
+        "the process-local DLSS/Streamline overrides of client PID %lu",
+        static_cast<unsigned long>(ce::inherited_renderer::RendererPid(claim)),
+        static_cast<unsigned long>(ce::inherited_renderer::ClientPid(claim)));
+    return;
+  }
+  static std::atomic<bool> s_preloaded{false};
+  if (s_preloaded.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+
+  const auto& gfx = g_pLocalConfig->graphics;
+  if (gfx.streamlineDllPath.empty() && gfx.dlssSrDllPath.empty() &&
+      gfx.dlssFgDllPath.empty() && gfx.dlssRrDllPath.empty()) {
+    return;
+  }
+
+  // Answer "did CE lose the Streamline core" before placing anything: injecting
+  // into a process whose runtime already mapped its core happens whenever the
+  // driver's NGX cache wins the race, and the loader notification cannot have
+  // seen a load that predates CE.
+  ScanLoadedModulesForForeignStreamlineCore();
+
+  // The sl.* set is placed only once this process shows Streamline use; see
+  // PlaceStreamlinePluginSet. Skipped entirely once the core is foreign: those
+  // copies could then only ever become the minority half of a version-mixed
+  // stack (or an unused third instance), which is the Cyberpunk 20260816_153027
+  // crash.
+  if (PlaceStreamlinePluginSet()) {
+    g_StreamlinePluginSetPlaced.store(true, std::memory_order_release);
+  }
+
+  // The NGX snippets carry no such cost - they are ordinary feature DLLs that
+  // NGX loads by name, and a probe run proved they leave NVIDIA's Vulkan
+  // present path alone - so they keep the eager placement that makes a later
+  // name-based load resolve to the configured copy.
+  PreloadOverrideDll(gfx.dlssSrDllPath, "nvngx_dlss.dll");
+  PreloadOverrideDll(gfx.dlssFgDllPath, "nvngx_dlssg.dll");
+  PreloadOverrideDll(gfx.dlssRrDllPath, "nvngx_dlssd.dll");
+}
+
+// Second chance for the deferred sl.* half, driven from the hook thread's
+// monitor loop. The first real Streamline request is served by the loader
+// redirect; this places the rest of the configured set right behind it.
+void PlaceConfiguredStreamlinePluginSetIfObserved() {
+  if (!g_pLocalConfig || g_StreamlinePluginSetPlaced.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (!CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    return;
+  }
+  if (!g_StreamlineUseObserved.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (PlaceStreamlinePluginSet()) {
+    g_StreamlinePluginSetPlaced.store(true, std::memory_order_release);
+  }
+}
+
+void PreloadConfiguredStreamlineBridgeNgxDlls() {
+  if (!g_pLocalConfig || !g_pLocalConfig->graphics.streamlineUpgrade) {
+    return;
+  }
+
+  const auto& gfx = g_pLocalConfig->graphics;
+  const std::string interposerPath = BuildOverridePath(gfx.streamlineDllPath, "sl.interposer.dll");
+  const ce::streamline_api::Generation runtimeGeneration =
+      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(interposerPath.c_str()));
+  if (LiveStreamlineGeneration() != ce::streamline_api::Generation::V1 ||
+      runtimeGeneration != ce::streamline_api::Generation::V2) {
+    return;
+  }
+
+  // A late bridge can arrive while the game's 1.x slInit is still loading its
+  // NGX snippets. Register the configured copies before the import-table
+  // takeover, so that in-flight 1.x initialization and the later CE-owned 2.x
+  // runtime converge on the same physical images. The post-shutdown retirement
+  // path covers the race where a legacy copy had already won.
+  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlss.dll");
+  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlssg.dll");
+
+  // Cover absolute-path loads as well as ordinary base-name resolution. The
+  // 1.x core/plugins predate CE's normal loader-IAT snapshot in late-injected
+  // titles; patch the already-resident owners now so their next feature load
+  // reaches the configured-path redirect.
+  for (const char* moduleName : {"sl.interposer.dll", "sl.common.dll", "sl.dlss.dll",
+                                 "sl.dlss_g.dll"}) {
+    if (HMODULE module = GetModuleHandleA(moduleName)) {
+      char modulePath[MAX_PATH] = {};
+      if (GetModuleFileNameA(module, modulePath, MAX_PATH)) {
+        PatchLoadLibraryIatForLateLoadedModule(module, modulePath);
+      }
+    }
+  }
+}
+
+void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
+  if (!module || !moduleNameOrPath || !moduleNameOrPath[0] || !NeedsLoaderRedirectionHook()) {
+    return;
+  }
+
+  // Never patch CE's own modules or third-party overlays: their LoadLibrary
+  // traffic is either already ours or must stay untouched.
+  if (strstr(moduleNameOrPath, "capture_hook") != nullptr ||
+      strstr(moduleNameOrPath, "d3d12_wrappers") != nullptr) {
+    return;
+  }
+  if (ce::overlay_compat::IsThirdPartyOverlayModulePath(moduleNameOrPath)) {
+    return;
+  }
+
+  // The initial IAT pass is a snapshot: modules that load later (sl.common.dll,
+  // sl.interposer.dll, the NGX snippets, ...) keep their real LoadLibrary*
+  // imports, so their internal loads bypass the redirect entirely. Patch the
+  // four loader imports here, inside the load notification, so the next load
+  // from this module reaches the redirect. Only kernel32 loader imports are
+  // touched - no graphics API wrapper is installed into runtime modules.
+  void* dummy = nullptr;
+  IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryA",
+                    reinterpret_cast<void*>(&HookedLoadLibraryA), &dummy);
+  IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryW",
+                    reinterpret_cast<void*>(&HookedLoadLibraryW), &dummy);
+  IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryExA",
+                    reinterpret_cast<void*>(&HookedLoadLibraryExA), &dummy);
+  IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryExW",
+                    reinterpret_cast<void*>(&HookedLoadLibraryExW), &dummy);
+}
+
+void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
+  if (!module || !moduleNameOrPath || !moduleNameOrPath[0]) {
+    return;
+  }
+
+  // Same exclusions as the loader half: CE's own modules already call CE, and a
+  // third-party overlay's import table is not ours to rewrite.
+  if (strstr(moduleNameOrPath, "capture_hook") != nullptr ||
+      strstr(moduleNameOrPath, "d3d12_wrappers") != nullptr) {
+    return;
+  }
+  if (ce::overlay_compat::IsThirdPartyOverlayModulePath(moduleNameOrPath)) {
+    return;
+  }
+
+  // Never repoint a slot before the original is resolvable, or a launch that
+  // lands on the patched slot finds nothing to forward to and fails outright.
+  if (!GetOriginalCreateProcessA() || !GetOriginalCreateProcessW()) {
+    return;
+  }
+
+  // Deliberately NOT behind the configured-override gate the loader half above
+  // uses. CE's CreateProcess hook is an IAT snapshot taken in DllMain and
+  // repeated once on the hook thread, so any module mapped after that keeps its
+  // real kernel32 imports. `_nvngx.dll` and `nvngx.dll` both import
+  // CreateProcessA and CreateProcessW by name and are exactly such modules: a
+  // title that initialises DLSS on demand maps them long after both passes, and
+  // `ngx_ota=off` would then never see the `nvngx_update.exe` launch at all.
+  // The same snapshot governs child-process injection, so a late-mapped module
+  // that spawns a whitelisted child was being missed for that reason too.
+  void* originalA = nullptr;
+  void* originalW = nullptr;
+  const bool patchedA = IATHook::PatchIAT(module, "kernel32.dll", "CreateProcessA",
+                                          reinterpret_cast<void*>(&HookedCreateProcessA), &originalA);
+  const bool patchedW = IATHook::PatchIAT(module, "kernel32.dll", "CreateProcessW",
+                                          reinterpret_cast<void*>(&HookedCreateProcessW), &originalW);
+  if (!patchedA && !patchedW) {
+    return;  // The overwhelmingly common case: the module creates no processes.
+  }
+
+  // Rare enough to report every time: only a module that actually imports
+  // CreateProcess reaches here, and knowing which ones did is what tells a
+  // later reader whether an updater launch could have been seen.
+  HookLogImportant("Late-loaded module %s imports CreateProcess - patched (A=%d W=%d) so its launches reach CE",
+                   moduleNameOrPath, patchedA ? 1 : 0, patchedW ? 1 : 0);
+}

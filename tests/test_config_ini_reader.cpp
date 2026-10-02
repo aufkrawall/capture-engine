@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "../common/config_ini_reader.h"
-#include "../common/config_text_encoding.h"
+#include "common/config/config_ini_reader.h"
+#include "common/config/config_text_encoding.h"
 
 namespace text = ce::config_text;
 

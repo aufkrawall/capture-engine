@@ -17,8 +17,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "mip_bias_limits.h"
-#include "sharpen_policy.h"
+#include "common/graphics/mip_bias_limits.h"
+#include "common/graphics/sharpen_policy.h"
 #include "vulkan_capture_transport_policy.h"
 #include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"

@@ -3,7 +3,7 @@
 
 #include <iterator>
 
-#include "../common/vulkan_wsi_surface_table.h"
+#include "hook/present/vulkan_wsi_surface_table.h"
 #include "layer_wsi_surface_bridge.h"
 
 VulkanLayerState& VulkanLayerState::Get() {

@@ -18,7 +18,7 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 }  // namespace
 
 TEST(RecordingStartFeedbackSourceTest, ControllerPublishesIntentBeforeReadinessWaits) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t videoToggle = source.find("void ToggleRecording() {");
@@ -41,7 +41,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesIntentBeforeReadinessW
 }
 
 TEST(RecordingStartFeedbackSourceTest, ControllerClearsIntentOnEveryOwnedTerminalClass) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("\"media readiness failure\""), std::string::npos);
@@ -56,7 +56,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerClearsIntentOnEveryOwnedTermina
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaOwnsLiveAndTerminalIntentTransitions) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("bool StartRecording(const AppConfig& config)"), std::string::npos);
@@ -73,7 +73,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaOwnsLiveAndTerminalIntentTransitions
 // when file output goes live is a full look-ahead reservoir too late, which is exactly how
 // "STARTING RECORDING..." ended up burned into the first frames of recorded files.
 TEST(RecordingStartFeedbackSourceTest, MediaTakesTheStatusOverlayDarkBeforeScreenGrabCaptureStarts) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t startRecording = source.find("bool StartRecording(const AppConfig& config)");
@@ -90,14 +90,14 @@ TEST(RecordingStartFeedbackSourceTest, MediaTakesTheStatusOverlayDarkBeforeScree
 
     // The request is bounded and fail-open: a missing or unresponsive consumer must never
     // block a recording start.
-    const std::string protocol = ReadSource("captureengine/status_overlay_sync.cpp");
+    const std::string protocol = ReadSource("captureengine/app/status_overlay_sync.cpp");
     ASSERT_FALSE(protocol.empty());
     EXPECT_NE(protocol.find("WaitForSingleObject(ackEvent, kDarkAckTimeoutMs)"), std::string::npos);
     EXPECT_NE(protocol.find("No controller status consumer"), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaReleasesTheCaptureDarkRequestOnEveryStatusPublication) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("ReleaseStatusOverlayDarkForCapture(\"recording live\")"), std::string::npos);
@@ -107,15 +107,15 @@ TEST(RecordingStartFeedbackSourceTest, MediaReleasesTheCaptureDarkRequestOnEvery
     // state does not wait for the overlay's next poll either.
     EXPECT_NE(source.find("SignalStatusOverlaySync()"), std::string::npos);
 
-    const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
+    const std::string overlay = ReadSource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("kCaptureRuntimeFlagStatusOverlayDarkForCapture"), std::string::npos);
     EXPECT_NE(overlay.find("frameLayout.recordingStatusDark"), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, WarmupStopIsAcceptedAsCancellationBeforeLiveCommit) {
-    const std::string captureSource = ReadSource("captureengine/media_main.cpp");
-    const std::string mediaSource = ReadSource("mediaengine/mediaengine.cpp");
+    const std::string captureSource = ReadSource("captureengine/media/media_main.cpp");
+    const std::string mediaSource = ReadSource("mediaengine/engine/mediaengine.cpp");
     ASSERT_FALSE(captureSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
@@ -128,7 +128,7 @@ TEST(RecordingStartFeedbackSourceTest, WarmupStopIsAcceptedAsCancellationBeforeL
 }
 
 TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulContentGatedPublication) {
-    const std::string source = ReadSource("mediaengine/video_encoder.cpp");
+    const std::string source = ReadSource("mediaengine/video/video_encoder.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("ReserveOutputStagingFile"), std::string::npos);
@@ -150,7 +150,7 @@ TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulCont
 TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationEnumsDistinguishAcceptanceFromCompletion) {
     // shared_defs.h is an umbrella over common/shared_defs_detail/; the overlay
     // notification enum lives in the constants/config part.
-    const std::string source = ReadSource("common/shared_defs_detail/abi_constants_and_config.h");
+    const std::string source = ReadSource("common/ipc/shared_defs_detail/abi_constants_and_config.h");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("RecordingFinalizing = 3"), std::string::npos);
     EXPECT_NE(source.find("RecordingSaved = 4"), std::string::npos);
@@ -161,7 +161,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationEnumsDistinguishAcce
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay) {
-    const std::string source = ReadSource("hook/common/overlay_adapter.cpp");
+    const std::string source = ReadSource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("\"Finalizing recording...\""), std::string::npos);
     // Completion wording is shared with the pseudo overlay (see
@@ -171,14 +171,14 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay)
     EXPECT_NE(source.find("ce::output_completion::IsRecordingFinalizationNotification("), std::string::npos);
     EXPECT_EQ(source.find("\"Recording saved - video degraded\""), std::string::npos);
 
-    const std::string pseudo = ReadSource("captureengine/pseudo_overlay_render.cpp");
+    const std::string pseudo = ReadSource("captureengine/pseudo_overlay/pseudo_overlay_render.cpp");
     ASSERT_FALSE(pseudo.empty());
     EXPECT_NE(pseudo.find("ce::output_completion::DescribeOutputCompletion("), std::string::npos);
     EXPECT_EQ(pseudo.find("\"Recording saved - video degraded\""), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
     ASSERT_NE(stopLine, std::string::npos);
@@ -187,7 +187,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"audio-only stop hotkey\")");
     ASSERT_NE(stopLine, std::string::npos);
@@ -196,7 +196,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinalization) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t stop = source.find("MediaEngine_StopRecording(cancelBeforeLive)");
     const size_t complete = source.find("CompleteRecordingFinalization(cancelBeforeLive, outputSaved)", stop);
@@ -207,7 +207,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinal
     EXPECT_NE(source.find("outputSaved=%d"), std::string::npos);
     EXPECT_NE(source.find("finalizationComplete=1"), std::string::npos);
 
-    const std::string completionPolicy = ReadSource("common/live_stream_config.cpp");
+    const std::string completionPolicy = ReadSource("common/config/live_stream_config.cpp");
     ASSERT_FALSE(completionPolicy.empty());
     EXPECT_NE(completionPolicy.find("OverlayNotificationType::RecordingSavedDegraded"), std::string::npos);
     EXPECT_NE(completionPolicy.find("OverlayNotificationType::RecordingFailed"), std::string::npos);
@@ -218,23 +218,23 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinal
 
     // The finalization folds each track's output loss into its own degraded bit and the
     // manifest records which track(s) lost content.
-    const std::string finalization = ReadSource("captureengine/media_main_recording.cpp");
+    const std::string finalization = ReadSource("captureengine/media/media_main_recording.cpp");
     ASSERT_FALSE(finalization.empty());
     EXPECT_NE(finalization.find("MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask"),
               std::string::npos);
     EXPECT_NE(finalization.find("kRecordingHealthFlagAudioDegraded"), std::string::npos);
-    const std::string manifest = ReadSource("captureengine/recording_manifest.h");
+    const std::string manifest = ReadSource("captureengine/media/recording_manifest.h");
     ASSERT_FALSE(manifest.empty());
     EXPECT_NE(manifest.find("\"recording_degraded=\""), std::string::npos);
 
-    const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
+    const std::string overlay = ReadSource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(overlay.empty());
     EXPECT_NE(overlay.find("recordingFinalizationNotification"), std::string::npos);
     EXPECT_NE(overlay.find("recordingState == ce::recording_indicator::State::Idle"), std::string::npos);
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaPublishesFailureNotificationOnStartFailure) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t publish = source.find("void PublishRecordingStartFailure(");
     ASSERT_NE(publish, std::string::npos);
@@ -244,7 +244,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesFailureNotificationOnStartF
 }
 
 TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnFailureCode) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("void PublishRecordingFailureOverlayNotification("), std::string::npos);
     const size_t check = source.find("void CheckRecordingFailureState()");
@@ -258,7 +258,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnF
 }
 
 TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnStartAborts) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     const std::vector<std::pair<std::string, bool>> cases = {
         {"\"media readiness failure\"", true},
@@ -285,7 +285,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnS
 }
 
 TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenChildDiesBeforeLive) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t block = source.find("\"required child exited before recording live\"");
     ASSERT_NE(block, std::string::npos);
@@ -298,7 +298,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhe
 }
 
 TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenMediaDiesLive) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     const size_t block = source.find("if (mediaGoneWhileLive) {");
     ASSERT_NE(block, std::string::npos);
@@ -315,9 +315,9 @@ TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhe
 }
 
 TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {
-    const std::string api = ReadSource("mediaengine/mediaengine.h");
-    const std::string loader = ReadSource("captureengine/mediaengine_loader.h");
-    const std::string encoder = ReadSource("mediaengine/video_encoder.h");
+    const std::string api = ReadSource("mediaengine/engine/mediaengine.h");
+    const std::string loader = ReadSource("captureengine/app/mediaengine_loader.h");
+    const std::string encoder = ReadSource("mediaengine/video/video_encoder.h");
     ASSERT_FALSE(api.empty());
     ASSERT_FALSE(loader.empty());
     ASSERT_FALSE(encoder.empty());
@@ -328,8 +328,8 @@ TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {
 }
 
 TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAndPseudoOwnsUiThread) {
-    const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
-    const std::string pseudo = ReadSource("captureengine/pseudo_overlay.cpp");
+    const std::string overlay = ReadSource("hook/overlay/overlay_adapter.cpp");
+    const std::string pseudo = ReadSource("captureengine/pseudo_overlay/pseudo_overlay.cpp");
     ASSERT_FALSE(overlay.empty());
     ASSERT_FALSE(pseudo.empty());
 
@@ -351,7 +351,7 @@ TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAn
 // never reached, so the controller's "Finalizing recording..." (60 s expiry) stayed on screen and
 // the recording manifest kept no finalization record, for a recording that produced no file.
 TEST(RecordingStartFeedbackSourceTest, MediaFinalizesAStopThatArrivedBeforeTheRecordingStarted) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
 
     // The latch is what distinguishes an aborted start from an ordinary finalization: it is set
@@ -378,7 +378,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaFinalizesAStopThatArrivedBeforeTheRe
 // active, so the aborted-start path must clear the hook-facing state it never owned first -
 // otherwise the cancellation would be swallowed exactly like the silent exit it replaces.
 TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFinalizing) {
-    const std::string source = ReadSource("captureengine/media_main.cpp");
+    const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t sharedMemoryAbort = source.find("CompleteAbortedRecordingStart(\"shared-memory stop request\")");
@@ -396,7 +396,7 @@ TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFi
 
     // A canceled finalization is recorded in the manifest as such, so the evidence for a
     // recording that produced nothing is no longer just a missing line.
-    const std::string manifest = ReadSource("captureengine/recording_manifest.h");
+    const std::string manifest = ReadSource("captureengine/media/recording_manifest.h");
     ASSERT_FALSE(manifest.empty());
     EXPECT_NE(manifest.find("recording_canceled"), std::string::npos);
 }
@@ -405,7 +405,7 @@ TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFi
 // seconds away from a live recording. Logging "Recording started" there reported a recording
 // that did not exist and, in the aborted case, never would.
 TEST(RecordingStartFeedbackSourceTest, ControllerReportsRecordingLiveOnlyWhenMediaPublishesIt) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_EQ(source.find("LogInfo(\"[Controller] Recording started\")"), std::string::npos)
@@ -434,7 +434,7 @@ TEST(RecordingStartFeedbackSourceTest, ControllerReportsRecordingLiveOnlyWhenMed
 // the stop arrived. The tick is armed on every start and cleared by every idle transition so it
 // cannot leak into a later recording.
 TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStartupWindow) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("main_g_RecordingStartRequestTick.store(GetTickCount64()"), std::string::npos);
@@ -460,9 +460,9 @@ TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStart
 // across recordings; the controller-owned session channel is what makes the probe cost once per
 // CE session. The deliberately removed disk cache must stay removed.
 TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposableMediaProcesses) {
-    const std::string spawn = ReadSource("common/process_ipc_client.cpp");
-    const std::string mediaMain = ReadSource("captureengine/media_main.cpp");
-    const std::string probe = ReadSource("mediaengine/audio_latency_probe.cpp");
+    const std::string spawn = ReadSource("common/ipc/process_ipc_client.cpp");
+    const std::string mediaMain = ReadSource("captureengine/media/media_main.cpp");
+    const std::string probe = ReadSource("mediaengine/audio/audio_latency_probe.cpp");
     ASSERT_FALSE(spawn.empty());
     ASSERT_FALSE(mediaMain.empty());
     ASSERT_FALSE(probe.empty());
@@ -497,7 +497,7 @@ TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposabl
 // full ~0.62 s window (20260927_195021: 5 shots = 3.17 s of recording-start delay). The full window
 // must stay as the upper bound for deep render paths, and the stop reason must stay in the log.
 TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeShotsStopOnceTheMarkerIsCaptured) {
-    const std::string probe = ReadSource("mediaengine/audio_latency_probe.cpp");
+    const std::string probe = ReadSource("mediaengine/audio/audio_latency_probe.cpp");
     ASSERT_FALSE(probe.empty());
 
     const size_t shot = probe.find("bool MeasureOnceMs(");

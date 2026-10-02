@@ -9,7 +9,7 @@ extern "C" {
 #include <cstring>
 #include <vector>
 
-#include "../mediaengine/video_metadata.h"
+#include "mediaengine/video/video_metadata.h"
 
 namespace {
 

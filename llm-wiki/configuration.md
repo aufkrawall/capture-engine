@@ -5,19 +5,19 @@ Last cross-checked: 2026-09-22 (hotkey keyboard-hook responsiveness rules)
 Primary sources:
 - `captureengine/config.ini.template`
 - `captureengine/captureengine.rc`
-- `common/config_resource.h`
-- `common/config.{h,cpp}`
-- `common/config_load_core.cpp`
-- `common/config_load_ue5.cpp`
-- `common/config_load_overlay.cpp`
-- `common/config_load_face_camera.cpp`
-- `common/face_camera_config.h`
-- `captureengine/inject_config.cpp`
-- `captureengine/inject_config_publication.cpp`
-- `common/monitor_selection.{h,cpp}`
-- `common/screen_grab_privacy.{h,cpp}`
-- `captureengine/media_main.cpp`
-- `captureengine/screen_grab_privacy_runtime.{h,cpp}`
+- `common/config/config_resource.h`
+- `common/config/config.{h,cpp}`
+- `common/config/config_load_core.cpp`
+- `common/config/config_load_ue5.cpp`
+- `common/config/config_load_overlay.cpp`
+- `common/config/config_load_face_camera.cpp`
+- `common/config/face_camera_config.h`
+- `captureengine/injection/inject_config.cpp`
+- `captureengine/injection/inject_config_publication.cpp`
+- `common/platform/monitor_selection.{h,cpp}`
+- `common/capture/screen_grab_privacy.{h,cpp}`
+- `captureengine/media/media_main.cpp`
+- `captureengine/media/screen_grab_privacy_runtime.{h,cpp}`
 - `tests/config_template.rc`
 - `tests/test_config.cpp`
 - `tests/test_config_ue5.cpp`
@@ -37,7 +37,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - Product and tests compile the same `captureengine/config.ini.template` into their executable resource tables under `IDR_DEFAULT_CONFIG`.
 - Creation uses `CREATE_NEW`, so simultaneous processes cannot overwrite a file another process just created.
 - A partial/failed write is removed. A missing resource fails safely and leaves ordinary parser fallbacks available; it does not synthesize a second hardcoded template.
-- Any new or renamed documented option belongs in the template plus focused semantic tests. Do not reintroduce a raw config string in `common/config.cpp`.
+- Any new or renamed documented option belongs in the template plus focused semantic tests. Do not reintroduce a raw config string in `common/config/config.cpp`.
 - Options deliberately kept out of the user-facing profile, including compatibility-only VFR paths, remain parser-supported only when there is a specific reason.
 
 ## Current section layout and compatibility
@@ -168,9 +168,9 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - `msaa_samples`, `sgssaa`, and `disable_auto_mip_bias` remain parser/runtime-compatible graphics overrides but are intentionally absent from the fresh template. They are specialized legacy controls rather than useful defaults.
 - Default-render system loopback and process loopback share one render latency domain. Per-source latency differences within that domain recreate an A/V mismatch. Microphones use the separate input latency domain. Fresh configs disable microphone capture for privacy/predictability.
 - Empty video and screenshot output directories both resolve to the `captures` directory beside the executable. The two paths are independent when customized. `crash_dump_dir` accepts only a safe relative subfolder beneath `logs`; absolute and parent-traversal paths are ignored.
-- Hotkeys are delivered on two paths that share one dispatch. `RegisterHotKey` is the registration of record and posts `WM_HOTKEY`; a `WH_KEYBOARD_LL` hook on its own pump-only thread (`captureengine/hotkey_input_hook.cpp`) posts `main_kMsgHotkeyFromInputHook`. The second path exists because a foreground application that registers its raw-input keyboard with `RIDEV_NOHOTKEYS` switches off application hotkey processing for the whole desktop - DOOM Eternal does (usage page 1 / usage 6, `dwFlags=0x200`), so no process received `WM_HOTKEY` at all while it had focus. Both paths call the same `DispatchHotkey(id)`, and they can never both fire: the hook returns 1 for a matched key, and a consumed key never reaches hotkey processing. The hook only serves combinations `RegisterHotKey` actually granted this process, so one another application owns is left to that application; it reads its binding table with `TryAcquireSRWLockShared` and never waits, because a low-level hook that blocks stalls input for every process on the desktop. Matching semantics (exact modifier set, `MOD_NOREPEAT`, consuming the release of a consumed press) live in `common/hotkey_matcher.h`. The hook thread is the one CE thread the whole desktop waits on, so (2026-09-22) it never logs (it only counts; `ReportHotkeyInputHookDiagnostics()` logs from the controller loop, and deliveries are logged on receipt of `main_kMsgHotkeyFromInputHook`, whose `lParam` carries the vk), runs at `THREAD_PRIORITY_TIME_CRITICAL`, and measures every callback's age against the user's `LowLevelHooksTimeout` (`common/keyboard_hook_policy.h`, default 300 ms, capped at 1000). Windows removes an LL hook silently after repeated timeouts (11th timeout on Windows 7+), so a callback older than half the timeout posts a re-arm: install a fresh hook, then unhook the old one - a failing unhook proves the system had already removed it (`systemRemovals`). A callback past the full timeout is bookkept but never consumed or acted on, because the application already has that key. The crash handler's `RegisterCrashPreDumpCallback` removes the hook before a controller dump suspends the process. Log lines: `[Hotkey] Keyboard hook answered late`, `re-armed`, `Windows had already removed the keyboard hook`. Pinned by `tests/test_desktop_input_latency.cpp`.
+- Hotkeys are delivered on two paths that share one dispatch. `RegisterHotKey` is the registration of record and posts `WM_HOTKEY`; a `WH_KEYBOARD_LL` hook on its own pump-only thread (`captureengine/app/hotkey_input_hook.cpp`) posts `main_kMsgHotkeyFromInputHook`. The second path exists because a foreground application that registers its raw-input keyboard with `RIDEV_NOHOTKEYS` switches off application hotkey processing for the whole desktop - DOOM Eternal does (usage page 1 / usage 6, `dwFlags=0x200`), so no process received `WM_HOTKEY` at all while it had focus. Both paths call the same `DispatchHotkey(id)`, and they can never both fire: the hook returns 1 for a matched key, and a consumed key never reaches hotkey processing. The hook only serves combinations `RegisterHotKey` actually granted this process, so one another application owns is left to that application; it reads its binding table with `TryAcquireSRWLockShared` and never waits, because a low-level hook that blocks stalls input for every process on the desktop. Matching semantics (exact modifier set, `MOD_NOREPEAT`, consuming the release of a consumed press) live in `common/overlay/hotkey_matcher.h`. The hook thread is the one CE thread the whole desktop waits on, so (2026-09-22) it never logs (it only counts; `ReportHotkeyInputHookDiagnostics()` logs from the controller loop, and deliveries are logged on receipt of `main_kMsgHotkeyFromInputHook`, whose `lParam` carries the vk), runs at `THREAD_PRIORITY_TIME_CRITICAL`, and measures every callback's age against the user's `LowLevelHooksTimeout` (`common/overlay/keyboard_hook_policy.h`, default 300 ms, capped at 1000). Windows removes an LL hook silently after repeated timeouts (11th timeout on Windows 7+), so a callback older than half the timeout posts a re-arm: install a fresh hook, then unhook the old one - a failing unhook proves the system had already removed it (`systemRemovals`). A callback past the full timeout is bookkept but never consumed or acted on, because the application already has that key. The crash handler's `RegisterCrashPreDumpCallback` removes the hook before a controller dump suspends the process. Log lines: `[Hotkey] Keyboard hook answered late`, `re-armed`, `Windows had already removed the keyboard hook`. Pinned by `tests/test_desktop_input_latency.cpp`.
 - An empty optional hotkey disables it. `start_stop` is the exception and falls back to F9 so recording cannot be left without a toggle. `toggle_overlay` (default `CTRL+8`) hides/shows the injected in-game overlay at runtime without a restart. It flips the *effective* visibility, so a profile that overrides `[Overlay] enabled` cannot swallow the first press, and it survives every republication (injection, hook-source change) until a config reload makes the file authoritative again.
-- The inject process publishes exactly one resolved config into shared memory, and every publication resolves the active target's `[Profile.*]` section first. Publishing an unresolved base config drops that target's graphics/DLSS/UE5 overrides, which the hook then restores as `configuration disabled` mid-session; `captureengine/inject_config_publication.cpp` funnels all of it through one `PublishConfigLocked` under one mutex, which is also what keeps the overlay-config seqlock single-writer against injection worker threads.
+- The inject process publishes exactly one resolved config into shared memory, and every publication resolves the active target's `[Profile.*]` section first. Publishing an unresolved base config drops that target's graphics/DLSS/UE5 overrides, which the hook then restores as `configuration disabled` mid-session; `captureengine/injection/inject_config_publication.cpp` funnels all of it through one `PublishConfigLocked` under one mutex, which is also what keeps the overlay-config seqlock single-writer against injection worker threads.
 - Choosing `video_capture=inject` or `dll_injection=always` can trigger anti-cheat protection. Do not use either for multiplayer/anti-cheat software unless injection is known to be permitted; `never` remains available as an explicit safety lock.
 - Desktop-overlay mode 2 is warning-only. With the shipped mode 2 profile there is no steady recording dot.
 - `[Overlay] copy_queue_priority` controls the injected D3D12 overlay's DIRECT queue priority, not a copy queue. The key name is retained for compatibility.
@@ -195,7 +195,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Diagnostics / stale-risk
 
 - Windows INI lookup is case-insensitive. The manual compatibility parser also accepts either case for `[Injection]`, `[DesktopOverlay]`, and legacy `[pseudo-overlay]`; multiline key spellings and semicolon comments should still follow the old syntax when maintaining an existing file.
-- Resource parity is proven in the native config suite. Any new build path that links `common/config.cpp` and can create a config must also provide the resource or explicitly establish that creation is not its responsibility.
+- Resource parity is proven in the native config suite. Any new build path that links `common/config/config.cpp` and can create a config must also provide the resource or explicitly establish that creation is not its responsibility.
 - Config annotations are a broad surface and can drift as behavior changes. When changing capture, audio, graphics, overlay, output, or performance behavior, check this page and the authoritative template rather than updating parser comments alone.
 - Title-only profiles can route WGC/DXGI video, but arbitrary per-app setting overrides (including `DesktopOverlay.*`) require `process`, matching the general profile override contract.
 
@@ -207,8 +207,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 ## Text encoding and hot reload (2026-09-24)
 
-- Values are read through `ce::config_text::ReadIniValue` (`common/config_text_encoding.*`). A UTF-8 `config.ini`
-  (BOM, or non-ASCII bytes that are all valid UTF-8) is parsed from its own bytes by `common/config_ini_reader.*`
+- Values are read through `ce::config_text::ReadIniValue` (`common/config/config_text_encoding.*`). A UTF-8 `config.ini`
+  (BOM, or non-ASCII bytes that are all valid UTF-8) is parsed from its own bytes by `common/config/config_ini_reader.*`
   (cached per path/write time/size) and answered in the active code page; an ANSI file still goes through
   `GetPrivateProfileStringA`. Verified 2026-09-24: kernel32's A profile API decodes and re-encodes with CP_ACP, which
   is lossless on 1252 but loses UTF-8 on 932/936/949/950 ("日本語テスト" on 932, "ゲーム" on 936). Section and key
@@ -221,7 +221,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   stripped. One deliberate difference: a UTF-8 BOM is skipped (the API hid the first section behind it). Note: the
   API writes into its name arguments when trimming them - never pass it read-only literals with trailing blanks.
 - The controller reloads only after the file identity (write time + size) is stable across two checks and never an
-  empty/missing file (`common/config_reload_policy.h`); checks run every 250 ms while a change settles, else 1 s.
+  empty/missing file (`common/config/config_reload_policy.h`); checks run every 250 ms while a change settles, else 1 s.
 - `kReload` is a request, not the commit (audit 4): the controller primes the whole file
   (`ce::config_text::PrimeConfigDocument`), loads into a candidate copy, and commits the identity only when
   `IsCoherentLoad` holds (readable before, `ConfigReadFailureCount` unchanged during, identity unchanged after);
@@ -229,7 +229,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - Optional hotkeys are assigned on every load (blank/deleted = disabled); the controller reloads into its live
   AppConfig, so skipping empty values kept removed bindings.
 - Install folders the code page cannot express resolve through `ce::path::AnsiCompatiblePath` (exact ANSI or the 8.3
-  short name), now header-only in `common/ansi_path.h` (`ce::ansi_path::CompatiblePath`, `ModuleDirectoryAnsi`,
+  short name), now header-only in `common/platform/ansi_path.h` (`ce::ansi_path::CompatiblePath`, `ModuleDirectoryAnsi`,
   `ModuleFileNameAnsi`, `ModulePathW`) so the Vulkan layer can use it; CP_UTF8 as ACP no longer returns "".
 - Hook `GetModuleFileNameA` inventory (2026-09-24): converted where the path is opened or derived - crash-dump
   fallback dir (was UTF-8 into ANSI consumers), external dump helper path, `GetSessionLogsDirectory` fallback, Vulkan

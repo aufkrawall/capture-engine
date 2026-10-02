@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/shared_defs.h"
+#include "common/ipc/shared_defs.h"
 
 TEST(CrossProcessGraphicsPublicationTest, VulkanOwnershipAndPresentEvidenceStayInsideThePublishingTree) {
     CaptureState state;

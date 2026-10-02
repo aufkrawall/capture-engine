@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "../common/config.h"
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/streamline_runtime_policy.h"
+#include "common/config/config.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 
 namespace {
 

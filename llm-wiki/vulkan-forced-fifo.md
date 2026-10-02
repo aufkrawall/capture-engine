@@ -21,10 +21,10 @@ Primary sources:
 - `hook/vulkan_layer/{vulkan_layer_swapchain,vulkan_layer_present,vulkan_layer_capabilities}.cpp`
 - `hook/vulkan_layer/{layer_overlay,layer_overlay_render,layer_overlay_compute}.cpp`
 - `hook/vulkan_layer/{vulkan_present_metering_policy,vulkan_present_chain_policy,overlay_submit_queue_policy}.h`
-- `hook/common/overlay_adapter_render_frame.cpp` (the `[Overlay] Pacing health:` line, 10 s cadence)
-- `hook/common/{vulkan_dxgi_fifo_policy.h,vulkan_dxgi_fifo_registry.h,vulkan_wsi_surface_table.h,remix_frame_generation_policy.h,custom_overlay_vk.h}`
+- `hook/overlay/overlay_adapter_render_frame.cpp` (the `[Overlay] Pacing health:` line, 10 s cadence)
+- `hook/ngx/remix_frame_generation_policy.h, hook/overlay/custom_overlay_vk.h, hook/present/{vulkan_dxgi_fifo_policy.h,vulkan_dxgi_fifo_registry.h,vulkan_wsi_surface_table.h}`
 - `hook/wrappers/vulkan_dxgi_fifo_present.cpp`, `hook/wrappers/wrapper_hooks.{h,cpp}`
-- `hook/apis/{streamline_hook_api,remix_hook}.cpp`
+- `hook/ngx/remix_hook.cpp, hook/streamline/streamline_hook_api.cpp`
 - `tools/build/build_vulkan_layer.py`, `tools/tests/test_vulkan_layer_exports.py`
 - `tests/{test_vulkan_present_metering_policy,test_vulkan_present_chain_policy,test_overlay_submit_queue_policy,test_remix_frame_generation_policy,test_vulkan_dxgi_fifo_scoping,test_vulkan_renderer_policy}.cpp`
 
@@ -129,8 +129,8 @@ screen.
   `VkPhysicalDevicePresentMeteringFeaturesNV`, which is application-owned and `const`, so CE cannot neutralize it. If
   the driver then rejects the create info, the layer hands the extension back and retries with the application's own
   list rather than turning a pacing preference into a game that will not start.
-- **The runtime's own option is the other half** (`hook/common/remix_frame_generation_policy.h`,
-  `hook/apis/remix_hook.cpp`). A runtime whose option still says "use hardware metering" asks for pacing it can no
+- **The runtime's own option is the other half** (`hook/ngx/remix_frame_generation_policy.h`,
+  `hook/ngx/remix_hook.cpp`). A runtime whose option still says "use hardware metering" asks for pacing it can no
   longer get and never engages its CPU pacer, so under `fifo`/`adaptive` CE sets `rtx.dlfg.enablePresentMetering` to
   `False` through the same official `SetConfigVariable` route it already uses for `rtx.dlfg.maxInterpolatedFrames`,
   and rewrites the value if the runtime's menu sets it again. An unknown key is inert, so a spelling that a future
@@ -267,7 +267,7 @@ screen.
   `ShouldSkipPresentModeOverride` in `vulkan_present_metering_policy.h` is consulted at both override sites - the
   layer's own `vkCreateSwapchainKHR` and the upstream `sl.interposer` hook, which reaches the same answer through
   a new layer export (`CEVulkanLayerDeviceEnabledPresentMetering`, resolved via
-  `hook/common/vulkan_layer_metering_bridge.h`). The gate is the application's own `VkDeviceCreateInfo` extension
+  `hook/present/vulkan_layer_metering_bridge.h`). The gate is the application's own `VkDeviceCreateInfo` extension
   list rather than an observed metered present, because the generator creates its swapchain and presents through
   it immediately - there is no present to observe first, and a present mode can only be chosen at creation.
   `off` and `mailbox` are untouched: they are not a vertical-blank contract and carry none of this measurement.
@@ -360,7 +360,7 @@ screen.
 
 ## The per-instance backstop: final present scoped to registered swapchains
 
-- **Arming** (`hook/common/vulkan_dxgi_fifo_policy.h`): `ShouldArmFinalDxgiPresent` is true only when the resident
+- **Arming** (`hook/present/vulkan_dxgi_fifo_policy.h`): `ShouldArmFinalDxgiPresent` is true only when the resident
   CE Vulkan layer is loaded and `vsync_mode` is `fifo` or `adaptive` (the canonical `RequestsVblankPacedPresentation`
   from `vulkan_present_metering_policy.h`, included and called directly so the two policies cannot drift). `off`,
   `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` installs the three system `CreateDXGIFactory*`
@@ -373,14 +373,14 @@ screen.
   atomic conjunction when complete, one `GetModuleHandleA` while `dxgi.dll` is absent, and exactly one resolve/
   install attempt per distinct loaded dxgi HMODULE (a failed attempt against an unchanged module image is
   deterministic, so it is never re-run per poll).
-- **The per-instance registry** (`hook/common/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
+- **The per-instance registry** (`hook/present/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
   open-addressed table of raw swapchain instance pointers, filled by the four system creation-method detours on
   every successful targeted creation. No COM reference is taken; a re-created instance at a recycled address
   refreshes its slot naturally. When the table is full, registration fails closed: that instance's presents pass
   through untouched instead of falling back to an unscoped rewrite. Membership plus `ShouldForceFifoNow()` is the
   complete rewrite gate (`ShouldRewriteFinalPresent`), so an armed backstop never restates a pacing contract on a
   swapchain it did not watch being created.
-- **Authorization lives in the resident layer, not in heuristics** (`hook/common/vulkan_wsi_surface_table.h`,
+- **Authorization lives in the resident layer, not in heuristics** (`hook/present/vulkan_wsi_surface_table.h`,
   `hook/vulkan_layer/layer_wsi_surface_bridge.cpp`). The layer publishes every live Win32 surface HWND at
   `vkCreateWin32SurfaceKHR` and retires it at `vkDestroySurfaceKHR`; the hook DLL resolves the layer's
   `CEVulkanLayerIsLiveVulkanSurfaceHwnd` export and registers only swapchains whose target window backs a live

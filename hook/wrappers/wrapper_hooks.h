@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "../common/dx12_process_frame_diagnostics.h"
+#include "hook/d3d12/dx12_process_frame_diagnostics.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "wrapper_base.h"

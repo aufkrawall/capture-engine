@@ -3,7 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
-#include "../common/frame_queue.h"
+#include "common/capture/frame_queue.h"
 
 namespace {
 

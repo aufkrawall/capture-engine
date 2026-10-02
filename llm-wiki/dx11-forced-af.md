@@ -3,9 +3,9 @@
 Last cross-checked: 2026-07-16
 
 Primary sources:
-- `hook/common/sampler_override_utils.h`
-- `hook/common/{hook_common.h,hook_common.cpp}`
-- `hook/apis/dx11_hook.cpp`
+- `hook/overrides/sampler_override_utils.h`
+- `hook/runtime/{hook_common.h,hook_common.cpp}`
+- `hook/d3d11/dx11_hook.cpp`
 - `hook/wrappers/{d3d11_device_wrap,d3d11_devicecontext_wrap}.{h,cpp}`
 - `tests/{test_sampler_override_utils,test_d3d11_context_wrapper_source}.cpp`
 

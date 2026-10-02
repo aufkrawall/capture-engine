@@ -4,7 +4,7 @@
 
 - **Motivation**: Live-switching `general_limiter_mode` from `reflex` to `basic` in Talos
   produced 140 FPS instead of the configured 60 FPS cap.
-- **Root cause** (`hook/common/fps_limiter.h:1070-1090`): For general (non-capture-sync)
+- **Root cause** (`hook/pacing/fps_limiter.h:1070-1090`): For general (non-capture-sync)
   mode, the code intentionally skipped waiting for the limiter process's `releaseEvent`,
   setting `waitResult = WAIT_OBJECT_0` and `haveReleaseEvent = true` without waiting.
   This meant the hook always read `targetTimeTicks=0` from shared memory (limiter hadn't
@@ -58,7 +58,7 @@
   cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"
   ```
 
-- **Files changed**: `hook/common/dxgi_shared.h`, `hook/common/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`, `AGENTS.md`
+- **Files changed**: `hook/present/dxgi_shared.h`, `hook/present/dxgi_shared.cpp`, `tests/test_dxgi_shared.cpp`, `llm-wiki/current.md`, `llm-wiki/frame-generation/guardrails.md`, `llm-wiki/log/recent.md`, `AGENTS.md`
 
 - **Verification**: Build `0.1.2771`: `success=1`, all unit tests passed (including updated `SteamDX12Bypass` test).
 
@@ -123,7 +123,7 @@ Update rules:
   1. **Guard RepairVTableHooksIfNeeded in `Hooked_slDLSSGGetState`**: Added `IsStreamlineStartupTransitionWindowActive() && IsStreamlineStartupHandoffPending()` check to skip vtable repair during SL initialization. This prevents accessing Steam's overlay hook chain during the unsafe window.
   2. **Extend startup window from 1500ms to 4000ms**: The crash happened 1440ms after arming, which was within the 1500ms timer's resolution margin. A 4-second window ensures SL's full DllMain initialization (including background thread setup) completes before CE resumes vtable repair.
 
-- **Files changed**: `hook/apis/streamline_hook.cpp` (RepairVTableHooksIfNeeded guard), `hook/common/dxgi_shared.h` (kStreamlineStartupTransitionGraceMs 1500→4000), `llm-wiki/log/recent.md`
+- **Files changed**: `hook/streamline/streamline_hook.cpp` (RepairVTableHooksIfNeeded guard), `hook/present/dxgi_shared.h` (kStreamlineStartupTransitionGraceMs 1500→4000), `llm-wiki/log/recent.md`
 
 - **Verification**: Build `0.1.2764`: `success=1`, all 668 unit tests passed.
 
@@ -137,7 +137,7 @@ Update rules:
 
 - **Fix** (build `0.1.2765`): Moved the guard from the call-site (timer-based) into `RepairVTableHooksIfNeeded()` itself, using a **state-based** check: skip vtable repair if `g_StreamlineFGRunning` is true but `HookIsPostSLOverlayConfirmedRendering()` is false. PostSL confirms rendering only after SL has completed initialization and submitted at least one real PostSL frame — which is after DllMain has returned and the swapchain/Steam vtable state is stable. This covers ALL call sites (GetState, SetOptions, RefreshLivePresentHooks, DX12 hook) without relying on timers.
 
-- **Files changed**: `hook/common/dxgi_shared.cpp` (RepairVTableHooksIfNeeded function-level guard), `hook/apis/streamline_hook.cpp` (simplified call-site guard to use PostSL confirmed), `llm-wiki/log/recent.md`
+- **Files changed**: `hook/present/dxgi_shared.cpp` (RepairVTableHooksIfNeeded function-level guard), `hook/streamline/streamline_hook.cpp` (simplified call-site guard to use PostSL confirmed), `llm-wiki/log/recent.md`
 
 - **Verification**: Build `0.1.2765`: `success=1`, all 668 unit tests passed.
 
@@ -153,7 +153,7 @@ Update rules:
   2. **`DX12_ServiceDeferredECLProbe()`**: New exported function that services the deferred ECL probe if the window has expired. Called from three places: ProcessFrame (existing), ECL detour (existing but simplified), and the synthetic re-entrant Present path in `dxgi_shared.cpp` (new — ensures probe fires even when ProcessFrame and ECL detour are both blocked).
   3. **FFX hook startup window guards**: `Hooked_ffxCreateContext`, `Hooked_ffxDestroyContext`, `Hooked_ffxConfigure` now check `DXGIShared::IsStreamlineStartupTransitionWindowActive()` at entry. If the window is active, they call the original function directly and skip all CE-side processing (context tracking, FG state updates, callback bridge setup, HDR state caching, etc.). This prevents CE from corrupting SL's internal state during DllMain/initialization.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `hook/apis/dx12_hook.h`, `hook/common/dxgi_shared.cpp`, `hook/apis/ffx_hook.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `hook/d3d12/dx12_hook.h`, `hook/present/dxgi_shared.cpp`, `hook/ffx/ffx_hook.cpp`, `tests/test_stubs.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
 
 - **Verification**: Build `0.1.2762`: `success=1`, all unit tests passed. FG-specific tests (`FGSessionStateTest.*:OverlayFGStatusPublicationTest.*:DX12FGTransitionSequencesFixture.*:DX12FGTraceReplayFixture.*`) all pass. Build `0.1.2763` reconfirmed after test stubs fix.
 
@@ -170,7 +170,7 @@ Update rules:
   4. CE also vtable-hooks `ExecuteCommandLists` (vtable[10]) on **all** queues sharing the D3D12 vtable, including Streamline's wrapper queues. Intercepting ECL on these wrappers during Streamline's initialization can also crash Streamline.
   5. The crash is deterministic on this Talos config — occurs ~8ms after the ECL probe runs.
 
-- **Fixes** (all in `hook/apis/dx12_hook.cpp`):
+- **Fixes** (all in `hook/d3d12/dx12_hook.cpp`):
   1. **Deferred ECL probe**: Both the synthetic startup path and the outer FG handler now check `DXGIShared::IsStreamlineStartupTransitionWindowActive()` before calling `ProbeRealD3D12ECL()`. If the window is active, a new `g_ProbeRealD3D12ECLDeferred` flag is set. The probe fires later in `ProcessFrame` once the startup window expires.
   2. **Skip vtable hook on SL wrapper queues during startup**: `DX12_HookQueueVTable` now skips non-origGame, non-swapchain queues when `g_StreamlineFGRunning` is true and `IsStreamlineStartupTransitionWindowActive()` is true. This prevents CE from hooking vtable[10] on Streamline wrapper queues during critical initialization.
   3. **Added `g_ProbeRealD3D12ECLDeferred` flag**: Static atomic bool near `g_RealD3D12ECL`, set when probe is deferred, checked and cleared after probe completes.
@@ -179,7 +179,7 @@ Update rules:
 
 - **Verification**: Initial build (build 1) fixed the crash but the overlay didn't appear — logs at `installed/captureengine/logs/20260503_173543` showed `realECL=0000000000000000` (deferred probe never ran, ProcessFrame dormant during synthetic Present), `PostSL refusing SL wrapper bootstrap without direct path` (overlay frames dropped), and `Custom backend initialized` but no overlay visible. Build 2 adds the ECL detour probe (Fix 4) and the pure-DLSS submit fallback (Fix 5). All unit tests pass: `python build.py --skip-updates --run-tests` + full build. FG-specific tests (`FGSessionStateTest.*:OverlayFGStatusPublicationTest.*:DX12FGTransitionSequencesFixture.*:DX12FGTraceReplayFixture.*`) all pass.
 
-- **Files changed**: `hook/apis/dx12_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/d3d12/dx12_hook.cpp`, `llm-wiki/current.md`, `llm-wiki/log/recent.md`
 - **Stale risk**: Medium-high until fresh Talos validation confirms: (1) no crash, (2) overlay visible with DLSS FG active. The ECL detour probe fires reliably when the startup window expires (even during synthetic Present routing). The pure-DLSS submit fallback ensures the overlay renders even if the probe is delayed. GTA V Enhanced validation should confirm no regression in existing DLSS FG startup behavior.
 
 ### 2026-05-02 - Fix Steam DX11 32-bit overlay still missing — LdrRegisterDllNotification for prompt IAT retry
@@ -198,7 +198,7 @@ Update rules:
 
 - **Verification**: Build `0.1.2730`: `success=1`, 668 tests passed (all existing tests pass, no regressions).
 
-- **Files changed**: `hook/main.cpp`, `hook/wrappers/wrapper_hooks.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/runtime/main.cpp`, `hook/wrappers/wrapper_hooks.cpp`, `llm-wiki/log/recent.md`
 - **Stale risk**: Low. With `LdrRegisterDllNotification` the HookThread wakes immediately when d3d11.dll loads, and the diagnostic logs will show exactly why the DX11 condition fails if it still doesn't pass.
 
 ### 2026-05-02 - Fix UE3 Steam DX11 32-bit game overlay missing — legacyD3DLoaded blocks DX11 hook when d3d9.dll loaded as transitive dep
@@ -217,6 +217,6 @@ Update rules:
 
 - **Verification**: Build `0.1.2729`: `success=1`, 668 tests passed (all existing tests pass, no regressions).
 
-- **Files changed**: `hook/main.cpp`, `llm-wiki/log/recent.md`
+- **Files changed**: `hook/runtime/main.cpp`, `llm-wiki/log/recent.md`
 
 - **Stale risk**: Medium. Fresh BioShock Infinite validation needed. The fix is generic and affects any D3D11 game that loads d3d9.dll as a transitive dependency (common for UE3, Unity games using old audio middleware, etc.).

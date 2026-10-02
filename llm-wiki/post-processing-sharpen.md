@@ -3,14 +3,14 @@
 Last cross-checked: 2026-09-24 (per-swapchain Vulkan states with non-blocking retirement; no hardware run yet)
 
 Primary sources:
-- `common/sharpen_policy.h`
-- `hook/common/sharpen_constants.{h,cpp}`
-- `hook/common/sharpen_request.h`
-- `hook/common/sharpen_pass_log.h`
-- `hook/common/sharpen_d3d11.{h,cpp}`
-- `hook/common/sharpen_d3d12.{h,cpp}`
-- `hook/apis/dx11_hook_sharpen.cpp`
-- `hook/apis/dx12_hook_sharpen.cpp`
+- `common/graphics/sharpen_policy.h`
+- `hook/sharpen/sharpen_constants.{h,cpp}`
+- `hook/sharpen/sharpen_request.h`
+- `hook/sharpen/sharpen_pass_log.h`
+- `hook/sharpen/sharpen_d3d11.{h,cpp}`
+- `hook/sharpen/sharpen_d3d12.{h,cpp}`
+- `hook/d3d11/dx11_hook_sharpen.cpp`
+- `hook/d3d12/dx12_hook_sharpen.cpp`
 - `hook/vulkan_layer/layer_sharpen.{h,cpp}`
 - `hook/vulkan_layer/layer_sharpen_setup.cpp`
 - `hook/vulkan_layer/layer_sharpen_state.h`
@@ -64,7 +64,7 @@ either uniform choice.
 
 The cost therefore scales with the *displayed* rate, not the rendered rate: at
 4x MFG the pass runs four times per rendered frame. **This has not been
-measured on hardware yet.** `hook/common/overlay_gpu_timing.cpp` already does
+measured on hardware yet.** `hook/overlay/overlay_gpu_timing.cpp` already does
 GPU timestamp slots and is the instrument for it; the default (`sharpen=off`)
 is deliberately conservative until those numbers exist.
 
@@ -213,7 +213,7 @@ RTV descriptors are exempt: they live in a CPU-only heap and D3D12 reads them at
 command-list record time, which is why `EnsureTargetView` may rewrite its single
 descriptor every frame as the backbuffer index rotates.
 
-The rules themselves live in `hook/common/sharpen_gpu_timeline.h` as pure logic -
+The rules themselves live in `hook/sharpen/sharpen_gpu_timeline.h` as pure logic -
 `CompletedPast`, `TimelineIsIdle`, `SelectFreeSlot`, `SlotValueAfter`,
 `SlotIsBusyAfter`, `QueueChangeNeedsOrdering` - the same way `sharpen_policy.h`
 holds the decision rules, because ordering is exactly what can be checked without a

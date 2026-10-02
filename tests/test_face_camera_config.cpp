@@ -1,6 +1,6 @@
 #include "test_config_shared.h"
 
-#include "../common/face_camera_config.h"
+#include "common/config/face_camera_config.h"
 
 TEST(FaceCameraPolicyTest, ParsesResolutionShapePositionAndCropTokens) {
     uint32_t width = 99;

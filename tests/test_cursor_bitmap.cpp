@@ -2,8 +2,8 @@
 
 #include <limits>
 
-#include "../mediaengine/cursor_bitmap_utils.h"
-#include "../mediaengine/cursor_renderer.h"
+#include "mediaengine/video/cursor_bitmap_utils.h"
+#include "mediaengine/video/cursor_renderer.h"
 
 namespace cb = ce::cursor_bitmap;
 

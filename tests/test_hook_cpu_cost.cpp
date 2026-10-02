@@ -1,4 +1,4 @@
-#include "../hook/common/hook_cpu_cost.h"
+#include "hook/metrics/hook_cpu_cost.h"
 #include <gtest/gtest.h>
 
 TEST(HookCpuCostTest, ReportsNothingBeforeAnyCall) {

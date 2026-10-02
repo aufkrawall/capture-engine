@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/capture_pipeline_policy.h"
+#include "common/capture/capture_pipeline_policy.h"
 
 namespace policy = ce::capture_policy;
 

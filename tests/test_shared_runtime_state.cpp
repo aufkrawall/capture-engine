@@ -6,12 +6,12 @@
 #include <string>
 #include <unordered_map>
 
-#include "../common/config.h"
-#include "../common/inject_overlay_policy.h"
-#include "../common/recording_lifecycle.h"
-#include "../common/recording_indicator_policy.h"
-#include "../common/shared_defs.h"
-#include "../captureengine/display_timing_policy.h"
+#include "common/config/config.h"
+#include "common/overlay/inject_overlay_policy.h"
+#include "common/capture/recording_lifecycle.h"
+#include "common/overlay/recording_indicator_policy.h"
+#include "common/ipc/shared_defs.h"
+#include "captureengine/display_timing/display_timing_policy.h"
 #include "source_fragment_reader.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
@@ -497,7 +497,7 @@ TEST(SharedDefsTest, AbiSignatureCoversDiscoveryLayout) {
 // offsets must therefore stay in the mix.
 TEST(SharedDefsTest, AbiSignatureMixesThePaddingBearingStructsAndLateFields) {
     const std::string source = ce::test_source::ReadLogicalSource(
-        std::filesystem::current_path() / "common" / "shared_defs_detail" / "abi_signature_and_helpers.h");
+        std::filesystem::current_path() / "common" / "ipc" / "shared_defs_detail" / "abi_signature_and_helpers.h");
     ASSERT_FALSE(source.empty());
 
     const size_t signature = source.find("constexpr uint32_t ComputeSharedMemoryAbiSignature()");

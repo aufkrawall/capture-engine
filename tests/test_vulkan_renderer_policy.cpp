@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <cstdint>
 
-#include "../hook/common/dxgi_shared.h"
-#include "../hook/common/vulkan_renderer_policy.h"
+#include "hook/present/dxgi_shared.h"
+#include "hook/present/vulkan_renderer_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -115,11 +115,11 @@ TEST(VulkanRendererPolicyTest, ResidentCaptureLayerSuppressesSpeculativeEarlyD3D
 TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing) {
     namespace fs = std::filesystem;
     const std::string hookThread =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_hookthread.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
     const std::string factories =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "wrapper_hooks.cpp");
     const std::string install =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_install.cpp");
     const std::string finalPresent = ce::test_source::ReadFile(
         fs::current_path() / "hook" / "wrappers" / "vulkan_dxgi_fifo_present.cpp");
     ASSERT_FALSE(hookThread.empty());
@@ -189,9 +189,9 @@ TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing)
     // Both authoritative DXGIShared present detours consult the one policy at
     // the top, after shutdown handling and before reentrancy/forwarding.
     const std::string sharedPresent =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_present.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_present.cpp");
     const std::string sharedPresent1 =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared_present1.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_present1.cpp");
     ASSERT_FALSE(sharedPresent.empty());
     ASSERT_FALSE(sharedPresent1.empty());
     const size_t presentPolicy = sharedPresent.find(
@@ -230,7 +230,7 @@ TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing)
 
     // The registry header adds no pacing or mutation surface of its own.
     const std::string registryHeader = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "common" / "vulkan_dxgi_fifo_registry.h");
+        fs::current_path() / "hook" / "present" / "vulkan_dxgi_fifo_registry.h");
     ASSERT_FALSE(registryHeader.empty());
     EXPECT_EQ(registryHeader.find("mutex"), std::string::npos);
     EXPECT_EQ(registryHeader.find("VirtualProtect"), std::string::npos);
@@ -268,7 +268,7 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
     const std::string layerBridge =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "layer_wsi_surface_bridge.cpp");
     const std::string tableHeader =
-        ce::test_source::ReadFile(root / "hook" / "common" / "vulkan_wsi_surface_table.h");
+        ce::test_source::ReadFile(root / "hook" / "present" / "vulkan_wsi_surface_table.h");
     ASSERT_FALSE(finalPresent.empty());
     ASSERT_FALSE(layerState.empty());
     ASSERT_FALSE(layerPresent.empty());
@@ -356,7 +356,7 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
               std::string::npos);
     EXPECT_NE(layerPresent.find("RegisterSurface(*pSurface, pCreateInfo->hwnd, instance)"), std::string::npos);
     const std::string surfaceTableHeader =
-        ce::test_source::ReadFile(root / "hook" / "common" / "vulkan_wsi_surface_table.h");
+        ce::test_source::ReadFile(root / "hook" / "present" / "vulkan_wsi_surface_table.h");
     ASSERT_FALSE(surfaceTableHeader.empty());
     EXPECT_NE(surfaceTableHeader.find("SelectWindowsToRetireOnInstanceDestroy"), std::string::npos);
 
@@ -372,7 +372,7 @@ TEST(VulkanRendererPolicySourceTest, SwapchainRegistrationIsScopedToLiveVulkanSu
 TEST(VulkanRendererPolicySourceTest, DxgiSharedPublishesTheSinglePresentInstallSeam) {
     namespace fs = std::filesystem;
     const std::string umbrella =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "common" / "dxgi_shared.h");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared.h");
     ASSERT_FALSE(umbrella.empty());
     EXPECT_NE(umbrella.find("bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain);"),
               std::string::npos);
@@ -471,7 +471,7 @@ TEST(VulkanRendererPolicyTest, SharedFlagFollowsPublishedDecision) {
 
 TEST(VulkanRendererPolicySourceTest, HookInstallPublishesTheSharedDecision) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "main_install.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "runtime" / "main_install.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string source = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(source.empty());
@@ -486,20 +486,20 @@ TEST(VulkanRendererPolicySourceTest, HookInstallPublishesTheSharedDecision) {
 
 TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3DHooks) {
     namespace fs = std::filesystem;
-    const std::string dllMain = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_dllmain.cpp");
-    const std::string hookThread = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_hookthread.cpp");
+    const std::string dllMain = ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_dllmain.cpp");
+    const std::string hookThread = ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
     const std::string create =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     const std::string deep =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
     const std::string ecl =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx12_hook_ecl_install.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_ecl_install.cpp");
     const std::string dx11 =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook_detours.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_detours.cpp");
     const std::string wrappers =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "dxgi_factory_wrap.cpp");
     const std::string install =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_install.cpp");
     ASSERT_FALSE(dllMain.empty());
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(create.empty());
@@ -526,11 +526,11 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
 
 TEST(VulkanRendererPolicySourceTest, VulkanLayerOwnsTranslatedD3D9FinalPresentation) {
     namespace fs = std::filesystem;
-    const std::string install = ce::test_source::ReadFile(fs::current_path() / "hook" / "main_install.cpp");
+    const std::string install = ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_install.cpp");
     const std::string present =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
     const std::string dx9Helpers =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx9_hook_helpers.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d9" / "dx9_hook_helpers.cpp");
     const std::string dx9Wrapper =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "wrappers" / "d3d9_device_wrap.cpp");
     ASSERT_FALSE(install.empty());
@@ -556,7 +556,7 @@ TEST(VulkanRendererPolicySourceTest, LayerEligibilityFollowsOnlyThePublishedWhit
     const std::string main =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
     const std::string injectHost =
-        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_main.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "injection" / "inject_main.cpp");
     ASSERT_FALSE(participation.empty());
     ASSERT_FALSE(ipc.empty());
     ASSERT_FALSE(main.empty());
@@ -588,9 +588,9 @@ TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverrides
     const std::string layerBootstrap = ce::test_source::ReadFile(
         root / "hook" / "vulkan_layer" / "layer_renderer_bootstrap.cpp");
     const std::string hookBootstrap =
-        ce::test_source::ReadFile(root / "hook" / "main_renderer_bootstrap.cpp");
+        ce::test_source::ReadFile(root / "hook" / "runtime" / "main_renderer_bootstrap.cpp");
     const std::string hookThread =
-        ce::test_source::ReadFile(root / "hook" / "main_hookthread.cpp");
+        ce::test_source::ReadFile(root / "hook" / "runtime" / "main_hookthread.cpp");
     ASSERT_FALSE(layerIpc.empty());
     ASSERT_FALSE(layerBootstrap.empty());
     ASSERT_FALSE(hookBootstrap.empty());
@@ -614,7 +614,7 @@ TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverrides
     // to the DLL's own directory and System32 (never the current directory or PATH).
     EXPECT_NE(layerBootstrap.find("LoadLibraryFromSecurePath"), std::string::npos);
     const std::string secureLoader =
-        ce::test_source::ReadFile(root / "common" / "secure_dll_loading.cpp");
+        ce::test_source::ReadFile(root / "common" / "platform" / "secure_dll_loading.cpp");
     EXPECT_NE(secureLoader.find("LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR"), std::string::npos);
     EXPECT_NE(secureLoader.find("LOAD_LIBRARY_SEARCH_SYSTEM32"), std::string::npos);
     EXPECT_NE(hookBootstrap.find("shared.dlssSrDllPath"), std::string::npos);
@@ -637,7 +637,7 @@ TEST(VulkanRendererPolicySourceTest, InheritedRendererBootstrapsRuntimeOverrides
 // vulkan-1.dll presence would restore the RoboCop DX12 regression.
 TEST(VulkanRendererPolicySourceTest, LayerOwnershipReopensTheLatchedVulkanDecision) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "main_install.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "runtime" / "main_install.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     const std::string source = ce::test_source::ReadFile(installSource);
     ASSERT_FALSE(source.empty());
@@ -663,7 +663,7 @@ TEST(VulkanRendererPolicySourceTest, LayerOwnershipReopensTheLatchedVulkanDecisi
 
 TEST(VulkanRendererPolicySourceTest, PresentGateConsultsScopedClaimNotModulePresence) {
     namespace fs = std::filesystem;
-    const fs::path sharedSource = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    const fs::path sharedSource = fs::current_path() / "hook" / "present" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(sharedSource));
     const std::string source = ce::test_source::ReadFile(sharedSource);
     ASSERT_FALSE(source.empty());
@@ -675,20 +675,20 @@ TEST(VulkanRendererPolicySourceTest, PresentGateConsultsScopedClaimNotModulePres
     EXPECT_EQ(source.find("GetModuleHandleW(L\"vulkan-1.dll\")"), std::string::npos);
 
     const fs::path routingSource =
-        fs::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp";
+        fs::current_path() / "hook" / "present" / "dxgi_shared_present_routing.cpp";
     ASSERT_TRUE(fs::exists(routingSource));
     const std::string routing = ce::test_source::ReadFile(routingSource);
     ASSERT_FALSE(routing.empty());
     EXPECT_NE(routing.find("if (IsVulkanActive())"), std::string::npos);
 
-    const fs::path dx12MainSource = fs::current_path() / "hook" / "apis" / "dx12_hook_main.cpp";
+    const fs::path dx12MainSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_main.cpp";
     ASSERT_TRUE(fs::exists(dx12MainSource));
     const std::string dx12Main = ce::test_source::ReadFile(dx12MainSource);
     ASSERT_FALSE(dx12Main.empty());
     EXPECT_NE(dx12Main.find("if (DXGIShared::IsVulkanActive())"), std::string::npos);
     EXPECT_EQ(dx12Main.find("GetModuleHandleW(L\"vulkan-1.dll\")"), std::string::npos);
 
-    const fs::path dx11Source = fs::current_path() / "hook" / "apis" / "dx11_hook.cpp";
+    const fs::path dx11Source = fs::current_path() / "hook" / "d3d11" / "dx11_hook.cpp";
     ASSERT_TRUE(fs::exists(dx11Source));
     const std::string dx11 = ce::test_source::ReadFile(dx11Source);
     ASSERT_FALSE(dx11.empty());
@@ -704,7 +704,7 @@ TEST(VulkanRendererPolicySourceTest, LayerPublishesOwnedVulkanAndDlssState) {
     const std::string layerPresent =
         ce::test_source::ReadFile(root / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
     const std::string streamline =
-        ce::test_source::ReadFile(root / "hook" / "apis" / "streamline_hook_state.cpp");
+        ce::test_source::ReadFile(root / "hook" / "streamline" / "streamline_hook_state.cpp");
 
     EXPECT_NE(layerIpc.find("PublishVulkanLayerClaim(rendererPid, clientPid)"), std::string::npos);
     EXPECT_NE(layerIpc.find("ReleaseVulkanLayerClaim(GetCurrentProcessId())"), std::string::npos);
@@ -735,7 +735,7 @@ TEST(VulkanRendererPolicySourceTest, DeviceLossStopsOverlayWorkAndSkipsIdleWait)
 
 TEST(VulkanRendererPolicySourceTest, FifoIsAppliedBeforeStreamlineDlssgSeesSwapchainCreation) {
     namespace fs = std::filesystem;
-    const fs::path installSource = fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp";
+    const fs::path installSource = fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp";
     const fs::path layerSource = fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_swapchain.cpp";
     ASSERT_TRUE(fs::exists(installSource));
     ASSERT_TRUE(fs::exists(layerSource));

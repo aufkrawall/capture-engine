@@ -6,7 +6,7 @@
 
 - **Previous approaches (all failed)**: Builds 0.1.2762–0.1.2813 tried IAT/GetProcAddress patching, stack-walk detection, thread-ID guards, unconditional startup bypass, 4000ms timer window. Build 0.1.2822 increased timer to 10000ms and removed premature `ShouldClear...` call. **Still crashed** with identical stack. Timer-based approach rejected as fundamentally unreliable.
 
-- **Root-cause fix** (`hook/common/dxgi_shared.cpp:1515-1535`): Replaced timer-based `inStartupWindow` with **caller-module detection**: when `callerFromStreamlineModule` is true AND `s_slRoutingActive` is false AND Steam overlay is loaded, bypass Steam unconditionally via `oPresentBypass`. No timer, grace period, or PostSL confirmation state dependency.
+- **Root-cause fix** (`hook/present/dxgi_shared.cpp:1515-1535`): Replaced timer-based `inStartupWindow` with **caller-module detection**: when `callerFromStreamlineModule` is true AND `s_slRoutingActive` is false AND Steam overlay is loaded, bypass Steam unconditionally via `oPresentBypass`. No timer, grace period, or PostSL confirmation state dependency.
 
 - **How detection works**: `callerFromStreamlineModule` is computed at DetourPresent entry (~line 995) via `CE_CAPTURE_RETURN_ADDRESS()` (= `_ReturnAddress()`) and `GetModuleHandleExA(FROM_ADDRESS)`. During SL DllMain, this returns an address in `sl_common!slGetPluginFunction` (confirmed by crash dump: RetAddr at frame 02 = `sl_common!slGetPluginFunction+0x12d5`). `IsCodeAddressFromStreamlineModule()` checks the module base against known SL modules.
 
@@ -24,7 +24,7 @@
 
 - **The unsafe case**: Only SL DllMain (`callerFromStreamlineModule=true && s_slRoutingActive=false`) is unsafe for Steam — Steam's TLS/callbacks may be uninitialized during DllMain, causing RIP=0 crashes.
 
-- **Fix** (`hook/common/dxgi_shared.cpp`): Changed both Steam overlay guards from `!callerFromStreamlineModule` to `!(callerFromStreamlineModule && !s_slRoutingActive)` (computed as `steamOverlaySafe` / `steamOverlaySafeConfirmed`). This allows Steam calls during active SL FG while blocking them only during the DllMain phase.
+- **Fix** (`hook/present/dxgi_shared.cpp`): Changed both Steam overlay guards from `!callerFromStreamlineModule` to `!(callerFromStreamlineModule && !s_slRoutingActive)` (computed as `steamOverlaySafe` / `steamOverlaySafeConfirmed`). This allows Steam calls during active SL FG while blocking them only during the DllMain phase.
 
 - **Verification**: Build 0.1.2836 passes all 672 unit tests.
 
@@ -49,7 +49,7 @@
   Talos1_Win64_Shipping
   ```
 
-- **Fix** (`hook/common/dxgi_shared.cpp`): Added `!callerFromStreamlineModule` to both Steam overlay invocation guards:
+- **Fix** (`hook/present/dxgi_shared.cpp`): Added `!callerFromStreamlineModule` to both Steam overlay invocation guards:
   - Synthetic re-entrant path (line ~1265): `if (g_externalOverlayPresentHook && steamOverlayLoaded && !callerFromStreamlineModule)`
   - Confirmed standalone bypass path (line ~1206): same guard added
   - Added debug logging when Steam overlay is skipped due to SL call chain
@@ -82,7 +82,7 @@
 
 - **Root cause**: SL's E9 JMP on dxgi!Present overwrites Steam's inline JMP. When SL FG is active, CE routes the game's Presents through SL's JMP (via `oPresent`). CE's bypass path (synthetic re-entrant + confirmed standalone) calls `oPresentBypass` created from disk bytes — which has NO JMPs at all. Steam's overlay is never reached.
 
-- **Fix** (`hook/common/dxgi_shared.cpp`):
+- **Fix** (`hook/present/dxgi_shared.cpp`):
   1. Added `ResolveE9JmpTarget()` function: reads the E9 relative offset from a function body and computes the absolute target address.
   2. Added `g_externalOverlayPresentHook` global: saves Steam's OverlayHookD3D3 address at `InstallPresentInlineHooks` time (BEFORE SL overwrites the E9 JMP).
   3. In the **synthetic re-entrant path** (~line 1217): when `g_externalOverlayPresentHook` is non-null and Steam overlay is loaded, call Steam's overlay function explicitly INSTEAD of `oPresentBypass`. Steam renders its overlay, calls its internal trampoline (saved original dxgi!Present bytes + JMP to dxgi!Present+5), which presents the frame. No double-present: Steam's trampoline calls past the JMP directly into the real Present implementation.
@@ -148,9 +148,9 @@
   3. Bind-time AF only ran on sampler binds, so games that reused samplers while changing
      SRVs could miss later eligible material textures.
 - **Fix**:
-  - `hook/common/sampler_override_utils.h` now owns testable D3D11 forced-AF sampler and
+  - `hook/overrides/sampler_override_utils.h` now owns testable D3D11 forced-AF sampler and
     resource classifiers.
-  - `hook/apis/dx11_hook.cpp` tracks logical original samplers and SRVs per context/stage,
+  - `hook/d3d11/dx11_hook.cpp` tracks logical original samplers and SRVs per context/stage,
     reconciles replacement samplers on both `*SetSamplers` and `*SetShaderResources`, and
     uses a Present-time bootstrap only to capture already-bound state.
   - D3D11 `CreateSamplerState` and wrapper `CreateSamplerState` no longer enable forced
@@ -191,10 +191,10 @@
   - Fixed DX9 skipReason to prevent dummy device creation for DX11 games
   - Added bind-time AF override to wrapper D3D11 context sampler set calls
   - Exposed `ApplyPrerenderLimit` from `dx11_hook.cpp` via `dx11_hook.h`
-- **Files changed**: `hook/apis/dx11_hook.cpp`, `hook/apis/dx9_hook.cpp`,
-  `hook/common/dxgi_shared.cpp`, `hook/wrappers/d3d11_devicecontext_wrap.cpp`,
+- **Files changed**: `hook/d3d11/dx11_hook.cpp`, `hook/d3d9/dx9_hook.cpp`,
+  `hook/present/dxgi_shared.cpp`, `hook/wrappers/d3d11_devicecontext_wrap.cpp`,
   `hook/wrappers/dxgi_swapchain_wrap.cpp`, `hook/wrappers/wrapper_hooks.cpp`,
-  `hook/main.cpp`, `tests/test_stubs.cpp`, `llm-wiki/log/recent.md`
+  `hook/runtime/main.cpp`, `tests/test_stubs.cpp`, `llm-wiki/log/recent.md`
 - **Verification**: Build `0.1.2790`: `success=1`, all unit tests passed.
 - **Stale risk**: Historical only. Superseded on 2026-05-05: create-time AF-on was
   removed again because Blackwell needs SRV/resource context before forcing AF.
@@ -205,11 +205,11 @@
   (BioShock Infinite). The query-based prerender limit was only in the wrapper's
   `CWrapDXGISwapChain::Present` which is never called for games that bypass the
   wrapper (Present goes through `DetourPresent` in `dxgi_shared.cpp`).
-- **DX9 skipReason fix** (`hook/apis/dx9_hook.cpp:6417-6419`): Changed the
+- **DX9 skipReason fix** (`hook/d3d9/dx9_hook.cpp:6417-6419`): Changed the
   skipReason check to return early regardless of `inlineHooksReady`. Previously
   it only returned when inline hooks were already installed; when inline hooks
   failed it fell through to create a dummy D3D9 device even for DX11/DX12 games.
-- **Prerender limit in shared path** (`hook/common/dxgi_shared.cpp`): Added
+- **Prerender limit in shared path** (`hook/present/dxgi_shared.cpp`): Added
   `ApplyPrerenderLimit` calls in both `DetourPresent` (after line 1244) and
   `DetourPresent1` (after line 1877). This is the actual Present entry point for
   all games — both wrapper and non-wrapper paths. Gated on `api == D3D11` and
@@ -219,7 +219,7 @@
   commit — it's now handled in the shared path.
 - **Test stub** (`tests/test_stubs.cpp`): Added `ApplyPrerenderLimit` stub for
   the unit test binary.
-- **Files changed**: `hook/apis/dx9_hook.cpp`, `hook/common/dxgi_shared.cpp`,
+- **Files changed**: `hook/d3d9/dx9_hook.cpp`, `hook/present/dxgi_shared.cpp`,
   `hook/wrappers/dxgi_swapchain_wrap.cpp`, `tests/test_stubs.cpp`,
   `llm-wiki/log/recent.md`
 - **Verification**: Build `0.1.2783`: `success=1`, all unit tests passed.

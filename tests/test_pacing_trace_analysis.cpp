@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../hook/common/pacing_trace_analysis.h"
+#include "hook/pacing/pacing_trace_analysis.h"
 
 namespace {
 using namespace ce::pacing_trace;

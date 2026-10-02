@@ -81,7 +81,7 @@ Full suite 3492 green on 0.1.6743. **No hardware run yet.**
 
 `ScreenGrabPrivacyTest.TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry` faulted
 with 0xC0000005 on every run and took the whole unit-test process down mid-suite. Root cause in
-`common/screen_grab_privacy.cpp::IsWindowOnCurrentVirtualDesktop`, fixed by creating the
+`common/capture/screen_grab_privacy.cpp::IsWindowOnCurrentVirtualDesktop`, fixed by creating the
 `IVirtualDesktopManager` per call instead of caching it in a `thread_local`.
 
 - **The hypothesis that an *earlier test* called `CoUninitialize` was wrong.** The test crashes
@@ -151,7 +151,7 @@ New feature, `[Graphics] sharpen = off | cas | rcas` plus `sharpen_strength`,
   of the blob and a tenth of the driver's pipeline-creation work, not a size cosmetic.
 - ABI: the resolved sharpen settings grew `SharedGraphicsConfig` past its tail padding, so
   `SHARED_MEMORY_VERSION` moved to 61. `SharedGraphicsConfig` and its layout assertions moved
-  into `common/shared_defs_detail/graphics_config.h` to keep the ABI header under the size
+  into `common/ipc/shared_defs_detail/graphics_config.h` to keep the ABI header under the size
   ceiling; it is included from inside that file's pack region and is deliberately not standalone.
 - Headers vendored from the MIT FidelityFX SDK 1.1.4 archive the build already downloads. The
   newer 2.x SDK drop must not be used as the source: its `docs/license.md` is
@@ -185,7 +185,7 @@ itself was closed.
     older build folders (`b*`), catching and ignoring `remove_all` errors if an external process still holds a lock on
     an older build image until that process exits.
   - Late injection is 100% preserved because the layer remains resident and registered in the Vulkan loader chain.
-- **Source anchors:** `common/vulkan_layer_registration.{h,cpp}`, `tests/test_vulkan_layer_registration.cpp`,
+- **Source anchors:** `common/graphics/vulkan_layer_registration.{h,cpp}`, `tests/test_vulkan_layer_registration.cpp`,
   `tools/build/build_bootstrap.py`, and `llm-wiki/{dx12-injection-bootstrap,log/recent}.md`.
 
 

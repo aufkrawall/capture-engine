@@ -1,0 +1,9 @@
+#pragma once
+
+// Audio sync helpers: resampling ratios, drift accounting, and track timeline math.
+//
+// This file is the umbrella; the topic headers below hold the code.
+
+#include "mediaengine/audio/audio_sync/timeline_constants.h"
+#include "mediaengine/audio/audio_sync/packet_clamp_and_drift.h"
+#include "mediaengine/audio/audio_sync/source_silence_policy.h"

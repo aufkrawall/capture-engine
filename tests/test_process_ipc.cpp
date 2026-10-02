@@ -13,8 +13,8 @@
 #include <windows.h>
 #include <shellapi.h>
 
-#include "../common/process_ipc.h"
-#include "../common/restricted_child_process.h"
+#include "common/ipc/process_ipc.h"
+#include "common/platform/restricted_child_process.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -154,12 +154,12 @@ TEST(ProcessIPCTest, RecordingIdentityIsStrictAndProducesImmutableMediaLogNames)
 }
 
 TEST(ProcessIPCTest, ProductionUsesInheritedEndpointsWithoutFixedPipeConstants) {
-    const std::string header = ReadSource("common/process_ipc.h");
+    const std::string header = ReadSource("common/ipc/process_ipc.h");
     // The endpoint implementation is split across the server and client halves,
     // so both are scanned: the positive expectations below name code from each,
     // and the negative ones must hold across the whole implementation.
-    const std::string serverSource = ReadSource("common/process_ipc.cpp");
-    const std::string clientSource = ReadSource("common/process_ipc_client.cpp");
+    const std::string serverSource = ReadSource("common/ipc/process_ipc.cpp");
+    const std::string clientSource = ReadSource("common/ipc/process_ipc_client.cpp");
     const std::string source = serverSource + clientSource;
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(serverSource.empty());
@@ -177,7 +177,7 @@ TEST(ProcessIPCTest, ProductionUsesInheritedEndpointsWithoutFixedPipeConstants) 
 }
 
 TEST(ProcessIPCTest, RestrictedLauncherUsesAnExplicitHandleList) {
-    const std::string source = ReadSource("common/restricted_child_process.cpp");
+    const std::string source = ReadSource("common/platform/restricted_child_process.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("PROC_THREAD_ATTRIBUTE_HANDLE_LIST"), std::string::npos);
     EXPECT_NE(source.find("EXTENDED_STARTUPINFO_PRESENT"), std::string::npos);
@@ -186,7 +186,7 @@ TEST(ProcessIPCTest, RestrictedLauncherUsesAnExplicitHandleList) {
 }
 
 TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenNeverSetTheCursor) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t modeParsing = source.find("ProcessMode mode = ParseProcessMode(lpCmdLine)");
@@ -215,9 +215,9 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
 }
 
 TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath) {
-    const std::string mainSource = ReadSource("captureengine/main.cpp");
-    const std::string workerHost = ReadSource("captureengine/process_loopback_worker_host.cpp");
-    const std::string processHeader = ReadSource("common/process_ipc.h");
+    const std::string mainSource = ReadSource("captureengine/app/main.cpp");
+    const std::string workerHost = ReadSource("captureengine/media/process_loopback_worker_host.cpp");
+    const std::string processHeader = ReadSource("common/ipc/process_ipc.h");
     ASSERT_FALSE(mainSource.empty());
     ASSERT_FALSE(workerHost.empty());
     ASSERT_FALSE(processHeader.empty());
@@ -239,7 +239,7 @@ TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath
 }
 
 TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpawns) {
-    const std::string source = ReadSource("captureengine/main.cpp");
+    const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("recoverProcess(ProcessMode::Inject"), std::string::npos);
     EXPECT_NE(source.find("recoverProcess(ProcessMode::Media"), std::string::npos);
@@ -261,7 +261,7 @@ TEST(ProcessIPCTest, RetiredLimiterProcessStaysRetired) {
     char modeArgument[] = "--mode=limiter";
     EXPECT_EQ(ParseProcessMode(modeArgument), ProcessMode::Controller);
 
-    const std::string controller = ReadSource("captureengine/main.cpp");
+    const std::string controller = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(controller.empty());
     EXPECT_EQ(controller.find("SpawnLimiter"), std::string::npos);
     EXPECT_EQ(controller.find("limiter readiness"), std::string::npos);
@@ -290,8 +290,8 @@ TEST(ProcessIPCTest, NoFirstPartyThreadPinsAHardCodedCoreOrRunsRealtime) {
 }
 
 TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndpointRelease) {
-    const std::string controllerSource = ReadSource("captureengine/main.cpp");
-    const std::string mediaSource = ReadSource("captureengine/media_main.cpp");
+    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string mediaSource = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
@@ -334,11 +334,11 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
 }
 
 TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
-    const std::string controllerSource = ReadSource("captureengine/main.cpp");
-    const std::string injectSource = ReadSource("captureengine/inject_main.cpp");
+    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string injectSource = ReadSource("captureengine/injection/inject_main.cpp");
     const std::string publicationSource =
-        ReadSource("captureengine/inject_config_publication.cpp");
-    const std::string protocolHeader = ReadSource("common/process_ipc.h");
+        ReadSource("captureengine/injection/inject_config_publication.cpp");
+    const std::string protocolHeader = ReadSource("common/ipc/process_ipc.h");
     const std::string templateSource = ReadSource("captureengine/config.ini.template");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(injectSource.empty());

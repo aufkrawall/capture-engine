@@ -164,7 +164,7 @@ Analyzed and resolved four minidumps from `logs/20260904_143301` produced during
 1. **Root Cause 1: Leaked COM references causing `E_ACCESSDENIED` (0x80070005) on swapchain recreation:**
    - Dumps: `crash_external_swapchain_access_denied_exhausted_f3172865.dmp` and `crash_external_fatal_exit_ExitProcess_e000eacc_14cc1ec5.dmp` (PID 13328).
    - In `hook/wrappers/dxgi_swapchain_wrap_present.cpp`, `CWrapDXGISwapChain::PromoteInterfaces()` called `m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))` unconditionally without checking `if (!m_pReal1)`. When the wrapper was constructed around an `IDXGISwapChain1`, the constructor had already stored and AddRef'd `m_pReal1`; calling `QueryInterface` again overwrote the pointer and added a second reference while the destructor only released it once.
-   - In `hook/apis/dx12_hook_swapchain_create.cpp`, `DetourCreateSwapChainGlobal` and `DetourCreateSwapChainForHwndGlobal` wrapped `*ppSwapChain` / `*ppSC` with `new CWrapDXGISwapChain` (which AddRefs), but omitted `pReal->Release()` to consume the factory's returned reference (unlike `dxgi_factory_wrap.cpp` and `dx11_hook_detours.cpp`).
+   - In `hook/d3d12/dx12_hook_swapchain_create.cpp`, `DetourCreateSwapChainGlobal` and `DetourCreateSwapChainForHwndGlobal` wrapped `*ppSwapChain` / `*ppSC` with `new CWrapDXGISwapChain` (which AddRefs), but omitted `pReal->Release()` to consume the factory's returned reference (unlike `dxgi_factory_wrap.cpp` and `dx11_hook_detours.cpp`).
    - The extra references pinned the swapchain to the HWND across mode switches, causing `CreateSwapChainForHwnd` to fail with `DXGI_ERROR_ACCESS_DENIED` (`0x80070005`) once the deep recovery was exhausted.
    - Fix: Added `!m_pReal1..4` guards in `PromoteInterfaces()`, and added `pReal->Release()` after wrapping in `DetourCreateSwapChainGlobal` and `DetourCreateSwapChainForHwndGlobal`.
 
@@ -184,14 +184,14 @@ Analyzed and resolved four minidumps from `logs/20260904_143301` produced during
 Fixed a real pacing hazard in *The Talos Principle: Reawakened* (`Talos1-Win64-Shipping.exe`) with native AMD FSR Frame Generation. Later 2026-09-06 reproductions prove it was not the complete random bad-start cause:
 
 1. **Root Cause (Route B extra ECL on AMD's presentation queue):**
-   - When a foreign overlay like Steam was loaded, `DecideBelowForeignChainFSRDeepDraw` (`hook/common/dx12_overlay_policy/ffx_routing.h`) activated Route B (`TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR`).
+   - When a foreign overlay like Steam was loaded, `DecideBelowForeignChainFSRDeepDraw` (`hook/d3d12/dx12_overlay_policy/ffx_routing.h`) activated Route B (`TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR`).
    - Route B caused CE to voluntarily yield AMD's official, zero-overhead `presentCallback` (`ShouldYieldFFXPresentCallbackToTopmostRoute`).
    - Instead, on AMD's presenter thread inside `DetourPresent`, Route B executed a separate `ExecuteCommandLists` call directly on AMD's presentation queue (`dx12_hook_g_SwapchainQueue`) right before `CallOriginalPresent`.
    - AMD's presenter thread uses high-precision QPC timers to pace generated vs real frames. Submitting an extra command list on AMD's queue desynced AMD's pacing timer and caused GPU queue contention right before VBlank scanout. Depending on queue slack at startup, if an extra ECL pushed GPU completion past the scanout deadline by even a fraction of a millisecond, the driver's hardware flip queue slipped by 1 VBlank and permanently locked into alternating 1 vs 2 VBlank flips (~6.6 ms / ~17.7 ms alternating flips, steady state ~83.3 FPS stutter).
 2. **Prioritizing official FFX `presentCallback` (Part 1):**
-   - In `hook/common/dx12_overlay_policy/ffx_routing.h`, `DecideBelowForeignChainFSRDeepDraw` makes Route B unavailable (`kUnavailable`). The official FFX `presentCallback` is never yielded to an extra swapchain-queue submission; CE renders directly into AMD's provided command list (`desc->commandList`) with zero extra `ExecuteCommandLists` calls, zero extra fences, and zero presenter-thread stalls.
+   - In `hook/d3d12/dx12_overlay_policy/ffx_routing.h`, `DecideBelowForeignChainFSRDeepDraw` makes Route B unavailable (`kUnavailable`). The official FFX `presentCallback` is never yielded to an extra swapchain-queue submission; CE renders directly into AMD's provided command list (`desc->commandList`) with zero extra `ExecuteCommandLists` calls, zero extra fences, and zero presenter-thread stalls.
 3. **Skipping deferred signals and overlay completion waits on runtime-owned queues (Part 3):**
-   - In `hook/common/dxgi_shared_present_core.cpp` (lines 356 and 479) and `hook/common/dxgi_shared_present1.cpp`, `InvokeDX12WaitForOverlayCompletion` and `InvokeDX12FlushDeferredSignal` are now skipped whenever `HookHasRuntimeOwnedNativeFGPresentPath()` or `DXGIShared::DoesFGRuntimeOwnSwapchain()`. This prevents any deferred signals or completion queries from touching AMD's presentation queue.
+   - In `hook/present/dxgi_shared_present_core.cpp` (lines 356 and 479) and `hook/present/dxgi_shared_present1.cpp`, `InvokeDX12WaitForOverlayCompletion` and `InvokeDX12FlushDeferredSignal` are now skipped whenever `HookHasRuntimeOwnedNativeFGPresentPath()` or `DXGIShared::DoesFGRuntimeOwnSwapchain()`. This prevents any deferred signals or completion queries from touching AMD's presentation queue.
 4. **Regression Tests & Verification:**
    - Updated `tests/test_ffx_below_foreign_chain_policy.cpp` (`PrefersOfficialPresentCallbackOverSwapchainQueueDrawInHealthyState`).
    - Passed full `--verify` content-validated product build, native tests, Python self-tests, file-size ratchet, and ASan/UBSan validation.
@@ -204,10 +204,10 @@ Two improvements to FSR FG frame pacing and overlay fidelity:
    - The user clarified the core project requirement: the frame-time graph must faithfully reflect
      real on-screen frame pacing (`msBetweenDisplayChange`) with VRR, GPU maxed out, VSync capping,
      and uncapped FPS, across all FG modes (all FG off, FSR FG, DLSS FG).
-   - In `captureengine/display_timing_policy.h`, `ResolveDeferredScreenTimes` marks unclocked completions
+   - In `captureengine/display_timing/display_timing_policy.h`, `ResolveDeferredScreenTimes` marks unclocked completions
      under VRR as `screenTimeResolved = true`, because on VRR panels without a fixed VBlank grid the
      unrounded hardware completion timestamp is the physical display transition time itself.
-   - In `hook/common/performance_metrics.cpp`, when `DisplayChange` is preferred and the timing service
+   - In `hook/metrics/performance_metrics.cpp`, when `DisplayChange` is preferred and the timing service
      is healthy, `m_effectiveSource` selects `FrameTimeSource::DisplayChange` directly. The overlay
      no longer forces fallback to `Presentation` when the display stream has natural variance or an
      alternating sawtooth (e.g. FSR FG on VRR). Fallback occurs only when the timing service is
@@ -215,13 +215,13 @@ Two improvements to FSR FG frame pacing and overlay fidelity:
    - `GetLastDisplayFrameTimeMs()` returns the active display frame time from the display series.
 
 2. **Eliminated per-frame render-thread VEH breakpoint rearm overhead in FSR FG:**
-   - In `hook/apis/ffx_hook_install.cpp`, `CallFfxConfigureOriginalGuarded` was pausing and re-arming
+   - In `hook/ffx/ffx_hook_install.cpp`, `CallFfxConfigureOriginalGuarded` was pausing and re-arming
      the 0xCC VEH breakpoint on AMD's executable code page on *every application frame* on the game's
      render thread (1800 times in 30 seconds). Each call ran 4 `VirtualProtect` syscalls (acquiring
      the process-wide `MmAddressCreationLock`) and 2 `FlushInstructionCache` syscalls (broadcasting
      cross-core TLB shootdowns).
    - The one-shot disarm was only hooked for no-callback mode.
-   - In `hook/apis/ffx_hook_context.cpp` (`Hooked_ffxConfigure`), as soon as the present-callback bridge
+   - In `hook/ffx/ffx_hook_context.cpp` (`Hooked_ffxConfigure`), as soon as the present-callback bridge
      is established (`installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback`), the
      protected `ffxConfigure` VEH breakpoint is permanently disarmed via
      `DisarmProtectedFfxConfigureVehBreakpoint("present-callback bridge established")`.

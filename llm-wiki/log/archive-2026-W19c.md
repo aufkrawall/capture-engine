@@ -19,7 +19,7 @@
   4. **CallOriginalPresent forced-bypass / SL-fast-path**: Steam overlay invoke at lines ~3036, ~3071 → crash.
   5. **CallOriginalPresent1 forced-bypass**: Line ~3140 → crash.
 - **Root cause**: SL's internal state is NOT re-entrant safe. When `slGetPluginFunction`/`slGetFeatureFunction` is called from within SL's own execution (DllMain, internal SL processing), it returns `kSlResultOk` with NULL function pointers. Steam's overlay hook internally calls these SL functions (to check if SL is active, get function pointers, etc.), and crashes when it gets NULL. This is a fundamental constraint: Steam overlay MUST NOT be invoked from any code running within SL's call chain.
-- **Fix** (`hook/common/dxgi_shared.cpp`):
+- **Fix** (`hook/present/dxgi_shared.cpp`):
   1. **Reverted ALL 5 g_externalOverlayPresentHook call sites** to use the bypass trampoline unconditionally (disk bytes, no hooks, no Steam overlay invoke):
      - Startup bypass block (DetourPresent, line ~1652)
      - Confirmed-standalone normal-route bypass (line ~1227)
@@ -28,9 +28,9 @@
      - CallOriginalPresent1 forced-bypass (line ~3140)
   2. **Why bypass trampoline is safe**: It reads the original dxgi!Present bytes from disk, copies them to executable memory, and calls them. This JMP executes PAST any inline E9 JMP hooks (both SL's and Steam's), calling the real dxgi!Present implementation directly. No SL code, no Steam overlay hook code, no re-entrancy.
   3. **Why ALL oPresent/synthetic paths are unsafe**: `oPresent` points to dxgi!Present which has SL's E9 JMP. Calling through `oPresent` enters SL's code → SL processes internally → SL's own trampoline includes Steam's E9 JMP → Steam → re-entrant slGetFeatureFunction → NULL → crash. The synthetic re-entrant path also uses `oPresent` or `g_externalOverlayPresentHook`, both of which lead to Steam → crash.
-- **Defense-in-depth: SlNullFunctionStub** (`hook/apis/streamline_hook.cpp`): In `Hooked_slGetFeatureFunction`, when the original function returns `kSlResultOk` with a NULL function pointer, substitute a no-op stub (`SlNullFunctionStub`) and return `kSlResultOk` (instead of returning an error code). This provides defense-in-depth: even if a caller ignores return-error checks and calls the function pointer directly, it calls a harmless stub that returns immediately rather than crashing through NULL.
+- **Defense-in-depth: SlNullFunctionStub** (`hook/streamline/streamline_hook.cpp`): In `Hooked_slGetFeatureFunction`, when the original function returns `kSlResultOk` with a NULL function pointer, substitute a no-op stub (`SlNullFunctionStub`) and return `kSlResultOk` (instead of returning an error code). This provides defense-in-depth: even if a caller ignores return-error checks and calls the function pointer directly, it calls a harmless stub that returns immediately rather than crashing through NULL.
 - **Steam overlay deferred**: Steam overlay rendering through the bypass path produces no Steam overlay on screen during SL FG. This is a known limitation that needs a future safe-path mechanism (background thread, timer, or non-SL caller context). The immediate priority is crash-free behavior.
-- **Source anchors**: `hook/common/dxgi_shared.cpp:1227` (confirmed-standalone bypass), `:1283` (synthetic re-entrant bypass), `:1652` (startup bypass), `:3036/:3071` (CallOriginalPresent), `:3140` (CallOriginalPresent1), `hook/apis/streamline_hook.cpp:2018` (SlNullFunctionStub).
+- **Source anchors**: `hook/present/dxgi_shared.cpp:1227` (confirmed-standalone bypass), `:1283` (synthetic re-entrant bypass), `:1652` (startup bypass), `:3036/:3071` (CallOriginalPresent), `:3140` (CallOriginalPresent1), `hook/streamline/streamline_hook.cpp:2018` (SlNullFunctionStub).
 - **Tests**: All 676 unit tests pass. Build 0.1.2869.
 
 ### 2026-05-06 — Steam overlay invisible in ALL vtable-hook paths: startup bypass and synthetic re-entrant need explicit Steam invoke too (build 0.1.2866)
@@ -52,7 +52,7 @@
   3. **Confirmed standalone normal route (line 1227)**: Same restrictive `steamOverlaySafeConfirmed` guard.
   The early paths caught ALL frames because `callerFromStreamlineModule` remained true for ALL Present calls
   when SL's interposer wraps the game's Present chain.
-- **Fix** (`hook/common/dxgi_shared.cpp`, 3 locations):
+- **Fix** (`hook/present/dxgi_shared.cpp`, 3 locations):
   1. **Startup bypass (line 1669)**: Added Steam overlay invocation before the bypass trampoline,
      guarded by `!postSLConfirmedButStartupSettling` (prevents DllMain-phase RIP=0 crashes).
      Steam's overlay hook presents the frame through Steam's own trampoline, so no separate
@@ -102,8 +102,8 @@
   going through SL's FG processing. SL misses one frame of FG interpolation but recovers
   on the next game-thread Present. The NULL function pointer guard (Fix 1) prevents the
   crash that previously occurred.
-- **Source anchors**: `hook/apis/streamline_hook.cpp:2018` (NULL function guard),
-  `hook/common/dxgi_shared.cpp:2950` (Steam overlay invocation).
+- **Source anchors**: `hook/streamline/streamline_hook.cpp:2018` (NULL function guard),
+  `hook/present/dxgi_shared.cpp:2950` (Steam overlay invocation).
 - **Tests**: All 676 unit tests pass.
 
 ### 2026-05-05 — BioShock forced-AF crash and slowdown: shader-aware AF, draw-time reconciliation, and D3D11 draw slot fix (build 0.1.2854)
@@ -136,10 +136,10 @@
      frame and is a plausible savegame-load crash trigger once gameplay hits compute
      dispatch.
 - **Fix**:
-  - `hook/common/sampler_override_utils.h` now parses D3D11 shader disassembly for
+  - `hook/overrides/sampler_override_utils.h` now parses D3D11 shader disassembly for
     sampler-to-texture sample pairs and records whether each sampler is used by plain
     implicit `sample` only versus explicit/non-implicit sample opcodes.
-  - `hook/apis/dx11_hook.cpp` and the D3D11 wrapper path now track active pixel shader
+  - `hook/d3d11/dx11_hook.cpp` and the D3D11 wrapper path now track active pixel shader
     metadata, require pixel-stage implicit sample-only usage, require every sampled SRV
     to pass the existing material texture classifier, and skip explicit sample opcodes
     with new diagnostics.
@@ -172,7 +172,7 @@
 
 - **Problem**: After builds 0.1.2824-0.1.2836 added explicit Steam overlay invocation with caller-module guards, the log showed the synthetic-reentrant path was entered continuously (#1-#3500+) but NO "Invoking Steam overlay" messages and only 5 "Skipping" (DllMain phase) messages. Steam overlay was still invisible during SL FG.
 
-- **Root cause chain** (`hook/common/dxgi_shared.cpp`):
+- **Root cause chain** (`hook/present/dxgi_shared.cpp`):
   1. `oPresentTrampoline` is NULL when using vtable hooking (external E9 JMP detected at InstallPresentInlineHooks — line 2617+). The inline hook trampoline is never created in this path; only `oPresentBypass` is.
   2. `DetectSLPresentHook()` at line 790 has guard `if (!oPresent || !oPresentTrampoline) return;` — always returns early because `oPresentTrampoline` is NULL.
   3. Consequently, `s_slRoutingActive` is NEVER set to true (line 848).
@@ -182,7 +182,7 @@
      - Confirmed standalone bypass (line 1198) never fires → Steam overlay check at line 1210 never reached.
   5. **Net result**: Steam overlay is NEVER invoked from any code path, in any thread.
 
-- **Fix** (`hook/common/dxgi_shared.cpp`, 3 changes):
+- **Fix** (`hook/present/dxgi_shared.cpp`, 3 changes):
   1. **`DetectSLPresentHook` line 790**: Changed from `if (!oPresent || !oPresentTrampoline)` to `if (!oPresent) return;` with `oPresentTrampoline && oPresent == oPresentTrampoline` guard only for the trampoline-equality check. This allows JMP detection when `oPresentTrampoline` is NULL (vtable hook path).
   2. **Trampoline bytes log (line 821)**: Guarded with `if (oPresentTrampoline)` to prevent null pointer access when trampoline is NULL. Added `else` log for vtable-hook path.
   3. **Activation log (line 855)**: Changed `oPresentTrampoline` reference to `oPresentTrampoline ? oPresentTrampoline : oPresentBypass` for the routing info log.

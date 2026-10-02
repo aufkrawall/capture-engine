@@ -2,7 +2,7 @@
 #include <array>
 #include <string>
 
-#include "../hook/wrappers/hook_system.h"
+#include "hook/hooking/hook_system.h"
 
 namespace {
 

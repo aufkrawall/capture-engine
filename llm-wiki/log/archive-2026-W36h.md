@@ -58,7 +58,7 @@ does not reach `ProcessFrame` at all. Consequences, all silent:
   inside FidelityFX's own queue, so it was invisible from both terms.
 
 Fix: `DX12_ObserveFFXProxyApplicationSourcePresent` in the FFX proxy-present detour
-(`hook/apis/dx12_hook_ffx_proxy_present.cpp`), outermost entry only, before any routing
+(`hook/d3d12/dx12_hook_ffx_proxy_present.cpp`), outermost entry only, before any routing
 decision - the measurement must not depend on which overlay-composition route is live.
 The proxy Present *is* the application's Present: game thread, once per rendered frame.
 A same-frame duplicate from a synchronous passthrough is rejected by the existing 3 ms

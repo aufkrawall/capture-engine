@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy.h"
-#include "../hook/common/swapchain_liveness.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/present/swapchain_liveness.h"
 #include "source_fragment_reader.h"
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ TEST(SwapChainProbeLifetimeTest, DestructorTakesTheReferenceBeforeReleasingAndDr
 }
 
 TEST(SwapChainProbeLifetimeTest, PinDiagnosticsNeverDereferenceRawTrackedPointers) {
-    const std::string tracking = ReadProjectSource("hook/apis/dx12_hook_swapchain_tracking.cpp");
+    const std::string tracking = ReadProjectSource("hook/d3d12/dx12_hook_swapchain_tracking.cpp");
 
     const size_t diagnostics = tracking.find("void LogAccessDeniedSwapchainPinDiagnostics(");
     ASSERT_NE(diagnostics, std::string::npos);
@@ -201,7 +201,7 @@ TEST(SwapChainProbeLifetimeTest, PromoteInterfacesDoesNotDuplicateReferencesWhen
 }
 
 TEST(SwapChainProbeLifetimeTest, GlobalSwapchainDetoursConsumeFactoryReferenceAfterWrapping) {
-    const std::string create = ReadProjectSource("hook/apis/dx12_hook_swapchain_create.cpp");
+    const std::string create = ReadProjectSource("hook/d3d12/dx12_hook_swapchain_create.cpp");
 
     const size_t createGlobal = create.find("HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(");
     ASSERT_NE(createGlobal, std::string::npos);

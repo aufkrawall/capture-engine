@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../mediaengine/audio_time_utils.h"
+#include "mediaengine/audio/audio_time_utils.h"
 
 TEST(AudioTimeUtilsTest, HundredNanosecondsToMillisecondsMatchesWasapiUnits) {
     EXPECT_EQ(ce::audio::HundredNanosecondsToMilliseconds(0), 0u);

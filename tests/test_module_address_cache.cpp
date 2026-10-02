@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/overlay_compat.h"
+#include "hook/overlay/overlay_compat.h"
 #include "source_fragment_reader.h"
 
 // GTA session 20260925_225006: CE classified Present/ECL callers with GetModuleHandleExA(FROM_ADDRESS) and
@@ -148,7 +148,7 @@ std::string ReadSource(const char* relativePath) {
 }
 
 TEST(ModuleAddressCacheSource, UnloadNotificationInvalidatesBeforeAnyEarlyReturnAndEnablesTheCache) {
-    const std::string detect = ReadSource("hook/main_overlay_detect.cpp");
+    const std::string detect = ReadSource("hook/runtime/main_overlay_detect.cpp");
     ASSERT_FALSE(detect.empty());
     const size_t callback = detect.find("OverlayDllNotificationCallback(ULONG reason");
     const size_t invalidate = detect.find("module_address_cache::NoteModuleUnloaded()", callback);
@@ -166,9 +166,9 @@ TEST(ModuleAddressCacheSource, UnloadNotificationInvalidatesBeforeAnyEarlyReturn
 }
 
 TEST(ModuleAddressCacheSource, HotPathHelpersNoLongerAskTheLoaderPerCall) {
-    const std::string helpers = ReadSource("hook/apis/dx12_hook_helpers.cpp");
-    const std::string steam = ReadSource("hook/common/dxgi_shared_steam.cpp");
-    const std::string table = ReadSource("hook/common/overlay_compat_detail/module_table.h");
+    const std::string helpers = ReadSource("hook/d3d12/dx12_hook_helpers.cpp");
+    const std::string steam = ReadSource("hook/present/dxgi_shared_steam.cpp");
+    const std::string table = ReadSource("hook/overlay/overlay_compat_detail/module_table.h");
     ASSERT_FALSE(helpers.empty());
     ASSERT_FALSE(steam.empty());
     ASSERT_FALSE(table.empty());

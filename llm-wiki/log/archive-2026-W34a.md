@@ -50,7 +50,7 @@ overlay. Session `20260818_231619`. Second root cause, fixed in 0.1.6162.
   while CE was not running therefore never got `VK_LAYER_CE_overlay.dll` into its chain, and nothing
   the injector does afterwards can add one - CE's Vulkan present/overlay path lives in that layer
   DLL, not in the hook. Vulkan late injection was structurally impossible, not merely broken.
-- **Fix.** `captureengine/main_vulkan_residency.h` (split out of `main_internal.h`, which hit the
+- **Fix.** `captureengine/app/main_vulkan_residency.h` (split out of `main_internal.h`, which hit the
   800-line ceiling) makes the registration resident: register + self-heal at startup, never
   unregister. `RepairOwnedRegistrations` now prunes only superseded CE entries and retains the live
   ones, removing the old delete-then-rewrite window during which a starting title would miss the
@@ -148,7 +148,7 @@ Two defects on the same path, both in Gothic 1 Remake under DLSS MSFG 4x. Fixed 
   than releases** resources a live GPU may still be reading. The producer reserves the worker's single slot
   *before* recording any GPU work, so a submitted copy can never be stranded by a busy queue - the only other exits
   would be the blocking wait we just removed or a use-after-free. Worker queue and task moved to
-  `hook/common/screenshot_worker.{h,cpp}`; the Vulkan layer links an explicit source list and needed it added.
+  `hook/capture/screenshot_worker.{h,cpp}`; the Vulkan layer links an explicit source list and needed it added.
 - **Then the overlay showed up anyway** (session `20260818_205615`, build 0.1.6148: `Saved (hook)`, no freeze, no
   GDI fallback - but the overlay was in the picture). The overlay-free capture sat at the top of
   `DX12_ProcessFrameExternal`, which is early enough only when `ProcessFrame` draws the overlay. Under FG it does

@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "../common/elevation_protocol.h"
-#include "../common/startup_policy.h"
-#include "../common/elevation_windows.h"
+#include "common/ipc/elevation_protocol.h"
+#include "common/setup/startup_policy.h"
+#include "common/ipc/elevation_windows.h"
 #include <shellapi.h>
 #include <thread>
 #include <atomic>
-#include "../elevationservice/service_internal.h"
-#include "../common/elevation_lifetime.h"
+#include "elevationservice/service_internal.h"
+#include "common/ipc/elevation_lifetime.h"
 
 using namespace ce::elevation;
 

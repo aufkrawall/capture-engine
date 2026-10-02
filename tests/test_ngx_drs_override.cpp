@@ -5,9 +5,9 @@
 #include <cstring>
 #include <memory>
 
-#include "../hook/common/ngx_drs_override.h"
-#include "../hook/common/reflex_defs.h"
-#include "../hook/wrappers/iat_hook.h"
+#include "hook/ngx/ngx_drs_override.h"
+#include "hook/pacing/reflex_defs.h"
+#include "hook/hooking/iat_hook.h"
 
 namespace {
 

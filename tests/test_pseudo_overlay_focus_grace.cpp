@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/pseudo_overlay_focus_grace.h"
+#include "common/overlay/pseudo_overlay_focus_grace.h"
 
 namespace pofg = ce::pseudo_overlay;
 

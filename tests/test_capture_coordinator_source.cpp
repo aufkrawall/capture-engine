@@ -10,26 +10,28 @@
 namespace {
 
 std::string ReadCoordinatorSource() {
-    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media_main.cpp");
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media" / "media_main.cpp");
 }
 
 std::string ReadMediaProcessStartSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                              "media" /
                                               "media_main_start.cpp");
 }
 
 std::string ReadEncoderLoopStartupSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                              "media" /
                                               "media_main_encoder_06_loop_startup.cpp");
 }
 
 std::string ReadWgcCaptureSource() {
-    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp");
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media" / "wgc_capture.cpp");
 }
 
 std::string ReadDxgiDuplicationSource() {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "captureengine" / "dxgi_dup_capture.cpp";
+        std::filesystem::current_path() / "captureengine" / "media" / "dxgi_dup_capture.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();
@@ -37,12 +39,12 @@ std::string ReadDxgiDuplicationSource() {
 }
 
 std::string ReadVideoEncoderSource() {
-    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp");
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder.cpp");
 }
 
 std::string ReadPrivacyRuntimeSource() {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "captureengine" / "screen_grab_privacy_runtime.cpp";
+        std::filesystem::current_path() / "captureengine" / "media" / "screen_grab_privacy_runtime.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();
@@ -50,7 +52,7 @@ std::string ReadPrivacyRuntimeSource() {
 }
 
 std::string ReadPrivacyPolicySource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "common" / "screen_grab_privacy.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "common" / "capture" / "screen_grab_privacy.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();

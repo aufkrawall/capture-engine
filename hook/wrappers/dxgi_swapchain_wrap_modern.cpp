@@ -1,6 +1,6 @@
 #include "dxgi_swapchain_wrap_internal.h"
 
-#include "../common/swapchain_flag_policy.h"
+#include "hook/present/swapchain_flag_policy.h"
 
 namespace {
 

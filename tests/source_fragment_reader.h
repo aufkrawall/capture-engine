@@ -26,6 +26,18 @@ inline std::string ReadFile(const std::filesystem::path& path) {
     return contents;
 }
 
+// Product sources live in <module>/<subsystem>/; basenames are unique per module, so a test can
+// name a unit without hard-coding the subsystem directory it currently sits in.
+inline std::filesystem::path FindSource(const std::filesystem::path& module, const std::string& fileName) {
+    const std::filesystem::path root = std::filesystem::current_path() / module;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
+        if (it->is_regular_file() && it->path().filename() == fileName)
+            return it->path();
+    }
+    return root / fileName;
+}
+
 inline std::string ReadLogicalSource(const std::filesystem::path& path) {
     const std::string wrapper = ReadFile(path);
     if (wrapper.empty())

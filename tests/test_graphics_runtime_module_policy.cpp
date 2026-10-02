@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-#include "../hook/common/graphics_runtime_module_policy.h"
+#include "hook/runtime/graphics_runtime_module_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -269,7 +269,7 @@ TEST(GraphicsRuntimeModulePolicy, StreamlinePluginSetIsPlacedOnlyForAProcessThat
 // would leave the driver-managed plugin loads (which is how sl.common/sl.reflex arrive) unguarded.
 TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplicateInstances) {
     namespace fs = std::filesystem;
-    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     ASSERT_FALSE(redirect.empty());
 
     EXPECT_NE(redirect.find("WouldRedirectDuplicateLoadedModule("), std::string::npos);
@@ -300,9 +300,9 @@ TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplic
 // copies under names a foreign-core runtime then resolves by name.
 TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheCore) {
     namespace fs = std::filesystem;
-    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     const std::string detect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_overlay_detect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp");
     ASSERT_FALSE(redirect.empty());
     ASSERT_FALSE(detect.empty());
 

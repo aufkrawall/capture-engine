@@ -10,7 +10,7 @@
 #include <sstream>
 #include <string>
 
-#include "../hook/apis/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_bridge_policy.h"
 
 // Session 20261001_034038: with streamline_upgrade=true The Witcher 3 configured the D3D12
 // debug layer (ID3D12Debug -> ID3D12Debug5::SetEnableAutoName) after releasing its probe
@@ -87,7 +87,7 @@ TEST(StreamlineBridgeDebugLayerTest, LeavesOtherDebugInterfacesAlone) {
 
 TEST(StreamlineBridgeDebugLayerTest, BridgedEntryPointRefusesBeforeReachingD3D12) {
     // A refusal after forwarding would be too late: the reset may happen inside the call.
-    const std::string source = ReadProjectSource("hook/apis/streamline_bridge.cpp");
+    const std::string source = ReadProjectSource("hook/streamline/streamline_bridge.cpp");
     ASSERT_FALSE(source.empty());
     const size_t entry = source.find("HRESULT WINAPI Bridged_D3D12GetDebugInterface(");
     const size_t refuse = source.find("ShouldRefuseDebugLayerConfiguration(requested, HasRetainedDevice())", entry);

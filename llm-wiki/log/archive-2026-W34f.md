@@ -9,7 +9,7 @@ Entries are newest-first. Rotated out of `recent.md`.
 > are the chronology of how it was arrived at, including the two inferences that turned out wrong.
 
 With the measured layouts in hand the generation bridge stops refusing and starts translating.
-`hook/apis/streamline_bridge_translate.{h,cpp}` turns each of the eight 1.x entry points into its
+`hook/streamline/streamline_bridge_translate.{h,cpp}` turns each of the eight 1.x entry points into its
 2.x equivalent: `slInit` reports success because CE already brought the runtime up,
 `slIsFeatureSupported` maps the feature and answers 1.x's adapter bitmask, `slSetTag` buffers tags
 until `slEvaluateFeature` supplies the command buffer 1.x never carries, `slSetConstants` copies

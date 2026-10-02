@@ -1,7 +1,7 @@
 """Regression tests for the scope-aware clang-tidy baseline ratchet in build.py.
 
 A `--tests-only` build regenerates `compile_commands.json` with only the test and
-hook/common translation units. A lint run against that partial database sees far
+hook-core translation units. A lint run against that partial database sees far
 fewer warnings for reasons that have nothing to do with the code, and before the
 scope record existed it folded those lower counts into the baseline; the next full
 run then failed with ~21 phantom "regressions" and needed a manual git checkout.
@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 import build
 
-PRODUCT_SOURCES = ("captureengine/capture.cpp", "mediaengine/encoder.cpp", "common/config.cpp")
-TEST_SOURCES = ("tests/test_config.cpp", "hook/common/lifecycle.cpp")
+PRODUCT_SOURCES = ("captureengine/capture.cpp", "mediaengine/encoder.cpp", "common/config/config.cpp")
+TEST_SOURCES = ("tests/test_config.cpp", "hook/runtime/lifecycle.cpp")
 
 
 class ClangTidyBaselineScopeTest(unittest.TestCase):
@@ -283,7 +283,7 @@ class CommittedClangTidyBaselineTest(unittest.TestCase):
             self.assertFalse(unit.startswith(("/", "..")), unit)
 
         # Same directories run_lint feeds to clang-format; a tests-only database
-        # covers only tests/ and hook/common, which is how the baseline got
+        # covers only tests/ and the hook core, which is how the baseline got
         # corrupted before the scope record existed.
         for directory in ("common", "hook", "captureengine", "mediaengine", "testapp", "tests"):
             self.assertTrue(

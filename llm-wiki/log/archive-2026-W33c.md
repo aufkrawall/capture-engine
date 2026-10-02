@@ -33,8 +33,8 @@
   `ResolvesDLSSFrameGenerationMultiplierFromParameter` /
   `CreateFeatureFGBranchesResolveTheMultiplierParameter` in
   `tests/test_ngx_feature_lifecycle.cpp`.
-- Source anchors: `hook/apis/streamline_hook_install.cpp`,
-  `hook/apis/streamline_hook_resolve.cpp`, `hook/apis/nvngx_hook_feature.cpp`.
+- Source anchors: `hook/streamline/streamline_hook_install.cpp`,
+  `hook/streamline/streamline_hook_resolve.cpp`, `hook/ngx/nvngx_hook_feature.cpp`.
 
 ### 2026-08-11 - Late-inject DLSS FG resume crash: route overlay to the swapchain-owning queue (20260811_221202)
 
@@ -64,9 +64,9 @@
 - Regression tests: `DX12SwapchainOverlayRoutingTreatsPlannerDLSSLikeStreamlineLatch`
   in `tests/test_dxgi_shared_part3.cpp`; the 0.1.5921 dedicated-queue tests
   (`tests/test_dxgi_shared_part14.cpp`) remain as defense-in-depth.
-- Source anchors: `hook/common/dx12_overlay_policy/ffx_routing.h`,
-  `hook/apis/dx12_hook_fg_heuristics.cpp`, `hook/apis/dx12_hook_process_session_phase2.cpp`,
-  `hook/apis/dx12_hook_overlay.cpp`.
+- Source anchors: `hook/d3d12/dx12_overlay_policy/ffx_routing.h`,
+  `hook/d3d12/dx12_hook_fg_heuristics.cpp`, `hook/d3d12/dx12_hook_process_session_phase2.cpp`,
+  `hook/d3d12/dx12_hook_overlay.cpp`.
 
 ### 2026-08-11 - Fix late-inject DLSS FG resume device removal (Talos Alt+Tab crash 20260811_214252)
 
@@ -101,10 +101,10 @@
   (`DedicatedOverlayQueueDisabledForNvidiaDLSSFrameGeneration`,
   `DedicatedOverlayQueueSubmitRequiresOffscreenList`,
   `DedicatedOverlayQueueSubmitGuardsBackbufferLists`).
-- Source anchors: `hook/apis/dx12_hook_overlay_dedicated_queue.cpp`,
-  `hook/apis/dx12_hook_process_session_draw_tail.cpp`,
-  `hook/apis/dx12_hook_overlay_render.cpp`,
-  `hook/common/dx12_overlay_policy/fg_metrics_and_transitions.h`.
+- Source anchors: `hook/d3d12/dx12_hook_overlay_dedicated_queue.cpp`,
+  `hook/d3d12/dx12_hook_process_session_draw_tail.cpp`,
+  `hook/d3d12/dx12_hook_overlay_render.cpp`,
+  `hook/d3d12/dx12_overlay_policy/fg_metrics_and_transitions.h`.
 - **SUPERSEDED as the crash fix by 0.1.5922** (see the next entry): the
   dedicated-queue guard was necessary but not sufficient - session
   `20260811_221202` still crashed via the game-queue submit on the DLSS-G

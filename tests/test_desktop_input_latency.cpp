@@ -6,8 +6,8 @@
 #include <iterator>
 #include <string>
 
-#include "../common/crash_handler.h"
-#include "../common/keyboard_hook_policy.h"
+#include "common/crash/crash_handler.h"
+#include "common/overlay/keyboard_hook_policy.h"
 #include "source_fragment_reader.h"
 
 // CaptureEngine must never make keyboard input of other applications wait.
@@ -101,7 +101,7 @@ TEST(CrashPreDumpCallbackTest, UnregisteringLeavesAnotherComponentsCallbackInPla
 
 // The dump worker suspends the process; the release has to come first.
 TEST(CrashPreDumpCallbackTest, FatalPathReleasesBeforeTheDumpWorkerStarts) {
-    const std::string writer = ReadSource("common/crash_dump_writer.cpp");
+    const std::string writer = ReadSource("common/crash/crash_dump_writer.cpp");
     ASSERT_FALSE(writer.empty());
     const size_t release = writer.find("NotifyCrashPreDump();");
     const size_t worker = writer.find("CreateThread(NULL, 0, DumpWorker");
@@ -111,7 +111,7 @@ TEST(CrashPreDumpCallbackTest, FatalPathReleasesBeforeTheDumpWorkerStarts) {
 }
 
 TEST(KeyboardHookSourceTest, HookThreadNeverLogsAndOutranksNormalThreads) {
-    const std::string hook = ReadSource("captureengine/hotkey_input_hook.cpp");
+    const std::string hook = ReadSource("captureengine/app/hotkey_input_hook.cpp");
     ASSERT_FALSE(hook.empty());
 
     // The per-event path and the re-arm path run while the hook is installed.
@@ -135,7 +135,7 @@ TEST(KeyboardHookSourceTest, HookThreadNeverLogsAndOutranksNormalThreads) {
     EXPECT_NE(hook.find("UnregisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash)"), std::string::npos);
 
     // The controller reports what the hook thread counted.
-    const std::string controller = ReadSource("captureengine/main.cpp");
+    const std::string controller = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(controller.empty());
     EXPECT_NE(controller.find("ReportHotkeyInputHookDiagnostics();"), std::string::npos);
     EXPECT_NE(controller.find("[Hotkey] Keyboard-hook delivery"), std::string::npos);

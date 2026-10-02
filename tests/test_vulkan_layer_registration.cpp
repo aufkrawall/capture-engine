@@ -8,9 +8,9 @@
 
 #include "source_fragment_reader.h"
 
-#include "../common/build_identity.h"
-#include "../common/vulkan_layer_registration.h"
-#include "../hook/vulkan_layer/vulkan_presentation_color.h"
+#include "common/platform/build_identity.h"
+#include "common/graphics/vulkan_layer_registration.h"
+#include "hook/vulkan_layer/vulkan_presentation_color.h"
 
 namespace {
 
@@ -255,6 +255,7 @@ TEST(VulkanLayerRegistrationTest, PlanRequiresTheGateBesideTheFullLayer) {
 
 TEST(VulkanLayerRegistrationSourceTest, ManifestNamesTheGateAndBothImagesAreStaged) {
     const std::string text = ce::test_source::ReadFile(std::filesystem::current_path() / "common" /
+                                                       "graphics" /
                                                        "vulkan_layer_registration.cpp");
     ASSERT_FALSE(text.empty());
     const size_t manifest = text.find("static bool WriteStagedManifest(const LayerManifest& manifest) {");
@@ -279,7 +280,7 @@ TEST(VulkanLayerRegistrationSourceTest, ManifestNamesTheGateAndBothImagesAreStag
 }
 
 TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritableScopes) {
-    const std::filesystem::path source = std::filesystem::current_path() / "common" / "vulkan_layer_registration.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "common" / "graphics" / "vulkan_layer_registration.cpp";
     std::ifstream input(source, std::ios::binary);
     ASSERT_TRUE(input.is_open()) << source.string();
     const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
@@ -317,7 +318,7 @@ TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritabl
 // failure for Strange Brigade Vulkan. Registration must outlive the controller.
 TEST(VulkanLayerRegistrationSourceTest, ControllerKeepsLayerRegistrationResidentAcrossShutdown) {
     const std::filesystem::path residencySource =
-        std::filesystem::current_path() / "captureengine" / "main_vulkan_residency.h";
+        std::filesystem::current_path() / "captureengine" / "app" / "main_vulkan_residency.h";
     const std::string residency = ce::test_source::ReadFile(residencySource);
     ASSERT_FALSE(residency.empty()) << residencySource.string();
 
@@ -334,7 +335,7 @@ TEST(VulkanLayerRegistrationSourceTest, ControllerKeepsLayerRegistrationResident
     EXPECT_EQ(residency.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
     EXPECT_EQ(residency.find("~VulkanLayerResidency"), std::string::npos);
 
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "app" / "main.cpp";
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty()) << source.string();
 

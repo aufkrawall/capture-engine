@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "process_loopback_protocol.h"
+#include "mediaengine/audio/process_loopback_protocol.h"
 
 #include <windows.h>
 

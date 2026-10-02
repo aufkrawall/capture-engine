@@ -262,6 +262,76 @@ STRICT_FP_MEDIA_SOURCES = {
 }
 STRICT_FP_SCREENSHOT_SOURCES = {"screenshot_encoding.cpp", "screenshot_hdr_encoding.cpp"}
 CLANG_STRICT_FP_FLAGS = ["-ffp-model=strict"]
+
+# --- Source tree layout ---
+# Product modules are <module>/<subsystem>/*.cpp; llm-wiki/repo-map.md describes the subsystems.
+# Includes are written repo-root-relative ("hook/overlay/custom_overlay.h"), so every compile
+# gets -I<PROJECT_ROOT> instead of one include directory per source directory.
+
+
+def module_sources(*parts: str) -> List[str]:
+    """Every .cpp below PROJECT_ROOT/<parts>, recursively, sorted."""
+    return sorted(glob.glob(os.path.join(PROJECT_ROOT, *parts, "**", "*.cpp"), recursive=True))
+
+
+def find_module_source(module: str, name: str) -> str:
+    """The unique source named `name` below `module` (basenames are unique per module)."""
+    matches = [path for path in module_sources(module) if os.path.basename(path) == name]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected exactly one {module}/**/{name}, found {matches}")
+    return matches[0]
+
+
+# common/platform/scanner.cpp (byte-pattern scanner) is compiled with common/ but links only into
+# the hook DLL; every other consumer links the rest of common/.
+HOOK_ONLY_COMMON_SOURCES = ("scanner.cpp",)
+
+
+def common_sources() -> List[str]:
+    return [path for path in module_sources("common") if os.path.basename(path) not in HOOK_ONLY_COMMON_SOURCES]
+
+
+# hook/vulkan_layer/ builds its own DLL (build_vulkan_layer.py); everything else under hook/ links
+# into capture_hook_<arch>.dll.
+HOOK_DLL_SEPARATE_DIRS = ("vulkan_layer", "shaders")
+
+
+def hook_dll_sources() -> List[str]:
+    separate = tuple(os.path.join(PROJECT_ROOT, "hook", d) + os.sep for d in HOOK_DLL_SEPARATE_DIRS)
+    return [path for path in module_sources("hook") if not path.startswith(separate)]
+
+
+# The API-independent hook core the unit-test binary links: whole subsystem directories plus the
+# core units that live beside API-specific code. Per-API hook implementations are not linked.
+HOOK_TEST_LINKED_DIRS = ("fg", "metrics", "overlay", "overrides", "pacing", "present", "sharpen")
+HOOK_TEST_LINKED_SOURCES = (
+    "hook/capture/screenshot_hook.cpp",
+    "hook/capture/screenshot_worker.cpp",
+    "hook/d3d12/dx12_dred.cpp",
+    "hook/d3d12/dx12_fg_transition_model.cpp",
+    "hook/d3d12/dx12_sampler_policy.cpp",
+    "hook/d3d9/d3d9_capture_policy.cpp",
+    "hook/ddraw/custom_overlay_d3d7.cpp",
+    "hook/hooking/module_pin.cpp",
+    "hook/ngx/dlss_indicator_spoof.cpp",
+    "hook/ngx/ngx_drs_override.cpp",
+    "hook/ngx/ngx_ota_runtime.cpp",
+    "hook/ngx/nv_lod_spread_override.cpp",
+    "hook/runtime/freeze_watchdog.cpp",
+    "hook/runtime/freeze_watchdog_dump.cpp",
+    "hook/runtime/hook_common.cpp",
+    "hook/runtime/ipc_client.cpp",
+    "hook/runtime/process_thread_walk.cpp",
+)
+
+
+def hook_test_linked_sources() -> List[str]:
+    sources: List[str] = []
+    for d in HOOK_TEST_LINKED_DIRS:
+        sources += module_sources("hook", d)
+    sources += [os.path.join(PROJECT_ROOT, *rel.split("/")) for rel in HOOK_TEST_LINKED_SOURCES]
+    return sorted(sources)
+
 GCC_STRICT_FP_FLAGS = ["-fno-fast-math", "-ffp-contract=off", "-frounding-math", "-fsignaling-nans"]
 
 # --- Configuration ---
@@ -499,7 +569,7 @@ def make_cpp_cflags(
     flags += COMMON_WINDOWS_COMPILE_FLAGS
     if enable_cfg and (compiler_exe is None or compiler_supports_windows_cfg(compiler_exe)):
         flags.append(CFG_COMPILE_FLAG)
-    flags.append("-I" + os.path.join(PROJECT_ROOT, "common"))
+    flags.append("-I" + PROJECT_ROOT)
     if production_build:
         flags.append("-DCE_PRODUCTION_BUILD=1")
     if extra_flags:

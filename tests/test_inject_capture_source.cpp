@@ -139,7 +139,7 @@ TEST(InjectCaptureSourceTest, VulkanCaptureUsesTheFullSharedTextureLeaseSpace) {
 }
 
 TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeAndFenceCompletion) {
-    const std::string source = ReadSource("hook/apis/opengl_hook.cpp");
+    const std::string source = ReadSource("hook/opengl/opengl_hook.cpp");
     ASSERT_FALSE(source.empty());
     // The internal header now carries declarations only; anchor on the
     // out-of-line definitions in the opengl_hook_capture_impl units.
@@ -165,7 +165,7 @@ TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeA
 }
 
 TEST(InjectCaptureSourceTest, D3D11CleanupOwnsImmediateContextAndSerializesCapture) {
-    const std::string source = ReadSource("hook/apis/dx11_hook.cpp");
+    const std::string source = ReadSource("hook/d3d11/dx11_hook.cpp");
     ASSERT_FALSE(source.empty());
     // The internal header now carries declarations only; anchor on the
     // out-of-line definitions in the dx11_hook_capture_impl units.
@@ -220,20 +220,20 @@ TEST(InjectCaptureSourceTest, SharedCaptureManagerOutlivesStaticCaptureTargets) 
 }
 
 TEST(InjectCaptureSourceTest, LegacyInjectProducersDoNotOverwriteOutstandingSlots) {
-    for (const char* path : {"hook/apis/dx8_hook.cpp", "hook/apis/dx9_hook.cpp", "hook/apis/ddraw_hook.cpp"}) {
+    for (const char* path : {"hook/d3d8/dx8_hook.cpp", "hook/d3d9/dx9_hook.cpp", "hook/ddraw/ddraw_hook.cpp"}) {
         const std::string source = ReadSource(path);
         ASSERT_FALSE(source.empty()) << path;
         EXPECT_NE(source.find("FindAvailableCaptureTextureSlot"), std::string::npos) << path;
         EXPECT_NE(source.find("publishedFenceValue"), std::string::npos) << path;
     }
 
-    const std::string dx9 = ReadSource("hook/apis/dx9_hook.cpp");
+    const std::string dx9 = ReadSource("hook/d3d9/dx9_hook.cpp");
     EXPECT_NE(dx9.find("IsCaptureTextureSlotOutstanding(sharedMem, idx)"), std::string::npos);
     EXPECT_EQ(dx9.find("while (completionQuery->GetData"), std::string::npos);
 }
 
 TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesSharedHelperRing) {
-    const std::string source = ReadSource("hook/apis/dx9_hook.cpp");
+    const std::string source = ReadSource("hook/d3d9/dx9_hook.cpp");
     ASSERT_FALSE(source.empty());
 
     // The internal header carries prototypes; anchor on the out-of-line
@@ -270,10 +270,10 @@ TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesShared
 }
 
 TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutableLegacyState) {
-    const std::string dx10 = ReadSource("hook/apis/dx11_hook.cpp");
-    const std::string dx9 = ReadSource("hook/apis/dx9_hook.cpp");
-    const std::string dx9State = ReadSource("hook/apis/dx9_sampler_state.cpp");
-    const std::string legacyState = ReadSource("hook/apis/legacy_d3d_sampler_state.cpp");
+    const std::string dx10 = ReadSource("hook/d3d11/dx11_hook.cpp");
+    const std::string dx9 = ReadSource("hook/d3d9/dx9_hook.cpp");
+    const std::string dx9State = ReadSource("hook/d3d9/dx9_sampler_state.cpp");
+    const std::string legacyState = ReadSource("hook/ddraw/legacy_d3d_sampler_state.cpp");
     ASSERT_FALSE(dx10.empty());
     ASSERT_FALSE(dx9.empty());
     ASSERT_FALSE(dx9State.empty());
@@ -298,22 +298,22 @@ TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutab
     EXPECT_NE(legacyState.find("bootstrapSweepPending"), std::string::npos);
     EXPECT_EQ(legacyState.find("DrawPrimitive"), std::string::npos);
 
-    const std::string ddraw = ReadSource("hook/apis/ddraw_hook.cpp");
+    const std::string ddraw = ReadSource("hook/ddraw/ddraw_hook.cpp");
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_GETTEXTURESTAGESTATE 36"), std::string::npos);
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETTEXTURESTAGESTATE 37"), std::string::npos);
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETRENDERSTATE 20"), std::string::npos);
     EXPECT_NE(ddraw.find("InstallLegacyD3DDeviceHooks"), std::string::npos);
     EXPECT_NE(ddraw.find("D3D7_VTABLE_APPLYSTATEBLOCK 39"), std::string::npos);
 
-    const std::string dx8 = ReadSource("hook/apis/dx8_hook.cpp");
+    const std::string dx8 = ReadSource("hook/d3d8/dx8_hook.cpp");
     EXPECT_NE(dx8.find("D3D8_VTABLE_APPLYSTATEBLOCK 54"), std::string::npos);
     EXPECT_NE(dx8.find("D3D8SamplerVTableRecord"), std::string::npos);
     EXPECT_NE(dx8.find("ReconcileAfterExternalStateChange"), std::string::npos);
 }
 
 TEST(InjectCaptureSourceTest, OpenGLSamplerOverridesCoverParameterAllocationAndBindEvents) {
-    const std::string sampler = ReadSource("hook/apis/opengl_sampler_override.cpp");
-    const std::string storage = ReadSource("hook/apis/opengl_texture_storage_override.cpp");
+    const std::string sampler = ReadSource("hook/opengl/opengl_sampler_override.cpp");
+    const std::string storage = ReadSource("hook/opengl/opengl_texture_storage_override.cpp");
     ASSERT_FALSE(sampler.empty());
     ASSERT_FALSE(storage.empty());
 
@@ -337,7 +337,7 @@ TEST(InjectCaptureSourceTest, OpenGLSamplerOverridesCoverParameterAllocationAndB
 }
 
 TEST(InjectLifecycleSourceTest, HostShutdownUsesDormantHandshakeInsteadOfRemoteUnload) {
-    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    const std::string injection = ReadSource("captureengine/injection/injection_inject.cpp");
     ASSERT_FALSE(injection.empty());
     const size_t ejectAllBegin = injection.find("void InjectionManager::EjectAll()");
     const size_t ejectBegin = injection.find("void InjectionManager::Eject(DWORD pid)");
@@ -358,7 +358,7 @@ TEST(InjectLifecycleSourceTest, HostShutdownUsesDormantHandshakeInsteadOfRemoteU
 }
 
 TEST(InjectLifecycleSourceTest, ShutdownNeverDetachesWorkersThatRetainManagerStorage) {
-    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    const std::string injection = ReadSource("captureengine/injection/injection_inject.cpp");
     ASSERT_FALSE(injection.empty());
     const size_t waitBegin = injection.find("void InjectionManager::WaitForInjectionThreads");
     const size_t nextFunction = injection.find("bool InjectionManager::HasActiveInjections", waitBegin);
@@ -371,7 +371,7 @@ TEST(InjectLifecycleSourceTest, ShutdownNeverDetachesWorkersThatRetainManagerSto
 }
 
 TEST(InjectLifecycleSourceTest, DynamicDetachDoesNoLoaderLockCleanup) {
-    const std::string source = ReadSource("hook/main_dllmain.cpp");
+    const std::string source = ReadSource("hook/runtime/main_dllmain.cpp");
     ASSERT_FALSE(source.empty());
     const size_t detachBegin = source.find("DLL_PROCESS_DETACH");
     ASSERT_NE(detachBegin, std::string::npos);
@@ -389,7 +389,7 @@ TEST(InjectLifecycleSourceTest, ProcessExitLatchesTheRuntimeDormantBeforeTeardow
     // The loader hooks therefore kept resolving redirects while this module's
     // globals were being destroyed, and HookedLoadLibraryExW faulted in
     // GetRedirectedPath on the released g_pLocalConfig.
-    const std::string source = ReadSource("hook/main_dllmain.cpp");
+    const std::string source = ReadSource("hook/runtime/main_dllmain.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t atExit = source.find("std::atexit(");
@@ -414,7 +414,7 @@ TEST(InjectLifecycleSourceTest, LocalConfigOutlivesEveryHookEntryPoint) {
     // level, and hooks stay callable until the process dies. Owning it through a
     // destructible global left g_pLocalConfig dangling during teardown, so it now
     // lives in this module's own storage and is never destroyed.
-    const std::string source = ReadSource("hook/main.cpp");
+    const std::string source = ReadSource("hook/runtime/main.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("g_LocalConfigStorage"), std::string::npos);
@@ -438,11 +438,11 @@ TEST(InjectLifecycleSourceTest, VulkanProcAddressesRemainStableWhileDormant) {
 }
 
 TEST(InjectLifecycleSourceTest, DormantPresentPathsForwardToTheirSavedPredecessors) {
-    const std::string dxgiPresent = ReadSource("hook/common/dxgi_shared_present.cpp");
-    const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");
-    const std::string dx9Present = ReadSource("hook/apis/dx9_hook_present_detours.cpp");
-    const std::string dx8Present = ReadSource("hook/apis/dx8_hook_detours.cpp");
-    const std::string openGLPresent = ReadSource("hook/apis/opengl_hook_capture.cpp");
+    const std::string dxgiPresent = ReadSource("hook/present/dxgi_shared_present.cpp");
+    const std::string dx11Present = ReadSource("hook/d3d11/dx11_hook_present.cpp");
+    const std::string dx9Present = ReadSource("hook/d3d9/dx9_hook_present_detours.cpp");
+    const std::string dx8Present = ReadSource("hook/d3d8/dx8_hook_detours.cpp");
+    const std::string openGLPresent = ReadSource("hook/opengl/opengl_hook_capture.cpp");
     ASSERT_FALSE(dxgiPresent.empty());
     ASSERT_FALSE(dx11Present.empty());
     ASSERT_FALSE(dx9Present.empty());
@@ -457,14 +457,14 @@ TEST(InjectLifecycleSourceTest, DormantPresentPathsForwardToTheirSavedPredecesso
 }
 
 TEST(InjectLifecycleSourceTest, DormantLoaderAndVendorHooksAreExactPassThrough) {
-    const std::string loader = ReadSource("hook/main_loadlibrary.cpp");
-    const std::string getProc = ReadSource("hook/wrappers/iat_hook_init.cpp");
-    const std::string ngxParams = ReadSource("hook/apis/nvngx_hook_params.cpp");
-    const std::string ngxFeature = ReadSource("hook/apis/nvngx_hook_feature.cpp");
-    const std::string ngxLifecycle = ReadSource("hook/apis/nvngx_hook_lifecycle.cpp");
-    const std::string streamline = ReadSource("hook/apis/streamline_hook_api.cpp");
-    const std::string streamlineDlssg = ReadSource("hook/apis/streamline_hook_dlssg.cpp");
-    const std::string ffx = ReadSource("hook/apis/ffx_hook_context.cpp");
+    const std::string loader = ReadSource("hook/runtime/main_loadlibrary.cpp");
+    const std::string getProc = ReadSource("hook/hooking/iat_hook_init.cpp");
+    const std::string ngxParams = ReadSource("hook/ngx/nvngx_hook_params.cpp");
+    const std::string ngxFeature = ReadSource("hook/ngx/nvngx_hook_feature.cpp");
+    const std::string ngxLifecycle = ReadSource("hook/ngx/nvngx_hook_lifecycle.cpp");
+    const std::string streamline = ReadSource("hook/streamline/streamline_hook_api.cpp");
+    const std::string streamlineDlssg = ReadSource("hook/streamline/streamline_hook_dlssg.cpp");
+    const std::string ffx = ReadSource("hook/ffx/ffx_hook_context.cpp");
     ASSERT_FALSE(loader.empty());
     ASSERT_FALSE(getProc.empty());
     ASSERT_FALSE(ngxParams.empty());
@@ -507,8 +507,8 @@ TEST(InjectLifecycleSourceTest, DormantLoaderAndVendorHooksAreExactPassThrough) 
 }
 
 TEST(InjectLifecycleSourceTest, DormantReflexKeepsResidentPredecessorsAndForwardsCalls) {
-    const std::string reflex = ReadSource("hook/common/reflex_limiter.h");
-    const std::string pacing = ReadSource("hook/common/reflex_limiter_detail/pacing.h");
+    const std::string reflex = ReadSource("hook/pacing/reflex_limiter.h");
+    const std::string pacing = ReadSource("hook/pacing/reflex_limiter_detail/pacing.h");
     ASSERT_FALSE(reflex.empty());
     ASSERT_FALSE(pacing.empty());
 
@@ -524,9 +524,9 @@ TEST(InjectLifecycleSourceTest, DormantReflexKeepsResidentPredecessorsAndForward
 }
 
 TEST(InjectLifecycleSourceTest, OpenGLExtensionHooksStayStableAndDormantOverridesPassThrough) {
-    const std::string capture = ReadSource("hook/apis/opengl_hook_capture.cpp");
-    const std::string sampler = ReadSource("hook/apis/opengl_sampler_override.cpp");
-    const std::string storage = ReadSource("hook/apis/opengl_texture_storage_override.cpp");
+    const std::string capture = ReadSource("hook/opengl/opengl_hook_capture.cpp");
+    const std::string sampler = ReadSource("hook/opengl/opengl_sampler_override.cpp");
+    const std::string storage = ReadSource("hook/opengl/opengl_texture_storage_override.cpp");
     ASSERT_FALSE(capture.empty());
     ASSERT_FALSE(sampler.empty());
     ASSERT_FALSE(storage.empty());
@@ -545,10 +545,10 @@ TEST(InjectLifecycleSourceTest, OpenGLExtensionHooksStayStableAndDormantOverride
 }
 
 TEST(InjectLifecycleSourceTest, TransientSwapchainLossDoesNotPermanentlyDormantTheRuntime) {
-    const std::string dx11Overlay = ReadSource("hook/apis/dx11_hook_overlay.cpp");
-    const std::string dx11Present = ReadSource("hook/apis/dx11_hook_present.cpp");
-    const std::string dxgiPresent = ReadSource("hook/common/dxgi_shared_present_routing.cpp");
-    const std::string dxgiPresent1 = ReadSource("hook/common/dxgi_shared_present1.cpp");
+    const std::string dx11Overlay = ReadSource("hook/d3d11/dx11_hook_overlay.cpp");
+    const std::string dx11Present = ReadSource("hook/d3d11/dx11_hook_present.cpp");
+    const std::string dxgiPresent = ReadSource("hook/present/dxgi_shared_present_routing.cpp");
+    const std::string dxgiPresent1 = ReadSource("hook/present/dxgi_shared_present1.cpp");
     ASSERT_FALSE(dx11Overlay.empty());
     ASSERT_FALSE(dx11Present.empty());
     ASSERT_FALSE(dxgiPresent.empty());
@@ -562,8 +562,8 @@ TEST(InjectLifecycleSourceTest, TransientSwapchainLossDoesNotPermanentlyDormantT
 }
 
 TEST(InjectLifecycleSourceTest, InitialLateConnectionDefersGraphicsReactivationUntilBootstrapCompletes) {
-    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
-    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
+    const std::string lifecycle = ReadSource("hook/runtime/main_host_lifecycle.cpp");
+    const std::string hookThread = ReadSource("hook/runtime/main_hookthread.cpp");
     ASSERT_FALSE(lifecycle.empty());
     ASSERT_FALSE(hookThread.empty());
 
@@ -578,8 +578,8 @@ TEST(InjectLifecycleSourceTest, InitialLateConnectionDefersGraphicsReactivationU
 // action — before module scans and IPC waits — and only a completed install may latch the
 // retry flag.
 TEST(InjectLifecycleSourceTest, GlobalFactorySwapchainHooksInstallBeforeAnyHookThreadDelay) {
-    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
-    const std::string installSource = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string hookThread = ReadSource("hook/runtime/main_hookthread.cpp");
+    const std::string installSource = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(installSource.empty());
 
@@ -605,7 +605,7 @@ TEST(InjectLifecycleSourceTest, GlobalFactorySwapchainHooksInstallBeforeAnyHookT
 }
 
 TEST(InjectLifecycleSourceTest, ReactivationConsumesWakeupBeforeDiscoveryToPreserveNewerHostSignals) {
-    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string lifecycle = ReadSource("hook/runtime/main_host_lifecycle.cpp");
     const std::string vulkan = ReadSource("hook/vulkan_layer/layer_ipc.cpp");
     ASSERT_FALSE(lifecycle.empty());
     ASSERT_FALSE(vulkan.empty());
@@ -626,7 +626,7 @@ TEST(InjectLifecycleSourceTest, ReactivationConsumesWakeupBeforeDiscoveryToPrese
 }
 
 TEST(InjectLifecycleSourceTest, TargetWakeupsExistBeforeRemoteOrApcLoadCanStart) {
-    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
+    const std::string injection = ReadSource("captureengine/injection/injection_inject.cpp");
     ASSERT_FALSE(injection.empty());
 
     const size_t remoteFunction = injection.find("bool InjectionManager::Inject(DWORD pid");
@@ -649,9 +649,9 @@ TEST(InjectLifecycleSourceTest, TargetWakeupsExistBeforeRemoteOrApcLoadCanStart)
 // non-ANSI user profile could never be injected. Both injection routes now pass
 // the UTF-16 path to the remote LoadLibraryW.
 TEST(InjectLifecycleSourceTest, InjectionPassesUtf16PathsToRemoteLoadLibraryW) {
-    const std::string injection = ReadSource("captureengine/injection_inject.cpp");
-    const std::string manager = ReadSource("captureengine/injection.cpp");
-    const std::string security = ReadSource("captureengine/injection_security.cpp");
+    const std::string injection = ReadSource("captureengine/injection/injection_inject.cpp");
+    const std::string manager = ReadSource("captureengine/injection/injection.cpp");
+    const std::string security = ReadSource("captureengine/injection/injection_security.cpp");
     ASSERT_FALSE(injection.empty());
     ASSERT_FALSE(manager.empty());
     ASSERT_FALSE(security.empty());
@@ -670,7 +670,7 @@ TEST(InjectLifecycleSourceTest, InjectionPassesUtf16PathsToRemoteLoadLibraryW) {
 }
 
 TEST(InjectLifecycleSourceTest, FailedReactivationWaitsForAnotherTargetSignal) {
-    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string lifecycle = ReadSource("hook/runtime/main_host_lifecycle.cpp");
     const std::string vulkan = ReadSource("hook/vulkan_layer/layer_ipc.cpp");
     ASSERT_FALSE(lifecycle.empty());
     ASSERT_FALSE(vulkan.empty());
@@ -682,9 +682,9 @@ TEST(InjectLifecycleSourceTest, FailedReactivationWaitsForAnotherTargetSignal) {
 }
 
 TEST(InjectLifecycleSourceTest, LauncherHooksBecomeExactPassThroughAndWaitOnHostEvents) {
-    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
-    const std::string injection = ReadSource("hook/main_injection.cpp");
-    const std::string lifecycle = ReadSource("hook/main_host_lifecycle.cpp");
+    const std::string hookThread = ReadSource("hook/runtime/main_hookthread.cpp");
+    const std::string injection = ReadSource("hook/runtime/main_injection.cpp");
+    const std::string lifecycle = ReadSource("hook/runtime/main_host_lifecycle.cpp");
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(injection.empty());
     ASSERT_FALSE(lifecycle.empty());
@@ -718,8 +718,8 @@ TEST(InjectLifecycleSourceTest, LauncherHooksBecomeExactPassThroughAndWaitOnHost
 }
 
 TEST(InjectLifecycleSourceTest, HookRestorationRejectsReusedModuleStorage) {
-    const std::string iat = ReadSource("hook/wrappers/iat_hook.cpp");
-    const std::string vtable = ReadSource("hook/wrappers/vtable_hook.cpp");
+    const std::string iat = ReadSource("hook/hooking/iat_hook.cpp");
+    const std::string vtable = ReadSource("hook/hooking/vtable_hook.cpp");
     ASSERT_FALSE(iat.empty());
     ASSERT_FALSE(vtable.empty());
 
@@ -734,9 +734,9 @@ TEST(InjectLifecycleSourceTest, HookRestorationRejectsReusedModuleStorage) {
 }
 
 TEST(InjectLifecycleSourceTest, PublishedHookRollbackRetainsCallablePredecessorStorage) {
-    const std::string inlineHook = ReadSource("hook/wrappers/inline_hook.cpp");
-    const std::string deepHook = ReadSource("hook/wrappers/inline_hook_deep.cpp");
-    const std::string vtable = ReadSource("hook/wrappers/vtable_hook.cpp");
+    const std::string inlineHook = ReadSource("hook/hooking/inline_hook.cpp");
+    const std::string deepHook = ReadSource("hook/hooking/inline_hook_deep.cpp");
+    const std::string vtable = ReadSource("hook/hooking/vtable_hook.cpp");
     ASSERT_FALSE(inlineHook.empty());
     ASSERT_FALSE(deepHook.empty());
     ASSERT_FALSE(vtable.empty());
@@ -749,7 +749,7 @@ TEST(InjectLifecycleSourceTest, PublishedHookRollbackRetainsCallablePredecessorS
 }
 
 TEST(InjectLifecycleSourceTest, IATPatchingPreservesPreexistingForeignOwners) {
-    const std::string iat = ReadSource("hook/wrappers/iat_hook.cpp");
+    const std::string iat = ReadSource("hook/hooking/iat_hook.cpp");
     ASSERT_FALSE(iat.empty());
 
     const size_t ownerCheck = iat.find("IsForeignIATOwner(currentFunction, sourceModule, functionName)");

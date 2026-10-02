@@ -15,7 +15,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/apis/legacy_d3d_state_block_policy.h"
+#include "hook/ddraw/legacy_d3d_state_block_policy.h"
 #include "source_fragment_reader.h"
 
 namespace blocks = ce::legacy_d3d_state_block;
@@ -243,11 +243,11 @@ TEST(LegacyD3DStateBlockPolicyTest, CoverageAndMasks) {
 }
 
 TEST(LegacyD3DStateBlockSourceTest, ApplyIsMergedFromTheSnapshotAndInactiveApplyWritesNothing) {
-    const auto root = std::filesystem::current_path() / "hook" / "apis";
-    const std::string state = ce::test_source::ReadFile(root / "legacy_d3d_sampler_state.cpp");
-    const std::string ddraw = ce::test_source::ReadFile(root / "ddraw_hook_detours_legacy_d3d.cpp");
-    const std::string ddrawInstall = ce::test_source::ReadFile(root / "ddraw_hook_install.cpp");
-    const std::string dx8 = ce::test_source::ReadFile(root / "dx8_hook_detours.cpp");
+    using ce::test_source::FindSource;
+    const std::string state = ce::test_source::ReadFile(FindSource("hook", "legacy_d3d_sampler_state.cpp"));
+    const std::string ddraw = ce::test_source::ReadFile(FindSource("hook", "ddraw_hook_detours_legacy_d3d.cpp"));
+    const std::string ddrawInstall = ce::test_source::ReadFile(FindSource("hook", "ddraw_hook_install.cpp"));
+    const std::string dx8 = ce::test_source::ReadFile(FindSource("hook", "dx8_hook_detours.cpp"));
     ASSERT_FALSE(state.empty());
     const size_t reconcile = state.find("void ReconcileAfterExternalStateChange(");
     ASSERT_NE(reconcile, std::string::npos);

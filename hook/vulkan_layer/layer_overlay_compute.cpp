@@ -12,7 +12,7 @@
 #include <algorithm>
 #include <vector>
 
-#include "../common/overlay_shader_spirv.h"
+#include "hook/overlay/overlay_shader_spirv.h"
 
 namespace {
 

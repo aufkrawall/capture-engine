@@ -23,8 +23,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     obj_dir = os.path.join(OBJ_DIR, arch, "vulkan_layer")
     os.makedirs(obj_dir, exist_ok=True)
 
-    # Layer source files - split into layer/support and hook/common sources
-    # hook/common sources are shared with the hook DLL and must use the same
+    # Layer source files - split into layer/support and shared hook-core sources
+    # hook-core sources are shared with the hook DLL and must use the same
     # optimization flags (HOOK_OPT_FLAGS_X64/X86) to maintain consistency.
     layer_only_sources = [
         os.path.join(layer_dir, "layer_main.cpp"),
@@ -57,53 +57,52 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_wsi_surface_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
         # The Vulkan layer intentionally links a selected source set instead of all common objects.
-        os.path.join(PROJECT_ROOT, "common", "build_identity.cpp"),
-        os.path.join(PROJECT_ROOT, "common", "secure_dll_loading.cpp"),
+        os.path.join(PROJECT_ROOT, "common", "platform", "build_identity.cpp"),
+        os.path.join(PROJECT_ROOT, "common", "platform", "secure_dll_loading.cpp"),
     ]
     hook_common_sources = [
-        os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "ipc_client.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "system_metrics_gpu.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "performance_metrics.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "pacing_health_telemetry.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "fg", "fg_detection.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "runtime", "ipc_client.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "system_metrics.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "system_metrics_gpu.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "performance_metrics.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "pacing", "pacing_health_telemetry.cpp"),
         # performance_metrics.cpp resolves a displayed transition back to the
         # frame-generation callback that produced it. The layer has no such
         # callback, so the ring stays empty here, but the symbol is required.
-        os.path.join(PROJECT_ROOT, "hook", "common", "present_callback_association.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_metrics_publisher.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "nv_lod_spread_override.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "perf_logger.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "present", "present_callback_association.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_metrics_publisher.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "ngx", "nv_lod_spread_override.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "perf_logger.cpp"),
         # CustomOverlay system for full overlay rendering
-        os.path.join(PROJECT_ROOT, "hook", "common", "sharpen_constants.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_cpu_raster.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay_vk.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "custom_overlay_vk_render.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "custom_font.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter_render.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "overlay_adapter_render_frame.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "benchmark_manager.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "benchmark_html_report.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "cached_overlay_renderer.cpp"),
-        os.path.join(PROJECT_ROOT, "hook", "common", "screenshot_hook.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "sharpen", "sharpen_constants.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_overlay.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_cpu_raster.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_overlay_vk.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_overlay_vk_render.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_font.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter_render.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter_render_frame.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "benchmark_manager.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "metrics", "benchmark_html_report.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "cached_overlay_renderer.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "capture", "screenshot_hook.cpp"),
         # Owns the screenshot task queue screenshot_hook.cpp hands work to.
-        os.path.join(PROJECT_ROOT, "hook", "common", "screenshot_worker.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "capture", "screenshot_worker.cpp"),
     ]
 
     # Shared layer-specific flags (include paths, defines)
     layer_extra_flags = [
         "-I" + layer_dir,
-        "-I" + os.path.join(PROJECT_ROOT, "common"),
-        "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
+        "-I" + PROJECT_ROOT,
         "-DVK_NO_PROTOTYPES",
         "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES",
         "-DVK_USE_PLATFORM_WIN32_KHR",
         "-DVK_LAYER_CE_OVERLAY",
     ]
 
-    # Build separate cflags: hook/common sources use hook optimization flags
+    # Build separate cflags: hook-core sources use hook optimization flags
     if arch == "x64":
         hook_opt_flags = HOOK_OPT_FLAGS_X64
     else:
@@ -157,7 +156,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     # Compile layer-specific sources with layer cflags
     layer_src_obj_pairs = add_sources(layer_only_sources, obj_dir)
-    # Compile hook/common sources with hook cflags (consistent with hook DLL)
+    # Compile hook-core sources with hook cflags (consistent with hook DLL)
     hook_src_obj_pairs = add_sources(hook_common_sources, obj_dir)
 
     if not layer_src_obj_pairs and not hook_src_obj_pairs:
@@ -258,7 +257,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         log(f"Built: {layer_dll}")
 
         # Manifests are staged at runtime into %LOCALAPPDATA% / %PROGRAMDATA% by
-        # CaptureEngine (common/vulkan_layer_registration.cpp). Do not leave JSON
+        # CaptureEngine (common/graphics/vulkan_layer_registration.cpp). Do not leave JSON
         # manifests in bin_dir (installed/captureengine/) to ensure external processes
         # never map or lock bin_dir binaries through stale or legacy registry entries.
         manifest_name = "VK_LAYER_CE_overlay.json" if arch == "x64" else "VK_LAYER_CE_overlay_x86.json"

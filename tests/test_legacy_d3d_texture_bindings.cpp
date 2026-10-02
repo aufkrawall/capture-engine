@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/legacy_d3d_texture_bindings.h"
+#include "hook/ddraw/legacy_d3d_texture_bindings.h"
 #include "source_fragment_reader.h"
 
 // A Direct3D 7 state block stores the texture bound to each stage as a raw
@@ -245,7 +245,7 @@ TEST_F(LegacyD3DTextureBindingsTest, DestructionReleasesStillHeldBindings) {
 // render loop, not only at shutdown.
 TEST(LegacyD3D9SamplerDriftTest, SamplerHookDriftStaysObservablePerPresent) {
     const std::filesystem::path root = std::filesystem::current_path();
-    const std::string family = ce::test_source::ReadLogicalSource(root / "hook/apis/dx9_hook.cpp");
+    const std::string family = ce::test_source::ReadLogicalSource(root / "hook/d3d9/dx9_hook.cpp");
     ASSERT_FALSE(family.empty());
     EXPECT_NE(family.find("CheckD3D9SamplerHookDrift(vtable)"), std::string::npos)
         << "the sampler slots lost their per-Present proof-of-life check";
@@ -258,7 +258,7 @@ TEST(LegacyD3D9SamplerDriftTest, SamplerHookDriftStaysObservablePerPresent) {
     // below the slot's new owner (a body hook on d3d9's own implementation),
     // never by writing the slot back: the drifted-to owner would become CE's
     // saved original and calling it is the mutual-hook cycle class.
-    const std::string detours = ce::test_source::ReadLogicalSource(root / "hook/apis/dx9_hook_state_detours.cpp");
+    const std::string detours = ce::test_source::ReadLogicalSource(root / "hook/d3d9/dx9_hook_state_detours.cpp");
     ASSERT_FALSE(detours.empty());
     const size_t drift = detours.find("void CheckD3D9SamplerHookDrift(uintptr_t* vtable)");
     ASSERT_NE(drift, std::string::npos);

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "../common/vulkan_layer_target_list.h"
+#include "common/graphics/vulkan_layer_target_list.h"
 #include "source_fragment_reader.h"
 
 namespace targets = ce::vulkan_layer_targets;
@@ -83,7 +83,7 @@ TEST(VulkanLayerTargetListSourceTest, NonTargetsAreDeclinedAtNegotiationAndNever
     const std::string layer =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
     const std::string publication =
-        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "injection" / "inject_config_publication.cpp");
     ASSERT_FALSE(layer.empty());
     ASSERT_FALSE(publication.empty());
 
@@ -117,7 +117,7 @@ TEST(VulkanLayerTargetListSourceTest, WriterAndReaderShareOneLocationIndependent
     const std::string layer =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_main.cpp");
     const std::string publication =
-        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "captureengine" / "injection" / "inject_config_publication.cpp");
     ASSERT_FALSE(layer.empty());
     ASSERT_FALSE(publication.empty());
 

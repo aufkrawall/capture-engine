@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../common/mip_mapping_policy.h"
-#include "../hook/vulkan_layer/vulkan_sampler_policy.h"
+#include "common/graphics/mip_mapping_policy.h"
+#include "hook/vulkan_layer/vulkan_sampler_policy.h"
 
 TEST(MipMappingPolicyTest, ParsesOnlyNormalizedSupportedModes) {
     ce::mip_mapping::Mode mode = ce::mip_mapping::Mode::Default;

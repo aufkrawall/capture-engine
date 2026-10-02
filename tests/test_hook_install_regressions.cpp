@@ -5,8 +5,8 @@
 #include <string>
 #include <string_view>
 
-#include "../hook/common/child_inject_policy.h"
-#include "../hook/common/hook_jump_policy.h"
+#include "hook/runtime/child_inject_policy.h"
+#include "hook/hooking/hook_jump_policy.h"
 #include "source_fragment_reader.h"
 
 // Regression coverage for hook-side child injection and hook-install
@@ -194,7 +194,7 @@ TEST(HookInstallRegressionTest, X86WrapSemanticsLandFarDisplacementsWithoutTrunc
 // --- Source policy: child injection worker (remote LoadLibraryW) -------------
 
 TEST(HookInstallRegressionTest, ChildInjectWorkerReportsLoadLibraryCompletionHonestly) {
-    const std::string source = ReadSource("hook/main_injection.cpp");
+    const std::string source = ReadSource("hook/runtime/main_injection.cpp");
     ASSERT_FALSE(source.empty());
     const std::string body =
         FunctionBody(source, "static DWORD WINAPI ChildInjectWorker(LPVOID param)", "void InjectIntoChild(");
@@ -231,7 +231,7 @@ TEST(HookInstallRegressionTest, ChildInjectWorkerReportsLoadLibraryCompletionHon
 // --- Source policy: program resolution in the CreateProcess hooks ------------
 
 TEST(HookInstallRegressionTest, CreateProcessHooksResolveTheProgramBeforeTheWhitelist) {
-    const std::string source = ReadSource("hook/main_injection.cpp");
+    const std::string source = ReadSource("hook/runtime/main_injection.cpp");
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("bool ShouldInjectChild(const char *exePath)"), std::string::npos);
@@ -249,10 +249,10 @@ TEST(HookInstallRegressionTest, CreateProcessHooksResolveTheProgramBeforeTheWhit
 // --- Source policy: UTF-16 module path derivation ----------------------------
 
 TEST(HookInstallRegressionTest, HookModulePathsAreDerivedAsUtf16) {
-    const std::string hookThread = ReadSource("hook/main_hookthread.cpp");
-    const std::string dllMain = ReadSource("hook/main_dllmain.cpp");
-    const std::string pristineUnit = ReadSource("hook/wrappers/inline_hook_pristine_image.cpp");
-    const std::string injection = ReadSource("hook/main_injection.cpp");
+    const std::string hookThread = ReadSource("hook/runtime/main_hookthread.cpp");
+    const std::string dllMain = ReadSource("hook/runtime/main_dllmain.cpp");
+    const std::string pristineUnit = ReadSource("hook/hooking/inline_hook_pristine_image.cpp");
+    const std::string injection = ReadSource("hook/runtime/main_injection.cpp");
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(dllMain.empty());
     ASSERT_FALSE(pristineUnit.empty());
@@ -271,7 +271,7 @@ TEST(HookInstallRegressionTest, HookModulePathsAreDerivedAsUtf16) {
     // text; a UTF-8 directory sent the dumps of a non-ASCII install nowhere.
     EXPECT_NE(crashSetup.find("ce::path::AnsiCompatiblePath(logsDir.wstring()"), std::string::npos);
     EXPECT_EQ(crashSetup.find("NarrowFromWideUtf8"), std::string::npos);
-    const std::string crashHandler = ReadSource("common/crash_handler.cpp");
+    const std::string crashHandler = ReadSource("common/crash/crash_handler.cpp");
     ASSERT_FALSE(crashHandler.empty());
     EXPECT_EQ(crashHandler.find("MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage()"), std::string::npos);
     EXPECT_NE(crashHandler.find("MultiByteToWideChar(CP_ACP, 0, CrashDumpDirectoryStorage()"), std::string::npos);
@@ -292,7 +292,7 @@ TEST(HookInstallRegressionTest, HookModulePathsAreDerivedAsUtf16) {
 TEST(HookInstallRegressionTest, ThreadQuiescenceScopesNeverLog) {
     // The logger takes a lock a suspended peer may hold: a log line inside the
     // transaction can deadlock the game frozen with every thread suspended.
-    for (const char* relativePath : {"hook/wrappers/inline_hook_entry_patch.cpp", "hook/wrappers/inline_hook_batch.cpp"}) {
+    for (const char* relativePath : {"hook/hooking/inline_hook_entry_patch.cpp", "hook/hooking/inline_hook_batch.cpp"}) {
         const std::string source = ReadSource(relativePath);
         ASSERT_FALSE(source.empty()) << relativePath;
         size_t search = 0;
@@ -308,7 +308,7 @@ TEST(HookInstallRegressionTest, ThreadQuiescenceScopesNeverLog) {
         EXPECT_GE(scopes, 1) << relativePath;
     }
 
-    const std::string entryPatch = ReadSource("hook/wrappers/inline_hook_entry_patch.cpp");
+    const std::string entryPatch = ReadSource("hook/hooking/inline_hook_entry_patch.cpp");
     ASSERT_FALSE(entryPatch.empty());
     EXPECT_NE(entryPatch.find("ReportEntryPatchFailure"), std::string::npos)
         << "failures inside the transaction must be reported after it ends";
@@ -317,8 +317,8 @@ TEST(HookInstallRegressionTest, ThreadQuiescenceScopesNeverLog) {
 // --- Source policy: rel32 emission -------------------------------------------
 
 TEST(HookInstallRegressionTest, JumpEmissionUsesTheRangeCheckedPolicy) {
-    const std::string trampoline = ReadSource("hook/wrappers/inline_hook_trampoline.cpp");
-    const std::string entryPatch = ReadSource("hook/wrappers/inline_hook_entry_patch.cpp");
+    const std::string trampoline = ReadSource("hook/hooking/inline_hook_trampoline.cpp");
+    const std::string entryPatch = ReadSource("hook/hooking/inline_hook_entry_patch.cpp");
     ASSERT_FALSE(trampoline.empty());
     ASSERT_FALSE(entryPatch.empty());
 
@@ -335,7 +335,7 @@ TEST(HookInstallRegressionTest, JumpEmissionUsesTheRangeCheckedPolicy) {
 }
 
 TEST(HookInstallRegressionTest, TrampolinePoolsSearchNearTheTargetOnEveryArchitecture) {
-    const std::string trampoline = ReadSource("hook/wrappers/inline_hook_trampoline.cpp");
+    const std::string trampoline = ReadSource("hook/hooking/inline_hook_trampoline.cpp");
     ASSERT_FALSE(trampoline.empty());
 
     const std::string poolSearch = FunctionBody(trampoline, "static uint8_t* AllocateTrampolinePool(void* nearAddr)",
@@ -349,7 +349,7 @@ TEST(HookInstallRegressionTest, TrampolinePoolsSearchNearTheTargetOnEveryArchite
 // --- Source policy: Steam init diagnostics -----------------------------------
 
 TEST(HookInstallRegressionTest, SteamInitDoesNotPeekTheStaleFixedCallbackRva) {
-    const std::string routing = ReadSource("hook/common/dxgi_shared_steam_routing.cpp");
+    const std::string routing = ReadSource("hook/present/dxgi_shared_steam_routing.cpp");
     ASSERT_FALSE(routing.empty());
     EXPECT_EQ(routing.find("0x1621d8"), std::string::npos)
         << "the fixed RVA moved between Steam builds; only the VEH's dynamically resolved slot is valid";

@@ -71,7 +71,7 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     ASSERT_NE(coverage, std::string::npos);
     EXPECT_LT(source.find("cfrCoverageIncomplete.store(true"), coverage);
 
-    const std::filesystem::path engineSource = std::filesystem::current_path() / "mediaengine" / "mediaengine.cpp";
+    const std::filesystem::path engineSource = std::filesystem::current_path() / "mediaengine" / "engine" / "mediaengine.cpp";
     const std::string engine = ce::test_source::ReadLogicalSource(engineSource);
     ASSERT_FALSE(engine.empty());
     // Video loss and audio loss stay separate bits so the user is told which track lost content.

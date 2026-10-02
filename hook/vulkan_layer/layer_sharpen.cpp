@@ -1,7 +1,7 @@
 #include "layer_sharpen_state.h"
 
-#include "../common/sharpen_constants.h"
-#include "../common/sharpen_gpu_timeline.h"
+#include "hook/sharpen/sharpen_constants.h"
+#include "hook/sharpen/sharpen_gpu_timeline.h"
 #include "vulkan_formatless_storage.h"
 #include "vulkan_presentation_color.h"
 

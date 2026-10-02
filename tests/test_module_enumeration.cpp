@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include "../common/module_enumeration.h"
+#include "common/platform/module_enumeration.h"
 
 namespace {
 

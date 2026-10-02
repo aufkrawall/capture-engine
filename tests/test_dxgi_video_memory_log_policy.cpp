@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/dxgi_video_memory_log_policy.h"
+#include "hook/present/dxgi_video_memory_log_policy.h"
 
 namespace policy = ce::dxgi_video_memory_log_policy;
 

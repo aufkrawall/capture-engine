@@ -25,7 +25,7 @@ the 230-line rolling-memory ceiling.
   a residual foreign pin is provable on the next run.
 - Build: the wrapper-internal and dx12-hook-internal headers both declared `ResolveCurrentProcessForeground` with
   default arguments, which broke any TU including both; the canonical declaration now lives in
-  `hook/common/hook_common.h`. `--tests-only` builds now warn when modified hook/captureengine product sources
+  `hook/runtime/hook_common.h`. `--tests-only` builds now warn when modified hook/captureengine product sources
   are outside the tests-only compile set (shared `HOOK_DLL_EXCLUDED_SOURCES` exclusion list), so focused tests
   can no longer pass while the product sources never compiled.
 - Tests: `AccessDeniedRetryThroughLiveEntryChainRequiresForeignChainAndSafeCaller`
@@ -95,7 +95,7 @@ the 230-line rolling-memory ceiling.
   burned the full 1 s liveness timeout, skipping the overlay draw. The timeout path never re-records the slot, so the
   wedge was permanent. (Not the 20260703_210021 AMD-suspend stall: there the fence NEVER advances; here it advances
   once per present but can never reach the stale guard values.)
-- Fix: `UploadSlotGuardFenceBinding` (new `hook/common/dx12_overlay_policy/upload_slot_guard.h`) pins the bound fence
+- Fix: `UploadSlotGuardFenceBinding` (new `hook/d3d12/dx12_overlay_policy/upload_slot_guard.h`) pins the bound fence
   with an owning COM reference, so a replacement fence can never reuse its address and any pointer change provably is
   a new lifetime; `RebindIfNeeded()` clears the per-slot guards. Wired into `DX12DescFreeBackend` and
   `CustomOverlay::DX12Backend`, replacing the raw `slotFence` members.

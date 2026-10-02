@@ -23,10 +23,10 @@ The `[Performance]` section controls three independent priority mechanisms. The 
 **Mechanism:** `ApplyMediaProcessPriority()` maps normalized config strings to Win32 priority classes and applies them through `SetPriorityClass(GetCurrentProcess(), ...)`. `realtime` is now implemented; use it only as an explicit diagnostic because it can starve unrelated work.
 
 **Source anchors:**
-- `common/config.h` (`AppConfig::processPriority`)
-- `common/config.cpp` (`NormalizePriorityString`, default config generation, `[Performance]` parsing)
+- `common/config/config.h` (`AppConfig::processPriority`)
+- `common/config/config.cpp` (`NormalizePriorityString`, default config generation, `[Performance]` parsing)
 - `captureengine/config.ini.template` (`[Performance]` comments/default)
-- `captureengine/media_main.cpp` (`ApplyMediaProcessPriority`, `ApplyMediaPrioritySettings`)
+- `captureengine/media/media_main.cpp` (`ApplyMediaProcessPriority`, `ApplyMediaPrioritySettings`)
 - `tests/test_config.cpp` (`ParsePerformancePriorityValues`, invalid fallback test)
 
 ## `gpu_priority` (D3D11 GPU Thread Priority)
@@ -43,11 +43,11 @@ The `[Performance]` section controls three independent priority mechanisms. The 
 **Limits:** This can prioritize CE's D3D11 work after WGC frames arrive, but it cannot force DWM/WGC to deliver frames on time. In `installed/captureengine/logs/sbwgc`, warmed WGC copy/convert was about 15 us while callback/source gaps reached tens to 100 ms, so the observed roughness was mostly upstream WGC delivery, not CE copy/encode priority.
 
 **Source anchors:**
-- `common/config.h` (`VideoConfig::gpuPriority`)
-- `common/config.cpp` (`[Performance] gpu_priority` parsing)
-- `mediaengine/video_encoder.cpp` (`ApplyGpuThreadPriority`, adaptive pressure handling, init application)
-- `captureengine/wgc_capture.cpp` (`WGCCapture::SetGpuPriority`)
-- `captureengine/media_main.cpp` (`StartWgcRecordingCapture` call)
+- `common/config/config.h` (`VideoConfig::gpuPriority`)
+- `common/config/config.cpp` (`[Performance] gpu_priority` parsing)
+- `mediaengine/video/video_encoder.cpp` (`ApplyGpuThreadPriority`, adaptive pressure handling, init application)
+- `captureengine/media/wgc_capture.cpp` (`WGCCapture::SetGpuPriority`)
+- `captureengine/media/media_main.cpp` (`StartWgcRecordingCapture` call)
 
 ## `gpu_scheduling_priority` (D3DKMT Process GPU Scheduling Class)
 
@@ -68,10 +68,10 @@ The requested D3D11 relative priority is retained and reapplied after WGC shared
 **WGC expectation:** This may help WGC if CE's own D3D11 copy/convert/encode work is losing GPU scheduling. It will not directly prioritize the Windows/DWM/WGC producer path that delivers `Direct3D11CaptureFrame` objects to CE.
 
 **Source anchors:**
-- `common/config.h` (`AppConfig::gpuSchedulingPriority`)
-- `common/config.cpp` (`gpu_scheduling_priority` generation/parsing)
+- `common/config/config.h` (`AppConfig::gpuSchedulingPriority`)
+- `common/config/config.cpp` (`gpu_scheduling_priority` generation/parsing)
 - `captureengine/config.ini.template` (`[Performance] gpu_scheduling_priority`)
-- `captureengine/media_main.cpp` (`ApplyMediaGpuSchedulingPriority`, dynamic D3DKMT lookup)
+- `captureengine/media/media_main.cpp` (`ApplyMediaGpuSchedulingPriority`, dynamic D3DKMT lookup)
 - `tests/test_config.cpp` (default, parse, invalid fallback coverage)
 
 ## `copy_queue_priority` (D3D12 Overlay Queue Priority)
@@ -85,11 +85,11 @@ The requested D3D11 relative priority is retained and reapplied after WGC shared
 **Important correction:** This queue is `D3D12_COMMAND_LIST_TYPE_DIRECT`, not `D3D12_COMMAND_LIST_TYPE_COPY`. `low` and `normal` are effectively equivalent for the current code. The name is retained for compatibility with existing configs.
 
 **Source anchors:**
-- `common/config.h` (`AppConfig::copyQueuePriority`)
-- `common/config.cpp` (`copy_queue_priority` parsing)
-- `common/shared_defs.h` (`copyQueuePriority_`)
-- `captureengine/inject_main.cpp`, `captureengine/ipc.cpp` (shared-memory propagation)
-- `hook/apis/dx12_hook_main.cpp` (`InitOverlaySync` queue creation)
+- `common/config/config.h` (`AppConfig::copyQueuePriority`)
+- `common/config/config.cpp` (`copy_queue_priority` parsing)
+- `common/ipc/shared_defs.h` (`copyQueuePriority_`)
+- `captureengine/injection/inject_main.cpp`, `captureengine/ipc.cpp` (shared-memory propagation)
+- `hook/d3d12/dx12_hook_main.cpp` (`InitOverlaySync` queue creation)
 
 ## D3D12 COPY Queue / HAGS Findings
 

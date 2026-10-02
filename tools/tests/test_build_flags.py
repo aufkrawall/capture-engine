@@ -206,13 +206,13 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_linux_mingw_sources_do_not_require_newer_d3d12_header_helpers(self) -> None:
         project_root = Path(build.__file__).parent
-        sampler_source = (project_root / "hook/common/dx12_sampler_policy.cpp").read_text(encoding="utf-8")
-        dred_source = (project_root / "hook/common/dx12_dred.cpp").read_text(encoding="utf-8")
+        sampler_source = (project_root / "hook/d3d12/dx12_sampler_policy.cpp").read_text(encoding="utf-8")
+        dred_source = (project_root / "hook/d3d12/dx12_dred.cpp").read_text(encoding="utf-8")
         fg_resource_source = (project_root / "testapp/dx12_fg_resources.h").read_text(encoding="utf-8")
         fg_dred_source = (project_root / "testapp/dx12_fg_switch_dred.cpp").read_text(encoding="utf-8")
         overlay_sources = (
-            (project_root / "hook/apis/dx12_streamline_ui_overlay.cpp").read_text(encoding="utf-8"),
-            (project_root / "hook/apis/dx12_ffx_suspend_overlay.cpp").read_text(encoding="utf-8"),
+            (project_root / "hook/d3d12/dx12_streamline_ui_overlay.cpp").read_text(encoding="utf-8"),
+            (project_root / "hook/d3d12/dx12_ffx_suspend_overlay.cpp").read_text(encoding="utf-8"),
         )
 
         self.assertFalse(
@@ -244,7 +244,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_sequence_lock_declares_pause_intrinsic_without_transitive_headers(self) -> None:
         project_root = Path(build.__file__).parent
-        source = (project_root / "common/sequence_lock.h").read_text(encoding="utf-8")
+        source = (project_root / "common/platform/sequence_lock.h").read_text(encoding="utf-8")
 
         self.assertIn("#include <intrin.h>  // for _mm_pause", source)
 
@@ -266,14 +266,14 @@ class BuildFlagPolicyTest(unittest.TestCase):
         captureengine = Path(build.PROJECT_ROOT) / "captureengine"
         module_sources = {
             source.name
-            for source in captureengine.glob("*.cpp")
+            for source in captureengine.rglob("*.cpp")
             if "screenshot_encoding_internal.h" in source.read_text(encoding="utf-8")
         }
 
         self.assertTrue(module_sources, "no screenshot encoding sources found")
         self.assertEqual(module_sources, build.STRICT_FP_SCREENSHOT_SOURCES)
         for name in build.STRICT_FP_SCREENSHOT_SOURCES:
-            self.assertTrue((captureengine / name).is_file(), f"{name} is registered but does not exist")
+            self.assertTrue(Path(build.find_module_source("captureengine", name)).is_file(), f"{name} is registered but does not exist")
 
     def test_linux_llvm_readobj_resolution_uses_host_executable(self) -> None:
         with patch.object(build, "IS_LINUX", True), patch.object(
@@ -450,14 +450,14 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_generated_build_version_isolated_from_fanout_headers(self) -> None:
         project_root = Path(build.__file__).parent
-        for relative_path in ("common/shared_defs.h", "common/config.h"):
+        for relative_path in ("common/ipc/shared_defs.h", "common/config/config.h"):
             source = (project_root / relative_path).read_text(encoding="utf-8")
-            self.assertNotIn('"build_version.h"', source, relative_path)
+            self.assertNotIn('build_version.h"', source, relative_path)
 
-        identity_source = (project_root / "common/build_identity.cpp").read_text(encoding="utf-8")
-        self.assertIn('#include "build_version.h"', identity_source)
+        identity_source = (project_root / "common/platform/build_identity.cpp").read_text(encoding="utf-8")
+        self.assertIn('#include "common/build_version.h"', identity_source)
         build_source = build.read_source_text()
-        self.assertIn('os.path.join(PROJECT_ROOT, "common", "build_identity.cpp")', build_source)
+        self.assertIn('os.path.join(PROJECT_ROOT, "common", "platform", "build_identity.cpp")', build_source)
 
     def test_incremental_signature_failure_recompiles_instead_of_trusting_timestamps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -649,7 +649,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         bump_version.assert_not_called()
 
     def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
-        cpp = (Path(build.PROJECT_ROOT) / "common" / "vulkan_layer_registration.cpp").read_text(encoding="utf-8")
+        cpp = (Path(build.PROJECT_ROOT) / "common" / "graphics" / "vulkan_layer_registration.cpp").read_text(encoding="utf-8")
         self.assertIn('return std::wstring(baseName) + L"_b" + std::to_wstring(GetCurrentBuildNumber());', cpp)
         self.assertIn('implementation_version', cpp)
 
@@ -688,7 +688,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         format_config = (project_root / "tools" / "config" / ".clang-format").read_text(encoding="utf-8")
         self.assertIn("SortIncludes: Never", format_config)
         for relative_path, dependent_header in (
-            ("common/module_enumeration.h", "#include <psapi.h>"),
+            ("common/platform/module_enumeration.h", "#include <psapi.h>"),
             ("tests/test_process_ipc.cpp", "#include <shellapi.h>"),
         ):
             lines = (project_root / relative_path).read_text(

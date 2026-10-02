@@ -3,7 +3,7 @@
 #include <array>
 #include <chrono>
 #include <thread>
-#include "../hook/common/capture_base.h"
+#include "hook/capture/capture_base.h"
 
 // Concrete implementation for testing
 class TestCapture : public CaptureBase {

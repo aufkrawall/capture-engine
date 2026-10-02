@@ -18,7 +18,7 @@ times a second, so that sequence runs between the application's own draw and the
 surface the display is scanning out live.
 
 There is no GPU path from a D3D9Ex device into a DirectDraw surface, so the composite cannot stay on the GPU.
-`hook/common/overlay_cpu_raster.cpp` rasterizes the shared draw list instead - the same vertices, indices and
+`hook/overlay/overlay_cpu_raster.cpp` rasterizes the shared draw list instead - the same vertices, indices and
 GDI font atlas the GPU backends consume - into a premultiplied BGRA sprite, and
 `BlendOverlaySpriteIntoSurface` blends that into the locked surface in one pass.
 **The GPU, the readback and the synchronization are gone from that route entirely.**

@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../mediaengine/audio_recovery_policy.h"
+#include "mediaengine/audio/audio_recovery_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -165,11 +165,11 @@ TEST(AudioDefaultDeviceFollowTest, SwitchesOnlyOntoADifferentEndpoint) {
 // completion said "saved".
 TEST(AudioDefaultDeviceFollowTest, CaptureWorkerKeepsRunningWithoutADeviceAndReportsIt) {
     const auto root = std::filesystem::current_path();
-    const std::string loop = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture_loop.cpp");
-    const std::string endpoints = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture_endpoints.cpp");
-    const std::string capture = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture.cpp");
-    const std::string stop = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_recording_stop.cpp");
-    const std::string config = ce::test_source::ReadLogicalSource(root / "mediaengine/mediaengine_config.cpp");
+    const std::string loop = ce::test_source::ReadLogicalSource(root / "mediaengine/audio/audio_capture_loop.cpp");
+    const std::string endpoints = ce::test_source::ReadLogicalSource(root / "mediaengine/audio/audio_capture_endpoints.cpp");
+    const std::string capture = ce::test_source::ReadLogicalSource(root / "mediaengine/audio/audio_capture.cpp");
+    const std::string stop = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_recording_stop.cpp");
+    const std::string config = ce::test_source::ReadLogicalSource(root / "mediaengine/engine/mediaengine_config.cpp");
     ASSERT_FALSE(loop.empty());
     ASSERT_FALSE(endpoints.empty());
     EXPECT_NE(loop.find("startWithoutDevice = true;"), std::string::npos);
@@ -199,8 +199,8 @@ TEST(AudioEndpointSelectionTest, ExplicitDeviceIsNeverReplacedByTheDefault) {
 
 TEST(AudioEndpointSelectionTest, ResolverWaitsForTheRequestedDeviceAndArrivalRetriesIt) {
     const auto root = std::filesystem::current_path();
-    const std::string capture = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture.cpp");
-    const std::string loop = ce::test_source::ReadLogicalSource(root / "mediaengine/audio_capture_loop.cpp");
+    const std::string capture = ce::test_source::ReadLogicalSource(root / "mediaengine/audio/audio_capture.cpp");
+    const std::string loop = ce::test_source::ReadLogicalSource(root / "mediaengine/audio/audio_capture_loop.cpp");
     ASSERT_FALSE(capture.empty());
     ASSERT_FALSE(loop.empty());
     const size_t resolver = capture.find("bool AudioCapture::ResolveCaptureDevice()");

@@ -5,51 +5,51 @@ Last cross-checked: 2026-09-23 (first-chance crash handling, helper exception st
 Primary sources:
 - `AGENTS.md`
 - `build.py`
-- `common/config.cpp`
-- `common/shared_defs.h`
-- `captureengine/injection.cpp`
-- `captureengine/main.cpp`
-- `captureengine/inject_main.cpp`
-- `captureengine/pseudo_overlay.cpp`
-- `hook/apis/dx12_hook_main.cpp`
-- `hook/apis/ffx_hook.cpp`
-- `hook/apis/dx11_hook.cpp`
-- `hook/apis/streamline_hook.cpp`
-- `hook/main.cpp`
-- `hook/common/overlay_compat.h`
-- `hook/common/dxgi_shared.cpp`
-- `hook/common/dx12_overlay_policy.h`
-- `hook/common/freeze_watchdog.cpp`
-- `hook/common/freeze_watchdog.h`
-- `hook/common/fps_limiter.h`
-- `hook/common/fps_limiter_policy.h`
-- `hook/common/reflex_limiter.h`
-- `hook/common/reflex_limiter.h`
-- `hook/common/overlay_metrics_publisher.cpp`
-- `hook/common/performance_metrics.cpp`
-- `hook/common/performance_metrics.h`
+- `common/config/config.cpp`
+- `common/ipc/shared_defs.h`
+- `captureengine/injection/injection.cpp`
+- `captureengine/app/main.cpp`
+- `captureengine/injection/inject_main.cpp`
+- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
+- `hook/d3d12/dx12_hook_main.cpp`
+- `hook/ffx/ffx_hook.cpp`
+- `hook/d3d11/dx11_hook.cpp`
+- `hook/streamline/streamline_hook.cpp`
+- `hook/runtime/main.cpp`
+- `hook/overlay/overlay_compat.h`
+- `hook/present/dxgi_shared.cpp`
+- `hook/d3d12/dx12_overlay_policy.h`
+- `hook/runtime/freeze_watchdog.cpp`
+- `hook/runtime/freeze_watchdog.h`
+- `hook/pacing/fps_limiter.h`
+- `hook/pacing/fps_limiter_policy.h`
+- `hook/pacing/reflex_limiter.h`
+- `hook/pacing/reflex_limiter.h`
+- `hook/overlay/overlay_metrics_publisher.cpp`
+- `hook/metrics/performance_metrics.cpp`
+- `hook/metrics/performance_metrics.h`
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
 - `hook/wrappers/wrapper_hooks.cpp`
-- `hook/wrappers/iat_hook.h`
+- `hook/hooking/iat_hook.h`
 - `hook/wrappers/d3d11_devicecontext_wrap.cpp`
-- `hook/wrappers/iat_hook.cpp`
-- `hook/wrappers/inline_hook.cpp`
-- `hook/wrappers/inline_hook_policy.h`
-- `common/crash_dump_policy.h`
-- `common/crash_first_chance.{h,cpp}`
-- `common/crash_symbol_store.{h,cpp}`
-- `common/crash_handler.cpp`
-- `common/crash_dump_writer.cpp`
-- `captureengine/dump_helper.cpp`
-- `hook/main_fatal_dump.cpp`
-- `hook/common/dxgi_shared_steam_veh.cpp`
-- `hook/apis/ffx_hook_install.cpp`
-- `common/process_ipc.cpp`
-- `common/process_ipc.h`
-- `captureengine/media_main_encoder_05_loop_wgc_select.cpp`
-- `mediaengine/video_encoder_write.cpp`
-- `mediaengine/mediaengine_audio_loop_commit.cpp`
-- `mediaengine/mediaengine_audio_pull_encode_c.cpp`
+- `hook/hooking/iat_hook.cpp`
+- `hook/hooking/inline_hook.cpp`
+- `hook/hooking/inline_hook_policy.h`
+- `common/crash/crash_dump_policy.h`
+- `common/crash/crash_first_chance.{h,cpp}`
+- `common/crash/crash_symbol_store.{h,cpp}`
+- `common/crash/crash_handler.cpp`
+- `common/crash/crash_dump_writer.cpp`
+- `captureengine/diagnostics/dump_helper.cpp`
+- `hook/runtime/main_fatal_dump.cpp`
+- `hook/present/dxgi_shared_steam_veh.cpp`
+- `hook/ffx/ffx_hook_install.cpp`
+- `common/ipc/process_ipc.cpp`
+- `common/ipc/process_ipc.h`
+- `captureengine/media/media_main_encoder_05_loop_wgc_select.cpp`
+- `mediaengine/video/video_encoder_write.cpp`
+- `mediaengine/engine/mediaengine_audio_loop_commit.cpp`
+- `mediaengine/engine/mediaengine_audio_pull_encode_c.cpp`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_crash_dump_policy.cpp`
@@ -99,13 +99,13 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
 
 - State summaries: log on change (first call + whenever any displayed parameter
   differs), not every evaluation. Applied to
-  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay_render.cpp`)
-  and `[Inject Thread] Read handle for texIdx` (`captureengine/media_main_threads_inject.cpp`,
+  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay/pseudo_overlay_render.cpp`)
+  and `[Inject Thread] Read handle for texIdx` (`captureengine/media/media_main_threads_inject.cpp`,
   per-slot handle change detection).
 - Hot-path heartbeats: use `ce::log_meter::ShouldLogCadence(callIndex,
-  firstBurstCount, stride)` from `common/log_meter.h` (tested in
+  firstBurstCount, stride)` from `common/logging/log_meter.h` (tested in
   `tests/test_log_meter.cpp`) — first N calls, then every stride-th. Applied to
-  the PostSL `SUBMIT` line (`hook/apis/dx12_hook_postsl_render_submit.cpp`,
+  the PostSL `SUBMIT` line (`hook/d3d12/dx12_hook_postsl_render_submit.cpp`,
   first 20, then every 600th, plus the bounded dense window 1700-1900 that
   replaced the old "every frame after 1800" crash investigation logging) and
   the wrapper IAT retry scan (`hook/wrappers/wrapper_hooks_devices.cpp`, first
@@ -113,16 +113,16 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
 - Retry/scan paths: never log the same "Initializing..." line on every retry.
   `IAT: Initializing D3D11 hooks...` now uses the same
   `ShouldLogRepeatedIATScan` metering as D3D9/D3D10/DDraw
-  (`hook/wrappers/iat_hook_init.cpp`), and the FFX per-export "found at"
-  lines are logged only for a newly seen module (`hook/apis/ffx_hook_install.cpp`).
+  (`hook/hooking/iat_hook_init.cpp`), and the FFX per-export "found at"
+  lines are logged only for a newly seen module (`hook/ffx/ffx_hook_install.cpp`).
   The FFX module-level "Found module"/"Installing hooks for module" lines are
   additionally metered (first 10 + every 300th) because a module without
   hookable exports (e.g. real nvngx_dlssg.dll) never latches as hooked and
-  used to re-log both lines every ~1 s scan (`hook/apis/ffx_hook_api.cpp`).
+  used to re-log both lines every ~1 s scan (`hook/ffx/ffx_hook_api.cpp`).
 - Trace-only byte dumps: inline-hook per-instruction dumps are limited to the
   first 4 installs and every 100th install; the compact per-hook lines stay
-  (`hook/wrappers/inline_hook.cpp`).
-- NVNGX preset hints (`hook/apis/nvngx_hook_internal.h`): `UpdatePresetHint`
+  (`hook/hooking/inline_hook.cpp`).
+- NVNGX preset hints (`hook/ngx/nvngx_hook_internal.h`): `UpdatePresetHint`
   logs only when the observed value actually changes (SR hints via the existing
   atomic array, RR hints via a new per-quality sentinel array), and the
   unconditional `SetI: Overriding` line is deduped through `LogOncePerParam`.
@@ -133,7 +133,7 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   entry on the next policy tick while the source stays below target, and the
   enter hold (120 ms) is shorter than the flap cycle. The log is gated on
   `encoderTooSlowForTargetCurrent || !bufferedReserveRecovered`
-  (`captureengine/media_main_encoder_05_loop_wgc_select.cpp`); flap entries are
+  (`captureengine/media/media_main_encoder_05_loop_wgc_select.cpp`); flap entries are
   still counted in the session summary (`lowSourceImmediateExits`), and source
   state stays visible at 1 Hz in the CFR jitter-budget diagnostics. This is a
   log-only gate; the flap itself was left unchanged pending runtime smoothness
@@ -145,7 +145,7 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   depth), and `[VideoEncoder] Queuing audio pkt` from every 100 to every 500
   audio packets (~5-10 s; the 1 Hz `[AppDiag] consume` line and `[MuxAudio]`
   cadence already cover flow).
-- Mux write-queue pressure is edge-logged, not polled (`mediaengine/mux_queue_pressure.h`,
+- Mux write-queue pressure is edge-logged, not polled (`mediaengine/mux/mux_queue_pressure.h`,
   `VideoEncoder::WriteFrame`/`ObserveMuxWrite`, tests `tests/test_mux_queue_pressure.cpp`):
   `Mux write queue reached N% of its limit` fires once per 25/50/75% band per episode and
   `Mux write queue recovered` once below 12.5%, each with writer-vs-encoder MB/s, writer
@@ -189,28 +189,28 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Shared deterministic A/V stimulus contract: event schedule, frame-marker encode/decode, palette recovery, zero-crossing audio transition boundaries, and smooth-lane wrap behavior.
 
 ## Useful Existing Logging Points
-- `captureengine/injection.cpp`
+- `captureengine/injection/injection.cpp`
   - Detailed delayed-injection logs for wait-loop start, D3D12 detection, fallback path, and injection attempt.
   - Startup-scan pending injection should log `Launching deferred injection thread for ...` once a target is whitelisted, not already injected, and not recently failed. If a whitelisted process sits forever after startup scan with no launch line, re-check lock ownership around `InjectionManager::Update()` and the locked already-injected/recent-failure checks.
-- `captureengine/main.cpp`
+- `captureengine/app/main.cpp`
   - `session_manifest.txt` records `overlay_enabled`, `overlay_observer_only`, `overlay_observer_policy_only`, and `overlay_observer_startup_present_only` so passive-vs-staged-vs-active sessions are self-describing.
   - A stop-command ACK logs that media finalization continues asynchronously. `Finalizing` is not success; saved/degraded/canceled/failed is media-owned completion feedback after trailer/close/probe completion and the actual output-publication result.
-- `captureengine/inject_main.cpp`
+- `captureengine/injection/inject_main.cpp`
   - Shared-memory config summary logs overlay enabled vs `observerOnly` / `observerPolicyOnly` / `observerStartupPresentOnly` alongside graphics override state.
-- `captureengine/pseudo_overlay.cpp`
+- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
-- `mediaengine/audio_capture.cpp` / `mediaengine/app_audio_capture.cpp` / `mediaengine/audio_resampler.cpp` / `mediaengine/audio_encoder.cpp`
+- `mediaengine/audio/audio_capture.cpp` / `mediaengine/audio/app_audio_capture.cpp` / `mediaengine/audio/audio_resampler.cpp` / `mediaengine/audio/audio_encoder.cpp`
   - Audio-format diagnostics should show endpoint/app requested format, channel masks, resampler input/output layouts, and resolved codec policy. For codec failures, confirm the log says `requested=... resolved=...`; `pcm` should resolve to a concrete PCM encoder and `opus` should resolve to `libopus`.
   - If Opus or PCM initialization fails before media samples are encoded, verify the bundled FFmpeg build first: Windows `--skip-updates` reuses the existing FFmpeg DLLs, and the expected bundle now includes `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`.
   - Hybrid automatic A/V sync evidence should include `[AVSyncProbe]` endpoint/cache/marker details or an explicit fallback, `[AVSyncAuto]` passive inputs, probe input, chosen delay, confidence, reason, and stop summary, plus `[AVSyncApply]` WGC selection-bias or inject reserve-frame application. Low confidence means no guessed render-domain delay was applied.
   - For silent or inactive-source recordings, confirm `Silence queue`, final packet clamp, and end-skip side-data logs where applicable. All enabled tracks should encode real zero samples through their selected codec rather than relying on sparse gaps.
   - For process-loopback sources that first become active late, confirm `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...` and `[STOP AUDIO] Source ... qjoin=... qjoinKeep=...` instead of old multi-second source-local backlog replay.
   - Healthy process-loopback shutdown OR mid-recording re-activation may log `Abandoning process-loopback COM interfaces (audioClient=... to avoid AudioSes CLoopbackMixer teardown crash`. A `crash.log` or `.dmp` in the run is still a strict triage failure. Stream-recovery breadcrumbs `FATAL stream error ... attempting re-activation`, `Process-loopback silent stall ...`, and `Stream recovery summary ...` are expected only when a capture stream actually died mid-session.
-- `mediaengine/video_encoder.cpp`
+- `mediaengine/video/video_encoder.cpp`
   - Mux shutdown logs `mux_closed` before optional post-mux probing. Post-write media validation logs `post_mux_probe_start`, `post_mux_probe_complete`, `post_mux_probe_timeout`, or `post_mux_probe_cancelled`; use a completed reopened-file result as the external stream-duration authority after trailer write.
   - A post-mux probe timeout is a validation/probe fault, not proof that the muxer still owns shutdown. The destructor must return and later captures must be able to start.
   - `Stop: ERROR writer_finalize_timeout ...` is a strict mux ownership fault. After this line, the async writer still owns the FFmpeg context and CE must not run `Sync Stop: Finalizing file...` on the same context. Old logs containing both the timeout/detach warning and sync finalization point to the double-finalize crash family.
-- `captureengine/media_main.cpp`
+- `captureengine/media/media_main.cpp`
   - `[RECORDING CAPACITY]` reports health transitions with current/peak CFR debt, encoder/mux cause, sustain/encode evidence, and `settingsChanged=0 policy=observe_and_preserve_cfr_audio`. `[RECORDING HEALTH]` is the final recording-level result. `[RECORDING FINALIZATION]` and the immutable manifest prove when media has actually completed rather than merely accepted stop.
 - `mediaengine/mediaengine_impl*.cpp`
   - `[PullAudio] App source gap silence ...` shows source-local padding for a started app source that has no buffered samples. This is the expected behavior for sparse app-audio sources in duplicate or mixed routing; a whole-track stall is not acceptable.
@@ -228,7 +228,7 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Automated CE runner for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and target-FPS cases. Bare execution is the fast WGC/inject ALAC/AAC 60/120 zero-drift gate; optional passes cover codec finalization, stress, late app-source joins, sync smoothness, full matrix, and long soak. The adaptive high-entropy 4K120 `--wgc-overload-gate` tries NVENC p5/p6/p7 and fails as inconclusive unless logs prove encoder pressure, overload flags, encoder-limited cadence, and material shortfall. A current fixed result preserves packet/audio integrity and bounded grid-relative residuals while using repeats for missing capacity; legacy encoder-limited output-slot drops are not required. The runner snapshots/restores config, kills stale stimulus processes, uses fullscreen/topmost tear-free defaults, records artifacts/reports per scenario, and keeps pure system/app tracks strict while explicitly marked late/mixed/microphone routes may remain diagnostic.
 - `tools/analysis/analyze_capture_av.py`
   - Session triage reports `multi_app_audio_track_stall`, genuine `late_app_source_backlog`, strict zero-drift/live-audio faults, encoder-overload policy faults, mux/probe/crash faults, and source/capacity attribution separately. Authoritative `[RECORDING HEALTH]` or manifest evidence preserves encoder/mux timeline-debt causality after current overload clears. For old logs only, material WGC/DXGI visual debt plus encoder-overload evidence and no hard pool evidence can conservatively infer the same degraded cause; soft source/pool symptoms then become downstream context. When packet/audio endpoints are exact and every audio overrun/underrun/resync/destroyed-sample/short-track counter is clean, encoder-backlog latency/extreme-drift lines are recovered context rather than false audio faults, but any concrete audio-integrity evidence remains strict. Exact decoded endpoints are necessary but do not prove content sync. Full scans retain a bounded RMS-envelope signature across the entire decoded duration (target 250 Hz, at most 500,000 points per track), prioritize windows around logged late joins/accepted epochs plus uniform and joint-activity windows, and search +/-2 seconds with coarse-to-fine normalized correlation. A `ce_audio_content_sync_fault` requires at least two windows with a repeatable offset of at least 20 ms, correlation at least 0.60, a distinct peak, and offsets within 30 ms of a common cluster; isolated/periodic ambiguity stays diagnostic. Runtime backend telemetry is authoritative over the configured manifest: single-backend diagnostics stay `wgc_*` or `dxgi_dup_*`; ordered DXGI→WGC fallback reports `dxgi_dup_to_wgc`, preserves backend history, adds transition context, and uses neutral `screen_capture_*` names. Fully lower-bound clean single-backend source limitation remains context. Across a proven DXGI→WGC producer-domain reset, a bounded aggregate lower-bound gap (10%, with a five-tick short-run accounting floor) also remains context only with exact final mux evidence, proven source starvation, clean encoder/mux/pool state, a complete runtime smoothness verdict, and zero policy-added repeats/clusters/holds, soft-safe misses, post-selection rejects, mixed policy, or evidence-incomplete counters; the same evidence without a transition stays strict. Live `[AppLatency]` warnings become `app_audio_latency_within_slack` only when the final target-relative distribution proves them benign. Media logs may be legacy `media.log` or immutable recording logs; multiple recordings require explicit selection and missing/overwritten evidence is classified.
-- `hook/apis/dx12_hook_main.cpp`
+- `hook/d3d12/dx12_hook_main.cpp`
   - Logs when observer-only suppresses early PostSL registration, PostSL callback execution, and DX12 overlay/PostSL transition management.
   - Fresh runtime-owned Streamline startup handoffs now log retained startup activation swapchain capture/release and DX12 startup activation service success/failure. A startup activation callback must use a retained or fresh non-null swapchain; a `nullptr` callback from Streamline flush/ECL-expiry paths is a regression.
   - Publishes the currently discovered DX12 queue/swapchain device to native driver limiter consumers and logs the source, device, queue, and HookContext update/conflict state. This matters for the explicit Reflex limiter mode that lazy-inits from `HookContext`.
@@ -238,12 +238,12 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Official AMD FFX startup swapchain creation before enabled `ffxConfigure` proof should log `Protected official FFX startup swapchain pass-through` and avoid CE-side Present-hook refresh, queue-ownership mutation, FFX export inspection, hook retry, deferred probes, capture, and separate overlay GPU work during the fragile startup window. If live Streamline/PostSL is active, it should also log `Protected official FFX startup immediately quiesced Streamline/PostSL` immediately, before AMD owns the swapchain. A staged Direct queue may be retained as deferred takeover data, but it is not a pre-enable render queue. Expected protected-window breadcrumbs are `Protected official FFX startup pending - keeping ProcessFrame tracking-only`, `Protected official FFX startup suppressing separate overlay GPU work`, and, on protected swapchain pointer churn, `Preserving overlay backend across protected official FFX startup swapchain change`. Sustained real render progress without direct FFX proof must only log `Protected official FFX startup has sustained frame progress but remains quiesced`; a `Finalizing ... after sustained frame progress`, `... keeping ProcessFrame overlay-only`, `... using staged runtime queue for overlay-only rendering`, or protected-startup cooldown-bypass line is now a regression. GTA freeze dumps `20260525_195848_gtafreeze` and `20260602_153554` showed that progress-only graduation and staged-queue pre-enable overlay-only ECLs can wedge AMD FSR threads in `ffxQuery`.
   - Early native-FSR interception should be visible before the first FSR preload caches function pointers. Useful breadcrumbs are `FFX Hook: Registered module-filtered dynamic hooks for FFX exports`, `FFX Hook: Using IAT/dynamic hooks for protected official FFX module`, and `GetProcAddress: Intercepted FFX API ffxConfigure`.
   - DX12 overlay no-blanking regressions should be diagnosed from visibility-path logs, not by reintroducing broad overlay suspension. Transition cooldowns should not clear a backend-ready overlay; only zero-sized/iconic swapchains are hard-suspend reasons. Startup-overlay compatibility may log `DX12: Continuing DX12 overlay submissions while startup-overlay compatibility window is active` when Social/EOS/Steam-like modules are still settling but the overlay backend is already initialized.
-- `hook/apis/dx11_hook.cpp` / `hook/wrappers/wrapper_hooks.cpp`
+- `hook/d3d11/dx11_hook.cpp` / `hook/wrappers/wrapper_hooks.cpp`
   - DX10 overlay diagnostics should prove the route, backend, and target binding: `DetourPresent: Routing D3D10 swapchain through shared DX10/DX11 ProcessFrame path`, `DX10: OverlayAdapter initialized`, and `DX10: Overlay RTV ready ...`. D3D10 device creation plus DXGI Present traffic without these lines means the swapchain is classified but not drawing overlay. The DX10 RTV must be released through `g_mainRenderTargetView10` / resize cleanup so CE does not keep an old backbuffer alive across `ResizeBuffers`.
   - D3D11 forced-AF diagnostics should prove both coverage and safety: per-context `DX11: Deferred AF bootstrap ...`, `DX11: Runtime AF hook ensure ...`, `Wrapper: AF draw hook hit`, `Wrapper: AF sampler bind tracked`, `Wrapper: AF allow`, and `Wrapper: AF reconciled` lines show the draw path is active; detailed `AF skip` lines explain conservative skips.
-  - `backbuffer_count` should be proven at swapchain creation, not only after a resolution change. D3D11 `CreateDeviceAndSwapChain`, `CreateSwapChain`, and `CreateSwapChainForHwnd` paths log requested/actual buffer counts when an override is configured. DX12 swapchain refresh logs actual buffer count in `hook/apis/dx12_hook_main.cpp`.
+  - `backbuffer_count` should be proven at swapchain creation, not only after a resolution change. D3D11 `CreateDeviceAndSwapChain`, `CreateSwapChain`, and `CreateSwapChainForHwnd` paths log requested/actual buffer counts when an override is configured. DX12 swapchain refresh logs actual buffer count in `hook/d3d12/dx12_hook_main.cpp`.
   - `cpu_prerender_limit` can still be active when `IDXGIDevice1::SetMaximumFrameLatency` fails: for D3D11, `Created manual prerender query ring buffer` plus `Prerender buffered wait lookback=...` proves the query-ring fallback is enforcing the limit.
-- `hook/common/fps_limiter.h` / `hook/common/reflex_limiter.h`
+- `hook/pacing/fps_limiter.h` / `hook/pacing/reflex_limiter.h`
   - Basic/timer fallback limiter pacing is hook-local. Per-game config can enable the limiter after startup, so the hook must not wait for helper-process release events before running local cadence. For a 140 FPS basic cap, `fps_limiter_trace.log` should show `Apply: LOCAL timer start ...` and periodic `Apply: LOCAL timer stats ...`; repeated `TIMEOUT waiting for release` in basic/timer fallback mode is a regression.
   - Explicit Reflex limiter fallback logs now include whether a native device was available, and the Reflex limiter logs missing SetSleepMode/Sleep pointers, missing devices, SetSleepMode failures, and NvAPI Sleep failures with device/interval/game-active context.
   - The Reflex sleep-mode ABI should remain 44 bytes with `version=0x0001002C`. A `PushFpsLimit failed` line with `status=-9` and a larger version such as `0x00010038` means CE is sending an incompatible NvAPI struct and explicit Reflex mode will fall back to timer pacing even when `device=1`.
@@ -252,9 +252,9 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Manual explicit Reflex activation should log `ReflexLimiter: Re-armed manual FPS limit with low-latency reset before push ...` before the first capped `Pushed FPS limit ... lowLatency=1` call after activation, target changes, or device changes. Talos `20260430_181933_talos` showed that the same OFF -> ON edge produced the user's observed latency drop when done manually through a config basic -> reflex toggle.
   - Manual explicit Reflex now has a filtered `nvapi_QueryInterface` hook path. Expected diagnostics are the early `ReflexLimiter: Early filtered nvapi_QueryInterface hook armed from config.ini...` (or shared-memory) log before late NvAPI readiness, registration logs for the filtered dynamic/IAT hook, wrapper-return logs such as `ReflexLimiter: Returning SetSleepMode wrapper...` / `ReflexLimiter: Returning Sleep wrapper...` for game callers, and pass-through reason logs for Streamline/FFX runtimes, third-party overlays, system modules, and CE modules. If the first filtered-hook registration still appears only beside `ReflexLimiter: Ready` after NvAPI loads and no wrapper-return logs follow, the game-owned low-latency handoff is still being armed too late.
   - Game-owned Reflex handoff remains intentionally strict in auto/non-manual paths: require fresh stable game sleep and no recent present-gap churn before skipping CE's local cadence. Manual explicit Reflex may use CE-owned post-Present cadence as fallback, including while DLSS FG is active, but the desired Talos low-latency path is for the game-owned NvAPI Sleep wrapper to run `ApplyHybridPacingBeforeNativeSleep()` at the game's Reflex sleep point and then forward to the original driver pointer. GTA Reflex/DLSS FG switching should stay protected because sensitive runtime callers receive original driver pointers and GTA's comparison path does not enable CE's manual limiter.
-- `hook/common/freeze_watchdog.cpp`
+- `hook/runtime/freeze_watchdog.cpp`
   - When a frame-generation runtime owns presentation, freeze monitoring must continue even if the process is backgrounded and no ordinary game Present is in flight. GTA `20260602_161000_gtafreezestartwithfsrfg` showed AMD presenter/interpolation hangs can sit inside `amd_fidelityfx_dx12!ffxQuery` and may otherwise require an Alt+Tab before dump capture triggers. Watchdog status logs include `runtimePresentation=1` while that monitor is forced. The pure policy helper is covered by `FreezeWatchdogKeepsRuntimePresentationMonitoredInBackground`.
-- `hook/apis/streamline_hook.cpp`
+- `hook/streamline/streamline_hook.cpp`
   - Logs pure observer-only FG transition pass-through versus staged observer-policy-only startup-policy handling.
   - Streamline feature-hook discovery now scans all loaded `sl.*.dll` modules, not only `sl.interposer.dll` / `sl.common.dll`, so feature-owner DLLs such as `sl.dlss_g.dll` can arm direct-import fallbacks even when export-inline patching fails.
   - Fresh `sl.*.dll` load notifications now immediately inspect that module in addition to the periodic hook-thread scan. The log line records whether `slGetFeatureFunction`, `slSetD3DDevice`, DLSSG SetOptions/GetState, and Reflex feature hooks are ready after the load.
@@ -266,15 +266,15 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - Samples successful `slDLSSGGetState` calls with the supplied options mode/generated-frame request, runtime fence evidence, update decision, and whether `slDLSSGSetOptions` is hook-ready. This is intended for 2D-menu stale-label investigations where `GetState` may remain active even after the user changed menu settings.
   - Logs source-specific suppression when post-settling `slDLSSGGetState` OFF polls are held through the 30-frame PostSL warmup proof window. In GTA `20260425_000339`, Reflex/NVAPI hooks were inactive, while the decisive collapse was a GetState OFF immediately after frame-12 stabilization ended.
   - Loaded-module feature-owner scans now retry transient Toolhelp `ERROR_BAD_LENGTH` failures and log retry recovery. Talos `20260425_173428` showed this error early in the session, so a single failed module snapshot must not permanently suppress later `sl.*.dll` fallback discovery.
-- `hook/common/dxgi_shared.cpp`
+- `hook/present/dxgi_shared.cpp`
   - Logs startup bypass and Streamline routing details, with explicit rate limiting in high-frequency paths. For GTA-style pure-DLSS startup, `Streamline startup normal-route transport allowed` with `transportRisk=0` / `steamRisk=0` is the healthy shape; `Streamline startup normal-route bypass` should now mean a real stale/third-party Present-hook risk exists.
   - Logs DXGI factory source selection for FG compatibility. `DXGI factory export source selected=live` should be used for app-thread FG handoffs so upstream interposers such as Streamline still see factory creation; `selected=unhooked ... callerRuntime=1` should be used for direct runtime callers.
 - `hook/wrappers/dxgi_swapchain_wrap.cpp`
   - DX12 focus-loss sessions must not force `SyncInterval=0` or `DXGI_PRESENT_DO_NOT_WAIT`. Expected logs say `preserving Present pacing (D3D12 focus-loss safety)`. The old `SyncInterval 1->0 + DO_NOT_WAIT` breadcrumb is acceptable only for non-DX12 unfocused flip-model paths where compatible. x86 DX12 Alt+Tab testing should treat `DX12: GPU device removed (0x887A0006)` after a burst of unfocused `DO_NOT_WAIT` logs as the old failure family.
   - x86 DX12 focus-loss testing (v10): the overlay must STAY VISIBLE in steady states (focused AND unfocused-but-visible); it may be briefly absent ONLY during the actual Alt+Tab mode switch. Verify `DX12 focus-loss sync policy=v10 focus-transition-hold`; on each focus change `DX12: Focus-change edge (regained/lost foreground) — holding ...` then `Holding overlay/capture backbuffer work during focus-change mode switch` then `Resuming overlay/capture backbuffer work — focus-change mode switch settled`; and the v8 not-presentable hold `Holding overlay/capture backbuffer work while swapchain is NOT presentable` only when occluded/iconic/zero-sized. Root cause (DRED): any CE backbuffer touch — draw (v8) OR copy (v9 offscreen) — pure-hangs (`pageFaultVA=0`) mid iflip<->composited switch; v9 offscreen is retired. DRED must be armed: `DX12 DRED: armed auto-breadcrumbs ... before device creation` (confirm with `llvm-strings capture_hook_x86.dll | grep "DX12 DRED: armed"`). If a hang recurs, the `DX12 DRED: ===== device-removed extended data` block shows the hung op: if it's during the hold window raise `kFocusTransitionHoldFrames`; if it's in STEADY unfocused (no recent edge) then steady-unfocused direct draw is unsafe.
-- `hook/common/performance_metrics.cpp`
+- `hook/metrics/performance_metrics.cpp`
   - Percentile FPS helpers are hot-path overlay code and should avoid per-frame heap allocation/full sort work. If this area changes, keep `PerformanceMetricsTest.LowPercentilesUseWorstFrameTimesWithoutHeapSortDependency` or an equivalent regression around worst-frame percentile behavior.
-- `hook/wrappers/iat_hook.cpp`
+- `hook/hooking/iat_hook.cpp`
   - Logs Streamline proxy DXGI factory export pass-through. A healthy DLSS-G switch-app run includes `GetProcAddress: Leaving Streamline proxy export CreateDXGIFactory1 from sl.interposer.dll unmodified`, while Streamline feature APIs remain hookable through their dedicated feature paths.
   - A module-filtered dynamic hook must preserve a resolved pointer owned by another image (or by no discoverable
     image). `GetProcAddress: Preserving foreign-resolved ... the filtered CE hook is not returned` proves this safety
@@ -282,9 +282,9 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
     recurse. `IATHookDynamicFilterTest.FilteredHookPreservesForeignResolvedTargets`,
     `IATHookExportResolverTest.DirectResolutionBypassesGetProcAddressWithoutChangingTheOwner`, and
     `NgxModulePolicy.ReentryGateOwnsOnlyTheOutermostCall` are the focused regression floor.
-- `hook/wrappers/inline_hook.cpp`
+- `hook/hooking/inline_hook.cpp`
   - Bypass/deep-hook diagnostics should prove external patch resume safety. `Extended resume offset past patched fill bytes` means CE skipped over a third-party `E9 ... CC ...` patch span and resumed only at a verified disk-matching instruction boundary.
-- `hook/common/freeze_watchdog.cpp`
+- `hook/runtime/freeze_watchdog.cpp`
   - Logs watchdog startup, monitored thread selection, dialog-triggered dumps, freeze-triggered dumps, explicit immediate dump requests, duplicate immediate-dump suppression, and temp/rename watchdog dump writes. Watchdog dump capture is one-shot per run; ordinary freeze dumps still do not force-kill the game.
   - A same-process `#32770` dialog is diagnostic evidence, not independently a freeze. Third-party overlays can own one while the game continues presenting. Known-critical `ERR_GFX_STATE` remains immediately dumpable and a startup dialog before any observed render loop remains dumpable after its short persistence delay; once presentation has been observed, an ordinary dialog dump additionally requires the render heartbeat to reach the configured freeze timeout. A healthy suppression logs the dialog age, heartbeat age, and timeout once per dialog identity. Gothic II + Steam session `20260915_124517` is the regression: Steam's dialog thread remained visible for about 11 seconds while DirectDraw continued at 144 FPS, and the old five-second dialog-only branch wrote a false `FREEZE` dump.
   - **The window the application presents into is never a blocking dialog, whatever class it is registered with.** Gothic II's own render window is `#32770` with no title, so session `20260916_005504` wrote a 29 MB dialog dump for the window CE was compositing into while the game ran at ~270 presentations a second. CE always knows that window - `SetPresentationWindow` publishes it from the DirectDraw target change - and `DialogWindowCanBlockPresentation` excludes it from the scan. An unknown presentation window still lets every dialog count, which preserves the startup-crash dumps.
@@ -296,21 +296,21 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   - **A freeze the application explains itself is recorded with stacks, not with its memory.** When the `#32770` window CE found is owned by the very thread CE monitors for presents, that thread is running the dialog's modal message pump - which is why the heartbeat went stale - so the cause is already established and the process's memory has nothing to add. `FreezeIsExplainedByApplicationDialog` turns that into a stack-only dump: `kStackOnlyDumpType` (thread stacks, thread info, unloaded modules) instead of `kRichCrashDumpType`, about a megabyte instead of the 30 MB Gothic II session `20260916_014133` wrote for its own `Error-Message` box. Memory ranges a dump callback contributes - the WoW64 32-bit stacks - are still written, so a 32-bit target stays walkable. The scope reaches the external helper as `--dump-helper-scope=stacks`; every other dump producer keeps the rich dump. Expect `the monitored render thread (tid=...) owns ... - capturing stacks only` and `stackOnly=1` on the helper lines. A known-critical `ERR_GFX_STATE` dialog is excluded deliberately.
   - **An exit that follows the application's own error box is dumped, whatever the exit code.** When the watchdog finds a dialog owned by the monitored render thread (`FreezeIsExplainedByApplicationDialog`), `NoteRenderThreadDialog` records the heartbeat at that moment and logs the dialog's Static/Edit text (`ReadDialogBodyTextBounded`, bounded sends, one line). `TerminationFollowsRenderThreadDialog` is true while no presentation has advanced the heartbeat since; `ShouldCapturePreTerminationDump`'s `terminationFollowsApplicationErrorDialog` then takes the minimal-first pre-termination dump even for exit code 0 (`FatalExitDump: Termination follows a modal dialog on the render thread ...`). Deliberately independent of whether the box is still visible at exit - the 500 ms poll would make that racy. Gothic II `20260924_233030` dismissed its `Error-Message` after ~3 s and called ExitProcess(0), so neither the five-second dialog dump nor the code-0 exit wrote anything. Known false positive: a title that asks "really quit?" in a render-thread message box gets one minimal dump. `tests/test_render_thread_dialog_exit.cpp`.
   - Freeze dumps take the same external-helper route as the crash worker (`ShouldPreferExternalCrashDumpHelper`), because an in-process dbghelp walk under a foreign overlay suspends every thread for ~60 s — the freeze dump then *is* the freeze the user reports. Expect `Foreign overlay loaded — capturing the freeze dump with the external helper` followed by `External helper captured the freeze dump`; with a foreign overlay loaded and the helper unavailable, `Skipping the in-process freeze dump` is correct and a missing dump is the intended outcome.
-- `hook/main.cpp`
+- `hook/runtime/main.cpp`
   - Logs installation of the `dbghelp.dll!MiniDumpWriteDump` mirror hook, successful/failed re-emission of externally handled dumps into the active session folder, duplicate external crash signature suppression, and repeated strong external dump storm termination. External dump mirrors and supplemental CE-owned dumps are written through `.inprogress` paths and renamed only after success/non-empty validation.
   - Pre-termination dump diagnostics should include both import/dynamic hook installation and any lower-level inline export hooks: `FatalExitDump: Installed pre-termination dump hooks`, `FatalExitDump: Installed inline pre-termination hook`, and, for crash-like current-process exits, `FatalExitDump: Capturing pre-termination dump before crash-like process exit`.
   - **A live FG runtime at exit is not evidence of an abnormal exit.** The active-FG fallback in `ShouldCapturePreTerminationDump` exists for an FG runtime killing the process while tearing down, but quitting never turns frame generation off first, so every game that uses FG reaches its exit with the flags still set. Portal RTX sessions `20260901_202149` and `20260902_071853` are the regression: the 64-bit `NvRemixBridge.exe` renderer ends itself with `TerminateProcess(1)` from its own image on every quit, and each run wrote a 191 MB "crash" dump and spent 2.5 s doing it, while the two real crashes in the same log set (DOOM `STATUS_BREAKPOINT`, Witcher 3 access violation) were caught by the crash-like exit code and never needed the fallback. The fallback now also requires `TerminationOrigin != kPrimaryModule`: a request raised from the process's own executable with a non-crash exit code is the application quitting. Anything raised from a loaded module, and anything unresolvable (`kUnknown`), still dumps — the classifier fails open. Crash machinery is unaffected, because abort/terminate/`_purecall`/fail-fast all report a crash-like code and return before the fallback, statically linked CRT included.
   - **A termination request is attributed to the frame that made it, never to the layer carrying it.** One request reaches CE at every layer it passes through on the same thread — the application calls `TerminateProcess` and KERNELBASE calls `NtTerminateProcess`; `exit()` calls `ExitProcess`, which calls `RtlExitUserProcess`, which calls `NtTerminateProcess` — and only the outermost layer still has the requester as its immediate caller. Portal RTX session `20260914_130052` is the regression: the `TerminateProcess` hook resolved `kPrimaryModule` for `NvRemixBridge.exe+0x10D6B` and correctly suppressed the dump, then the `NtTerminateProcess` hook saw `KERNELBASE.dll+0x100159` as its caller, called the same request `loaded-module`, and wrote the 183 MB dump the first hook had just refused (`origin=loaded-module` one line after the suppression line). `ResolveTerminationOrigin` therefore answers directly only when the immediate caller is attributable; when that caller is CE's own hook or one of the forwarding layers it walks `RtlCaptureStackBackTrace` and takes the first frame that is neither.
   - Every classification is a range check against bounds cached by `CacheTerminationOriginModuleBounds()` while the fatal hooks are installed — the executable, CE's own image, and `ce::crash_dump_policy::kTerminationPlumbingModuleNames` (ntdll, kernel32, KERNELBASE, ucrtbase, msvcrt, vcruntime140). It deliberately makes no loader call on the termination path, where whatever is tearing the process down may already hold the loader lock, and where `NtTerminateProcess` is reached from `RtlExitUserProcess` with that lock held by the terminating thread itself. The plumbing list stays narrow rather than covering the Windows directory wholesale, because NVIDIA's FG runtimes load from the DriverStore under that directory and an FG runtime killing the process during teardown is exactly what the fallback exists to capture. Unresolved frames, an uncached executable and a stack of nothing but forwarding layers all resolve to `kUnknown`, which still dumps.
   - A suppressed dump is never silent: `FatalExitDump: Skipping pre-termination dump - the application terminated itself from its own image with a non-crash exit code` is logged once per process with the caller address and module **plus `requester=`/`requesterModule=`**, and the capture line carries `origin=primary-module|loaded-module|unknown` with the same requester pair. The two are what distinguish a genuine layered false positive from a real loaded-module exit.
-- `common/crash_dump_writer.cpp`
-  - The vectored handler sees every first-chance exception in the host process (`ce::crash_dump_policy::ClassifyFirstChanceException`). A first-chance exception is not a crash: Mono (Unity) and the JVM turn access violations into null checks and safepoints, emulators map memory through them, .NET and LuaJIT raise error-severity codes for every managed/script exception. So only inherently fatal codes (stack overflow, fail-fast/GS, heap corruption, fatal user callback, assertion failure) dump immediately, UE5 `ensure` gets its quick assert dump (capped per process), an undebugged `STATUS_BREAKPOINT` is recorded like a hardware fault (handled anti-cheat/hook-race int3s are the common case, and an immediate dump there latched `g_DumpSuccessfullyWritten`, so the real crash that followed got no dump; an escaped breakpoint still dumps via `forceDump`, the termination hooks - `kBreakpointExceptionExitCode` is crash-like - or WER LocalDumps adoption), application-defined codes (customer bit) and C++ EH are ignored, and every other error-severity fault is only **recorded** (`common/crash_first_chance.{h,cpp}`: fixed per-thread slots, no allocation/lock/I/O). A vectored continue handler forgets a thread's record when any handler resumes execution. The dump happens when the process dies of it: the unhandled filter re-enters with `forceDump`, and the pre-termination hooks dump a non-zero exit that follows an unresolved fault (`IsTerminationFollowingUnresolvedFault`: the terminating thread is still inside exception dispatch - a KiUserExceptionDispatcher/RtlRaiseException frame on its stack - or it holds a recorded fault on its own stack), using the recorded context. Wukong `20260817_052857` is the older regression (RPC_S_CALL_CANCELLED dumped twice); the 2026-09-23 audit is the newer one (each handled AV cost a dump stall, the dump budget and three crash.log writes). The duplicate last-position registration is gone.
+- `common/crash/crash_dump_writer.cpp`
+  - The vectored handler sees every first-chance exception in the host process (`ce::crash_dump_policy::ClassifyFirstChanceException`). A first-chance exception is not a crash: Mono (Unity) and the JVM turn access violations into null checks and safepoints, emulators map memory through them, .NET and LuaJIT raise error-severity codes for every managed/script exception. So only inherently fatal codes (stack overflow, fail-fast/GS, heap corruption, fatal user callback, assertion failure) dump immediately, UE5 `ensure` gets its quick assert dump (capped per process), an undebugged `STATUS_BREAKPOINT` is recorded like a hardware fault (handled anti-cheat/hook-race int3s are the common case, and an immediate dump there latched `g_DumpSuccessfullyWritten`, so the real crash that followed got no dump; an escaped breakpoint still dumps via `forceDump`, the termination hooks - `kBreakpointExceptionExitCode` is crash-like - or WER LocalDumps adoption), application-defined codes (customer bit) and C++ EH are ignored, and every other error-severity fault is only **recorded** (`common/crash/crash_first_chance.{h,cpp}`: fixed per-thread slots, no allocation/lock/I/O). A vectored continue handler forgets a thread's record when any handler resumes execution. The dump happens when the process dies of it: the unhandled filter re-enters with `forceDump`, and the pre-termination hooks dump a non-zero exit that follows an unresolved fault (`IsTerminationFollowingUnresolvedFault`: the terminating thread is still inside exception dispatch - a KiUserExceptionDispatcher/RtlRaiseException frame on its stack - or it holds a recorded fault on its own stack), using the recorded context. Wukong `20260817_052857` is the older regression (RPC_S_CALL_CANCELLED dumped twice); the 2026-09-23 audit is the newer one (each handled AV cost a dump stall, the dump budget and three crash.log writes). The duplicate last-position registration is gone.
   - External-helper dumps carry the exception stream: `ExternalDumpException` passes the EXCEPTION_POINTERS address and thread id, and the x64 helper writes them with `ClientPointers=TRUE` (same-bitness targets only; `WriteSupplementalCrashDump` retries without the stream if dbghelp cannot read it). Freeze dumps prefer the helper whenever it is registered (`ShouldPreferExternalFreezeDumpHelper`).
   - `RegisterWithWER` ORs its bits into the host's existing error mode and WER flags instead of replacing them.
   - With a foreign overlay loaded the worker captures through the external helper first and refuses the in-process fallback entirely (`ShouldPreferExternalCrashDumpHelper` + the existing `ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure`). dbghelp reads every module's version resource through the overlay's loader/version hooks while all other threads stay suspended; the same session measured 61.6 s per `MiniDumpNormal`. The hook publishes the helper and the overlay predicate through `RegisterCrashDumpEnvironmentHooks` before `InstallCrashHandler`; nothing registered keeps the plain in-process path (captureengine's own processes).
-- `hook/common/overlay_metrics_publisher.cpp`
+- `hook/overlay/overlay_metrics_publisher.cpp`
   - Logs FG publication state changes and invariant violations.
-- `hook/common/fg_session_state.cpp`
+- `hook/fg/fg_session_state.cpp`
   - Emits `FG SNAPSHOT`, `FG INVARIANT`, `FG EVENT`, `FG PLAN`, `FG PLAN DIFF`, `FG TRANSITION`, and `FG LEGACY DECISION` lines, and updates `session_manifest.txt` with planner/session metadata.
 
 ## Practical Regression Checklist
@@ -330,7 +330,7 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
 - If you touch native-FSR callback-backend lifecycle or any normal-overlay cleanup path that can run during FSR suspension windows, verify the temporary suspend/resume family explicitly too: a transient `ffxConfigure(frameGenerationEnabled=0)` while the runtime-owned swapchain still owns Present must not unnecessarily tear down the dedicated callback backend, GTA/Talos traces should clearly show whether CE preserved or re-used that backend, and a quick resume on the same runtime-owned path must not reopen the `amd_fidelityfx_dx12!ffxQuery` deadlock family.
 - If you touch official AMD FFX startup swapchain handling, verify the pass-through invariant explicitly: before a direct enabled `ffxConfigure` proves CE can safely mutate the path, create-swapchain hooks may latch startup arming and stage a Direct queue only as deferred takeover data. They must not refresh Present hooks, claim queue ownership, inspect official AMD FFX exports, retry hooks, run probes, capture, or submit separate overlay GPU work. Live Streamline/PostSL must still be quiesced immediately if it is active. Regression coverage should include `DXGISharedTest.ProtectedOfficialFFXStartupQuiescesCESideEffectsUntilDirectConfigure`, `DXGISharedTest.ProtectedOfficialFFXStartupDoesNotAllowSeparateOverlayOnlyBeforeProof`, `DXGISharedTest.ProtectedOfficialFFXStartupOverlayOnlyDoesNotBypassFGCooldownWithStagedQueue`, `DXGISharedTest.ProtectedOfficialFFXStartupPreservesBackendAcrossSwapchainChangeUntilProof`, `DXGISharedTest.ProtectedOfficialFFXStartupQuiescesLiveStreamlinePostSLImmediately`, and `CrashHandlerBinaryTest.HookDllContainsLazyExecRegressionStrings`.
 - If you touch runtime-owned native-FSR overlay ownership or injected DX12 overlay suppression, verify the explicit native-FSR OFF teardown window too: while `HookHasRuntimeOwnedNativeFGPresentPath()` is still true, CE must not fall back to separate injected DX12 overlay GPU work on the runtime-owned FFX queue just because the temporary effective runtime label says `Off`. GTA/Talos traces should make that ownership visible: no resumed deadlock in `amd_fidelityfx_dx12!ffxQuery`, no cold callback-backend re-init on the same runtime-owned path, and no normal injected overlay reinit/submit path taking over that same FFX-owned queue during the explicit `enabled=0` teardown window unless ownership has truly ended.
-- If you touch `hook/common/fg_session_state.*` or move a decision under the planner/session layer, verify both sides: focused unit coverage for the planner/session output and the existing reducer/replay/publication compatibility suites that still depend on the old public contract.
+- If you touch `hook/fg/fg_session_state.*` or move a decision under the planner/session layer, verify both sides: focused unit coverage for the planner/session output and the existing reducer/replay/publication compatibility suites that still depend on the old public contract.
 - If you use `Overlay.enabled=false` as a diagnosis baseline, verify from the logs that there is actually no DX12 overlay/PostSL/startup-policy activity. Hidden overlay and passive observer-only are not equivalent.
 - If you touch `Overlay.observer_only`, `Overlay.observer_policy_only`, or `Overlay.observer_startup_present_only`, verify the intended split explicitly: pure observer-only still has no pre-FG overlay submits, no early/PostSL callback install/use, no special Streamline synthetic/startup Present routing, and no startup-window Streamline mutation; observer-policy-only may restore only the Streamline startup-policy family while DX12/PostSL/startup-Present behavior stays passive; observer-startup-present-only may further restore only the remaining non-Streamline startup-Present probe pieces while PostSL callback install/use and rendering still stay passive, and Streamline-originated startup-handoff Presents must stay synthetic in observer mode.
 - If you touch watchdog ownership or dump-trigger conditions, verify that helper heartbeats do not silently retarget the monitored thread and that explicit stall conditions still produce an automatic dump.
@@ -375,8 +375,8 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
 - If you touch create-swapchain queue capture or caller classification, verify that duplicate deep/inline/global capture of the same authoritative Streamline queue does not drop its hookable/runtime-owned identity, and also does not falsely re-arm the startup handoff window once the queue is already known.
 - If you touch DXGI Present-hook refresh or repair logic, verify that later runtime-created live swapchains can still re-anchor Present/Present1 interception when the active Present path moves to a different vtable after startup.
 - If you touch DX10/D3D10 classification or overlay setup, verify that D3D10 swapchains enter the shared DX10/DX11 `ProcessFrame` path and that the overlay binds an explicit swapchain backbuffer RTV instead of relying on whatever render target the app left bound.
-- If you touch the DX10/DX11 capture-texture slot selector, remember that `ID3D10Query`/`ID3D11Query` EVENT queries return `DXGI_ERROR_INVALID_CALL` (0x887A0001), not `S_OK`, until they have been `End()`ed. Accepting only `S_OK` makes every freshly created slot look GPU-busy, so no copy is ever issued and capture wedges with zero frames and no diagnostics. Readiness must go through `ClassifyCaptureCopyQuerySlot` (`common/capture_base.h`), gated on the per-slot `copyQueryIssued` flag; `CaptureBaseTest.NeverIssuedCopyQueryDoesNotBlockSlotReuse` and `CaptureBaseTest.SlotScanSucceedsWhenNoCopyQueryHasBeenIssuedYet` pin it. DX11 normally hides the defect behind fences, so exercise the no-fence path too. Slot starvation is now reported by `DX10Capture:`/`DX11Capture: No capture texture slot available (consecutive=...)`.
-- If you touch any hook whose target is called from a hot render loop, do not rely on IAT patching alone. An optimizing compiler may hoist the `__imp_*` load out of the loop and keep the address in a register, so a patch applied after injection is never observed (`opengl_test.exe` caches `SwapBuffers` in `r13`; `opengl_legacy_test.exe` reloads it per iteration, which is the whole reason only one of them showed an overlay). Swap entry points are inline-hooked in `hook/apis/opengl_hook_install.cpp` and log `OpenGL: Inline hook installed for <module>!<export>`; a `Inline hook failed ...` line means only IAT-routed callers are covered.
+- If you touch the DX10/DX11 capture-texture slot selector, remember that `ID3D10Query`/`ID3D11Query` EVENT queries return `DXGI_ERROR_INVALID_CALL` (0x887A0001), not `S_OK`, until they have been `End()`ed. Accepting only `S_OK` makes every freshly created slot look GPU-busy, so no copy is ever issued and capture wedges with zero frames and no diagnostics. Readiness must go through `ClassifyCaptureCopyQuerySlot` (`common/capture/capture_base.h`), gated on the per-slot `copyQueryIssued` flag; `CaptureBaseTest.NeverIssuedCopyQueryDoesNotBlockSlotReuse` and `CaptureBaseTest.SlotScanSucceedsWhenNoCopyQueryHasBeenIssuedYet` pin it. DX11 normally hides the defect behind fences, so exercise the no-fence path too. Slot starvation is now reported by `DX10Capture:`/`DX11Capture: No capture texture slot available (consecutive=...)`.
+- If you touch any hook whose target is called from a hot render loop, do not rely on IAT patching alone. An optimizing compiler may hoist the `__imp_*` load out of the loop and keep the address in a register, so a patch applied after injection is never observed (`opengl_test.exe` caches `SwapBuffers` in `r13`; `opengl_legacy_test.exe` reloads it per iteration, which is the whole reason only one of them showed an overlay). Swap entry points are inline-hooked in `hook/opengl/opengl_hook_install.cpp` and log `OpenGL: Inline hook installed for <module>!<export>`; a `Inline hook failed ...` line means only IAT-routed callers are covered.
 - Inline-hook trampolines must be allocated near their target. `AllocateTrampolinePool` picks the closest free block because the first free block above `target - 2GB` puts rewritten RIP-relative displacements out of range and fails installs that were previously fine (this is what kept `opengl32!wglSwapBuffers` and `wglSwapLayerBuffers` unhooked). `InlineHook: RIP-relative fixup out of range` is the symptom.
 - `python .\testapp\run_tests.py --api dx10` covers D3D10 inject capture end to end (`DX10 Capture Initialized` plus `DX10Capture: [n] Copying to texture`). DX10 had no integration target at all before 2026-08-07, which is why a total capture wedge shipped unnoticed.
 - If you touch D3D12 focus-loss or unfocused swapchain throttling, verify the x86 DX12 Alt+Tab/focus-loss family manually with irregular short/long intervals. The overlay must STAY VISIBLE whenever the window is visible (unfocused-but-visible included) — focus is NOT a reason to hide it. D3D12 must preserve Present pacing, preserve overlay backend/resources/state, and hold CE's direct swapchain backbuffer overlay/capture work ONLY when the swapchain is not presentable (occluded/iconic/zero-size); avoid using DXGI frame-latency waitables as the correctness gate; do not reintroduce `DO_NOT_WAIT`, overlay backend teardown, or focus-based overlay hiding. The legacy focus-edge counter is telemetry/DRED-window state only and is covered by `DXGISharedTest.D3D12FocusTransitionTelemetryTracksOnlyTheModeSwitchWindow`; it must never become a render gate. Other coverage includes `DXGISharedTest.D3D12FocusLossPreservesPresentPacing`, `DXGISharedTest.D3D12FocusLossFrameLatencyWaitableProbeIsDisabledForPresentPassthrough`, `DXGISharedTest.D3D12NonPresentableSwapchainHoldsBackbufferWork`, `DXGISharedTest.D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible`, `DXGISharedTest.D3D12FocusTransitionDeviceRemovalDumpRequestsOnlyOnceForRecentTransition`, `DXGISharedTest.D3D12NonPresentableHoldPolicyIsPresentPathAgnostic`, and `DXGISharedTest.IncompleteFocusLossFenceOnlyHoldsBackbufferWork`. DRED arming/dump and current v13 markers are pinned by `CrashHandlerBinaryTest.HookDllContainsLazyExecRegressionStrings`.
@@ -493,7 +493,7 @@ the CRT `abort()`/`std::terminate` pair, so the interesting frame is the third o
 - **Log privacy is enforced centrally; do not bypass it.** Every funnel scrubs lines before they reach disk or the
   SHM ring: `ce::privacy::RedactUserAccountComponents` masks `\Users\<account>` path components (length-preserving
   `*` fill — redaction must never grow a formatted line, because funnels format into fixed-capacity buffers) inside
-  `common/logging.cpp` (`Log`), `hook/common/hook_common.cpp` (`LogToFileAtomic`, covering hook_debug/nvngx logs and
+  `common/logging/logging.cpp` (`Log`), `hook/runtime/hook_common.cpp` (`LogToFileAtomic`, covering hook_debug/nvngx logs and
   the logger-service SHM consumer), and the Vulkan layer's `EarlyLog`/`LayerLog`/incompatible-discovery report.
   User-configured output paths additionally collapse to root + leaf via `ce::privacy::CollapsePathForLog` at the
   video-encoder/audio-only/screenshot/reserved-output call sites, so a shared log shows `H:\...\capture_*.mkv`,

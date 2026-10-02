@@ -2,8 +2,8 @@
 
 TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamTouchAndInvoke) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
-    const fs::path coreSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_core.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
+    const fs::path coreSource = fs::current_path() / "hook" / "present" / "dxgi_shared_present_core.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     ASSERT_TRUE(fs::exists(coreSource));
 
@@ -33,7 +33,7 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     EXPECT_NE(core.find("SL external-overlay vtable transport"), std::string::npos);
     EXPECT_EQ(core.find("\"SL startup bypass\""), std::string::npos);
 
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
@@ -50,7 +50,7 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     EXPECT_LT(naturalGuard, slFastPath);
 
     // CallOriginalPresent1 lives in its own translation unit (source-size split).
-    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "present" / "dxgi_shared_original_present1.cpp";
     ASSERT_TRUE(fs::exists(present1Source));
     const std::string present1 = ce::test_source::ReadFile(present1Source);
     ASSERT_FALSE(present1.empty());
@@ -69,7 +69,7 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
 
 TEST(DXGISharedSourceTest, PresentBootstrapPreservesE9AndDetoursFF25ForeignEntries) {
     namespace fs = std::filesystem;
-    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path hooksSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(hooksSource));
     const std::string hooks = ce::test_source::ReadFile(hooksSource);
     ASSERT_FALSE(hooks.empty());
@@ -93,7 +93,7 @@ TEST(DXGISharedSourceTest, PresentBootstrapPreservesE9AndDetoursFF25ForeignEntri
 TEST(DXGISharedSourceTest, RuntimeWorkerCannotReplaceTrackedSourcePresentThread) {
     namespace fs = std::filesystem;
     const fs::path phase2Source =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_phase2.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp";
     ASSERT_TRUE(fs::exists(phase2Source));
     const std::string phase2 = ce::test_source::ReadFile(phase2Source);
     ASSERT_FALSE(phase2.empty());
@@ -119,7 +119,7 @@ TEST(DXGISharedSourceTest, RuntimeWorkerCannotReplaceTrackedSourcePresentThread)
 // the GetBuffer-failure branch only.
 TEST(DXGISharedSourceTest, GetBufferFailureForcesRtvReinitButSuccessPathKeepsOverlayState) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -173,7 +173,7 @@ TEST(DXGISharedSourceTest, GetBufferFailureForcesRtvReinitButSuccessPathKeepsOve
     // the release. Only session ownership makes that impossible, so require it: a destructor
     // that releases, and default-initialized members so that destructor is safe on presents
     // that never reach the acquisition.
-    const fs::path sessionHeader = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session.h";
+    const fs::path sessionHeader = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session.h";
     ASSERT_TRUE(fs::exists(sessionHeader));
     const std::string sessionText = ce::test_source::ReadLogicalSource(sessionHeader);
     ASSERT_FALSE(sessionText.empty());
@@ -198,7 +198,7 @@ TEST(DXGISharedSourceTest, GetBufferFailureForcesRtvReinitButSuccessPathKeepsOve
 // reachable ONLY from their original failure branches.
 TEST(DXGISharedSourceTest, DrawChainFailureElseBranchesNeverRunOnTheSuccessPath) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
@@ -264,7 +264,7 @@ TEST(DXGISharedSourceTest, DrawChainFailureElseBranchesNeverRunOnTheSuccessPath)
 TEST(DXGISharedSourceTest, RealECLResolutionNeverCreatesALiveRuntimeProbeQueue) {
     namespace fs = std::filesystem;
     const fs::path source =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_queue_method_resolution.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_queue_method_resolution.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadFile(source);
@@ -278,7 +278,7 @@ TEST(DXGISharedSourceTest, RealECLResolutionNeverCreatesALiveRuntimeProbeQueue) 
 
 TEST(DXGISharedSourceTest, DeferredRealECLResolutionRemainsPendingUntilPassiveProofExists) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook_process.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadFile(source);
@@ -302,9 +302,9 @@ TEST(DXGISharedSourceTest, DeferredRealECLResolutionRemainsPendingUntilPassivePr
 TEST(DXGISharedSourceTest, PostSLSemanticUnitsShareLifecycleAndAccountingState) {
     namespace fs = std::filesystem;
     const fs::path stateSource =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_postsl_render.cpp";
     const fs::path entrySource =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_entry.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_postsl_render_entry.cpp";
     ASSERT_TRUE(fs::exists(stateSource));
     ASSERT_TRUE(fs::exists(entrySource));
 
@@ -332,7 +332,7 @@ TEST(DXGISharedSourceTest, PostSLSemanticUnitsShareLifecycleAndAccountingState) 
 TEST(DXGISharedSourceTest, PostSLKeepAliveDecrementsSLOffHeuristicGrace) {
     namespace fs = std::filesystem;
     const fs::path entrySource =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_entry.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_postsl_render_entry.cpp";
     ASSERT_TRUE(fs::exists(entrySource));
 
     const std::string entry = ce::test_source::ReadFile(entrySource);
@@ -351,7 +351,7 @@ TEST(DXGISharedSourceTest, PostSLKeepAliveDecrementsSLOffHeuristicGrace) {
 TEST(DXGISharedSourceTest, PureDLSSSelectedQueueFallbackCannotFallThroughToSecondECL) {
     namespace fs = std::filesystem;
     const fs::path source =
-        fs::current_path() / "hook" / "apis" / "dx12_hook_postsl_render_submit.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_postsl_render_submit.cpp";
     ASSERT_TRUE(fs::exists(source));
 
     const std::string text = ce::test_source::ReadFile(source);
@@ -383,7 +383,7 @@ TEST(DXGISharedSourceTest, PureDLSSSelectedQueueFallbackCannotFallThroughToSecon
 // provenance rule; the SL fast-path must get the same protections.
 TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamTransport) {
     namespace fs = std::filesystem;
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
@@ -421,7 +421,7 @@ TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamT
 // bypass) before any bare trampoline call is reachable.
 TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuardedTransport) {
     namespace fs = std::filesystem;
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
@@ -442,7 +442,7 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
     // Present1 fast path: same hazard; the clean Present1 bypass (or the
     // guarded Present transport) must precede the bare Present1 trampoline call.
     // It lives in its own translation unit (source-size split).
-    const fs::path present1Source = fs::current_path() / "hook" / "common" / "dxgi_shared_original_present1.cpp";
+    const fs::path present1Source = fs::current_path() / "hook" / "present" / "dxgi_shared_original_present1.cpp";
     ASSERT_TRUE(fs::exists(present1Source));
     const std::string present1 = ce::test_source::ReadFile(present1Source);
     ASSERT_FALSE(present1.empty());
@@ -464,7 +464,7 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
     // API. With Steam AND RTSS both loaded the name cache reports Steam even
     // though RTSS (loaded later) owns the entry jump; classifying by the name
     // alone made CE service RTSS's chain as Steam (session 20260811_233748).
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
     ASSERT_FALSE(steam.empty());
@@ -485,7 +485,7 @@ TEST(DXGISharedSourceTest, SteamExternalChainTrampolineNeverCalledBareBeforeGuar
 // prepend is live records CE as its own "next" and drops the other overlay out of the chain.
 TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority) {
     namespace fs = std::filesystem;
-    const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";
+    const fs::path steamSource = fs::current_path() / "hook" / "present" / "dxgi_shared_steam.cpp";
     ASSERT_TRUE(fs::exists(steamSource));
     const std::string steam = ce::test_source::ReadFile(steamSource);
     ASSERT_FALSE(steam.empty());
@@ -515,7 +515,7 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
               std::string::npos);
 
     // Install-time diagnostics resolve and log the foreign hook owner.
-    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path hooksSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(hooksSource));
     const std::string hooks = ce::test_source::ReadFile(hooksSource);
     ASSERT_FALSE(hooks.empty());
@@ -537,7 +537,7 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
 
     // In that mode every forward runs the live entry — never a trampoline, a saved foreign
     // target, or the DXGI bypass, each of which drops one overlay out of the chain.
-    const fs::path originalSource = fs::current_path() / "hook" / "common" / "dxgi_shared_original.cpp";
+    const fs::path originalSource = fs::current_path() / "hook" / "present" / "dxgi_shared_original.cpp";
     ASSERT_TRUE(fs::exists(originalSource));
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
@@ -559,7 +559,7 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
     ASSERT_NE(bareTrampolineForward, std::string::npos);
 
     // Load-order evidence is recorded only from real load notifications.
-    const fs::path detectSource = fs::current_path() / "hook" / "main_overlay_detect.cpp";
+    const fs::path detectSource = fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp";
     ASSERT_TRUE(fs::exists(detectSource));
     const std::string detect = ce::test_source::ReadFile(detectSource);
     ASSERT_FALSE(detect.empty());
@@ -575,7 +575,7 @@ TEST(DXGISharedSourceTest, RTSSCoexistenceClassifiesChainByOwnerNotNamePriority)
 // passthrough while CE still owns the entry.
 TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterposerEntryException) {
     namespace fs = std::filesystem;
-    const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks_present.cpp";
+    const fs::path hooksSource = fs::current_path() / "hook" / "present" / "dxgi_shared_hooks_present.cpp";
     ASSERT_TRUE(fs::exists(hooksSource));
     const std::string hooks = ce::test_source::ReadFile(hooksSource);
     ASSERT_FALSE(hooks.empty());
@@ -597,7 +597,7 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     EXPECT_NE(hooks.find("dxgi_shared_oPresentTrampoline = nullptr", transition), std::string::npos);
 
     // The runtime swapchain create wraps instead of always skipping when Streamline is loaded.
-    const fs::path createSource = fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp";
+    const fs::path createSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp";
     ASSERT_TRUE(fs::exists(createSource));
     const std::string create = ce::test_source::ReadFile(createSource);
     ASSERT_FALSE(create.empty());
@@ -650,7 +650,7 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     ASSERT_FALSE(wrapInternalText.empty());
     EXPECT_NE(wrapInternalText.find("streamlineRuntimeNonRetainingWrapper"), std::string::npos);
 
-    const fs::path routingSource = fs::current_path() / "hook" / "common" / "dxgi_shared_present_routing.cpp";
+    const fs::path routingSource = fs::current_path() / "hook" / "present" / "dxgi_shared_present_routing.cpp";
     ASSERT_TRUE(fs::exists(routingSource));
     const std::string routing = ce::test_source::ReadFile(routingSource);
     ASSERT_FALSE(routing.empty());
@@ -668,7 +668,7 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
 TEST(DXGISharedSourceTest, DeepForeignPresentViewPreservesRealDX12SwapchainIdentity) {
     namespace fs = std::filesystem;
     const std::string create = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(create.empty());
     const size_t policyCall = create.find("ShouldPreserveDX12SwapchainIdentityForForeignChain(pDevice,");
     ASSERT_NE(policyCall, std::string::npos);
@@ -705,12 +705,12 @@ TEST(DXGISharedSourceTest, DeepForeignPresentViewPreservesRealDX12SwapchainIdent
 TEST(DXGISharedSourceTest, InternalD3D11ProbeCannotEnterDX12SwapchainWrapping) {
     namespace fs = std::filesystem;
     const std::string dx11 =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "apis" / "dx11_hook.cpp");
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook.cpp");
     ASSERT_FALSE(dx11.empty());
     EXPECT_NE(dx11.find("ScopedInternalDXGISwapchainProbe probeScope"), std::string::npos);
 
     const std::string create = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(create.empty());
     const size_t bypass = create.find("if (DX12_IsInternalDXGISwapchainProbe())");
     const size_t wrapper = create.find("new CWrapDXGISwapChain(*ppSwapChain, pDevice)");
@@ -720,7 +720,7 @@ TEST(DXGISharedSourceTest, InternalD3D11ProbeCannotEnterDX12SwapchainWrapping) {
     EXPECT_NE(create.find("return dx12_hook_oCreateSwapChainGlobal", bypass), std::string::npos);
 
     const std::string process = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "apis" / "dx12_hook_process.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process.cpp");
     ASSERT_FALSE(process.empty());
     EXPECT_NE(process.find("PublishD3D12UseFromPresentedSwapchain(pSwapChain)"), std::string::npos);
     EXPECT_NE(process.find("MarkD3D12DeviceCreated()"), std::string::npos)

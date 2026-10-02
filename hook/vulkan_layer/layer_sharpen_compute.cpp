@@ -1,6 +1,6 @@
 #include "layer_sharpen_state.h"
 
-#include "../common/sharpen_shader_spirv.h"
+#include "hook/sharpen/sharpen_shader_spirv.h"
 
 // Compute route of the Vulkan sharpen pass, used when the application presents
 // from a queue family without graphics support. See vulkan_sharpen_route_policy.h.

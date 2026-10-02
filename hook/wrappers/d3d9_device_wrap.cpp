@@ -1,8 +1,8 @@
 #include "d3d9_device_wrap.h"
 #include <d3d9.h>
-#include "../apis/dx9_hook.h"
-#include "../common/system_metrics.h"
-#include "hook_common.h"
+#include "hook/d3d9/dx9_hook.h"
+#include "hook/metrics/system_metrics.h"
+#include "hook/runtime/hook_common.h"
 
 // Forward declarations for Overlay Logic (from dx9_hook.cpp)
 // Avoid including dx9_hook.h to prevent include path issues

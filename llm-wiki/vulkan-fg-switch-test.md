@@ -11,8 +11,8 @@ Primary sources:
 - `testapp/vulkan_fg_policy.h`
 - `testapp/vulkan_fg_switch_*.{h,inl,cpp}`
 - `testapp/shaders/vulkan_fg_*`
-- `hook/apis/ffx_hook.cpp`
-- `hook/common/ffx_api_parsing.h`
+- `hook/ffx/ffx_hook.cpp`
+- `hook/ffx/ffx_api_parsing.h`
 - `tests/test_ffx_api_parsing.cpp`
 - `tests/test_vulkan_fg_policy.cpp`
 - `tests/test_vulkan_fg_build_policy.cpp`

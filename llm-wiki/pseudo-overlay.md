@@ -3,20 +3,20 @@
 Last cross-checked: 2026-08-11 (DPI scaling follows the anchor monitor's effective DPI instead of the anchor window's awareness-dependent DPI)
 
 Primary sources:
-- `captureengine/pseudo_overlay.h`
-- `captureengine/pseudo_overlay.cpp`
-- `common/pseudo_overlay_profile_policy.h`
-- `common/pseudo_overlay_focus_grace.h`
-- `common/pseudo_overlay_focus_grace.cpp`
-- `common/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
-- `common/recording_indicator_policy.h`
-- `common/capture_policy/recording_health.h`
-- `common/shared_defs.h` (`RecordingStartIntent`, recording health, and finalization notification fields)
-- `common/config.h` (`PseudoOverlayConfig`)
-- `common/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
+- `captureengine/pseudo_overlay/pseudo_overlay.h`
+- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
+- `common/overlay/pseudo_overlay_profile_policy.h`
+- `common/overlay/pseudo_overlay_focus_grace.h`
+- `common/overlay/pseudo_overlay_focus_grace.cpp`
+- `common/overlay/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
+- `common/overlay/recording_indicator_policy.h`
+- `common/capture/capture_policy/recording_health.h`
+- `common/ipc/shared_defs.h` (`RecordingStartIntent`, recording health, and finalization notification fields)
+- `common/config/config.h` (`PseudoOverlayConfig`)
+- `common/config/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
 - `tests/test_pseudo_overlay_thread.cpp`
 - `tests/test_pseudo_overlay_visibility.cpp`
-- `captureengine/status_overlay_sync.{h,cpp}` (media half of the capture-dark protocol)
+- `captureengine/app/status_overlay_sync.{h,cpp}` (media half of the capture-dark protocol)
 
 ## Overview
 
@@ -44,7 +44,7 @@ manifest, so its layered windows are presented in physical pixels on the anchor 
 The font height (`-S(40)`), circle insets, and text padding are multiplied by
 `scale = dpi / 96`, where `dpi` is the **anchor monitor's effective DPI**
 (`GetDpiForMonitor(MDT_EFFECTIVE_DPI)`, pure fallback policy in
-`common/pseudo_overlay_dpi_policy.h`).
+`common/overlay/pseudo_overlay_dpi_policy.h`).
 
 The scale deliberately does NOT come from `GetDpiForWindow(anchorWindow)`: that API
 returns the DPI as seen through the *window owner's* DPI-awareness context (always 96
@@ -75,7 +75,7 @@ fallback, never-0 contract).
 ## Visibility Policy & Mode-2 "Inactive While Recording" Contract
 
 Whether the overlay should have ANY visible window this update is decided by the pure helper
-`ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(...)` in `common/pseudo_overlay_visibility.h`
+`ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(...)` in `common/overlay/pseudo_overlay_visibility.h`
 (unit-tested in `tests/test_pseudo_overlay_visibility.cpp`). The live `ShouldOverlayBeVisible`
 wrapper in `pseudo_overlay.cpp` just fills the inputs and delegates.
 
@@ -114,7 +114,7 @@ Roughly half a second of amber startup status therefore ended up at the start of
 
 `show_encoder_overload_warnings` defaults to true and now covers the recording-level health result, not only the current encoder bottleneck bit. Sustained capacity loss can show `!VIDEO DEGRADED!`; after capacity returns while CFR debt is still being repaid it can show `!RECOVERING!`. These warnings consume telemetry only and never change encoder settings, frame scheduling, timestamps, or audio.
 
-The controller's stop-command `Ack` means only that media accepted the stop. The pseudo-overlay therefore shows `Finalizing recording...` at that point and does not claim success. The disposable media child publishes `Recording saved` or `Recording saved - video/audio/audio and video degraded` only after `MediaEngine_StopRecording` has completed its bounded stop attempt and the output was actually published. Pre-live cancellation reports `Recording canceled`; trailer/close/publication failure reports `Recording failed`. A writer timeout remains a strict analyzer/process-lifetime fault, but it cannot turn an already closed and published playable file into a false “not saved” result. The immutable per-recording manifest records the actual publication outcome with `output_saved`. Completion notifications are idle-only and a new recording-start intent clears stale feedback, so an older media child cannot cover a newer active recording. Completion wording and warning color come from one table shared with the in-game overlay (`common/output_completion_notification.h`); the pseudo overlay maps the shared `OverlayNotificationType` onto its own kinds and back through `common/pseudo_overlay_completion.h` (round trip unit-tested). The degraded values 5/9 mean video; 11-14 are audio and audio-and-video (IPC version 65).
+The controller's stop-command `Ack` means only that media accepted the stop. The pseudo-overlay therefore shows `Finalizing recording...` at that point and does not claim success. The disposable media child publishes `Recording saved` or `Recording saved - video/audio/audio and video degraded` only after `MediaEngine_StopRecording` has completed its bounded stop attempt and the output was actually published. Pre-live cancellation reports `Recording canceled`; trailer/close/publication failure reports `Recording failed`. A writer timeout remains a strict analyzer/process-lifetime fault, but it cannot turn an already closed and published playable file into a false “not saved” result. The immutable per-recording manifest records the actual publication outcome with `output_saved`. Completion notifications are idle-only and a new recording-start intent clears stale feedback, so an older media child cannot cover a newer active recording. Completion wording and warning color come from one table shared with the in-game overlay (`common/capture/output_completion_notification.h`); the pseudo overlay maps the shared `OverlayNotificationType` onto its own kinds and back through `common/overlay/pseudo_overlay_completion.h` (round trip unit-tested). The degraded values 5/9 mean video; 11-14 are audio and audio-and-video (IPC version 65).
 
 ## Recording-Start State Contract
 
@@ -174,7 +174,7 @@ foreground_acquire_grace_ms=2000   ; 0 disables, 10s max
 ```
 
 The pure policy helper `ce::pseudo_overlay::ComputeFocusGraceDecision(...)` in
-`common/pseudo_overlay_focus_grace.h` is fully unit-testable without Windows APIs.
+`common/overlay/pseudo_overlay_focus_grace.h` is fully unit-testable without Windows APIs.
 See `tests/test_pseudo_overlay_focus_grace.cpp` for the focused regression coverage.
 
 **Asymmetry:** focus-out is NOT debounced — when the user Alt+Tabs AWAY from the
@@ -204,7 +204,7 @@ PID without consulting the whitelisted process list — used to feed the grace p
 
 ## process_list Compatibility Parsing
 
-`common/config.cpp:1205-1221` — supports two formats:
+`common/config/config.cpp:1205-1221` — supports two formats:
 
 **Pipe-delimited (single line):**
 ```
@@ -247,28 +247,28 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 
 | Component | File | Lines |
 |-----------|------|-------|
-| Config struct | `common/config.h` | 274-289 |
-| Profile selection policy | `common/pseudo_overlay_profile_policy.h` | full |
-| `foreground_acquire_grace_ms` config | `common/config.cpp` | ~1389 |
-| Grace policy header | `common/pseudo_overlay_focus_grace.h` | full |
-| Grace policy implementation | `common/pseudo_overlay_focus_grace.cpp` | full |
-| DPI resolution policy (pure) | `common/pseudo_overlay_dpi_policy.h` | full |
+| Config struct | `common/config/config.h` | 274-289 |
+| Profile selection policy | `common/overlay/pseudo_overlay_profile_policy.h` | full |
+| `foreground_acquire_grace_ms` config | `common/config/config.cpp` | ~1389 |
+| Grace policy header | `common/overlay/pseudo_overlay_focus_grace.h` | full |
+| Grace policy implementation | `common/overlay/pseudo_overlay_focus_grace.cpp` | full |
+| DPI resolution policy (pure) | `common/overlay/pseudo_overlay_dpi_policy.h` | full |
 | DPI policy tests | `tests/test_pseudo_overlay_dpi.cpp` | full |
-| Monitor-effective-DPI resolution | `captureengine/pseudo_overlay_internal.h` | `GetMonitorEffectiveDpi` |
-| Anchor DPI wiring | `captureengine/pseudo_overlay_state.cpp` | `ResolveAnchorInfo` |
-| Visibility policy (pure) | `common/pseudo_overlay_visibility.h` | full |
+| Monitor-effective-DPI resolution | `captureengine/pseudo_overlay/pseudo_overlay_internal.h` | `GetMonitorEffectiveDpi` |
+| Anchor DPI wiring | `captureengine/pseudo_overlay/pseudo_overlay_state.cpp` | `ResolveAnchorInfo` |
+| Visibility policy (pure) | `common/overlay/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
-| Recording-state policy | `common/recording_indicator_policy.h` | full |
-| Capture-dark protocol (media) | `captureengine/status_overlay_sync.cpp` | full |
-| Capture-dark watcher/ack | `captureengine/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
-| Instant intent publication | `captureengine/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
-| Thread lifecycle / refresh | `captureengine/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
-| UI-thread stall diagnostic | `captureengine/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
-| Controller block timer | `captureengine/main.cpp` | `MainThreadBlockTimer` + record-start/config-reload wraps |
-| Pseudo-overlay header | `captureengine/pseudo_overlay.h` | full |
-| Pseudo-overlay implementation | `captureengine/pseudo_overlay.cpp` | full |
-| Grace state update + decision | `captureengine/pseudo_overlay.cpp` | `UpdateForegroundGraceState` / `EvaluateForegroundGrace` |
-| Grace gate inside `UpdateOverlay` | `captureengine/pseudo_overlay.cpp` | after the inject suppression check, before `EnsureOverlayWindows` |
+| Recording-state policy | `common/overlay/recording_indicator_policy.h` | full |
+| Capture-dark protocol (media) | `captureengine/app/status_overlay_sync.cpp` | full |
+| Capture-dark watcher/ack | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
+| Instant intent publication | `captureengine/app/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
+| Thread lifecycle / refresh | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
+| UI-thread stall diagnostic | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
+| Controller block timer | `captureengine/app/main.cpp` | `MainThreadBlockTimer` + record-start/config-reload wraps |
+| Pseudo-overlay header | `captureengine/pseudo_overlay/pseudo_overlay.h` | full |
+| Pseudo-overlay implementation | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | full |
+| Grace state update + decision | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `UpdateForegroundGraceState` / `EvaluateForegroundGrace` |
+| Grace gate inside `UpdateOverlay` | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | after the inject suppression check, before `EnsureOverlayWindows` |
 | Tests (config) | `tests/test_config.cpp` | 221-289 |
 | Tests (grace policy) | `tests/test_pseudo_overlay_focus_grace.cpp` | full |
 | Tests (thread lifecycle) | `tests/test_pseudo_overlay_thread.cpp` | full |
@@ -284,7 +284,7 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
   misconfigures it.
 - Grace only applies to the pseudo-overlay; the inject (DX12 hook) overlay already
   has its own well-tested focus-loss/focus-acquire handling in
-  `hook/common/dx12_overlay_policy.h` and the D3D12 wrapper. The two layers are
+  `hook/d3d12/dx12_overlay_policy.h` and the D3D12 wrapper. The two layers are
   intentionally independent.
 
 ## Verification

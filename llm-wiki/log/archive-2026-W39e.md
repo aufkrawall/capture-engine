@@ -8,7 +8,7 @@ Covers 2026-09-26 - 2026-09-25. Newest first.
   (GTA sessions `20260925_233000` / `20260925_235838`: pacing-trace detour ~350 us minus forward ~270 us).
   Loader-lock lookups and the per-present `DetectSLPresentHook` lookup were already removed; the number did not
   move. No behaviour change in this entry, measurement only.
-- `hook/common/present_stage_cost.h`: per-thread lap clock. The outermost `DetourPresent` owns a
+- `hook/present/present_stage_cost.h`: per-thread lap clock. The outermost `DetourPresent` owns a
   `DetourRecorder`; `EnterStage` advances the linear detour flow (entry, keepalive, context, startup_routing,
   core_policy, post_present) and `StageScope` wraps nested regions (metrics, fsr_topmost, overlay, limiter,
   overlay_wait, forward). Stages are disjoint and sum exactly to the detour; `kForward` is excluded from `own`.
@@ -37,7 +37,7 @@ Covers 2026-09-26 - 2026-09-25. Newest first.
   unmeasurable past `kMaximumQueueDepth + 1` (one frame in transit) or when displays over-retire by >1;
   `queueCountRejects=` in the chain line. Earlier session read 33 ms only by chance (count drained to 0).
 - `DetectSLPresentHook` re-resolved a foreign E9 target outside any module on every Present (~145 module-cache
-  misses/s, 15k in 5 min). Memo `hook/common/present_hook_target_memo.h`, valid per module-set generation.
+  misses/s, 15k in 5 min). Memo `hook/present/present_hook_target_memo.h`, valid per module-set generation.
 - `StreamlineHook::Init` took a Toolhelp module snapshot (loader lock) every second; the module half now reruns
   only on module-set change, feature resolution (`ResolveStreamlineFeatureHooks`) stays per pass.
 - Not CE overhead: run 2's ~5 ms `ProcessFrame innerOther` during the loading screen is the configured CPU
@@ -53,7 +53,7 @@ Covers 2026-09-26 - 2026-09-25. Newest first.
   deliberately unchanged (user decision).
 - Fixed CE costs: (1) `ffx_hook_InstallHooksForModule` repeated 3x `PatchIATAllModules` +
   `ffx_cached_pointer_router::Refresh` (lock cmpxchg over GTA's 39 MB `.data`) every second, ~115 ms/s;
-  now gated by `hook/common/ffx_module_rescan_policy.h` (runtime image, module-set generation, unrouted-call
+  now gated by `hook/ffx/ffx_module_rescan_policy.h` (runtime image, module-set generation, unrouted-call
   evidence from the create breakpoint / configure VEH) and the scan reads plainly. (2) Present/ECL caller
   classification called `GetModuleFileNameA` (loader lock) per call; now
   `overlay_compat_detail/module_address_cache.h`, invalidated by the LdrRegisterDllNotification unload
@@ -70,7 +70,7 @@ Covers 2026-09-26 - 2026-09-25. Newest first.
 
 - Audit of the CFR/audio/mux path found no broken invariant in encoder PTS, hole accounting, finalization,
   ring buffer or Matroska timing, but one long-duration sync defect: the CFR real-time grid strided
-  `qpcFrequency / fps` truncated (4-28 ppm fast). Fixed with `common/cfr_rational_grid.h`; see
+  `qpcFrequency / fps` truncated (4-28 ppm fast). Fixed with `common/capture/cfr_rational_grid.h`; see
   `cfr-capture-sync.md` (Exact rational output grid). Hardware run pending: multi-hour 240 fps recording.
 - Audio: resume/startup track fades now span pulls; VFR drop crossfade length and backlog-trim seam fixed;
   encoder intake resampler tail drained at flush (`test_audio_encoder.cpp` test fails without it: 16 zero

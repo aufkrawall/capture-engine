@@ -630,8 +630,6 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
         "-fsanitize=address",
         "-DCE_FUZZING",
         "-I" + PROJECT_ROOT,
-        "-I" + os.path.join(PROJECT_ROOT, "common"),
-        "-I" + os.path.join(PROJECT_ROOT, "hook", "common"),
     ] + FUZZ_COVERAGE_FLAGS
 
     # Link the whole common/ tree rather than a hand-maintained per-harness source
@@ -639,7 +637,7 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
     # dependency, which is precisely how the previous harnesses stopped linking.
     compile_tasks = []
     common_objs = []
-    for src in sorted(glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))):
+    for src in common_sources():
         rel_path = os.path.relpath(src, PROJECT_ROOT)
         obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         compile_tasks.append((base_cflags, src, obj))
@@ -656,7 +654,7 @@ def run_fuzz_targets(env, max_total_time: int) -> None:
     # implementation rather than the common/ tree linked into every product.
     sensor_plugin_obj = os.path.join(obj_dir, "captureengine", "sensor_plugin.fuzz.o").replace("\\", "/")
     compile_tasks.append(
-        (base_cflags + ["-DCE_ELEVATION_SERVICE=1"], os.path.join(PROJECT_ROOT, "captureengine", "sensor_plugin.cpp"), sensor_plugin_obj)
+        (base_cflags + ["-DCE_ELEVATION_SERVICE=1"], os.path.join(PROJECT_ROOT, "captureengine", "sensors", "sensor_plugin.cpp"), sensor_plugin_obj)
     )
 
     # These sanitizer/coverage compilations must not reach compile_commands.json:

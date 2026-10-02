@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "../common/wow64_stack_range_policy.h"
+#include "common/crash/wow64_stack_range_policy.h"
 
 // A 64-bit MiniDumpWriteDump against a WoW64 target records the x64 side of
 // every thread and nothing of the 32-bit side, so the dump cannot produce a

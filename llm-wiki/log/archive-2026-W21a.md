@@ -9,16 +9,16 @@
   - The dump pipeline attempted broader/richer dumps before securing a minimal artifact; in fragile crash states that could leave only an empty `.dmp.inprogress`.
   - `CWrapDXGISwapChain` destruction was still performing optional DXGI side-channel cleanup (`UnregisterDestructionCallback`, wrapper private-data clear) during final wrapper release. That is not required for correctness once the wrapper is already dying, and it is risky around Streamline/FFX/third-party-overlay swapchain teardown.
 - **Fixes**:
-  - `common/crash_handler.cpp` now writes minimal-first dumps (`minimal-primary`, `minimal-no-exception`) before compatibility/rich variants, and logs `CrashHandler: using minimal-first crash dump attempts`.
+  - `common/crash/crash_handler.cpp` now writes minimal-first dumps (`minimal-primary`, `minimal-no-exception`) before compatibility/rich variants, and logs `CrashHandler: using minimal-first crash dump attempts`.
   - `hook/wrappers/dxgi_swapchain_wrap.cpp` now logs staged destructor progress and skips optional destruction-callback unregister/private-data clear when `m_Releasing` indicates final wrapper release. COM refs are still released normally.
-  - `hook/common/dx12_overlay_policy.h` exposes regression-testable helpers for the final-release teardown policy.
+  - `hook/d3d12/dx12_overlay_policy.h` exposes regression-testable helpers for the final-release teardown policy.
   - `dx12_fg_switch_test.exe` gained config/CLI stress knobs for auto-exit, startup native swapchain recreates, repeated FSR suspend/resume, and shutdown isolated native-wrapper probes.
 - **Validation**:
   - `python build.py --skip-updates` passed (build `0.1.3529`).
   - Injected switch-app session `installed/captureengine/logs/20260524_185734` ran `dx12_fg_switch_test.exe 1280 720 20 --duration 45 --bootstrap-native-swaps 3 --startup-recreates 4 --fsr-suspend-interval 2` to exit code 0. It produced FSR callback overlay render diagnostics, DLSS PostSL overlay submit diagnostics, four startup recreate stress cycles, three shutdown native wrapper probes, repeated FSR suspend/resume, staged wrapper destructor logs, and no crash/error markers.
   - `python build.py --no-build --run-tests --skip-updates` passed all 802 tests (displayed metadata `0.1.3530`).
   - Process cleanup check found no lingering `captureengine.exe`, `dx12_fg_switch_test.exe`, `dx12_test.exe`, Talos, or unit-test processes.
-- **Source anchors**: `common/crash_handler.cpp`, `hook/common/dx12_overlay_policy.h`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_config.inl`, `testapp/dx12_fg_switch_swapchain.inl`, `tests/test_crash_handler.cpp`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260524_185734/hook_debug.log`.
+- **Source anchors**: `common/crash/crash_handler.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `hook/wrappers/dxgi_swapchain_wrap.cpp`, `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_config.inl`, `testapp/dx12_fg_switch_swapchain.inl`, `tests/test_crash_handler.cpp`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260524_185734/hook_debug.log`.
 
 ### 2026-05-22 - GTA/Talos DX12 FG overlay crash fixes and hardened switch-app stress validation (build 0.1.3490 / tests 0.1.3491)
 
@@ -37,7 +37,7 @@
   - `python build.py --skip-updates` passed (build `0.1.3490`).
   - `python build.py --no-build --run-tests --skip-updates` passed all 792 tests (displayed metadata `0.1.3491`).
   - Injected switch-app session `installed/captureengine/logs/20260522_125259` exited with code 0 and no lingering `captureengine.exe` or `dx12_fg_switch_test.exe` processes. It produced no `crash.log`, no `.dmp`, no device-removal markers, no separate `DX12: FG overlay SUBMIT` during FSR, sampled FSR callback overlay render diagnostics, sampled DLSS PostSL overlay submit diagnostics, one authoritative DLSS OFF breadcrumb, and one `FG state transition ON->OFF via SetOptions`.
-- **Source anchors**: `hook/common/dx12_overlay_policy.h`, `hook/apis/dx12_hook.cpp`, `hook/apis/dx12_hook.h`, `hook/apis/ffx_hook.cpp`, `hook/apis/streamline_hook.cpp`, `hook/common/streamline_runtime_policy.h`, `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_fsr.inl`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `installed/captureengine/logs/20260522_125259/hook_debug.log`.
+- **Source anchors**: `hook/d3d12/dx12_overlay_policy.h`, `hook/d3d12/dx12_hook.cpp`, `hook/d3d12/dx12_hook.h`, `hook/ffx/ffx_hook.cpp`, `hook/streamline/streamline_hook.cpp`, `hook/streamline/streamline_runtime_policy.h`, `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_fsr.inl`, `tests/test_dxgi_shared.cpp`, `tests/test_streamline_runtime_policy.cpp`, `installed/captureengine/logs/20260522_125259/hook_debug.log`.
 
 ### 2026-05-22 - Mixed DX12 FSR/DLSS FG switch test app and protected FFX startup quiesce (build 0.1.3482 / tests 0.1.3483)
 
@@ -51,7 +51,7 @@
   - `python build.py --no-build --run-tests --skip-updates` passed all 790 tests (displayed metadata `0.1.3483`).
   - Standalone `dx12_fg_switch_test.exe` completed the automatic sequence and manual all-direction switching with exit 0, no app failures, and no lingering process.
   - Injected session `installed/captureengine/logs/20260522_021308` completed with no dumps, no device-removal markers, 26 FFX callback overlay render diagnostics, 95 PostSL overlay submit diagnostics, 8 PostSL confirmations, and 1 immediate protected-FFX quiesce breadcrumb.
-- **Source anchors**: `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_*.inl`, `testapp/dx12_fsr_fg_test.cpp`, `build.py`, `hook/apis/dx12_hook.cpp`, `hook/apis/ffx_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `tests/test_crash_handler.cpp`, `installed/captureengine/logs/20260522_021308/hook_debug.log`.
+- **Source anchors**: `testapp/dx12_fg_switch_test.cpp`, `testapp/dx12_fg_switch_*.inl`, `testapp/dx12_fsr_fg_test.cpp`, `build.py`, `hook/d3d12/dx12_hook.cpp`, `hook/ffx/ffx_hook.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `tests/test_crash_handler.cpp`, `installed/captureengine/logs/20260522_021308/hook_debug.log`.
 
 ### 2026-05-21 - DX12 FG test-app injected overlay crash and FSR callback bridge fix (build 0.1.3454 / tests 0.1.3455)
 
@@ -69,7 +69,7 @@
   - DLSS path: 130 `Post-SL overlay SUBMIT` diagnostics.
   - FSR path: `FFX Hook: Installed DX12 overlay present-callback bridge`, one callback-backend init, and 27 `DX12: FFX present callback rendered overlay on runtime-owned FSR path` diagnostics.
   - `python build.py --no-build --run-tests --skip-updates` passed all 784 tests (displayed metadata `0.1.3455`).
-- **Source anchors**: `hook/main.cpp`, `hook/apis/dx12_hook.cpp`, `hook/common/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260521_233919/hook_debug.log`.
+- **Source anchors**: `hook/runtime/main.cpp`, `hook/d3d12/dx12_hook.cpp`, `hook/d3d12/dx12_overlay_policy.h`, `tests/test_dxgi_shared.cpp`, `installed/captureengine/logs/20260521_233919/hook_debug.log`.
 
 ### 2026-05-21 — dx12_fsr_fg_test window stall fix
 
@@ -114,7 +114,7 @@ Superseded note, verified 2026-05-30: current official AMD modules use IAT/dynam
   - x86/x64 compatibility: context register names (`Rcx`/`Ecx`, `Rdx`/`Edx`, `Rax`/`Eax`, `Rip`/`Eip`) use `#ifdef _WIN64`.
   - Removed unused `prevCount` variable that produced a compiler warning.
 - **Key insight**: The existing `Hooked_ffxConfigure` at `ffx_hook.cpp:311` already correctly modifies the configure descriptor to add CE's `DX12_RenderOverlayViaFFXPresentCallback` as the present callback. The only problem was that this hook never fired for the official AMD runtime because CE skipped inline hooks. The VEH single-shot approach solves this: it intercepts the FIRST intra-module call to ffxConfigure (which GetProcAddress hooks can't see), installs the callback bridge, and removes itself.
-- **Source anchors**: `hook/apis/ffx_hook.cpp` — VEH handler (~line 593), install function (~line 610), call from init path (~line 575), shutdown cleanup (~line 810). `hook/common/ffx_api_parsing.h:202-206` — `ShouldInlineHookFFXExportsForModule` returns false for official AMD modules.
+- **Source anchors**: `hook/ffx/ffx_hook.cpp` — VEH handler (~line 593), install function (~line 610), call from init path (~line 575), shutdown cleanup (~line 810). `hook/ffx/ffx_api_parsing.h:202-206` — `ShouldInlineHookFFXExportsForModule` returns false for official AMD modules.
 - **Regression tests**: All 783 tests pass (build `0.1.3414`). `python build.py --skip-updates` passed. `python build.py --no-build --run-tests --skip-updates` passed 783/783 tests (build `0.1.3415`).
 - **Historical validation note**: this entry's original expected VEH breadcrumb has been superseded. Current official AMD evidence should instead include IAT/dynamic FFX interception such as `GetProcAddress: Intercepted FFX API ffxConfigure`, followed by `FFX Hook: Installed DX12 overlay present-callback bridge for context=...`.
 
@@ -128,7 +128,7 @@ Superseded note, verified 2026-05-30: current official AMD modules use IAT/dynam
 - **Root cause (corrected)**: The 2-second timeout enforcement forced overlay GPU work (command lists, barriers, font upload, draw commands) onto the game's D3D12 queue via raw ECL at line 14228-14235, but **no fence signal or GPU completion wait** was performed before returning from ProcessFrame. The FFX runtime then reads the backbuffer for its own frame interpolation processing, finds it in a transitional state (barriers still pending, overlay draws not yet complete), and removes the D3D device with ERR_GFX_STATE. The issue is NOT about cross-queue submission — it is about **GPU work completion**: overlay GPU work must be fully completed before the FG runtime reads the backbuffer.
 - **Why inline hooking Signal is not viable**: SL (Streamline) hooks the Signal vtable slot on D3D12 command queues for frame sync. Calling the hooked Signal would let SL see CE's fence value, potentially causing frame pacing issues. Using `g_State.fence` (CE's own shared fence) would also be visible to SL via the hooked Signal.
 - **Fix — Overlay GPU work completion fence**:
-  - Added `ID3D12Fence* g_OverlayCompletionFence` (separate from `g_State.fence`) and `g_RealD3D12Signal` (raw D3D12 Signal function pointer from vtable[14]) in `hook/apis/dx12_hook.cpp`.
+  - Added `ID3D12Fence* g_OverlayCompletionFence` (separate from `g_State.fence`) and `g_RealD3D12Signal` (raw D3D12 Signal function pointer from vtable[14]) in `hook/d3d12/dx12_hook.cpp`.
   - Probed `g_RealD3D12Signal` from a clean COMPUTE D3D12 command queue vtable[14] alongside the existing ECL probe (line 3970 area). COMPUTE queues are not hooked by SL, so vtable[14] returns the real driver Signal.
   - Created `g_OverlayCompletionFence` in `InitOverlaySync()` alongside `g_State.fence` (same device, signaled value 1, initially 0).
   - Replaced the old "skip fence signal entirely" block for FG with: after `realECL(eclQueue, 1, lists)`, signal `g_OverlayCompletionFence` to value 1 via raw Signal pointer, then CPU-wait (`SetEventOnCompletion(1, event)` + `WaitForSingleObject(event, INFINITE)`) to ensure all overlay GPU work completes before returning from ProcessFrame.
@@ -141,7 +141,7 @@ Superseded note, verified 2026-05-30: current official AMD modules use IAT/dynam
 - **Coverage**: This fix addresses the fundamental safety issue that the 2-second timeout did not. Whether the overlay submits on the game queue (2s timeout) or with normal FG suppression logic, if it does submit, its GPU work must complete before Present / before the FG runtime reads the backbuffer.
 - **Regression tests**: All 783 tests pass (build `0.1.3410`). `python build.py --skip-updates` passed (build `0.1.3410`). `python build.py --no-build --run-tests --skip-updates` passed 783/783 tests (build `0.1.3411`).
 - **Manual validation still needed**: Re-run GTA V Enhanced with FSR FG active. Expected: overlay renders within ~2 seconds, no ERR_GFX_STATE, no device removal. Test all FG transitions.
-- **Source anchors**: `hook/apis/dx12_hook.cpp` — `g_OverlayCompletionFence` and `g_RealD3D12Signal` declarations (near line 111), ECL probe extension for Signal (line ~3970), `InitOverlaySync()` creation, FG fence-skip replacement (line ~14357-14410), shutdown release.
+- **Source anchors**: `hook/d3d12/dx12_hook.cpp` — `g_OverlayCompletionFence` and `g_RealD3D12Signal` declarations (near line 111), ECL probe extension for Signal (line ~3970), `InitOverlaySync()` creation, FG fence-skip replacement (line ~14357-14410), shutdown release.
 
 ### 2026-05-21 - 2-second max overlay suspension enforcement for all FG transitions (build 0.1.3409 / tests 0.1.3409) — **REJECTED (causes ERR_GFX_STATE)**
 

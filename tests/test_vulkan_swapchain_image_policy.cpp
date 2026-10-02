@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/vulkan_layer/vulkan_swapchain_image_policy.h"
+#include "hook/vulkan_layer/vulkan_swapchain_image_policy.h"
 #include "source_fragment_reader.h"
 
 namespace {

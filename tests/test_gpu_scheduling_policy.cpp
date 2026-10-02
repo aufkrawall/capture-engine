@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../common/gpu_scheduling_policy.h"
+#include "common/capture/gpu_scheduling_policy.h"
 
 using namespace ce::gpu_scheduling;
 

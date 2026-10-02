@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "../hook/wrappers/d3dkmt_abi.h"
+#include "hook/wrappers/d3dkmt_abi.h"
 
 namespace {
 

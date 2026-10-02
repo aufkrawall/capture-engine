@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/ue5_console_registry.h"
-#include "../hook/common/ue5_redirect_plan.h"
+#include "hook/overrides/ue5_console_registry.h"
+#include "hook/overrides/ue5_redirect_plan.h"
 
 namespace {
 
@@ -32,7 +32,7 @@ ce::ue5_registry::StringHeader HeaderFor(const std::string& text) {
     return header;
 }
 
-// Chunk stride of the anchor sweep in hook/main_ue5_registry.cpp: consecutive
+// Chunk stride of the anchor sweep in hook/runtime/main_ue5_registry.cpp: consecutive
 // chunks overlap so an element straddling a boundary is still seen whole.
 constexpr std::size_t kChunkBytes = 64 * 1024;
 constexpr std::size_t kChunkOverlap = 64;

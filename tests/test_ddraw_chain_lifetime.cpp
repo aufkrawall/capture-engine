@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/ddraw_chain_lifetime_policy.h"
+#include "hook/ddraw/ddraw_chain_lifetime_policy.h"
 #include "source_fragment_reader.h"
 
 // CE must not keep an application's DirectDraw presentation chain alive past
@@ -125,8 +125,8 @@ TEST(DDrawChainLifetimeTest, DirectDrawRefusesANewPrimaryWhileAnyReferenceToTheO
 }
 
 TEST(DDrawChainLifetimeTest, EveryCreateSurfaceGenerationReleasesTheChainBeforeForwarding) {
-    const std::string detours = ReadSource("hook/apis/ddraw_hook_detours.cpp");
-    const std::string detours4 = ReadSource("hook/apis/ddraw_hook_detours_surface4.cpp");
+    const std::string detours = ReadSource("hook/ddraw/ddraw_hook_detours.cpp");
+    const std::string detours4 = ReadSource("hook/ddraw/ddraw_hook_detours_surface4.cpp");
     ExpectReleaseBeforeForwarding(
         FunctionBody(detours, "HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface("),
         "record.createSurface(pThis", "DetourDirectDrawLegacyCreateSurface");
@@ -138,7 +138,7 @@ TEST(DDrawChainLifetimeTest, EveryCreateSurfaceGenerationReleasesTheChainBeforeF
 }
 
 TEST(DDrawChainLifetimeTest, TheChainReleaseCoversEveryReferenceCeTakes) {
-    const std::string route = ReadSource("hook/apis/ddraw_hook_overlay_route.cpp");
+    const std::string route = ReadSource("hook/ddraw/ddraw_hook_overlay_route.cpp");
     const std::string reset =
         FunctionBody(route, "DirectDrawChainReferenceRelease ResetDirectDrawPresentationStateForPrimaryChange()");
     ASSERT_FALSE(reset.empty());
@@ -162,7 +162,7 @@ TEST(DDrawChainLifetimeTest, TheChainReleaseCoversEveryReferenceCeTakes) {
     EXPECT_NE(release.find("ddraw_hook_g_PrimarySurface4 = nullptr"), std::string::npos);
     EXPECT_NE(release.find("HookLogImportant("), std::string::npos) << "what CE released must be provable";
 
-    const std::string overrides = ReadSource("hook/apis/ddraw_hook_present_overrides.cpp");
+    const std::string overrides = ReadSource("hook/ddraw/ddraw_hook_present_overrides.cpp");
     const std::string overrideReset = FunctionBody(overrides, "uint32_t ResetDirectDrawPresentationOverrides()");
     ASSERT_FALSE(overrideReset.empty());
     EXPECT_NE(overrideReset.find("ClearPendingLocked(state)"), std::string::npos);
@@ -173,7 +173,7 @@ TEST(DDrawChainLifetimeTest, TheChainReleaseCoversEveryReferenceCeTakes) {
 // sidecar in a title that stops calling SetTextureStageState: every rendered
 // frame ends in EndScene, which tracks the device again.
 TEST(DDrawChainLifetimeTest, EndSceneTracksTheDeviceAgain) {
-    const std::string legacy = ReadSource("hook/apis/ddraw_hook_detours_legacy_d3d.cpp");
+    const std::string legacy = ReadSource("hook/ddraw/ddraw_hook_detours_legacy_d3d.cpp");
     const std::string endScene = FunctionBody(legacy, "HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(");
     ASSERT_FALSE(endScene.empty());
     const size_t internalGuard = endScene.find("LegacyD3DInternalCallActive()");
@@ -185,7 +185,7 @@ TEST(DDrawChainLifetimeTest, EndSceneTracksTheDeviceAgain) {
     EXPECT_LT(internalGuard, track) << "CE's own EndScene calls must not track anything";
     EXPECT_LT(track, draw);
 
-    const std::string helpers = ReadSource("hook/apis/ddraw_hook_helpers.cpp");
+    const std::string helpers = ReadSource("hook/ddraw/ddraw_hook_helpers.cpp");
     const std::string untrack = FunctionBody(helpers, "bool ReleaseTrackedLegacyD3D7DeviceIf(");
     ASSERT_FALSE(untrack.empty());
     const size_t exchange = untrack.find("exchange(nullptr");
@@ -208,7 +208,7 @@ TEST(DDrawChainLifetimeTest, OnlyAReleaseThatLeavesCeAloneEndsCesReferences) {
 // CE may hold the application's device only while the Release interception
 // can hand the reference back inside the application's own last Release.
 TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRelease) {
-    const std::string lifetimeSource = ReadSource("hook/apis/ddraw_hook_device_lifetime.cpp");
+    const std::string lifetimeSource = ReadSource("hook/ddraw/ddraw_hook_device_lifetime.cpp");
     const std::string detour = FunctionBody(lifetimeSource, "ULONG STDMETHODCALLTYPE DetourD3D7DeviceRelease(");
     ASSERT_FALSE(detour.empty());
     const size_t count = detour.find("CountCeDeviceReferences(ddraw_hook_device)");
@@ -227,7 +227,7 @@ TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRele
     EXPECT_LT(tracked, textures);
     EXPECT_NE(detour.find("LegacyD3DInternalCallActive()"), std::string::npos) << "CE's own releases pass through";
 
-    const std::string helpers = ReadSource("hook/apis/ddraw_hook_helpers.cpp");
+    const std::string helpers = ReadSource("hook/ddraw/ddraw_hook_helpers.cpp");
     const std::string track = FunctionBody(helpers, "void TrackLegacyD3D7Device(");
     const size_t gate = track.find("LegacyD3D7DeviceReleaseIsIntercepted(device)");
     const size_t addRef = track.find("device->AddRef()");
@@ -235,10 +235,10 @@ TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRele
     ASSERT_NE(addRef, std::string::npos);
     EXPECT_LT(gate, addRef);
 
-    const std::string route = ReadSource("hook/apis/ddraw_hook_overlay_route.cpp");
+    const std::string route = ReadSource("hook/ddraw/ddraw_hook_overlay_route.cpp");
     const std::string prime = FunctionBody(route, "bool PrimeNativeLegacyD3DOverlay(");
     EXPECT_NE(prime.find("LegacyD3D7DeviceReleaseIsIntercepted(device)"), std::string::npos);
 
-    const std::string install = ReadSource("hook/apis/ddraw_hook_install.cpp");
+    const std::string install = ReadSource("hook/ddraw/ddraw_hook_install.cpp");
     EXPECT_NE(install.find("InstallD3D7DeviceReleaseHook(record, vtable)"), std::string::npos);
 }

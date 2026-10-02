@@ -10,8 +10,8 @@ Primary sources:
 - `.editorconfig` (and `tools/config/.editorconfig`)
 - `pyrightconfig.json` (and `tools/config/pyrightconfig.json`)
 - `tools/config/.flake8`
-- `common/raii_helpers.h`
-- representative headers such as `common/shared_defs.h`, `hook/common/dx12_overlay_policy.h`, and `hook/wrappers/custom_hook.h`
+- `common/platform/raii_helpers.h`
+- representative headers such as `common/ipc/shared_defs.h`, `hook/d3d12/dx12_overlay_policy.h`, and `hook/hooking/custom_hook.h`
 
 ## Scope
 This page records the style rules that are either tool-backed or strongly reflected in the current tree. Local file conventions still win if a touched subsystem clearly uses a different established pattern.
@@ -84,7 +84,7 @@ This page records the style rules that are either tool-backed or strongly reflec
   sweeps every first-party header for the shape. Either the type is shared, or the variable is not.
 
 ## Existing Helper Patterns
-- Common RAII helpers already live in `common/raii_helpers.h`: `HandleGuard`, `MappingGuard`, `VirtualAllocGuard`, `ComGuard`, and `ScopeGuard`.
+- Common RAII helpers already live in `common/platform/raii_helpers.h`: `HandleGuard`, `MappingGuard`, `VirtualAllocGuard`, `ComGuard`, and `ScopeGuard`.
 - Hooking code is not one-size-fits-all in this tree. Current subsystems use wrapper hooks plus typed hook helpers such as `HookSystem::TypedHook` and `CustomHook::TypedHook`. Match the local subsystem pattern instead of forcing a global hook abstraction rewrite.
 
 ## Practical Notes

@@ -17,7 +17,7 @@
   pins the old chain after the game and CE released everything; pre-cleanup probe refs=2 (incl. probe), post-cleanup
   and post-entry-retry probes show no tracked chains. The live-entry retry ran RTSS's handler again without
   releasing it.
-- Fix: `CaptureCreateSwapchainAccessDeniedExhaustedDump` moved to the main dump layer (`hook/main_fatal_dump.cpp`)
+- Fix: `CaptureCreateSwapchainAccessDeniedExhaustedDump` moved to the main dump layer (`hook/runtime/main_fatal_dump.cpp`)
   and now prefers the EXTERNAL dump helper (`captureengine.exe --dump-helper` - the game's threads are never
   suspended for a large capture), falling back to a minimal in-process MiniDumpNormal-class dump when the helper is
   unavailable. The test app's own fatal dump is now MiniDumpNormal+ThreadInfo+UnloadedModules instead of the heavy

@@ -7,8 +7,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "../captureengine/display_timing_correlation.h"
-#include "../hook/common/performance_metrics.h"
+#include "captureengine/display_timing/display_timing_correlation.h"
+#include "hook/metrics/performance_metrics.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -33,7 +33,7 @@ TEST(DisplayPacingIntegrityTest, CallbackAndRendererConsumersDoNotDuplicateDispl
 }
 
 TEST(DisplayPacingIntegrityTest, FsrCallbackDrainsDisplayBeforeOptionalPresentationSampling) {
-    const auto path = std::filesystem::current_path() / "hook/apis/dx12_hook_ffx_metrics.cpp";
+    const auto path = std::filesystem::current_path() / "hook/d3d12/dx12_hook_ffx_metrics.cpp";
     const std::string source = ce::test_source::ReadLogicalSource(path);
     const auto entry = source.find("void DX12_UpdateFFXPresentCallbackFrameTiming(");
     ASSERT_NE(entry, std::string::npos);
@@ -161,7 +161,7 @@ TEST(DisplayPacingIntegrityTest, KernelCompletionsRetainMeasuredIntervalsAndProv
         EXPECT_FLOAT_EQ(history[i], static_cast<float>(times[i + 1] - times[i]) / 1000.0f);
     // Neither service drain may reintroduce the old grid rewrite after reduction.
     const auto service = ce::test_source::ReadLogicalSource(
-        std::filesystem::current_path() / "captureengine/display_timing_service.cpp");
+        std::filesystem::current_path() / "captureengine/display_timing/display_timing_service.cpp");
     EXPECT_EQ(service.find("ResolveDeferredScreenTimes"), std::string::npos);
     EXPECT_EQ(service.find(".Claim("), std::string::npos);
     EXPECT_EQ(service.find(".Snap("), std::string::npos);

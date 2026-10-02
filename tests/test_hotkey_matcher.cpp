@@ -4,8 +4,8 @@
 #include <filesystem>
 #include <string>
 
-#include "../common/config.h"
-#include "../common/hotkey_matcher.h"
+#include "common/config/config.h"
+#include "common/overlay/hotkey_matcher.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -306,8 +306,8 @@ std::string ReadSource(const char* relativePath) {
 // which a foreground application can switch off for the whole desktop with
 // RIDEV_NOHOTKEYS. The wiring below is what keeps a press arriving anyway.
 TEST(HotkeyDeliveryWiringTest, ControllerRunsBothDeliveryPathsAndTheHookNeverBlocks) {
-    const std::string controllerSource = ReadSource("captureengine/main.cpp");
-    const std::string hookSource = ReadSource("captureengine/hotkey_input_hook.cpp");
+    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string hookSource = ReadSource("captureengine/app/hotkey_input_hook.cpp");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(hookSource.empty());
 

@@ -6,9 +6,9 @@
 #include <filesystem>
 #include <string>
 
-#include "../common/crash_dump_policy.h"
-#include "../hook/common/freeze_watchdog.h"
-#include "../hook/common/window_text_safe.h"
+#include "common/crash/crash_dump_policy.h"
+#include "hook/runtime/freeze_watchdog.h"
+#include "hook/runtime/window_text_safe.h"
 #include "source_fragment_reader.h"
 
 // A title that reports its own fatal error in a modal box on the render thread
@@ -59,14 +59,14 @@ TEST(RenderThreadDialogExitTest, DialogTextBecomesOneBoundedLogLine) {
 
 TEST(RenderThreadDialogExitTest, WatchdogAndFatalExitAreWiredTogether) {
     const auto root = std::filesystem::current_path();
-    const std::string watchdog = ce::test_source::ReadFile(root / "hook/common/freeze_watchdog.cpp");
+    const std::string watchdog = ce::test_source::ReadFile(root / "hook/runtime/freeze_watchdog.cpp");
     const size_t note = watchdog.find("NoteRenderThreadDialog(dialogInfo.hwnd");
     ASSERT_NE(note, std::string::npos) << "the watchdog no longer records render-thread dialogs";
     const size_t guard = watchdog.rfind("FreezeIsExplainedByApplicationDialog(", note);
     ASSERT_NE(guard, std::string::npos);
     EXPECT_LT(note - guard, 300u) << "only a dialog the monitored render thread owns may qualify";
 
-    const std::string fatal = ce::test_source::ReadFile(root / "hook/main_fatal_dump.cpp");
+    const std::string fatal = ce::test_source::ReadFile(root / "hook/runtime/main_fatal_dump.cpp");
     const size_t query = fatal.find("g_RenderWatchdog.TerminationFollowsRenderThreadDialog()");
     const size_t decision = fatal.find("followsUnresolvedFault, followsRenderThreadDialog)");
     ASSERT_NE(query, std::string::npos);

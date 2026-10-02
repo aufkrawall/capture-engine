@@ -20,7 +20,7 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
     };
 
     const std::string tracking =
-        readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_tracking.cpp");
+        readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
     ASSERT_FALSE(tracking.empty());
     size_t exhaustionDumps = 0;
     for (size_t pos = tracking.find("CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd");
@@ -35,7 +35,7 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
               std::string::npos);
 
     const std::string fatalDump =
-        readFile(fs::current_path() / "hook" / "main_fatal_dump.cpp");
+        readFile(fs::current_path() / "hook" / "runtime" / "main_fatal_dump.cpp");
     ASSERT_FALSE(fatalDump.empty());
     EXPECT_NE(fatalDump.find("CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context)"),
               std::string::npos);
@@ -50,12 +50,12 @@ TEST(DXGISharedSourceTest, AccessDeniedExhaustionWritesDiagnosticDumpAndBrackete
            "(session 20260813_222058 freeze: the game's own dump deadlocked inside Steam's hooked version APIs)";
 
     const std::string inlineCreate =
-        readFile(fs::current_path() / "hook" / "apis" / "dx12_hook_swapchain_create.cpp");
+        readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(inlineCreate.empty());
     EXPECT_NE(inlineCreate.find("CaptureCreateSwapchainAccessDeniedExhaustedDump(hWnd"), std::string::npos)
         << "the INLINE recovery arms must also dump on exhaustion";
 
-    const std::string externalDump = readFile(fs::current_path() / "hook" / "main_external_dump.cpp");
+    const std::string externalDump = readFile(fs::current_path() / "hook" / "runtime" / "main_external_dump.cpp");
     ASSERT_FALSE(externalDump.empty());
     EXPECT_NE(externalDump.find("CopyCompletedDumpFile(hProcess"), std::string::npos)
         << "the session mirror must be a plain copy of the game's completed dump, never a nested "

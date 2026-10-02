@@ -8,7 +8,7 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
 - Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory file with the final container extension (`.mkv`, `.mp4`, etc.); idle media initialization creates no output. The file receives its final collision-safe name after valid mux finalization.
 - Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine_impl.cpp`.
-- SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
+- SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/media/screenshot_encoding.cpp`.
 
 `[Output] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. `[Output] screenshot_dir` follows the same rules. Empty video, audio-only, and screenshot output writes to the `captures` subfolder next to the executable. Relative output is resolved below the executable directory. All three paths preserve the mapped-drive behavior below. Legacy `[Video] output_dir` and `[Screenshot] screenshot_dir` remain readable.
 
@@ -40,12 +40,12 @@ Limits:
 
 ## Source Anchors
 
-- `common/path_utils.{h,cpp}` (`ResolveMappedDrivePath`, `ReplaceDriveRootWithRemotePath`)
-- `common/reserved_capture_output.{h,cpp}` (`ResolveCaptureDirectory`, `ReservedCaptureOutput`)
-- `mediaengine/video_encoder.cpp` (`ReserveOutputStagingFile`, content-gated muxer publication and cancellation cleanup)
-- `mediaengine/mux_invariants.h` (`SelectVideoOutputDisposition`)
+- `common/platform/path_utils.{h,cpp}` (`ResolveMappedDrivePath`, `ReplaceDriveRootWithRemotePath`)
+- `common/capture/reserved_capture_output.{h,cpp}` (`ResolveCaptureDirectory`, `ReservedCaptureOutput`)
+- `mediaengine/video/video_encoder.cpp` (`ReserveOutputStagingFile`, content-gated muxer publication and cancellation cleanup)
+- `mediaengine/mux/mux_invariants.h` (`SelectVideoOutputDisposition`)
 - `mediaengine/mediaengine_impl*.cpp` (`InitAudioOnlyMuxer`, audio-only ownership and publication)
-- `captureengine/screenshot_encoding.cpp` (reserved staging and atomic final commit)
+- `captureengine/media/screenshot_encoding.cpp` (reserved staging and atomic final commit)
 - `tests/test_path_utils.cpp`, `tests/test_reserved_capture_output.cpp`, `tests/test_mux_invariants.cpp`, and `tests/test_recording_start_feedback.cpp`
 
 ## Validation
@@ -72,7 +72,7 @@ The existing rate-limited cancellation log identifies `backpressure`. Regression
 
 ## Source changes after the output opened (2026-09-24)
 
-`mediaengine/encode_geometry_policy.h` decides what a committed recording does when its capture source changes:
+`mediaengine/video/encode_geometry_policy.h` decides what a committed recording does when its capture source changes:
 
 - **Colour contract** (HDR on/off, 10-bit input appearing/disappearing): `ReinitForFormatModeChange` /
   `PrepareFrameD3D11` used to `Stop()` and re-`Init()` with the preserved staging reservation, and the next

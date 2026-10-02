@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <thread>
-#include "../hook/common/pacing_trace_boundary.h"
-#include "../hook/common/present_heartbeat.h"
+#include "hook/pacing/pacing_trace_boundary.h"
+#include "hook/present/present_heartbeat.h"
 
 namespace {
 using namespace ce::pacing_trace;

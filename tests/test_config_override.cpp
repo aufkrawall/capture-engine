@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
-#include "../common/config.h"
+#include "common/config/config.h"
 #include "test_config_override_fixture.h"
 
 TEST_F(ConfigOverrideTest, SimpleOverride) {

@@ -5,7 +5,7 @@
 #include <set>
 #include <string>
 
-#include "../hook/common/gl_overlay_state_policy.h"
+#include "hook/opengl/gl_overlay_state_policy.h"
 #include "source_fragment_reader.h"
 
 namespace gls = ce::gl_overlay_state;
@@ -342,7 +342,7 @@ TEST(GlOverlayStatePolicyTest, FontUploadNeverReadsFromTheApplicationsUnpackStat
 }
 
 TEST(GlOverlayStatePolicyTest, BothRenderPathsAndInitializationUseTheSnapshot) {
-    const std::string source = ce::test_source::ReadLogicalSource("hook/common/custom_overlay_gl.cpp");
+    const std::string source = ce::test_source::ReadLogicalSource("hook/overlay/custom_overlay_gl.cpp");
     ASSERT_FALSE(source.empty());
     for (const char* entry : {"void OpenGLBackend::RenderModern(", "void OpenGLBackend::RenderLegacy(",
                               "bool OpenGLBackend::Initialize("}) {

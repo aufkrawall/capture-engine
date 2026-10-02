@@ -1,4 +1,4 @@
-// Regression tests for third-party-overlay detection (hook/common/overlay_compat.h).
+// Regression tests for third-party-overlay detection (hook/overlay/overlay_compat.h).
 //
 // Root cause these guard against: the Present hot path used to re-walk the Windows loader
 // (GetModuleHandleA over the overlay list) whenever ANY DLL loaded, because the cache was
@@ -13,7 +13,7 @@
 
 #include <cstring>
 
-#include "../hook/common/overlay_compat.h"
+#include "hook/overlay/overlay_compat.h"
 
 namespace {
 

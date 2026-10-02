@@ -1,6 +1,6 @@
 #include "test_config_shared.h"
 
-#include "../hook/common/ue5_cvar_override_policy.h"
+#include "hook/overrides/ue5_cvar_override_policy.h"
 
 #include <string>
 #include <string_view>

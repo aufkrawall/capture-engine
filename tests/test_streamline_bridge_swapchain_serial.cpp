@@ -6,7 +6,7 @@
 #include <thread>
 #include <vector>
 
-#include "../hook/apis/streamline_bridge_swapchain_serial.h"
+#include "hook/streamline/streamline_bridge_swapchain_serial.h"
 
 // Session 20261001_153717 (Witcher 3, streamline_upgrade=true, DLSS-G on): alt-tab crashed the game.
 // The window thread's SetFullscreenState(FALSE) ran 2.x sl.dlss_g's SetFullscreenStatePre, which

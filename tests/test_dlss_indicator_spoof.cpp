@@ -5,8 +5,8 @@
 #include <cstdio>
 #include <string>
 
-#include "../common/config.h"
-#include "../hook/common/dlss_indicator_spoof.h"
+#include "common/config/config.h"
+#include "hook/ngx/dlss_indicator_spoof.h"
 
 namespace {
 

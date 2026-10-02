@@ -4,7 +4,7 @@
 #include <cstring>
 #include <vector>
 
-#include "../hook/wrappers/inline_hook_pristine_image.h"
+#include "hook/hooking/inline_hook_pristine_image.h"
 
 namespace {
 

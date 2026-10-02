@@ -20,7 +20,7 @@
   `IDXGISwapChain::GetDevice`. CE's temp D3D11 device/swapchain were third-party proxy objects because the
   "saved original" `D3D11CreateDeviceAndSwapChain` entry had been patched by the tools; releasing through the
   mixed ReShade/OptiScaler/Steam wrapper chain forwarded a corrupted pointer.
-- Fix: `hook/apis/dx11_hook.cpp` now bypasses the entry patch on `D3D11CreateDeviceAndSwapChain` (and the D3D10
+- Fix: `hook/d3d11/dx11_hook.cpp` now bypasses the entry patch on `D3D11CreateDeviceAndSwapChain` (and the D3D10
   temp route's `D3D10CreateDevice`) with `InlineHook::CreateBypassTrampoline` before creating the temp device, so
   the probe operates on genuine d3d11 objects — same rule as the temp-DXGI-factory fix. Source-order test added
   to `tests/test_inject_capture_source_part2.cpp`.
@@ -34,10 +34,10 @@
 - Conclusion: load order alone cannot fix this — both orders create a loader-lock/tool-mutex cycle. The fix keeps
   Special K FIRST and synchronizes the loads on the real Windows synchronization primitive: before every tool load
   after the first, CE joins a trivial `LoadLibrary` probe thread (`WaitForLoaderQuiescence` in
-  `hook/main_thirdparty_load.cpp`). The probe blocks in the loader work-queue drain until every in-flight loader
+  `hook/runtime/main_thirdparty_load.cpp`). The probe blocks in the loader work-queue drain until every in-flight loader
   call finished, so the next tool's DllMain never overlaps the previous tool's init loader work. No fixed sleeps.
 - Order constant back to Special K -> ReShade -> OptiScaler; `ShouldWaitForLoaderQuiescenceBeforeToolLoad` added to
-  `hook/common/third_party_load_policy.h` with tests in `tests/test_third_party_load_policy.cpp` and a source-order
+  `hook/runtime/third_party_load_policy.h` with tests in `tests/test_third_party_load_policy.cpp` and a source-order
   pin in `tests/test_inject_capture_source_part2.cpp`. Template/README/wiki order and rationale updated.
 
 ### 2026-08-13 - FIXED: ReShade + OptiScaler + Special K startup deadlock (0.1.5983 -> next)
@@ -50,8 +50,8 @@
 - Fix: Special K now loads LAST. ReShade and OptiScaler load before Special K's early thread hooks exist (their
   DllMains are then clean, as the working ReShade+OptiScaler combo proves), and Special K's own DllMain is already
   proven safe standalone. This also matches the projects' own supported combination (OptiScaler's `LoadSpecialK`
-  option loads Special K after OptiScaler). Order constant updated in `hook/common/third_party_load_policy.h`,
-  executor array in `hook/main_thirdparty_load.cpp`, tests in `tests/test_third_party_load_policy.cpp`, and the
+  option loads Special K after OptiScaler). Order constant updated in `hook/runtime/third_party_load_policy.h`,
+  executor array in `hook/runtime/main_thirdparty_load.cpp`, tests in `tests/test_third_party_load_policy.cpp`, and the
   template/README/wiki order text.
 
 ### 2026-08-13 - FIXED: game-close UAF when ReShade proxies the swapchain (0.1.5982 -> next)
@@ -63,7 +63,7 @@
   interface refs (the proxy's exact remaining refcount -> ReShade destroyed proxy and genuine swapchain) and
   released the base reference once more: use-after-free on the freed proxy, `_orig` dangling.
 - Fix: `ShouldReleaseRealSwapchainWrapperReferenceDuringWrapperDestructor` in
-  `hook/common/dx12_overlay_policy/streamline_ownership.h` — skip the base release on the releasing path
+  `hook/d3d12/dx12_overlay_policy/streamline_ownership.h` — skip the base release on the releasing path
   (`wrapperReleasing=true`); the Streamline non-retaining wrapper keeps returning its borrowed reference.
   Guard added in `hook/wrappers/dxgi_swapchain_wrap_lifetime.cpp`. Tests:
   `tests/test_dxgi_shared_part6.cpp` (policy values) + source-order pin in
@@ -76,9 +76,9 @@
   `CreateDXGIFactory1` and returns a proxy factory; CE passed that proxy as `this` into the raw saved
   `IDXGIFactory2::CreateSwapChainForHwnd` slot function, so dxgi read the adapter table from the proxy's
   unrelated `+0xE8` layout (garbage: freed heap / ASCII) and crashed.
-- Root-cause fix in `hook/apis/dx12_hook_hook_install.cpp`: the temp factory creation bypasses the foreign
+- Root-cause fix in `hook/d3d12/dx12_hook_hook_install.cpp`: the temp factory creation bypasses the foreign
   entry patch on `CreateDXGIFactory1`, and the historical raw-slot call is guarded by the saved-slot vtable
-  match (`hook/common/dx12_factory_slot_policy.h`, new global
+  match (`hook/d3d12/dx12_factory_slot_policy.h`, new global
   `dx12_hook_s_savedCreateSwapChainForHwndVtable` captured together with the slot value). Mismatched/proxied
   factories are refused with a one-shot log; the real-swapchain retry paths install the Present hooks instead.
 - Tests: `tests/test_dx12_factory_slot_policy.cpp` (policy + source-order pinning). OptiScaler-only runs were

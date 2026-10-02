@@ -19,10 +19,10 @@ so the validators stay covered without a fuzz run.
 
 | Target | Harness | Under test | Corpus |
 |---|---|---|---|
-| Config parser | `tests/fuzz/fuzz_config_parser.cpp` | `LoadConfig()` (`common/config.cpp`) | `tests/fuzz/corpus/config/` |
-| Hardware-sensor protocol | `tests/fuzz/fuzz_hardware_sensor_protocol.cpp` | `ParseBridgeMessage()` (`captureengine/sensor_plugin.cpp`) | `tests/fuzz/corpus/hardware_sensor_protocol/` |
+| Config parser | `tests/fuzz/fuzz_config_parser.cpp` | `LoadConfig()` (`common/config/config.cpp`) | `tests/fuzz/corpus/config/` |
+| Hardware-sensor protocol | `tests/fuzz/fuzz_hardware_sensor_protocol.cpp` | `ParseBridgeMessage()` (`captureengine/sensors/sensor_plugin.cpp`) | `tests/fuzz/corpus/hardware_sensor_protocol/` |
 | Elevation service | tests/fuzz/fuzz_elevation_protocol.cpp | Bounded privileged pipe request validator | tests/fuzz/corpus/elevation_protocol/ |
-| IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
+| IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/ipc/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
 
 ## Running
 
@@ -46,7 +46,7 @@ reproducers under its `fuzz_<corpus>/` directory.
 - **Harnesses link the whole `common/` tree**, not a curated per-harness source list.
   A curated list silently rots when the code under test grows a new dependency.
   The hardware-sensor target additionally links its controller-owned
-  `captureengine/sensor_plugin.cpp`; that implementation intentionally does not
+  `captureengine/sensors/sensor_plugin.cpp`; that implementation intentionally does not
   live in `common/`, where every product component would otherwise inherit it.
 - **Target public boundaries only.** The IPC harness drives `ValidateProcessMessage`,
   the entry point every pipe reader funnels through. Do not target the file-local

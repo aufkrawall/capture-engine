@@ -7,8 +7,8 @@
 #include <string>
 #include <vector>
 
-#include "../captureengine/host_metrics_policy.h"
-#include "../common/shared_defs.h"
+#include "captureengine/app/host_metrics_policy.h"
+#include "common/ipc/shared_defs.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -241,8 +241,8 @@ TEST(SharedSystemMetricsTest, OptionalHardwareValuesKeepValidZeroPowerAndFanRead
 }
 
 TEST(HostMetricsSourceInvariantTest, HookConsumesValidityInsteadOfNonzeroHeuristics) {
-    const std::string source = ReadProjectSource("hook/common/system_metrics.cpp");
-    const std::string overlay = ReadProjectSource("hook/common/overlay_adapter.cpp");
+    const std::string source = ReadProjectSource("hook/metrics/system_metrics.cpp");
+    const std::string overlay = ReadProjectSource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(overlay.empty());
 
@@ -253,7 +253,7 @@ TEST(HostMetricsSourceInvariantTest, HookConsumesValidityInsteadOfNonzeroHeurist
 }
 
 TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlySourceOrDirectChildGraphicsLuid) {
-    const std::string source = ReadProjectSource("captureengine/sensor_service.cpp");
+    const std::string source = ReadProjectSource("captureengine/sensors/sensor_service.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("QueryDirectParentProcessId(luidSourcePid)"), std::string::npos);
     EXPECT_NE(source.find("IsGpuTelemetryPublisherEligible"), std::string::npos);
@@ -270,7 +270,7 @@ TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlySourceOrDirectChildGraphic
 // The host reaps it once the process is provably gone, and must never reap on a
 // snapshot that failed to answer.
 TEST(HostMetricsSourceInvariantTest, SensorReapsAnInheritedRendererClaimWhoseProcessIsGone) {
-    const std::string source = ReadProjectSource("captureengine/sensor_service.cpp");
+    const std::string source = ReadProjectSource("captureengine/sensors/sensor_service.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("QueryDirectParentProcessId(inheritedRendererPid, &inheritedRendererAlive)"),
               std::string::npos);
@@ -281,8 +281,8 @@ TEST(HostMetricsSourceInvariantTest, SensorReapsAnInheritedRendererClaimWhosePro
 }
 
 TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessProvenance) {
-    for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp",
-                             "hook/common/system_metrics.cpp"}) {
+    for (const char* path : {"common/capture/capture_base.h", "hook/runtime/hook_common.cpp",
+                             "hook/metrics/system_metrics.cpp"}) {
         const std::string source = ReadProjectSource(path);
         SCOPED_TRACE(path);
         ASSERT_FALSE(source.empty());
@@ -296,7 +296,7 @@ TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessPr
 }
 
 TEST(HostMetricsSourceInvariantTest, DirectDrawOverlayPublishesAdapterWithoutRecordingOrD3D9Helper) {
-    const std::string source = ReadProjectSource("hook/apis/ddraw_hook.cpp");
+    const std::string source = ReadProjectSource("hook/ddraw/ddraw_hook.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t overlayEnsure = source.rfind("bool DDrawCapture::EnsureOverlayDevice");

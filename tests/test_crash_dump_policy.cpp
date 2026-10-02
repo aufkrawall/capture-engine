@@ -8,8 +8,8 @@
 
 #include "source_fragment_reader.h"
 
-#include "../common/crash_dump_policy.h"
-#include "../common/cpp_exception_message.h"
+#include "common/crash/crash_dump_policy.h"
+#include "common/crash/cpp_exception_message.h"
 
 namespace policy = ce::crash_dump_policy;
 
@@ -640,7 +640,7 @@ TEST(CrashDumpPolicyTest, OnlyCeWrittenLocalDumpsSubkeysAreRecognised) {
 TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
     namespace fs = std::filesystem;
     const std::string handler =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_handler.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash" / "crash_handler.cpp");
     ASSERT_FALSE(handler.empty());
 
     const size_t setErrorMode = handler.find("SetErrorMode(");

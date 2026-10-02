@@ -1,6 +1,6 @@
-#include "../captureengine/display_timing_submissions.h"
-#include "../common/display_timing_shared.h"
-#include "../hook/common/system_latency_metrics.h"
+#include "captureengine/display_timing/display_timing_submissions.h"
+#include "common/ipc/display_timing_shared.h"
+#include "hook/metrics/system_latency_metrics.h"
 
 #include <gtest/gtest.h>
 

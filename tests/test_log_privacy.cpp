@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../common/log_privacy.h"
+#include "common/logging/log_privacy.h"
 #include "source_fragment_reader.h"
 
 namespace privacy = ce::privacy;
@@ -149,7 +149,7 @@ TEST(LogPrivacySourceTest, LibavDiagnosticsAreRoutedIntoTheSessionLogAndRedacted
     // The callback is the only thing keeping them, and it has to be installed before any
     // avformat/avcodec call can run.
     namespace fs = std::filesystem;
-    const std::string engine = ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "mediaengine.cpp");
+    const std::string engine = ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "engine" / "mediaengine.cpp");
     ASSERT_FALSE(engine.empty());
     EXPECT_NE(engine.find("av_log_set_callback(CaptureEngineAvLogCallback);"), std::string::npos);
     EXPECT_NE(engine.find("ce::privacy::RedactStreamEndpointsForLog(message).c_str()"), std::string::npos)
@@ -164,7 +164,7 @@ TEST(LogPrivacySourceTest, LibavDiagnosticsAreRoutedIntoTheSessionLogAndRedacted
     // Redaction is what allows the live path to keep its diagnostics; AV_LOG_QUIET used to be
     // the only protection for the stream key and silenced the transport entirely.
     const std::string configure =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "video_encoder_configure.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "mediaengine" / "video" / "video_encoder_configure.cpp");
     ASSERT_FALSE(configure.empty());
     // Match the call, not the token: the surrounding comment explains why AV_LOG_QUIET was
     // dropped and legitimately names it.

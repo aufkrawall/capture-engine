@@ -24,7 +24,7 @@ namespace {
 
 std::string ReadInstaller() {
     const std::filesystem::path source =
-        std::filesystem::current_path() / "hook/apis" / "ddraw_hook_install.cpp";
+        ce::test_source::FindSource("hook", "ddraw_hook_install.cpp");
     return ce::test_source::ReadLogicalSource(source);
 }
 

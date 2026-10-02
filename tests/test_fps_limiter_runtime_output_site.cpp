@@ -193,14 +193,14 @@ TEST(FpsLimiterRuntimeOutputSiteTest, DxgiLimiterSitesUseTheVerdictReadAtPresent
     const auto read = [](const char* path) {
         return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / path);
     };
-    const std::string present = read("hook/common/dxgi_shared_present.cpp");
+    const std::string present = read("hook/present/dxgi_shared_present.cpp");
     EXPECT_NE(present.find("ctx.callbackProvenRuntimeOutput = "
                            "ce::present_association::PeekPresentFrameVerdict().known;"),
               std::string::npos);
-    const std::string core = read("hook/common/dxgi_shared_present_core.cpp");
+    const std::string core = read("hook/present/dxgi_shared_present_core.cpp");
     EXPECT_NE(core.find("ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput)"), std::string::npos);
 
-    const std::string present1 = read("hook/common/dxgi_shared_present1.cpp");
+    const std::string present1 = read("hook/present/dxgi_shared_present1.cpp");
     const size_t entry = present1.find("NotePresentEntry(PerfLogger::GetQpcUs());");
     const size_t peek = present1.find("const bool callbackProvenRuntimeOutput = "
                                       "ce::present_association::PeekPresentFrameVerdict().known;");

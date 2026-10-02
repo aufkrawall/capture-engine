@@ -4,7 +4,7 @@
 
 #include <filesystem>
 
-#include "../common/path_utils.h"
+#include "common/platform/path_utils.h"
 
 TEST(PathUtilsTest, DetectsDriveAbsolutePaths) {
     EXPECT_TRUE(ce::path::IsDriveAbsolutePath(std::filesystem::path(L"Z:\\Captures")));

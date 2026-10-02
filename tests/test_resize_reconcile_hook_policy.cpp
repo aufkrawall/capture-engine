@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include "../hook/common/resize_reconcile_hook_policy.h"
+#include "hook/present/resize_reconcile_hook_policy.h"
 
 namespace policy = ce::resize_reconcile_hook;
 

@@ -1,5 +1,5 @@
-#include "../hook/common/graph_scroll_policy.h"
-#include "../hook/common/performance_metrics.h"
+#include "hook/overlay/graph_scroll_policy.h"
+#include "hook/metrics/performance_metrics.h"
 #include <gtest/gtest.h>
 
 #include <array>

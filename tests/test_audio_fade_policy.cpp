@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "../mediaengine/audio_sync_utils.h"
+#include "mediaengine/audio/audio_sync_utils.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -117,6 +117,7 @@ TEST(AudioFadePolicyTest, SteadyPlacementStatsReportNetDeviceDriftInPpm) {
 
 TEST(AudioFadePolicyTest, PullPathCarriesTrackFadesAcrossPulls) {
     const std::string source = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" /
+                                                                   "engine" /
                                                                    "mediaengine_audio_pull_sync.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("ce::audio::ApplyTrackFadeIn(mixBuffer.data()"), std::string::npos);

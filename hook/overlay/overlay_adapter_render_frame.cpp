@@ -1,0 +1,479 @@
+#include "overlay_adapter_internal.h"
+#include "hook/metrics/benchmark_manager.h"
+
+void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    static int renderLogCount = 0;
+    if (renderLogCount < 5) {
+        HookLog("[Overlay] RenderOverlay#%d: init=%d renderer=%p ipc=%p shm=%p showOverlay=%d vp=%dx%d", renderLogCount,
+                initialized ? 1 : 0, (void*)renderer, (void*)ipc, ipc ? (void*)ipc->GetSharedMem() : nullptr,
+                (ipc && ipc->GetSharedMem()) ? ipc->GetSharedMem()->ReadOverlayConfig().showOverlay : -1, viewportWidth,
+                viewportHeight);
+        renderLogCount++;
+    }
+
+    if (!initialized || !renderer) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - not initialized or no renderer");
+        return;
+    }
+
+    if (!ipc || !ipc->GetSharedMem()) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - no IPC or shared memory");
+        return;
+    }
+    auto* sharedMem = ipc->GetSharedMem();
+    auto cfg = sharedMem->ReadOverlayConfig();
+
+    int64_t currentQpcUs = 0;
+    if (metrics) {
+        // Deliberately not PerfLogger::GetQpcUs(): this value is compared against
+        // a publication stamp produced in the sensor process, so it has to use
+        // the same conversion the producer used, including its overflow guard.
+        LARGE_INTEGER displayTimingNow = {};
+        QueryPerformanceCounter(&displayTimingNow);
+        currentQpcUs = DisplayTimingQpcToUs(displayTimingNow.QuadPart, PerfLogger::GetQpcFrequency());
+        metrics->SetFrameTimeSource(cfg.frameTimeSource);
+        metrics->ConsumeDisplayTiming(sharedMem->displayTiming, currentQpcUs);
+        const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
+        const DWORD sourceNow = GetTickCount();
+        if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
+            // The observed source is recorded whatever the rate limit then
+            // decides. Leaving it behind on a suppressed transition made every
+            // later comparison run against a source that was no longer current,
+            // so a flapping stream reached the log as unrelated one-off lines.
+            lastObservedFrameTimeSource = effectiveSource;
+            if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
+                // Age/status explain fallback. Provenance and interval shape are
+                // diagnostic only and never override a healthy display stream.
+                const int64_t lastPublishUs =
+                    sharedMem->displayTiming.lastPublishQpcUs.load(std::memory_order_acquire);
+                HookLogImportant(
+                    "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
+                    "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u "
+                    "publishAgeUs=%lld)",
+                    effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                    cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                    static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
+                    metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille(),
+                    metrics->GetDisplayJaggednessUs(), metrics->GetPresentationJaggednessUs(),
+                    suppressedFrameTimeSourceChanges,
+                    static_cast<long long>(lastPublishUs > 0 ? currentQpcUs - lastPublishUs : -1));
+                lastFrameTimeSourceLogTime = sourceNow;
+                hasObservedFrameTimeSource = true;
+                suppressedFrameTimeSourceChanges = 0;
+            } else {
+                ++suppressedFrameTimeSourceChanges;
+            }
+        }
+
+        // The cadence of the series the overlay is reporting from, on a bounded
+        // period. A pacing regression can leave every present interval intact
+        // and move only what reaches the screen: Portal RTX 20260913_184745
+        // crossed a live vsync_mode change inside one running game and the
+        // metered 3x batch went from 0.43 ms to 6.91 ms of frame-time stddev
+        // (1% low 110 -> 14 fps) with byte-identical vkQueuePresentKHR calls.
+        // Without this line that shape is only recoverable by re-deriving it
+        // from the per-frame CSV.
+        constexpr DWORD kPacingHealthLogIntervalMs = 10000;
+        const DWORD pacingNow = GetTickCount();
+        if (pacingNow - lastPacingHealthLogTime >= kPacingHealthLogIntervalMs) {
+            lastPacingHealthLogTime = pacingNow;
+            HookLogImportant(
+                "[Overlay] Pacing health: source=%s fps=%.1f 1%%low=%.1f 0.1%%low=%.1f stddev=%.0fus "
+                "displayJagUs=%.0f presentJagUs=%.0f screenTimeShare=%upermille fg=%d multiplier=%d "
+                "baseFps=%.1f outputFps=%.1f",
+                metrics->GetEffectiveFrameTimeSource() == FrameTimeSource::DisplayChange ? "display-change"
+                                                                                         : "presentation",
+                metrics->GetCurrentFPS(), metrics->Get1PercentLowFPS(), metrics->Get01PercentLowFPS(),
+                metrics->GetWindowStdDev(), metrics->GetDisplayJaggednessUs(),
+                metrics->GetPresentationJaggednessUs(), metrics->GetDisplayScreenTimePermille(),
+                metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
+                metrics->GetFGOutputFPS());
+        }
+    }
+
+    const float presFrameTimeMs = metrics ? metrics->GetLastPresentationFrameTimeMs() : 0.0f;
+    const float dispFrameTimeMs = metrics ? metrics->GetLastDisplayFrameTimeMs() : 0.0f;
+    auto& benchmark = BenchmarkManager::Get();
+    if (benchmark.NeedsFrame(sharedMem->benchmark.toggleSeq.load(std::memory_order_acquire))) {
+        // An idle benchmark needs no per-output sensor mutex, snapshot, or
+        // configuration string copies. A new toggle still wakes it immediately.
+        benchmark.OnFrame(currentQpcUs, presFrameTimeMs, dispFrameTimeMs,
+                          SystemMetricsCollector::Get().GetMetrics(), sharedMem);
+    }
+    const bool benchmarkActive = benchmark.IsActiveOrShowingResults();
+
+    if (!cfg.showOverlay && !benchmarkActive) {
+        if (renderLogCount < 5)
+            HookLog("[Overlay] RenderOverlay: early return - showOverlay is false");
+        return;
+    }
+
+    // Update throttling
+    DWORD now = GetTickCount();
+    const bool latencyJustEnabled =
+        cfg.showSystemLatency && (!hasRenderedConfig || !lastRenderedConfig.showSystemLatency);
+    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval || latencyJustEnabled;
+    if (shouldUpdate) {
+        lastUpdateTime = now;
+        if (metrics) {
+            cachedFPS = metrics->GetCurrentFPS();
+            cachedAvgFPS = metrics->GetAverageFPS();
+            cached1PercentLow = metrics->Get1PercentLowFPS();
+            cached01PercentLow = metrics->Get01PercentLowFPS();
+            if (cfg.showSystemLatency && currentQpcUs > 0) {
+                constexpr DWORD kNativeLatencyQueryIntervalMs = 250;
+                // A registered cross-IHV marker provider reports without a
+                // graphics device, so the poll must not wait for one to be
+                // resolved: gating on the device alone silently disables the
+                // game's own PCL markers whenever the device is unavailable.
+                const bool nativeLatencySourceAvailable =
+                    latencyDevice != nullptr ||
+                    ce::system_latency::GetSupplementalNativeReportProvider() != nullptr;
+                if (nativeLatencySourceAvailable &&
+                    (lastNativeLatencyQueryTime == 0 ||
+                     now - lastNativeLatencyQueryTime >= kNativeLatencyQueryIntervalMs)) {
+                    ce::system_latency::NativeReport nativeReport;
+                    if (ce::system_latency::QueryNativeReport(latencyDevice, nativeReport))
+                        metrics->SubmitNativeLatencyReport(nativeReport);
+                    lastNativeLatencyQueryTime = now;
+                }
+
+                cachedSystemLatency = metrics->GetSystemLatency(currentQpcUs);
+                const auto latencySource = cachedSystemLatency.source;
+                // Comparing a latency reading across a configuration change is
+                // only sound if the reading's provenance is on record, so the
+                // full decomposition is logged, not just the published number:
+                // a wide min/max spread or a low association ratio is how a
+                // broken present/display correlation announces itself.
+                constexpr DWORD kSystemLatencyLogIntervalMs = 5000;
+                const bool latencySourceChanged = latencySource != lastLoggedSystemLatencySource;
+                const bool latencyLogDue =
+                    !hasObservedSystemLatencySource || latencySourceChanged ||
+                    now - lastSystemLatencySourceLogTime >= kSystemLatencyLogIntervalMs;
+                if (latencyLogDue) {
+                    const auto latencyDiagnostics = metrics->GetSystemLatencyDiagnostics(currentQpcUs);
+                    HookLogImportant(
+                        "[Overlay] PC latency sample: source=%s value=%.1fms median=%.1f min=%.1f max=%.1f "
+                        "samples=%u fg=%d multiplier=%d baseFps=%.1f outputFps=%.1f",
+                        ce::system_latency::SourceLogLabel(latencySource), cachedSystemLatency.milliseconds,
+                        cachedSystemLatency.medianMilliseconds, cachedSystemLatency.minimumMilliseconds,
+                        cachedSystemLatency.maximumMilliseconds, cachedSystemLatency.sampleCount,
+                        metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
+                        metrics->GetFGOutputFPS());
+                    HookLogImportant(
+                        "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
+                        "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
+                        "displayInterval=%lldus outputRatio=%dpermille generationObserved=%d generatorHold=%s appStream=%s "
+                        "appQueue=%u "
+                        "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
+                        "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
+                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu",
+                        ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
+                        static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
+                        static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
+                        static_cast<long long>(latencyDiagnostics.lastInputWaitUs),
+                        static_cast<long long>(latencyDiagnostics.lastBaseIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.applicationIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.frameBeginIntervalUs),
+                        static_cast<long long>(latencyDiagnostics.displayIntervalUs),
+                        latencyDiagnostics.observedOutputRatioPermille,
+                        latencyDiagnostics.frameGenerationObserved ? 1 : 0,
+                        // "modelled" while a generator is pacing means no application-source Present
+                        // reached the correlator, so the hold is a floor of one output interval rather
+                        // than the span the runtime actually held the frame for.
+                        latencyDiagnostics.generatorHoldApplied
+                            ? (latencyDiagnostics.generatorHoldMeasured ? "measured" : "modelled")
+                            : "none",
+                        // "stale" means the application cadence was dropped for the
+                        // marker or published-base cadence shown as applicationInterval.
+                        latencyDiagnostics.applicationPresentStreamFresh ? "fresh" : "stale",
+                        latencyDiagnostics.applicationFramesInFlight,
+                        static_cast<long long>(latencyDiagnostics.markerIntervalUs),
+                        latencyDiagnostics.markerCadenceTrusted ? 1 : 0,
+                        latencyDiagnostics.lastMarkerUsedAssociation ? 1 : 0,
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysObserved),
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysWithPresentAssociation),
+                        static_cast<unsigned long long>(latencyDiagnostics.displaysWithoutMatchedPresent),
+                        static_cast<unsigned long long>(latencyDiagnostics.presentsDroppedUnderContention),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedOutOfRange),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedPresentToDisplay),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedBaseInterval),
+                        static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedTotalLatency),
+                        static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
+                        static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
+                        static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions),
+                        static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected));
+                    if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
+                        HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",
+                                         ce::system_latency::SourceLogLabel(latencyDiagnostics.crossCheckSource),
+                                         latencyDiagnostics.crossCheckMilliseconds,
+                                         cachedSystemLatency.milliseconds);
+                    }
+                    lastSystemLatencySourceLogTime = now;
+                    lastLoggedSystemLatencySource = latencySource;
+                    hasObservedSystemLatencySource = true;
+                }
+            } else {
+                cachedSystemLatency = {};
+            }
+        }
+        if (cfg.showCPU || cfg.showRAM || cfg.showGPU || cfg.showVRAM) {
+            SystemMetricsCollector::Get().Update();
+            cachedSystemMetrics = SystemMetricsCollector::Get().GetMetrics();
+        }
+    }
+
+    FrameLayoutSnapshot frameLayout = {};
+    frameLayout.systemLatency = cachedSystemLatency;
+    frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
+    frameLayout.reserveFGSpace = false;
+    if (frameLayout.fgActive && metrics) {
+        frameLayout.fgMultiplier = metrics->GetFGMultiplier();
+        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "%s", metrics->GetFGTypeLabel());
+        frameLayout.fgBaseFPS = metrics->GetFGBaseFPS();
+        frameLayout.fgOutputFPS = metrics->GetFGOutputFPS();
+    }
+    if (frameLayout.fgOutputFPS < 1.0f)
+        frameLayout.fgOutputFPS = cachedFPS;
+    if (frameLayout.fgBaseFPS < 1.0f) {
+        frameLayout.fgBaseFPS =
+            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+            frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier : cachedFPS;
+    }
+
+    frameLayout.recordingActive = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
+    frameLayout.recordingAudioOnly = sharedMem->runtimeState.audioOnly.load(std::memory_order_acquire);
+    const RecordingStartIntent recordingStartIntent = sharedMem->runtimeState.GetRecordingStartIntent();
+    frameLayout.recordingState = ce::recording_indicator::SelectState(
+        frameLayout.recordingActive, frameLayout.recordingAudioOnly, recordingStartIntent);
+    frameLayout.recordingStatusDark =
+        sharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture) &&
+        ce::recording_indicator::IsStarting(frameLayout.recordingState);
+    uint64_t nowTick64 = GetTickCount64();
+    if (cfg.showRecording && frameLayout.recordingActive) {
+        int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
+        if (startTime > 0) {
+            frameLayout.recordingSeconds = (nowTick64 - startTime) / 1000;
+        }
+        uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+        const uint32_t captureHealthFlags =
+            sharedMem->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t recordingHealthFlags =
+            sharedMem->runtimeState.recordingHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(
+            overloadFlags, captureHealthFlags, recordingHealthFlags);
+        if (warningKind == ce::capture_policy::kOverlayWarningNone &&
+            ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
+            lastEncoderOverloadTick = 0;
+            lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
+            lastEncoderOverloadTick = nowTick64;
+            lastRecordingWarningKind = warningKind;
+        }
+    } else {
+        lastEncoderOverloadTick = 0;
+        lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
+
+    }
+    frameLayout.showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    frameLayout.recordingWarningKind =
+        frameLayout.showOverloadWarning ? lastRecordingWarningKind : ce::capture_policy::kOverlayWarningNone;
+    frameLayout.recordingTargetFps = sharedMem->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
+    frameLayout.recordingSustainFpsX100 = sharedMem->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+
+    const uint64_t notificationExpiry = sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
+    frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
+    const bool recordingFinalizationNotification =
+        ce::output_completion::IsRecordingFinalizationNotification(frameLayout.notificationType);
+    frameLayout.notificationVisible =
+        notificationExpiry > nowTick64 && frameLayout.notificationType != 0 &&
+        (!recordingFinalizationNotification || frameLayout.recordingState == ce::recording_indicator::State::Idle);
+
+    const BenchmarkState benchState = BenchmarkManager::Get().GetState();
+    frameLayout.benchmarkState = benchState;
+    if (benchState == BenchmarkState::Delaying) {
+        const float remaining = BenchmarkManager::Get().GetDelayRemainingSeconds();
+        std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                      "Starts in %.0fs", remaining);
+        frameLayout.benchmarkFpsText[0] = '\0';
+    } else if (benchState == BenchmarkState::Recording) {
+        const float elapsed = BenchmarkManager::Get().GetRecordingElapsedSeconds();
+        const uint32_t dur = BenchmarkManager::Get().GetDurationSeconds();
+        const int elapsedSec = static_cast<int>(elapsed);
+        const int mm = elapsedSec / 60;
+        const int ss = elapsedSec % 60;
+        if (dur > 0) {
+            const int durMm = static_cast<int>(dur / 60);
+            const int durSs = static_cast<int>(dur % 60);
+            std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                          "%02d:%02d / %02d:%02d", mm, ss, durMm, durSs);
+        } else {
+            std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                          "%02d:%02d", mm, ss);
+        }
+
+        const bool displayCadence = (cfg.frameTimeSource == FrameTimeSource::DisplayChange);
+        const BenchmarkStats runningStats = BenchmarkManager::Get().GetRunningStats(displayCadence);
+        if (runningStats.avgFps > 0.0f) {
+            std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText),
+                          "%.1f / %.1f / %.1f", runningStats.avgFps, runningStats.onePercentLowFps,
+                          runningStats.zeroPointOnePercentLowFps);
+        } else {
+            std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText), "-- / -- / --");
+        }
+    } else if (benchState == BenchmarkState::Results) {
+        const BenchmarkResults& results = BenchmarkManager::Get().GetResults();
+        const int totalSec = static_cast<int>(results.durationSeconds);
+        const int mm = totalSec / 60;
+        const int ss = totalSec % 60;
+        std::snprintf(frameLayout.benchmarkTimerText, sizeof(frameLayout.benchmarkTimerText),
+                      "%02d:%02d (Done)", mm, ss);
+
+        const bool displayCadence = (cfg.frameTimeSource == FrameTimeSource::DisplayChange);
+        const BenchmarkStats& stats = displayCadence ? results.displayStats : results.presentationStats;
+        std::snprintf(frameLayout.benchmarkFpsText, sizeof(frameLayout.benchmarkFpsText),
+                      "%.1f / %.1f / %.1f", stats.avgFps, stats.onePercentLowFps,
+                      stats.zeroPointOnePercentLowFps);
+    } else {
+        frameLayout.benchmarkTimerText[0] = '\0';
+        frameLayout.benchmarkFpsText[0] = '\0';
+    }
+
+    ce::overlay_layout::RowInputs rowInputs = {};
+    if (cfg.showOverlay) {
+        rowInputs.showGPU = cfg.showGPU;
+        rowInputs.showCPU = cfg.showCPU;
+        rowInputs.showGPUClocks = cachedSystemMetrics.gpuCoreClockValid || cachedSystemMetrics.gpuMemoryClockValid ||
+                                  cachedSystemMetrics.gpuCoreVoltageValid;
+        rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid;
+        rowInputs.showVRAM = cfg.showVRAM;
+        rowInputs.showRAM = cfg.showRAM;
+        rowInputs.showFPS = cfg.showFPS;
+        rowInputs.showFPSAverages = cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f;
+        rowInputs.showSystemLatency = cfg.showSystemLatency;
+        rowInputs.showFG = cfg.showFG;
+        rowInputs.fgActive = frameLayout.fgActive;
+        rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
+        rowInputs.showRecording = cfg.showRecording;
+        rowInputs.recordingActive = frameLayout.recordingActive;
+        rowInputs.recordingStarting =
+            ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
+        rowInputs.notificationVisible = frameLayout.notificationVisible;
+    }
+    rowInputs.showBenchmarkTimer = (benchState != BenchmarkState::Idle);
+    rowInputs.showBenchmarkFPS = (benchState == BenchmarkState::Recording || benchState == BenchmarkState::Results);
+    frameLayout.rowMask = ce::overlay_layout::BuildOverlayRowMask(rowInputs);
+    frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
+
+    PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
+    bool showGraph = cfg.showFrameTime && metrics && cfg.showOverlay;
+    bool shouldRefreshGraph = showGraph;
+    bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
+    bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
+    const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
+    const bool fgIdentityChanged = !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
+                                   frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
+                                   frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
+                                   std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
+    const bool recordingChanged = !hasLastFrameLayout ||
+                                  frameLayout.recordingState != lastFrameLayout.recordingState ||
+                                  frameLayout.recordingStatusDark != lastFrameLayout.recordingStatusDark ||
+                                  frameLayout.recordingActive != lastFrameLayout.recordingActive ||
+                                  frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
+                                  frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
+                                  frameLayout.showOverloadWarning != lastFrameLayout.showOverloadWarning ||
+                                  frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind;
+    const bool notificationChanged = !hasLastFrameLayout ||
+                                     frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
+                                     frameLayout.notificationType != lastFrameLayout.notificationType;
+    const bool benchmarkChanged = !hasLastFrameLayout ||
+                                  frameLayout.benchmarkState != lastFrameLayout.benchmarkState ||
+                                  std::strcmp(frameLayout.benchmarkTimerText, lastFrameLayout.benchmarkTimerText) != 0 ||
+                                  std::strcmp(frameLayout.benchmarkFpsText, lastFrameLayout.benchmarkFpsText) != 0;
+    bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged || benchmarkChanged;
+    bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
+                       dynamicStateChanged || layoutDirty || benchmarkActive;
+    const bool refreshLayout = shouldUpdate || layoutDirty || configChanged || rowSetChanged || fgIdentityChanged;
+    static int renderPathLogCount = 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant(
+            "[Overlay] RenderOverlay path: rebuild=%d cache=%d shouldUpdate=%d viewportChanged=%d cfgChanged=%d",
+            needRebuild ? 1 : 0, hasCachedFrame ? 1 : 0, shouldUpdate ? 1 : 0, viewportChanged ? 1 : 0,
+            configChanged ? 1 : 0);
+        renderPathLogCount++;
+    }
+
+    // Pass HDR params to backend for shader constants
+    if (backend) {
+        float paperWhite = cfg.hdrPaperWhite;
+        if (paperWhite <= 0.0f) {
+            const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
+            HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
+                ULONG rawLevel = 0;
+                float queriedNits = 0.0f;
+                if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
+                    resolvedHdrPaperWhiteNits = queriedNits;
+                    HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
+                                     static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
+                } else {
+                    resolvedHdrPaperWhiteNits = 203.0f;
+                    HookLogImportant("[Overlay] Windows SDR white unavailable for monitor=%p; using %.1f nits",
+                                     monitor, resolvedHdrPaperWhiteNits);
+                }
+                hdrPaperWhiteMonitor = monitor;
+            }
+            paperWhite = resolvedHdrPaperWhiteNits;
+        }
+        int mode = 0;             // SDR
+        if (isHDR) {
+            // Detect HDR10/PQ (R10G10B10A2) vs scRGB (FP16) from render target format
+            // DXGI_FORMAT_R10G10B10A2_UNORM = 24
+            mode = (renderTargetFormat == 24) ? 2 : 1;
+        }
+        backend->SetHDRParams(mode, paperWhite);
+    }
+
+    if (!needRebuild) {
+        const int64_t cachedRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+        if (renderer->RenderCachedFrame(viewportWidth, viewportHeight)) {
+            if (activeDebugSample) {
+                activeDebugSample->flags |= kPresentSampleFlagOverlayCacheHit;
+                activeDebugSample->overlayRenderUs +=
+                    static_cast<int32_t>(PerfLogger::GetQpcUs() - cachedRenderStartUs);
+            }
+            return;
+        }
+        hasCachedFrame = false;
+    }
+
+    const int64_t overlayBuildStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant("[Overlay] RenderOverlay: BeginFrame %dx%d", viewportWidth, viewportHeight);
+    }
+    renderer->BeginFrame(viewportWidth, viewportHeight);
+    RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout);
+    if (activeDebugSample) {
+        activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
+        activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);
+    }
+    const int64_t overlayRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
+    if (renderPathLogCount < 10) {
+        HookLogImportant("[Overlay] RenderOverlay: EndFrame");
+    }
+    renderer->EndFrame();
+    if (activeDebugSample) {
+        activeDebugSample->overlayRenderUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayRenderStartUs);
+    }
+
+    hasCachedFrame = true;
+    hasRenderedConfig = true;
+    lastRenderedConfig = cfg;
+    lastViewportWidth = viewportWidth;
+    lastViewportHeight = viewportHeight;
+    lastFrameLayout = frameLayout;
+    hasLastFrameLayout = true;
+}

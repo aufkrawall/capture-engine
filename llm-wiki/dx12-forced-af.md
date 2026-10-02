@@ -3,9 +3,9 @@
 Last cross-checked: 2026-09-09
 
 Primary sources:
-- `hook/common/dx12_sampler_policy.{h,cpp}`
-- `hook/apis/dx12_sampler_hooks.{h,cpp}`
-- `hook/wrappers/iat_hook_init.cpp`
+- `hook/d3d12/dx12_sampler_policy.{h,cpp}`
+- `hook/d3d12/dx12_sampler_hooks.{h,cpp}`
+- `hook/hooking/iat_hook_init.cpp`
 - `tests/test_dx12_sampler_policy.cpp`
 - `tests/test_inject_capture_source_part2.cpp`
 

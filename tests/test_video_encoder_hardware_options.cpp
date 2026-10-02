@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "../mediaengine/video_encoder_options.h"
+#include "mediaengine/video/video_encoder_options.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>

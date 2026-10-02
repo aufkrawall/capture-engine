@@ -1,6 +1,6 @@
 #include "service_internal.h"
-#include "../captureengine/display_timing_etw.h"
-#include "../common/logging.h"
+#include "captureengine/display_timing/display_timing_etw.h"
+#include "common/logging/logging.h"
 
 namespace ce::elevation {
 

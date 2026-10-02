@@ -8,10 +8,10 @@
 #include <string>
 #include <vector>
 
-#include "../common/crash_dump_policy.h"
-#include "../common/crash_first_chance.h"
-#include "../common/crash_handler.h"
-#include "../common/log_privacy.h"
+#include "common/crash/crash_dump_policy.h"
+#include "common/crash/crash_first_chance.h"
+#include "common/crash/crash_handler.h"
+#include "common/logging/log_privacy.h"
 #include "source_fragment_reader.h"
 
 namespace policy = ce::crash_dump_policy;
@@ -216,7 +216,7 @@ TEST_F(CrashOutputTruthTest, UnownedBreakpointsNeverDumpAtFirstChance) {
 TEST(CrashOutputTruthSourceTest, TraceCrashRedactsAccountNamesBeforeWriting) {
     namespace fs = std::filesystem;
     const std::string handler =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_handler.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash" / "crash_handler.cpp");
     ASSERT_FALSE(handler.empty());
 
     const size_t trace = handler.find("void TraceCrash(const char* msg) {");
@@ -237,7 +237,7 @@ TEST(CrashOutputTruthSourceTest, TraceCrashRedactsAccountNamesBeforeWriting) {
 TEST(CrashOutputTruthSourceTest, QuickAssertDumpBranchIsCappedAndGuardedBeforeItDumpsInProcess) {
     namespace fs = std::filesystem;
     const std::string writer =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_dump_writer.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash" / "crash_dump_writer.cpp");
     ASSERT_FALSE(writer.empty());
 
     const size_t branch = writer.find("if (action == ce::crash_dump_policy::FirstChanceAction::kQuickAssertDump) {");
@@ -269,9 +269,9 @@ TEST(CrashOutputTruthSourceTest, QuickAssertDumpBranchIsCappedAndGuardedBeforeIt
 TEST(CrashOutputTruthSourceTest, BreakpointsCarryNoImmediateDumpBudget) {
     namespace fs = std::filesystem;
     const std::string writer =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_dump_writer.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash" / "crash_dump_writer.cpp");
     const std::string policyHeader =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash_dump_policy.h");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "common" / "crash" / "crash_dump_policy.h");
     ASSERT_FALSE(writer.empty());
     ASSERT_FALSE(policyHeader.empty());
 

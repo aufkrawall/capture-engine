@@ -90,7 +90,7 @@ TEST(DXGISharedTest, NormalSwapchainReturnWaitsForAuthoritativeQueueBaseline) {
 
 TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -113,7 +113,7 @@ TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
 
 TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchingPresent) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -166,7 +166,7 @@ TEST(DXGISharedTest, ExactCreationProofDefeatsSwapchainPointerABAReuse) {
 
 TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueueRouting) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -259,7 +259,7 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
 
 TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTransitionConsumers) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -323,7 +323,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
 
 TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAnyStaleEpochLock) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -349,7 +349,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
 
 TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNestedPresentDuplicate) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    const fs::path source = fs::current_path() / "hook" / "present" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -456,7 +456,7 @@ TEST(DXGISharedSourceTest, WrapperPresentScopeSpansProcessFrameAndRealPresentFor
 
 TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepAliveBeforePresent) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
@@ -488,7 +488,7 @@ TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepA
 
 TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWithoutPresentationOwnershipProof) {
     namespace fs = std::filesystem;
-    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    const fs::path source = fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());

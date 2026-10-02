@@ -1,6 +1,6 @@
 #include "dxgi_swapchain_wrap_internal.h"
-#include "../common/present_pacing_policy.h"
-#include "../common/swapchain_flag_apply.h"
+#include "hook/present/present_pacing_policy.h"
+#include "hook/present/swapchain_flag_apply.h"
 
 
 void CWrapDXGISwapChain::WaitFrameLatency() {

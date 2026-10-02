@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/swapchain_flag_policy.h"
+#include "hook/present/swapchain_flag_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -150,7 +150,7 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 // single place.
 TEST(SwapchainFlagPolicySourceTest, OnlyThePolicyWritesTheWaitableCreationFlag) {
     const char* creationSources[] = {
-        "hook/apis/dx12_hook_swapchain_create.cpp", "hook/apis/dx12_hook_swapchain_tracking.cpp",
+        "hook/d3d12/dx12_hook_swapchain_create.cpp", "hook/d3d12/dx12_hook_swapchain_tracking.cpp",
         "hook/wrappers/dxgi_factory_wrap.cpp",      "hook/wrappers/wrapper_hooks.cpp",
         "hook/wrappers/dxgi_swapchain_wrap_modern.cpp",
     };
@@ -164,8 +164,8 @@ TEST(SwapchainFlagPolicySourceTest, OnlyThePolicyWritesTheWaitableCreationFlag) 
 
 TEST(SwapchainFlagPolicySourceTest, CreationPathsGoThroughTheSharedPolicy) {
     const char* creationSources[] = {
-        "hook/apis/dx12_hook_swapchain_create.cpp",
-        "hook/apis/dx12_hook_swapchain_tracking.cpp",
+        "hook/d3d12/dx12_hook_swapchain_create.cpp",
+        "hook/d3d12/dx12_hook_swapchain_tracking.cpp",
         "hook/wrappers/dxgi_factory_wrap.cpp",
         "hook/wrappers/wrapper_hooks.cpp",
     };
@@ -181,9 +181,9 @@ TEST(SwapchainFlagPolicySourceTest, CreationPathsGoThroughTheSharedPolicy) {
 // must read the live descriptor rather than re-derive intent from the config.
 TEST(SwapchainFlagPolicySourceTest, EveryResizePathReconcilesAgainstTheLiveDescriptor) {
     const char* resizeSources[] = {
-        "hook/common/dxgi_shared_resize.cpp",
+        "hook/present/dxgi_shared_resize.cpp",
         "hook/wrappers/dxgi_swapchain_wrap_modern.cpp",
-        "hook/apis/dx11_hook_present.cpp",
+        "hook/d3d11/dx11_hook_present.cpp",
     };
     for (const char* relativePath : resizeSources) {
         const std::string source = ReadSource(relativePath);
@@ -197,7 +197,7 @@ TEST(SwapchainFlagPolicySourceTest, EveryResizePathReconcilesAgainstTheLiveDescr
 // declined to install, so the claim has to happen where the swapchain is handed
 // to the application untouched, and before the Present ownership question.
 TEST(SwapchainFlagPolicySourceTest, ResizeClaimIsIndependentOfPresentOwnership) {
-    const std::string hooks = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string hooks = ReadSource("hook/present/dxgi_shared_hooks.cpp");
     ASSERT_FALSE(hooks.empty());
 
     const size_t claim = hooks.find("InstallResizeReconciliationHooks(pSwapChain, \"InstallHooks\")");
@@ -206,7 +206,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizeClaimIsIndependentOfPresentOwnership) 
     ASSERT_NE(foreignChainReturn, std::string::npos);
     EXPECT_LT(claim, foreignChainReturn);
 
-    const std::string create = ReadSource("hook/apis/dx12_hook_swapchain_create.cpp");
+    const std::string create = ReadSource("hook/d3d12/dx12_hook_swapchain_create.cpp");
     ASSERT_FALSE(create.empty());
     EXPECT_NE(create.find("InstallResizeReconciliationHooks"), std::string::npos);
 
@@ -219,7 +219,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizeClaimIsIndependentOfPresentOwnership) 
 // configured depth there silently reallocates a chain the application meant to
 // leave alone.
 TEST(SwapchainFlagPolicySourceTest, ResizePathsPreserveAnImplicitBufferCount) {
-    const std::string shared = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string shared = ReadSource("hook/present/dxgi_shared_resize.cpp");
     ASSERT_FALSE(shared.empty());
     EXPECT_NE(shared.find("if (BufferCount == 0)"), std::string::npos);
 
@@ -239,7 +239,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizePathsPreserveAnImplicitBufferCount) {
 // reconciliation hooks below the entry, like Present, and never takes the entry
 // while a third-party overlay is loaded.
 TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesSlotsAndEntriesToSlotHookingOverlays) {
-    const std::string hooks = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const std::string hooks = ReadSource("hook/present/dxgi_shared_hooks.cpp");
     const size_t begin = hooks.find("bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain");
     ASSERT_NE(begin, std::string::npos);
     const std::string body = hooks.substr(begin, hooks.find("\n}\n", begin) - begin);
@@ -272,7 +272,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesSlotsAndEntriesToS
 // re-enter the chain it is part of; the detours forward to their saved
 // predecessors only.
 TEST(SwapchainFlagPolicySourceTest, ResizeDetoursNeverReenterTheirOwnVTableSlot) {
-    const std::string shared = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    const std::string shared = ReadSource("hook/present/dxgi_shared_resize.cpp");
     ASSERT_FALSE(shared.empty());
     // The cast form is the call itself; the slot numbers still appear in the
     // comments that explain why the call must not be made that way.
@@ -284,7 +284,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizeDetoursNeverReenterTheirOwnVTableSlot)
 // which does not depend on CE having seen D3D12CreateDevice. That is the only
 // discovery that survives an injection later than the game's graphics init.
 TEST(SwapchainFlagPolicySourceTest, SamplerOverridesHookEveryDiscoveredD3D12Device) {
-    const std::string helpers = ReadSource("hook/apis/dx12_hook_helpers.cpp");
+    const std::string helpers = ReadSource("hook/d3d12/dx12_hook_helpers.cpp");
     ASSERT_FALSE(helpers.empty());
 
     const size_t publish = helpers.find("void DX12_PublishNativeLimiterDevice(");

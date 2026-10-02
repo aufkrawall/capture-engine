@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../captureengine/display_timing_session_reclaim.h"
+#include "captureengine/display_timing/display_timing_session_reclaim.h"
 
 #include "source_fragment_reader.h"
 
@@ -62,14 +62,14 @@ TEST(DisplayTimingSessionReclaimTest, StopsOnlyOurSessionsWhoseOwnerIsGone) {
 // The recovery is worth nothing if the service does not attempt it, and the failure
 // message is what tells a user why their frame-time graph changed shape.
 TEST(DisplayTimingSessionReclaimTest, TheServiceReclaimsAndThenRetriesTheSession) {
-    const std::string service = ReadSource("captureengine/display_timing_service.cpp");
+    const std::string service = ReadSource("captureengine/display_timing/display_timing_service.cpp");
     ASSERT_FALSE(service.empty());
     // The service reaches ETW only through the startup unit, which is the only
     // caller of the reclaiming open below.
     EXPECT_NE(service.find("OpenSessionAndEnableProviders(&session_, sessionName_)"), std::string::npos);
     EXPECT_EQ(service.find("StartTraceW("), std::string::npos);
 
-    const std::string startup = ReadSource("captureengine/display_timing_startup.cpp");
+    const std::string startup = ReadSource("captureengine/display_timing/display_timing_startup.cpp");
     ASSERT_FALSE(startup.empty());
     // The session is opened only through the reclaiming path, never StartTraceW
     // directly, or a leak would still be able to accumulate.
@@ -79,7 +79,7 @@ TEST(DisplayTimingSessionReclaimTest, TheServiceReclaimsAndThenRetriesTheSession
     // symptom a user sees is a changed frame-time graph, not an error.
     EXPECT_NE(startup.find("ETW session budget is"), std::string::npos);
 
-    const std::string reclaim = ReadSource("captureengine/display_timing_session_reclaim.cpp");
+    const std::string reclaim = ReadSource("captureengine/display_timing/display_timing_session_reclaim.cpp");
     ASSERT_FALSE(reclaim.empty());
 
     // The sweep runs BEFORE the session is opened, so a leak cannot accumulate at all,

@@ -9,8 +9,8 @@
 #include <deque>
 #include <vector>
 
-#include "../common/capture_pipeline_policy.h"
-#include "../common/frame_timing_utils.h"
+#include "common/capture/capture_pipeline_policy.h"
+#include "common/capture/frame_timing_utils.h"
 
 namespace policy = ce::capture_policy;
 

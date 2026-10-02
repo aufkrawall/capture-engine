@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../common/elevation_protocol.h"
-#include "../common/elevation_windows.h"
-#include "../captureengine/sensor_plugin.h"
-#include "../common/config.h"
+#include "common/ipc/elevation_protocol.h"
+#include "common/ipc/elevation_windows.h"
+#include "captureengine/sensors/sensor_plugin.h"
+#include "common/config/config.h"
 #include <atomic>
 #include <mutex>
 #include <thread>

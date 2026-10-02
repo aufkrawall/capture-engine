@@ -16,7 +16,7 @@ std::string ReadGraphicsApiSource(const std::filesystem::path& relativePath) {
 }  // namespace
 
 TEST(GraphicsApiReportingSourceTest, OverlayIgnoresUnchangedLabelsBeforeInvalidatingLayout) {
-    const std::string source = ReadGraphicsApiSource("hook/common/overlay_adapter.cpp");
+    const std::string source = ReadGraphicsApiSource("hook/overlay/overlay_adapter.cpp");
     ASSERT_FALSE(source.empty());
     const size_t unchanged = source.find("LabelsDiffer(graphicsAPI, api)");
     const size_t layoutDirty = source.find("layoutDirty = true", unchanged);
@@ -27,7 +27,7 @@ TEST(GraphicsApiReportingSourceTest, OverlayIgnoresUnchangedLabelsBeforeInvalida
 }
 
 TEST(GraphicsApiReportingSourceTest, DirectDrawHooksAllFactoryGenerationsAndExcludesBootstrapEvidence) {
-    const std::string source = ReadGraphicsApiSource("hook/apis/ddraw_hook.cpp");
+    const std::string source = ReadGraphicsApiSource("hook/ddraw/ddraw_hook.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("DetourDirectDrawCreate("), std::string::npos);
     EXPECT_NE(source.find("DetourDirectDrawCreateEx("), std::string::npos);
@@ -41,7 +41,7 @@ TEST(GraphicsApiReportingSourceTest, DirectDrawHooksAllFactoryGenerationsAndExcl
 }
 
 TEST(GraphicsApiReportingSourceTest, D3D9CreationEvidenceKeepsClassicAndExDevicesSeparate) {
-    const std::string source = ReadGraphicsApiSource("hook/apis/dx9_hook.cpp");
+    const std::string source = ReadGraphicsApiSource("hook/d3d9/dx9_hook.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("RegisterD3D9DeviceIdentity(*ppReturnedDeviceInterface, false"), std::string::npos);
     EXPECT_NE(source.find("RegisterD3D9DeviceIdentity(*ppReturnedDeviceInterface, true"), std::string::npos);
@@ -54,7 +54,7 @@ TEST(GraphicsApiReportingSourceTest, D3D10AndD3D11UseCreationAndExternalInterfac
     // the device-creation exports; the D3D10 evidence lives in the latter.
     const std::string wrappers = ReadGraphicsApiSource("hook/wrappers/wrapper_hooks.cpp") + "\n" +
                                  ReadGraphicsApiSource("hook/wrappers/wrapper_hooks_devices.cpp");
-    const std::string dx11 = ReadGraphicsApiSource("hook/apis/dx11_hook.cpp");
+    const std::string dx11 = ReadGraphicsApiSource("hook/d3d11/dx11_hook.cpp");
     ASSERT_FALSE(wrappers.empty());
     ASSERT_FALSE(dx11.empty());
     EXPECT_NE(wrappers.find("Wrapped_D3D10CreateDeviceAndSwapChain1"), std::string::npos);
@@ -66,7 +66,7 @@ TEST(GraphicsApiReportingSourceTest, D3D10AndD3D11UseCreationAndExternalInterfac
 }
 
 TEST(GraphicsApiReportingSourceTest, OpenGLReevaluatesVersionAndProfileOnContextSwitch) {
-    const std::string source = ReadGraphicsApiSource("hook/apis/opengl_hook.cpp");
+    const std::string source = ReadGraphicsApiSource("hook/opengl/opengl_hook.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("g_CurrentTrackedContext = NULL"), std::string::npos);
     EXPECT_NE(source.find("g_VersionChecked = false"), std::string::npos);

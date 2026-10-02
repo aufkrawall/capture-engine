@@ -15,8 +15,8 @@ std::string ReadTraySource(const std::filesystem::path& relativePath) {
 }  // namespace
 
 TEST(TrayIconSourceTest, RestoresCurrentIconStateWhenExplorerRecreatesTaskbar) {
-    const std::string header = ReadTraySource("captureengine/tray.h");
-    const std::string source = ReadTraySource("captureengine/tray.cpp");
+    const std::string header = ReadTraySource("captureengine/app/tray.h");
+    const std::string source = ReadTraySource("captureengine/app/tray.cpp");
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
 
@@ -41,7 +41,7 @@ TEST(TrayIconSourceTest, RestoresCurrentIconStateWhenExplorerRecreatesTaskbar) {
 }
 
 TEST(TrayIconSourceTest, EnsuresContextMenuOpensOnTopOfTaskbar) {
-    const std::string source = ReadTraySource("captureengine/tray.cpp");
+    const std::string source = ReadTraySource("captureengine/app/tray.cpp");
     ASSERT_FALSE(source.empty());
 
     // Window creation must include WS_EX_TOPMOST so owned popups inherit topmost Z-order

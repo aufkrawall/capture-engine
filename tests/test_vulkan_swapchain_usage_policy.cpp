@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/vulkan_layer/vulkan_swapchain_usage_policy.h"
+#include "hook/vulkan_layer/vulkan_swapchain_usage_policy.h"
 
 using ce::vulkan_swapchain_usage::Decide;
 using ce::vulkan_swapchain_usage::Decision;

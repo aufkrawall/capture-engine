@@ -98,7 +98,7 @@ changes below (no restructuring). No hardware run yet for any of them.
   `GetModuleFileNameA` users (logs/config dirs, ~56 files) remain ANSI - stale-risk for
   non-ACP install paths.
 - **~180 MB symbol copy per session, twice**: hard links into `logs\symbol_store`
-  (`common/crash_symbol_store.h`), pruned by link count; the hook never archives.
+  (`common/crash/crash_symbol_store.h`), pruned by link count; the hook never archives.
 - **Freeze dumps** prefer the registered external helper when available. Audit correction: the effective
   watchdog timeout is 30 s (120 s UE5/DLSS-FG), not the 5 s field initializer.
 

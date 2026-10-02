@@ -5,9 +5,9 @@
 
 #include "source_fragment_reader.h"
 
-#include "../captureengine/process_start_poll.h"
-#include "../common/config.h"
-#include "../hook/common/ngx_ota_policy.h"
+#include "captureengine/injection/process_start_poll.h"
+#include "common/config/config.h"
+#include "hook/ngx/ngx_ota_policy.h"
 
 namespace {
 
@@ -209,7 +209,7 @@ TEST(RuntimeOverrideRefusal, EveryReasonExceptNoneHasExplanatoryText) {
 TEST(NgxOtaSlInitRoute, InstallsFromTheConfigLoadPathRatherThanGenerationClassification) {
     namespace fs = std::filesystem;
     const std::string hookThread =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_hookthread.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
     ASSERT_FALSE(hookThread.empty());
 
     const size_t publish = hookThread.find("ce::ngx_ota::PublishPolicy(");
@@ -221,7 +221,7 @@ TEST(NgxOtaSlInitRoute, InstallsFromTheConfigLoadPathRatherThanGenerationClassif
     // The old wiring hung off the ABI-sensitive generation classification, which
     // runs off GetProcAddress observation and lands after slInit.
     const std::string install_unit =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_hook_install.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp");
     ASSERT_FALSE(install_unit.empty());
     EXPECT_EQ(install_unit.find("streamline_ota::"), std::string::npos)
         << "the slInit route must not be tied to the hook-time generation classification again";
@@ -230,7 +230,7 @@ TEST(NgxOtaSlInitRoute, InstallsFromTheConfigLoadPathRatherThanGenerationClassif
 TEST(NgxOtaSlInitRoute, PatchesTheImportTableAndNotOnlyTheDynamicRoute) {
     namespace fs = std::filesystem;
     const std::string route =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_ota_preferences.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_ota_preferences.cpp");
     ASSERT_FALSE(route.empty());
 
     // A title that links sl.interposer statically - Alan Wake 2 does - calls
@@ -260,7 +260,7 @@ TEST(NgxOtaSlInitRoute, PatchesTheImportTableAndNotOnlyTheDynamicRoute) {
 TEST(NgxOtaSlInitRoute, ModuleProbeRetriesThePartialCopyRace) {
     namespace fs = std::filesystem;
     const std::string manager =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_manager.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "injection_manager.cpp");
     ASSERT_FALSE(manager.empty());
     EXPECT_NE(manager.find("ERROR_PARTIAL_COPY"), std::string::npos)
         << "the early-enumeration race must be recognized, not just ACCESS_DENIED";
@@ -287,7 +287,7 @@ TEST(NgxOtaSlInitRoute, ModuleProbeRetriesThePartialCopyRace) {
 TEST(NgxOtaEarlyMode, ModeResolvesFromSharedMemoryBeforeTheHookThreadPublishes) {
     namespace fs = std::filesystem;
     const std::string runtime =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_ota_runtime.cpp");
     ASSERT_FALSE(runtime.empty());
 
     const size_t current = runtime.find("uint8_t CurrentMode()");
@@ -323,7 +323,7 @@ TEST(NgxOtaEarlyMode, ModeResolvesFromSharedMemoryBeforeTheHookThreadPublishes) 
 TEST(NgxOtaSlInitRoute, EveryOutcomeOfTheHookIsDistinguishableInTheLog) {
     namespace fs = std::filesystem;
     const std::string route =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "apis" / "streamline_ota_preferences.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_ota_preferences.cpp");
     ASSERT_FALSE(route.empty());
 
     // Entry is counted before any early return, or "did the call reach CE"
@@ -352,7 +352,7 @@ TEST(NgxOtaSlInitRoute, EveryOutcomeOfTheHookIsDistinguishableInTheLog) {
 TEST(NgxOtaSlInitRoute, ForeignCoreObservationReportsWhyTheStripDidNotPrevent) {
     namespace fs = std::filesystem;
     const std::string redirect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     ASSERT_FALSE(redirect.empty());
 
     const size_t latch = redirect.find("g_ForeignStreamlineCoreObserved.exchange(true");
@@ -380,7 +380,7 @@ TEST(NgxOtaSlInitRoute, ForeignCoreObservationReportsWhyTheStripDidNotPrevent) {
 TEST(NgxOtaSlInitRoute, InstalledFromDllMainBesideTheLoaderHooks) {
     namespace fs = std::filesystem;
     const std::string dllMain =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_dllmain.cpp");
     ASSERT_FALSE(dllMain.empty());
 
     const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
@@ -410,7 +410,7 @@ TEST(NgxOtaSlInitRoute, InstalledFromDllMainBesideTheLoaderHooks) {
 TEST(NgxOtaEarlyMode, DisableUpdaterEnvironmentIsPublishedFromDllMainNotTheHookThread) {
     namespace fs = std::filesystem;
     const std::string dllMain =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_dllmain.cpp");
     ASSERT_FALSE(dllMain.empty());
 
     const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
@@ -429,7 +429,7 @@ TEST(NgxOtaEarlyMode, DisableUpdaterEnvironmentIsPublishedFromDllMainNotTheHookT
     }
 
     const std::string runtime =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_ota_runtime.cpp");
     ASSERT_FALSE(runtime.empty());
     const size_t apply = runtime.find("void ApplyEarlyPolicyFromPublishedConfig()");
     ASSERT_NE(apply, std::string::npos);
@@ -446,7 +446,7 @@ TEST(NgxOtaEarlyMode, DisableUpdaterEnvironmentIsPublishedFromDllMainNotTheHookT
 TEST(NgxOtaEarlyMode, DefaultUndoesAnEarlierWriteInsteadOfLeavingSuppressionBehind) {
     namespace fs = std::filesystem;
     const std::string runtime =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_ota_runtime.cpp");
     ASSERT_FALSE(runtime.empty());
 
     const size_t apply = runtime.find("void ApplyUpdaterEnvironment(");
@@ -478,7 +478,7 @@ TEST(NgxOtaEarlyMode, DefaultUndoesAnEarlierWriteInsteadOfLeavingSuppressionBehi
 TEST(NgxOtaEarlyMode, EarlyResolveNeitherRacesNorCachesAnUnansweredRead) {
     namespace fs = std::filesystem;
     const std::string runtime =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_ota_runtime.cpp");
     ASSERT_FALSE(runtime.empty());
 
     EXPECT_EQ(runtime.find("g_EarlyModeResolved.exchange("), std::string::npos)
@@ -502,13 +502,13 @@ TEST(NgxOtaEarlyMode, EarlyResolveNeitherRacesNorCachesAnUnansweredRead) {
 TEST(NgxOtaLateModules, CreateProcessImportsArePatchedOnEveryLateLoadedModule) {
     namespace fs = std::filesystem;
     const std::string detect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_overlay_detect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp");
     ASSERT_FALSE(detect.empty());
     EXPECT_NE(detect.find("PatchProcessCreationIatForLateLoadedModule(module, moduleNameOrPath)"), std::string::npos)
         << "the module-load notification must repair the CreateProcess snapshot, not only the loader one";
 
     const std::string redirect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     ASSERT_FALSE(redirect.empty());
     const size_t fn = redirect.find("void PatchProcessCreationIatForLateLoadedModule(");
     ASSERT_NE(fn, std::string::npos);
@@ -538,7 +538,7 @@ TEST(NgxOtaLateModules, CreateProcessImportsArePatchedOnEveryLateLoadedModule) {
 TEST(NgxOtaLateModules, AnUpdaterLaunchCeAllowsIsReportedAsWellAsOneItRefuses) {
     namespace fs = std::filesystem;
     const std::string injection =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_injection.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_injection.cpp");
     ASSERT_FALSE(injection.empty());
 
     for (const char* hookName : {"BOOL WINAPI HookedCreateProcessA(", "BOOL WINAPI HookedCreateProcessW("}) {
@@ -561,7 +561,7 @@ TEST(NgxOtaLateModules, AnUpdaterLaunchCeAllowsIsReportedAsWellAsOneItRefuses) {
     }
 
     const std::string runtime =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "common" / "ngx_ota_runtime.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_ota_runtime.cpp");
     ASSERT_FALSE(runtime.empty());
     const size_t allowedFn = runtime.find("void NoteUpdaterLaunchAllowed(const char* imagePath)");
     ASSERT_NE(allowedFn, std::string::npos);
@@ -586,7 +586,7 @@ TEST(NgxOtaLateModules, AnUpdaterLaunchCeAllowsIsReportedAsWellAsOneItRefuses) {
 TEST(NgxOtaLateModules, CreateProcessWDecidesOnTheWideStringBeforeConverting) {
     namespace fs = std::filesystem;
     const std::string injection =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_injection.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_injection.cpp");
     ASSERT_FALSE(injection.empty());
 
     const size_t hook = injection.find("BOOL WINAPI HookedCreateProcessW(");
@@ -613,7 +613,7 @@ TEST(NgxOtaLateModules, CreateProcessWDecidesOnTheWideStringBeforeConverting) {
 TEST(RuntimeOverrideEarlyPaths, RedirectIsArmedFromDllMainNotTheHookThreadConfig) {
     namespace fs = std::filesystem;
     const std::string dllMain =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_dllmain.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_dllmain.cpp");
     ASSERT_FALSE(dllMain.empty());
 
     const size_t loaderHooks = dllMain.find("InstallKernel32LoaderHooks(\"DllMain\")");
@@ -631,7 +631,7 @@ TEST(RuntimeOverrideEarlyPaths, RedirectIsArmedFromDllMainNotTheHookThreadConfig
 TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedConfig) {
     namespace fs = std::filesystem;
     const std::string redirect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     ASSERT_FALSE(redirect.empty());
 
     for (const char* accessor : {"ConfiguredDlssSrDllPath", "ConfiguredDlssRrDllPath",
@@ -650,7 +650,7 @@ TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedCon
     // And the flag has to actually be set where config is read, or every
     // accessor stays permanently on the early branch.
     const std::string hookThread =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_hookthread.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
     ASSERT_FALSE(hookThread.empty());
     const size_t load = hookThread.find("LoadConfig(configPath, *g_pLocalConfig)");
     ASSERT_NE(load, std::string::npos);
@@ -664,7 +664,7 @@ TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedCon
 TEST(RuntimeOverrideEarlyPaths, ModelStoreRedirectUsesTheSameEarlyCapableSource) {
     namespace fs = std::filesystem;
     const std::string redirect =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "main_redirect.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
     ASSERT_FALSE(redirect.empty());
 
     const size_t branch = redirect.find("IsNgxModelRepositoryPath(requestedPath.c_str())");
@@ -686,25 +686,25 @@ TEST(RuntimeOverrideEarlyPaths, ModelStoreRedirectUsesTheSameEarlyCapableSource)
 TEST(NgxOtaSupervisorWatchdog, SupervisorIntegratesOtaWatchdogAndConfigPrewarming) {
     namespace fs = std::filesystem;
     const std::string watchdog =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_ota_watchdog.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "injection_ota_watchdog.cpp");
     ASSERT_FALSE(watchdog.empty());
     EXPECT_NE(watchdog.find("TerminateNgxUpdaterIfDisabled"), std::string::npos);
     EXPECT_NE(watchdog.find("SweepRunningNgxUpdatersIfDisabled"), std::string::npos);
     EXPECT_NE(watchdog.find("OpenProcess(PROCESS_TERMINATE"), std::string::npos);
 
     const std::string manager =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_manager.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "injection_manager.cpp");
     ASSERT_FALSE(manager.empty());
     EXPECT_NE(manager.find("TerminateNgxUpdaterIfDisabled(pid, imageName, \"ProcessPoll\")"), std::string::npos);
     EXPECT_NE(manager.find("SweepRunningNgxUpdatersIfDisabled(\"TargetLaunchSweep\")"), std::string::npos);
 
     const std::string security =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection_security.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "injection_security.cpp");
     ASSERT_FALSE(security.empty());
     EXPECT_NE(security.find("TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, name, \"StartupScan\")"), std::string::npos);
 
     const std::string injectMain =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "inject_main.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "inject_main.cpp");
     ASSERT_FALSE(injectMain.empty());
     EXPECT_NE(injectMain.find("manager->SetNgxOtaModeQuery("), std::string::npos);
 
@@ -713,7 +713,7 @@ TEST(NgxOtaSupervisorWatchdog, SupervisorIntegratesOtaWatchdogAndConfigPrewarmin
     // unusable: SetPublicationBaseConfig is also the ReloadConfig handler's
     // path, and that handler has a 1 s ack window.
     const std::string publication =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "inject_config_publication.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "inject_config_publication.cpp");
     ASSERT_FALSE(publication.empty());
     EXPECT_NE(publication.find("baseConfig.gameWhitelist"), std::string::npos);
     EXPECT_NE(publication.find("baseConfig.overlayWhitelist"), std::string::npos);
@@ -750,7 +750,7 @@ TEST(NgxOtaSupervisorWatchdog, TheProcessPollCadenceStaysCoarseEnoughForABacksto
 TEST(NgxOtaSupervisorWatchdog, TheProcessPollNamesOnlyPidsItHasNotSeen) {
     namespace fs = std::filesystem;
     const std::string poll =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "process_start_poll.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "captureengine" / "injection" / "process_start_poll.cpp");
     ASSERT_FALSE(poll.empty());
 
     EXPECT_NE(poll.find("const std::unordered_set<DWORD>* knownPids"), std::string::npos)

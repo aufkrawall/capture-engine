@@ -6,7 +6,7 @@ Last verified: 2026-09-15
 
 The inject overlay reports the API evidenced by the active application device or context, rather than the newest
 runtime interface available on the machine or an API DLL that happens to be loaded. The common formatting and
-device-scope registry live in `hook/common/graphics_api_identity.h`; accepted visible-label changes flow through
+device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted visible-label changes flow through
 `OverlayAdapter::SetGraphicsAPI` and dirty layout state only when the label actually changes.
 
 ## Labels and evidence
@@ -29,13 +29,13 @@ device-scope registry live in `hook/common/graphics_api_identity.h`; accepted vi
 
 ## Source anchors
 
-- Formatting, parsing, monotonic upgrade, scoped registry: `hook/common/graphics_api_identity.h`
-- Transition-only overlay update and diagnostics: `hook/common/overlay_adapter.cpp`
-- DirectDraw 1/2/3/4/7 plus D3D6/7 evidence: `hook/apis/ddraw_hook.cpp`
-- D3D9 classic/Ex and helper exclusion: `hook/apis/dx9_hook.cpp`
-- D3D10/10.1 and D3D11 revision evidence: `hook/apis/dx11_hook.cpp`, `hook/wrappers/wrapper_hooks.cpp`,
+- Formatting, parsing, monotonic upgrade, scoped registry: `hook/runtime/graphics_api_identity.h`
+- Transition-only overlay update and diagnostics: `hook/overlay/overlay_adapter.cpp`
+- DirectDraw 1/2/3/4/7 plus D3D6/7 evidence: `hook/ddraw/ddraw_hook.cpp`
+- D3D9 classic/Ex and helper exclusion: `hook/d3d9/dx9_hook.cpp`
+- D3D10/10.1 and D3D11 revision evidence: `hook/d3d11/dx11_hook.cpp`, `hook/wrappers/wrapper_hooks.cpp`,
   `hook/wrappers/d3d11_device_wrap.cpp`, `hook/wrappers/d3d11_devicecontext_wrap.cpp`
-- OpenGL version/profile reporting: `hook/apis/opengl_hook.cpp`
+- OpenGL version/profile reporting: `hook/opengl/opengl_hook.cpp`
 
 ## Invariants and failure modes
 

@@ -18,7 +18,7 @@ std::string ReadSource(const char* relativePath) {
 // fence that could only complete after this Present returned hung the game for
 // good. The bound is final; a still-pending fence only holds later overlay work.
 TEST(PresentThreadBoundedWaitTest, FocusLossOverlayFenceWaitNeverWaitsUnbounded) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_focus_loss.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_focus_loss.cpp");
     ASSERT_FALSE(source.empty());
     const size_t start = source.find("bool WaitForFocusLossImmediateOverlayFenceBeforePresent(");
     ASSERT_NE(start, std::string::npos);

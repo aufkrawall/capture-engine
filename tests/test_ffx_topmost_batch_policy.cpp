@@ -4,7 +4,7 @@
 #include <limits>
 #include <string>
 
-#include "../hook/common/dx12_overlay_policy/ffx_topmost_batch.h"
+#include "hook/d3d12/dx12_overlay_policy/ffx_topmost_batch.h"
 
 #include "source_fragment_reader.h"
 
@@ -131,7 +131,7 @@ TEST(FFXTopmostBatchPolicyTest, DeepPresentIsTheOnlyFrameTimingObserverWhenAvail
 }
 
 TEST(FFXTopmostBatchSourceTest, OverlayIsLastInOneExistingExecuteCommandListsCall) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t append = source.find("combined[context->commandListCount] = overlayCommandList;");
@@ -145,7 +145,7 @@ TEST(FFXTopmostBatchSourceTest, OverlayIsLastInOneExistingExecuteCommandListsCal
 }
 
 TEST(FFXTopmostBatchSourceTest, HotPathIsGenericAndExcludesCEOwnedSubmissions) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ecl.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t exclusion = source.find("dx12_hook_s_insideCEOverlayECLDepth == 0");
@@ -156,9 +156,9 @@ TEST(FFXTopmostBatchSourceTest, HotPathIsGenericAndExcludesCEOwnedSubmissions) {
 }
 
 TEST(FFXTopmostBatchSourceTest, FallbackAndInlineRenderersCoexistAndHandoffWithoutDoubleBlend) {
-    const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");
-    const std::string proxy = ReadSource("hook/apis/dx12_hook_ffx_proxy_present.cpp");
-    const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string renderer = ReadSource("hook/d3d12/dx12_ffx_suspend_overlay.cpp");
+    const std::string proxy = ReadSource("hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
+    const std::string topmostBatch = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(proxy.empty());
     ASSERT_FALSE(topmostBatch.empty());
@@ -183,7 +183,7 @@ TEST(FFXTopmostBatchSourceTest, FallbackAndInlineRenderersCoexistAndHandoffWitho
 }
 
 TEST(FFXTopmostBatchSourceTest, AppCallbackHandoffProvesRouteBeforeFirstVisibleTopmostDraw) {
-    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    const std::string ownerQueue = ReadSource("hook/d3d12/dx12_hook_ffx_owner_queue.cpp");
     ASSERT_FALSE(ownerQueue.empty());
 
     const size_t probe = ownerQueue.find("const bool activationProbe =");
@@ -201,10 +201,10 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackHandoffProvesRouteBeforeFirstVisibleT
 }
 
 TEST(FFXTopmostBatchSourceTest, AppCallbackTopmostRouteRunsBeforeNormalBackendEarlyReturns) {
-    const std::string processSession = ReadSource("hook/apis/dx12_hook_process_session.cpp");
-    const std::string phase3Source = ReadSource("hook/apis/dx12_hook_process_session_phase3.cpp");
-    const std::string phase5 = ReadSource("hook/apis/dx12_hook_process_session_phase5.cpp");
-    const std::string drawMain = ReadSource("hook/apis/dx12_hook_process_session_draw_main.cpp");
+    const std::string processSession = ReadSource("hook/d3d12/dx12_hook_process_session.cpp");
+    const std::string phase3Source = ReadSource("hook/d3d12/dx12_hook_process_session_phase3.cpp");
+    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_phase5.cpp");
+    const std::string drawMain = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
     ASSERT_FALSE(processSession.empty());
     ASSERT_FALSE(phase3Source.empty());
     ASSERT_FALSE(phase5.empty());
@@ -243,11 +243,11 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackTopmostRouteRunsBeforeNormalBackendEa
 }
 
 TEST(FFXTopmostBatchSourceTest, AppCallbackRouteReusesWarmMarkerRendererAndPinsPresentationQueue) {
-    const std::string callbackAdapter = ReadSource("hook/apis/dx12_hook_ffx_overlay_adapter.cpp");
-    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
-    const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
-    const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");
-    const std::string drawMain = ReadSource("hook/apis/dx12_hook_process_session_draw_main.cpp");
+    const std::string callbackAdapter = ReadSource("hook/d3d12/dx12_hook_ffx_overlay_adapter.cpp");
+    const std::string ownerQueue = ReadSource("hook/d3d12/dx12_hook_ffx_owner_queue.cpp");
+    const std::string topmostBatch = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string renderer = ReadSource("hook/d3d12/dx12_ffx_suspend_overlay.cpp");
+    const std::string drawMain = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
     ASSERT_FALSE(callbackAdapter.empty());
     ASSERT_FALSE(ownerQueue.empty());
     ASSERT_FALSE(topmostBatch.empty());
@@ -289,7 +289,7 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackRouteReusesWarmMarkerRendererAndPinsP
 }
 
 TEST(FFXTopmostBatchSourceTest, HiddenCallbackHasNoDiagnosticGpuTailAndStillPublishesTiming) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
     const auto gate = source.find("if (overlayDrawn || shouldComposeCurrentToOutput) {");
     ASSERT_NE(gate, std::string::npos);
     const auto end = source.find("\n    }", gate);
@@ -304,9 +304,9 @@ TEST(FFXTopmostBatchSourceTest, HiddenCallbackHasNoDiagnosticGpuTailAndStillPubl
 }
 
 TEST(FFXTopmostBatchSourceTest, CallbackBridgeCacheInvalidatesAtShutdownAndAvoidsSteadyMutex) {
-    const std::string callback = ReadSource("hook/apis/dx12_hook_ffx.cpp");
-    const std::string registry = ReadSource("hook/apis/dx12_hook_ffx_callback_bridge.cpp");
-    const std::string shutdown = ReadSource("hook/apis/dx12_hook_main.cpp");
+    const std::string callback = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
+    const std::string registry = ReadSource("hook/d3d12/dx12_hook_ffx_callback_bridge.cpp");
+    const std::string shutdown = ReadSource("hook/d3d12/dx12_hook_main.cpp");
     EXPECT_EQ(callback.find("lock(dx12_hook_g_FFXPresentCallbackBridgeMutex)"), std::string::npos);
     EXPECT_NE(callback.find("DX12_ResolveFFXPresentCallbackBridge(userCtx)"), std::string::npos);
     EXPECT_NE(shutdown.find("DX12_ClearAllFFXPresentCallbackBridges();"), std::string::npos);
@@ -317,11 +317,11 @@ TEST(FFXTopmostBatchSourceTest, CallbackBridgeCacheInvalidatesAtShutdownAndAvoid
 }
 
 TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreStateful) {
-    const std::string topmostBatch = ReadSource("hook/apis/dx12_hook_ffx_topmost_batch.cpp");
-    const std::string renderer = ReadSource("hook/apis/dx12_ffx_suspend_overlay.cpp");
-    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
-    const std::string layerLogging = ReadSource("hook/common/dxgi_shared_hooks.cpp");
-    const std::string ffx = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string topmostBatch = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string renderer = ReadSource("hook/d3d12/dx12_ffx_suspend_overlay.cpp");
+    const std::string ownerQueue = ReadSource("hook/d3d12/dx12_hook_ffx_owner_queue.cpp");
+    const std::string layerLogging = ReadSource("hook/present/dxgi_shared_hooks.cpp");
+    const std::string ffx = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
     ASSERT_FALSE(topmostBatch.empty());
     ASSERT_FALSE(renderer.empty());
     ASSERT_FALSE(ownerQueue.empty());
@@ -352,7 +352,7 @@ TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreS
 }
 
 TEST(FFXTopmostBatchSourceTest, CallbackRoutingChangeImmediatelyRetiresBothTopmostRoutes) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ffx.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t configured = source.find("void DX12_OnNativeFSRPresentCallbackRoutingConfigured(");
@@ -368,9 +368,9 @@ TEST(FFXTopmostBatchSourceTest, CallbackRoutingChangeImmediatelyRetiresBothTopmo
 }
 
 TEST(FFXTopmostBatchSourceTest, CallbackDrawAndFrameTimingUseIndependentExactOwners) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_ffx.cpp");
-    const std::string metrics = ReadSource("hook/apis/dx12_hook_ffx_metrics.cpp");
-    const std::string ownerQueue = ReadSource("hook/apis/dx12_hook_ffx_owner_queue.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
+    const std::string metrics = ReadSource("hook/d3d12/dx12_hook_ffx_metrics.cpp");
+    const std::string ownerQueue = ReadSource("hook/d3d12/dx12_hook_ffx_owner_queue.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(metrics.empty());
     ASSERT_FALSE(ownerQueue.empty());

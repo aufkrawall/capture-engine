@@ -68,7 +68,7 @@ But auditing the startup path for the user's claim found four real defects, all 
 4. The freeze watchdog did the same unbounded send twice a second for the whole session - a watchdog
    that can itself wedge on the thread it is judging.
 
-3 and 4 now share `ce::window_text::ReadWindowTitleBounded` (`hook/common/window_text_safe.h`), a
+3 and 4 now share `ce::window_text::ReadWindowTitleBounded` (`hook/runtime/window_text_safe.h`), a
 50 ms `SendMessageTimeoutA(WM_GETTEXT, SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT)`; a timeout is an empty
 title, which only changes dialog identity in the case that used to hang. Same-thread windows still go
 through `GetWindowTextA`, where there is nothing to wait for.

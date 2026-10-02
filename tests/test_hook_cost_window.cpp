@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/hook_cost_window.h"
+#include "hook/metrics/hook_cost_window.h"
 
 TEST(HookCostWindowTest, ExcludesForwardedTimeAndCountsOwnStalls) {
     ce::HookCostWindow<3> cost;

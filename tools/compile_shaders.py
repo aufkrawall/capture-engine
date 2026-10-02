@@ -340,7 +340,7 @@ def main():
 
     # One file per shader: a single combined header runs past the AGENTS.md size
     # ceiling, and per-shader files also keep regeneration diffs readable.
-    common_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hook", "common")
+    common_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hook", "overlay")
     part_dir = os.path.join(common_dir, "overlay_shader_bytecode")
     os.makedirs(part_dir, exist_ok=True)
 

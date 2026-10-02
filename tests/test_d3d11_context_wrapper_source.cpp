@@ -50,7 +50,7 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirty
     const auto root = std::filesystem::current_path();
     const std::string context = ReadContextWrapperSources();
     const std::string device = ReadTextFile(root / "hook" / "wrappers" / "d3d11_device_wrap.cpp");
-    const std::string rawHook = ReadTextFile(root / "hook" / "apis" / "dx11_hook.cpp");
+    const std::string rawHook = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook.cpp");
 
     ASSERT_FALSE(context.empty());
     ASSERT_FALSE(device.empty());

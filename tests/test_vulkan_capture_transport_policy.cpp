@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/vulkan_layer/vulkan_capture_transport_policy.h"
+#include "hook/vulkan_layer/vulkan_capture_transport_policy.h"
 
 namespace {
 

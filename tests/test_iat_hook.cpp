@@ -3,11 +3,11 @@
 #include <cstring>
 #include <vector>
 
-#include "../hook/apis/ffx_hook.h"
-#include "../hook/common/module_export_resolver.h"
-#include "../hook/common/streamline_runtime_policy.h"
-#include "../hook/wrappers/iat_import_table.h"
-#include "../hook/wrappers/iat_hook.h"
+#include "hook/ffx/ffx_hook.h"
+#include "hook/hooking/module_export_resolver.h"
+#include "hook/streamline/streamline_runtime_policy.h"
+#include "hook/hooking/iat_import_table.h"
+#include "hook/hooking/iat_hook.h"
 
 namespace {
 

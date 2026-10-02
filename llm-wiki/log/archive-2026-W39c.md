@@ -40,7 +40,7 @@ deleting that worktree, never recursively.
 - **Vulkan overlay fence** - `vulkan-forced-fifo.md`: re-arm or strand on failed submit; bounded backpressure.
 - **D3D7/D3D8 state blocks** - `cross-api-forced-af.md`: D3D9 snapshot model ported; inactive-override Apply writes
   nothing. `legacy_d3d_sampler_state.cpp` is 774 lines (near the 800 ceiling).
-- **Logger** - waits on the controller process too (`captureengine/service_lifetime_wait.h`).
+- **Logger** - waits on the controller process too (`captureengine/elevation/service_lifetime_wait.h`).
 - **HDR switch** - assessed, not implemented (`recording-output-paths.md`): SDR->HDR-source is bounded via existing
   tonemaps; the reverse needs a new transform; segmenting conflicts with the audio lattice.
 

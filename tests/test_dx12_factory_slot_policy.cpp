@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/common/dx12_factory_slot_policy.h"
+#include "hook/d3d12/dx12_factory_slot_policy.h"
 
 #include "source_fragment_reader.h"
 
@@ -41,7 +41,7 @@ TEST(Dx12FactorySlotPolicyTest, ForeignEntryJumpShapesAreRecognizedOnlyAtEntry) 
 }
 
 TEST(Dx12FactorySlotPolicyTest, HookInstallerCapturesSavedSlotVtableWithTheSlotValue) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t slotSave = source.find("dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;");
@@ -55,7 +55,7 @@ TEST(Dx12FactorySlotPolicyTest, HookInstallerCapturesSavedSlotVtableWithTheSlotV
 }
 
 TEST(Dx12FactorySlotPolicyTest, TempSwapchainBypassesFactoryExportPatchAndGuardsTheRawSlotCall) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t exportBypass = source.find(
@@ -101,7 +101,7 @@ TEST(Dx12FactorySlotPolicyTest, BelowChainHookCarriesTheEntryHandlingOnlyForCeFo
 }
 
 TEST(Dx12FactorySlotPolicyTest, InstallerSamplesTheEntryBeforePatchingAndPlacesTheDeepHookFirst) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
     const size_t sample = source.find("ce::dx12_factory_slot::HasForeignEntryJump(realCreateSCForHwndAddr)");
     const size_t deep = source.find("(void*)DeepHookCreateSwapChainForHwnd,");
@@ -115,7 +115,7 @@ TEST(Dx12FactorySlotPolicyTest, InstallerSamplesTheEntryBeforePatchingAndPlacesT
     EXPECT_LT(deep, decide);
     EXPECT_LT(decide, prepend);
 
-    const std::string deepHook = ReadSource("hook/apis/dx12_hook_swapchain_tracking.cpp");
+    const std::string deepHook = ReadSource("hook/d3d12/dx12_hook_swapchain_tracking.cpp");
     ASSERT_FALSE(deepHook.empty());
     EXPECT_NE(deepHook.find("return RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_deepHookTrampoline"),
               std::string::npos);
@@ -146,7 +146,7 @@ TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheEntryBeforeItHasPatchedIt) {
 }
 
 TEST(Dx12FactorySlotPolicyTest, InstallerPassesTheOwnersSpanToTheBelowChainHook) {
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
     const size_t owned = source.find("IsCreateSwapChainForHwndEntryForeignOwned(foreignCreateSCForHwndEntry");
     const size_t deep = source.find("(void*)DeepHookCreateSwapChainForHwnd,");
@@ -197,7 +197,7 @@ TEST(Dx12FactorySlotPolicyTest, BelowChainOriginatorSkipsCeTheOverlayChainDxgiAn
 }
 
 TEST(Dx12FactorySlotPolicyTest, SlotsAreDecidedAfterTheBodyHooksAndLeftSlotsAreNeverRestored) {
-    const std::string install = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string install = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(install.empty());
     const size_t body = install.find("void InstallGlobalVTableHooks() {");
     ASSERT_NE(body, std::string::npos);
@@ -220,14 +220,14 @@ TEST(Dx12FactorySlotPolicyTest, SlotsAreDecidedAfterTheBodyHooksAndLeftSlotsAreN
     // A version-specific vtable (IDXGIFactory4/6) gets the same per-slot decision.
     EXPECT_NE(install.find("if (hookCreateSCForHwndSlot) {"), std::string::npos);
 
-    const std::string removal = ReadSource("hook/apis/dx12_hook_swapchain.cpp");
+    const std::string removal = ReadSource("hook/d3d12/dx12_hook_swapchain.cpp");
     EXPECT_NE(removal.find("dx12_hook_s_createSCSlotHooked.exchange(false)"), std::string::npos);
     EXPECT_NE(removal.find("dx12_hook_s_createSCForHwndSlotHooked.exchange(false)"), std::string::npos);
     EXPECT_NE(removal.find("RemoveCreateSwapChainBelowChainHook()"), std::string::npos);
 }
 
 TEST(Dx12FactorySlotPolicyTest, BelowChainCreatesResolveTheOriginatorFromTheStack) {
-    const std::string tracking = ReadSource("hook/apis/dx12_hook_swapchain_tracking.cpp");
+    const std::string tracking = ReadSource("hook/d3d12/dx12_hook_swapchain_tracking.cpp");
     const size_t decide = tracking.find("ShouldBelowChainHookRunEntrySemantics(");
     const size_t scope = tracking.find("ScopedBelowForeignChainSwapchainCreate belowChain;", decide);
     const size_t run = tracking.find("RunCreateSwapChainForHwndEntrySemantics(dx12_hook_s_deepHookTrampoline", decide);
@@ -237,7 +237,7 @@ TEST(Dx12FactorySlotPolicyTest, BelowChainCreatesResolveTheOriginatorFromTheStac
     EXPECT_LT(scope, run);
     EXPECT_NE(tracking.find("slotLeftToOverlay)", decide), std::string::npos);
 
-    const std::string belowChain = ReadSource("hook/apis/dx12_hook_swapchain_create_below_chain.cpp");
+    const std::string belowChain = ReadSource("hook/d3d12/dx12_hook_swapchain_create_below_chain.cpp");
     const size_t resolver =
         belowChain.find("CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext() {");
     ASSERT_NE(resolver, std::string::npos);
@@ -258,7 +258,7 @@ TEST(Dx12FactorySlotPolicyTest, FactoryVtableDiscoveryNeverEntersAnOverlayFactor
     // 20261001_044010: CE's discovery factory ran Steam's CreateDXGIFactory1 handler on CE's hook
     // thread while the game initialized; Steam hooked CreateSwapChainForHwnd twice and the game's
     // first swapchain create recursed in Steam's handler until the stack overflowed.
-    const std::string source = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(source.empty());
     const size_t install = source.find("void InstallGlobalVTableHooks() {");
     const size_t genuine = source.find("GenuineCreateDXGIFactory1ForDiscovery(", install);

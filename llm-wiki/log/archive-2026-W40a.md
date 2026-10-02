@@ -85,7 +85,7 @@ Covers 2026-09-29. Newest first.
   PID 12472` for every one (`DropFull` = input, `liveFrames=0`), so the stop became a pre-live cancel.
 - Root cause: the source-PID pin in `media_main_threads_inject.cpp` only accepted `GetSourcePid()` (the injected
   parent). Split renderers stamp slots with their own PID because the handles live in their handle table.
-- Fix: `common/inject_frame_source_policy.h` admits a writer when `vulkanLayerClaim` = {slot PID, session source}
+- Fix: `common/capture/inject_frame_source_policy.h` admits a writer when `vulkanLayerClaim` = {slot PID, session source}
   and a Toolhelp check (cached per pair, unavailable snapshots not cached) proves it is the source's live direct
   child. Cursor window now resolves from the session source (the bridge owns no window). Logs:
   `Admitting split-renderer frames` / `Refusing split-renderer frames`; drop line now names admission + claim.

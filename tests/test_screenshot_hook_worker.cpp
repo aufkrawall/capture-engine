@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/screenshot_hook.h"
+#include "hook/capture/screenshot_hook.h"
 
 #include <windows.h>
 

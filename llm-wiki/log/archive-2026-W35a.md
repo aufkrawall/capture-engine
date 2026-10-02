@@ -146,13 +146,13 @@ log.
 
 Fix (all funnels covered; no call site can forget):
 
-- New header-only `common/log_privacy.h` (`ce::privacy`): `RedactUserAccountComponents` masks the account token of
+- New header-only `common/logging/log_privacy.h` (`ce::privacy`): `RedactUserAccountComponents` masks the account token of
   `\users\<account>` prefixes with `*` (case-insensitive marker match, marker spelling preserved). Deliberately
   **length-preserving**: an earlier compaction prototype corrupted adjacent bytes for accounts shorter than a
   placeholder and could grow formatted lines past funnel buffer capacity — tests caught both. CollapsePathForLog
   collapses user-configured output paths to root + leaf (`H:\...\capture.mkv`, UNC server/share collapsed too).
-- Wired centrally: `common/logging.cpp` `Log()` now formats into a stack buffer (heap fallback via `va_copy` for
-  oversized messages) and redacts before fwrite; `hook/common/hook_common.cpp` `LogToFileAtomic` redacts before the
+- Wired centrally: `common/logging/logging.cpp` `Log()` now formats into a stack buffer (heap fallback via `va_copy` for
+  oversized messages) and redacts before fwrite; `hook/runtime/hook_common.cpp` `LogToFileAtomic` redacts before the
   SHM ring / direct-file fan-out (covers hook_debug.log, nvngx_debug.log, and the logger-service consumer); Vulkan
   layer `EarlyLog`/`LayerLog`/`LayerReportIncompatibleDiscovery` redact their buffers; `session_manifest.txt`
   redacts `session_dir=`.
@@ -188,7 +188,7 @@ Changes (commit `6f4ba8b4`, all additive, dev builds stay warn-only so local ite
   `GetModuleFileNameA` results when deriving hook-DLL/config paths: launcher resumes without injection and
   logs `[Launcher] Cannot resolve the application directory reliably`; inject child exits 1 with a clear log.
 - Dead code removed: `VerifyDLLHash`, the `.hash` sidecar logic, member `ComputeFileHash`, and an unused static
-  hash helper. Pure helpers now live in `captureengine/injection_path_policy.h`
+  hash helper. Pure helpers now live in `captureengine/injection/injection_path_policy.h`
   (`IsPathInsideDirectory`, `AnsiPathToWide`) with unit coverage in `tests/test_injection_path_policy.cpp`
   (sibling-prefix rejection like `C:\appdir2` vs `C:\appdir` is locked).
 

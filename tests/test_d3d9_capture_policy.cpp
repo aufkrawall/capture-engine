@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../hook/common/d3d9_capture_policy.h"
+#include "hook/d3d9/d3d9_capture_policy.h"
 
 TEST(D3D9CapturePolicyTest, ClassicDevicesAreNeverPromotedToEx) {
     EXPECT_FALSE(ShouldPromoteClassicD3D9Device());

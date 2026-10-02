@@ -3,9 +3,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include "../hook/common/overlay_metrics_publisher.h"
-#include "../hook/common/perf_logger.h"
-#include "../hook/common/performance_metrics.h"
+#include "hook/overlay/overlay_metrics_publisher.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/metrics/performance_metrics.h"
 
 // Test fixture
 class PerformanceMetricsTest : public ::testing::Test {

@@ -8,7 +8,7 @@ from tools.build.build_lhm_plugin import LHM_PINNED_FILE_SHA256
 
 class ElevationBuildTest(unittest.TestCase):
     def test_privileged_runtime_hashes_match_build_pins(self):
-        source = (Path(build.PROJECT_ROOT) / "captureengine" / "elevation_runtime.cpp").read_text(encoding="utf-8")
+        source = (Path(build.PROJECT_ROOT) / "captureengine" / "elevation" / "elevation_runtime.cpp").read_text(encoding="utf-8")
         for name, digest in LHM_PINNED_FILE_SHA256.items():
             self.assertIn(name, source)
             self.assertIn(digest, source)

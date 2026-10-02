@@ -3,8 +3,8 @@
 
 #include <string>
 
-#include "../common/config.h"
-#include "../common/inject_overlay_policy.h"
+#include "common/config/config.h"
+#include "common/overlay/inject_overlay_policy.h"
 
 namespace {
 

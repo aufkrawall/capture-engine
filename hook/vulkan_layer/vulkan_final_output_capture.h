@@ -3,8 +3,8 @@
 #include <atomic>
 #include <mutex>
 
-#include "../../common/capture_policy/final_output_timing.h"
-#include "../../common/shared_defs.h"
+#include "common/capture/capture_policy/final_output_timing.h"
+#include "common/ipc/shared_defs.h"
 
 struct VulkanFinalOutputCaptureState {
     std::mutex planningMutex;

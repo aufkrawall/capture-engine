@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../common/inject_frame_source_policy.h"
+#include "common/capture/inject_frame_source_policy.h"
 #include "source_fragment_reader.h"
 
 using ce::inject_frame_source::Admission;
@@ -132,7 +132,7 @@ TEST(InjectFrameSourcePolicyTest, DegeneratePairsNeverReachTheProcessCheck) {
 }
 
 TEST(InjectFrameSourcePolicyTest, MediaInjectThreadAdmitsVerifiedSplitRenderers) {
-    const std::string source = ReadProjectSource("captureengine/media_main_threads_inject.cpp");
+    const std::string source = ReadProjectSource("captureengine/media/media_main_threads_inject.cpp");
 
     const size_t pin = source.find("// Pin the frame's source PID to the process that owns this capture session.");
     ASSERT_NE(pin, std::string::npos);

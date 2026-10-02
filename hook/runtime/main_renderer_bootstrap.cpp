@@ -1,0 +1,128 @@
+#include "main_internal.h"
+
+#include "hook/ngx/ngx_ota_policy.h"
+#include "hook/ngx/ngx_ota_runtime.h"
+
+std::atomic<bool> g_InheritedRendererProcess{false};
+
+// Tells the host that a configured runtime override did not take effect, and
+// why. Best-effort by construction: this is reachable from inside the LdrLoadDll
+// redirect under the loader lock and before IPC exists, so it must never block,
+// allocate or wait. Losing a publication is acceptable - the refusal is also
+// logged - but stalling the loader is not.
+void PublishRuntimeOverrideRefusal(uint32_t reason) {
+  SharedMemoryLayout* sharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+  if (!sharedMemory) {
+    return;
+  }
+  sharedMemory->runtimeOverrideStatus.PublishRefusal(GetCurrentProcessId(), reason);
+}
+
+namespace {
+
+std::atomic<int> g_RendererBootstrapResult{0};
+HANDLE g_RendererBootstrapEvent = nullptr;
+
+void CopyFixedString(std::string& destination, const char* source, size_t capacity) {
+  destination.assign(source ? source : "", source ? strnlen(source, capacity) : 0);
+}
+
+}  // namespace
+
+void InitializeInheritedRendererBootstrapSignal() {
+  if (!g_InheritedRendererProcess.load(std::memory_order_acquire) ||
+      g_RendererBootstrapEvent) {
+    return;
+  }
+  g_RendererBootstrapEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+}
+
+void CompleteInheritedRendererBootstrap(bool success) {
+  if (!g_InheritedRendererProcess.load(std::memory_order_acquire)) {
+    return;
+  }
+  int expected = 0;
+  g_RendererBootstrapResult.compare_exchange_strong(
+      expected, success ? 1 : -1, std::memory_order_acq_rel,
+      std::memory_order_acquire);
+  if (g_RendererBootstrapEvent) {
+    SetEvent(g_RendererBootstrapEvent);
+  }
+}
+
+void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory) {
+  if (!g_InheritedRendererProcess.load(std::memory_order_acquire) ||
+      !sharedMemory || !g_pLocalConfig) {
+    return;
+  }
+
+  const SharedGraphicsConfig& shared = sharedMemory->graphicsConfig;
+  GraphicsConfig& local = g_pLocalConfig->graphics;
+  CopyFixedString(local.dlssSrDllPath, shared.dlssSrDllPath,
+                  sizeof(shared.dlssSrDllPath));
+  CopyFixedString(local.dlssRrDllPath, shared.dlssRrDllPath,
+                  sizeof(shared.dlssRrDllPath));
+  CopyFixedString(local.dlssFgDllPath, shared.dlssFgDllPath,
+                  sizeof(shared.dlssFgDllPath));
+  CopyFixedString(local.streamlineDllPath, shared.streamlineDllPath,
+                  sizeof(shared.streamlineDllPath));
+  CopyFixedString(local.dlssDebugOverlay, shared.dlssDebugOverlay,
+                  sizeof(shared.dlssDebugOverlay));
+  HookLogImportant(
+      "Inherited renderer: synchronized process-local DLSS/Streamline profile "
+      "controls from shared memory (SR=%d RR=%d FG=%d SL=%d indicator=%s)",
+      local.dlssSrDllPath.empty() ? 0 : 1,
+      local.dlssRrDllPath.empty() ? 0 : 1,
+      local.dlssFgDllPath.empty() ? 0 : 1,
+      local.streamlineDllPath.empty() ? 0 : 1,
+      local.dlssDebugOverlay.empty() ? "default" : local.dlssDebugOverlay.c_str());
+}
+
+uint64_t PublishedInheritedRendererClaim() {
+  SharedMemoryLayout* sharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+  return sharedMemory ? sharedMemory->runtimeState.inheritedRendererClaim.load(
+                            std::memory_order_acquire)
+                      : 0;
+}
+
+bool CurrentProcessOwnsProcessLocalRuntimeOverrides() {
+  // ngx_ota=on means the driver's OTA files are the ones that should load, so
+  // CE's own nvngx_*/sl.* path overrides stand down. This is the single gate
+  // both the loader redirect and the runtime preload consult, so answering it
+  // here covers every path by which an override could otherwise still apply.
+  if (ce::ngx_ota::ShouldSuppressConfiguredRuntimeOverrides(ce::ngx_ota::CurrentMode())) {
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true, std::memory_order_acq_rel)) {
+      PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalNgxOtaForcedOn);
+      HookLogImportant(
+          "NGX OTA: ngx_ota=on - standing the configured nvngx_*/sl.* path overrides down so the driver's OTA "
+          "files under %%ProgramData%%\\NVIDIA\\NGX\\models are what actually loads");
+    }
+    return false;
+  }
+
+  // One load: this also runs inside the LdrLoadDll redirect hook under the
+  // loader lock, so the claim has to answer "whose tree is this?" by itself.
+  // No process enumeration is permitted here.
+  const uint64_t claim = PublishedInheritedRendererClaim();
+  return ce::vulkan_renderer_policy::ShouldApplyProcessLocalRuntimeOverrides(
+      GetCurrentProcessId(), ce::inherited_renderer::RendererPid(claim),
+      ce::inherited_renderer::ClientPid(claim));
+}
+
+extern "C" __declspec(dllexport) BOOL
+CE_WaitForInheritedRendererBootstrap(DWORD timeoutMs) {
+  if (!g_InheritedRendererProcess.load(std::memory_order_acquire)) {
+    return FALSE;
+  }
+  const int immediate = g_RendererBootstrapResult.load(std::memory_order_acquire);
+  if (immediate != 0) {
+    return immediate > 0 ? TRUE : FALSE;
+  }
+  if (!g_RendererBootstrapEvent ||
+      WaitForSingleObject(g_RendererBootstrapEvent, timeoutMs) != WAIT_OBJECT_0) {
+    return FALSE;
+  }
+  return g_RendererBootstrapResult.load(std::memory_order_acquire) > 0 ? TRUE
+                                                                      : FALSE;
+}

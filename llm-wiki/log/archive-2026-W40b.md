@@ -155,8 +155,8 @@ Covers 2026-10-01 - 2026-09-30. Newest first.
   (`DecideBelowForeignChainFSRDeepDraw` is a stub returning `kUnavailable` since `cff7a507`); see the SUPERSEDED note in
   `dx12-overlay-third-party-coexistence.md`. Whether the FFX present callback's composite reaches the captured proxy
   back buffer stays the open hardware question from 2026-09-29.
-- Release preflight caught `common/crash_dump_policy.h` at 801 lines (already over at HEAD, from `d5b878f0`): the WER
-  adoption/registration helpers moved to `common/crash_dump_wer_policy.h` (still included by the old header).
+- Release preflight caught `common/crash/crash_dump_policy.h` at 801 lines (already over at HEAD, from `d5b878f0`): the WER
+  adoption/registration helpers moved to `common/crash/crash_dump_wer_policy.h` (still included by the old header).
 - The first full `--verify` since 0.1.6772 (sanitizers are skipped by the per-change gate) found a real bug at HEAD:
   `SteamOverlayInitVehHandler` (process-wide, runs first for every exception) read a `thread_local`; loader worker
   threads (`LdrpProcessWork`) have no TLS block, so the read faulted inside the handler and recursed to stack

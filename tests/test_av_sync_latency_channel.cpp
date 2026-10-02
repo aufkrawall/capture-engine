@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "../common/av_sync_latency_channel.h"
+#include "common/ipc/av_sync_latency_channel.h"
 
 // The session A/V latency channel replaces a per-recording ~3.2 s render->loopback probe with a
 // controller-lifetime table the disposable media children share. These cover the pure table logic

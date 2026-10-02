@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "../captureengine/pawnio_workers.h"
-#include "../common/elevation_windows.h"
+#include "captureengine/sensors/pawnio_workers.h"
+#include "common/ipc/elevation_windows.h"
 #include <atomic>
 
 TEST(PawnioShutdownTest, WaitsForOwnedWorkerFilesAndRefusesNewSetupDuringTeardown) {

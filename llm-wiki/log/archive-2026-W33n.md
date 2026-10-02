@@ -248,7 +248,7 @@ Covers 2026-08-16. Newest-first.
 - For the two names Industria 2 reported (`r.MegaLights.DownsampleMode`, `r.Tonemapper.GrainQuantization`) the
   verdict happens to hold anyway on independent evidence: neither has a UTF-16 literal in any of the 119 loaded
   modules, in *either* title or engine version, and a statically registered CVar always carries its name literal.
-- Sweep progress lives in `hook/common/ue5_console_registry.h` as pure predicates so the resume arithmetic is
+- Sweep progress lives in `hook/overrides/ue5_console_registry.h` as pure predicates so the resume arithmetic is
   unit-testable (`UE5RegistrySweepTest`, 5 tests): a paused-and-resumed sweep visits exactly the chunk offsets a
   single pass would, the cursor parks on the unread chunk, region skipping stays in bounds and never wraps, and
   only a finished sweep may support an absence claim.

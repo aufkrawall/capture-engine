@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "../hook/common/ue5_rr_override_policy.h"
+#include "hook/overrides/ue5_rr_override_policy.h"
 
 namespace {
 

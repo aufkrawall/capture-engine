@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/capture/capture_swapchain_binding.h"
+#include "hook/capture/capture_swapchain_binding.h"
 #include "source_fragment_reader.h"
 
 namespace {

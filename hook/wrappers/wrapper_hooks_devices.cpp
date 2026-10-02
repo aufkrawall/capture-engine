@@ -12,8 +12,8 @@
 #include <cstdarg>
 #include <cstdio>
 
-#include "../../common/log_meter.h"
-#include "../../common/raii_helpers.h"
+#include "common/logging/log_meter.h"
+#include "common/platform/raii_helpers.h"
 
 // Include Windows header for MinGW compatibility
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,15 +31,15 @@ extern void EnsureDX12Hook();
 struct IDXGISwapChain;
 // Forward declaration from dx11_hook.cpp
 extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
-#include "../apis/ddraw_hook.h"
-#include "../apis/dx11_hook.h"
-#include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
-#include "../common/dx12_dred.h"
-#include "../common/dx12_overlay_policy.h"
-#include "../common/dx12_process_frame_diagnostics.h"
-#include "../common/hook_common.h"
-#include "../common/overlay_compat.h"
-#include "../common/streamline_runtime_policy.h"
+#include "hook/ddraw/ddraw_hook.h"
+#include "hook/d3d11/dx11_hook.h"
+#include "hook/d3d12/dx12_hook.h"  // Access to g_DX12Hook implementation
+#include "hook/d3d12/dx12_dred.h"
+#include "hook/d3d12/dx12_overlay_policy.h"
+#include "hook/d3d12/dx12_process_frame_diagnostics.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/overlay/overlay_compat.h"
+#include "hook/streamline/streamline_runtime_policy.h"
 #include "d3d10_device_wrap.h"
 
 #include "d3d11_device_wrap.h"
@@ -48,14 +48,14 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "d3d9_wrap.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_swapchain_wrap.h"
-#include "iat_hook.h"
+#include "hook/hooking/iat_hook.h"
 #include "wrapper_hooks.h"
 // Forward declaration from dx11_hook.cpp (after D3D11 types are available)
 extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
                                                   IDXGISwapChain* pSwapChain);
 #include "wrapper_hooks_internal.h"
 
-#include "../common/swapchain_flag_apply.h"
+#include "hook/present/swapchain_flag_apply.h"
 
 // ============================================================================
 // Wrapped D3D12 Device Creation (uses MSVC-compiled wrapper via C interface)

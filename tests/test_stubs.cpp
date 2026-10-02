@@ -7,11 +7,11 @@
 #include <windows.h>
 #include <atomic>
 
-#include "../hook/apis/streamline_hook.h"
-#include "../hook/common/fg_runtime_state.h"
-#include "../hook/common/hook_common.h"
-#include "../hook/common/custom_overlay_vk.h"
-#include "../hook/wrappers/vulkan_dxgi_fifo_present.h"
+#include "hook/streamline/streamline_hook.h"
+#include "hook/fg/fg_runtime_state.h"
+#include "hook/runtime/hook_common.h"
+#include "hook/overlay/custom_overlay_vk.h"
+#include "hook/wrappers/vulkan_dxgi_fifo_present.h"
 
 void LayerLog(const char*, ...) {}
 
@@ -57,7 +57,7 @@ void ApplyFinalPresentPolicy(IDXGISwapChain*, UINT&, UINT&, FinalPresentVariant)
 
 // Stubs for InlineHook - need to match actual class definition
 // The real InlineHook is a class with static methods, so we provide definitions here
-#include "inline_hook.h"
+#include "hook/hooking/inline_hook.h"
 
 size_t InlineHook::InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
     for (size_t i = 0; hooks && i < count; ++i) {
@@ -199,7 +199,7 @@ extern "C" BOOL MiniDumpWriteDump(HANDLE, DWORD, HANDLE, int, void*, void*, void
 }
 
 // Stubs for hook_common.cpp
-#include "config.h"
+#include "common/config/config.h"
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 static AppConfig g_LocalConfigInstance{};
 AppConfig* g_pLocalConfig = &g_LocalConfigInstance;

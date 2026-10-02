@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#include "../common/process_ipc_internal.h"
+#include "common/ipc/process_ipc_internal.h"
 
 namespace {
 

@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "../hook/vulkan_layer/vulkan_instance_registry.h"
+#include "hook/vulkan_layer/vulkan_instance_registry.h"
 #include "source_fragment_reader.h"
 
 namespace {
