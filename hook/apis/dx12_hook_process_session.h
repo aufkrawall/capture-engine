@@ -155,6 +155,9 @@ public:
     bool runtimeModeChanged;
     bool slSignalChanged;
     bool skipOverlayDraw;
+    // The FG transition cooldown holds PostSL bookkeeping (skipOverlayDraw stays set) but the pre-SL
+    // draw still runs: DLSS-G toggle-ON before the first confirmed PostSL render.
+    bool preSLDrawKeptThroughDLSSToggleOn = false;
     bool slFGActive;
     const char* skipSeparateOverlayGpuReason;
     uint64_t frameNum;

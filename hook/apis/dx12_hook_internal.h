@@ -156,6 +156,9 @@ bool HookHasFSRFGHistory();
 
 bool HookHasExplicitStreamlineSetOptionsActivation();
 
+// DLSS-G toggle-ON before the first confirmed PostSL render: keep drawing the live pre-SL overlay
+// (same queue, pure DLSS, explicit enable or opt-in). See ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn.
+bool DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn();
 
 
 ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay();

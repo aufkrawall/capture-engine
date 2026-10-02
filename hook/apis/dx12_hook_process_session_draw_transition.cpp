@@ -554,6 +554,7 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
     }
 }
 skipOverlayDraw = false;
+preSLDrawKeptThroughDLSSToggleOn = false;
 if (holdFocusLossBackbufferWork) {
     skipOverlayDraw = true;
     NoteDX12OverlayCoverageGate("focus-loss-hold");
@@ -645,6 +646,24 @@ if (dx12_hook_g_FGTransitionCooldown > 0) {
         }
 
         NoteDX12OverlayCoverageGate("fg-transition-cooldown");
+        // DLSS-G toggle-ON before the first confirmed PostSL render: the cooldown keeps holding PostSL
+        // (skipOverlayDraw stays set for the routing below), but the pre-SL draw is the overlay's only
+        // route until then. Suppressing it blanked the FG-ON present that DLSS-G then held on screen
+        // for 114 ms while it created its feature (Witcher 3 session 20261002_045950).
+        if (!holdFocusLossBackbufferWork && DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn()) {
+            preSLDrawKeptThroughDLSSToggleOn = true;
+            NoteDX12OverlayCoverageGate("dlss-toggle-on-presl-kept-drawing");
+            static std::atomic<int> s_keepPreSLThroughToggleOnLogCount{0};
+            const int logCount = s_keepPreSLThroughToggleOnLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: Keeping pre-SL overlay drawing through the DLSS-G toggle-on cooldown until PostSL "
+                    "confirms (cooldown=%d explicitEnable=%d optIn=%d queue=%p) #%d",
+                    dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire),
+                    HookHasExplicitStreamlineSetOptionsActivation() ? 1 : 0,
+                    DXGIShared::IsDlssToggleEagerOverlayEnabled() ? 1 : 0, transitionSwapchainQueue, logCount + 1);
+            }
+        }
         if (dx12_hook_g_FGTransitionCooldown == 0) {
             auto fgType = g_FGCompat.GetActiveFGType();
             bool slFG = currentFGActive && DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);

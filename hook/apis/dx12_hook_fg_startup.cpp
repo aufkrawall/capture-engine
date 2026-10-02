@@ -472,6 +472,22 @@ bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pS
 }
 
 
+bool DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn() {
+    bool swapchainQueueIsOriginalGameQueue = false;
+    {
+        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+        swapchainQueueIsOriginalGameQueue =
+            dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_SwapchainQueue == dx12_hook_g_OriginalGameQueue;
+    }
+    return ce::dx12_overlay_policy::ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        DXGIShared::IsDlssToggleEagerOverlayEnabled(), HookHasExplicitStreamlineSetOptionsActivation(),
+        dx12_hook_g_HadFSRFGPhase, dx12_hook_g_FGRuntimeOwnsSwapchain, dx12_hook_g_State.overlayInit,
+        dx12_hook_g_State.syncInit, swapchainQueueIsOriginalGameQueue);
+}
+
+
 bool HasUsableRetainedStreamlineStartupActivationSwapchainCandidate() {
 std::lock_guard<std::mutex> lock(dx12_hook_g_StreamlineStartupActivationSwapchainMutex);
 return IsUsableStartupActivationSwapchainPointer(dx12_hook_g_StreamlineStartupActivationSwapchain);

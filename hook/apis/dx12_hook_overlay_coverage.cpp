@@ -201,12 +201,17 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
             dx12_hook_g_OverlayHandoffVerboseLogPresents.store(verboseRemaining - 1, std::memory_order_relaxed);
             const uint32_t route = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
             const uint32_t prevRoute = dx12_hook_g_OverlayHandoffVerbosePrevRoute.load(std::memory_order_relaxed);
+            // The last skip gate names what suppressed a drawObserved=0 present (session 20261002_045950
+            // needed a source read to find that the FG transition cooldown had).
+            const char* lastGate = dx12_hook_g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
             HookLogImportant(
                 "[OVERLAY HANDOFF] present=%llu sc=%p drawObserved=%d inheritIfNoDraw=%d covered=%d route=%s "
-                "prevRoute=%s source=%s mergedCalls=%d currentStreak=%llu tid=0x%lX qpcUs=%llu remaining=%d",
+                "prevRoute=%s source=%s mergedCalls=%d lastGate=%s currentStreak=%llu tid=0x%lX qpcUs=%llu "
+                "remaining=%d",
                 static_cast<unsigned long long>(snapshot.totalPresents), pSwapChain, drawObserved ? 1 : 0,
                 inheritCoverageIfNoDraw ? 1 : 0, result.covered ? 1 : 0, DX12OverlayRenderRouteName(route),
                 DX12OverlayRenderRouteName(prevRoute), source ? source : "unknown", mergedCalls,
+                lastGate ? lastGate : "none",
                 static_cast<unsigned long long>(snapshot.currentStreak), GetCurrentThreadId(),
                 static_cast<unsigned long long>(nowUs), verboseRemaining - 1);
         }

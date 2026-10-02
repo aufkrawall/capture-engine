@@ -470,3 +470,98 @@ TEST(DXGISharedSourceTest, FreshStreamlineHandoffJudgesRetiringOverlayByCoverage
     ASSERT_NE(prewarmDecision, std::string::npos);
     EXPECT_NE(skipped, std::string::npos);
 }
+
+// Round 4 (Talos DLSS-FG toggle-ON, session 20260614_030417) and Witcher 3 session 20261002_045950:
+// with pure DLSS, the runtime not owning the swapchain, a warm overlay backend and NO separate
+// Streamline queue, the pre-SL overlay keeps drawing until PostSL confirms, so the frame DLSS-G holds
+// on screen while it creates its feature still carries the overlay.
+TEST(DXGISharedTest, EagerlyDrawsPreSLOverlayDuringDLSSToggleOnWhenSameQueue) {
+    using ce::dx12_overlay_policy::ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn;
+
+    // The legacy opt-in alone still qualifies (covers GetState-only enables too).
+    EXPECT_TRUE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
+        /*eagerEnabled=*/true, /*explicitSetOptionsActivation=*/false, /*hadFSRFGPhase=*/false,
+        /*runtimeOwnsSwapchain=*/false, /*overlayInit=*/true, /*syncInit=*/true,
+        /*swapchainQueueIsOriginalGameQueue=*/true));
+    // An explicit slDLSSGSetOptions(ON) for this comeback qualifies without the opt-in. Before this,
+    // W3's FG-ON present drew nothing and stayed on screen for 114 ms.
+    EXPECT_TRUE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(false, /*explicitSetOptionsActivation=*/true, false,
+                                                                false, true, true, true));
+    // GetState-only enable without the opt-in (the GTA startup-churn family) keeps the suppression.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(false, false, false, false, true, true, true));
+    // FSR history -> a separate SL/FSR queue topology is likely; keep the strict suppression.
+    EXPECT_FALSE(
+        ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, /*hadFSRFGPhase=*/true, false, true, true, true));
+    // Runtime owns the swapchain -> not the same-queue case.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, /*runtimeOwnsSwapchain=*/true,
+                                                                 true, true, true));
+    // Overlay backend or sync resources not initialized -> nothing to keep drawing.
+    EXPECT_FALSE(
+        ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, false, /*overlayInit=*/false, true, true));
+    EXPECT_FALSE(
+        ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, false, true, /*syncInit=*/false, true));
+    // A SEPARATE Streamline queue -> a pre-SL ECL on origGame against SL's backbuffers risks the
+    // cross-queue DEVICE_HUNG.
+    EXPECT_FALSE(ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(true, true, false, false, true, true,
+                                                                 /*swapchainQueueIsOriginalGameQueue=*/false));
+}
+
+TEST(DXGISharedTest, PreSLOverlayKeptLiveOnlyUntilPostSLConfirms) {
+    using ce::dx12_overlay_policy::ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn;
+
+    // W3 present 827: SL FG running, PostSL not confirmed yet, explicit enable, same queue -> draw.
+    EXPECT_TRUE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
+        /*streamlineFGRunning=*/true, /*postSLConfirmedRendering=*/false, /*eagerEnabled=*/false,
+        /*explicitSetOptionsActivation=*/true, /*hadFSRFGPhase=*/false, /*runtimeOwnsSwapchain=*/false,
+        /*overlayInit=*/true, /*syncInit=*/true, /*swapchainQueueIsOriginalGameQueue=*/true));
+    // PostSL confirmed -> PostSL owns the overlay; never double-draw.
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, /*postSLConfirmedRendering=*/true, false, true,
+                                                               false, false, true, true, true));
+    // Streamline FG not running -> the normal route draws anyway; not this window.
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(/*streamlineFGRunning=*/false, false, false, true,
+                                                               false, false, true, true, true));
+    // The underlying proof still applies inside the window.
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false, /*explicit=*/false, false, false,
+                                                               true, true, true));
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false, true, false, false, true, true,
+                                                               /*swapchainQueueIsOriginalGameQueue=*/false));
+}
+
+// Both suppression sites must consult the same decision: the [outer] SL FG ON cooldown suppressed W3's
+// FG-ON present first, so un-gating only the startup gate in DrawSkipAndCounters drew nothing. The
+// cooldown keeps skipOverlayDraw set (PostSL activation bookkeeping keys on it) and admits the draw
+// through a separate flag.
+TEST(DXGISharedSourceTest, DLSSToggleOnPreSLDrawSurvivesTheTransitionCooldown) {
+    namespace fs = std::filesystem;
+    const fs::path transition = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_transition.cpp";
+    const fs::path drawMain = fs::current_path() / "hook" / "apis" / "dx12_hook_process_session_draw_main.cpp";
+    ASSERT_TRUE(fs::exists(transition));
+    ASSERT_TRUE(fs::exists(drawMain));
+    const std::string transitionText = ce::test_source::ReadLogicalSource(transition);
+    const std::string mainText = ce::test_source::ReadLogicalSource(drawMain);
+
+    const size_t cooldownGate = transitionText.find("NoteDX12OverlayCoverageGate(\"fg-transition-cooldown\")");
+    ASSERT_NE(cooldownGate, std::string::npos);
+    const size_t keep = transitionText.find("DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn()", cooldownGate);
+    const size_t flag = transitionText.find("preSLDrawKeptThroughDLSSToggleOn = true;", cooldownGate);
+    const size_t skip = transitionText.find("skipOverlayDraw = true;", cooldownGate);
+    ASSERT_NE(keep, std::string::npos);
+    ASSERT_NE(flag, std::string::npos);
+    ASSERT_NE(skip, std::string::npos);
+    EXPECT_LT(keep, flag);
+    EXPECT_LT(flag, skip) << "the cooldown must still set skipOverlayDraw for the PostSL routing";
+
+    const size_t drawMainFn = mainText.find("ProcessFrameFlow FrameProcessSession::DrawMain()");
+    ASSERT_NE(drawMainFn, std::string::npos);
+    const size_t admit = mainText.find("if (!skipOverlayDraw || preSLDrawKeptThroughDLSSToggleOn)", drawMainFn);
+    const size_t skipAndCounters = mainText.find("DrawSkipAndCounters();", drawMainFn);
+    ASSERT_NE(admit, std::string::npos);
+    EXPECT_LT(admit, skipAndCounters);
+
+    const size_t startupGate = mainText.find("if (slFGNow && !postSLConfirmed)");
+    ASSERT_NE(startupGate, std::string::npos);
+    const size_t startupKeep = mainText.find("DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn()", startupGate);
+    const size_t startupSuppress = mainText.find("return ProcessFrameFlow::kSkipOverlayDraw;", startupGate);
+    ASSERT_NE(startupKeep, std::string::npos);
+    EXPECT_LT(startupKeep, startupSuppress);
+}

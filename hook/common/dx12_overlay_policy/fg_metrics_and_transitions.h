@@ -27,15 +27,37 @@ namespace ce::dx12_overlay_policy {
 // already-live pre-SL overlay drawing during the toggle-on window instead of suppressing it. Only safe
 // when there is NO separate Streamline queue — i.e. the present swapchain queue is the game's own
 // original queue (swapchainQueueIsOriginalGameQueue) — so the overlay ECL lands on the game's queue and
-// cannot cause a cross-queue DEVICE_HUNG. Gated to opt-in (eagerEnabled), pure DLSS (no FSR history),
-// the runtime not owning the swapchain, and the overlay backend already initialized. This is NOT the
-// PostSL re-entrant ECL submitted into DLSS-G's pipeline (the documented init-hang hazard) — it is the
-// same plain present-time ECL CE already submits on the no-FG normal route. See guardrails.md (Round 4).
-inline bool ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(bool eagerEnabled, bool hadFSRFGPhase,
-                                                            bool runtimeOwnsSwapchain, bool overlayInit, bool syncInit,
+// cannot cause a cross-queue DEVICE_HUNG. Gated to pure DLSS (no FSR history), the runtime not owning
+// the swapchain, and the overlay backend already initialized. This is NOT the PostSL re-entrant ECL
+// submitted into DLSS-G's pipeline (the documented init-hang hazard) — it is the same plain
+// present-time ECL CE already submits on the no-FG normal route. See guardrails.md (Round 4).
+//
+// It used to need the CE_DLSS_TOGGLE_OVERLAY_EAGER opt-in (eagerEnabled). An explicit
+// slDLSSGSetOptions(ON) for this comeback is now enough on its own: Witcher 3 session
+// 20261002_045950 drew nothing on the FG-ON present (the [outer] SL FG ON cooldown and this gate
+// both suppressed it), and DLSS-G then spent 94 ms creating its feature inside the next Present, so
+// that overlay-less frame stayed on screen for 114 ms. GetState-only enables (the GTA startup-churn
+// family) still need the opt-in. PostSL confirmation ends the window: from then on PostSL owns the
+// overlay and the pre-SL draw is suppressed again.
+inline bool ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(bool eagerEnabled, bool explicitSetOptionsActivation,
+                                                            bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
+                                                            bool overlayInit, bool syncInit,
                                                             bool swapchainQueueIsOriginalGameQueue) {
-    return eagerEnabled && !hadFSRFGPhase && !runtimeOwnsSwapchain && overlayInit && syncInit &&
-           swapchainQueueIsOriginalGameQueue;
+    return (eagerEnabled || explicitSetOptionsActivation) && !hadFSRFGPhase && !runtimeOwnsSwapchain && overlayInit &&
+           syncInit && swapchainQueueIsOriginalGameQueue;
+}
+
+// The same decision, made for the present being processed: Streamline FG is running and PostSL has
+// not confirmed a render yet (before that, the pre-SL draw is the overlay's only route).
+inline bool ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(bool streamlineFGRunning, bool postSLConfirmedRendering,
+                                                          bool eagerEnabled, bool explicitSetOptionsActivation,
+                                                          bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
+                                                          bool overlayInit, bool syncInit,
+                                                          bool swapchainQueueIsOriginalGameQueue) {
+    return streamlineFGRunning && !postSLConfirmedRendering &&
+           ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(eagerEnabled, explicitSetOptionsActivation, hadFSRFGPhase,
+                                                           runtimeOwnsSwapchain, overlayInit, syncInit,
+                                                           swapchainQueueIsOriginalGameQueue);
 }
 
 // Extended cooldown for post-FSR non-FG recovery.  Streamline's FG teardown

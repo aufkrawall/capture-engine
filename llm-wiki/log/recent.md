@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-02 - Overlay gap at DLSS-G activation: the FG-ON present skipped its draw (fixed 0.1.6926)
+
+- Session `20261002_045950` (0.1.6925): present 827, the FG-ON edge, logged `drawObserved=0 inheritIfNoDraw=1` on
+  the game thread. ProcessFrame ran, but the `[outer] SL FG ON` 60-frame cooldown skipped the draw. The next Present
+  spent 94 ms in DLSS-G `CreateFeature` (nvngx_debug.log), so 827 stayed on screen for 114 ms; 828 was the first
+  PostSL render. The earlier "825 had no ProcessFrame" reading of `045116` was wrong: there the skipped present was
+  also the FG-ON one.
+- Fix: `DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn` (explicit enable or opt-in, pure DLSS, same queue, PostSL
+  unconfirmed) admits the pre-SL draw at both the cooldown site and the startup gate. See guardrails.md (2026-10-02).
+  The `[OVERLAY HANDOFF]` per-present line now prints `lastGate=`. Run pending; then re-test a GTA/Talos DLSS toggle-ON.
+
 ### 2026-10-02 - W3 bridged run clean; overlay gap at DLSS-G activation traced
 
 - Session `20261002_045116` (0.1.6924): focused startup, both fullscreen switches accepted, no 2.x call failures,

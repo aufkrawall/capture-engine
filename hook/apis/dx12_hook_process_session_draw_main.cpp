@@ -388,7 +388,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
 
 ProcessFrameFlow FrameProcessSession::DrawMain() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-        if (!skipOverlayDraw) {
+        if (!skipOverlayDraw || preSLDrawKeptThroughDLSSToggleOn) {
     flow = DrawSkipAndCounters();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -478,28 +478,17 @@ return ProcessFrameFlow::kSkipOverlayDraw;
         // suppressing it, so the frame DLSS-G freezes on during init still carries the
         // overlay. The overlay ECL lands on the game's own queue (same as the no-FG normal
         // route) → no cross-queue DEVICE_HUNG, and it is NOT the PostSL re-entrant ECL the
-        // cold-start warmup protects. Opt-in (default OFF) + pure-DLSS + same-queue gated.
-        ID3D12CommandQueue* eagerSwapchainQueue = nullptr;
-        ID3D12CommandQueue* eagerOriginalGameQueue = nullptr;
-        {
-            std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-            eagerSwapchainQueue = dx12_hook_g_SwapchainQueue;
-            eagerOriginalGameQueue = dx12_hook_g_OriginalGameQueue;
-        }
-        const bool eagerToggleOnDraw =
-            ce::dx12_overlay_policy::ShouldEagerlyDrawPreSLOverlayDuringDLSSToggleOn(
-                DXGIShared::IsDlssToggleEagerOverlayEnabled(), dx12_hook_g_HadFSRFGPhase, dx12_hook_g_FGRuntimeOwnsSwapchain,
-                dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
-                eagerSwapchainQueue != nullptr && eagerSwapchainQueue == eagerOriginalGameQueue);
-        if (eagerToggleOnDraw) {
+        // cold-start warmup protects. Pure-DLSS + same-queue + (explicit enable or opt-in).
+        if (DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn()) {
             NoteDX12OverlayCoverageGate("dlss-toggle-on-eager-presl-draw");
             static int s_eagerToggleOnLog = 0;
             ++s_eagerToggleOnLog;
             if (s_eagerToggleOnLog <= 10 || (s_eagerToggleOnLog % 300) == 0) {
                 HookLogImportant(
                     "DX12: Keeping pre-SL overlay live during DLSS toggle-on (RTSS-style, "
-                    "scQueue==origGame=%p postSLActive=%d stallCount=%d) #%d",
-                    (void*)eagerSwapchainQueue, postSLActive ? 1 : 0, stallCount, s_eagerToggleOnLog);
+                    "explicitEnable=%d postSLActive=%d stallCount=%d) #%d",
+                    HookHasExplicitStreamlineSetOptionsActivation() ? 1 : 0, postSLActive ? 1 : 0, stallCount,
+                    s_eagerToggleOnLog);
             }
             // Fall through to the normal pre-SL draw below (do NOT goto skip_overlay_draw).
         } else {
