@@ -407,7 +407,101 @@ void Shutdown() {
 }
 }
 
+namespace {
+// What a held SetOptions(OFF) needs to know to decide whether its startup protection still holds.
+// The caller holds streamline_hook_g_SuppressedOffMutex.
+struct HeldOffDeferral {
+    bool windowStillActive = false;
+    bool activationPending = false;
+    bool callbackInstalled = false;
+    bool postSLActiveButUnconfirmed = false;
+    bool postSLStartupActivationEntered = false;
+    bool postSLConfirmedRendering = false;
+    bool postSLConfirmedButStartupSettling = false;
+    bool explicitSetOptionsActivationForCurrentComeback = false;
+    bool hadFSRFGPhase = false;
+    bool safePostFSRBootstrapPath = false;
+    bool postSLConfirmedButOffChurnAwaitingActiveProof = false;
+    bool effectivePostSLRuntimeStateStabilizing = false;
+    bool acceptActivatedUnconfirmedResumeOff = false;
+    bool keepDeferred = false;
+};
+
+HeldOffDeferral EvaluateHeldOffDeferral() {
+    HeldOffDeferral d;
+    d.windowStillActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    d.activationPending =
+        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
+    d.callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+    d.postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
+    d.postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
+    d.postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
+    d.postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
+    const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+                                                           HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+    d.explicitSetOptionsActivationForCurrentComeback =
+        streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+    d.hadFSRFGPhase = HookHasFSRFGHistory();
+    d.safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
+    const bool startupProtectedComebackProof =
+        d.explicitSetOptionsActivationForCurrentComeback || d.safePostFSRBootstrapPath;
+    d.postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
+        startupProtectedComebackProof, d.postSLConfirmedRendering, d.postSLConfirmedButStartupSettling);
+    d.effectivePostSLRuntimeStateStabilizing =
+        postSLConfirmedButRuntimeStateStabilizing || d.postSLConfirmedButOffChurnAwaitingActiveProof;
+    d.acceptActivatedUnconfirmedResumeOff =
+        ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
+            true, d.windowStillActive, startupProtectedComebackProof, d.activationPending,
+            d.postSLActiveButUnconfirmed, d.postSLStartupActivationEntered, d.postSLConfirmedRendering,
+            d.postSLConfirmedButStartupSettling, d.effectivePostSLRuntimeStateStabilizing);
+    d.keepDeferred =
+        !d.acceptActivatedUnconfirmedResumeOff &&
+        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+            d.windowStillActive, d.hadFSRFGPhase, d.explicitSetOptionsActivationForCurrentComeback,
+            d.safePostFSRBootstrapPath, d.activationPending, d.postSLActiveButUnconfirmed, d.postSLConfirmedRendering,
+            d.postSLConfirmedButStartupSettling, d.effectivePostSLRuntimeStateStabilizing);
+    return d;
+}
+}  // namespace
+
 namespace StreamlineHook {
+// The title's own thread, right after its PCL present-start marker went through: the point where the
+// title itself could call slDLSSGSetOptions, outside every Streamline call. A held OFF is the title's
+// latest request (any SetOptions(ON) clears it), so once its startup protection ends it is replayed
+// through CE's own SetOptions handling - Streamline gets the OFF and CE's runtime state follows it, as
+// if the title had sent it now. It is never discarded: dropping it left DLSS-G on in a menu opened
+// within the startup window until the title's next edge.
+void ServiceHeldSetOptionsOffOnTitleFrame() {
+    if (ShouldKeepPureObserverOnlyStreamlineBehavior()) {
+        return;
+    }
+    slViewportHandle viewport = {};
+    slDLSSGOptions options = {};
+    uint32_t viewportKey = 0;
+    {
+        std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
+        if (!streamline_hook_g_SuppressedSetOptionsOffDuringStartup) {
+            return;
+        }
+        if (EvaluateHeldOffDeferral().keepDeferred) {
+            return;
+        }
+        viewport = streamline_hook_g_SuppressedOffViewport;
+        options = streamline_hook_g_SuppressedOffOptions;
+        viewportKey = streamline_hook_g_SuppressedOffViewportKey;
+        streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
+    }
+    static std::atomic<int> s_replayLogCount{0};
+    const int logCount = s_replayLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 100) == 0) {
+        HookLogImportant(
+            "Streamline Hook: Replaying held slDLSSGSetOptions(OFF) on the title thread - startup protection ended "
+            "(viewport=%u tid=0x%lX log=%d)",
+            viewportKey, GetCurrentThreadId(), logCount + 1);
+    }
+    Hooked_slDLSSGSetOptions(viewport, options);
+}
+
 void FlushSuppressedSetOptionsOffIfNeeded() {
     if (ShouldKeepPureObserverOnlyStreamlineBehavior()) {
         return;
@@ -416,37 +510,21 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
 
     std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
 
-    const bool windowStillActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
-    const bool activationPending =
-        DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
-    const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
-    const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
-    const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
-    const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
-    const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-    const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
-                                                           HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
-    const bool explicitSetOptionsActivationForCurrentComeback =
-        streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
-    const bool hadFSRFGPhase = HookHasFSRFGHistory();
-    const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
-    const bool startupProtectedComebackProof =
-        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
-    const bool postSLConfirmedButOffChurnAwaitingActiveProof = IsStartupProtectedOffChurnAwaitingActiveProof(
-        startupProtectedComebackProof, postSLConfirmedRendering, postSLConfirmedButStartupSettling);
-    const bool effectivePostSLRuntimeStateStabilizing =
-        postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
-    const bool acceptActivatedUnconfirmedResumeOff =
-        ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
-            true, windowStillActive, startupProtectedComebackProof, activationPending, postSLActiveButUnconfirmed,
-            postSLStartupActivationEntered, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-            effectivePostSLRuntimeStateStabilizing);
-    const bool shouldKeepDeferred =
-        !acceptActivatedUnconfirmedResumeOff &&
-        ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
-            windowStillActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-            activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-            effectivePostSLRuntimeStateStabilizing);
+    const HeldOffDeferral deferral = EvaluateHeldOffDeferral();
+    const bool windowStillActive = deferral.windowStillActive;
+    const bool activationPending = deferral.activationPending;
+    const bool callbackInstalled = deferral.callbackInstalled;
+    const bool postSLActiveButUnconfirmed = deferral.postSLActiveButUnconfirmed;
+    const bool postSLStartupActivationEntered = deferral.postSLStartupActivationEntered;
+    const bool postSLConfirmedRendering = deferral.postSLConfirmedRendering;
+    const bool postSLConfirmedButStartupSettling = deferral.postSLConfirmedButStartupSettling;
+    const bool explicitSetOptionsActivationForCurrentComeback = deferral.explicitSetOptionsActivationForCurrentComeback;
+    const bool hadFSRFGPhase = deferral.hadFSRFGPhase;
+    const bool safePostFSRBootstrapPath = deferral.safePostFSRBootstrapPath;
+    const bool postSLConfirmedButOffChurnAwaitingActiveProof = deferral.postSLConfirmedButOffChurnAwaitingActiveProof;
+    const bool effectivePostSLRuntimeStateStabilizing = deferral.effectivePostSLRuntimeStateStabilizing;
+    const bool acceptActivatedUnconfirmedResumeOff = deferral.acceptActivatedUnconfirmedResumeOff;
+    const bool shouldKeepDeferred = deferral.keepDeferred;
     if (shouldKeepDeferred) {
         if (ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(
                 shouldKeepDeferred, windowStillActive, activationPending, postSLStartupActivationEntered,
@@ -483,9 +561,11 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
         }
     };
 
-    // Case 1: Suppressed OFF exists — either forward it to Streamline for a real
-    // inactive edge, or drop it if a newer post-FSR comeback is already
-    // startup-protected and this OFF is now stale churn.
+    // Case 1: Suppressed OFF exists and its protection ended: it is the title's latest request, so it
+    // reaches Streamline - never discarded. A title that marks its frames gets it replayed on its own
+    // thread at the next marker (ServiceHeldSetOptionsOffOnTitleFrame), through CE's SetOptions handling
+    // and outside every Streamline call; this Present detour can run on DLSS-G's presenter thread.
+    // Without that clock the OFF is forwarded from here, as before.
     if (streamline_hook_g_SuppressedSetOptionsOffDuringStartup) {
         if (acceptActivatedUnconfirmedResumeOff) {
             LogAcceptedOffDuringActivatedUnconfirmedResume(
@@ -494,17 +574,17 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
                 postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
         }
-        if (!acceptActivatedUnconfirmedResumeOff &&
-            ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-                hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), postSLConfirmedButStartupSettling,
-                effectivePostSLRuntimeStateStabilizing)) {
-            LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
-                streamline_hook_g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
-                safePostFSRBootstrapPath, activationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
-                postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
-            streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
-            ResetStartupProtectedOffChurnActiveProof("dropped stale suppressed OFF after active proof");
+        if (ce::streamline_runtime_policy::ShouldReplayHeldOffOnTitleThread(
+                true, streamline_hook_g_TitleFrameMarkerSequence.load(std::memory_order_acquire),
+                streamline_hook_g_SuppressedOffTitleFrameSequence)) {
+            static std::atomic<int> s_leftToTitleThreadLogCount{0};
+            const int logCount = s_leftToTitleThreadLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 200) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Held slDLSSGSetOptions(OFF) protection ended - leaving it to the title "
+                    "thread's next frame marker (viewport=%u log=%d)",
+                    streamline_hook_g_SuppressedOffViewportKey, logCount + 1);
+            }
         } else {
             auto originalSetOptions = GetCallableOriginalDLSSGSetOptions();
             if (!originalSetOptions) {

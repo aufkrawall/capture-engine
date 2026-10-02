@@ -50,10 +50,15 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
     const sl::Result result = original(marker, frame);
     if (result == sl::Result::eOk && captureMarker) {
         g_pclMarkerHistory.Record(markerValue, frameId, markerTimeUs);
-        // The title's per-frame clock for the startup-protected OFF churn proof: titles that never
-        // poll GetState report "still active" through nothing else.
-        if (markerValue == ce::system_latency::PclMarkerHistory::kPresentStartMarker)
+        // The title's per-frame clock: proof for the startup-protected OFF churn (titles that never
+        // poll GetState report "still active" through nothing else), and the point on the title's
+        // own thread, outside every Streamline call, where a held OFF is replayed.
+        if (markerValue == ce::system_latency::PclMarkerHistory::kPresentStartMarker &&
+            !StreamlineHook::CeIssuedFrameMarkerScope::Active() && !StreamlineHook::IsExternalOverlayPresentGuardActive()) {
+            streamline_hook_g_TitleFrameMarkerSequence.fetch_add(1, std::memory_order_acq_rel);
             NoteStartupProtectedActiveTitleFrame(frameId);
+            StreamlineHook::ServiceHeldSetOptionsOffOnTitleFrame();
+        }
     } else if (result != sl::Result::eOk && captureMarker) {
         static std::atomic<uint32_t> s_forwardFailureCount{0};
         const uint32_t failureCount = s_forwardFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;

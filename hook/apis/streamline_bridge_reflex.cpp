@@ -16,6 +16,7 @@
 #include "streamline_bridge_policy.h"
 #include "streamline_bridge_present.h"
 #include "streamline_bridge_v1_abi.h"
+#include "streamline_hook.h"
 
 namespace ce::streamline_bridge {
 namespace {
@@ -232,6 +233,8 @@ bool SynthesizePresentMarkers(const sl::FrameToken& token) {
         return false;
     }
     // A complete pair, so the driver's report for the re-marked frame stays START-before-END.
+    // Issued from inside sl.dlss_g's Present hook: not the title's frame boundary.
+    StreamlineHook::CeIssuedFrameMarkerScope ceIssued;
     const sl::Result start = g_slPCLSetMarker(sl::PCLMarker::ePresentStart, token);
     const sl::Result end = g_slPCLSetMarker(sl::PCLMarker::ePresentEnd, token);
     g_synthesizedPresents.fetch_add(1, std::memory_order_relaxed);

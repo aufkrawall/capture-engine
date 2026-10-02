@@ -593,33 +593,29 @@ inline bool ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
 }
 
-inline bool ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-    bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
-    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing) {
-    const bool startupProtectedComebackProof =
-        explicitSetOptionsActivationForCurrentComeback || safePostFSRBootstrapPath;
-    return hadFSRFGPhase && startupProtectedComebackProof && effectiveSignalActive &&
-           !postSLConfirmedButStartupSettling && !postSLConfirmedButRuntimeStateStabilizing;
+// A startup-protected SetOptions(OFF) is held until the comeback has settled (confirmed, past settling
+// and stabilization, active proof reached - the state in which CE accepts a fresh title OFF as
+// authoritative). What happens to it then depends on what the title said since:
+//   - It reported its options as ON again, through slDLSSGSetOptions(ON) or through the options it
+//     passes into slDLSSGGetState (a title's current intent, polled every frame by e.g. GTA V): the
+//     held OFF was startup churn and is cleared. GTA session 20260421_213224 was such a case - the user
+//     had just enabled DLSS-G, GTA kept polling with ON options, and forwarding the OFF would have kept
+//     DLSS-G from ever coming up.
+//   - It said nothing contrary: the held OFF is the title's latest request and reaches Streamline. It
+//     used to be dropped once DLSS-G ran stably, which lost genuine OFFs: Witcher 3 through the 2.x bridge
+//     (SetOptions on edges only, no GetState) opening its menu within the startup window kept DLSS-G on.
+inline bool ShouldTitleOptionsSupersedeHeldOff(bool heldOff, bool getStateSucceeded, bool optionsProvided,
+                                               bool optionsModeEnabled) {
+    return heldOff && getStateSucceeded && optionsProvided && optionsModeEnabled;
 }
 
-inline bool ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-    bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool effectiveSignalActive,
-    bool postSLConfirmedButStartupSettling, bool postSLConfirmedButRuntimeStateStabilizing) {
-    return !hadFSRFGPhase && explicitSetOptionsActivationForCurrentComeback && effectiveSignalActive &&
-           !postSLConfirmedButStartupSettling && !postSLConfirmedButRuntimeStateStabilizing;
-}
-
-inline bool ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-    bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
-    bool effectiveSignalActive, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing) {
-    return ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-               hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-               effectiveSignalActive, postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing) ||
-           ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-               hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, effectiveSignalActive,
-               postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing);
+// Where a held OFF is replayed: a title that marks its frames (PCL present-start on its own thread) gets
+// it replayed there at its next marker, through CE's own SetOptions handling and outside every
+// Streamline call. A Present detour can run on DLSS-G's presenter thread, where SetOptions is unsafe. A
+// title that has not marked a frame since the hold keeps the Present-path forward.
+inline bool ShouldReplayHeldOffOnTitleThread(bool heldOff, uint64_t titleFrameMarkerSequence,
+                                             uint64_t titleFrameMarkerSequenceAtHold) {
+    return heldOff && titleFrameMarkerSequence != titleFrameMarkerSequenceAtHold;
 }
 
 inline constexpr uint32_t GetStartupProtectedOffChurnActiveProofUpdateThreshold() {

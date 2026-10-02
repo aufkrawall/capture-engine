@@ -135,11 +135,7 @@ inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActivePro
 inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActiveFrameCount{0};
 uint32_t GetStartupProtectedOffChurnActiveProof();
 void NoteStartupProtectedActiveTitleFrame(uint64_t frameId);
-bool IsObserverOnlyModeActive();void LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
-    uint32_t viewportKey, bool hadFSRFGPhase, bool explicitSetOptionsActivationForCurrentComeback,
-    bool safePostFSRBootstrapPath, bool startupActivationPending, bool postSLActiveButUnconfirmed,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing);bool IsObserverPolicyOnlyModeActive();bool ShouldKeepPureObserverOnlyStreamlineBehavior();bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWindow);void ResetStartupProtectedOffChurnActiveProof(const char* reason);void LogAcceptedOffDuringActivatedUnconfirmedResume(const char* source, bool startupWindowActive, bool hadFSRFGPhase,
+bool IsObserverOnlyModeActive();bool IsObserverPolicyOnlyModeActive();bool ShouldKeepPureObserverOnlyStreamlineBehavior();bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWindow);void ResetStartupProtectedOffChurnActiveProof(const char* reason);void LogAcceptedOffDuringActivatedUnconfirmedResume(const char* source, bool startupWindowActive, bool hadFSRFGPhase,
                                                     bool explicitSetOptionsActivationForCurrentComeback,
                                                     bool safePostFSRBootstrapPath, bool startupActivationPending,
                                                     bool postSLActiveButUnconfirmed,
@@ -484,6 +480,12 @@ inline slViewportHandle streamline_hook_g_SuppressedOffViewport = {};
 inline slDLSSGOptions streamline_hook_g_SuppressedOffOptions = {};
 
 inline uint32_t streamline_hook_g_SuppressedOffViewportKey = 0;
+
+// Title frames marked (PCL present-start forwarded on the title's own thread). The held OFF records the
+// value at hold time: once the title has marked a frame since, it is replayed on the title's thread at
+// its next marker instead of from a Present detour. Guarded by streamline_hook_g_SuppressedOffMutex.
+inline std::atomic<uint64_t> streamline_hook_g_TitleFrameMarkerSequence{0};
+inline uint64_t streamline_hook_g_SuppressedOffTitleFrameSequence = 0;
 
 // --- DLSSG activation-health diagnostics (GTA cold-start DLSS FG "active but not interpolating", session
 // 20260702_094955: optionsMode=on, updateActive=1, yet presents stayed at base rate with

@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-02 - Held startup-window OFF: replayed on the title thread, never dropped (0.1.6929)
+
+- Closes the remaining edge of the entry below: a held SetOptions(OFF) was dropped as stale at window expiry once
+  DLSS-G ran stably. Now it is cleared only when the title reports ON again (SetOptions(ON), or ON options passed
+  into slDLSSGGetState, which covers GTA 20260421_213224 where the drop was right); otherwise it is replayed.
+- Replay moved to the title thread (after its PCL present-start marker, through CE's own SetOptions handler, lock
+  released first). The Present-path flush runs on DLSS-G's presenter thread and forwarded raw, so an edge-only
+  title's CE state never saw the OFF. GTA call-pattern evidence is in guardrails.md (logs are not kept).
+
 ### 2026-10-02 - W3: DLSS-G stayed on in menus; the stale-OFF proof never arrived (fixed)
 
 - Session `20261002_051703`, second process: FG-on at 05:20:39.764 then OFF at 05:20:40.178 (startup window) was

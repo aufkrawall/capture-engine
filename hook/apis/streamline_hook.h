@@ -45,18 +45,39 @@ void OnAuthoritativeFFXTakeover();
 // ahead of the later explicit SetOptions enable.
 void OnAuthoritativeStreamlineStartupHandoff();
 
-// Forward or discard any suppressed slDLSSGSetOptions(OFF) call that was buffered
-// during startup-window churn once the window is no longer the active blocker.
-// Called from periodic check points (DetourPresent, DetourPresent1, GetState,
-// etc.) so stale deferred OFF does not linger indefinitely.
+// Release a slDLSSGSetOptions(OFF) held during startup-window churn once its protection ends. A held
+// OFF is the title's latest request (any SetOptions(ON) clears it) and is never discarded. Called
+// from DetourPresent/DetourPresent1: if the title has marked a frame since the hold, the OFF is left
+// to ServiceHeldSetOptionsOffOnTitleFrame; otherwise it is forwarded from here.
 //
 // When PostSL activation is still pending (startup-handoff Present bypassed the
 // synthetic Present path, or the callback is deferred by the startup transition
-// window guard), this function also triggers the PostSL callback directly before
-// forwarding a genuine OFF edge. If a newer explicit post-FSR comeback is already
-// half-armed and the buffered OFF is now just stale startup churn, the stale OFF
-// is discarded instead of being replayed into the recovered comeback.
+// window guard), this function also triggers the PostSL callback directly.
 void FlushSuppressedSetOptionsOffIfNeeded();
+
+// Called on the title's thread right after its PCL present-start marker reached Streamline: replays a
+// held OFF whose protection ended through CE's own slDLSSGSetOptions handling.
+void ServiceHeldSetOptionsOffOnTitleFrame();
+
+// Marks PCL markers CE issues itself (the 2.x bridge re-marks a present from inside Streamline's own
+// Present hook). They are not the title's frame boundary: no proof is counted and no held OFF is
+// replayed there.
+class CeIssuedFrameMarkerScope {
+public:
+    CeIssuedFrameMarkerScope() { ++Depth(); }
+    ~CeIssuedFrameMarkerScope() { --Depth(); }
+
+    CeIssuedFrameMarkerScope(const CeIssuedFrameMarkerScope&) = delete;
+    CeIssuedFrameMarkerScope& operator=(const CeIssuedFrameMarkerScope&) = delete;
+
+    static bool Active() { return Depth() > 0; }
+
+private:
+    static int& Depth() {
+        static thread_local int depth = 0;
+        return depth;
+    }
+};
 
 // Guard used while CE explicitly services a third-party overlay Present hook
 // from inside a Streamline-originated Present path.  Some overlays query

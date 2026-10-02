@@ -224,6 +224,23 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
 
     if (!IsObserverOnlyModeActive()) {
         std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
+        // The options a title passes into slDLSSGGetState are its current intent. "On" after a held OFF
+        // supersedes it exactly like a SetOptions(ON) does: the OFF was startup churn.
+        if (ce::streamline_runtime_policy::ShouldTitleOptionsSupersedeHeldOff(
+                streamline_hook_g_SuppressedSetOptionsOffDuringStartup, result == streamline_hook_kSlResultOk,
+                streamline_hook_options != nullptr,
+                streamline_hook_options != nullptr &&
+                    ce::streamline_runtime_policy::IsDLSSGModeEnabled(streamline_hook_options->mode))) {
+            static std::atomic<int> s_supersededByGetStateLogCount{0};
+            const int logCount = s_supersededByGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 100) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Clearing held slDLSSGSetOptions(OFF) - the title still reports DLSS-G on "
+                    "through slDLSSGGetState (heldViewport=%u getStateViewport=%u log=%d)",
+                    streamline_hook_g_SuppressedOffViewportKey, viewportKey, logCount + 1);
+            }
+            streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
+        }
         const bool startupWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
         const bool startupActivationPending =
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
@@ -265,17 +282,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                     postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
                     postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
             }
-            if (!acceptActivatedUnconfirmedResumeOff &&
-                ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-                    hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing)) {
-                LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
-                    streamline_hook_g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
-                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                    postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                    effectivePostSLRuntimeStateStabilizing);
-            } else if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
+            // A held OFF is the title's latest request (any SetOptions(ON) clears it), so it is forwarded once
+            // the startup protection ends, never discarded. See ForwardSuppressedOffWhenStartupProtectionEnds.
+            if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
                     "expired (viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
@@ -413,17 +422,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
                     postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
                     postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
             }
-            if (!acceptActivatedUnconfirmedResumeOff &&
-                ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-                    hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback, safePostFSRBootstrapPath,
-                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing)) {
-                LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
-                    streamline_hook_g_SuppressedOffViewportKey, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
-                    safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                    postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                    effectivePostSLRuntimeStateStabilizing);
-            } else if (auto suppressedOriginalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
+            // The held OFF is the title's latest request: forward it, never discard it.
+            if (auto suppressedOriginalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
                 HookLogImportant(
                     "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) — startup window expired "
                     "(viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
@@ -540,7 +540,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
             streamline_hook_g_SuppressedSetOptionsOffDuringStartup = true;
             streamline_hook_g_SuppressedOffViewport = viewport;
             streamline_hook_g_SuppressedOffOptions = adjustedOptions;
+            // Replayed after this call returned: the title's extension chain may be gone by then, and
+            // an OFF needs none.
+            streamline_hook_g_SuppressedOffOptions.next = nullptr;
             streamline_hook_g_SuppressedOffViewportKey = viewportKey;
+            streamline_hook_g_SuppressedOffTitleFrameSequence =
+                streamline_hook_g_TitleFrameMarkerSequence.load(std::memory_order_acquire);
         }
         result = streamline_hook_kSlResultOk;
     } else {

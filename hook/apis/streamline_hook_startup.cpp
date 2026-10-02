@@ -1,29 +1,6 @@
 #include "streamline_hook_internal.h"
 
 
-void LogDroppedSuppressedOffForStartupProtectedStreamlineComeback(
-    uint32_t viewportKey,  bool hadFSRFGPhase,  bool explicitSetOptionsActivationForCurrentComeback, 
-    bool safePostFSRBootstrapPath,  bool startupActivationPending,  bool postSLActiveButUnconfirmed, 
-    bool postSLConfirmedRendering,  bool postSLConfirmedButStartupSettling, 
-    bool postSLConfirmedButRuntimeStateStabilizing) {
-
-
-    static std::atomic<int> s_dropLogCount{0};
-    const int logCount = s_dropLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 10 || (logCount % 100) == 0) {
-        HookLogImportant(
-            "Streamline Hook: Dropping stale suppressed slDLSSGSetOptions(OFF) after startup window expiry because "
-            "Streamline DLSS startup is already stably active (viewport=%u hadFSR=%d explicit=%d safeBootstrap=%d "
-            "pending=%d unconfirmed=%d confirmed=%d settling=%d stabilizing=%d)",
-            viewportKey, hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivationForCurrentComeback ? 1 : 0,
-            safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-            postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-            postSLConfirmedButRuntimeStateStabilizing ? 1 : 0);
-    }
-
-}
-
-
 bool TryServicePostSLStartupActivation(const char* source,  bool clearStartupWindow) {
 
 

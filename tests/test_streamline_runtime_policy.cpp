@@ -604,52 +604,14 @@ TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackKeepsOffChurnD
         false, false, true, false, false, true, false, false));
 }
 
-TEST(StreamlineRuntimePolicyTest, StartupProtectedPostFSRComebackDropsStaleSuppressedOffChurnOnceActive) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, true, false, true, false, false));
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, false, true, true, false, false));
-
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        false, true, false, true, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, false, false, true, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, true, false, false, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, true, false, true, true, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPostFSRComeback(
-        true, true, false, true, false, true));
-}
-
-TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackDropsStaleSuppressedOffChurnOnceActive) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, true, false, false));
-
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        true, true, true, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, false, true, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, false, false, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, true, true, false));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedPureDLSSComeback(
-        false, true, true, false, true));
-}
-
 TEST(StreamlineRuntimePolicyTest, StartupProtectedStreamlineComebackIncludesPureDLSSProtection) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
         false, false, true, false, true, false, false, false, false));
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-        false, true, false, true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedPureDLSSComebackStaysDeferredDuringPostSettlingStabilization) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
         false, false, true, false, false, false, true, false, true));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-        false, true, false, true, false, true));
 }
 
 TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnDeferred) {
@@ -662,8 +624,6 @@ TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnD
     EXPECT_TRUE(staleOffWarmupProtection);
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
         false, false, true, false, false, false, true, false, staleOffWarmupProtection));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldDropSuppressedOffChurnForStartupProtectedStreamlineComeback(
-        false, true, false, true, false, staleOffWarmupProtection));
 }
 
 TEST(StreamlineRuntimePolicyTest, StartupProtectedOffChurnWaitsForActiveProofAfterPostSLConfirmation) {
