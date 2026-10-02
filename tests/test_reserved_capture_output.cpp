@@ -3,6 +3,8 @@
 #include "reserved_capture_output.h"
 
 #include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
 
 #include <filesystem>
 #include <fstream>
@@ -28,6 +30,45 @@ protected:
 };
 
 }  // namespace
+
+TEST_F(ReservedCaptureOutputTest, ConfiguredDirectoryExpandsEnvironmentReferencesBeforeRelativeRule) {
+    ASSERT_TRUE(SetEnvironmentVariableW(L"CE_CAPTURE_DIR_TEST_ROOT", directory.c_str()));
+    const std::filesystem::path exeDirectory = directory / L"exe";
+
+    const std::filesystem::path resolved =
+        ce::capture_output::ResolveCaptureDirectory("%CE_CAPTURE_DIR_TEST_ROOT%\\Videos\\Capture Engine", exeDirectory);
+    SetEnvironmentVariableW(L"CE_CAPTURE_DIR_TEST_ROOT", nullptr);
+
+    EXPECT_EQ(resolved, directory / L"Videos" / L"Capture Engine");
+    EXPECT_TRUE(std::filesystem::is_directory(resolved));
+    EXPECT_FALSE(std::filesystem::exists(exeDirectory));
+}
+
+TEST_F(ReservedCaptureOutputTest, VideosTokenResolvesToTheVideosKnownFolder) {
+    PWSTR videos = nullptr;
+    ASSERT_EQ(S_OK, SHGetKnownFolderPath(FOLDERID_Videos, KF_FLAG_DEFAULT, nullptr, &videos));
+    const std::filesystem::path videosFolder(videos);
+    CoTaskMemFree(videos);
+
+    const std::wstring leaf = L"ce_videos_token_test_" + directory.filename().wstring();
+    const std::filesystem::path resolved =
+        ce::capture_output::ResolveCaptureDirectory(std::filesystem::path(L"%videos%\\" + leaf).string(), directory);
+
+    std::error_code error;
+    const bool created = std::filesystem::is_directory(videosFolder / leaf, error);
+    std::filesystem::remove(videosFolder / leaf, error);
+    EXPECT_EQ(resolved, videosFolder / leaf);
+    EXPECT_TRUE(created);
+}
+
+TEST_F(ReservedCaptureOutputTest, RealVideosEnvironmentVariableIsNotShadowedByTheToken) {
+    ASSERT_TRUE(SetEnvironmentVariableW(L"VIDEOS", directory.c_str()));
+    const std::filesystem::path resolved =
+        ce::capture_output::ResolveCaptureDirectory("%VIDEOS%\\Capture Engine", directory / L"exe");
+    SetEnvironmentVariableW(L"VIDEOS", nullptr);
+
+    EXPECT_EQ(resolved, directory / L"Capture Engine");
+}
 
 class ReservedCaptureOutputCollisionTest : public ReservedCaptureOutputTest,
                                            public ::testing::WithParamInterface<const wchar_t*> {};

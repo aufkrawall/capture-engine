@@ -32,21 +32,7 @@ std::wstring ExpandRegistryStringIfNeeded(const std::wstring& value, DWORD type)
     if (type != REG_EXPAND_SZ) {
         return value;
     }
-
-    const DWORD required = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
-    if (required == 0) {
-        return value;
-    }
-
-    std::wstring expanded(required, L'\0');
-    const DWORD written = ExpandEnvironmentStringsW(value.c_str(), expanded.data(), required);
-    if (written == 0 || written > required) {
-        return value;
-    }
-    if (!expanded.empty() && expanded.back() == L'\0') {
-        expanded.pop_back();
-    }
-    return expanded;
+    return ExpandEnvironmentReferences(value);
 }
 
 bool QueryLiveMappedDriveRemote(wchar_t driveLetter, std::wstring& remoteRoot, DWORD& status) {
@@ -172,6 +158,27 @@ MappedDriveResolution ResolveMappedDrivePath(const std::filesystem::path& path) 
             result.changed ? MappedDriveResolutionSource::RegistryMapping : MappedDriveResolutionSource::None;
     }
     return result;
+}
+
+std::wstring ExpandEnvironmentReferences(const std::wstring& value) {
+    if (value.find(L'%') == std::wstring::npos) {
+        return value;
+    }
+
+    const DWORD required = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
+    if (required == 0) {
+        return value;
+    }
+
+    std::wstring expanded(required, L'\0');
+    const DWORD written = ExpandEnvironmentStringsW(value.c_str(), expanded.data(), required);
+    if (written == 0 || written > required) {
+        return value;
+    }
+    if (!expanded.empty() && expanded.back() == L'\0') {
+        expanded.pop_back();
+    }
+    return expanded;
 }
 
 std::string AnsiCompatiblePath(const std::wstring& widePath, bool* exact) {

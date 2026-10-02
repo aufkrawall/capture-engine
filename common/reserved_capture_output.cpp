@@ -4,6 +4,9 @@
 #include "logging.h"
 #include "path_utils.h"
 
+#include <knownfolders.h>
+#include <shlobj.h>
+
 #include <atomic>
 #include <array>
 #include <cwchar>
@@ -73,6 +76,39 @@ std::optional<std::wstring> BuildFilename(const std::wstring& prefix, const std:
     return buffer.data();
 }
 
+// %VIDEOS% is the user's Videos library folder. Unlike %USERPROFILE%\Videos it
+// follows a relocated folder (OneDrive, another drive). A real environment
+// variable of that name is not shadowed.
+std::wstring ExpandVideosToken(std::wstring value) {
+    constexpr size_t kTokenLength = 8;  // length of L"%VIDEOS%"
+    const auto isToken = [&](size_t at) {
+        return at + kTokenLength <= value.size() && _wcsnicmp(value.c_str() + at, L"%VIDEOS%", kTokenLength) == 0;
+    };
+
+    size_t first = value.find(L'%');
+    while (first != std::wstring::npos && !isToken(first))
+        first = value.find(L'%', first + 1);
+    if (first == std::wstring::npos || GetEnvironmentVariableW(L"VIDEOS", nullptr, 0) != 0)
+        return value;
+
+    PWSTR videos = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_Videos, KF_FLAG_DEFAULT, nullptr, &videos);
+    const std::wstring folder = (SUCCEEDED(result) && videos) ? std::wstring(videos) : std::wstring();
+    CoTaskMemFree(videos);
+    if (folder.empty())
+        return value;
+
+    for (size_t at = first; at != std::wstring::npos; at = value.find(L'%', at)) {
+        if (isToken(at)) {
+            value.replace(at, kTokenLength, folder);
+            at += folder.size();
+        } else {
+            ++at;
+        }
+    }
+    return value;
+}
+
 }  // namespace
 
 OutputNameSeed MakeOutputNameSeed() {
@@ -93,6 +129,21 @@ std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirec
                                               const std::filesystem::path& executableDirectory) {
     std::filesystem::path directory =
         configuredDirectory.empty() ? executableDirectory / L"captures" : std::filesystem::path(configuredDirectory);
+    if (!configuredDirectory.empty()) {
+        // %VIDEOS% and %VAR% references (e.g. %VIDEOS%\Capture Engine) are expanded
+        // before the relative-path rule so they can name an absolute folder.
+        const std::wstring original = directory.wstring();
+        const std::wstring expanded = ce::path::ExpandEnvironmentReferences(ExpandVideosToken(original));
+        if (expanded != original) {
+            directory = std::filesystem::path(expanded);
+        } else if (original.find(L'%') != std::wstring::npos) {
+            static std::atomic<uint32_t> s_unresolvedLogCount{0};
+            if (s_unresolvedLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+                LogWarn("[Output] Configured capture directory contains an unresolved %%VAR%% reference (configured='%s')",
+                        ce::privacy::CollapsePathForLog(configuredDirectory).c_str());
+            }
+        }
+    }
     if (!configuredDirectory.empty() && directory.is_relative()) {
         directory = executableDirectory / directory;
     }

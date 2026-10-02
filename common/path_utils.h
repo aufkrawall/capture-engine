@@ -26,6 +26,12 @@ bool IsDriveAbsolutePath(const std::filesystem::path& path);
 std::filesystem::path ReplaceDriveRootWithRemotePath(const std::filesystem::path& path, const std::wstring& remoteRoot);
 MappedDriveResolution ResolveMappedDrivePath(const std::filesystem::path& path);
 
+// Expands %NAME% references from the process environment (so a config path can
+// say %USERPROFILE%\Videos). A reference to an undefined variable is left in
+// place, exactly as ExpandEnvironmentStringsW does; text without '%' is returned
+// unchanged.
+std::wstring ExpandEnvironmentReferences(const std::wstring& value);
+
 // A path for the ANSI (A-suffixed) Windows APIs that configuration, logging and
 // crash handling still use. When the path is representable in the active code
 // page it is returned as that; otherwise (an installation below a folder whose

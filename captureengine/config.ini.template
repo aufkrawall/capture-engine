@@ -71,11 +71,13 @@ wgc_same_device_capture=true
 
 [Output]
 ; Empty paths use the captures folder next to CaptureEngine.exe. Relative paths
-; start from the CaptureEngine installation folder.
+; start from the CaptureEngine installation folder. %VIDEOS% is your Windows
+; Videos folder (wherever it was moved to); environment variables such as
+; %USERPROFILE% are expanded too.
 ; output_dir and screenshot_dir are independent. Set both to use the same custom
 ; folder for recordings and screenshots.
-output_dir=
-screenshot_dir=
+output_dir=%VIDEOS%\Capture Engine
+screenshot_dir=%VIDEOS%\Capture Engine\Screenshots
 ; mkv, mp4, or mov. Only MKV is actively tested. MKV is also the safest choice
 ; if recording is interrupted.
 container=mkv
