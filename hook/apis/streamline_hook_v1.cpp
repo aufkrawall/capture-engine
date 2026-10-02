@@ -3,6 +3,7 @@
 #include "streamline_hook_v1.h"
 
 #include "../common/module_pin.h"
+#include "../common/rr_handoff_gate.h"
 #include "dx12_streamline_ui_overlay.h"
 
 namespace ce::streamline_v1 {
@@ -307,6 +308,7 @@ bool Hooked_slEvaluateFeatureV1(void* commandBuffer, uint32_t feature, uint32_t 
     if (result && feature == kV1FeatureDLSS) {
         const uint32_t previous =
             streamline_hook_g_LastUpscalerEvaluation.exchange(feature, std::memory_order_acq_rel);
+        ce::rr_handoff::g_superResolutionEvaluations.fetch_add(1, std::memory_order_release);
         if (g_IPC && g_IPC->GetSharedMem()) {
             auto& state = g_IPC->GetSharedMem()->dlssState;
             // 1.x has no ray-reconstruction feature at all, so RR can only be off here.

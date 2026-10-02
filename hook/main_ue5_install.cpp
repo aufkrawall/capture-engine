@@ -148,6 +148,12 @@ uint32_t ResolveEffectiveBits(std::size_t specIndex, uint32_t observedBits) {
     const ce::ue5_cvar::Spec& spec = ce::ue5_cvar::kSpecs[specIndex];
     desired.bits = ce::ue5_cvar::MaxBits(spec.type, desired.bits, observedBits);
   }
+  if (desired.handoff) {
+    g_handoffGameBits[specIndex] = observedBits;
+    g_handoffGameBitsKnown[specIndex] = true;
+    desired.bits = ce::ue5_cvar::HandoffBits(g_handoffConfiguredBits[specIndex], g_rayReconstructionRendering,
+                                             true, observedBits);
+  }
   return desired.bits;
 }
 
@@ -354,6 +360,7 @@ VerificationCounts VerifyOverrides() {
       }
       RestoreReferencePair(state);
       state = {};
+      g_handoffGameBitsKnown[index] = false;
       g_activeModules[index].store(nullptr, std::memory_order_release);
       g_fullRescanRequested.store(true, std::memory_order_release);
       continue;
@@ -369,6 +376,28 @@ VerificationCounts VerifyOverrides() {
     }
 
     const bool matches = gameBits == expected && renderBits == expected && throughBits == expected;
+    if (!matches && g_desired[index].handoff) {
+      // A hand-off entry tracks the game's own intent: NVIDIA's plugin flips
+      // exactly these CVars when RR is enabled or disabled in a menu. While RR
+      // renders CE's value still wins (re-asserted below), but the game's
+      // latest value is what goes back once RR stops; while RR is not rendering
+      // the game owns the value outright, so its write is adopted, not fought.
+      const uint32_t written = gameBits != expected ? gameBits : renderBits != expected ? renderBits : throughBits;
+      g_handoffGameBits[index] = written;
+      g_handoffGameBitsKnown[index] = true;
+      if (!g_rayReconstructionRendering) {
+        static uint32_t adoptionLogs = 0;
+        if (adoptionLogs++ < 16) {
+          HookLogImportant("UE5 overrides: %s set to 0x%08X by the game while Ray Reconstruction is not "
+                           "rendering; passing the game's value through",
+                           ce::ue5_cvar::kSpecs[index].name, written);
+        }
+        g_desired[index].bits = written;
+        UpdateForcedData(index, written);
+        ++counts.verified;
+        continue;
+      }
+    }
     if (!matches) {
       // A game-side Set() reached the storage CE owns. Re-assert rather than
       // reinstall: the redirect itself is still ours.
@@ -414,6 +443,7 @@ void ForgetUnloadedOverrides() {
       HookLogImportant("UE5 overrides: module owning %s unloaded; retired stale override and awaiting reload",
                        ce::ue5_cvar::kSpecs[index].name);
       g_overrides[index] = {};
+      g_handoffGameBitsKnown[index] = false;
     }
     if (g_desired[index].enabled)
       g_fullRescanRequested.store(true, std::memory_order_release);
@@ -421,6 +451,9 @@ void ForgetUnloadedOverrides() {
 }
 
 void RestoreOverride(std::size_t specIndex, const char* reason) {
+  // The recorded game value belongs to the object being handed back; a later
+  // install observes it afresh.
+  g_handoffGameBitsKnown[specIndex] = false;
   OverrideState& state = g_overrides[specIndex];
   if (state.bitReference) {
     // Only CE's own bit goes back. Writing the whole byte would undo whatever

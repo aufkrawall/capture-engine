@@ -31,10 +31,9 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         {"r.Lumen.Reflections.DownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.Reflections.DownsampleCheckerboard", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.Reflections.MaxRayIntensity", ce::ue5_cvar::ValueType::Float, 100.0},
-        // The cheaper stochastic direction, not the engine's bilinear default:
-        // it is what an RR denoiser expects and it is up to ~30% cheaper in the
-        // screen probe gather passes (AMD's UE performance guide).
-        {"r.Lumen.ScreenProbeGather.StochasticInterpolation", ce::ue5_cvar::ValueType::Int32, 1.0},
+        // Bilinear, the direction UE's own Epic and Cinematic GI scalability
+        // use; only High picks the noisier stochastic interpolation.
+        {"r.Lumen.ScreenProbeGather.StochasticInterpolation", ce::ue5_cvar::ValueType::Int32, 0.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.SpatialFilterNumPasses", ce::ue5_cvar::ValueType::Int32, 3.0},
         // Float in the engine, not int: Talos's console object holds 25.0f.
@@ -62,6 +61,8 @@ TEST(UE5CVarOverridePolicyTest, ContainsCompleteRayReconstructionOptimalBundle) 
         // Appended last so the positional indices above stay stable.
         {"r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
         {"r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal", ce::ue5_cvar::ValueType::Int32, 1.0},
+        {"r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
+        {"r.MegaLights.DownsampleFactor", ce::ue5_cvar::ValueType::Int32, 1.0},
     };
     for (const auto& item : expected) {
         const auto* spec = FindSpec(item.name);
@@ -124,40 +125,44 @@ TEST(UE5CVarOverridePolicyTest, RayReconstructionSettingsLevelsAreNestedWithoutS
     ASSERT_NE(shortRangeAo, nullptr);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetLight;
-    EXPECT_EQ(countEnabled(), 5u);
+    EXPECT_EQ(countEnabled(), 4u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*bilateral, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*ssrTemporal, settings).enabled);
-    EXPECT_TRUE(ce::ue5_cvar::Resolve(*stochastic, settings).enabled);
-    EXPECT_EQ(static_cast<int32_t>(ce::ue5_cvar::Resolve(*stochastic, settings).bits), 1);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*stochastic, settings).enabled)
+        << "light and medium leave the title's own probe interpolation alone";
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetMedium;
-    EXPECT_EQ(countEnabled(), 15u);
+    EXPECT_EQ(countEnabled(), 13u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*downsample, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled)
         << "medium is the cost-free stabilizer level and must not carry paid rays";
-    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled)
+        << "the direction cycle is free and belongs with the history it fills";
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*stochastic, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetHigh;
-    EXPECT_EQ(countEnabled(), 26u);
+    EXPECT_EQ(countEnabled(), 24u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
-    EXPECT_TRUE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*smrtLocal, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*probeResolution, settings).enabled);
-    EXPECT_FALSE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled)
-        << "the per-frame screen probe ray count is what full adds over high";
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*stochastic, settings).enabled);
+    EXPECT_EQ(static_cast<int32_t>(ce::ue5_cvar::Resolve(*stochastic, settings).bits), 0);
+    EXPECT_FALSE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled)
+        << "four times the traces per screen probe is what full adds over high";
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
     EXPECT_FALSE(ce::ue5_cvar::Resolve(*probeBudget, settings).enabled);
 
     settings.rayReconstructionOptimalSettings = ce::ue5_cvar::kRayReconstructionPresetFull;
     EXPECT_EQ(countEnabled(), 31u);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxIntensity, settings).enabled);
+    EXPECT_TRUE(ce::ue5_cvar::Resolve(*octahedron, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*maxDirections, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*shortRangeAo, settings).enabled);
     EXPECT_TRUE(ce::ue5_cvar::Resolve(*probeBudget, settings).enabled);

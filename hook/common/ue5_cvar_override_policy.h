@@ -18,6 +18,12 @@ enum class ValueType : uint8_t {
 enum class Activation : uint8_t {
     RayReconstruction,
     RayReconstructionLight,
+    // The engine reflection denoisers RR replaces. Installed with the `light`
+    // preset like any other entry, but CE's value is only held while RR is
+    // demonstrably rendering (ce::rr_handoff::Gate); otherwise the game's own
+    // value is passed through, so TSR, plain DLSS SR, or an RR->SR fallback
+    // never shows raw reflections. Resolve() marks these `handoff`.
+    RayReconstructionHandoff,
     RayReconstructionMedium,
     RayReconstructionHigh,
     RayReconstructionFull,
@@ -45,6 +51,8 @@ enum class Activation : uint8_t {
     HdrUiLuminance,
     HdrMinLuminance,
     HdrColorGamut,
+    // Reachable through `custom_cvar_overrides` only; no preset writes it.
+    CustomOnly,
 };
 
 // The preset is a strict ladder: every level contains the one below it. It is
@@ -54,16 +62,19 @@ enum class Activation : uint8_t {
 // that buy sampling density - so wanting the free half forced paying for the
 // expensive half.
 //
-//   light  - the engine-side reconstruction and pre-smoothing that Ray
-//            Reconstruction replaces.
-//   medium - light plus every cost-free stabilizer, every engine-default floor,
-//            and the scene-lighting update factors that reduce work.
-//   high   - medium plus the sampling density that is visibly worth paying for:
-//            virtual-shadow ray counts and local resolution, the screen-probe
-//            octahedron lattice, the radiance-cache probe resolution, and the
-//            RR-friendly firefly/ghosting tolerances.
-//   full   - high plus the two maximum-sampling escalations: the screen-probe
-//            ray count and full-resolution short-range AO on UE 5.6+.
+//   light  - the engine-side reflection denoising that Ray Reconstruction
+//            replaces, handed over only while RR renders.
+//   medium - light plus every cost-free stabilizer and engine-default floor:
+//            full-resolution reflection tracing, the screen-probe history and
+//            its matching direction cycle, and full-resolution integration.
+//   high   - medium plus the paid quality that is visibly worth it: Epic's
+//            bilinear probe interpolation, faster surface-cache lighting
+//            updates, virtual-shadow ray counts and local resolution, the
+//            radiance-cache probe resolution, and the reflection firefly clamp.
+//   full   - high plus the maximum-sampling escalations: the Cinematic
+//            screen-probe octahedron (4x traces per probe), the radiance-cache
+//            probe budget, full-resolution MegaLights, and full-resolution
+//            short-range AO on UE 5.6+.
 //
 // The numeric values cross the shared-memory boundary (SharedGraphicsConfig), so
 // inserting a level renumbers `full` and requires a SHARED_MEMORY_VERSION bump.
@@ -268,7 +279,19 @@ struct ResolvedValue {
     // than an explicit custom entry: the install layer raises the game's value
     // to `bits` instead of overwriting it.
     bool floor = false;
+    // True for a preset RayReconstructionHandoff entry: `bits` is CE's value
+    // while RR renders, and the install layer passes the game's own value
+    // through otherwise (HandoffBits). Never set for an explicit custom entry.
+    bool handoff = false;
 };
+
+// The value a hand-off override holds. Until the game's own value is known
+// (nothing installed yet) the configured value is all there is; the install
+// layer re-applies this once it has observed the game's value.
+constexpr uint32_t HandoffBits(uint32_t configuredBits, bool rayReconstructionRendering, bool gameBitsKnown,
+                               uint32_t gameBits) noexcept {
+    return rayReconstructionRendering || !gameBitsKnown ? configuredBits : gameBits;
+}
 
 // The preset ladder is described above the kRayReconstructionPreset* values.
 // Each spec names the lowest preset that writes it; the comments mark the tier
@@ -276,25 +299,34 @@ struct ResolvedValue {
 inline constexpr std::array kSpecs{
     Spec{"r.NGX.DLSS.DenoiserMode", ValueType::Int32, Activation::RayReconstruction, 1.0},
     // light: the reconstruction pipeline NVIDIA's own RR enable path turns off,
-    // because RR is the denoiser for those signals.
+    // because RR is the denoiser for those signals. The bilateral filter stays
+    // a plain preset write rather than a hand-off: NVIDIA documents that UE
+    // 5.2/5.3 can assert on a later resolution change after it was changed at
+    // runtime, and a hand-off necessarily changes it while rendering. It is the
+    // last, spatial stage; without RR the temporal and screen-space stages
+    // below are handed back and still denoise.
     Spec{"r.Lumen.Reflections.BilateralFilter", ValueType::Int32,
          Activation::RayReconstructionLight, 0.0},
     Spec{"r.Lumen.Reflections.ScreenSpaceReconstruction", ValueType::Int32,
-         Activation::RayReconstructionLight, 0.0},
-    Spec{"r.Lumen.Reflections.Temporal", ValueType::Int32, Activation::RayReconstructionLight, 0.0},
+         Activation::RayReconstructionHandoff, 0.0},
+    Spec{"r.Lumen.Reflections.Temporal", ValueType::Int32, Activation::RayReconstructionHandoff, 0.0},
     Spec{"r.Lumen.Reflections.DownsampleFactor", ValueType::Int32,
          Activation::RayReconstructionMedium, 1.0},
     Spec{"r.Lumen.Reflections.DownsampleCheckerboard", ValueType::Int32,
          Activation::RayReconstructionFull, 0.0},
     Spec{"r.Lumen.Reflections.MaxRayIntensity", ValueType::Float,
          Activation::RayReconstructionHigh, 100.0},
-    // light, and a saving rather than a cost: stochastic interpolation is up to
-    // ~30% cheaper in the screen probe gather passes (AMD's UE performance
-    // guide) and is what an RR denoiser expects, where bilinear interpolation
-    // is pre-smoothed input. The spatial filter passes below absorb the extra
-    // per-frame noise.
+    // high, and the bilinear direction: the registered default is 1
+    // (stochastic, one probe of four), but UE's own Epic and Cinematic GI
+    // scalability set 0 and only High uses 1 (UE 5.4.4 BaseScalability). The
+    // stochastic pick is noisiest exactly where neighbouring probes disagree -
+    // thin geometry, foliage, mid-distance detail - which is the boiling RR
+    // keeps visible rather than smoothing away. Bilinear is up to ~30% more
+    // expensive in the gather passes for a title on High GI (AMD's UE
+    // performance guide), so it is a paid entry; light and medium leave the
+    // title's own choice alone.
     Spec{"r.Lumen.ScreenProbeGather.StochasticInterpolation", ValueType::Int32,
-         Activation::RayReconstructionLight, 1.0},
+         Activation::RayReconstructionHigh, 0.0},
     // medium: denoising and stabilization of what is already traced, no extra
     // tracing work.
     Spec{"r.Lumen.ScreenProbeGather.SpatialFilterProbes", ValueType::Int32,
@@ -316,21 +348,26 @@ inline constexpr std::array kSpecs{
          Activation::RayReconstructionMedium, 16.0, ApplyGuard::Always, ApplyMode::Floor},
     // Epic's own help couples this to MaxFramesAccumulated ("Should be tweaked
     // based on MaxFramesAccumulated"), so it is floored to the same value; a
-    // title already using a wider direction set keeps it. Unlike the frame count
-    // this one is paid every frame - it is the per-frame ray count of the screen
-    // probe trace - so it is the step that separates high from full.
+    // title already using a wider direction set keeps it. It is the length of
+    // the jitter cycle, not a ray count: the engine indexes the direction set
+    // with `FrameIndex % MaxRayDirections` (UE 5.4.4, default 8), so a longer
+    // cycle costs nothing per frame and belongs next to the history it fills.
     Spec{"r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections", ValueType::Int32,
-         Activation::RayReconstructionFull, 16.0, ApplyGuard::Always, ApplyMode::Floor},
-    // high: free, but they shift the noise-versus-ghosting balance, so they are
-    // not forced onto the cheap levels.
+         Activation::RayReconstructionMedium, 16.0, ApplyGuard::Always, ApplyMode::Floor},
+    // Not preset entries any more: both register as 0 (UE 5.4.4), so writing 0
+    // was a no-op on a stock engine and only ever overrode a title that turned
+    // them on deliberately - normal rejection exists to stop GI streaking
+    // around moving characters. Kept for `custom_cvar_overrides`.
     Spec{"r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal", ValueType::Int32,
-         Activation::RayReconstructionHigh, 0.0},
+         Activation::CustomOnly, 0.0},
     Spec{"r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp", ValueType::Int32,
-         Activation::RayReconstructionHigh, 0.0},
-    // high: refines the directional lattice the traced rays accumulate into. The
-    // engine clamps this to 16, so there is no headroom above the preset.
+         Activation::CustomOnly, 0.0},
+    // full: "Determines how many traces are done per probe" - resolution
+    // squared, so 8 -> 16 is four times the screen-probe trace count and the
+    // most expensive single entry. 8 is the registered and Epic value, 16 the
+    // Cinematic one and the engine's clamp ceiling.
     Spec{"r.Lumen.ScreenProbeGather.TracingOctahedronResolution", ValueType::Int32,
-         Activation::RayReconstructionHigh, 16.0},
+         Activation::RayReconstructionFull, 16.0},
     // full: a linear cost in probes updated per frame, and a responsiveness lever
     // rather than steady-state quality (Epic: "Higher values make lighting more
     // responsive but cost more"), so it is the paid tier's last step.
@@ -346,18 +383,26 @@ inline constexpr std::array kSpecs{
     // lowered it does not keep the lower-quality path.
     Spec{"r.Lumen.ScreenProbeGather.ShortRangeAO.ApplyDuringIntegration", ValueType::Int32,
          Activation::RayReconstructionMedium, 0.0},
-    // medium: radiosity is low frequency and the defaults re-derive it every few
-    // frames; updating a smaller share per frame only reduces work.
+    // medium: the registered default (UE 5.4.4), kept so a title that raised it
+    // does not keep its slower radiosity response.
     Spec{"r.LumenScene.Radiosity.Temporal.MaxFramesAccumulated", ValueType::Int32,
          Activation::RayReconstructionMedium, 4.0},
+    // high: a cost, not a saving. The engine updates SurfaceCacheTexels / Factor
+    // texels per frame with defaults of 64 (radiosity) and 32 (direct lighting),
+    // so 16 is four and two times the per-frame surface-cache update work. What
+    // it buys is responsiveness - surface-cache lighting that lags behind a
+    // moving or switched light is a temporal artifact RR cannot repair.
     Spec{"r.LumenScene.Radiosity.UpdateFactor", ValueType::Int32,
-         Activation::RayReconstructionMedium, 16.0},
+         Activation::RayReconstructionHigh, 16.0},
     Spec{"r.LumenScene.DirectLighting.UpdateFactor", ValueType::Int32,
-         Activation::RayReconstructionMedium, 16.0},
-    // high: virtual-shadow quality. RayCount is the penumbra sampling (the engine
-    // default is 8) and the negative local LOD bias doubles static local shadow
-    // map texels, while the positive moving bias takes half of them back for
-    // lights whose penumbra is temporary anyway.
+         Activation::RayReconstructionHigh, 16.0},
+    // high: virtual-shadow quality. RayCount is the penumbra sampling: it
+    // registers as 7, Epic shadow scalability uses 8 and Cinematic 16.
+    // SamplesPerRay 4 is the Epic value (registered 8, Cinematic 8). The
+    // negative local LOD bias doubles static local shadow-map texels; the
+    // moving bias registers as 1.0 (half resolution) and is blended back to the
+    // static bias once a light stops, so 0.5 gives moving lights about 1.4x the
+    // engine's moving resolution - a cost, paid where penumbrae move.
     Spec{"r.Shadow.Virtual.SMRT.RayCountDirectional", ValueType::Int32,
          Activation::RayReconstructionHigh, 12.0},
     Spec{"r.Shadow.Virtual.SMRT.SamplesPerRayDirectional", ValueType::Int32,
@@ -370,7 +415,13 @@ inline constexpr std::array kSpecs{
          Activation::RayReconstructionHigh, -0.5},
     Spec{"r.Shadow.Virtual.ResolutionLodBiasLocalMoving", ValueType::Float,
          Activation::RayReconstructionHigh, 0.5},
-    Spec{"r.MegaLights.DownsampleMode", ValueType::Int32, Activation::RayReconstructionMedium, 0.0},
+    // full: 0 is full-resolution sampling and tracing (UE 5.7+; 1 checkerboard,
+    // 2 half resolution). Epic names the downsampling as MegaLights' main
+    // performance control and the half-resolution path cuts importance
+    // evaluation to about a quarter, so this is a maximum-sampling escalation,
+    // not a default. UE 5.6 spells it r.MegaLights.DownsampleFactor (appended
+    // below).
+    Spec{"r.MegaLights.DownsampleMode", ValueType::Int32, Activation::RayReconstructionFull, 0.0},
     // UE quantises this to real sample tiers: the supported values are 2, 4 and
     // 16, and everything from 4 up to 16 builds the same 2x2 sample grid, so 8
     // executed as 4. Write the tier that is actually used; 16 is the next real
@@ -428,7 +479,7 @@ inline constexpr std::array kSpecs{
     Spec{"r.HDR.Display.MinLuminanceLog10", ValueType::Float, Activation::HdrMinLuminance, 0.0},
     Spec{"r.HDR.Display.ColorGamut", ValueType::Int32, Activation::HdrColorGamut, 0.0},
     // Kept at the end so every established positional index remains stable.
-    Spec{"r.SSR.Temporal", ValueType::Int32, Activation::RayReconstructionLight, 0.0},
+    Spec{"r.SSR.Temporal", ValueType::Int32, Activation::RayReconstructionHandoff, 0.0},
     // UE 5.6 moved short-range AO to half resolution with its own temporal
     // denoiser - faster, but it leaves half-resolution AO residuals that RR
     // preset F preserves instead of smoothing away. Full resolution restores
@@ -443,6 +494,16 @@ inline constexpr std::array kSpecs{
          Activation::RayReconstructionFull, 1.0},
     Spec{"r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal", ValueType::Int32,
          Activation::RayReconstructionFull, 1.0},
+    // medium: an engine-default restore. UE 5.6 added half-resolution
+    // integration of the screen-probe gather; 5.7 shipped it on by default,
+    // which Epic's Lumen developer called a noise regression, and 5.8 removed
+    // it from High scalability for "generating too much noise and softening
+    // normals". Titles built on early 5.7 still carry it. 1 is the default.
+    Spec{"r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor", ValueType::Int32,
+         Activation::RayReconstructionMedium, 1.0},
+    // full: the UE 5.6 spelling of full-resolution MegaLights (1 or 2), merged
+    // into r.MegaLights.DownsampleMode in 5.7. Each build has one of the two.
+    Spec{"r.MegaLights.DownsampleFactor", ValueType::Int32, Activation::RayReconstructionFull, 1.0},
 };
 
 inline constexpr std::size_t kDenoiserModeIndex = 0;
@@ -515,6 +576,7 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             enabled = settings.forceRayReconstruction;
             break;
         case Activation::RayReconstructionLight:
+        case Activation::RayReconstructionHandoff:
             enabled = settings.rayReconstructionOptimalSettings >= kRayReconstructionPresetLight;
             break;
         case Activation::RayReconstructionMedium:
@@ -600,11 +662,14 @@ inline ResolvedValue Resolve(const Spec& spec, const Settings& settings) noexcep
             enabled = IsHdrColorGamutRequested(settings.hdrColorGamut);
             value = enabled ? settings.hdrColorGamut : 0.0;
             break;
+        case Activation::CustomOnly:
+            break;
     }
     const std::size_t specIndex = FindSpecIndex(spec.name ? spec.name : "");
     if (specIndex < kSpecs.size() && (settings.customCVarOverrideMask & (uint64_t{1} << specIndex)))
-        return {true, settings.customCVarOverrideValues[specIndex], false};
-    return {enabled, ValueBits(spec.type, value), spec.mode == ApplyMode::Floor};
+        return {true, settings.customCVarOverrideValues[specIndex], false, false};
+    return {enabled, ValueBits(spec.type, value), spec.mode == ApplyMode::Floor,
+            enabled && spec.activation == Activation::RayReconstructionHandoff};
 }
 
 inline bool AnyEnabled(const Settings& settings) noexcept {

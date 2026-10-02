@@ -4,6 +4,16 @@
 
 Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6941).
 
+### Improved
+
+- **UE5 Ray Reconstruction preset no longer causes foliage shimmer:** `high` and `full` now use the smooth (bilinear) Lumen screen-probe interpolation that UE's own Epic and Cinematic quality use. Before, every level forced the cheaper stochastic one, which shows as boiling on foliage in shade and on thin detail further away. `medium` and up also undo UE 5.7's noisy half-resolution GI integration (`r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=1`).
+
+- **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
+
+### Fixed
+
+- **UE5 RR preset left reflections noisy without Ray Reconstruction:** under TSR, plain DLSS SR, an RR fallback, or after RR was turned off in a game's menu, the preset still switched off Lumen's reflection denoising. Those settings now follow whether RR is actually rendering and hand the game its own values back the moment it stops. The log says `UE5 overrides: Ray Reconstruction is rendering` / `stopped rendering`.
+
 ## v0.1.6941
 
 Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6868).

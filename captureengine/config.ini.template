@@ -660,27 +660,29 @@ force_ray_reconstruction=off
 ; every setting which costs no GPU time available without the settings that do.
 ; light applies:
 ; r.Lumen.Reflections.BilateralFilter=0
-; r.Lumen.Reflections.ScreenSpaceReconstruction=0
-; r.Lumen.Reflections.Temporal=0
-; r.SSR.Temporal=0
-; r.Lumen.ScreenProbeGather.StochasticInterpolation=1
+; r.Lumen.Reflections.ScreenSpaceReconstruction=0 (only while RR renders)
+; r.Lumen.Reflections.Temporal=0 (only while RR renders)
+; r.SSR.Temporal=0 (only while RR renders)
+; The three entries marked "only while RR renders" hold CE's value only while
+; DLSS Ray Reconstruction is actually being evaluated; under TSR, plain DLSS SR
+; or an RR fallback the game's own value is passed through, so reflections are
+; never left without a denoiser.
 ; medium applies all light settings and additionally:
 ; r.Lumen.Reflections.DownsampleFactor=1
 ; r.Lumen.ScreenProbeGather.SpatialFilterProbes=1
 ; r.Lumen.ScreenProbeGather.SpatialFilterNumPasses=3
 ; r.Lumen.ScreenProbeGather.Temporal.MaxFramesAccumulated=16
+; r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections=16
+; r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=1
 ; r.Lumen.ScreenProbeGather.ShortRangeAO.ApplyDuringIntegration=0
 ; r.LumenScene.Radiosity.Temporal.MaxFramesAccumulated=4
-; r.LumenScene.Radiosity.UpdateFactor=16
-; r.LumenScene.DirectLighting.UpdateFactor=16
-; r.MegaLights.DownsampleMode=0
 ; r.MegaLights.NumSamplesPerPixel=4
 ; high applies all medium settings and additionally:
 ; r.Lumen.Reflections.MaxRayIntensity=100
-; r.Lumen.ScreenProbeGather.Temporal.RejectBasedOnNormal=0
-; r.Lumen.ScreenProbeGather.Temporal.FastUpdateModeUseNeighborhoodClamp=0
-; r.Lumen.ScreenProbeGather.TracingOctahedronResolution=16
+; r.Lumen.ScreenProbeGather.StochasticInterpolation=0
 ; r.Lumen.ScreenProbeGather.RadianceCache.ProbeResolution=32
+; r.LumenScene.Radiosity.UpdateFactor=16
+; r.LumenScene.DirectLighting.UpdateFactor=16
 ; r.Shadow.Virtual.SMRT.RayCountDirectional=12
 ; r.Shadow.Virtual.SMRT.SamplesPerRayDirectional=4
 ; r.Shadow.Virtual.SMRT.RayCountLocal=12
@@ -689,24 +691,26 @@ force_ray_reconstruction=off
 ; r.Shadow.Virtual.ResolutionLodBiasLocalMoving=0.5
 ; full applies all high settings and additionally:
 ; r.Lumen.Reflections.DownsampleCheckerboard=0
-; r.Lumen.ScreenProbeGather.Temporal.MaxRayDirections=16
+; r.Lumen.ScreenProbeGather.TracingOctahedronResolution=16
 ; r.Lumen.ScreenProbeGather.RadianceCache.NumProbesToTraceBudget=600
 ; r.Lumen.ScreenProbeGather.ShortRangeAO.DownsampleFactor=1
 ; r.Lumen.ScreenProbeGather.ShortRangeAO.Temporal=1
-; high and full share the visible virtual-shadow and radiance-cache quality; full
-; adds the maximum screen-probe ray count and full-resolution short-range AO,
-; which are the two settings that cost the most GPU time per visible gain.
+; r.MegaLights.DownsampleMode=0
+; r.MegaLights.DownsampleFactor=1
+; medium costs no GPU time over the engine defaults. high pays for Epic's bilinear
+; screen-probe interpolation (UE's Epic and Cinematic GI quality use it; only High
+; uses the noisier stochastic pick, which shows as shimmer on foliage and thin
+; detail), faster surface-cache lighting updates and sharper virtual shadows. full
+; adds the most expensive steps: four times the traces per screen probe, the
+; radiance-cache probe budget, full-resolution MegaLights and short-range AO.
 ; CVars a build does not have are logged and skipped, so this list is shared
-; across engine versions: ShortRangeAO.DownsampleFactor/Temporal and
-; Reflections.DownsampleCheckerboard need UE 5.6+, MegaLights.DownsampleMode
+; across engine versions: IntegrateDownsampleFactor, ShortRangeAO.DownsampleFactor/
+; Temporal, Reflections.DownsampleCheckerboard and MegaLights.DownsampleFactor
+; need UE 5.6+ (MegaLights.DownsampleFactor is 5.6 only), MegaLights.DownsampleMode
 ; needs UE 5.7+. MegaLights quantizes its sample count to 2, 4 or 16; 4 is the
 ; engine default tier. MaxFramesAccumulated and MaxRayDirections are minimums
 ; rather than fixed values, so a game that already keeps a longer probe history
 ; keeps it while shorter histories are raised.
-; StochasticInterpolation=1 is the cheaper path (up to about 30% in the screen
-; probe gather passes per AMD's UE performance guide) and the one a ray
-; reconstruction denoiser expects; Lumen's own temporal and spatial filters
-; absorb the extra per-frame noise even without RR.
 ; The legacy value on remains accepted as an alias for full.
 ray_reconstruction_optimal_settings=off
 ;

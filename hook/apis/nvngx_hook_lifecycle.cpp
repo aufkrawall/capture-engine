@@ -1,5 +1,7 @@
 #include "nvngx_hook_internal.h"
 
+#include "../common/rr_handoff_gate.h"
+
 namespace {
 
 bool IsTrackedUpscalerFeature(int featureID) {
@@ -13,6 +15,12 @@ bool IsFrameGenerationFeature(int featureID) {
 }
 
 void PublishEvaluatedFeature(int featureID, bool firstEvaluation) {
+    // Evidence for the UE5 reflection-denoiser hand-off, independent of the IPC
+    // channel the published state below needs.
+    if (featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction)
+        ce::rr_handoff::g_rayReconstructionEvaluations.fetch_add(1, std::memory_order_release);
+    else if (featureID == 1)
+        ce::rr_handoff::g_superResolutionEvaluations.fetch_add(1, std::memory_order_release);
     if (!g_IPC || !g_IPC->GetSharedMem())
         return;
 

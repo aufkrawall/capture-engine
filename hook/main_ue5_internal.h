@@ -188,6 +188,15 @@ extern std::array<std::atomic<ForcedConsoleVariableData*>, kCVarCount> g_forcedD
 extern std::array<OverrideState, kCVarCount> g_overrides;
 extern std::array<ce::ue5_cvar::ResolvedValue, kCVarCount> g_desired;
 extern bool g_missingSummaryLogged;
+// Ray Reconstruction hand-off state (`ResolvedValue::handoff` entries), owned
+// by the hook thread like the rest of this block. `g_desired[i].bits` always
+// holds the value in force; the configured value and the game's own value are
+// kept beside it so a gate transition can switch between them without a
+// reinstall.
+extern bool g_rayReconstructionRendering;
+extern std::array<uint32_t, kCVarCount> g_handoffConfiguredBits;
+extern std::array<uint32_t, kCVarCount> g_handoffGameBits;
+extern std::array<bool, kCVarCount> g_handoffGameBitsKnown;
 
 bool IsReadableRange(const void* pointer, std::size_t size);
 bool IsWritableRange(const void* pointer, std::size_t size);
@@ -211,6 +220,7 @@ void UpdateForcedData(std::size_t specIndex, uint32_t bits);
 // Applies an `ApplyMode::Floor` spec's minimum to the value the title currently
 // holds and records the result as the desired value, so verification,
 // re-assertion, and later settings changes all agree on the effective value.
+// A hand-off spec records the title's value and holds it until RR renders.
 // Set specs are returned unchanged.
 uint32_t ResolveEffectiveBits(std::size_t specIndex, uint32_t observedBits);
 // Process-lifetime shadow storage for one override, allocated on first use.

@@ -78,14 +78,15 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   values retain profile precedence over globals. It does not change Engine.ini, add absent RR inputs, or falsify
   runtime capability/support results.
 - `[UE5] ray_reconstruction_optimal_settings=off|light|medium|high|full` applies a strict cost-ranked ladder of
-  quality bundles. `light` disables the Lumen reflection bilateral/screen-space/temporal reconstruction, SSR temporal
-  accumulation and the bilinear screen-probe interpolation that RR replaces (`StochasticInterpolation=1`, also the
-  cheaper path); `medium` also sets the Lumen reflection downsample factor to 1 and adds every cost-free stabilizer
-  and engine-default floor (screen-probe history, spatial filter passes, scene-lighting update factors, the MegaLights
-  tiers); `high` adds the paid sampling density that is visibly worth it (virtual-shadow ray counts and local LOD
-  bias, the engine-clamped 16-wide octahedron lattice, the radiance-cache probe resolution, the RR firefly/ghosting
-  tolerances); `full` adds the maximum screen-probe ray count, the radiance-cache probe budget, and full-resolution
-  short-range AO on UE 5.6+ (`ShortRangeAO.DownsampleFactor=1`, `ShortRangeAO.Temporal=1`).
+  quality bundles. `light` hands the Lumen reflection screen-space/temporal reconstruction and SSR temporal
+  accumulation to RR *only while RR is evaluated* (the game's own values pass through otherwise) and disables the
+  reflection bilateral filter; `medium` also sets the Lumen reflection downsample factor to 1 and adds every
+  cost-free stabilizer and engine-default floor (screen-probe history and its direction cycle, full-resolution
+  integration, spatial filter passes, the MegaLights sample tier); `high` adds Epic's bilinear screen-probe
+  interpolation (`StochasticInterpolation=0`), faster surface-cache lighting updates, virtual-shadow ray counts and
+  local LOD bias, the radiance-cache probe resolution and the reflection firefly clamp; `full` adds the Cinematic
+  16-wide octahedron (4x traces per probe), the radiance-cache probe budget, full-resolution MegaLights and
+  full-resolution short-range AO on UE 5.6+. Details and evidence: `ue5-cvar-overrides.md`.
   `Temporal.MaxFramesAccumulated` and `MaxRayDirections` are floors, so a game-tuned longer history or a wider
   direction set is kept. It does not include `r.NGX.DLSS.DenoiserMode` or imply the independent force policy, and
   legacy `on`/Boolean-true inputs remain compatibility aliases for `full`. Missing CVars are logged and skipped;

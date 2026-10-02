@@ -1,20 +1,20 @@
 # UE5 CVar Overrides
 
-Last cross-checked: 2026-09-10
+Last cross-checked: 2026-10-02
 
 Process-local, persistent overrides of Unreal Engine console variables in an injected x64 game: how CE finds a CVar's
 value storage, which layouts it accepts, what it refuses, and every setting the `[UE5]` config section ships. Split
 out of `graphics-overrides-and-frame-pacing.md` on 2026-08-21, which had reached the file-size ceiling.
 
 Primary sources:
-- `hook/common/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h}`
+- `hook/common/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h,rr_handoff_gate.h}`
 - `hook/main_ue5.cpp` (policy/lifecycle/service pass), `hook/main_ue5_scan.cpp` (literal + candidate discovery),
   `hook/main_ue5_install.cpp` (install, refresh, read-back verification, restore), `hook/main_ue5_layout.cpp`
   (layout classification and console-object install), `hook/main_ue5_memory.cpp` (process-memory/PE primitives),
   `hook/main_ue5_registry.cpp` (resolution through UE's console-object map)
 - `common/config_load_ue5.cpp`, `common/config.h`, `common/shared_defs_detail/abi_constants_and_config.h`
 - `captureengine/config.ini.template` (the user-facing contract for every key)
-- `tests/{test_ue5_cvar_override_policy,test_ue5_console_layout,test_ue5_console_registry,test_ue5_rr_override_policy,test_config_ue5}.cpp`
+- `tests/{test_ue5_cvar_override_policy,test_ue5_rr_handoff,test_ue5_console_layout,test_ue5_console_registry,test_ue5_rr_override_policy,test_config_ue5}.cpp`
 
 ## Persistent UE5 CVar override policy
 
@@ -332,9 +332,9 @@ mode is a visibly broken frame in the user's game.
 
 - `ray_reconstruction_optimal_settings` is a nested preset, `off|light|medium|high|full` since 2026-09-10 (the last
   section of this page carries the cost rationale and the per-level contents). `light` writes
-  `r.Lumen.Reflections.BilateralFilter=0`, `ScreenSpaceReconstruction=0`, `Temporal=0`, `r.SSR.Temporal=0` and
-  `r.Lumen.ScreenProbeGather.StochasticInterpolation=1`; `medium` adds `r.Lumen.Reflections.DownsampleFactor=1` plus
-  every cost-free stabilizer and engine-default floor; `high` and `full` add the paid sampling density in two graded
+  `r.Lumen.Reflections.BilateralFilter=0` and hands `ScreenSpaceReconstruction=0`, `Temporal=0` and `r.SSR.Temporal=0`
+  to RR only while RR is evaluated (see the hand-off section); `medium` adds `r.Lumen.Reflections.DownsampleFactor=1`
+  plus every cost-free stabilizer and engine-default floor; `high` and `full` add the paid quality in two graded
   steps. The old `on`/true spellings remain aliases for `full` so existing profiles retain their quality settings.
 - The preset never selects `r.NGX.DLSS.DenoiserMode`. Its dedicated named control is
   `force_ray_reconstruction=on`, preserving the distinction between tuning renderer inputs and selecting the NVIDIA
@@ -361,14 +361,15 @@ mode is a visibly broken frame in the user's game.
 - **`r.MegaLights.NumSamplesPerPixel` is 4, not 8.** The engine quantizes the setting to real tiers - 2, 4 and 16
   (ARM's MegaLights article and Epic's Tokyo DevDays 26 deck show only those), and every value from 4 up to 16 builds
   the same 2x2 sample grid, so the former 8 executed as 4. 16 is the next real tier and multiplies the tracing cost;
-  `r.MegaLights.DownsampleMode=0`, where the literal exists (UE 5.7+), already quadruples the ray count.
+  `r.MegaLights.DownsampleMode=0` (UE 5.7+; `r.MegaLights.DownsampleFactor=1` on 5.6) already quadruples the ray
+  count, which is why both sit in `full`.
 - **`r.Shadow.Denoiser` is deliberately not in the bundle.** NVIDIA's `UDLSSLibrary::EnableDLSSRR()` sets it to 0
   together with the three Lumen reflection CVars, but only on an actual enable transition with DLSS-SR enabled; UE
   5.6/5.7 register the CVar with an actual default of 2 (its help text still says "0: Disabled (default)"), and
-  forcing 0 while RR is not provably active exposes raw ray-traced shadow masks. The `light` preset already writes the
+  forcing 0 while RR is not provably active exposes raw ray-traced shadow masks. The `light` preset writes the
   three Lumen reflection CVars itself, so pre-setting `r.NGX.DLSS.DenoiserMode=1` cannot leave those unset even when
-  the plugin's own transaction early-returns. If it is ever added, the correct mechanism is an RR-state-gated enable
-  with restore, not a persistent write.
+  the plugin's own transaction early-returns. If it is ever added, it belongs in the RR hand-off described below,
+  not in a persistent write.
 - Parsing occurs at the host config boundary. ABI 45 transports only a 64-bit spec mask and 64 raw values whose
   types were already validated; the injected hook does not parse an untrusted expression. `kSpecs` is statically
   capped at that capacity. `SharedGraphicsConfig` grows from 420 to 688 bytes, and all mapping/event names move with
@@ -464,83 +465,88 @@ redirect. Configuration lives in `[UE5]` and is parsed by `common/config_load_ue
   tags buffer type 68 on its RR evaluation - if it does, the mask is game-side tuning and nothing needs injecting.
   Unverified in-game.
 
-## Cost-ranked RR preset ladder with a new `high` level (2026-09-10)
+## Cost-ranked RR preset ladder (2026-09-10, re-tiered against engine source 2026-10-02)
 
-The measured 10-15% frame-time delta between `medium` and `full` was attributed to the wrong settings: the bundle
-mixed three kinds of entry and only one kind is what the delta is made of. The levels are now ranked by cost, and
-every entry is classified explicitly:
+The 2026-09-10 ladder classified entries by reading CVar help text; on 2026-10-02 every classified entry was checked
+against UE 5.4.4 source (registered defaults, the code that consumes the value, `BaseScalability.ini` tiers via the
+indxzero UE 5.4.4 CVar wiki), Epic's Lumen/VSM/MegaLights documentation, Epic's Lumen developer on the forum, and
+Tom Looman's 5.6/5.7/5.8 release digests. Four classifications were wrong and are corrected here.
 
-- **history-only, free** (memory, not GPU time): `Temporal.MaxFramesAccumulated` floored to 16,
-  `Temporal.RejectBasedOnNormal=0`, `Temporal.FastUpdateModeUseNeighborhoodClamp=0`, the two spatial filter entries.
-- **already engine defaults, no-ops, or work-reducing**: `MegaLights.NumSamplesPerPixel=4` (the real tier; 8
-  executes as 4), `MegaLights.DownsampleMode=0`, `ShortRangeAO.ApplyDuringIntegration=0`, `ShortRangeAO.Temporal=1`
-  (5.6 default), `Reflections.MaxRayIntensity=100` (registered default), `Reflections.DownsampleCheckerboard=0`
-  (default, and inert while `DownsampleFactor=1`), and both `LumenScene` update factors, which *save* work.
-- **paid sampling density**: the screen-probe ray count (`Temporal.MaxRayDirections`, roughly 2x the trace cost
-  against the engine default of 8), `TracingOctahedronResolution` (the engine clamps it at 16, so `full` is already
-  at the ceiling), the radiance-cache `ProbeResolution`/`NumProbesToTraceBudget`, the SMRT ray counts and
-  `ResolutionLodBiasLocal`, and, on 5.6+, full-resolution short-range AO.
+| Entry | Engine fact | Tier |
+| --- | --- | --- |
+| `LumenScene.Radiosity/DirectLighting.UpdateFactor=16` | texels per frame = `SurfaceCacheTexels / Factor`, defaults 64 / 32 | `high` (4x / 2x the update work, was mis-filed as "saves work"; buys lighting responsiveness) |
+| `ScreenProbeGather.Temporal.MaxRayDirections` floor 16 | `FrameIndex % Clamp(N,1,128)`, default 8: a jitter cycle | `medium` (free; was mis-filed as the per-frame ray count) |
+| `ScreenProbeGather.TracingOctahedronResolution=16` | "how many traces are done per probe", res^2; default 8, clamp 4-16; Epic 8, Cinematic 16 | `full` (4x traces per probe, the costliest single entry) |
+| `MegaLights.DownsampleMode=0` (5.7+) / `DownsampleFactor=1` (5.6) | 0 = full res, 1 checkerboard, 2 half; half res cuts importance evaluation to ~1/4 | `full` (was mis-filed as free) |
+| `ScreenProbeGather.StochasticInterpolation=0` | registered 1, but `GlobalIlluminationQuality@3` (Epic) and `@Cine` set 0; only High uses 1 | `high` (was `light` writing **1**, which downgraded every Epic-GI title) |
+| `ScreenProbeGather.IntegrateDownsampleFactor=1` (5.6+) | default 1; 5.7 shipped 2, which Epic's Lumen developer called "a noise regression"; 5.8 removed it from High ("too much noise and softening normals") | `medium` (engine-default restore) |
+| `Temporal.RejectBasedOnNormal`, `FastUpdateModeUseNeighborhoodClamp` | both register as 0 | custom-only (`Activation::CustomOnly`); as preset writes they were no-ops or overrode a deliberate title fix |
+| `SMRT.RayCount*=12`, `SamplesPerRay*=4` | registered 7 / 8; Epic shadow tier 8 / 4; Cinematic 16 / 8 | `high` unchanged; 4 samples is Epic's value, not a halving |
+| `ResolutionLodBiasLocalMoving=0.5` | default 1.0, blended back to the static bias as the light stops | `high` unchanged; ~1.4x moving-light resolution, a cost |
 
-Level contents (strict ladder, `on` still aliases `full`): `light` = the reconstruction and pre-smoothing RR
-replaces (`BilateralFilter`, `ScreenSpaceReconstruction`, `Reflections.Temporal`, `SSR.Temporal`, and
-`StochasticInterpolation=1`); `medium` = light + full-resolution reflection tracing + every free, default, or
-work-reducing entry above; `high` = medium + the paid density that is visibly worth it (VSM ray counts and local LOD
-bias, the octahedron lattice, radiance-cache `ProbeResolution`, the RR firefly/ghosting tolerances); `full` = high +
-the two maximum-sampling escalations (`Temporal.MaxRayDirections` floor 16, radiance-cache probe budget 600,
-short-range AO at full resolution).
+Level contents (strict ladder, `on` still aliases `full`), counted by `Resolve()` (4/13/24/31):
+- `light`: `Reflections.BilateralFilter=0` plus the three hand-off entries below.
+- `medium`: reflection `DownsampleFactor=1`, both spatial-filter entries, the two screen-probe history floors,
+  `IntegrateDownsampleFactor=1`, `ShortRangeAO.ApplyDuringIntegration=0`, radiosity history 4 (registered default),
+  `MegaLights.NumSamplesPerPixel=4`.
+- `high`: `MaxRayIntensity=100`, `StochasticInterpolation=0`, radiance-cache `ProbeResolution=32`, both update
+  factors, the four SMRT entries, both local LOD biases.
+- `full`: the octahedron, `NumProbesToTraceBudget=600`, both MegaLights spellings, full-resolution short-range AO,
+  and the inert `DownsampleCheckerboard=0`.
 
-- **`r.Lumen.ScreenProbeGather.StochasticInterpolation` was the one genuinely reversed entry.** The bundle wrote `0`
-  (bilinear, 4-sample) while AMD's UE performance guide measures up to ~30% faster screen probe gather passes at `1`
-  (1-sample stochastic) with no perceptible difference in most content, and Epic's own High scalability uses `1`. A
-  stochastic signal is also what an RR denoiser expects - bilinear interpolation is pre-smoothed input - so `light`
-  and up now write `1`, with `SpatialFilterNumPasses=3` left on to absorb the extra per-frame noise.
-  - What this can and cannot affect, since "cheaper" here is paid in per-frame variance: the change is in the final
-    gather's diffuse-indirect fetch (`LumenScreenProbeGather/SupportImportanceSampleBRDF`), so the added variance is
-    proportional to how much the four nearest screen probes differ at that pixel - near the camera they are usually
-    on the same surface, while mid-distance detail, probe-grid boundaries, thin geometry and disocclusions are where
-    it shows. It cannot touch the dedicated full-resolution short-range AO pass (`ShortRangeAO.*`), which has its own
-    screen/HWRT trace and its own temporal filter, so contact-area AO boiling is not this entry.
-  - The escape hatch is one CVar and needs no rebuild:
-    `custom_cvar_overrides=r.Lumen.ScreenProbeGather.StochasticInterpolation=0` restores the pre-2026-09-10 `full`
-    behaviour exactly. Counter-intuitively it is the *more expensive* direction, so reverting it gives back the
-    original 10-15% question rather than a cheaper frame.
-  - The counter-pressure that suppresses boiling is already in the same levels: the 16-frame history floor, the
-    disabled normal rejection and disabled neighbourhood clamp (both at `high` and up) keep far more history alive
-    than the engine default, and RR's own temporal reconstruction consumes the stochastic signal. The failure mode
-    to watch for instead is *ghosting* on moving geometry, which is the same tolerances working as intended. Open
-    question: no in-game A/B has been run, and RR preset F (2nd-gen transformer, detail-preserving) is expected to
-    keep per-frame variance visible longer than preset E, so a shimmer report with F should first be re-tested on E.
-- **Which paid entries actually cost anything is title-dependent, so the classification above is per-CVar, not
-  global.** `RadianceCache.ProbeResolution` registers at 32 but UE's own scalability lowers it at reduced GI quality
-  (measured: 16), so raising it is a real cost step there and a no-op elsewhere; `NumProbesToTraceBudget` is a
-  *responsiveness* lever (Epic: "Higher values make lighting more responsive but cost more") rather than steady-state
-  quality, which is why it stayed in `full`. Defaults were checked per CVar against Unreal Directive, AMD's UE
-  performance guide, Epic's Lumen Performance Guide and ArtStation's UE5.5+ cinematic tool notes, and the wrong
-  reading of a default was what had made `r.MegaLights.NumSamplesPerPixel=8` look harmless.
-- **The reflection-density saving is documented as an opt-in, not applied as a default.**
-  `r.Lumen.Reflections.DownsampleCheckerboard` only does anything when `DownsampleFactor > 1` (5.6+, default 0), so
-  the preset's `=0` write is inert while the presets pin `DownsampleFactor=1` - i.e. one ray per pixel, the most
-  expensive tracing density UE offers. Epic documents `factor 2 + checkerboard 1` as the middle ground (one ray per
-  two pixels) and `factor 2` alone as one ray per quad, and RR is built to reconstruct such signals. The config
-  template now carries it as a `custom_cvar_overrides` example; it is not a preset default because the visible risk
-  (softer, less stable reflections, and worse without RR) has not been A/B'd in a title yet.
-- **`medium` and up keep `DownsampleFactor=1` on purpose.** `light` disables the Lumen reflection reconstruction that
-  makes low-resolution traces presentable, so lowering the density is only safe together with RR - which is exactly
-  the configuration the opt-in example targets.
-- **Inserting a level renumbers the shared-memory preset byte** (`off=0, light=1, medium=2, high=3, full=4`) because
-  the hook compares `>=` against it. A pre-58 hook would read a new host's `3` as `full`, and a 58 hook would read a
-  pre-58 host's `3` (`full`) as `high`, so `SHARED_MEMORY_VERSION` moved 57 -> 58 together with the hardcoded
-  `SHARED_MEM_BASE_NAME` / `SHARED_MEM_DISCOVERY` literals
-  (`SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting` pins all of them).
-  `RayReconstructionPresetName()` plus
-  `UE5CVarOverridePolicyTest.PresetValuesAndNamesAreAStableAbiContract` pin the mapping and the diagnostic name now
-  printed by `UE5 overrides enabled: ... rrOptimal=%d(%s)`.
-- **Tier membership is ratcheted** by
-  `UE5CVarOverridePolicyTest.RayReconstructionSettingsLevelsAreNestedWithoutSelectingDenoiserMode`, which asserts the
-  enabled count per level (5/15/26/31 excluding the denoiser) plus per-entry membership of the paid axes, so a later
-  edit cannot silently move a paid setting into a cheap tier or a free one out of `medium`.
-- Open question, unmeasured: whether `high`'s `TracingOctahedronResolution=16` at the engine default ray count and
-  `full`'s doubled ray count are separable in practice. The evidence for the coupling is the CVar help text ("Number
-  of possible random directions per pixel. Should be tweaked based on MaxFramesAccumulated") and the arithmetic that
-  16 directions x 16 accumulated frames covers a 16x16 octahedron once, but the shader was not read; if the lattice
-  resolution turns out to be the real per-frame cost, `high` and `full` should swap that entry.
+Pinned by `UE5CVarOverridePolicyTest.RayReconstructionSettingsLevelsAreNestedWithoutSelectingDenoiserMode` (counts
+and per-entry membership) and `UE5RayReconstructionHandoffPolicyTest.PaidEntriesSitInPaidTiers` (lowest preset and
+value of every reclassified entry). Inserting a level still renumbers the shared-memory preset byte
+(`off=0 .. full=4`, `PresetValuesAndNamesAreAStableAbiContract`); changing tiers or appending specs does not, and
+needs no `SHARED_MEMORY_VERSION` bump (same precedent as the 2026-09-10 short-range-AO append).
+
+- **`StochasticInterpolation` and foliage.** The stochastic pick takes one of the four nearest screen probes per
+  pixel, so its variance tracks how much those probes disagree: thin geometry, foliage and mid-distance detail, i.e.
+  "foliage in shade boils, worse further away". Lumen's own temporal filter absorbs some of it; RR (preset F
+  especially) keeps per-frame variance visible. Bilinear is up to ~30% more expensive in the gather passes for a
+  title on High GI (AMD's UE guide) and costs nothing extra for one already on Epic. Escape hatch:
+  `custom_cvar_overrides=r.Lumen.ScreenProbeGather.StochasticInterpolation=1`.
+- **The `MaxFramesAccumulated` floor of 16 stays**, deliberately: the help text states the trade ("Lower values ...
+  propagate lighting changes faster, but also increase flickering from noise"), Talos ships 25, and no A/B shows the
+  extra lag outweighing the stability. It is a trade, not a free win.
+- **Reflection checkerboard opt-in unchanged.** `DownsampleCheckerboard` only acts when `DownsampleFactor > 1`; the
+  presets pin factor 1, and the config template keeps `factor 2 + checkerboard 1` as an RR-only custom example.
+- Other far-foliage noise sources CE does not address yet (all evidence, none validated in a title): hardware RT
+  ignores World Position Offset by default and evaluates it only within 50 m when enabled
+  (`r.RayTracing.Geometry.StaticMeshes.WPO.CullingRadius`, NVIDIA UE5 RT guideline), so swaying foliage and its traced
+  proxy disagree; `r.RayTracing.Culling.*` drops small distant instances; WPO invalidates VSM cached pages every frame
+  (Epic VSM docs); 5.8 adds `r.MegaLights.DistantScreenTraces.Length`, `r.MegaLights.ScreenTraces.Quality`,
+  `r.MegaLights.HardwareRayTracing.FarField` and experimental `r.Shadow.Virtual.PrefilteredDistant.*`. Attribute a
+  report first by toggling short-range AO, MegaLights and the interpolation one at a time in the game's console.
+
+## RR-gated reflection-denoiser hand-off (2026-10-02)
+
+The `light` entries `Reflections.ScreenSpaceReconstruction`, `Reflections.Temporal` and `SSR.Temporal` are
+`Activation::RayReconstructionHandoff`: installed from `light` upward like any entry, but holding CE's `0` only while
+DLSS RR is demonstrably rendering, and the game's own value otherwise. Before, the preset wrote them unconditionally,
+so TSR, plain DLSS SR, an RR->SR fallback, or RR switched off in a game menu left raw, undenoised reflections.
+
+- **Evidence:** `ce::rr_handoff::Gate` (`hook/common/rr_handoff_gate.h`) samples monotonic counters bumped by every
+  successful NGX Feature 13 / Feature 1 evaluation (`nvngx_hook_lifecycle.cpp`) and Streamline `kFeatureDLSS_RR` /
+  `kFeatureDLSS` (2.x) and DLSS (1.x) evaluation, plus `DXGIShared::g_PresentCallCounter`. Any RR evaluation in a
+  window = rendering (so RR-on-one-view/SR-on-another never flaps); SR only = not rendering; none = not rendering
+  once 120 presented frames passed without an upscaler (TSR or DLSS off). A game presenting nothing keeps its verdict.
+- **Mechanism:** a transition is a value write into the already-installed shadow (`ServiceRayReconstructionHandoff`
+  in `main_ue5.cpp`, every hook-thread tick) - no rescan, no pointer churn. The game's value is recorded at install
+  (`ResolveEffectiveBits`) and refreshed by verification: a game write while RR renders is recorded and re-asserted,
+  a game write while RR is not rendering is adopted (NVIDIA's plugin flips exactly these CVars in its RR enable and
+  disable paths). Custom entries are exact and never handed off.
+- **Latency:** up to one service tick (~100 ms). RR starting: the engine's reflection denoisers stay on for those
+  frames (double denoising, harmless). RR stopping: those frames keep the temporal/screen-space stages off.
+- **The bilateral filter is not handed off.** NVIDIA documents that on UE 5.2/5.3 changing
+  `r.Lumen.Reflections.BilateralFilter` at runtime can assert on a later resolution change, and a hand-off always
+  changes it while rendering. It stays a plain `light` write; without RR only this last spatial stage is missing.
+- **Diagnostics:** `UE5 overrides: Ray Reconstruction is rendering|stopped rendering (evaluations rr=.. sr=..,
+  presents without an upscaler=..); N reflection denoiser CVar(s) handed to RR|handed back to the game` (capped at
+  32, only when hand-off entries are enabled) and `... set to 0x.. by the game while Ray Reconstruction is not
+  rendering; passing the game's value through` (capped at 16).
+- **Tests:** `tests/test_ue5_rr_handoff.cpp` (gate transitions, interleaving, absence threshold, backwards counter,
+  hand-off membership, custom precedence, `HandoffBits`).
+- **Open / stale-risk:** no hardware run yet. Streamline-only titles that switch DLSS off entirely rely on the
+  present-count absence rule; Vulkan titles have no DXGI present count, so there a full DLSS-off keeps the last
+  verdict until an SR evaluation arrives.

@@ -1,5 +1,7 @@
 #include "main_ue5_internal.h"
 
+#include "common/rr_handoff_gate.h"
+
 namespace UE5 {
 namespace detail {
 
@@ -12,6 +14,10 @@ std::array<std::atomic<ForcedConsoleVariableData*>, kCVarCount> g_forcedData{};
 std::array<OverrideState, kCVarCount> g_overrides{};
 std::array<ce::ue5_cvar::ResolvedValue, kCVarCount> g_desired{};
 bool g_missingSummaryLogged = false;
+bool g_rayReconstructionRendering = false;
+std::array<uint32_t, kCVarCount> g_handoffConfiguredBits{};
+std::array<uint32_t, kCVarCount> g_handoffGameBits{};
+std::array<bool, kCVarCount> g_handoffGameBitsKnown{};
 
 }  // namespace detail
 namespace {
@@ -19,6 +25,9 @@ namespace {
 std::atomic<bool> g_policyRequested{false};
 ce::ue5_cvar::Settings g_settings{};
 bool g_wasEnabled = false;
+#ifdef _WIN64
+ce::rr_handoff::Gate g_rayReconstructionGate;
+#endif
 
 ce::ue5_cvar::Settings MakeSettings(const GraphicsConfig& config) {
   return {
@@ -88,6 +97,12 @@ void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
       resolved.bits = ce::ue5_cvar::MaxBits(ce::ue5_cvar::kSpecs[index].type, resolved.bits,
                                             detail::g_desired[index].bits);
     }
+    if (resolved.handoff) {
+      detail::g_handoffConfiguredBits[index] = resolved.bits;
+      resolved.bits = ce::ue5_cvar::HandoffBits(resolved.bits, detail::g_rayReconstructionRendering,
+                                                detail::g_handoffGameBitsKnown[index],
+                                                detail::g_handoffGameBits[index]);
+    }
     if (detail::g_desired[index].enabled && !resolved.enabled)
       detail::RestoreOverride(index, "configuration disabled");
     if (!detail::g_desired[index].enabled && resolved.enabled)
@@ -105,6 +120,55 @@ void UpdateDesiredOverrides(const ce::ue5_cvar::Settings& settings) {
     detail::ReopenConsoleRegistry();
   }
 }
+
+#ifdef _WIN64
+// Moves the RR hand-off entries between CE's value and the game's own as Ray
+// Reconstruction starts and stops rendering. The overrides stay installed
+// either way, so a transition is a value write - no rescan, no pointer churn -
+// and lands within one hook-thread service tick. The frames inside that tick
+// keep the previous state: double denoising when RR starts (harmless), the
+// game's reflection temporal/screen-space stages still off when it stops.
+void ServiceRayReconstructionHandoff() {
+  const ce::rr_handoff::Sample sample{
+      ce::rr_handoff::g_rayReconstructionEvaluations.load(std::memory_order_acquire),
+      ce::rr_handoff::g_superResolutionEvaluations.load(std::memory_order_acquire),
+      DXGIShared::g_PresentCallCounter.load(std::memory_order_relaxed),
+  };
+  if (!g_rayReconstructionGate.Observe(sample))
+    return;
+  const bool rendering = g_rayReconstructionGate.Rendering();
+  detail::g_rayReconstructionRendering = rendering;
+
+  std::size_t handoffEntries = 0;
+  std::size_t changed = 0;
+  for (std::size_t index = 0; index < detail::kCVarCount; ++index) {
+    ce::ue5_cvar::ResolvedValue& desired = detail::g_desired[index];
+    if (!desired.enabled || !desired.handoff)
+      continue;
+    ++handoffEntries;
+    const uint32_t bits = ce::ue5_cvar::HandoffBits(detail::g_handoffConfiguredBits[index], rendering,
+                                                    detail::g_handoffGameBitsKnown[index],
+                                                    detail::g_handoffGameBits[index]);
+    if (bits == desired.bits)
+      continue;
+    desired.bits = bits;
+    detail::UpdateForcedData(index, bits);
+    ++changed;
+  }
+
+  static uint32_t transitionLogs = 0;
+  if (handoffEntries && transitionLogs++ < 32) {
+    HookLogImportant(
+        "UE5 overrides: Ray Reconstruction %s (evaluations rr=%llu sr=%llu, presents without an upscaler=%llu); "
+        "%zu reflection denoiser CVar(s) %s, %zu value(s) changed",
+        rendering ? "is rendering" : "stopped rendering",
+        static_cast<unsigned long long>(sample.rayReconstructionEvaluations),
+        static_cast<unsigned long long>(sample.superResolutionEvaluations),
+        static_cast<unsigned long long>(g_rayReconstructionGate.PresentsWithoutUpscaler()), handoffEntries,
+        rendering ? "handed to RR" : "handed back to the game", changed);
+  }
+}
+#endif
 
 }  // namespace
 
@@ -167,6 +231,9 @@ void RefreshOverrides(const GraphicsConfig& config) {
     UpdateDesiredOverrides(settings);
     g_settings = settings;
   }
+  // Observed even while nothing is enabled, so a preset switched on mid-session
+  // starts from the current verdict instead of from "not rendering".
+  ServiceRayReconstructionHandoff();
 
   if (!enabled) {
     if (g_wasEnabled)
@@ -260,6 +327,7 @@ void ShutdownOverrides() {
   g_settings = {};
   for (auto& desired : detail::g_desired)
     desired = {};
+  detail::g_handoffGameBitsKnown = {};
   g_wasEnabled = false;
   detail::g_missingSummaryLogged = false;
   detail::g_fullRescanRequested.store(true, std::memory_order_release);

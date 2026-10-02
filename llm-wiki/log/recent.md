@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-02 - UE5 RR preset re-tiered against engine source; RR-gated reflection hand-off (run pending)
+
+- Source check (UE 5.4.4 CVar wiki, Epic docs/forum, Looman digests) found four mis-tiered entries and a downgrade:
+  `StochasticInterpolation=1` on every level overrode Epic/Cinematic GI's bilinear 0 (foliage boiling). Details,
+  table and evidence: ue5-cvar-overrides.md "Cost-ranked RR preset ladder" and "RR-gated reflection-denoiser hand-off".
+- Reflection Temporal/ScreenSpaceReconstruction/SSR.Temporal now hold CE's 0 only while RR evaluations are observed.
+  Check the next RR session for `Ray Reconstruction is rendering` and a TSR/SR session for `stopped rendering`.
+
 ### 2026-10-02 - "Recording failed" on an SMB output target: fixed finalize budget (fixed, run pending)
 
 - Session `20261002_092450` (0.1.6930, DXGI-dup desktop, 4K AV1 125 Mbps, `output_dir` on `Z:` =

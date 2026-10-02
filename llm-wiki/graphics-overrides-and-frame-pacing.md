@@ -101,8 +101,9 @@ Primary sources:
   listed in `captureengine/config.ini.template`; none selects `r.NGX.DLSS.DenoiserMode`, so RR remains the independent
   `force_ray_reconstruction` policy. Legacy `on` maps to `full`, which also restores full-resolution short-range AO on
   UE 5.6+ and floors the screen-probe history (a game-tuned longer history wins), while `high` is the level that adds
-  the paid virtual-shadow/radiance-cache quality without the maximum screen-probe ray count. All levels write
-  `ScreenProbeGather.StochasticInterpolation=1`, the cheaper and RR-native direction. `custom_cvar_overrides` accepts typed, comma-separated
+  the paid virtual-shadow/radiance-cache quality and Epic's bilinear probe interpolation without the 4x screen-probe
+  octahedron. The reflection-denoiser entries are handed to RR only while it is evaluated (`ue5-cvar-overrides.md`).
+  `custom_cvar_overrides` accepts typed, comma-separated
   values for any CVar in the supported spec table and has final precedence. `disable_post_processing_effects=on` applies dedicated
   built-in sharpen, film-grain/grain-quantization, vignette show-flag, motion-blur, and scene-fringe overrides without
   touching `r.Tonemapper.Quality`. `tonemapper_sharpen=default|0..10` overrides the bundle's sharpen=0 only.

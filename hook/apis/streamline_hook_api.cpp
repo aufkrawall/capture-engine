@@ -1,5 +1,7 @@
 #include "streamline_hook_internal.h"
 
+#include "../common/rr_handoff_gate.h"
+
 
 slResult SlNullFunctionStub() {
 
@@ -410,6 +412,9 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
         (feature == streamline_hook_kFeatureDLSS || feature == streamline_hook_kFeatureDLSSRR)) {
         const uint32_t previous =
             streamline_hook_g_LastUpscalerEvaluation.exchange(feature, std::memory_order_acq_rel);
+        (feature == streamline_hook_kFeatureDLSSRR ? ce::rr_handoff::g_rayReconstructionEvaluations
+                                                   : ce::rr_handoff::g_superResolutionEvaluations)
+            .fetch_add(1, std::memory_order_release);
         if (g_IPC && g_IPC->GetSharedMem()) {
             auto& state = g_IPC->GetSharedMem()->dlssState;
             const bool rayReconstruction = feature == streamline_hook_kFeatureDLSSRR;
