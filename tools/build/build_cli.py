@@ -56,7 +56,9 @@ Gates & Quality Checks:
 
 Build Options:
   --skip-updates           Skip MSYS2 packages and FFmpeg repo update checks (essential for fast dev loops)
-  --skip-package           Skip creating 7z release packages in build/bin
+  --skip-package           Skip all release packaging (setup executable and portable archives)
+  --portable-archives      Also create the portable 7z archives (captureengine, testapps,
+                           ffmpeg-corresponding-source); the setup executable is always built
   --jobs <N>               Override parallel compilation workers (default: all CPU cores)
   --ccache                 Enable ccache compiler cache wrapper if available
 
@@ -164,6 +166,7 @@ def main():
     # takes minutes longer.
     verify_runtime_flag = "--verify-runtime" in sys.argv
     skip_package_flag = "--skip-package" in sys.argv
+    portable_archives_flag = "--portable-archives" in sys.argv
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
     run_integration_flag = "--run-integration-tests" in sys.argv
@@ -379,7 +382,7 @@ def main():
     env["FORCE_REBUILD"] = "1" if force_flag else "0"
     if skip_package_flag:
         env["CE_SKIP_PACKAGE"] = "1"
-        log("Release archive packaging skipped (--skip-package)")
+        log("Release packaging skipped (--skip-package)")
     if production_flag:
         env["CE_PRODUCTION_BUILD"] = "1"
         log("PRODUCTION BUILD: DLL signature verification will be enforced")
@@ -641,7 +644,7 @@ def main():
         skip_package=env.get("CE_SKIP_PACKAGE") == "1",
     ):
         package_executor = ThreadPoolExecutor(max_workers=1)
-        package_future = package_executor.submit(package_build_outputs)
+        package_future = package_executor.submit(package_build_outputs, portable_archives_flag)
 
     if lint_flag:
         lint_ok = run_lint(env, advisory=True)

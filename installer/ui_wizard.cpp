@@ -401,7 +401,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case kMsgProgress:
-        InvalidateRect(window, nullptr, FALSE);
+        InvalidateProgress(wizard);
         return 0;
     case kMsgWorkDone:
         if (wizard.worker) {

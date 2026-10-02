@@ -29,6 +29,7 @@ Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/
 - **Installer data safety:** uninstall and failed updates preserve files outside the installation when an internal folder or `logs` is a directory link.
 - **Installer relocation:** updating through another path to the same folder keeps the new program files; disabling shortcuts during a move removes links to the old folder.
 - **Silent uninstall completion:** setup waits for removal to finish and returns its actual result, keeps waiting installer launchers alive, and removes the temporary executable when it exits.
+- **Installer Cancel button flickered while files were copied:** every progress update repainted the whole setup window, including the footer under the buttons. Only the status, bar and percentage area is repainted now.
 
 - **"Recording failed" for recordings saved to a slow drive or network share:** after a stop, everything still waiting to be written goes to the file first. On a slow target this takes a while: a 6 s 4K recording left 34 MB to write to a network share that took about 1 MB/s. CaptureEngine stopped waiting after a fixed 30 s, reported the recording as failed with no file saved, and the complete file appeared on the share 12 s later. CaptureEngine now waits for as long as the writing keeps moving forward. It gives up only if nothing has been written for 45 s; a single write that hangs is still cancelled after 30 s. While it waits, the log shows `writer_finalize_progress` every 10 s.
 

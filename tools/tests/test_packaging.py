@@ -313,7 +313,7 @@ class PackagingTests(unittest.TestCase):
         )
         build_step = source.index('record_verification_step(\n        "build",')
         submit_index = source.index(
-            "package_future = package_executor.submit(package_build_outputs)", build_step
+            "package_future = package_executor.submit(package_build_outputs, portable_archives_flag)", build_step
         )
         lint_call = source.index("run_lint(env, advisory=True)", submit_index)
         self.assertLess(submit_index, lint_call)

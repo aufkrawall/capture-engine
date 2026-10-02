@@ -103,6 +103,7 @@ extern Wizard g_wizard;
 // ui_pages.cpp
 void LayoutControls(Wizard& wizard);
 void UpdatePageControls(Wizard& wizard);
+void InvalidateProgress(Wizard& wizard);
 void PaintWizard(Wizard& wizard, HDC dc, const RECT& client);
 
 // ui_results.cpp

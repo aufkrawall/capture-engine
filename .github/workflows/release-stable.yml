@@ -228,7 +228,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Python 3.12 or newer is required on the self-hosted runner."
           }
-          python build.py --verify --verify-clean --skip-updates --concise
+          python build.py --verify --verify-clean --portable-archives --skip-updates --concise
 
       - name: Verify built version
         shell: pwsh

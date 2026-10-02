@@ -164,7 +164,7 @@ class WorkflowSecurityPolicyTest(unittest.TestCase):
         self.assertIn("$env:GITHUB_REF -ne 'refs/heads/main'", sync)
         self.assertIn("git switch -C main $env:GITHUB_SHA", sync)
         self.assertIn("$actual -ne $env:GITHUB_SHA", sync)
-        self.assertIn("python build.py --verify --verify-clean --skip-updates --concise", build["run"])
+        self.assertIn("python build.py --verify --verify-clean --portable-archives --skip-updates --concise", build["run"])
         self.assertNotIn("gh auth setup-git", sync)
         self.assertIn("GIT_CONFIG_VALUE_0", sync)
         self.assertNotIn("GITHUB_TOKEN", job.get("env") or {})

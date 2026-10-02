@@ -193,6 +193,18 @@ void UpdatePageControls(Wizard& wizard) {
     InvalidateRect(wizard.window, nullptr, FALSE);
 }
 
+// Progress ticks arrive for every copied file. The page has no clip-children style, so
+// invalidating the whole client area repainted the footer under the buttons each time and
+// the Cancel button flickered; only the content area (status, bar, percent) changes.
+void InvalidateProgress(Wizard& wizard) {
+    if (!wizard.window)
+        return;
+    RECT client{};
+    GetClientRect(wizard.window, &client);
+    const RECT content = ContentRect(wizard, client);
+    InvalidateRect(wizard.window, &content, FALSE);
+}
+
 // ---------------------------------------------------------------------------
 // Painting
 // ---------------------------------------------------------------------------

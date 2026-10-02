@@ -207,8 +207,13 @@ def _create_7z_archive(cmake_exe: str, staging_root: str, root_name: str, archiv
             os.remove(temporary_archive)
 
 
-def package_build_outputs() -> Tuple[str, ...]:
-    """Create clean binary and corresponding-source archives after a successful product build."""
+def package_build_outputs(portable_archives: bool = False) -> Tuple[str, ...]:
+    """Create the setup executable after a successful product build.
+
+    The portable 7z archives (CaptureEngine, test apps, FFmpeg corresponding
+    source) are only produced with `portable_archives` (`--portable-archives`);
+    they cost about a minute per gate and only releases publish them.
+    """
     package_start = time.time()
     staging_root = os.path.join(WORKSPACE_TEMP_DIR, "package-staging")
     _reset_package_staging_directory(staging_root)
@@ -221,28 +226,78 @@ def package_build_outputs() -> Tuple[str, ...]:
             capture_stage,
             os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
         )
-        testapp_files = _stage_testapps_package(
-            TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE, TESTAPP_CONFIG_TEMPLATE
-        )
-        source_files = []
-        if IS_WINDOWS:
-            source_files = _stage_ffmpeg_corresponding_source(
-                os.path.join(PROJECT_ROOT, "ffmpeg_build", "repos", "ffmpeg"),
-                os.path.join(PROJECT_ROOT, "ffmpeg_build", "dependencies", "downloads"),
-                source_stage,
-            )
+        if "captureengine.exe" not in capture_files:
+            raise RuntimeError("Automatic package verification failed: staged captureengine.exe is missing")
 
-        cmake_exe = _get_cmake_archiver()
+        archives: List[str] = []
+        details = {"captureengine_files": len(capture_files)}
         capture_archive = os.path.join(PACKAGE_OUTPUT_DIR, CAPTUREENGINE_PACKAGE_NAME)
         testapps_archive = os.path.join(PACKAGE_OUTPUT_DIR, TESTAPPS_PACKAGE_NAME)
         source_archive = os.path.join(PACKAGE_OUTPUT_DIR, FFMPEG_SOURCE_PACKAGE_NAME)
-        capture_members = _create_7z_archive(cmake_exe, staging_root, "captureengine", capture_archive)
-        testapp_members = _create_7z_archive(cmake_exe, staging_root, "testapps", testapps_archive)
-        source_members = []
-        if IS_WINDOWS:
-            source_members = _create_7z_archive(
-                cmake_exe, staging_root, "ffmpeg-corresponding-source", source_archive
+        if portable_archives:
+            testapp_files = _stage_testapps_package(
+                TESTAPP_BIN_DIR, testapps_stage, TESTAPP_RUNTIME_NOTE, TESTAPP_CONFIG_TEMPLATE
             )
+            source_files = []
+            if IS_WINDOWS:
+                source_files = _stage_ffmpeg_corresponding_source(
+                    os.path.join(PROJECT_ROOT, "ffmpeg_build", "repos", "ffmpeg"),
+                    os.path.join(PROJECT_ROOT, "ffmpeg_build", "dependencies", "downloads"),
+                    source_stage,
+                )
+
+            cmake_exe = _get_cmake_archiver()
+            capture_members = _create_7z_archive(cmake_exe, staging_root, "captureengine", capture_archive)
+            testapp_members = _create_7z_archive(cmake_exe, staging_root, "testapps", testapps_archive)
+            source_members = []
+            if IS_WINDOWS:
+                source_members = _create_7z_archive(
+                    cmake_exe, staging_root, "ffmpeg-corresponding-source", source_archive
+                )
+
+            required_capture_member = "captureengine/captureengine.exe"
+            required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
+            required_config_member = "testapps/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
+            if (
+                required_capture_member not in capture_members
+                or required_note_member not in testapp_members
+                or required_config_member not in testapp_members
+            ):
+                raise RuntimeError("Automatic package verification failed: required archive member is missing")
+            if any(member.startswith("testapps/x86/") for member in testapp_members):
+                x86_config_member = "testapps/x86/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
+                if x86_config_member not in testapp_members:
+                    raise RuntimeError("Automatic package verification failed: x86 test-app config is missing")
+            if any(member.lower().endswith(".dll") for member in testapp_members):
+                raise RuntimeError("Automatic package verification failed: test-app archive contains a vendor DLL")
+            if IS_WINDOWS and not {
+                "ffmpeg-corresponding-source/SOURCE_MANIFEST.txt",
+                "ffmpeg-corresponding-source/ffmpeg/configure",
+            }.issubset(source_members):
+                raise RuntimeError(
+                    "Automatic package verification failed: corresponding-source archive is incomplete"
+                )
+            details["testapp_files"] = len(testapp_files)
+            details["ffmpeg_source_files"] = len(source_files)
+            details["captureengine_archive"] = capture_archive
+            details["testapps_archive"] = testapps_archive
+            details["ffmpeg_source_archive"] = source_archive if IS_WINDOWS else "not produced on this host"
+            record_verification_artifact("captureengine_package", capture_archive)
+            record_verification_artifact("testapps_package", testapps_archive)
+            if IS_WINDOWS:
+                record_verification_artifact("ffmpeg_source_package", source_archive)
+            log(f"Packaged CaptureEngine: {capture_archive} ({os.path.getsize(capture_archive)} bytes)")
+            log(f"Packaged test apps: {testapps_archive} ({os.path.getsize(testapps_archive)} bytes)")
+            archives.extend([capture_archive, testapps_archive])
+            if IS_WINDOWS:
+                log(
+                    f"Packaged FFmpeg corresponding source: {source_archive} "
+                    f"({os.path.getsize(source_archive)} bytes)"
+                )
+                archives.append(source_archive)
+        else:
+            details["portable_archives"] = "skipped (pass --portable-archives to create them)"
+            log("Portable 7z archives skipped (pass --portable-archives to create them)")
 
         setup_archive = None
         if IS_WINDOWS:
@@ -250,56 +305,15 @@ def package_build_outputs() -> Tuple[str, ...]:
                 os.path.join(staging_root, "captureengine"),
                 os.path.join(PACKAGE_OUTPUT_DIR, SETUP_PACKAGE_NAME),
             )
-
-        required_capture_member = "captureengine/captureengine.exe"
-        required_note_member = "testapps/" + os.path.basename(TESTAPP_RUNTIME_NOTE)
-        required_config_member = "testapps/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
-        if (
-            required_capture_member not in capture_members
-            or required_note_member not in testapp_members
-            or required_config_member not in testapp_members
-        ):
-            raise RuntimeError("Automatic package verification failed: required archive member is missing")
-        if any(member.startswith("testapps/x86/") for member in testapp_members):
-            x86_config_member = "testapps/x86/" + os.path.basename(TESTAPP_CONFIG_TEMPLATE)
-            if x86_config_member not in testapp_members:
-                raise RuntimeError("Automatic package verification failed: x86 test-app config is missing")
-        if any(member.lower().endswith(".dll") for member in testapp_members):
-            raise RuntimeError("Automatic package verification failed: test-app archive contains a vendor DLL")
-        if IS_WINDOWS and not {
-            "ffmpeg-corresponding-source/SOURCE_MANIFEST.txt",
-            "ffmpeg-corresponding-source/ffmpeg/configure",
-        }.issubset(source_members):
-            raise RuntimeError("Automatic package verification failed: corresponding-source archive is incomplete")
-
-        record_verification_artifact("captureengine_package", capture_archive)
-        if setup_archive:
             record_verification_artifact("captureengine_setup_package", setup_archive)
-        record_verification_artifact("testapps_package", testapps_archive)
-        if IS_WINDOWS:
-            record_verification_artifact("ffmpeg_source_package", source_archive)
+            archives.append(setup_archive)
+        details["captureengine_setup"] = setup_archive or "not produced on this host"
         record_verification_step(
             "package_archives",
             "passed",
             duration_seconds=time.time() - package_start,
-            details={
-                "captureengine_files": len(capture_files),
-                "testapp_files": len(testapp_files),
-                "ffmpeg_source_files": len(source_files),
-                "captureengine_archive": capture_archive,
-                "captureengine_setup": setup_archive or "not produced on this host",
-                "testapps_archive": testapps_archive,
-                "ffmpeg_source_archive": source_archive if IS_WINDOWS else "not produced on this host",
-            },
+            details=details,
         )
-        log(f"Packaged CaptureEngine: {capture_archive} ({os.path.getsize(capture_archive)} bytes)")
-        log(f"Packaged test apps: {testapps_archive} ({os.path.getsize(testapps_archive)} bytes)")
-        archives = [capture_archive, testapps_archive]
-        if setup_archive:
-            archives.append(setup_archive)
-        if IS_WINDOWS:
-            log(f"Packaged FFmpeg corresponding source: {source_archive} ({os.path.getsize(source_archive)} bytes)")
-            archives.append(source_archive)
         return tuple(archives)
     except Exception as error:
         record_verification_step(

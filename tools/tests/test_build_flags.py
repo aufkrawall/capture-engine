@@ -754,9 +754,15 @@ class BuildFlagPolicyTest(unittest.TestCase):
         source = build.read_source_text()
         self.assertIn('skip_package_flag = "--skip-package" in sys.argv', source)
         self.assertIn('env["CE_SKIP_PACKAGE"] = "1"', source)
-        self.assertIn("Release archive packaging skipped (--skip-package)", source)
+        self.assertIn("Release packaging skipped (--skip-package)", source)
         self.assertIn('elif env.get("CE_SKIP_PACKAGE") == "1":', source)
         self.assertIn('record_verification_step("package_archives", "skipped"', source)
+
+    def test_portable_archives_are_opt_in_and_reach_the_packager(self) -> None:
+        source = build.read_source_text()
+        self.assertIn('portable_archives_flag = "--portable-archives" in sys.argv', source)
+        self.assertIn("package_executor.submit(package_build_outputs, portable_archives_flag)", source)
+        self.assertIn("--portable-archives      Also create the portable 7z archives", source)
 
 
 if __name__ == "__main__":
