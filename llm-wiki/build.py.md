@@ -305,6 +305,17 @@ Default quality mode currently:
 - Mixed/default lint runs after the current compilation database is written. Full `clang-format`, `flake8`, `pyright`, and `clang-tidy` output is retained as a per-stage artifact; the manifest records exact format-file/batch counts, compile-database hash/entry count, and clang-tidy check/subsystem aggregation. An advisory finding uses step status `warning`, not the ambiguous combination of a failed lint step and successful build.
 - The clang-tidy ratchet is scope-aware. `tools/clang_tidy_baseline.json` carries a `scope` object listing the project-relative translation units its counts were measured over (269 as of 2026-07-28); `tools/lint_driver.py` derives the current scope from every `file` entry in `compile_commands.json`. `evaluate_clang_tidy_baseline()` folds lower counts in only when that scope covers everything the baseline recorded — baseline units whose source no longer exists are excluded, so ordinary deletions do not freeze the ratchet. A reduced or unknown scope logs `clang-tidy lint scope reduced` (or the unknown-scope variant), records `clang_tidy_scope` / `clang_tidy_scope_unlinted` in the manifest, and leaves the file untouched; `--update-lint-baseline` exits 2 there instead of writing a subset baseline. Increases and previously unseen checks stay fatal at any scope, because warnings are only ever counted from translation units that were actually linted. A baseline with no `scope` (pre-2026-07-25 format) is treated like an unknown scope and is never auto-tightened. Source anchors: `build.py` (`clang_tidy_scope_from_entries`, `clang_tidy_scope_gap`, `evaluate_clang_tidy_baseline`), `tools/lint_driver.py`, and `tools/tests/test_clang_tidy_baseline.py`.
 - Python lint targets all first-party Python under `build.py`, `tools`, and `testapp`. Automatic Python formatting remains limited to `build.py` and `testapp`.
+- clang-tidy results are content-addressed per translation unit: reuse needs identical analyzer/config, compile
+  command, source and every compiler-recorded dependency (by content); anything changed or unreadable runs again,
+  and the ratchet always aggregates the whole database including cached units. A cold cache costs about the old
+  whole-tree duration; a warm run only analyzes misses.
+- The ratchet covers compiler diagnostics (`clang-diagnostic-<name>`): lint used to pass `-extra-arg=-w`, which
+  left `-Wall/-Wextra/-Wshadow/-Wformat=2` warnings completely ungated (the build has no `-Werror`). Hence the
+  large (~2.2k) baseline, which is debt to reduce, not an endorsement. `clang-analyzer-core.*`/`cplusplus.*` and
+  `misc-use-after-move` are enabled; their cross-translation-unit false positives (a null guard passed as a bool
+  into a policy header) are carried in the baseline rather than suppressed inline.
+- The 800-line file-size ceiling also governs `llm-wiki/**/*.md`: `log/recent.md` once reached 6212 lines with
+  nothing enforcing its ~230-line rotation and dominated git history size. Markdown outside `llm-wiki/` is not governed.
 
 ## Unit Test Behavior
 - `compile_tests()` runs on every build so test compile failures are caught and `compile_commands.json` contains authoritative entries even if tests are not executed. Its formerly fragmented common/media/test/hook batches now share one bounded mixed-flag worker pool.
