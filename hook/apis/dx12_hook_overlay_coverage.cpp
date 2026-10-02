@@ -19,6 +19,24 @@ switch (static_cast<DX12OverlayRenderRoute>(route)) {
 }
 
 
+// Session 20261002_045116: the window armed at PostSL reactivation began one present after the
+// DLSS-G activation present and the uncovered-looking present that followed it, so the frames a
+// user saw without the overlay were never traced. FG-on arms it too; a later arm only extends it.
+void DX12_ArmOverlayHandoffTrace(const char* reason, int presents, IDXGISwapChain* pSwapChain) {
+const uint32_t prevRoute = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+dx12_hook_g_OverlayHandoffVerbosePrevRoute.store(prevRoute, std::memory_order_relaxed);
+int current = dx12_hook_g_OverlayHandoffVerboseLogPresents.load(std::memory_order_relaxed);
+while (current < presents &&
+       !dx12_hook_g_OverlayHandoffVerboseLogPresents.compare_exchange_weak(current, presents,
+                                                                         std::memory_order_relaxed)) {
+}
+HookLogImportant(
+    "[OVERLAY HANDOFF] %s armed verbose window (prevRoute=%s swapchain=%p) - logging the next %d presents' "
+    "overlay coverage",
+    reason ? reason : "transition", DX12OverlayRenderRouteName(prevRoute), (void*)pSwapChain, presents);
+}
+
+
 void NoteDX12OverlayCoverageGate(const char* gate) {
 dx12_hook_g_OverlayCoverageLastGate.store(gate, std::memory_order_relaxed);
 }
@@ -185,11 +203,12 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
             const uint32_t prevRoute = dx12_hook_g_OverlayHandoffVerbosePrevRoute.load(std::memory_order_relaxed);
             HookLogImportant(
                 "[OVERLAY HANDOFF] present=%llu sc=%p drawObserved=%d inheritIfNoDraw=%d covered=%d route=%s "
-                "prevRoute=%s source=%s mergedCalls=%d currentStreak=%llu remaining=%d",
+                "prevRoute=%s source=%s mergedCalls=%d currentStreak=%llu tid=0x%lX qpcUs=%llu remaining=%d",
                 static_cast<unsigned long long>(snapshot.totalPresents), pSwapChain, drawObserved ? 1 : 0,
                 inheritCoverageIfNoDraw ? 1 : 0, result.covered ? 1 : 0, DX12OverlayRenderRouteName(route),
                 DX12OverlayRenderRouteName(prevRoute), source ? source : "unknown", mergedCalls,
-                static_cast<unsigned long long>(snapshot.currentStreak), verboseRemaining - 1);
+                static_cast<unsigned long long>(snapshot.currentStreak), GetCurrentThreadId(),
+                static_cast<unsigned long long>(nowUs), verboseRemaining - 1);
         }
     }
 

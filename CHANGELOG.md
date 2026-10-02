@@ -18,6 +18,7 @@ Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/
 ### Improved
 
 - **Clearer logs when the upgraded Streamline runtime rejects a game's calls (`streamline_upgrade=true`):** the log used to show only the first rejection of each call as a bare number (`sl::Result=38`), so it could not tell whether DLSS kept failing afterwards. It now names the error (`eErrorInvalidState`), reports how many times in a row the call failed (at the 1st, 2nd, 4th, 8th… failure, and whenever the error changes), and says when the call `succeeds again`. The game's fullscreen switches are logged too, with whether its window had focus. A switch Windows refused is reported as `never reached 2.x DLSS-G's after-hook`: Windows refuses exclusive fullscreen to a window without focus, and Streamline 2.x then leaves frame generation torn down until the next switch.
+- **Tracing the overlay gap when DLSS frame generation switches on:** the overlay can vanish for a moment when frame generation starts, for example right after a save loads. The per-present `[OVERLAY HANDOFF]` trace started too late to show those presents. It now starts the moment frame generation is switched on and also records the presenting thread and time.
 - **Service removal and portable-folder cleanup:** tray service removal waits for owned processes to exit and removes the protected runtime. CaptureEngine confirms child exit before releasing process handles; injected games must also close before their loaded hook files can be removed.
 
 ### Fixed

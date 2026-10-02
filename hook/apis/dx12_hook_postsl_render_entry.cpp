@@ -414,15 +414,7 @@ if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive,
     // Arm the verbose overlay-handoff diagnostic so the next presents log per-present coverage
     // detail. prevRoute distinguishes off->DLSS (prevRoute=normal, native->fresh-proxy — the
     // reported slight-flash case) from FSR->DLSS (prevRoute=post-sl/ffx, warm proxy).
-    {
-        const uint32_t prevRoute = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
-        dx12_hook_g_OverlayHandoffVerbosePrevRoute.store(prevRoute, std::memory_order_relaxed);
-        dx12_hook_g_OverlayHandoffVerboseLogPresents.store(16, std::memory_order_relaxed);
-        HookLogImportant(
-            "[OVERLAY HANDOFF] PostSL reactivation armed verbose window (epoch=%d hadFSR=%d prevRoute=%s "
-            "swapchain=%p) — logging the next 16 presents to pinpoint an off->DLSS fresh-proxy overlay flash",
-            s_reactivationEpoch, dx12_hook_g_HadFSRFGPhase ? 1 : 0, DX12OverlayRenderRouteName(prevRoute), (void*)pSwapChain);
-    }
+    DX12_ArmOverlayHandoffTrace("PostSL reactivation", 16, pSwapChain);
     // Reset ECL diagnostic counter for fresh diagnostics after transition
     g_PostSLECLDiagCount.store(0, std::memory_order_relaxed);
 

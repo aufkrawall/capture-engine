@@ -231,6 +231,9 @@ if (installed) {
     if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRenderGated) {
         DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRenderGated, std::memory_order_release);
         HookLogImportant("%s — installed gated PostSL callback", reason);
+        // The presents between this edge and the first confirmed PostSL draw are the ones a
+        // user can see without the overlay; trace them.
+        DX12_ArmOverlayHandoffTrace("PostSL callback install (FG on)", 24, nullptr);
         ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPostSLCallbackInstalled,
                                     reason ? reason : "SetPostSLCallbackInstalled", nullptr, nullptr,
                                     g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(), false);

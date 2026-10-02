@@ -431,6 +431,8 @@ bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked( bool explici
 
 void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
 const char* DX12OverlayRenderRouteName(uint32_t route);
+// Logs per-present overlay coverage for the next `presents` presents ([OVERLAY HANDOFF] lines).
+void DX12_ArmOverlayHandoffTrace(const char* reason, int presents, IDXGISwapChain* pSwapChain);
 void NoteDX12OverlayCoverageGate(const char* gate);
 DX12OverlayCoverageSnapshot GetOverlayCoverageSnapshot();
 

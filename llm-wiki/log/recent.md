@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-02 - W3 bridged run clean; overlay gap at DLSS-G activation traced
+
+- Session `20261002_045116` (0.1.6924): focused startup, both fullscreen switches accepted, no 2.x call failures,
+  normal exit. sl.log errors are only the pre-device feature lookups and the blocked NGX updater. The save-load crash
+  of `043740` did not recur (that run started unfocused and was slow in the menu).
+- Overlay gap the user saw as FG kicked in after a save load: FG ON 04:51:58.934; CSV present 824 (+3 ms, ProcessFrame
+  ran, normal route), present 825 (+22 ms, no ProcessFrame: "ProcessFrame dormant for 140ms"), then no present for
+  141 ms, then 826 = first PostSL-covered present. The coverage tracker counted 824/825 covered (no
+  INTERRUPTED line; a no-draw FG present inherits coverage), and the 16-present trace was armed only at 826.
+  0.1.6925 arms the trace at the FG-on edge (24 presents) with tid and QPC. Next run: is 825 `drawObserved=0
+  inheritIfNoDraw=1` on a Streamline thread? Then a covered-by-inheritance present is the gap.
+
 ### 2026-10-02 - W3 bridged save-load crash: unresolved, diagnostics added
 
 - Session `20261002_043740` (0.1.6923): AV (null read) on W3's main thread in game code
