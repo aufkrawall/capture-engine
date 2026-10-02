@@ -64,6 +64,51 @@ inline bool IsOutputIoDeadlineExpired(uint64_t deadlineMs, uint64_t nowMs) {
     return deadlineMs != 0 && nowMs >= deadlineMs;
 }
 
+// A live stream that cannot write for 5 s has lost its bounded-latency
+// contract. A local file gets longer - a slow disk can legitimately stall on a
+// large keyframe flush - but never unbounded: a hung write (dead network share,
+// dying disk) must not wedge the writer thread forever.
+inline constexpr uint64_t kLiveOutputIoTimeoutMs = 5000;
+inline constexpr uint64_t kLocalOutputIoTimeoutMs = 30000;
+
+// How long Stop() keeps waiting on an async writer that has stopped advancing.
+// Every blocking output operation is already bounded by the I/O deadline above
+// and cancelled when it expires, so a writer that stalls longer than one
+// deadline plus the time to fail that operation and finish is genuinely hung.
+inline constexpr uint64_t kWriterFinalizeStallTimeoutMs = kLocalOutputIoTimeoutMs + 15000;
+
+// Finalize wait that judges the writer by progress, not by total duration.
+// The writer drains everything queued at stop before the trailer, so on a slow
+// target (a network share draining ~1 MB/s with tens of MB queued) a correct
+// finalize can take far longer than any fixed budget; abandoning it early made
+// Stop() report a failed recording that the writer published moments later.
+// `progress` is any counter the writer advances when an output operation
+// completes or its finalize phase changes.
+class WriterFinalizeProgressWatch {
+public:
+    void Begin(uint64_t progress, uint64_t nowMs) {
+        lastProgress_ = progress;
+        lastProgressTickMs_ = nowMs;
+    }
+
+    // Milliseconds since the writer last advanced.
+    uint64_t Observe(uint64_t progress, uint64_t nowMs) {
+        if (progress != lastProgress_) {
+            lastProgress_ = progress;
+            lastProgressTickMs_ = nowMs;
+        }
+        return nowMs >= lastProgressTickMs_ ? nowMs - lastProgressTickMs_ : 0;
+    }
+
+private:
+    uint64_t lastProgress_ = 0;
+    uint64_t lastProgressTickMs_ = 0;
+};
+
+inline bool IsWriterFinalizeStalled(uint64_t idleMs) {
+    return idleMs >= kWriterFinalizeStallTimeoutMs;
+}
+
 // Whether the last finalized output must be reported as degraded. A writer
 // that had not finished finalizing when Stop() gave up owns the trailer, close
 // and CFR coverage check that would report a loss; their outcome is unknown at

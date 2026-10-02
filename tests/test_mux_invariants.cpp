@@ -208,3 +208,46 @@ TEST(MuxInvariantTest, UnfinishedFinalizeIsReportedDegraded) {
     EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(0, 1, false, false));
     EXPECT_TRUE(ce::mux::IsFinalizedOutputDegraded(0, 0, true, false));
 }
+
+// Regression (session 20261002_092450): a 6 s 4K recording to a network share
+// queued 34 MB that drained at ~1 MB/s. Stop() gave up after a fixed 30 s,
+// reported the recording failed, and the writer published a complete file
+// 12 s later. A writer that keeps advancing is never abandoned.
+TEST(MuxInvariantTest, SlowButAdvancingWriterFinalizeIsNeverStalled) {
+    ce::mux::WriterFinalizeProgressWatch watch;
+    watch.Begin(0, 1000);
+    uint64_t progress = 0;
+    uint64_t worstIdleMs = 0;
+    // 120 s of finalize with one completed write every 2.2 s (the worst single
+    // stall in that session) - far past any fixed budget.
+    for (uint64_t nowMs = 1000; nowMs <= 121000; nowMs += 250) {
+        if ((nowMs - 1000) % 2250 == 0) {
+            ++progress;
+        }
+        const uint64_t idleMs = watch.Observe(progress, nowMs);
+        worstIdleMs = std::max(worstIdleMs, idleMs);
+        ASSERT_FALSE(ce::mux::IsWriterFinalizeStalled(idleMs)) << "nowMs=" << nowMs;
+    }
+    EXPECT_LE(worstIdleMs, 2250u);
+}
+
+TEST(MuxInvariantTest, WriterFinalizeStallsOnlyAfterNoProgressForTheStallTimeout) {
+    constexpr uint64_t kStall = ce::mux::kWriterFinalizeStallTimeoutMs;
+    ce::mux::WriterFinalizeProgressWatch watch;
+    watch.Begin(7, 10000);
+    EXPECT_EQ(watch.Observe(7, 10000), 0u);
+    EXPECT_FALSE(ce::mux::IsWriterFinalizeStalled(watch.Observe(7, 10000 + kStall - 1)));
+    // Progress just before the deadline restarts the idle clock.
+    const uint64_t resumedMs = 10000 + kStall - 1;
+    EXPECT_EQ(watch.Observe(8, resumedMs), 0u);
+    EXPECT_FALSE(ce::mux::IsWriterFinalizeStalled(watch.Observe(8, resumedMs + kStall - 1)));
+    EXPECT_TRUE(ce::mux::IsWriterFinalizeStalled(watch.Observe(8, resumedMs + kStall)));
+}
+
+// A single blocked output operation is cancelled at its I/O deadline; the
+// writer then fails it and moves on. Stop() must not abandon the writer before
+// that cancellation had a chance to unblock it.
+TEST(MuxInvariantTest, WriterFinalizeStallTimeoutOutlastsTheOutputIoDeadline) {
+    EXPECT_GT(ce::mux::kWriterFinalizeStallTimeoutMs, ce::mux::kLocalOutputIoTimeoutMs);
+    EXPECT_GT(ce::mux::kWriterFinalizeStallTimeoutMs, ce::mux::kLiveOutputIoTimeoutMs);
+}

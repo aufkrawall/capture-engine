@@ -142,3 +142,39 @@ TEST(VideoEncoderOutputTruthTest, FinalizeTimeoutReportsTheOutputDegraded) {
     EXPECT_NE(source.find("lastStopFinalizeTimedOut.store(false"), std::string::npos)
         << "each recording starts without the previous stop's verdict";
 }
+
+// Regression (session 20261002_092450): Stop() abandoned a writer that was still
+// draining a slow network share after a fixed 30 s, so the recording was
+// reported failed and the file it published moments later was never claimed.
+// The wait is now judged by writer progress; every bounded output operation
+// and every finalize phase change advances it.
+TEST(VideoEncoderOutputTruthTest, FinalizeWaitIsJudgedByWriterProgressNotTotalTime) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t stop = source.find("void VideoEncoder::Stop()");
+    ASSERT_NE(stop, std::string::npos);
+    const size_t stopEnd = source.find("void VideoEncoder::Cancel()", stop);
+    ASSERT_NE(stopEnd, std::string::npos);
+    const std::string stopBody = source.substr(stop, stopEnd - stop);
+    EXPECT_EQ(stopBody.find("kWriterFinalizeTimeoutMs"), std::string::npos) << "no fixed total finalize budget";
+    EXPECT_NE(stopBody.find("progressWatch.Observe(writerProgressCount.load("), std::string::npos);
+    EXPECT_NE(stopBody.find("if (ce::mux::IsWriterFinalizeStalled(idleMs))"), std::string::npos);
+
+    const size_t clear = source.find("void VideoEncoder::ClearOutputIoDeadline()");
+    ASSERT_NE(clear, std::string::npos);
+    const std::string clearBody = source.substr(clear, source.find("\n}\n", clear) - clear);
+    EXPECT_NE(clearBody.find("writerProgressCount.fetch_add(1"), std::string::npos);
+
+    const size_t phase = source.find("void VideoEncoder::SetWriterFinalizePhase(");
+    ASSERT_NE(phase, std::string::npos);
+    const std::string phaseBody = source.substr(phase, source.find("\n}\n", phase) - phase);
+    EXPECT_NE(phaseBody.find("writerProgressCount.fetch_add(1"), std::string::npos);
+
+    const size_t writer = source.find("void VideoEncoder::AsyncWriteLoop()");
+    ASSERT_NE(writer, std::string::npos);
+    const std::string writerBody = source.substr(writer, source.find("\n}\n", writer) - writer);
+    EXPECT_EQ(writerBody.find("writerFinalizePhase.store("), std::string::npos)
+        << "writer phase changes must go through SetWriterFinalizePhase so they count as progress";
+    EXPECT_NE(writerBody.find("SetWriterFinalizePhase(kWriterPhaseWritingTrailer)"), std::string::npos);
+}

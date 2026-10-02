@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-02 - "Recording failed" on an SMB output target: fixed finalize budget (fixed, run pending)
+
+- Session `20261002_092450` (0.1.6930, DXGI-dup desktop, 4K AV1 125 Mbps, `output_dir` on `Z:` =
+  `\\Werkstatt-fortn\4tb`). Mux writes of ~850 B blocked 350-2150 ms; header took 1.7 s. 34.2 MB queued at stop
+  drained at ~1 MB/s; Stop() hit its fixed 30 s `writer_finalize_timeout` (4.3 MB left) and finalization reported
+  `status=failed outputSaved=0`. The writer kept going and published a complete file (774/774 CFR packets, 46 MB)
+  12 s later; the verdict and toast were never corrected.
+- Fix: the finalize wait is progress-based (cfr-capture-sync.md, `writer_finalize_progress`). Remaining edges:
+  a writer that truly stalls >45 s and recovers later still gets the stale verdict; the controller's
+  "Finalizing recording..." notice expires after 60 s even while media is still writing; controller shutdown
+  waits only 10 s for media.
+
 ### 2026-10-02 - Installer review fixes: external data, aliases and uninstall completion
 
 - `logs` root junction removal and temporary-file cleanup/rollback now preserve external files. Read-access directory

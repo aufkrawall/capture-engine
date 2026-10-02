@@ -4,27 +4,29 @@ std::string VideoEncoder::OutputTargetForLog() const {
     return liveOutput ? "<live-stream-endpoint>" : ce::privacy::CollapsePathForLog(outputFilename);
 }
 
-namespace {
-// A live stream that cannot write for 5 s has lost its bounded-latency
-// contract. A local file gets longer - a slow disk can legitimately stall on a
-// large keyframe flush - but never unbounded: a hung write (dead network share,
-// dying disk) must not wedge the writer thread forever, because Stop() gives up
-// waiting for finalize and the unpublished staging file would never reach the
-// user. FFmpeg's interrupt callback only refuses the next transfer; a write
+// The deadlines (ce::mux::kLiveOutputIoTimeoutMs / kLocalOutputIoTimeoutMs)
+// keep a hung write from wedging the writer thread forever: Stop() would give
+// up waiting for finalize and the unpublished staging file would never reach
+// the user. FFmpeg's interrupt callback only refuses the next transfer; a write
 // already blocked in the kernel is broken by CancelExpiredOutputIo.
-constexpr uint64_t kLiveOutputIoTimeoutMs = 5000;
-constexpr uint64_t kLocalOutputIoTimeoutMs = 30000;
-}  // namespace
-
 void VideoEncoder::ArmOutputIoDeadline() {
     std::lock_guard<std::mutex> lock(outputIoCancelMutex);
-    outputIoDeadlineMs.store(GetTickCount64() + (liveOutput ? kLiveOutputIoTimeoutMs : kLocalOutputIoTimeoutMs),
+    outputIoDeadlineMs.store(GetTickCount64() + (liveOutput ? ce::mux::kLiveOutputIoTimeoutMs
+                                                            : ce::mux::kLocalOutputIoTimeoutMs),
                              std::memory_order_release);
 }
 
 void VideoEncoder::ClearOutputIoDeadline() {
     std::lock_guard<std::mutex> lock(outputIoCancelMutex);
     outputIoDeadlineMs.store(0, std::memory_order_release);
+    // A bounded output operation finished (successfully or not): the finalize
+    // wait in Stop() counts this as writer progress.
+    writerProgressCount.fetch_add(1, std::memory_order_release);
+}
+
+void VideoEncoder::SetWriterFinalizePhase(uint32_t phase) {
+    writerFinalizePhase.store(phase, std::memory_order_release);
+    writerProgressCount.fetch_add(1, std::memory_order_release);
 }
 
 void VideoEncoder::RegisterOutputIoThread() {

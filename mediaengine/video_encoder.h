@@ -212,6 +212,7 @@ private:
     std::string OutputTargetForLog() const;
     void ArmOutputIoDeadline();
     void ClearOutputIoDeadline();
+    void SetWriterFinalizePhase(uint32_t phase);
     // The writer thread registers a handle to itself so another thread can
     // break a blocking output write whose deadline passed (CancelSynchronousIo).
     void RegisterOutputIoThread();
@@ -690,6 +691,9 @@ private:
     std::atomic<bool> writerRunning = false;
     std::atomic<bool> writerFinalizeTimedOut = false;
     std::atomic<uint32_t> writerFinalizePhase = 0;
+    // Advanced whenever the writer completes a bounded output operation or
+    // enters a new finalize phase; Stop() waits while it keeps moving.
+    std::atomic<uint64_t> writerProgressCount = 0;
     std::atomic<bool> writerFinalizeSlowWarningLogged = false;
     std::atomic<size_t> currentQueueBytes = 0;
 
