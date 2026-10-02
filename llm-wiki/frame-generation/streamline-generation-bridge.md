@@ -25,7 +25,7 @@ re-derived from documentation. Treat it as the primary reason this page exists.
 | The measured 1.x structures | `hook/apis/streamline_bridge_v1_abi.h` (x64 only) |
 | Passive layout recorder | `hook/apis/streamline_v1_feature_probe.{h,cpp}` |
 | Generation classification | `hook/common/streamline_api_generation.h` |
-| Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_debug_layer.cpp`, `tests/test_streamline_bridge_v1_reflex.cpp` |
+| Tests | `tests/test_streamline_bridge_policy.cpp`, `tests/test_streamline_bridge_activation.cpp`, `tests/test_streamline_bridge_debug_layer.cpp`, `tests/test_streamline_bridge_v1_reflex.cpp` |
 | Config | `streamline_upgrade` (default off), alongside `streamline_dll_path` |
 
 ## What it is, and what it deliberately is not
