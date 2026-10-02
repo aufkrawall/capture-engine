@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 
 
 void DX12_OnSwapchainResizeBegin() {
@@ -124,13 +125,18 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
     }
 
     static std::atomic<int> s_preRoutingExactOffKeepAliveLogCount{0};
+    static ce::log_meter::ChangeGate s_preRoutingExactOffKeepAliveGate;
     const int logCount = s_preRoutingExactOffKeepAliveLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 20 || (logCount % 300) == 0) {
+    const auto verdict = s_preRoutingExactOffKeepAliveGate.ObserveOrEvery(
+        ce::log_meter::FieldKey(submitted, source, pSwapChain, lastWorkingQueue, lockedQueue),
+        static_cast<uint32_t>(logCount) + 1, 600);
+    if (verdict) {
         HookLogImportant(
             "DX12: Pre-routing exact-proxy PostSL OFF keep-alive submit completed=%d sequence=%llu->%llu "
-            "(source=%s sc=%p lastWorking=%p locked=%p log=%d)",
+            "(source=%s sc=%p lastWorking=%p locked=%p log=%d)%s",
             submitted ? 1 : 0, successfulSubmitSequenceBefore, successfulSubmitSequenceAfter,
-            source ? source : "Present", pSwapChain, lastWorkingQueue, lockedQueue, logCount + 1);
+            source ? source : "Present", pSwapChain, lastWorkingQueue, lockedQueue, logCount + 1,
+            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     return submitted;
 }

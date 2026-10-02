@@ -749,6 +749,17 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 // app-specific overrides
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "");
 
+// While alive, LoadConfig's informational narrative (profile matches, app-audio sources, parsed
+// presets) is suppressed on the calling thread; warnings still log. For sweeps that resolve the
+// same file for many targets, which would otherwise repeat that narrative once per target.
+class ScopedQuietConfigLog {
+public:
+    ScopedQuietConfigLog();
+    ~ScopedQuietConfigLog();
+    ScopedQuietConfigLog(const ScopedQuietConfigLog&) = delete;
+    ScopedQuietConfigLog& operator=(const ScopedQuietConfigLog&) = delete;
+};
+
 // capture_method accepts canonical values "inject", "wgc", "dxgi_dup", and "auto".
 // "none" is used by application profiles that deliberately have no video route.
 // Legacy explicit-WGC aliases ("screengrab", "framegrab") normalize to "wgc".

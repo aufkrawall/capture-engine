@@ -1,6 +1,43 @@
 #include "config_internal.h"
 
+#include <cstdarg>
+#include <cstdio>
+
 // Helper to trim specific characters from both ends
+namespace {
+thread_local int t_quietConfigLogDepth = 0;
+
+__attribute__((format(printf, 2, 0))) void ConfigLogV(LogLevel level, const char* format, va_list args) {
+    if (t_quietConfigLogDepth > 0 || !Log_IsEnabled(level))
+        return;
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    Log(level, "%s", buffer);
+}
+}  // namespace
+
+ScopedQuietConfigLog::ScopedQuietConfigLog() {
+    ++t_quietConfigLogDepth;
+}
+
+ScopedQuietConfigLog::~ScopedQuietConfigLog() {
+    --t_quietConfigLogDepth;
+}
+
+void ConfigLogInfo(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    ConfigLogV(LogLevel::Info, format, args);
+    va_end(args);
+}
+
+void ConfigLogDebug(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    ConfigLogV(LogLevel::Debug, format, args);
+    va_end(args);
+}
+
 std::string Trim(const std::string& s, const char* chars ) {
     std::string res = s;
     res.erase(0, res.find_first_not_of(chars));

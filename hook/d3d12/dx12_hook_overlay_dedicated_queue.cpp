@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 
 
 bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** reason) {
@@ -302,14 +303,19 @@ if (ce::dx12_overlay_policy::ShouldDisableDedicatedOverlayQueueForNvidiaFrameGen
         streamlineFGRunning, g_FGCompat.GetRuntimeMode())) {
     if (disabledByOverlayModule)
         *disabledByOverlayModule = nullptr;
-    static std::atomic<int> s_nvidiaDedicatedQueueDisableLogCount{0};
-    const int logCount = s_nvidiaDedicatedQueueDisableLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 10 || (logCount % 300) == 0) {
+    static std::atomic<uint32_t> s_nvidiaDedicatedQueueDisableCount{0};
+    static ce::log_meter::ChangeGate s_nvidiaDedicatedQueueDisableGate;
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const auto verdict = s_nvidiaDedicatedQueueDisableGate.ObserveOrEvery(
+        ce::log_meter::FieldKey(streamlineFGRunning, runtimeMode, dx12_hook_g_SwapchainQueue,
+                                dx12_hook_g_OriginalGameQueue),
+        s_nvidiaDedicatedQueueDisableCount.fetch_add(1, std::memory_order_relaxed) + 1, 3000);
+    if (verdict) {
         HookLogImportant(
             "DX12: Dedicated overlay queue disabled for NVIDIA DLSS FG "
-            "(streamlineFG=%d runtime=%s scQueue=%p origGame=%p)",
-            streamlineFGRunning ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-            dx12_hook_g_SwapchainQueue, dx12_hook_g_OriginalGameQueue);
+            "(streamlineFG=%d runtime=%s scQueue=%p origGame=%p)%s",
+            streamlineFGRunning ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(runtimeMode), dx12_hook_g_SwapchainQueue,
+            dx12_hook_g_OriginalGameQueue, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     return false;
 }

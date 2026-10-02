@@ -1,4 +1,5 @@
 #include "fg_session_state.h"
+#include "common/logging/log_meter.h"
 
 #include <algorithm>
 #include <array>
@@ -684,8 +685,19 @@ void EmitFGEvent(const FGEvent& event) {
 
     const FGSessionSnapshot& snapshot = state.latestSnapshot;
     if (isPresentObserved) {
+        // The 10 presents after an FG event: the first decision, every changed decision, and the last
+        // of the window. sessionEpoch is left out of the key; it advances on every refresh.
         if (state.presentDecisionLogsRemaining > 0) {
-            LogLegacyDecisionLine(snapshot, state.latestPlan);
+            static ce::log_meter::ChangeGate s_legacyDecisionGate;
+            const FGActionPlan& plan = state.latestPlan;
+            const uint64_t decisionKey = ce::log_meter::FieldKey(
+                snapshot.runtimeEpoch, snapshot.startupPhase, plan.route, plan.transport, plan.invokePostSLCallback,
+                plan.selectedQueueRole, plan.selectedQueue, snapshot.transportRisk.steamOverlayLoaded,
+                snapshot.postSLConfirmedRendering, snapshot.postSLSettling);
+            const auto verdict = state.presentDecisionLogsRemaining == 1 ? s_legacyDecisionGate.Force(decisionKey)
+                                                                         : s_legacyDecisionGate.Observe(decisionKey);
+            if (verdict)
+                LogLegacyDecisionLine(snapshot, plan, verdict.suppressed);
             state.presentDecisionLogsRemaining--;
         }
         return;

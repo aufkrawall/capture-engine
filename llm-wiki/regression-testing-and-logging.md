@@ -89,27 +89,52 @@ Primary sources:
 - For Win32 failures, include `GetLastError()` when useful.
 - For COM and D3D failures, include the `HRESULT` when useful.
 
+## Hook log line format (since 0.1.6946)
+
+`hook_debug.log` / `nvngx_debug.log`: `HH:MM:SS.mmm T<tid> #<seq> p<pid> message`
+(`hook/runtime/hook_common.cpp` `LogToFileAtomic`). `#<seq>` counts per file, so a gap is a line that
+file lost. Several hooked processes can share the file; each process's first line is
+`DllMain: Process '<exe>' pid=<pid> x64|x86 is a whitelisted hook target`. Only `[WARN]`/`[ERROR]`
+tags remain (`[INFO]` marked nothing). `vulkan_layer.log` uses the same time/tid/pid columns and
+starts each process with `=== Layer DLL Loaded: <exe> pid=<pid> <arch> ===`; a layer line goes to
+the host's `vulkan-layer.log` only when the layer could not open `vulkan_layer.log` itself.
+Older sessions use `[HH:MM:SS.mmm] [T:x] [S:N] [<exe>]` with a process-global `S` counter.
+
 ## Log metering conventions
 
 Trace/debug logs must stay readable: unconditional per-frame, per-tick, or
-per-retry log lines are spam and bury the transitions that matter. Session
-`20260810_210407` (trace level) showed ~9k hook_debug.log lines/minute, ~2.2k
-identical `UpdateOverlay` lines, ~2.2k per-frame inject "Read handle" lines,
-and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
+per-retry log lines are spam and bury the transitions that matter. The default
+`log_level` is `trace`, so "demote to trace" saves nothing; meter instead.
+Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md`
+("Log findings").
 
+- **Log on change, count the repeats** (preferred for per-frame/per-call lines):
+  `ce::log_meter::ChangeGate` + `FieldKey(...)` in `common/logging/log_meter.h`
+  (tests `tests/test_log_meter.cpp`). Key only the fields whose change matters;
+  leave counters, sequence numbers and rotating back-buffer pointers out. Append
+  `SuppressedNote(verdict.suppressed)` so each logged line says how many identical
+  repeats it stands for. `ObserveOrEvery(key, callIndex, stride)` adds a heartbeat;
+  `Force(key)` logs a window's last line. Examples: PostSL `SUBMIT`
+  (`hook/d3d12/dx12_hook_postsl_render_submit.cpp`), Reinit/Post-transition/PostFGOff
+  windows, `FG LEGACY DECISION` (`hook/fg/fg_session_state.cpp`), Streamline UI-tag
+  opportunities (tag-set signature, `hook/streamline/streamline_hook_api.cpp`).
+- **Once per key**: `ce::log_meter::KeyedOnce<N>` for "once per module/handle" lines
+  (Steam overlay detection, late-loaded CreateProcess patching, FFX modules without exports).
+- **Narrative to one line**: a multi-step operation logs one summary line (inline-hook
+  install: `InlineHook: Installed <target> -> <detour> tramp= patch= entry=<hex> jmpBack=`),
+  never one line per step or per byte.
+- **Repeated resolves**: `ScopedQuietConfigLog` (`common/config/config.h`) silences
+  `LoadConfig`'s informational narrative for sweeps such as the inject child's per-target
+  prewarm, which logs one `[Inject] Prewarmed N target configs` summary instead.
 - State summaries: log on change (first call + whenever any displayed parameter
   differs), not every evaluation. Applied to
-  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay/pseudo_overlay_render.cpp`)
-  and `[Inject Thread] Read handle for texIdx` (`captureengine/media/media_main_threads_inject.cpp`,
-  per-slot handle change detection).
-- Hot-path heartbeats: use `ce::log_meter::ShouldLogCadence(callIndex,
-  firstBurstCount, stride)` from `common/logging/log_meter.h` (tested in
-  `tests/test_log_meter.cpp`) — first N calls, then every stride-th. Applied to
-  the PostSL `SUBMIT` line (`hook/d3d12/dx12_hook_postsl_render_submit.cpp`,
-  first 20, then every 600th, plus the bounded dense window 1700-1900 that
-  replaced the old "every frame after 1800" crash investigation logging) and
-  the wrapper IAT retry scan (`hook/wrappers/wrapper_hooks_devices.cpp`, first
-  10, then every 300th, plus log-on-summary-change).
+  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay/pseudo_overlay_render.cpp`,
+  the NOT RECORDING blink phase excluded) and `[Inject Thread] Read handle for texIdx`
+  (`captureengine/media/media_main_threads_inject.cpp`, per-slot handle change detection).
+- Hot-path heartbeats without a meaningful key: `ce::log_meter::ShouldLogCadence(callIndex,
+  firstBurstCount, stride)` — first N calls, then every stride-th. Applied to the wrapper IAT
+  retry scan (`hook/wrappers/wrapper_hooks_devices.cpp`, first 10, then every 300th, plus
+  log-on-summary-change).
 - Retry/scan paths: never log the same "Initializing..." line on every retry.
   `IAT: Initializing D3D11 hooks...` now uses the same
   `ShouldLogRepeatedIATScan` metering as D3D9/D3D10/DDraw
@@ -119,9 +144,8 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   additionally metered (first 10 + every 300th) because a module without
   hookable exports (e.g. real nvngx_dlssg.dll) never latches as hooked and
   used to re-log both lines every ~1 s scan (`hook/ffx/ffx_hook_api.cpp`).
-- Trace-only byte dumps: inline-hook per-instruction dumps are limited to the
-  first 4 installs and every 100th install; the compact per-hook lines stay
-  (`hook/hooking/inline_hook.cpp`).
+- Trace-only relocation detail: inline-hook per-instruction lines (one hex string each) are
+  limited to the first 4 installs and every 100th install (`hook/hooking/inline_hook.cpp`).
 - NVNGX preset hints (`hook/ngx/nvngx_hook_internal.h`): `UpdatePresetHint`
   logs only when the observed value actually changes (SR hints via the existing
   atomic array, RR hints via a new per-quality sentinel array), and the
@@ -158,9 +182,10 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   class; ~2 lines/s per app source is the accepted cost), as do
   `[AppAudioCapture] Source Sync`/`Content`, the `[AppLatency] WARNING` and the
   `[PullAudio] Drift debug` counters.
-- Already-fine patterns to keep: `% N`-counter gating (ECL timing windows,
-  fence health), `LogOncePerParam`, log-on-diff FG plan/transition lines, and
-  bounded "first K after transition" windows (Reinit/Post-transition/PostFGOff).
+- Already-fine patterns to keep: windowed summaries (`DX12 DIAG: ECL timing/10s`),
+  `LogOncePerParam` (keyed by parameter and message format), log-on-diff FG
+  plan/transition lines, and bounded "first K after transition" windows that log
+  their first line, changes and last line.
 
 ## High-Value Existing Test Files
 - `tests/test_fg_session_state.cpp`

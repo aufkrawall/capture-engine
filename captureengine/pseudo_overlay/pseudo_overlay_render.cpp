@@ -233,10 +233,15 @@ void PseudoOverlay::UpdateOverlay() {
     const int currentGhost = ghostActive ? 1 : 0;
     const int currentStatusDark = statusDarkForCapture_ ? 1 : 0;
     const int currentShouldHaveVisible = shouldHaveVisibleOverlay ? 1 : 0;
+    // While the NOT RECORDING warning blinks (2 s on, 1 s off), its visibility and the overlay's follow
+    // the blink; warning activation and deactivation have their own lines, so the blink phase alone
+    // is not a change worth logging.
+    const bool blinkPhaseOnly = warnActive_ && currentWarnVisible != s_lastWarnVisible;
     if (s_firstUpdateOverlayLog || currentMode != s_lastMode || currentRecordingState != s_lastRecordingState ||
-        currentIsRecording != s_lastIsRecording || currentWarnVisible != s_lastWarnVisible ||
-        currentGhost != s_lastGhost || currentStatusDark != s_lastStatusDark ||
-        currentShouldHaveVisible != s_lastShouldHaveVisible) {
+        currentIsRecording != s_lastIsRecording || currentGhost != s_lastGhost ||
+        currentStatusDark != s_lastStatusDark ||
+        (!blinkPhaseOnly &&
+         (currentWarnVisible != s_lastWarnVisible || currentShouldHaveVisible != s_lastShouldHaveVisible))) {
         LogDebug(
             "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
             "statusDark=%d shouldHaveVisible=%d",

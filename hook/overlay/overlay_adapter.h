@@ -217,8 +217,10 @@ private:
 
     // Last logged digest of the metric rows plus their validity flags, so a row
     // that alternates between a reading and "--" is visible in the log.
-    char lastLoggedRowDigest[320] = "";
+    char lastLoggedRowDigest[320] = "";  // last digest seen (logged or not), to count changes
+    char lastLoggedRowValidity[16] = "";
     uint32_t rowDigestChanges = 0;
+    ULONGLONG lastRowDigestLogMs = 0;
 
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;

@@ -227,19 +227,19 @@ void LogDlssFrameGenerationDriverOverrides(const AppConfig& config) {
     else
         snprintf(targetText, sizeof(targetText), "%u fps", static_cast<unsigned>(parsed.fgTargetFps));
 
-    LogInfo("Config: DLSS FG driver-settings override: mode=%s fixed=%ux dynamicMax=%ux targetRate=%s",
+    ConfigLogInfo("Config: DLSS FG driver-settings override: mode=%s fixed=%ux dynamicMax=%ux targetRate=%s",
             DlssFGModeName(parsed.fgMode), static_cast<unsigned>(parsed.fgFixedCount),
             static_cast<unsigned>(parsed.fgDynamicMax), targetText);
 
     if (parsed.fgMode == kDlssFGModeDynamic && NormalizeDLSSFGFactor(parsed.dlssFGFactor) > 0) {
-        LogInfo(
+        ConfigLogInfo(
             "Config: dlss_fg_mode=dynamic stands dlss_fg_factor=%dx down - the runtime picks the cadence per "
             "frame and a forced factor would pin it",
             parsed.dlssFGFactor);
     }
     if (parsed.fgFixedCount > 0 && NormalizeDLSSFGFactor(parsed.dlssFGFactor) > 0 &&
         static_cast<int>(parsed.fgFixedCount) != NormalizeDLSSFGFactor(parsed.dlssFGFactor)) {
-        LogInfo(
+        ConfigLogInfo(
             "Config: dlss_fg_fixed_count=%ux and dlss_fg_factor=%dx disagree; they travel different channels "
             "(driver settings vs NGX parameters) and the runtime sees both",
             static_cast<unsigned>(parsed.fgFixedCount), parsed.dlssFGFactor);
@@ -451,14 +451,14 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
 
     // Log parsed presets for debugging
     if (IsDebugLoggingEnabled(config.logLevel)) {
-        LogInfo("Config: Parsed dlss_sr_preset='%s' -> ID %u", config.graphics.dlssSRPreset.c_str(),
+        ConfigLogInfo("Config: Parsed dlss_sr_preset='%s' -> ID %u", config.graphics.dlssSRPreset.c_str(),
                 config.graphics.parsed.srPreset);
         if (config.graphics.parsed.srPreset > 0) {
-            LogInfo("Config: Global SR Preset Override Active: '%c'",
+            ConfigLogInfo("Config: Global SR Preset Override Active: '%c'",
                     (config.graphics.parsed.srPreset <= 26) ? ('A' + config.graphics.parsed.srPreset - 1) : '?');
         }
         if (config.graphics.parsed.fgPreset > 0) {
-            LogInfo("Config: Frame Generation Preset Override Active: '%c' (ID %u)",
+            ConfigLogInfo("Config: Frame Generation Preset Override Active: '%c' (ID %u)",
                     (config.graphics.parsed.fgPreset <= 26) ? ('A' + config.graphics.parsed.fgPreset - 1) : '?',
                     config.graphics.parsed.fgPreset);
         }

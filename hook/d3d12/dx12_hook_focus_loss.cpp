@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_main_shared.h"
 
 
@@ -149,14 +150,22 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (!ce::dx12_overlay_policy::ShouldWaitForOverlayCompletion(dx12_hook_g_State.fenceEvent != nullptr, usingDedicatedQueue,
                                                                  overlayModule != nullptr, runtimeMode,
                                                                  processHasForeground)) {
-        static std::atomic<int> s_policySkipLog{0};
-        if (ShouldLogOverlayCompletionWaitDiagnostic(s_policySkipLog)) {
+        // Per Present: log the first skip, every change of the reason (fence value excluded, it grows
+        // every frame) and every 1000th as a heartbeat.
+        static std::atomic<uint32_t> s_policySkipCount{0};
+        static ce::log_meter::ChangeGate s_policySkipGate;
+        const auto verdict = s_policySkipGate.ObserveOrEvery(
+            ce::log_meter::FieldKey(dx12_hook_g_State.fenceEvent, usingDedicatedQueue, overlayModule, runtimeMode,
+                                    processHasForeground, foregroundWindow, foregroundPid),
+            s_policySkipCount.fetch_add(1, std::memory_order_relaxed) + 1, 1000);
+        if (verdict) {
             HookLog(
                 "DX12: Overlay completion wait skipped by policy "
-                "(event=%p dedicated=%d overlayModule=%s runtime=%s foreground=%d fg=%p/%lu fence=%llu)",
+                "(event=%p dedicated=%d overlayModule=%s runtime=%s foreground=%d fg=%p/%lu fence=%llu)%s",
                 dx12_hook_g_State.fenceEvent, usingDedicatedQueue ? 1 : 0, overlayModule ? overlayModule : "none",
                 ce::fg_runtime::GetRuntimeModeName(runtimeMode), processHasForeground ? 1 : 0, foregroundWindow,
-                foregroundPid, (unsigned long long)fenceValueToWait);
+                foregroundPid, (unsigned long long)fenceValueToWait,
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
         return;
     }
@@ -172,10 +181,15 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
             if (focusLossMode) {
                 ClearFocusLossPendingOverlayFence("pre-Present wait already complete", fenceValueToWait, completedVal);
             }
-            static std::atomic<int> s_fenceAlreadyCompleteLog{0};
-            if (s_fenceAlreadyCompleteLog.fetch_add(1, std::memory_order_relaxed) < 50) {
-                HookLog("DX12: Overlay fence already complete (fence=%llu, completed=%llu, mode=%s)",
-                        (unsigned long long)fenceValueToWait, (unsigned long long)completedVal, waitMode);
+            static std::atomic<uint32_t> s_fenceAlreadyCompleteCount{0};
+            static ce::log_meter::ChangeGate s_fenceAlreadyCompleteGate;
+            const auto verdict = s_fenceAlreadyCompleteGate.ObserveOrEvery(
+                ce::log_meter::FieldKey(waitMode), s_fenceAlreadyCompleteCount.fetch_add(1, std::memory_order_relaxed) + 1,
+                1000);
+            if (verdict) {
+                HookLog("DX12: Overlay fence already complete (fence=%llu, completed=%llu, mode=%s)%s",
+                        (unsigned long long)fenceValueToWait, (unsigned long long)completedVal, waitMode,
+                        ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
             return;
         }

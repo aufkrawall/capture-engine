@@ -11,7 +11,7 @@ void LogSnapshotLine(const FGSessionSnapshot& snapshot);
 void LogPlanLine(const FGSessionSnapshot& snapshot, const FGActionPlan& plan);
 void LogPlanDiffIfNeeded(const FGSessionSnapshot& previousSnapshot, const FGActionPlan& previousPlan,
                          const FGSessionSnapshot& currentSnapshot, const FGActionPlan& currentPlan);
-void LogLegacyDecisionLine(const FGSessionSnapshot& snapshot, const FGActionPlan& plan);
+void LogLegacyDecisionLine(const FGSessionSnapshot& snapshot, const FGActionPlan& plan, uint64_t unchangedRepeats);
 void LogTransitionIfNeeded(const FGSessionSnapshot& previousSnapshot, const FGActionPlan& previousPlan,
                            const FGSessionSnapshot& currentSnapshot, const FGActionPlan& currentPlan,
                            const char* trigger);

@@ -148,7 +148,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 // full decomposition is logged, not just the published number:
                 // a wide min/max spread or a low association ratio is how a
                 // broken present/display correlation announces itself.
-                constexpr DWORD kSystemLatencyLogIntervalMs = 5000;
+                constexpr DWORD kSystemLatencyLogIntervalMs = 15000;
                 const bool latencySourceChanged = latencySource != lastLoggedSystemLatencySource;
                 const bool latencyLogDue =
                     !hasObservedSystemLatencySource || latencySourceChanged ||

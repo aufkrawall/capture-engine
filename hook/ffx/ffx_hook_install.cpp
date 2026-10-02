@@ -91,9 +91,13 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
     PfnFfxConfigure configureCtx = (PfnFfxConfigure)GetProcAddress(hModule, "ffxConfigure");
 
     if (!createCtx && !destroyCtx && !configureCtx) {
+        // Module scans repeat on every load notification; report each module instance once (plus a
+        // heartbeat every 1000 scans so a long session still shows the scan running).
         static std::atomic<int> s_noExportLogCount{0};
+        static ce::log_meter::KeyedOnce<32> s_noExportModules;
         const int logCount = s_noExportLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (logCount <= 20 || (logCount % 300) == 0) {
+        if (s_noExportModules.FirstTime(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hModule))) ||
+            (logCount % 1000) == 0) {
             HookLog("FFX Hook: No supported FFX exports found in %s - skipping (log=%d)", ffx_hook_moduleName, logCount);
         }
         return false;

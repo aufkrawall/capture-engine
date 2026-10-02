@@ -238,10 +238,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     if (!overrideSection.empty()) {
-        LogInfo("Config: applying per-process override section [%s] for process '%s'", overrideSection.c_str(),
+        ConfigLogInfo("Config: applying per-process override section [%s] for process '%s'", overrideSection.c_str(),
                 currentProcessName.c_str());
     } else if (!currentProcessName.empty()) {
-        LogDebug("Config: no per-process profile matched process '%s'", currentProcessName.c_str());
+        ConfigLogDebug("Config: no per-process profile matched process '%s'", currentProcessName.c_str());
     }
 
     ConfigReader reader(path, overrideSection);

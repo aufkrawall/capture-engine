@@ -1,6 +1,11 @@
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <type_traits>
 
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
@@ -23,5 +28,104 @@ inline bool ShouldLogCadence(uint32_t callIndex, uint32_t firstBurstCount, uint3
     }
     return callIndex <= firstBurstCount || (callIndex % stride) == 0;
 }
+
+// The fields of a log line that make it a different line, folded into one key (FNV-1a over each
+// field's bytes). Leave counters, sequence numbers and rotating back-buffer pointers out: a key
+// should change exactly when a reader would say the state changed.
+template <typename... Fields>
+inline uint64_t FieldKey(const Fields&... fields) noexcept {
+    static_assert((std::is_trivially_copyable_v<Fields> && ...), "FieldKey hashes raw field bytes");
+    uint64_t hash = 14695981039346656037ull;
+    auto mix = [&hash](const auto& field) {
+        unsigned char bytes[sizeof(field)];
+        std::memcpy(bytes, &field, sizeof(field));
+        for (unsigned char byte : bytes) {
+            hash ^= byte;
+            hash *= 1099511628211ull;
+        }
+    };
+    (mix(fields), ...);
+    return hash == UINT64_MAX ? hash - 1 : hash;  // UINT64_MAX is ChangeGate's "nothing seen yet"
+}
+
+// Gate for a line that repeats with the same content: it is logged when its key changes, and
+// optionally once per heartbeat while it stays the same. Each logged line learns how many identical
+// repeats were swallowed since the previous one, so suppression loses no information. Lock-free;
+// racing callers can at worst log one extra line.
+class ChangeGate {
+public:
+    struct Verdict {
+        bool log = false;
+        uint64_t suppressed = 0;  // identical repeats swallowed since the previous logged line
+        explicit operator bool() const { return log; }
+    };
+
+    constexpr ChangeGate() = default;
+    explicit constexpr ChangeGate(uint64_t heartbeatMs) : heartbeatMs_(heartbeatMs) {}
+
+    // `nowMs` only matters with a heartbeat; any monotonic millisecond clock works.
+    Verdict Observe(uint64_t key, uint64_t nowMs = 0) noexcept { return Decide(key, nowMs, false); }
+
+    // Always logs (for a line the caller must emit anyway, e.g. the end of a diagnostic window)
+    // and still reports the repeats swallowed since the previous logged line.
+    Verdict Force(uint64_t key, uint64_t nowMs = 0) noexcept { return Decide(key, nowMs, true); }
+
+    // The per-frame form: logs on the first call, on every key change and on every `stride`-th call
+    // (`callIndex` 1-based, as for ShouldLogCadence), which keeps a heartbeat in long steady runs.
+    Verdict ObserveOrEvery(uint64_t key, uint32_t callIndex, uint32_t stride) noexcept {
+        return Decide(key, 0, stride != 0 && callIndex % stride == 0);
+    }
+
+private:
+    Verdict Decide(uint64_t key, uint64_t nowMs, bool force) noexcept {
+        const uint64_t previous = lastKey_.exchange(key, std::memory_order_acq_rel);
+        const bool heartbeat =
+            heartbeatMs_ != 0 && nowMs - lastLogMs_.load(std::memory_order_relaxed) >= heartbeatMs_;
+        if (previous == key && !heartbeat && !force) {
+            suppressed_.fetch_add(1, std::memory_order_relaxed);
+            return {};
+        }
+        lastLogMs_.store(nowMs, std::memory_order_relaxed);
+        return {true, suppressed_.exchange(0, std::memory_order_acq_rel)};
+    }
+
+    std::atomic<uint64_t> lastKey_{UINT64_MAX};
+    std::atomic<uint64_t> lastLogMs_{0};
+    std::atomic<uint64_t> suppressed_{0};
+    uint64_t heartbeatMs_ = 0;
+};
+
+// " (+N unchanged)" when a ChangeGate swallowed repeats, "" otherwise; for a trailing "%s".
+struct SuppressedNote {
+    char text[40] = {};
+    explicit SuppressedNote(uint64_t suppressed) noexcept {
+        if (suppressed != 0)
+            std::snprintf(text, sizeof(text), " (+%llu unchanged)", static_cast<unsigned long long>(suppressed));
+    }
+    const char* c_str() const noexcept { return text; }
+};
+
+// Remembers the first `Capacity` distinct keys, for "log once per module/handle/target" lines.
+// When full it reports every further unseen key as new: it may log too much, never too little.
+template <size_t Capacity>
+class KeyedOnce {
+public:
+    bool FirstTime(uint64_t key) noexcept {
+        const uint64_t stored = key == 0 ? 1 : key;  // 0 marks an empty slot
+        for (auto& slot : slots_) {
+            uint64_t current = slot.load(std::memory_order_acquire);
+            if (current == stored)
+                return false;
+            if (current == 0 && slot.compare_exchange_strong(current, stored, std::memory_order_acq_rel))
+                return true;
+            if (current == stored)
+                return false;
+        }
+        return true;
+    }
+
+private:
+    std::atomic<uint64_t> slots_[Capacity] = {};
+};
 
 }  // namespace ce::log_meter

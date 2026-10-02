@@ -83,10 +83,21 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                       cachedSystemMetrics.gpuFanValid ? 'f' : '-',
                       cachedSystemMetrics.gpuCoreClockValid ? 'k' : '-',
                       cachedSystemMetrics.cpuCoreClockValid ? 'K' : '-');
+        // Readability (the valid= mask and any row reading "--") is logged the moment it changes; the
+        // values themselves move with every sensor update and repeat the [Sensors] summary, so a change
+        // of values alone is logged at most once a minute.
+        char rowValidity[sizeof(lastLoggedRowValidity)];
+        std::snprintf(rowValidity, sizeof(rowValidity), "%.9s%c%c%c%c", std::strrchr(rowDigest, '=') + 1,
+                      std::strstr(cachedCpuMetricsText, "--") ? 'x' : '.', std::strstr(cachedGpuMetricsText, "--") ? 'x' : '.',
+                      std::strstr(cachedGpuClocksText, "--") ? 'x' : '.', std::strstr(cachedCpuClocksText, "--") ? 'x' : '.');
         if (std::strcmp(rowDigest, lastLoggedRowDigest) != 0) {
             std::snprintf(lastLoggedRowDigest, sizeof(lastLoggedRowDigest), "%s", rowDigest);
             ++rowDigestChanges;
-            if (rowDigestChanges <= 60 || (rowDigestChanges % 50) == 0) {
+            const ULONGLONG rowNowMs = GetTickCount64();
+            const bool validityChanged = std::strcmp(rowValidity, lastLoggedRowValidity) != 0;
+            if (validityChanged || rowNowMs - lastRowDigestLogMs >= 60000) {
+                std::snprintf(lastLoggedRowValidity, sizeof(lastLoggedRowValidity), "%s", rowValidity);
+                lastRowDigestLogMs = rowNowMs;
                 HookLogImportant("[Overlay] Rows changed #%u: %s", rowDigestChanges, rowDigest);
             }
         }

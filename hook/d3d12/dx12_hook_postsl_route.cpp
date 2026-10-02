@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "hook/fg/fg_cost_probe.h"
 
@@ -17,13 +18,17 @@ if (!vtblPtr)
 
 if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
     static std::atomic<int> s_protectedOfficialFFXSetQueueSkipLogCount{0};
+    static ce::log_meter::ChangeGate s_protectedOfficialFFXSetQueueSkipGate;
     const int logCount = s_protectedOfficialFFXSetQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 20 || (logCount % 256) == 0) {
+    const auto verdict = s_protectedOfficialFFXSetQueueSkipGate.ObserveOrEvery(
+        ce::log_meter::FieldKey(pQueue, callerFromThirdPartyOverlay), static_cast<uint32_t>(logCount) + 1, 1024);
+    if (verdict) {
         HookLogImportant(
             "DX12: Protected official FFX startup pending - skipping SetCommandQueue side effects "
-            "(queue=%p callerOverlay=%d caller=%s count=%d)",
+            "(queue=%p callerOverlay=%d caller=%s count=%d)%s",
             pQueue, callerFromThirdPartyOverlay ? 1 : 0,
-            callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", logCount + 1);
+            callerModulePath && callerModulePath[0] ? callerModulePath : "unknown", logCount + 1,
+            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     return;
 }

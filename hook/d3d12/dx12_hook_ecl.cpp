@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/pacing/pacing_trace.h"
 
 #include "hook/fg/fg_cost_probe.h"
@@ -170,8 +171,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     GetCurrentThreadId());
             }
         }
-        // Periodic (~1s) ECL-timing summary for steady-state comparison.
-        if (nowMs - windowStart >= 1000 && windowCount > 0) {
+        // Periodic (10 s) ECL-timing summary for steady-state comparison; single slow submissions
+        // are reported on their own above.
+        if (nowMs - windowStart >= 10000 && windowCount > 0) {
             if (s_eclWindowStartMs.compare_exchange_strong(windowStart, nowMs, std::memory_order_relaxed)) {
                 const double winMax = s_eclWindowMaxMs.exchange(0.0, std::memory_order_relaxed);
                 const double winSum = s_eclWindowSumMs.exchange(0.0, std::memory_order_relaxed);
@@ -182,7 +184,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 // recognise, so each one re-ran queue registration (command-queue mutex + queue calls)
                 // on a submission thread. Under active FG this belongs at or near zero.
                 HookLogImportant(
-                    "DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f registrations=%u tid=0x%04X", winCnt,
+                    "DX12 DIAG: ECL timing/10s: count=%u maxMs=%.2f avgMs=%.3f registrations=%u tid=0x%04X", winCnt,
                     winMax, winCnt ? (winSum / (double)winCnt) : 0.0, winRegistrations, GetCurrentThreadId());
             }
         }
@@ -410,14 +412,18 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 "(queue=%p lists=%u eclProgress=%u)",
                 pThis, NumCommandLists, progressCount);
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
+            static ce::log_meter::ChangeGate s_protectedOfficialFFXECLPassThroughGate;
             const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 1024) == 0) {
+            const auto verdict = s_protectedOfficialFFXECLPassThroughGate.ObserveOrEvery(
+                ce::log_meter::FieldKey(pThis, GetCurrentThreadId()), static_cast<uint32_t>(logCount) + 1, 1024);
+            if (verdict) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "
                     "side effects until enabled ffxConfigure or present-callback proof "
-                    "(queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d progress=%u processFrameProgress=%u)",
+                    "(queue=%p lists=%u eclCount=%llu tid=0x%04X count=%d progress=%u processFrameProgress=%u)%s",
                     pThis, NumCommandLists, (unsigned long long)eclCount, GetCurrentThreadId(), logCount + 1,
-                    progressCount, dx12_hook_g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire));
+                    progressCount, dx12_hook_g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire),
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
 
             ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);

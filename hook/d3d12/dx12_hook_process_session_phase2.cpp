@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::Phase2() {
@@ -707,11 +708,12 @@ if (!gameQueue) {
     HookLog("DX12: ProcessFrame - no game queue, skipping overlay");
         return ProcessFrameFlow::kReturn;
 }
-// Log queue selection decision (rate-limited: first 10, then every 300)
+// Queue selection decision: the first frame, every change of queue or path, and every 3000th frame.
 {
-    static int s_queueLogCount = 0;
-    ++s_queueLogCount;
-    if (s_queueLogCount <= 10 || (s_queueLogCount % 300) == 0) {
+    static std::atomic<uint32_t> s_queueLogCount{0};
+    static ce::log_meter::ChangeGate s_queueLogGate;
+    const uint32_t queueLogCount = s_queueLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    {
         bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         bool fsrFGActive = IsFSRFrameGenerationActive();
         const char* qPath = "unknown";
@@ -737,12 +739,17 @@ if (!gameQueue) {
             qPath = "cmdQueue";
         else
             qPath = "otherQ";
-        HookLogImportant(
-            "DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p primaryQ=%p scQ=%p cmdQ=%p lastWorkingQ=%p "
-            "path=%s) #%d",
-            gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, dx12_hook_g_OriginalGameQueue,
-            dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), dx12_hook_g_SwapchainQueue, (void*)g_CommandQueue.load(),
-            dx12_hook_g_PostSLLastWorkingQueue, qPath, s_queueLogCount);
+        const auto queueVerdict = s_queueLogGate.ObserveOrEvery(
+            ce::log_meter::FieldKey(gameQueue, slFGNow, fsrFGActive, qPath), queueLogCount, 3000);
+        if (queueVerdict) {
+            HookLogImportant(
+                "DX12: ProcessFrame queue=%p (slFG=%d fsrFG=%d origQ=%p primaryQ=%p scQ=%p cmdQ=%p lastWorkingQ=%p "
+                "path=%s) #%u%s",
+                gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, dx12_hook_g_OriginalGameQueue,
+                dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), dx12_hook_g_SwapchainQueue,
+                (void*)g_CommandQueue.load(), dx12_hook_g_PostSLLastWorkingQueue, qPath, queueLogCount,
+                ce::log_meter::SuppressedNote(queueVerdict.suppressed).c_str());
+        }
     }
 }
 

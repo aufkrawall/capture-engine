@@ -171,7 +171,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
 
       _putenv("FERMI_UNOPT_LOD_SPREAD=1");
       _putenv("NIAGARA_UNOPT_LOD_SPREAD=1");
-      EarlyLog("DllMain: Process '%s' is a whitelisted hook target", fileName);
+      EarlyLog("DllMain: Process '%s' pid=%lu %s is a whitelisted hook target", fileName,
+               static_cast<unsigned long>(GetCurrentProcessId()), sizeof(void*) == 8 ? "x64" : "x86");
       InitializeInheritedRendererBootstrapSignal();
     } else {
       // Not whitelisted - assume blacklist

@@ -252,7 +252,8 @@ TEST(ModulePinSourceTest, InlinePatchingValidatesItsTargetWithoutPinningForeignP
     const std::string installSource = ReadSource("hook/hooking/inline_hook.cpp");
     ASSERT_FALSE(installSource.empty());
     const size_t guard = installSource.find("ce::module_pin::IsReadableCode(target, PATCH_SIZE)");
-    const size_t firstByteRead = installSource.find("code[i]");
+    // The first read of the target's bytes: deciding whether another hook already owns the entry.
+    const size_t firstByteRead = installSource.find("IsAlreadyHooked(code, is64bit)");
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(firstByteRead, std::string::npos);
     EXPECT_LT(guard, firstByteRead);

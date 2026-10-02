@@ -297,8 +297,6 @@ uint8_t* GetTrampolineSlot(void* nearAddr) {
 
     g_trampolineOffset = (g_trampolineOffset + TRAMPOLINE_ALIGNMENT - 1) & ~(TRAMPOLINE_ALIGNMENT - 1);
     uint8_t* slot = g_trampolinePool + g_trampolineOffset;
-    HookLog("GetTrampolineSlot: Allocating slot at offset %zu (addr=%p) for target %p", g_trampolineOffset, slot,
-            nearAddr);
     g_trampolineOffset += TRAMPOLINE_ENTRY_SIZE;
     return slot;
 }
@@ -355,7 +353,6 @@ bool WriteJump(uint8_t* dest, void* target) {
     // Write full 6-byte JMP header atomically (32-bit aligned, single memcpy)
     const uint8_t jmpHeader[6] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
     memcpy(dest, jmpHeader, 6);
-    HookLog("WriteJump: x64 JMP [RIP+0] -> %p at %p", target, dest);
     return true;
 #else
     // E9 [4-byte relative offset]
@@ -379,8 +376,6 @@ bool WriteJump(uint8_t* dest, void* target) {
     memcpy(dest + 1, &rel, 4);
     MemoryBarrier();
     dest[0] = 0xE9;
-    HookLog("WriteJump: x86 JMP rel32 -> %p at %p (rel=0x%08X, dest+5=%p)", target, dest, (unsigned)rel,
-            (void*)(dest + 5));
     return true;
 #endif
 }

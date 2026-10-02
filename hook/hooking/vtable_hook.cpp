@@ -150,14 +150,10 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
         return ErrorAlreadyCreated;
     }
 
-    // DEBUG: Log memory region details
+    // The slot's page protection goes into the Create line below.
     MEMORY_BASIC_INFORMATION mbi = {};
-    if (VirtualQuery(reinterpret_cast<void*>(ppEntry), &mbi, sizeof(mbi))) {
-        HookLog(
-            "VTableHook: DEBUG - Target %p in region: Base=%p, Size=%zu, "
-            "Protect=0x%X",
-            ppEntry, mbi.BaseAddress, mbi.RegionSize, mbi.Protect);
-    }
+    if (!VirtualQuery(reinterpret_cast<void*>(ppEntry), &mbi, sizeof(mbi)))
+        mbi.Protect = 0;
 
     // Whatever CE keeps as "the original" is what CE will call. When that is
     // another injector's detour rather than the vtable's own implementation,
@@ -180,12 +176,12 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
     // Save original function pointer if requested
     if (ppOriginal) {
         *ppOriginal = currentValue;
-        HookLog("VTableHook: Saving original %p to caller's storage", currentValue);
     }
     MemoryBarrier();
 
-    HookLog("VTableHook: Create - Patching %p (Original=%p, Detour=%p, SelfHook=%d)", ppEntry, currentValue, pDetour,
-            isSelfHook ? 1 : 0);
+    HookLog("VTableHook: Create - Patching %p (Original=%p, Detour=%p, SelfHook=%d, protect=0x%lX%s)", ppEntry,
+            currentValue, pDetour, isSelfHook ? 1 : 0, static_cast<unsigned long>(mbi.Protect),
+            ppOriginal ? ", original returned to caller" : "");
 
     try {
         const auto [insertedOwnership, inserted] =

@@ -388,9 +388,17 @@ inline int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
     return ResolveEffectiveDLSSFGFactor(cfg.parsed.dlssFGFactor, cfg.parsed.fgMode);
 }
 
+// Logs a parameter line only when its text differs from the last line logged for the same parameter
+// and message format. Keyed by format too: one parameter is reported by several messages (override,
+// injection, read-back), and keying by parameter alone made those alternate and defeat the dedup.
 inline void LogOncePerParam(const char* param, const char* msg, ...) {
+    struct LastLog {
+        std::string param;
+        const char* format;
+        std::string text;
+    };
     static std::mutex s_mutex;
-    static std::vector<std::pair<std::string, std::string>> s_LastLogs;
+    static std::vector<LastLog> s_LastLogs;
 
     // Format for comparison (private stack buffer)
     char buffer[1024];
@@ -403,17 +411,17 @@ inline void LogOncePerParam(const char* param, const char* msg, ...) {
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         for (auto& entry : s_LastLogs) {
-            if (entry.first == param) {
-                if (entry.second == buffer) {
+            if (entry.format == msg && entry.param == param) {
+                if (entry.text == buffer) {
                     return;  // Same message, skip
                 }
-                entry.second = buffer;
+                entry.text = buffer;
                 shouldLog = true;
                 break;
             }
         }
         if (!shouldLog) {
-            s_LastLogs.push_back({param, buffer});
+            s_LastLogs.push_back({param, msg, buffer});
             shouldLog = true;
         }
     }

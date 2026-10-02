@@ -154,7 +154,7 @@ void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path)
                     trackList += ",";
                 trackList += std::to_string(appAudio.tracks[t]);
             }
-            LogInfo("Config: [%s] app-audio source process='%s' tracks=[%s]", profileSection,
+            ConfigLogInfo("Config: [%s] app-audio source process='%s' tracks=[%s]", profileSection,
                     appAudio.processName.c_str(), trackList.c_str());
             config.audioSources.push_back(appAudio);
         } else if (appAudio.enabled) {
@@ -214,7 +214,7 @@ void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path)
                 trackList += std::to_string(appAudio.tracks[t]);
 
             }
-            LogInfo("Config: [%s] app-audio source process='%s' processId=%lu tracks=[%s]", section,
+            ConfigLogInfo("Config: [%s] app-audio source process='%s' processId=%lu tracks=[%s]", section,
                     appAudio.processName.empty() ? "-" : appAudio.processName.c_str(),
                     (unsigned long)appAudio.processId, trackList.c_str());
             config.audioSources.push_back(appAudio);

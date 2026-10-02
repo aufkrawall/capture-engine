@@ -21,11 +21,11 @@ inline FpsLimiterTraceFileState& GetFpsLimiterTraceFileState() {
     return state;
 }
 
-inline void FpsLimiter::TraceLog(const char* fmt, ...) {
+inline bool FpsLimiter::TraceLog(const char* fmt, ...) {
     if (!HookDebugLoggingEnabled())
-        return;
+        return false;
     if (traceLogCount_ >= 200)
-        return;
+        return false;
     traceLogCount_++;
     char buf[512];
     va_list args;
@@ -33,33 +33,37 @@ inline void FpsLimiter::TraceLog(const char* fmt, ...) {
     int msgLen = vsnprintf(buf, sizeof(buf) - 32, fmt, args);
     va_end(args);
     if (msgLen <= 0)
-        return;
+        return false;
 
     SYSTEMTIME st;
     GetLocalTime(&st);
     char line[600];
-    int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n", st.wHour, st.wMinute, st.wSecond,
-                       st.wMilliseconds, buf);
+    // The 200th line also says the file is full, so its silence afterwards is not mistaken for a stall.
+    int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n%s", st.wHour, st.wMinute, st.wSecond,
+                       st.wMilliseconds, buf,
+                       traceLogCount_ == 200 ? "[trace cap of 200 lines reached; limiter stats continue in hook_debug.log]\n"
+                                             : "");
     if (len <= 0)
-        return;
+        return false;
+    len = (std::min)(len, static_cast<int>(sizeof(line) - 1));
     FpsLimiterTraceFileState& s_TraceState = GetFpsLimiterTraceFileState();
 
     std::unique_lock<std::mutex> lock(s_TraceState.mutex, std::defer_lock);
     if (!lock.try_lock())
-        return;  // Drop trace if another thread is writing; never stall Present
+        return false;  // Drop trace if another thread is writing; never stall Present
 
     if (s_TraceState.path[0] == '\0') {
         BuildLogFilePathForModuleAddress((const void*)this, "fps_limiter_trace.log", s_TraceState.path,
                                          sizeof(s_TraceState.path));
     }
     if (s_TraceState.path[0] == '\0')
-        return;
+        return false;
 
     if (s_TraceState.file == INVALID_HANDLE_VALUE) {
         s_TraceState.file = CreateFileA(s_TraceState.path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                         nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (s_TraceState.file == INVALID_HANDLE_VALUE)
-            return;
+            return false;
     }
 
     DWORD written = 0;
@@ -67,7 +71,9 @@ inline void FpsLimiter::TraceLog(const char* fmt, ...) {
         written != static_cast<DWORD>(len)) {
         CloseHandle(s_TraceState.file);
         s_TraceState.file = INVALID_HANDLE_VALUE;
+        return false;
     }
+    return true;
 }
 
 inline void FpsLimiter::ResetTraceLogPath() {

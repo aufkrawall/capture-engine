@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "hook/hooking/module_pin.h"
 #include "hook/present/vulkan_renderer_policy.h"
@@ -233,10 +234,12 @@ void CheckAndInstallHooks() {
   bool d3d11Or10DeviceCreated = !dxvkD3D11WrapperLoaded && WasD3D11Or10DeviceCreated();
   bool d3d12DeviceCreated = WasD3D12DeviceCreated();
 
-  // Log third-party overlay presence for diagnostics
+  // Third-party overlay presence, once per loaded instance (this runs on every hook pass).
   {
+    static ce::log_meter::KeyedOnce<8> s_loggedOverlayModules;
     HMODULE hGameoverlay = GetModuleHandleA("gameoverlayrenderer.dll");
-    if (hGameoverlay) {
+    if (hGameoverlay &&
+        s_loggedOverlayModules.FirstTime(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hGameoverlay)))) {
       char overlayPath[MAX_PATH] = {};
       GetModuleFileNameA(hGameoverlay, overlayPath, MAX_PATH);
       HookLog("Third-party overlay detected: gameoverlayrenderer.dll (%s)", overlayPath);

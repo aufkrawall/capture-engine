@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "common/logging/log_meter.h"
 
 namespace DXGIShared {
 void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
@@ -263,15 +264,20 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
     if (shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute) {
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
-            static std::atomic<int> s_confirmedStandaloneNormalRouteCallbackLogCount{0};
-            int logCount = s_confirmedStandaloneNormalRouteCallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 10 || (logCount % 100) == 0) {
+            static std::atomic<uint32_t> s_confirmedStandaloneNormalRouteCallbackLogCount{0};
+            static ce::log_meter::ChangeGate s_confirmedStandaloneNormalRouteCallbackGate;
+            const uint32_t logCount =
+                s_confirmedStandaloneNormalRouteCallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            const auto verdict = s_confirmedStandaloneNormalRouteCallbackGate.ObserveOrEvery(
+                ce::log_meter::FieldKey(ctx.postSLConfirmedButStartupSettling, ctx.presentOwner, ctx.presentDepthVal,
+                                        ctx.currentThreadId),
+                logCount, 1000);
+            if (verdict) {
                 HookLogImportant(
                     "DetourPresent: Invoking PostSL on confirmed standalone Streamline Present while keeping the "
-                    "normal "
-                    "SL route #%d (settling=%d owner=0x%04X depth=%d tid=0x%04X)",
+                    "normal SL route #%u (settling=%d owner=0x%04X depth=%d tid=0x%04X)%s",
                     logCount, ctx.postSLConfirmedButStartupSettling ? 1 : 0, ctx.presentOwner, ctx.presentDepthVal,
-                    ctx.currentThreadId);
+                    ctx.currentThreadId, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
             InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }

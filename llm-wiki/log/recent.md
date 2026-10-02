@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-02 - Log volume wave 2a: on-change gates, one-line hook installs, shorter prefix (0.1.6946, run pending)
+
+- `ce::log_meter::ChangeGate`/`KeyedOnce` (log_meter.h) now meter ~25 repeat families; conventions and the new
+  `HH:MM:SS.mmm T<tid> #<seq> p<pid>` hook prefix are in regression-testing-and-logging.md, evidence in
+  refactor-roadmap.md. Next hardware session: check that `(+N unchanged)` suffixes appear, `hook_debug.log` shrinks
+  by roughly half, and no transition/failure line is missing compared with an older session of the same game.
+
 ### 2026-10-02 - Source tree relaid out by subsystem (no behavior change)
 
 - 1006 files moved from flat `hook/{apis,common}`, `captureengine/`, `common/`, `mediaengine/` into subsystem
@@ -143,4 +150,3 @@
 - Fix (0.1.6923): `SwapchainCallSerializer` around sl.dlss_g Present/Present1 + the three swapchain before-hooks;
   the wait pumps sent messages. Unit-tested incl. the SendMessage deadlock case. Hardware run pending: alt-tab
   in and out of fullscreen with DLSS-G on, look for the serializer setup line and `waited for another thread`.
-

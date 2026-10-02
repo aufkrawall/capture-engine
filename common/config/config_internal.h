@@ -34,6 +34,10 @@
 
 #include "common/logging/logging.h"
 
+// LogInfo/LogDebug for LoadConfig's narrative; silent under ScopedQuietConfigLog.
+void ConfigLogInfo(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void ConfigLogDebug(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
 #include "common/platform/strict_float_parse.h"
 
 #include "common/platform/strict_integer_parse.h"

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
 
@@ -136,14 +137,23 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
             s_postFGOffFrames.store(pfCount + 1, std::memory_order_release);
             auto* pfDev = g_Device.load(std::memory_order_acquire);
             HRESULT pfDevHr = pfDev ? pfDev->GetDeviceRemovedReason() : E_FAIL;
-            // Log first 50 every frame, then every 10th frame up to 300
-            if (pfCount < 50 || pfCount % 10 == 0) {
+            // 300 frames after FG turns off: the first frame, every change of the overlay/FG state, the
+            // last frame. The cooldown counts down per frame, so only "cooldown running" is in the key.
+            static ce::log_meter::ChangeGate s_postFGOffGate;
+            const int cooldown = dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire);
+            const bool fgActive = g_FGCompat.IsFGActive();
+            const uint64_t pfKey = ce::log_meter::FieldKey(dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
+                                                           cooldown > 0, slFGNow, fgActive, pfDevHr,
+                                                           GetCurrentThreadId());
+            const auto pfVerdict = (pfCount == 0 || pfCount == 299) ? s_postFGOffGate.Force(pfKey)
+                                                                   : s_postFGOffGate.Observe(pfKey);
+            if (pfVerdict) {
                 HookLogImportant(
                     "DX12: PostFGOff-PF #%d (overlayInit=%d syncInit=%d cooldown=%d "
-                    "slFG=%d fgActive=%d devRemoved=0x%08X tid=0x%04X)",
-                    pfCount + 1, dx12_hook_g_State.overlayInit ? 1 : 0, dx12_hook_g_State.syncInit ? 1 : 0,
-                    dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire), slFGNow ? 1 : 0,
-                    g_FGCompat.IsFGActive() ? 1 : 0, (unsigned)pfDevHr, GetCurrentThreadId());
+                    "slFG=%d fgActive=%d devRemoved=0x%08X tid=0x%04X)%s",
+                    pfCount + 1, dx12_hook_g_State.overlayInit ? 1 : 0, dx12_hook_g_State.syncInit ? 1 : 0, cooldown,
+                    slFGNow ? 1 : 0, fgActive ? 1 : 0, (unsigned)pfDevHr, GetCurrentThreadId(),
+                    ce::log_meter::SuppressedNote(pfVerdict.suppressed).c_str());
             }
             // Immediately abort overlay rendering if device was removed
             if (FAILED(pfDevHr)) {

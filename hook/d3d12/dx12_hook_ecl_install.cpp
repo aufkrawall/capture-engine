@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_ecl_shared.h"
 
 
@@ -17,12 +18,15 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
 
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
         static std::atomic<int> s_protectedOfficialFFXQueueHookSkipLogCount{0};
+        static ce::log_meter::ChangeGate s_protectedOfficialFFXQueueHookSkipGate;
         const int logCount = s_protectedOfficialFFXQueueHookSkipLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 20 || (logCount % 128) == 0) {
+        const auto verdict = s_protectedOfficialFFXQueueHookSkipGate.ObserveOrEvery(
+            ce::log_meter::FieldKey(queue), static_cast<uint32_t>(logCount) + 1, 1024);
+        if (verdict) {
             HookLogImportant(
                 "DX12: Protected official FFX startup pending - skipping ExecuteCommandLists vtable hook refresh "
-                "(queue=%p count=%d)",
-                queue, logCount + 1);
+                "(queue=%p count=%d)%s",
+                queue, logCount + 1, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
         return;
     }

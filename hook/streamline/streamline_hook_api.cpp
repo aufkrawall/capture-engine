@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
 
@@ -236,22 +237,32 @@ bool TryRecordOfficialUiResourceTag(const void* frameToken,  const slResourceTag
 }
 
 
+// Logs a UI-tag opportunity (and its tags) on the first call, whenever the tag set changes and on every
+// 300th call; returns the opportunity number when it logged, 0 otherwise. The tag set is the api,
+// feature, viewport and each tag's type/lifecycle/extent (resources and frame tokens rotate per frame;
+// `localTagSignature` carries the same for tags a caller passes as evaluate inputs).
 uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken,  uint32_t viewportKey, 
                                      const slResourceTag* tags,  uint32_t numTags,  void* streamline_hook_commandBuffer, 
-                                     uint32_t feature,  uint32_t numInputs) {
-
-
+                                     uint32_t feature,  uint32_t numInputs, uint64_t localTagSignature) {
     static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
+    static ce::log_meter::ChangeGate s_uiTagSetGate;
     const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (opportunity > 12 && (opportunity % 300) != 0) {
+    uint64_t tagSet = ce::log_meter::FieldKey(tagApi, feature, viewportKey, numTags, numInputs, localTagSignature);
+    for (uint32_t i = 0; tags && i < numTags; ++i) {
+        tagSet = ce::log_meter::FieldKey(tagSet, tags[i].type, tags[i].lifecycle, tags[i].extent.left, tags[i].extent.top,
+                                         tags[i].extent.width, tags[i].extent.height);
+    }
+    const auto verdict = s_uiTagSetGate.ObserveOrEvery(tagSet, opportunity, 300);
+    if (!verdict) {
         return 0;
     }
 
     HookLogImportant(
         "Streamline Hook: Official UI tag record opportunity #%u (api=%s feature=%u frame=%p viewport=%u "
-        "tags=%p numTags=%u inputs=%u commandBuffer=%p d3d12=%d)",
+        "tags=%p numTags=%u inputs=%u commandBuffer=%p d3d12=%d)%s",
         opportunity, tagApi ? tagApi : "unknown", feature, frameToken, viewportKey, tags, numTags, numInputs,
-        streamline_hook_commandBuffer, streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
+        streamline_hook_commandBuffer, streamline_hook_g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0,
+        ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
     for (uint32_t i = 0; i < loggedTags; ++i) {
         const slResourceTag& tag = tags[i];
@@ -354,6 +365,7 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
     if (wantsUiBootstrapRecord) {
         slViewportHandle viewport;
         uint32_t localTagCount = 0;
+        uint64_t localTagSignature = 0;
         constexpr uint32_t kMaximumInputChainDepth = 16;
         if (inputs) {
             for (uint32_t i = 0; i < numInputs; ++i) {
@@ -364,6 +376,10 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
                     }
                     if (StructTypesEqual(input->structType, streamline_hook_kResourceTagStructType)) {
                         ++localTagCount;
+                        const auto& tag = *static_cast<const slResourceTag*>(input);
+                        localTagSignature = ce::log_meter::FieldKey(localTagSignature, i, depth, tag.type, tag.lifecycle,
+                                                                    tag.extent.left, tag.extent.top, tag.extent.width,
+                                                                    tag.extent.height);
                     }
                     const slBaseStructure* next = input->next;
                     if (next == input) {
@@ -376,7 +392,8 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
 
         const uint32_t opportunity =
             LogOfficialUiTagOpportunity("slEvaluateFeature", frameToken, GetViewportKey(viewport), nullptr,
-                                        localTagCount, streamline_hook_commandBuffer, feature, numInputs);
+                                        localTagCount, streamline_hook_commandBuffer, feature, numInputs,
+                                        localTagSignature);
         uint32_t tagIndex = 0;
         bool recorded = false;
         if (inputs) {

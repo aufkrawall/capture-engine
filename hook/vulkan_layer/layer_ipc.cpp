@@ -695,8 +695,9 @@ void LayerIPC_Log(const char* fmt, ...) {
     GetLocalTime(&st);
     DWORD tid = GetCurrentThreadId();
 
-    int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer), "[%02d:%02d:%02d.%03d] [T:%04lX] [%s] %s", st.wHour,
-                       st.wMinute, st.wSecond, st.wMilliseconds, (unsigned long)tid, g_ProcessName, s_formatBuffer);
+    int len = snprintf(s_lineBuffer, sizeof(s_lineBuffer), "%02d:%02d:%02d.%03d T%04lX p%lu %s", st.wHour,
+                       st.wMinute, st.wSecond, st.wMilliseconds, (unsigned long)tid,
+                       static_cast<unsigned long>(GetCurrentProcessId()), s_formatBuffer);
 
     if (len > 0) {
         auto& logs = mem->logs;

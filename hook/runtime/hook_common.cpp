@@ -176,8 +176,14 @@ SharedMemoryLayout* g_pSharedMem = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
 std::atomic<bool> g_GraphicsOverridesActive{false};
 
-// Global sequence counter for log ordering diagnostics
-static std::atomic<uint64_t> g_LogSequence{0};
+// Per-file line sequence numbers. A gap in one file's `#N` column is a line that file lost (ring
+// overflow or a contended fallback write), not a line written to another file.
+static std::atomic<uint64_t> g_HookDebugLogSequence{0};
+static std::atomic<uint64_t> g_OtherLogSequence{0};
+
+static std::atomic<uint64_t>& LogSequenceFor(const char* baseFilename) {
+    return strcmp(baseFilename, "hook_debug.log") == 0 ? g_HookDebugLogSequence : g_OtherLogSequence;
+}
 
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
@@ -224,12 +230,13 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     GetLocalTime(&st);
     DWORD tid = GetCurrentThreadId();
 
-    // Get sequence number for ordering diagnostics
-    uint64_t seq = g_LogSequence.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t seq = LogSequenceFor(baseFilename).fetch_add(1, std::memory_order_relaxed);
 
-    int len =
-        snprintf(lineBuffer, sizeof(lineBuffer), "[%02d:%02d:%02d.%03d] [T:%04lX] [S:%llu] [%s] %s", st.wHour,
-                 st.wMinute, st.wSecond, st.wMilliseconds, tid, (unsigned long long)seq, g_ProcessName, formatBuffer);
+    // "HH:MM:SS.mmm T<tid> #<seq> p<pid> message". Several hooked processes can share one session file;
+    // each process's first line ("DllMain: Process '<exe>' pid=<pid> ...") maps its pid to the exe.
+    int len = snprintf(lineBuffer, sizeof(lineBuffer), "%02d:%02d:%02d.%03d T%04lX #%llu p%lu %s", st.wHour,
+                       st.wMinute, st.wSecond, st.wMilliseconds, tid, (unsigned long long)seq,
+                       static_cast<unsigned long>(GetCurrentProcessId()), formatBuffer);
 
     if (len <= 0)
         return;
@@ -449,22 +456,18 @@ static void HookLogInternal(LogLevel level, const char* fmt, va_list args) {
     char buffer[4096];
     vsnprintf(buffer, sizeof(buffer), fmt, args);
 
-    const char* levelStr = "INFO";
+    // Only levels that mean something get a tag; HookLogImportant/EarlyLog lines carry none either.
     switch (level) {
         case LogLevel::Error:
-            levelStr = "ERROR";
+            EarlyLog("[ERROR] %s", buffer);
             break;
         case LogLevel::Warn:
-            levelStr = "WARN";
-            break;
-        case LogLevel::Debug:
-            levelStr = "DEBUG";
+            EarlyLog("[WARN] %s", buffer);
             break;
         default:
+            EarlyLog("%s", buffer);
             break;
     }
-
-    EarlyLog("[%s] %s", levelStr, buffer);
 }
 
 void HookLog(const char* fmt, ...) {

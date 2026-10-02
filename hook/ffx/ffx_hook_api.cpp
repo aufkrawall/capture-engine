@@ -98,8 +98,10 @@ void Init() {
             }
             // Module exists but has no FFX exports (e.g. real nvngx_dlssg.dll)
             static std::atomic<int> s_moduleWithoutExportsLogCount{0};
+            static ce::log_meter::KeyedOnce<32> s_modulesWithoutExports;
             const int logCount = s_moduleWithoutExportsLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 20 || (logCount % 300) == 0) {
+            if (s_modulesWithoutExports.FirstTime(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hMod))) ||
+                (logCount % 1000) == 0) {
                 HookLog("FFX Hook: Module %s has no FFX exports, continuing search (log=%d)", ffxModuleNames[i],
                         logCount);
             }

@@ -39,7 +39,7 @@ become a library other clients use for recording, overlay and 3D overrides.
 | # | Wave | Kind | Status |
 | --- | --- | --- | --- |
 | 1 | Subsystem directory layout (repo-map.md), root-relative includes, layout helpers in `build_common.py` | mechanical | done 2026-10-02 |
-| 2 | Runtime log volume: the top families below, an ON-CHANGE gate in `log_meter.h`, shorter prefixes | behavioral (logging only) | next |
+| 2 | Runtime log volume: the top families below, an ON-CHANGE gate in `log_meter.h`, shorter prefixes | behavioral (logging only) | 2a done 2026-10-02 (0.1.6946): ~25 families + hook/Vulkan prefix; remaining: service `Log()` date prefix, DisplayTiming line, PRESENT STAGE COST legend, `sl.log` verbosity |
 | 3 | `tools/log_digest.py`: a per-session digest (files, warnings/errors, transitions, top templates, gaps) so an investigation starts from ~5 KB instead of ~2 MB | new tool | planned |
 | 4 | Agent docs: compress `index.md` routing paragraphs and AGENTS.md without dropping any rule | docs | planned |
 | 5 | Dead code: linker `--gc-sections` report + unreferenced units (e.g. excluded `hook/wrappers/d3d12_*_wrap.cpp`) | behavioral (removal) | planned |
@@ -83,7 +83,8 @@ Measured on sessions `20261002_063748` (Gothic2 DDraw + Strange Brigade DX12), `
 - Vendor logs: the SL2 bridge sets `sl.log` verbose whenever `log_level>=trace` (the default): 7.7-7.9 MB per
   W3 session, and it contains the unredacted account name. NGX logs follow `[DLSS] ngx_log`.
 - Loss: the shared log ring overflowed 507-1,399 times per session; 0-15 lines per session were dropped.
-  Less volume means fewer drops. `[S:N]` counts per process across all files, so gaps are ambiguous.
+  Less volume means fewer drops. The old `[S:N]` counted per process across all files (gaps ambiguous);
+  since 0.1.6946 the `#N` column counts per file.
 - Text consumers that must keep working: `testapp/run_tests_support.py` (`IAT: Patched D3D11CreateDevice`,
   `DX12: ProcessFrame queue=`, `DX12: Overlay frame #`, media-log date prefix), `tools/analysis` media-log
   parsers (full-date prefix), `tools/analyze_sl1_probe.py`, `tests/test_present_stage_cost.cpp`.

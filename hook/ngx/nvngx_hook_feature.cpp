@@ -96,7 +96,12 @@ static void UpdateDLSSVersion() {
                     state.versionMinor = minor;
                     state.versionPatch = patch;
 
-                    if (g_IPC->GetSharedMem()->GetDebugLogging()) {
+                    // Install() retries until nvngx.dll loads; report each distinct version once.
+                    static std::atomic<uint32_t> s_lastLoggedVersion{0};
+                    const uint32_t packedVersion = (static_cast<uint32_t>(major) << 20) |
+                                                   (static_cast<uint32_t>(minor) << 10) | static_cast<uint32_t>(patch);
+                    if (g_IPC->GetSharedMem()->GetDebugLogging() &&
+                        s_lastLoggedVersion.exchange(packedVersion, std::memory_order_relaxed) != packedVersion) {
                         NVNGXLog("NVNGX: Detected Version from %S: v%d.%d.%d", fileName, major, minor, patch);
                     }
                 }
@@ -636,7 +641,9 @@ void NVNGXHook::Install() {
         // connected if game just started. But GetSharedMem() checks connection.
         if (g_IPC && g_IPC->GetSharedMem()) {
             g_IPC->GetSharedMem()->dlssState.srPreset = PresetIDToChar(presetVal);
-            NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", PresetIDToChar(presetVal));
+            static std::atomic<uint32_t> s_lastLoggedForcedPreset{0};
+            if (s_lastLoggedForcedPreset.exchange(presetVal, std::memory_order_relaxed) != presetVal)
+                NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", PresetIDToChar(presetVal));
         }
     }
 

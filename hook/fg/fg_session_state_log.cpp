@@ -1,4 +1,5 @@
 #include "fg_session_state.h"
+#include "common/logging/log_meter.h"
 
 #include <cstdio>
 #include <cstring>
@@ -81,15 +82,16 @@ void LogPlanDiffIfNeeded(const FGSessionSnapshot& previousSnapshot, const FGActi
         fg_runtime::GetRuntimeModeName(currentPlan.publishRuntimeMode));
 }
 
-void LogLegacyDecisionLine(const FGSessionSnapshot& snapshot, const FGActionPlan& plan) {
+void LogLegacyDecisionLine(const FGSessionSnapshot& snapshot, const FGActionPlan& plan, uint64_t unchangedRepeats) {
     HookLogImportant(
         "FG LEGACY DECISION sessionEpoch=%u runtimeEpoch=%u startupPhase=%s route=%s transport=%s callback=%d "
-        "queueRole=%s queue=%p steamRisk=%d threadSafeBypass=%d confirmed=%d settling=%d",
+        "queueRole=%s queue=%p steamRisk=%d threadSafeBypass=%d confirmed=%d settling=%d%s",
         snapshot.sessionEpoch, snapshot.runtimeEpoch, GetFGStartupPhaseName(snapshot.startupPhase),
         GetFGPresentRouteName(plan.route), GetFGPresentTransportName(plan.transport), plan.invokePostSLCallback ? 1 : 0,
         GetFGQueueRoleName(plan.selectedQueueRole), plan.selectedQueue,
         snapshot.transportRisk.steamOverlayLoaded ? 1 : 0, plan.transport == FGPresentTransport::kDirectBypass ? 1 : 0,
-        snapshot.postSLConfirmedRendering ? 1 : 0, snapshot.postSLSettling ? 1 : 0);
+        snapshot.postSLConfirmedRendering ? 1 : 0, snapshot.postSLSettling ? 1 : 0,
+        ce::log_meter::SuppressedNote(unchangedRepeats).c_str());
 }
 
 void LogTransitionIfNeeded(const FGSessionSnapshot& previousSnapshot, const FGActionPlan& previousPlan,

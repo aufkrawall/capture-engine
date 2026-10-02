@@ -6,6 +6,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Session logs are much smaller and easier to read:** lines that repeated unchanged every frame or every second (overlay submits, queue choices, frame-generation decisions, controller loop timing, config re-reads for every whitelisted game) are now written when something changes, with a "(+N unchanged)" count instead of the copies. Each hook installation is one line instead of about twenty, the Steam overlay is reported once instead of on every hook pass, and FPS-limiter stats and Vulkan layer lines are no longer written to two files. Nothing that marks a change, a failure or a recovery was removed.
+
+- **Shorter hook log lines:** `hook_debug.log` lines read `time T<thread> #<line> p<pid> message`. The line number counts per file, so a gap now always means a lost line, and each process's first line names its executable and pid.
+
 - **UE5 Ray Reconstruction preset no longer causes foliage shimmer:** `high` and `full` now use the smooth (bilinear) Lumen screen-probe interpolation that UE's own Epic and Cinematic quality use. Before, every level forced the cheaper stochastic one, which shows as boiling on foliage in shade and on thin detail further away. `medium` and up also undo UE 5.7's noisy half-resolution GI integration (`r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=1`).
 
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.

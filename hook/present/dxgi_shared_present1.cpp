@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/pacing/pacing_trace_boundary.h"
@@ -373,15 +374,20 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute) {
         auto postSLCallback = g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
         if (postSLCallback) {
-            static std::atomic<int> s_confirmedStandaloneNormalRouteCallbackLogCount1{0};
-            int logCount =
+            static std::atomic<uint32_t> s_confirmedStandaloneNormalRouteCallbackLogCount1{0};
+            static ce::log_meter::ChangeGate s_confirmedStandaloneNormalRouteCallbackGate1;
+            const uint32_t logCount =
                 s_confirmedStandaloneNormalRouteCallbackLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (logCount <= 10 || (logCount % 100) == 0) {
+            const auto verdict = s_confirmedStandaloneNormalRouteCallbackGate1.ObserveOrEvery(
+                ce::log_meter::FieldKey(postSLConfirmedButStartupSettling, presentOwner, presentDepthVal,
+                                        currentThreadId),
+                logCount, 1000);
+            if (verdict) {
                 HookLogImportant(
                     "DetourPresent1: Invoking PostSL on confirmed standalone Streamline Present1 while keeping the "
-                    "normal SL route #%d (settling=%d owner=0x%04X depth=%d tid=0x%04X)",
+                    "normal SL route #%u (settling=%d owner=0x%04X depth=%d tid=0x%04X)%s",
                     logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal,
-                    currentThreadId);
+                    currentThreadId, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
             InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }

@@ -39,7 +39,7 @@ void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) {
             break;
         }
     }
-    LogInfo(
+    ConfigLogInfo(
         "[LiveStream] Enabled service=%s endpoint=<redacted> encoder=%s fps=%d videoBitrate=%s "
         "audioBitrate=%dKbps bFrames=%d",
         ce::live_stream::ServiceName(service), config.video.encoder.c_str(), config.video.fps,

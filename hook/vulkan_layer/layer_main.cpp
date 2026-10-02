@@ -198,7 +198,12 @@ static void InitLayerLogFile() {
 
     g_LogFile = fopen(logPath.string().c_str(), "a");
     if (g_LogFile) {
-        fprintf(g_LogFile, "\n=== Layer DLL Loaded ===\n");
+        // Maps this process's p<pid> column to its executable; several processes can share the file.
+        char exePath[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+        const char* exeName = std::strrchr(exePath, '\\');
+        fprintf(g_LogFile, "\n=== Layer DLL Loaded: %s pid=%lu %s ===\n", exeName ? exeName + 1 : exePath,
+                static_cast<unsigned long>(GetCurrentProcessId()), sizeof(void*) == 8 ? "x64" : "x86");
         fflush(g_LogFile);
     }
 }
@@ -225,17 +230,16 @@ void LayerLog(const char* fmt, ...) {
 
     // Deliberately no write to the host process's stdout/stderr - see LayerEarlyLog.
 
-    // Also to log file
+    // One file per message: vulkan_layer.log when this process could open it, otherwise the host's
+    // vulkan-layer.log through IPC. Writing both duplicated every layer line in the session.
     if (g_LogFile) {
         SYSTEMTIME st;
         GetLocalTime(&st);
-        fprintf(g_LogFile, "[%02u:%02u:%02u.%03u] [VulkanLayer] %s\n", st.wHour, st.wMinute, st.wSecond,
-                st.wMilliseconds, buf);
+        fprintf(g_LogFile, "%02u:%02u:%02u.%03u T%04lX p%lu %s\n", st.wHour, st.wMinute, st.wSecond,
+                st.wMilliseconds, static_cast<unsigned long>(GetCurrentThreadId()),
+                static_cast<unsigned long>(GetCurrentProcessId()), buf);
         fflush(g_LogFile);
-    }
-
-    // Also to IPC if connected
-    if (LayerIPC_IsConnected()) {
+    } else if (LayerIPC_IsConnected()) {
         LayerIPC_Log("%s", buf);
     }
 }

@@ -13,7 +13,9 @@ inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence,
 
     const PresentToDisplaySnapshot p2dDiagnostics = SnapshotPresentToDisplay();
 
-    TraceLog(
+    // The full line goes to fps_limiter_trace.log; hook_debug.log gets the short form only once the
+    // trace file stops taking lines (cap reached or debug logging off), so the stats are never logged twice.
+    const bool traced = TraceLog(
         "Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
         "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
         "resets=%u phaseSkipped=%u dedup=%u activeDedup=%u frontLoad=%d budgetUs=%lld "
@@ -26,12 +28,14 @@ inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence,
         timerPostPresentPending_ ? 1 : 0, frameWorkBudgetUs_, observedFrameWorkCeilingUs_,
         frontLoadHeadroomUs_, frontLoadGpuHeadroomUs_, p2dDiagnostics.recentUs, p2dDiagnostics.floorUs,
         frontLoadOverrunCount_, lastFrontLoadedReleaseWaitUs_, frontLoadedReleaseCount_);
-    HookLog(
-        "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
-        "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",
-        cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
-        effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
-        cadence.statsSkippedGridSlots, applyActiveDedupCount_);
+    if (!traced) {
+        HookLog(
+            "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
+            "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",
+            cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
+            effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
+            cadence.statsSkippedGridSlots, applyActiveDedupCount_);
+    }
     if (cadence.statsBoundaryCallbacks > 0 || cadence.statsGeneratedPasses > 0 ||
         cadence.statsConcurrentSkips > 0 || cadence.statsGroupResets > 0) {
         // Rate-limited by the 120-frame stats window. A nonzero concurrent

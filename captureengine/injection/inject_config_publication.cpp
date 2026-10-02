@@ -140,6 +140,11 @@ void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* r
 void PublicationWarmupLoop() {
     PublicationState& publication = Publication();
     std::unique_lock<std::mutex> lock(publication.mutex);
+    // One summary line per sweep; each resolve itself runs quiet (ScopedQuietConfigLog), because
+    // LoadConfig's narrative is the same base file once per whitelisted target.
+    uint64_t sweepGeneration = UINT64_MAX;
+    size_t sweepResolved = 0;
+    ULONGLONG sweepStartMs = 0;
     for (;;) {
         publication.warmSignal.wait(lock,
                                     [&] { return publication.warmStop || !publication.warmQueue.empty(); });
@@ -147,6 +152,11 @@ void PublicationWarmupLoop() {
             return;
 
         const uint64_t generation = publication.configGeneration;
+        if (generation != sweepGeneration) {
+            sweepGeneration = generation;
+            sweepResolved = 0;
+            sweepStartMs = GetTickCount64();
+        }
         const std::string target = std::move(publication.warmQueue.front());
         publication.warmQueue.pop_front();
         const std::string cacheKey = NormalizeTargetProcessName(target);
@@ -162,6 +172,7 @@ void PublicationWarmupLoop() {
         AppConfig resolved;
         bool resolveSucceeded = false;
         try {
+            ScopedQuietConfigLog quiet;
             resolved = ResolveTargetConfig(configPath, baseConfig, target);
             resolveSucceeded = true;
         } catch (const std::exception& error) {
@@ -179,6 +190,12 @@ void PublicationWarmupLoop() {
         if (publication.configGeneration != generation)
             continue;
         publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{target, std::move(resolved)});
+        ++sweepResolved;
+        if (publication.warmQueue.empty()) {
+            LogInfo("[Inject] Prewarmed %zu target configs in %llu ms (config generation %llu)", sweepResolved,
+                    static_cast<unsigned long long>(GetTickCount64() - sweepStartMs),
+                    static_cast<unsigned long long>(generation));
+        }
     }
 }
 

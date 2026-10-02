@@ -445,14 +445,22 @@ if (dx12_hook_g_State.fence) {
 }
 if (dx12_hook_g_State.fence) {
     UINT64 completed = dx12_hook_g_State.fence->GetCompletedValue();
-    static int s_fenceHealthLog = 0;
-    s_fenceHealthLog++;
+    // First frame, every change of "GPU behind by more than 10 fences" or of the allocator count, every
+    // 3000th frame, and once per 60 frames while the GPU stays behind.
+    static std::atomic<uint32_t> s_fenceHealthLog{0};
+    static ce::log_meter::ChangeGate s_fenceHealthGate;
+    const uint32_t fenceHealthIndex = s_fenceHealthLog.fetch_add(1, std::memory_order_relaxed) + 1;
     UINT64 expected = dx12_hook_g_State.currentFenceValue;
     UINT64 gap = (expected > completed) ? (expected - completed) : 0;
-    if (s_fenceHealthLog <= 10 || (s_fenceHealthLog % 200 == 0) || gap > 10) {
+    const bool gpuBehind = gap > 10;
+    const auto fenceVerdict = s_fenceHealthGate.ObserveOrEvery(
+        ce::log_meter::FieldKey(gpuBehind, dx12_hook_g_State.allocators.size()), fenceHealthIndex,
+        gpuBehind ? 60 : 3000);
+    if (fenceVerdict) {
         HookLogImportant(
-            "DX12: PostSL fence health #%d — completed=%llu current=%llu gap=%llu allocators=%d idx=%d",
-            s_fenceHealthLog, completed, expected, gap, (int)dx12_hook_g_State.allocators.size(), idx);
+            "DX12: PostSL fence health #%u — completed=%llu current=%llu gap=%llu allocators=%d idx=%d%s",
+            fenceHealthIndex, completed, expected, gap, (int)dx12_hook_g_State.allocators.size(), idx,
+            ce::log_meter::SuppressedNote(fenceVerdict.suppressed).c_str());
     }
 }
 static std::atomic<int> s_postSLRenderCount{0};
@@ -556,21 +564,21 @@ if (SUCCEEDED(postDevReason) && submittedQueue != dx12_hook_g_PostSLLastWorkingQ
     HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", dx12_hook_g_PostSLLastWorkingQueue, submittedQueue);
     SetPostSLLastWorkingQueue(submittedQueue);
 }
-// Metered diagnostic: the old condition logged every frame once renderNum
-// passed 1800 (added during the SL-metadata DEVICE_HUNG investigation), which
-// at PostSL rates produced ~5.2k SUBMIT lines in a 90-second trace session.
-// Keep the first-burst + heartbeat cadence, retain a bounded dense window
-// around the historical crash region (frames 1700-1900), and always log device
-// failure. Routing/state transitions are already covered by dedicated
-// transition logs elsewhere.
-if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(renderNum), 20, 600) ||
-    (renderNum >= 1700 && renderNum <= 1900) || FAILED(postDevReason)) {
+// First 20 submits, every 600th, every change of the submit route (queue, ECL path, thread,
+// epoch) and every device failure. bufIdx is left out of the route key: it rotates every frame.
+static ce::log_meter::ChangeGate s_submitRouteGate;
+const auto submitRouteChange = s_submitRouteGate.Observe(ce::log_meter::FieldKey(
+    submittedQueue, scQueue, isSLWrapperQ, rendered, usedVirtualCall, usedRealECL, usedOrigECL, crossQueueSynced,
+    GetCurrentThreadId(), s_reactivationEpoch));
+if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(renderNum), 20, 600) || submitRouteChange ||
+    FAILED(postDevReason)) {
     HookLogImportant(
         "DX12: Post-SL overlay SUBMIT #%d (bufIdx=%u queue=%p scQueue=%p slWrapper=%d rendered=%d "
-        "virtualCall=%d realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X epoch=%d)",
+        "virtualCall=%d realECL=%d origECL=%d xqSync=%d tid=0x%04X devRemoved=0x%08X epoch=%d)%s",
         renderNum, bufIdx, submittedQueue, scQueue, isSLWrapperQ ? 1 : 0, rendered ? 1 : 0, usedVirtualCall ? 1 : 0,
         usedRealECL ? 1 : 0, usedOrigECL ? 1 : 0, crossQueueSynced ? 1 : 0, GetCurrentThreadId(),
-        (unsigned)postDevReason, s_reactivationEpoch);
+        (unsigned)postDevReason, s_reactivationEpoch,
+        ce::log_meter::SuppressedNote(submitRouteChange.suppressed).c_str());
 }
 if (FAILED(postDevReason)) {
     HookLogImportant(

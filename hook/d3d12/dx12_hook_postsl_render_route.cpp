@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_postsl_session.h"
 
 PostSLFlow PostSLRenderSession::Chunk2() {
@@ -390,16 +391,21 @@ const auto postSLBarrierMode = ce::dx12_overlay_policy::DecidePostSLBackbufferBa
 bool slFGBarrierFree = postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly;
 if (willRender && bb) {
     D3D12_RESOURCE_DESC bbDesc = bb->GetDesc();
-    // AddRef/Release to get refcount without side effects
-    bb->AddRef();
-    ULONG refCount = bb->Release();
-    static int s_bbHealthLog = 0;
-    if (s_bbHealthLog < 10 || (s_bbHealthLog % 200 == 0)) {
-        HookLogImportant("DX12: PostSL BB health #%d — bb=%p refCnt=%lu w=%u h=%u fmt=%u bufIdx=%d slFG=%d",
-                         s_bbHealthLog, bb, refCount, (unsigned)bbDesc.Width, (unsigned)bbDesc.Height,
-                         (unsigned)bbDesc.Format, bufIdx, cachedSLFGActive ? 1 : 0);
+    // First frame, every change of size/format/FG, every 3000th frame. The refcount probe runs
+    // only for a logged line (diagnostic only, never a liveness test).
+    static std::atomic<uint32_t> s_bbHealthLog{0};
+    static ce::log_meter::ChangeGate s_bbHealthGate;
+    const uint32_t bbHealthIndex = s_bbHealthLog.fetch_add(1, std::memory_order_relaxed);
+    const auto bbVerdict = s_bbHealthGate.ObserveOrEvery(
+        ce::log_meter::FieldKey(bbDesc.Width, bbDesc.Height, bbDesc.Format, cachedSLFGActive), bbHealthIndex + 1, 3000);
+    if (bbVerdict) {
+        bb->AddRef();
+        const ULONG refCount = bb->Release();
+        HookLogImportant("DX12: PostSL BB health #%u — bb=%p refCnt=%lu w=%u h=%u fmt=%u bufIdx=%d slFG=%d%s",
+                         bbHealthIndex, bb, refCount, (unsigned)bbDesc.Width, (unsigned)bbDesc.Height,
+                         (unsigned)bbDesc.Format, bufIdx, cachedSLFGActive ? 1 : 0,
+                         ce::log_meter::SuppressedNote(bbVerdict.suppressed).c_str());
     }
-    s_bbHealthLog++;
 }
 if (willRender && !usePostSLOffscreenComposite && slFGBarrierFree) {
     // UAV barrier: full GPU pipeline flush, no state tracking modification

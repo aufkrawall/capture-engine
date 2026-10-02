@@ -367,13 +367,8 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
     // a lock a peer may be waiting on is worth avoiding on principle.
     patchLock.unlock();
 
-    if (lookup.usedResolvedAddress) {
-        WrapperLog("IAT: Successfully patched name-less %s!%s in module %p by resolved address", sourceModule,
-                   functionName, targetModule);
-    } else {
-        WrapperLog("IAT: Successfully patched %s!%s in module %p", sourceModule, functionName, targetModule);
-    }
-    WrapperLog("IAT: Patched %s!%s in module %p", sourceModule, functionName, targetModule);
+    WrapperLog("IAT: Patched %s!%s in module %p%s", sourceModule, functionName, targetModule,
+               lookup.usedResolvedAddress ? " (name-less import, matched by resolved address)" : "");
     return true;
 }
 

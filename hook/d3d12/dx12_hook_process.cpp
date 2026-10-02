@@ -83,7 +83,8 @@ static void DX12_ProcessFrameExternalForPresent(IDXGISwapChain* pSwapChain, bool
         const auto wrapperActivityAfter = GetWrapperHookActivitySnapshot();
         static std::atomic<int> s_slowProcessFrameLogCount{0};
         const int logCount = s_slowProcessFrameLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 200 || (logCount % 50) == 0) {
+        // First 20 slow frames in full, then every 50th; `#` counts every slow frame in between.
+        if (logCount < 20 || (logCount % 50) == 0) {
             const auto breakdown = ce::dx12_process_frame_diagnostics::ComputeBreakdown(timings);
             const bool wrapperActivityOverlap = ce::dx12_process_frame_diagnostics::DidActivityOverlap(
                 wrapperActivityBefore, wrapperActivityAfter);
@@ -92,7 +93,7 @@ static void DX12_ProcessFrameExternalForPresent(IDXGISwapChain* pSwapChain, bool
                 "innerOther=%.3fms capture=%.3fms overlay=%.3fms "
                 "[valid=%d acquire=%.3fms record=%.3fms submit=%.3fms post=%.3fms] screenshot=%.3fms "
                 "queueLockWait=%.3fms wrapperInitOverlap=%d wrapperActivity=%llu/%u->%llu/%u "
-                "innerCalled=%d reentrantSkip=%d tid=0x%04X",
+                "innerCalled=%d reentrantSkip=%d tid=0x%04X #%d",
                 static_cast<double>(timings.totalUs) / 1000.0,
                 static_cast<double>(breakdown.externalUs) / 1000.0,
                 static_cast<double>(timings.innerUs) / 1000.0,
@@ -107,7 +108,7 @@ static void DX12_ProcessFrameExternalForPresent(IDXGISwapChain* pSwapChain, bool
                 static_cast<double>(timings.commandQueueLockWaitUs) / 1000.0, wrapperActivityOverlap ? 1 : 0,
                 static_cast<unsigned long long>(wrapperActivityBefore.generation), wrapperActivityBefore.activeCalls,
                 static_cast<unsigned long long>(wrapperActivityAfter.generation), wrapperActivityAfter.activeCalls,
-                timings.innerCalled ? 1 : 0, timings.reentrantInnerSkipped ? 1 : 0, GetCurrentThreadId());
+                timings.innerCalled ? 1 : 0, timings.reentrantInnerSkipped ? 1 : 0, GetCurrentThreadId(), logCount + 1);
         }
     }
 }

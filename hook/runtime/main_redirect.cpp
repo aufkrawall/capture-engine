@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "common/platform/module_enumeration.h"
 #include "hook/streamline/streamline_bridge_policy.h"
@@ -764,9 +765,13 @@ void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* modu
     return;  // The overwhelmingly common case: the module creates no processes.
   }
 
-  // Rare enough to report every time: only a module that actually imports
-  // CreateProcess reaches here, and knowing which ones did is what tells a
-  // later reader whether an updater launch could have been seen.
-  HookLogImportant("Late-loaded module %s imports CreateProcess - patched (A=%d W=%d) so its launches reach CE",
-                   moduleNameOrPath, patchedA ? 1 : 0, patchedW ? 1 : 0);
+  // Reported once per loaded module instance: only a module that actually imports CreateProcess
+  // reaches here, and knowing which ones did is what tells a later reader whether an updater launch
+  // could have been seen. Every later load notification for the same module re-runs the (idempotent)
+  // patch, which is not news.
+  static ce::log_meter::KeyedOnce<64> s_reportedModules;
+  if (s_reportedModules.FirstTime(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(module)))) {
+    HookLogImportant("Late-loaded module %s imports CreateProcess - patched (A=%d W=%d) so its launches reach CE",
+                     moduleNameOrPath, patchedA ? 1 : 0, patchedW ? 1 : 0);
+  }
 }

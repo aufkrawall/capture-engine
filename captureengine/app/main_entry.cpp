@@ -6,6 +6,8 @@
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_workers.h"
 
+#include <algorithm>
+
 namespace {
 // Hot-reload debounce state for config.ini (see config_reload_policy.h).
 ce::config_reload::State g_ConfigReloadState;
@@ -163,32 +165,28 @@ int ControllerMain(HINSTANCE hInstance) {
     // Main message loop
     MSG msg;
 
-    // Diagnostic loop timing
-    static int64_t loopStartUs = Log_GetQpcUs();
+    // Controller loop health: one summary per minute, plus an immediate line when a single
+    // iteration's own work (messages + health + config) blocks this UI thread for 100 ms or more.
+    constexpr int64_t kLoopSummaryWindowUs = 60'000'000;
+    constexpr int64_t kSlowIterationUs = 100'000;
+    struct LoopWindow {
+        int64_t startUs = 0;
+        uint64_t iterations = 0;
+        uint64_t messages = 0;
+        uint64_t hotkeys = 0;
+        uint64_t zeroWaits = 0;
+        int64_t maxMsgUs = 0;
+        int64_t maxHealthUs = 0;
+        int64_t maxConfigUs = 0;
+    };
+    static LoopWindow loopWindow{Log_GetQpcUs()};
     static uint64_t iterCount = 0;
-    static uint64_t iterRateLogCount = 0;
-    static int64_t iterRateLogStartUs = Log_GetQpcUs();
     static DWORD lastConfigCheck = 0;
 
     while (main_g_Running) {
         ce::startup::Pump();
         iterCount++;
         const int64_t iterNowUs = Log_GetQpcUs();
-        const int64_t iterDeltaUs = iterNowUs - loopStartUs;
-        loopStartUs = iterNowUs;
-
-        // Log iteration rate every ~5s at trace level
-        iterRateLogCount++;
-        const int64_t rateLogElapsedUs = iterNowUs - iterRateLogStartUs;
-        if (rateLogElapsedUs > 5000000) {
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
-            LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
-                     (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,
-                     GetControllerLoopWaitMs(lastConfigCheck, ce::config_reload::CheckIntervalMs(g_ConfigReloadState)), 0);
-            iterRateLogCount = 0;
-            iterRateLogStartUs = iterNowUs;
-        }
 
         // Process messages
         int msgCount = 0;
@@ -370,19 +368,33 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck, ce::config_reload::CheckIntervalMs(g_ConfigReloadState));
 
-        // Log per-iteration timing breakdown at trace level when rate is logged
-        if (iterRateLogCount == 0) {
+        {
             const int64_t msgUs = postMsgUs - iterNowUs;
             const int64_t healthUs = postHealthUs - postMsgUs;
             const int64_t configUs = preWaitUs - postHealthUs;
-            LogDebug("[ControllerDiag] iter=%llu breakdown: msg=%lld health=%lld config=%lld",
-                     (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs);
-            LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d hkHook=%d hook=%d)",
-                     (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys,
-                     msgHookHotkeys, IsHotkeyInputHookActive() ? 1 : 0);
-            if (waitMs == 0) {
-                LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu", (unsigned long long)iterCount,
-                         (unsigned long)(GetTickCount() - lastConfigCheck));
+            if (msgUs + healthUs + configUs >= kSlowIterationUs) {
+                LogDebug("[ControllerDiag] slow iteration %llu: msg=%lldus health=%lldus config=%lldus messages=%d "
+                         "(timer=%d other=%d hk=%d hkHook=%d)",
+                         (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
+                         msgCount, msgTimers, msgOthers, msgHotkeys, msgHookHotkeys);
+            }
+            loopWindow.iterations++;
+            loopWindow.messages += static_cast<uint64_t>(msgCount);
+            loopWindow.hotkeys += static_cast<uint64_t>(msgHotkeys + msgHookHotkeys);
+            loopWindow.zeroWaits += waitMs == 0 ? 1 : 0;
+            loopWindow.maxMsgUs = (std::max)(loopWindow.maxMsgUs, msgUs);
+            loopWindow.maxHealthUs = (std::max)(loopWindow.maxHealthUs, healthUs);
+            loopWindow.maxConfigUs = (std::max)(loopWindow.maxConfigUs, configUs);
+            const int64_t windowUs = preWaitUs - loopWindow.startUs;
+            if (windowUs >= kLoopSummaryWindowUs) {
+                LogDebug("[ControllerDiag] %llds: iterations=%llu messages=%llu hotkeys=%llu zeroWaits=%llu "
+                         "max(msg=%lldus health=%lldus config=%lldus) hotkeyHook=%d",
+                         (long long)(windowUs / 1000000), (unsigned long long)loopWindow.iterations,
+                         (unsigned long long)loopWindow.messages, (unsigned long long)loopWindow.hotkeys,
+                         (unsigned long long)loopWindow.zeroWaits, (long long)loopWindow.maxMsgUs,
+                         (long long)loopWindow.maxHealthUs, (long long)loopWindow.maxConfigUs,
+                         IsHotkeyInputHookActive() ? 1 : 0);
+                loopWindow = LoopWindow{preWaitUs};
             }
         }
 

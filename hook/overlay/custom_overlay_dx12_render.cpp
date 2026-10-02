@@ -136,7 +136,6 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
                      : frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
     if (slot < 0)
         return;
-    DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
     if (!needsInlineCompletion && !IsUploadSlotReusable(slot)) {
         return;
     }
@@ -153,7 +152,6 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     }
     if (vertexBufferPtr[slot]) {
         memcpy(vertexBufferPtr[slot], vertices.data(), vbSize);
-        DX12_DEBUG_FRAME(s_RenderCounter, "Vertex data copied: %zu bytes", vbSize);
     }
 
     size_t ibSize = indices.size() * sizeof(uint16_t);
@@ -170,7 +168,6 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     }
     if (indexBufferPtr[slot]) {
         memcpy(indexBufferPtr[slot], indices.data(), ibSize);
-        DX12_DEBUG_FRAME(s_RenderCounter, "Index data copied: %zu bytes", ibSize);
     }
 
     if (hasTexturedCommands) {
@@ -189,7 +186,6 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     if (hasTexturedCommands && !UploadFontTextureIfNeeded(currentCmdList))
         return;
 
-    DX12_DEBUG_FRAME(s_RenderCounter, "Setting pipeline state");
     currentCmdList->SetGraphicsRootSignature(rootSignature.Get());
 
     D3D12_GPU_DESCRIPTOR_HANDLE fontSrvGpuHandle = {};
@@ -267,7 +263,8 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         MarkInlineUploadComplete(inlineList.Get(), slot);
     else
         slotFenceValue[slot] = nextSlotFenceValue;
-    DX12_DEBUG_FRAME(s_RenderCounter, "Render complete: %d draw calls", drawCallCount);
+    DX12_DEBUG_FRAME(s_RenderCounter, "Render complete: %d draw calls slot=%d vb=%zu ib=%zu bytes", drawCallCount, slot,
+                     vbSize, ibSize);
     if (logThisRender) {
         if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {
             HookLogImportant("DX12 Overlay: Backend state probe complete (drawCalls skipped, psoBinds=%d, slot=%d)",

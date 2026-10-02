@@ -205,7 +205,9 @@ public:
     bool SmartWait(int64_t targetTick);
 
     // Direct trace log for debugging — bypasses all log infrastructure
-    void TraceLog(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+    // Writes one line to fps_limiter_trace.log; false when nothing was written (debug logging off,
+    // the per-limiter 200-line cap reached, or the file busy).
+    bool TraceLog(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
     // Close and forget the cached fps_limiter_trace.log path so the next
     // TraceLog call re-resolves it against the current host session.
     void ResetTraceLogPath();

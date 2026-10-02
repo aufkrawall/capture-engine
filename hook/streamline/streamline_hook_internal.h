@@ -779,7 +779,8 @@ bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<
 // This allows Steam to continue overlay rendering without crashing.
 slResult SlNullFunctionStub();void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName);slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* streamline_hook_functionName, void*& streamline_hook_function);slResult Hooked_slSetD3DDevice(void* streamline_hook_d3dDevice);bool StructTypesEqual(const slStructType& lhs, const slStructType& rhs);bool TryRecordOfficialUiResourceTag(const void* frameToken, const slResourceTag& tag, void* streamline_hook_commandBuffer);uint32_t LogOfficialUiTagOpportunity(const char* tagApi, const void* frameToken, uint32_t viewportKey,
                                      const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer,
-                                     uint32_t feature = UINT_MAX, uint32_t numInputs = 0);void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const slViewportHandle& viewport,
+                                     uint32_t feature = UINT_MAX, uint32_t numInputs = 0,
+                                     uint64_t localTagSignature = 0);void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const slViewportHandle& viewport,
                             const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer);slResult Hooked_slSetTag(const slViewportHandle& viewport, const slResourceTag* tags, uint32_t numTags,
                          void* streamline_hook_commandBuffer);slResult Hooked_slSetTagForFrame(const slBaseStructure& streamline_hook_frame, const slViewportHandle& viewport,
                                  const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer);slResult Hooked_slEvaluateFeature(uint32_t feature, const slBaseStructure& streamline_hook_frame, const slBaseStructure** inputs,

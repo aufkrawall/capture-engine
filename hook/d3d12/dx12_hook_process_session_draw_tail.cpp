@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitCoreTail() {
@@ -226,25 +227,38 @@ return ProcessFrameFlow::kOverlayDone;
                                 }
                             }
 
-                            // Unconditional post-submit diagnostic: log first 50
-                            // submits after each overlay reinit.  Catches
-                            // DEVICE_REMOVED even when FG is inactive.
+                            // Post-submit diagnostic for the first 50 submits after each overlay
+                            // reinit (catches DEVICE_REMOVED even when FG is inactive): the first
+                            // submit, every change of the submit path, and the window's last submit.
+                            // bb/bufIdx stay out of the change key: they rotate every frame.
                             {
                                 static int s_reinitSubmitCount = 0;
-                                if (dx12_hook_g_ResetReinitSubmitCounter.exchange(false, std::memory_order_acquire))
+                                static uint32_t s_reinitWindow = 0;
+                                static ce::log_meter::ChangeGate s_reinitSubmitGate;
+                                if (dx12_hook_g_ResetReinitSubmitCounter.exchange(false, std::memory_order_acquire)) {
                                     s_reinitSubmitCount = 0;
+                                    ++s_reinitWindow;
+                                }
                                 if (s_reinitSubmitCount < 50) {
                                     s_reinitSubmitCount++;
                                     auto* diagDevR = g_Device.load(std::memory_order_acquire);
                                     HRESULT devHrR = diagDevR ? diagDevR->GetDeviceRemovedReason() : E_FAIL;
-                                    HookLogImportant(
-                                        "DX12: Reinit SUBMIT #%d (queue=%p descFree=%d realECL=%d "
-                                        "directD3D12=%d offscreen=%d extOverlay=%d bb=%p bufIdx=%d "
-                                        "devRemoved=0x%08X tid=0x%04X)",
-                                        s_reinitSubmitCount, eclQueue, usedDescFree ? 1 : 0,
-                                        usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
-                                        offscreenCompositeRequired ? 1 : 0, startupOverlayPresent ? 1 : 0,
-                                        bb, bufferIdx, (unsigned)devHrR, GetCurrentThreadId());
+                                    const uint64_t submitKey = ce::log_meter::FieldKey(
+                                        s_reinitWindow, eclQueue, usedDescFree, usedRealECL, submitPathIsD3D12Module,
+                                        offscreenCompositeRequired, startupOverlayPresent, devHrR, GetCurrentThreadId());
+                                    const auto verdict = s_reinitSubmitCount == 50 ? s_reinitSubmitGate.Force(submitKey)
+                                                                                   : s_reinitSubmitGate.Observe(submitKey);
+                                    if (verdict) {
+                                        HookLogImportant(
+                                            "DX12: Reinit SUBMIT #%d (queue=%p descFree=%d realECL=%d "
+                                            "directD3D12=%d offscreen=%d extOverlay=%d bb=%p bufIdx=%d "
+                                            "devRemoved=0x%08X tid=0x%04X)%s",
+                                            s_reinitSubmitCount, eclQueue, usedDescFree ? 1 : 0,
+                                            usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
+                                            offscreenCompositeRequired ? 1 : 0, startupOverlayPresent ? 1 : 0,
+                                            bb, bufferIdx, (unsigned)devHrR, GetCurrentThreadId(),
+                                            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                                    }
                                     if (FAILED(devHrR)) {
                                         HookLogImportant("DX12: DEVICE REMOVED after reinit submit #%d!",
                                                          s_reinitSubmitCount);
@@ -253,32 +267,45 @@ return ProcessFrameFlow::kOverlayDone;
                                 }
                             }
 
-                            // Post-FG-transition diagnostic: log first 20 frames after any FG change.
-                            // Catches DEVICE_REMOVED right after overlay resumes following FG switches.
+                            // Post-FG-transition diagnostic for the first 50 frames after a transition
+                            // starts and after it ends (catches DEVICE_REMOVED right after the overlay
+                            // resumes): the first frame, every change of the submit path, the last frame.
                             {
                                 static int s_postTransitionFrames = 0;
                                 static int s_lastTransitionCooldown = -1;
+                                static uint32_t s_postTransitionWindow = 0;
+                                static ce::log_meter::ChangeGate s_postTransitionGate;
                                 int curCooldown = dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire);
-                                if (curCooldown > 0 && s_lastTransitionCooldown <= 0)
-                                    s_postTransitionFrames = 0;  // new transition started
-                                if (curCooldown <= 0 && s_lastTransitionCooldown > 0)
-                                    s_postTransitionFrames = 0;  // transition just ended
+                                const bool transitionStarted = curCooldown > 0 && s_lastTransitionCooldown <= 0;
+                                const bool transitionEnded = curCooldown <= 0 && s_lastTransitionCooldown > 0;
+                                if (transitionStarted || transitionEnded) {
+                                    s_postTransitionFrames = 0;
+                                    ++s_postTransitionWindow;
+                                }
                                 s_lastTransitionCooldown = curCooldown;
                                 if (s_postTransitionFrames < 50) {
                                     s_postTransitionFrames++;
                                     auto* diagDev3 = g_Device.load(std::memory_order_acquire);
                                     HRESULT devHr3 = diagDev3 ? diagDev3->GetDeviceRemovedReason() : E_FAIL;
-                                    HookLogImportant(
-                                        "DX12: Post-transition SUBMIT #%d (queue=%p origQ=%p cmdQ=%p "
-                                        "fgActive=%d slFG=%d descFree=%d realECL=%d devRemoved=0x%08X "
-                                        "bb=%p bufIdx=%d tid=0x%04X)",
-                                        s_postTransitionFrames, eclQueue, dx12_hook_g_OriginalGameQueue,
-                                        (void*)g_CommandQueue.load(), g_FGCompat.IsFGActive() ? 1 : 0,
-                                        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)
-                                            ? 1
-                                            : 0,
-                                        usedDescFree ? 1 : 0, usedRealECL ? 1 : 0, (unsigned)devHr3, bb,
-                                        bufferIdx, GetCurrentThreadId());
+                                    void* const commandQueue = (void*)g_CommandQueue.load();
+                                    const bool fgActive = g_FGCompat.IsFGActive();
+                                    const bool slFG = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                                    const uint64_t frameKey = ce::log_meter::FieldKey(
+                                        s_postTransitionWindow, eclQueue, dx12_hook_g_OriginalGameQueue, commandQueue,
+                                        fgActive, slFG, usedDescFree, usedRealECL, devHr3, GetCurrentThreadId());
+                                    const auto verdict = s_postTransitionFrames == 50
+                                                             ? s_postTransitionGate.Force(frameKey)
+                                                             : s_postTransitionGate.Observe(frameKey);
+                                    if (verdict) {
+                                        HookLogImportant(
+                                            "DX12: Post-transition SUBMIT #%d (queue=%p origQ=%p cmdQ=%p "
+                                            "fgActive=%d slFG=%d descFree=%d realECL=%d devRemoved=0x%08X "
+                                            "bb=%p bufIdx=%d tid=0x%04X)%s",
+                                            s_postTransitionFrames, eclQueue, dx12_hook_g_OriginalGameQueue,
+                                            commandQueue, fgActive ? 1 : 0, slFG ? 1 : 0, usedDescFree ? 1 : 0,
+                                            usedRealECL ? 1 : 0, (unsigned)devHr3, bb, bufferIdx, GetCurrentThreadId(),
+                                            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                                    }
                                 }
                             }
 

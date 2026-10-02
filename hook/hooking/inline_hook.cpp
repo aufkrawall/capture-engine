@@ -66,18 +66,10 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     auto LogDirect = [](const char* fmt, auto... args) {
         HookLog(fmt, args...);
     };
-    auto TraceDirect = [](const char* fmt, auto... args) {
-        if (HookTraceLoggingEnabled()) {
-            HookLog(fmt, args...);
-        }
-    };
 
-    // Metered diagnostic: trace-level per-instruction byte dumps are valuable
-    // for the first few hook installs but pure noise afterwards - one 90-second
-    // trace session dumped ~2.5k byte lines across ~174 installs. Keep full
-    // detail for the first 4 installs and then every 100th install as a
-    // heartbeat; the compact per-hook lines (Hooking, Original bytes,
-    // trampoline result) stay unconditional at trace level.
+    // Every install logs one summary line (or its failure). Per-instruction relocation detail is
+    // valuable for the first few installs only, so it is metered: the first 4 installs, then every
+    // 100th as a heartbeat.
     static std::atomic<int> s_traceDetailHookCount{0};
     const bool fullHookTrace = HookTraceLoggingEnabled() &&
                                ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(
@@ -102,8 +94,6 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         }
         if (h.target == target && h.installed) {
             if (h.detour != detour) {
-                LogDirect("FAILED: Target %p is already owned by CE with different detour %p (requested=%p)",
-                          target, h.detour, detour);
                 HookLogImportant(
                     "InlineHook: Refused conflicting detour for CE-owned target %p (installed=%p requested=%p)",
                     target, h.detour, detour);
@@ -123,15 +113,12 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         }
     }
 
-    LogDirect("=== Install called: target=%p, detour=%p", target, detour);
-
     // Never decode a prolog that cannot be read. Targets arrive from every hook
     // family, including Streamline/NGX/FFX plugins that the FG paths genuinely
     // load and unload, so this deliberately validates rather than pins: pinning
     // is reserved for the named D3D/DXGI runtime modules whose export addresses
     // CE caches for the process lifetime (see common/module_pin.h).
     if (!ce::module_pin::IsReadableCode(target, PATCH_SIZE)) {
-        LogDirect("FAILED: target %p is not readable executable memory", target);
         HookLogImportant("InlineHook: Refused target %p - not readable executable memory", target);
         return false;
     }
@@ -142,21 +129,15 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     bool is64bit = false;
 #endif
 
-    TraceDirect("is64bit=%d, checking if externally hooked...", is64bit ? 1 : 0);
-
     // If another component owns a conventional entry jump, prepend CE at the
     // real export entry and make our trampoline forward to that exact jump
     // target. Never decode or patch inside the foreign detour body.
     const uint8_t* code = (const uint8_t*)target;
 
-    LogDirect("First bytes of target: %02X %02X %02X %02X %02X %02X %02X %02X", code[0], code[1], code[2], code[3],
-              code[4], code[5], code[6], code[7]);
-
     if (IsAlreadyHooked(code, is64bit)) {
         void* chainedEntry = ResolveExternalEntryJump(code, is64bit);
         if (!chainedEntry) {
-            LogDirect("FAILED: Existing entry patch at %p is not a chainable E9/FF25 jump", target);
-            HookLog("InlineHook: Existing entry patch at %p is not safely chainable", target);
+            HookLog("InlineHook: Existing entry patch at %p is not a chainable E9/FF25 jump", target);
             return false;
         }
 
@@ -243,15 +224,12 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         return true;
     }
 
-    LogDirect("Not externally hooked, decoding instructions...");
-
     // Determine how many bytes to copy (must be >= PATCH_SIZE on instruction
     // boundary)
     int copySize = 0;
     while (copySize < PATCH_SIZE) {
         int len = GetInstructionLength(code + copySize, is64bit);
         if (len == 0) {
-            LogDirect("FAILED: Failed to decode instruction at %p+%d (byte=0x%02X)", target, copySize, code[copySize]);
             HookLog(
                 "InlineHook: Failed to decode instruction at %p+%d "
                 "(byte=0x%02X)",
@@ -261,40 +239,21 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         copySize += len;
     }
 
-    LogDirect("Instructions decoded, copySize=%d bytes", copySize);
-    HookLog("InlineHook: Hooking %p, patch=%d bytes, detour=%p, is64bit=%d", target, copySize, detour, is64bit ? 1 : 0);
+    // The relocated prolog bytes, for the summary line (one hex string, never one line per byte).
+    auto formatHex = [](char* out, size_t outSize, const uint8_t* bytes, int count) {
+        size_t used = 0;
+        out[0] = '\0';
+        for (int i = 0; i < count && used + 3 < outSize; i++)
+            used += static_cast<size_t>(snprintf(out + used, outSize - used, "%02X", bytes[i]));
+    };
+    char bytesStr[40] = {};
+    formatHex(bytesStr, sizeof(bytesStr), code, copySize < 16 ? copySize : 16);
 
-    // Dump original bytes for diagnosis
-    // SECURITY FIX: Use safe string concatenation
-    char bytesStr[256] = {0};
-    size_t bytesRemaining = sizeof(bytesStr) - 1;
-    char* bytesDest = bytesStr;
-    for (int i = 0; i < copySize && i < 16 && bytesRemaining > 3; i++) {
-        int written = snprintf(bytesDest, bytesRemaining, "%02X ", code[i]);
-        if (written > 0 && (size_t)written < bytesRemaining) {
-            bytesDest += written;
-            bytesRemaining -= written;
-        }
-    }
-    TraceDirect("Original bytes: %s", bytesStr);
-
-    if (fullHookTrace) {
-        HookLog("InlineHook: Original bytes at %p:", target);
-        for (int i = 0; i < copySize && i < 16; i++) {
-            HookLog("  [%02d] 0x%02X", i, code[i]);
-        }
-    }
-
-    // Allocate trampoline
-    LogDirect("Allocating trampoline...");
     uint8_t* trampoline = GetTrampolineSlot(target);
     if (!trampoline) {
-        LogDirect("FAILED: Failed to allocate trampoline");
-        HookLog("InlineHook: Failed to allocate trampoline");
+        HookLogImportant("InlineHook: Failed to allocate a trampoline for %p", target);
         return false;
     }
-    LogDirect("Trampoline allocated at %p", trampoline);
-    HookLog("InlineHook: Trampoline allocated at %p", trampoline);
 
     // Copy original instructions to trampoline, fixing up RIP-relative refs
     int trampolineOffset = 0;
@@ -306,12 +265,10 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
     while (srcOffset < copySize) {
         int instrLen = GetInstructionLength(code + srcOffset, is64bit);
 
-        // Log instruction being copied
         if (fullHookTrace) {
-            HookLog("InlineHook: Copying instruction at offset %d, len=%d:", srcOffset, instrLen);
-            for (int i = 0; i < instrLen && i < 8; i++) {
-                HookLog("  [%02d] 0x%02X", i, code[srcOffset + i]);
-            }
+            char instrStr[20] = {};
+            formatHex(instrStr, sizeof(instrStr), code + srcOffset, instrLen < 8 ? instrLen : 8);
+            HookLog("InlineHook: %p copy +%d len=%d bytes=%s", target, srcOffset, instrLen, instrStr);
         }
 
         const auto shortBranchResult = TryRelocateExternalShortControlTransfer(
@@ -396,13 +353,6 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
 
             int32_t newDisp32 = (int32_t)newDisp;
             memcpy(trampoline + trampolineOffset + dispOff, &newDisp32, 4);
-        } else {
-            if (fullHookTrace) {
-                HookLog(
-                    "InlineHook: No PC-relative fixup needed for instruction at "
-                    "offset %d",
-                    srcOffset);
-            }
         }
 
         trampolineOffset += instrLen;
@@ -411,8 +361,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
 
     // Add jump back to original function after the patched area
     void* jumpTarget = (void*)(code + copySize);
-    HookLog("InlineHook: Writing jump back from trampoline+%d to %p (original+%d)", trampolineOffset, jumpTarget,
-            copySize);
+    const int jumpBackOffset = trampolineOffset;
     if (!WriteJump(trampoline + trampolineOffset, jumpTarget)) {
         AbandonCurrentTrampoline();
         return false;
@@ -433,19 +382,16 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         trampolineOffset += 8;
     }
 
-    // Dump trampoline bytes for diagnosis
     if (fullHookTrace) {
-        HookLog("InlineHook: Trampoline bytes (%d bytes total):", trampolineOffset);
-        for (int i = 0; i < trampolineOffset && i < 32; i++) {
-            HookLog("  [%02d] 0x%02X", i, trampoline[i]);
-        }
+        char trampolineStr[72] = {};
+        formatHex(trampolineStr, sizeof(trampolineStr), trampoline, trampolineOffset < 32 ? trampolineOffset : 32);
+        HookLog("InlineHook: %p trampoline %d bytes=%s", target, trampolineOffset, trampolineStr);
     }
 
     // Seal the private page RX and, under CFG, make this 16-byte-aligned entry
     // the page's only valid indirect-call target before patching live code.
     if (!FinalizeCurrentTrampoline(trampoline, static_cast<size_t>(trampolineOffset))) {
-        LogDirect("FAILED: Could not seal/register trampoline entrypoint");
-        HookLog("InlineHook: Trampoline RX/CFG finalization failed");
+        HookLog("InlineHook: Trampoline RX/CFG finalization failed for %p", target);
         return false;
     }
 
@@ -477,10 +423,11 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
 
     if (preparedHookIndex) {
         *preparedHookIndex = g_hooks.size() - 1;
+        HookLog("InlineHook: Prepared %p -> %p tramp=%p patch=%d entry=%s jmpBack=+%d%s (batch commits it)", target,
+                detour, trampoline, copySize, bytesStr, jumpBackOffset, hasPendingAbsCall ? " absCall" : "");
         return true;
     }
 
-    LogDirect("Patching target function with peer threads quiesced...");
     if (!WriteOwnedEntryPatch(target, detour, copySize, entry.origBytes, g_hooks.back().installedBytes)) {
         LogDirect("FAILED: Could not safely patch target %p", target);
         if (publisher) {
@@ -496,8 +443,8 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
 
     g_hooks.back().installed = true;
 
-    LogDirect("SUCCESS: Hook installed at %p -> %p (trampoline=%p)", target, detour, trampoline);
-    HookLog("InlineHook: Installed hook at %p -> %p (trampoline=%p)", target, detour, trampoline);
+    HookLog("InlineHook: Installed %p -> %p tramp=%p patch=%d entry=%s jmpBack=+%d%s", target, detour, trampoline,
+            copySize, bytesStr, jumpBackOffset, hasPendingAbsCall ? " absCall" : "");
     return true;
 }
 
