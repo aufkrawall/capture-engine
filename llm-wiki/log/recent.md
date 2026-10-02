@@ -9,7 +9,10 @@
   also the FG-ON one.
 - Fix: `DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn` (explicit enable or opt-in, pure DLSS, same queue, PostSL
   unconfirmed) admits the pre-SL draw at both the cooldown site and the startup gate. See guardrails.md (2026-10-02).
-  The `[OVERLAY HANDOFF]` per-present line now prints `lastGate=`. Run pending; then re-test a GTA/Talos DLSS toggle-ON.
+  The `[OVERLAY HANDOFF]` per-present line now prints `lastGate=`.
+- VALIDATED `20261002_051301`: FG-ON present 832 `drawObserved=1`, no uncovered present, three warm-resume
+  activations drew via PostSL before the 240 ms CreateFeature stall; exit 0, no 2.x call failures. Still open: GTA/Talos
+  DLSS toggle-ON re-test.
 
 ### 2026-10-02 - W3 bridged run clean; overlay gap at DLSS-G activation traced
 
