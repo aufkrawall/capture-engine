@@ -270,7 +270,8 @@ void AdoptUnobservedFFXContextFromConfigure(ffxContext contextHandle, ffxStructT
 ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* ffx_hook_context,
                                                        const ffxConfigureDescHeader* ffx_hook_desc);
 
-void ClearSubstituteUiReRegistrationForContext(ffxContext ffx_hook_context);bool IsCommittedReadableCodeAddress(void* address);
+void ClearSubstituteUiReRegistrationForContext(ffxContext ffx_hook_context);
+bool IsCommittedReadableCodeAddress(void* address);
 
 template <typename T> inline
 void RefreshDirectOriginalForModuleReload(T& original, T resolved, std::atomic<bool>& inlineHooked,
@@ -373,11 +374,16 @@ inline ce::ffx_api::PresentCallback ffx_hook_g_DefaultPresentCallback = nullptr;
 // (defined after Hooked_ffxConfigure below)
 inline bool ffx_hook_g_ffxConfigureVehInstalled = false;
 
-bool InstallFfxConfigureBreakpointHook(PfnFfxConfigure target, const char* ffx_hook_moduleName);void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context);void* GetPresentCallbackBridgeKey(ffxContext ffx_hook_context);bool HasTrackedPresentCallbackBridgeKey(void* key);
+bool InstallFfxConfigureBreakpointHook(PfnFfxConfigure target, const char* ffx_hook_moduleName);
+void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context);
+void* GetPresentCallbackBridgeKey(ffxContext ffx_hook_context);
+bool HasTrackedPresentCallbackBridgeKey(void* key);
 
 // Extract effect ID from structure type
-uint32_t GetEffectId(ffxStructType_t type);ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context, ffxCreateContextDescHeader* ffx_hook_desc,
-                                        const ffxAllocationCallbacks* memCb);ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffxAllocationCallbacks* memCb);
+uint32_t GetEffectId(ffxStructType_t type);
+ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context, ffxCreateContextDescHeader* ffx_hook_desc,
+                                        const ffxAllocationCallbacks* memCb);
+ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context, const ffxAllocationCallbacks* memCb);
 
 // --- Per-present substitute UI-resource re-registration (GTA no-callback FSR FG) ------------------------
 // GTA Enhanced registers a 1x1 placeholder UI resource EVERY frame. CE substitutes its own backbuffer-sized
@@ -398,10 +404,21 @@ inline PfnFfxConfigure ffx_hook_g_SubstReRegConfigure = nullptr;
 
 inline ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource ffx_hook_g_SubstReRegDesc = {};
 
-inline std::atomic<bool> ffx_hook_g_SubstReRegActive{false};void ClearSubstituteUiReRegistrationForContext(ffxContext ffx_hook_context);void StoreSubstituteUiReRegistration(
+inline std::atomic<bool> ffx_hook_g_SubstReRegActive{false};
+void ClearSubstituteUiReRegistrationForContext(ffxContext ffx_hook_context);
+void StoreSubstituteUiReRegistration(
     ffxContext* ffx_hook_context, PfnFfxConfigure originalConfigure,
-    const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource& substitutedDesc);ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context, const ffxConfigureDescHeader* ffx_hook_desc);bool IsFFXDynamicHookOwnerModule(const char* moduleBaseName, HMODULE module);void ffx_hook_RegisterDynamicHooksOnce();bool ffx_hook_InstallHooksForModule(HMODULE hModule, const char* ffx_hook_moduleName);void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* ffx_hook_reason);bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* ffx_hook_moduleName, const char* ffx_hook_reason);ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* ffx_hook_context,
-                                                       const ffxConfigureDescHeader* ffx_hook_desc);LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep);bool InstallFfxConfigureBreakpointHook(PfnFfxConfigure target, const char* ffx_hook_moduleName);
+    const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource& substitutedDesc);
+ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context, const ffxConfigureDescHeader* ffx_hook_desc);
+bool IsFFXDynamicHookOwnerModule(const char* moduleBaseName, HMODULE module);
+void ffx_hook_RegisterDynamicHooksOnce();
+bool ffx_hook_InstallHooksForModule(HMODULE hModule, const char* ffx_hook_moduleName);
+void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* ffx_hook_reason);
+bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* ffx_hook_moduleName, const char* ffx_hook_reason);
+ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* ffx_hook_context,
+                                                const ffxConfigureDescHeader* ffx_hook_desc);
+LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep);
+bool InstallFfxConfigureBreakpointHook(PfnFfxConfigure target, const char* ffx_hook_moduleName);
 
 // Retroactive ffxConfigure call: when FSR FG activates through Streamline's
 // authoritative takeover (no direct ffxConfigure intercepted), CE calls

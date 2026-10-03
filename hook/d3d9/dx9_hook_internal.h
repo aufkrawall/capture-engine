@@ -281,7 +281,8 @@ struct D3D9SamplerProcessingScope {
 
 inline thread_local uintptr_t* dx9_hook_t_D3D9SamplerVTable = nullptr;
 
-inline thread_local D3D9SamplerVTableRecord* dx9_hook_t_D3D9SamplerVTableRecord = nullptr;D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device);
+inline thread_local D3D9SamplerVTableRecord* dx9_hook_t_D3D9SamplerVTableRecord = nullptr;
+D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device);
 
 // Inline hooks installed flag
 inline std::atomic<bool> dx9_hook_g_InlineHooksInstalled{false};
@@ -329,11 +330,26 @@ inline int64_t dx9_hook_g_QpcFreqCached = 0;
 
 inline thread_local int64_t dx9_hook_g_LastPacedQpc = 0;
 
-inline thread_local HANDLE dx9_hook_g_PaceTimer = nullptr;bool IsDX9InternalHelperBypassActive();bool IsDX9InternalHelperDevice(IDirect3DDevice9* device);bool ShouldBypassDX9HooksForDevice(IDirect3DDevice9* device);void RegisterD3D9DeviceIdentity(IDirect3DDevice9* device, bool isEx, const char* evidence);bool ResolveD3D9DeviceIsEx(IDirect3DDevice9* device);bool ShouldBypassDX9HooksForSwapChain(IDirect3DSwapChain9* swapChain);
+inline thread_local HANDLE dx9_hook_g_PaceTimer = nullptr;
+bool IsDX9InternalHelperBypassActive();
+bool IsDX9InternalHelperDevice(IDirect3DDevice9* device);
+bool ShouldBypassDX9HooksForDevice(IDirect3DDevice9* device);
+void RegisterD3D9DeviceIdentity(IDirect3DDevice9* device, bool isEx, const char* evidence);
+bool ResolveD3D9DeviceIsEx(IDirect3DDevice9* device);
+bool ShouldBypassDX9HooksForSwapChain(IDirect3DSwapChain9* swapChain);
 
 // Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
 // present-time processing to avoid duplicate overlay/limiter effects in DXVK.
-bool ShouldSkipDX9PresentForVulkan();bool ShouldSkipDX9OverlayForVulkan();void EnsureDwmFlushLoaded();int64_t GetQpcFreqCached();HANDLE GetPaceTimerHandle();void WaitUsHighRes(int64_t waitUs);int GetDesktopRefreshHzCached();void PaceToRefreshQpc();DWORD WINAPI DwmFlushThreadProc(LPVOID param);void MaybeWaitForVSyncAfterPresent(int64_t presentUs);
+bool ShouldSkipDX9PresentForVulkan();
+bool ShouldSkipDX9OverlayForVulkan();
+void EnsureDwmFlushLoaded();
+int64_t GetQpcFreqCached();
+HANDLE GetPaceTimerHandle();
+void WaitUsHighRes(int64_t waitUs);
+int GetDesktopRefreshHzCached();
+void PaceToRefreshQpc();
+DWORD WINAPI DwmFlushThreadProc(LPVOID param);
+void MaybeWaitForVSyncAfterPresent(int64_t presentUs);
 
 inline thread_local struct PresentTimingFwd {
     int64_t presentCallTime = 0;
@@ -370,7 +386,10 @@ HRESULT STDMETHODCALLTYPE DetourStateBlockCapture(IDirect3DStateBlock9* stateBlo
 void* TranslateD3D9SamplerOriginal(void* original);
 bool ArmD3D9SamplerBodyHook(D3D9SamplerSlot slot, void* pristine);
 
-void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);const char* D3D9FormatName(D3DFORMAT format);D3DMULTISAMPLE_TYPE ParseD3D9MSAA(const char* msaa);void ApplyMSAAOverride(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE deviceType, D3DPRESENT_PARAMETERS* pp);
+void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);
+const char* D3D9FormatName(D3DFORMAT format);
+D3DMULTISAMPLE_TYPE ParseD3D9MSAA(const char* msaa);
+void ApplyMSAAOverride(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE deviceType, D3DPRESENT_PARAMETERS* pp);
 
 // DX9 Capture class with D3D11 interop
 class DX9Capture : public HookCaptureBase {
@@ -380,7 +399,8 @@ public:
     // Capture State
     bool firstFrame = true;
     bool initializationFailed = false;  // Prevent endless retries if HW really fails
-    bool generationResetPending = false;DX9Capture();
+    bool generationResetPending = false;
+    DX9Capture();
 
     // D3D9 resources
     IDirect3DDevice9* d3d9Device = nullptr;
@@ -515,9 +535,40 @@ void GDICaptureThreadProc();
         IDirect3DQuery9* query = nullptr;
     };
     std::vector<QuerySlot> prerenderQueries;
-    uint32_t prerenderIdx = 0;void Cleanup() override;void ForceCleanup();void ReleaseSharedTextureRing();bool CreateSharedTextureRing(bool gdiCompatible);void ReleaseDirectD3D9RingResources();void ReleaseDirectD3D9HelperDevices();void ReleaseDirectD3D9SharedRing();bool EnsureDirectD3D9HelperWindow();DWORD BuildDirectD3D9HelperBehaviorFlags(DWORD gameBehaviorFlags);DWORD BuildDirectD3D9HelperSoftwareVpFlags(DWORD helperFlags);D3DFORMAT ResolveDirectD3D9HelperBackBufferFormat() const;void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp, bool useExRuntime) const;void ResetDirectD3D9SharedRingPendingState();int AcquirePublishedTextureSlot();void SignalPublishedTextureFrame(int idx, int64_t frameTimestampQpc);int AcquireDirectD3D9SharedRingSubmitIndex();void SignalDirectD3D9SharedRingFrame(int idx, int64_t frameTimestampQpc);void DrainDirectD3D9SharedRingCompletions(bool flushOutstanding);void LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device, const D3DDEVICE_CREATION_PARAMETERS& params,
-                                         const char* label);bool ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device, const char* label);bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);bool EnsureDirectD3D9LegacyProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);bool ValidateDirectD3D9SharedHandle(HANDLE sharedHandle);bool TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* gameDevice, IDirect3DDevice9* producerDevice,
-                                                  bool useHelperProducer, const char* producerLabel);bool SetupDirectD3D9SharedRing(IDirect3DDevice9* device, bool isD3D9Ex);bool HasPublishedGeneration() const;bool EnsureNativeDirectRingRetirementOwner();void ReleaseGameDeviceResourcesForReset();bool PrepareForDeviceReset();bool CleanupDX9(bool permanentFailure = false, bool force = false);void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
+    uint32_t prerenderIdx = 0;
+    void Cleanup() override;
+    void ForceCleanup();
+    void ReleaseSharedTextureRing();
+    bool CreateSharedTextureRing(bool gdiCompatible);
+    void ReleaseDirectD3D9RingResources();
+    void ReleaseDirectD3D9HelperDevices();
+    void ReleaseDirectD3D9SharedRing();
+    bool EnsureDirectD3D9HelperWindow();
+    DWORD BuildDirectD3D9HelperBehaviorFlags(DWORD gameBehaviorFlags);
+    DWORD BuildDirectD3D9HelperSoftwareVpFlags(DWORD helperFlags);
+    D3DFORMAT ResolveDirectD3D9HelperBackBufferFormat() const;
+    void BuildDirectD3D9HelperPresentParameters(D3DPRESENT_PARAMETERS& pp, bool useExRuntime) const;
+    void ResetDirectD3D9SharedRingPendingState();
+    int AcquirePublishedTextureSlot();
+    void SignalPublishedTextureFrame(int idx, int64_t frameTimestampQpc);
+    int AcquireDirectD3D9SharedRingSubmitIndex();
+    void SignalDirectD3D9SharedRingFrame(int idx, int64_t frameTimestampQpc);
+    void DrainDirectD3D9SharedRingCompletions(bool flushOutstanding);
+    void LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device, const D3DDEVICE_CREATION_PARAMETERS& params,
+                                         const char* label);
+    bool ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device, const char* label);
+    bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);
+    bool EnsureDirectD3D9LegacyProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);
+    bool ValidateDirectD3D9SharedHandle(HANDLE sharedHandle);
+    bool TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* gameDevice, IDirect3DDevice9* producerDevice,
+                                                  bool useHelperProducer, const char* producerLabel);
+    bool SetupDirectD3D9SharedRing(IDirect3DDevice9* device, bool isD3D9Ex);
+    bool HasPublishedGeneration() const;
+    bool EnsureNativeDirectRingRetirementOwner();
+    void ReleaseGameDeviceResourcesForReset();
+    bool PrepareForDeviceReset();
+    bool CleanupDX9(bool permanentFailure = false, bool force = false);
+    void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
 
     // Set up GDI interop: D3D9 render target + D3D11 GDI-compatible texture.
     // On WDDM 2.0+ (Win10+), BitBlt between GPU-backed DCs uses the GPU blitter.
@@ -525,16 +576,20 @@ bool SetupGDIInterop(IDirect3DDevice9* device);
 
     // Complete GDI interop transfer from a specific D3D9 RT to the published D3D11 ring.
     // The surface should have been written to in a PREVIOUS frame so GetDC won't stall.
-void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface, int64_t frameTimestampQpc);bool CreateD3D11Device();void Init(IDirect3DDevice9* device);void CaptureFrame(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
+void CompleteGDIInteropCapture(IDirect3DSurface9* srcSurface, int64_t frameTimestampQpc);
+bool CreateD3D11Device();
+void Init(IDirect3DDevice9* device);
+void CaptureFrame(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
 
-    // Completes a pending zero-copy submission. Called at the start of the next
-    // frame's CaptureFrame so the D3D9 event query has had an entire frame of
-    // rendering time to finish — typically completes instantly.
+// Completes a pending zero-copy submission. Called at the start of the next
+// frame's CaptureFrame so the D3D9 event query has had an entire frame of
+// rendering time to finish — typically completes instantly.
 void CompletePendingZeroCopy();
 
     // Called AFTER the actual D3D9 Present to complete deferred readback.
     // This prevents GetRenderTargetData's GPU->CPU DMA from blocking Present.
-void PostPresentReadback(IDirect3DDevice9* device);void WaitPrerender(IDirect3DDevice9* device, float limit);
+void PostPresentReadback(IDirect3DDevice9* device);
+void WaitPrerender(IDirect3DDevice9* device, float limit);
 };
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
@@ -545,7 +600,8 @@ void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);
 HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
 
 // Draw overlay using CustomOverlay
-void DrawDX9Overlay(IDirect3DDevice9* device);void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* shm, uint64_t requestId);
+void DrawDX9Overlay(IDirect3DDevice9* device);
+void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* shm, uint64_t requestId);
 
 // Performance measurement
 struct PresentTiming {
@@ -571,19 +627,26 @@ inline thread_local uint64_t dx9_hook_g_screenshotDeferredToPresentEndScene = 0;
 
 inline thread_local bool dx9_hook_g_sawPresentNestedEndScene = false;
 
-inline std::atomic<bool> dx9_hook_g_PreferOverlayInPresentEndScene{false};bool IsD3D9On12Loaded();
+inline std::atomic<bool> dx9_hook_g_PreferOverlayInPresentEndScene{false};
+bool IsD3D9On12Loaded();
 
 // Hook: IDirect3DDevice9::EndScene (vtable[42])
 // Draw overlay at EndScene so it stays in the active frame, but on classic D3D9
 // prefer the nested EndScene reached from Present when a third-party overlay adds
 // one there. That lets our overlay land after their popup/tint pass instead of
 // underneath it.
-HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
-                                                       D3DSAMPLERSTATETYPE Type, DWORD Value);HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
-                                                       D3DSAMPLERSTATETYPE Type, DWORD* Value);HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
-                                                  IDirect3DBaseTexture9* Texture);HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
-                                                            D3DTEXTURESTAGESTATETYPE Type, DWORD Value);HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
-                                                        IDirect3DStateBlock9** stateBlock);HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock);HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock);
+HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
+HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type,
+                                                DWORD Value);
+HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type,
+                                                DWORD* Value);
+HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage, IDirect3DBaseTexture9* Texture);
+HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
+                                                     D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
+HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
+                                                 IDirect3DStateBlock9** stateBlock);
+HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock);
+HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock);
 
 // Hook: IDirect3DDevice9::Present
 HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, CONST RECT* pSourceRect, CONST RECT* pDestRect,
@@ -623,16 +686,22 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
                                                D3DPRESENT_PARAMETERS* pPresentationParameters,
                                                D3DDISPLAYMODEEX* pFullscreenDisplayMode);
 
-HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect,
-                                                   const RECT* pDestRect, HWND hDestWindowOverride,
-                                                   const RGNDATA* pDirtyRegion, DWORD dwFlags);void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);void InstallD3D9SamplerHooks(uintptr_t* vtable);void CheckD3D9SamplerHookDrift(uintptr_t* vtable);void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);bool IsMemoryReadable(const void* ptr, size_t size);
+HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect, const RECT* pDestRect,
+                                            HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags);
+void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);
+void InstallD3D9SamplerHooks(uintptr_t* vtable);
+void CheckD3D9SamplerHookDrift(uintptr_t* vtable);
+void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);
+void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);
+bool IsMemoryReadable(const void* ptr, size_t size);
 
 // Scan process memory for existing IDirect3DDevice9 objects
 // This is needed when we inject AFTER the game has already created its device
 // and inline hooks are blocked by external overlays
-void ScanForExistingD3D9Devices();HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapter, D3DDEVTYPE DeviceType,
-                                                    HWND hFocusWindow, DWORD BehaviorFlags,
-                                                    D3DPRESENT_PARAMETERS* pPresentationParameters,
-                                                    IDirect3DDevice9** ppReturnedDeviceInterface);
+void ScanForExistingD3D9Devices();
+HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow,
+                                             DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters,
+                                             IDirect3DDevice9** ppReturnedDeviceInterface);
 
-inline Direct3DCreate9_t dx9_hook_oDirect3DCreate9 = nullptr;IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion);
+inline Direct3DCreate9_t dx9_hook_oDirect3DCreate9 = nullptr;
+IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion);

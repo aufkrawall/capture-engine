@@ -132,7 +132,8 @@ enum WgcIngressAdmissionReasonCode : uint32_t {
     kWgcIngressReasonDecimatedCredit = 8,
     kWgcIngressReasonUniformPlayoutSoftReserve = 9,
     kWgcIngressReasonUniformPlayoutCredit = 10,
-};uint32_t WgcIngressReasonCodeFromText(const char* reason);
+};
+uint32_t WgcIngressReasonCodeFromText(const char* reason);
 
 template <typename T>
 void SafeRelease(T*& ptr) {
@@ -147,7 +148,10 @@ void UpdateAtomicMax(std::atomic<T>& value, T sample) {
     auto current = value.load(std::memory_order_relaxed);
     while (sample > current &&
            !value.compare_exchange_weak(current, sample, std::memory_order_relaxed, std::memory_order_relaxed)) {}
-}void UpdateSmoothedAtomicUs(std::atomic<int64_t>& target, int64_t sampleUs);const char* DxgiFormatName(DXGI_FORMAT format);ce::capture_retarget::SourceFormatFamily DxgiSourceFormatFamily(DXGI_FORMAT format);
+}
+void UpdateSmoothedAtomicUs(std::atomic<int64_t>& target, int64_t sampleUs);
+const char* DxgiFormatName(DXGI_FORMAT format);
+ce::capture_retarget::SourceFormatFamily DxgiSourceFormatFamily(DXGI_FORMAT format);
 
 enum class WgcItemCreationMethod {
     kNone,
@@ -155,14 +159,20 @@ enum class WgcItemCreationMethod {
     kInteropWindow,
     kInteropMonitor,
     kDxgiDuplication,
-};const char* WgcItemCreationMethodName(WgcItemCreationMethod method);
+};
+const char* WgcItemCreationMethodName(WgcItemCreationMethod method);
 
 enum class WgcItemSourcePreference {
     kAuto,
     kInteropOnly,
-};std::string LowerAscii(std::string value);WgcItemSourcePreference GetWgcItemSourcePreference();bool ShouldKeepWgcBorderByDiagnosticEnv();
+};
+std::string LowerAscii(std::string value);
+WgcItemSourcePreference GetWgcItemSourcePreference();
+bool ShouldKeepWgcBorderByDiagnosticEnv();
 
-using GetWindowIdFromWindowFn = HRESULT(WINAPI*)(HWND hwnd, winrt::Windows::UI::WindowId* id);GetWindowIdFromWindowFn ResolveGetWindowIdFromWindow();bool TryCreateCaptureItemFromWindowId(HWND hwnd, winrt::GraphicsCaptureItem& item, uint64_t& windowIdValue,
+using GetWindowIdFromWindowFn = HRESULT(WINAPI*)(HWND hwnd, winrt::Windows::UI::WindowId* id);
+GetWindowIdFromWindowFn ResolveGetWindowIdFromWindow();
+bool TryCreateCaptureItemFromWindowId(HWND hwnd, winrt::GraphicsCaptureItem& item, uint64_t& windowIdValue,
                                       HRESULT& helperHr, HRESULT& createHr);
 
 struct D3D11ContextStateGuard {D3D11ContextStateGuard(ID3D11DeviceContext* context);~D3D11ContextStateGuard();
@@ -244,7 +254,10 @@ public:
 
 private:
     HANDLE mmcssHandle_ = nullptr;
-};void EnsureWgcCallbackThreadQoS();int64_t HundredNanosecondsToQpcTicks(int64_t value100ns, int64_t qpcFreq);bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace);
+};
+void EnsureWgcCallbackThreadQoS();
+int64_t HundredNanosecondsToQpcTicks(int64_t value100ns, int64_t qpcFreq);
+bool IsHdrOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace);
 
 static const GUID IID_IGraphicsCaptureSession5Abi = {
     0x67C0EA62, 0x1F85, 0x5061, {0x92, 0x5A, 0x23, 0x9B, 0xE0, 0xAC, 0x09, 0xCB}};
@@ -267,7 +280,13 @@ bool TryQueryComInterface(const T& object, const GUID& iid, void** result) {
     }
 
     return SUCCEEDED(unknown->QueryInterface(iid, result));
-}bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect);bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance);LONG RectWidth(const RECT& rect);LONG RectHeight(const RECT& rect);bool SizeNearlyMatchesRect(uint32_t width, uint32_t height, const RECT& rect, LONG tolerance);bool IsFullscreenLikeWindow(HWND hwnd);
+}
+bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect);
+bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance);
+LONG RectWidth(const RECT& rect);
+LONG RectHeight(const RECT& rect);
+bool SizeNearlyMatchesRect(uint32_t width, uint32_t height, const RECT& rect, LONG tolerance);
+bool IsFullscreenLikeWindow(HWND hwnd);
 
 constexpr int kBorderlessAccessUnknown = 0;
 constexpr int kBorderlessAccessAllowed = 1;
@@ -275,7 +294,9 @@ constexpr int kBorderlessAccessDenied = 2;
 constexpr int kBorderlessAccessUnavailable = 3;
 
 inline std::once_flag g_BorderlessAccessRequestOnce;
-inline std::atomic<int> g_BorderlessAccessRequestState{kBorderlessAccessUnknown};int GetBorderlessAccessRequestState();bool EnsureBorderlessAccessRequested();
+inline std::atomic<int> g_BorderlessAccessRequestState{kBorderlessAccessUnknown};
+int GetBorderlessAccessRequestState();
+bool EnsureBorderlessAccessRequested();
 #endif
 
 class WGCCapture::Impl {
@@ -531,15 +552,69 @@ public:
     std::atomic<bool> hdrRecheckPending_{false};
     // Set when a delivered source texture contradicts the capture HDR contract:
     // the confirmation probe then bypasses the periodic-recheck throttle.
-    std::atomic<bool> hdrRecheckUrgent_{false};void FlagResetNeeded(const char* reason);bool NeedsReset() const;std::string ConsumeResetReason();void PerformHDRRecheck();
+    std::atomic<bool> hdrRecheckUrgent_{false};
+    void FlagResetNeeded(const char* reason);
+    bool NeedsReset() const;
+    std::string ConsumeResetReason();
+    void PerformHDRRecheck();
 
     // Periodically re-check HDR state (handles mid-capture HDR toggle in Windows settings)
     // but keep the DXGI probe off the WinRT callback hot path.
-void RequestHDRRecheckIfDue();void RequestHDRRecheckUrgent(DXGI_FORMAT deliveredFormat);void MaybePerformDeferredHDRRecheck();const char* DescribeCaptureFormat() const;uint32_t BytesPerPixelForFormat(DXGI_FORMAT format) const;DXGI_FORMAT GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const;bool IsCompactRetainedCopy(DXGI_FORMAT sourceFormat, DXGI_FORMAT retainedFormat) const;void ReleasePoolConversionResources();void ReleaseGpuTimingResources();bool EnsurePoolCopyShader();bool CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
-                                 DXGI_FORMAT inputSrvFormat, ID3D11ShaderResourceView** outSrv, bool* usedStaging);bool RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
-                               ID3D11RenderTargetView* targetRtv, bool linearToSrgb, bool* usedStaging);ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
-                                                                            DXGI_FORMAT format) const;void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget);void ReleaseTexturePool();bool EnsureGpuTimingQueries();void PollGpuTimingSample();void BeginGpuTimingSample();void EndGpuTimingSample();void LogVideoMemoryInfo(const char* stage, bool force = false);bool IsAllocationExhaustion(HRESULT hr);void SetVideoMemoryReservationBytes(uint64_t requestedBytes, const char* stage);void ApplyConfiguredVideoMemoryReservation();void ResetVideoMemoryReservation();void EnableMultithreadProtection(ID3D11Device* device, const char* label);void ApplyConfiguredGpuPriority(const char* role);bool InitializeDevices(ID3D11Device* encoderDevice);void ReleaseCapturedFrame(WGCCapturedFrame& frame);void ResetStats();void ReleasePendingFramesLocked();void EnqueueFrameInternal(WGCCapturedFrame&& frame);void QueuePendingFrame(WGCCapturedFrame&& frame);void RecordInputFrameEvent();void RecordDeliveredFrameEvent();void RecordSourceTimingSample(int64_t sourceFrameQpc);void RecordSourceToCopyLatency(int64_t sourceFrameQpc, int64_t copyCompleteQpc);void ApplyFrameThrottleInterval();void ApplyProducerInterval();void ApplyMinUpdateInterval();int64_t GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const;bool IsStaleSourceFrameQpc(int64_t sourceFrameQpc) const;bool IsOutOfOrderRawSourceFrameQpc(int64_t sourceFrameQpc) const;int64_t NormalizeSourceFrameQpc(int64_t sourceFrameQpc, bool* duplicateSourceTimestamp = nullptr);HMONITOR ResolveTargetMonitor() const;bool GetCaptureOrigin(int32_t& left, int32_t& top) const;const char* ResolveWindowCaptureOrigin(int32_t& left, int32_t& top) const;bool QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1);void UpdateCaptureFormatSelection();bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat = DXGI_FORMAT_B8G8R8A8_UNORM);bool ShouldAdmitFrameToPool(int64_t sourceFrameQpc, int64_t rawSourceFrameQpc, uint32_t poolSize,
-                                const std::shared_ptr<WgcPoolLeaseState>& leaseState);bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
+    void RequestHDRRecheckIfDue();
+    void RequestHDRRecheckUrgent(DXGI_FORMAT deliveredFormat);
+    void MaybePerformDeferredHDRRecheck();
+    const char* DescribeCaptureFormat() const;
+    uint32_t BytesPerPixelForFormat(DXGI_FORMAT format) const;
+    DXGI_FORMAT GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const;
+    bool IsCompactRetainedCopy(DXGI_FORMAT sourceFormat, DXGI_FORMAT retainedFormat) const;
+    void ReleasePoolConversionResources();
+    void ReleaseGpuTimingResources();
+    bool EnsurePoolCopyShader();
+    bool CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
+                                 DXGI_FORMAT inputSrvFormat, ID3D11ShaderResourceView** outSrv, bool* usedStaging);
+    bool RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
+                               ID3D11RenderTargetView* targetRtv, bool linearToSrgb, bool* usedStaging);
+    ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
+                                                                            DXGI_FORMAT format) const;
+    void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget);
+    void ReleaseTexturePool();
+    bool EnsureGpuTimingQueries();
+    void PollGpuTimingSample();
+    void BeginGpuTimingSample();
+    void EndGpuTimingSample();
+    void LogVideoMemoryInfo(const char* stage, bool force = false);
+    bool IsAllocationExhaustion(HRESULT hr);
+    void SetVideoMemoryReservationBytes(uint64_t requestedBytes, const char* stage);
+    void ApplyConfiguredVideoMemoryReservation();
+    void ResetVideoMemoryReservation();
+    void EnableMultithreadProtection(ID3D11Device* device, const char* label);
+    void ApplyConfiguredGpuPriority(const char* role);
+    bool InitializeDevices(ID3D11Device* encoderDevice);
+    void ReleaseCapturedFrame(WGCCapturedFrame& frame);
+    void ResetStats();
+    void ReleasePendingFramesLocked();
+    void EnqueueFrameInternal(WGCCapturedFrame&& frame);
+    void QueuePendingFrame(WGCCapturedFrame&& frame);
+    void RecordInputFrameEvent();
+    void RecordDeliveredFrameEvent();
+    void RecordSourceTimingSample(int64_t sourceFrameQpc);
+    void RecordSourceToCopyLatency(int64_t sourceFrameQpc, int64_t copyCompleteQpc);
+    void ApplyFrameThrottleInterval();
+    void ApplyProducerInterval();
+    void ApplyMinUpdateInterval();
+    int64_t GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const;
+    bool IsStaleSourceFrameQpc(int64_t sourceFrameQpc) const;
+    bool IsOutOfOrderRawSourceFrameQpc(int64_t sourceFrameQpc) const;
+    int64_t NormalizeSourceFrameQpc(int64_t sourceFrameQpc, bool* duplicateSourceTimestamp = nullptr);
+    HMONITOR ResolveTargetMonitor() const;
+    bool GetCaptureOrigin(int32_t& left, int32_t& top) const;
+    const char* ResolveWindowCaptureOrigin(int32_t& left, int32_t& top) const;
+    bool QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1);
+    void UpdateCaptureFormatSelection();
+    bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat = DXGI_FORMAT_B8G8R8A8_UNORM);
+    bool ShouldAdmitFrameToPool(int64_t sourceFrameQpc, int64_t rawSourceFrameQpc, uint32_t poolSize,
+                                const std::shared_ptr<WgcPoolLeaseState>& leaseState);
+    bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
                          int64_t rawSourceFrameQpc, ID3D11Texture2D** out, int64_t& copyCompleteQpc,
                          WgcPoolSlotLease& outLease, uint32_t& outSlot, uint64_t& outGeneration);
 
@@ -552,31 +627,51 @@ void RequestHDRRecheckIfDue();void RequestHDRRecheckUrgent(DXGI_FORMAT delivered
         int64_t sourceFrameQpc = 0;
         bool duplicateSourceTimestamp = false;
         bool accepted = false;
-    };SourceFramePreflight PreflightSourceFrame(int64_t rawSourceFrameQpc);
+    };
+    SourceFramePreflight PreflightSourceFrame(int64_t rawSourceFrameQpc);
 
     // Shared pool copy + delivery for an admitted source texture. The texture
     // only needs to stay valid for the duration of this call (the GPU copy is
     // submitted synchronously), which is exactly the DXGI duplication
     // Acquire/Release contract as well as the WinRT surface lifetime.
-bool DeliverSourceTexture(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc,
-                              const SourceFramePreflight& pre, WGCCapturedFrame* outputFrame);bool ProcessCapturedFrame(const winrt::Direct3D11CaptureFrame& winrtFrame, WGCCapturedFrame* outputFrame);
+    bool DeliverSourceTexture(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc,
+                              const SourceFramePreflight& pre, WGCCapturedFrame* outputFrame);
+    bool ProcessCapturedFrame(const winrt::Direct3D11CaptureFrame& winrtFrame, WGCCapturedFrame* outputFrame);
 
     // DXGI duplication sink: mirrors OnFrameArrived's locking, instrumentation,
     // and pull/callback dual-mode dispatch for the duplication capture thread.
-void OnDuplicationFrame(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc);void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&);bool CreateWinRTDevice();void UnsubscribeItemClosed() noexcept;bool SubscribeItemClosed(const char* targetName, const char* resetReason);bool CreateForMonitor(HMONITOR hmon);bool CreateForWindow(HWND hwnd);
+    void OnDuplicationFrame(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc);
+    void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&);
+    bool CreateWinRTDevice();
+    void UnsubscribeItemClosed() noexcept;
+    bool SubscribeItemClosed(const char* targetName, const char* resetReason);
+    bool CreateForMonitor(HMONITOR hmon);
+    bool CreateForWindow(HWND hwnd);
 
     // Prepare a DXGI Desktop Duplication monitor target. Only light
     // availability validation happens here (adapter/output match, rotation);
     // the duplication object itself is created at StartCapture so an idle
     // primed target does not keep system-wide desktop duplication active
     // (which would suppress MPO/DirectFlip between recordings).
-bool CreateForMonitorDuplication(HMONITOR hmon);bool StartDuplicationCapture(uint32_t& width, uint32_t& height);bool StartCapture(uint32_t& width, uint32_t& height, bool captureCursor);void StopCapture();size_t DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames);bool GetNextFrame(WGCCapturedFrame& frame);
+    bool CreateForMonitorDuplication(HMONITOR hmon);
+    bool StartDuplicationCapture(uint32_t& width, uint32_t& height);
+    bool StartCapture(uint32_t& width, uint32_t& height, bool captureCursor);
+    void StopCapture();
+    size_t DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames);
+    bool GetNextFrame(WGCCapturedFrame& frame);
 
 #endif
 #if !HAS_WGC
     // Stub implementation when WGC headers not available
     ID3D11Device* d3dDevice_ = nullptr;
-    ID3D11DeviceContext* d3dContext_ = nullptr;bool CreateWinRTDevice();bool CreateForMonitor(void*);bool CreateForWindow(void*);bool StartCapture(uint32_t&, uint32_t&, bool);void StopCapture();bool GetNextFrame(WGCCapturedFrame&);bool GetCaptureOrigin(int32_t&, int32_t&) const;
+    ID3D11DeviceContext* d3dContext_ = nullptr;
+    bool CreateWinRTDevice();
+    bool CreateForMonitor(void*);
+    bool CreateForWindow(void*);
+    bool StartCapture(uint32_t&, uint32_t&, bool);
+    void StopCapture();
+    bool GetNextFrame(WGCCapturedFrame&);
+    bool GetCaptureOrigin(int32_t&, int32_t&) const;
 
 #endif
 };

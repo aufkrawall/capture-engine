@@ -141,52 +141,105 @@ inline std::atomic<uint32_t> dx11_hook_g_D3D11DirtyContextCount{0};
 // The raw-vtable fallback is normally bypassed by the context wrapper. For
 // callers that retain a real context pointer, let clean draws test one atomic
 // and return without taking the process-global state mutex.
-void MarkPixelSamplersDirty11Locked(D3D11PerContextState& state, uint32_t mask);size_t GetStageIndex(D3D11ShaderStage stage);const char* GetStageName11(D3D11ShaderStage stage);uint32_t SamplerRangeMask11(UINT startSlot, UINT numSamplers);uint32_t TrackedPixelSamplerMask11Locked(const D3D11PerContextState& state);uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerContextState& state, UINT startSlot,
-                                                              UINT numViews);void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                      UINT numViews, ID3D11ShaderResourceView** views);void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
-                               ID3D11SamplerState** samplers);void ReleaseTrackedContextState11(D3D11PerContextState& state);void ReleaseTrackedShaderResources11Unlocked();void ClearTrackedContextState11(ID3D11DeviceContext* context);void ReleaseTrackedShaderResources11();void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                       UINT numViews, ID3D11ShaderResourceView* const* ppShaderResourceViews);uint32_t UpdateStageSamplers(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                    UINT numSamplers, ID3D11SamplerState* const* ppSamplers);void RememberRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
-                                  ID3D11SamplerState* sampler);void RememberRealSamplerRange11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                       UINT numSamplers, ID3D11SamplerState* const* ppSamplers);ID3D11SamplerState* GetRememberedRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);uint32_t PeekPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t slotMask);void ClearPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t slotMask);ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                                                UINT slot);ID3D11SamplerState* GetTrackedSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11PixelShader* shader);uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context);bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context, bool* hasShader,
-                                            WrapperPixelShaderAFMetadata* metadata);void RefreshPixelShaderFromContext11(ID3D11DeviceContext* context);void RefreshStageShaderResourcesFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                                     UINT startSlot, UINT numViews);void RefreshStageSamplersFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                              UINT numSamplers);ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
+void MarkPixelSamplersDirty11Locked(D3D11PerContextState& state, uint32_t mask);
+size_t GetStageIndex(D3D11ShaderStage stage);
+const char* GetStageName11(D3D11ShaderStage stage);
+uint32_t SamplerRangeMask11(UINT startSlot, UINT numSamplers);
+uint32_t TrackedPixelSamplerMask11Locked(const D3D11PerContextState& state);
+uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerContextState& state, UINT startSlot,
+                                                       UINT numViews);
+void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
+                               ID3D11ShaderResourceView** views);
+void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
+                        ID3D11SamplerState** samplers);
+void ReleaseTrackedContextState11(D3D11PerContextState& state);
+void ReleaseTrackedShaderResources11Unlocked();
+void ClearTrackedContextState11(ID3D11DeviceContext* context);
+void ReleaseTrackedShaderResources11();
+void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
+                                ID3D11ShaderResourceView* const* ppShaderResourceViews);
+uint32_t UpdateStageSamplers(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
+                             ID3D11SamplerState* const* ppSamplers);
+void RememberRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
+                           ID3D11SamplerState* sampler);
+void RememberRealSamplerRange11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
+                                ID3D11SamplerState* const* ppSamplers);
+ID3D11SamplerState* GetRememberedRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);
+uint32_t PeekPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t slotMask);
+void ClearPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t slotMask);
+ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                                         UINT slot);
+ID3D11SamplerState* GetTrackedSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);
+void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11PixelShader* shader);
+uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context);
+bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context, bool* hasShader,
+                                     WrapperPixelShaderAFMetadata* metadata);
+void RefreshPixelShaderFromContext11(ID3D11DeviceContext* context);
+void RefreshStageShaderResourcesFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
+                                              UINT numViews);
+void RefreshStageSamplersFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
+                                       UINT numSamplers);
+ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
     ID3D11Device* device, ID3D11ShaderResourceView* view,
-    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context,
-                                              D3D11ShaderStage stage, UINT slot, const D3D11_SAMPLER_DESC& desc,
-                                              const GraphicsConfig& gfx);ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                                           UINT slot, ID3D11SamplerState* original);int ReconcileStageSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                    UINT startSlot, UINT numSlots, uint32_t slotMask);void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                       UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* ppSamplers);
+    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);
+bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
+bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                       UINT slot, const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
+ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
+                                                    ID3D11SamplerState* original);
+int ReconcileStageSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                             UINT startSlot, UINT numSlots, uint32_t slotMask);
+void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
+                                UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* ppSamplers);
 
-void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,
-                                                           SIZE_T bytecodeLength, ID3D11ClassLinkage* classLinkage,
-                                                           ID3D11PixelShader** pixelShader);HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device, UINT contextFlags,
-                                                               ID3D11DeviceContext** deferredContext);void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context, ID3D11PixelShader* pixelShader,
-                                                  ID3D11ClassInstance* const* classInstances, UINT numClassInstances);void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews);void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void STDMETHODCALLTYPE DetourVSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void STDMETHODCALLTYPE DetourGSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void STDMETHODCALLTYPE DetourHSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
-                                                    ID3D11SamplerState* const* ppSamplers);void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context);void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context, UINT indexCount,
-                                                  UINT startIndexLocation, INT baseVertexLocation);void STDMETHODCALLTYPE DetourDraw11(ID3D11DeviceContext* context, UINT vertexCount, UINT startVertexLocation);void STDMETHODCALLTYPE DetourDrawIndexedInstanced11(ID3D11DeviceContext* context, UINT indexCountPerInstance,
-                                                           UINT instanceCount, UINT startIndexLocation,
-                                                           INT baseVertexLocation, UINT startInstanceLocation);void STDMETHODCALLTYPE DetourDrawInstanced11(ID3D11DeviceContext* context, UINT vertexCountPerInstance,
-                                                    UINT instanceCount, UINT startVertexLocation,
-                                                    UINT startInstanceLocation);void STDMETHODCALLTYPE DetourDrawAuto11(ID3D11DeviceContext* context);void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceContext* context,
-                                                                   ID3D11Buffer* bufferForArgs,
-                                                                   UINT alignedByteOffsetForArgs);void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* context, ID3D11Buffer* bufferForArgs,
-                                                            UINT alignedByteOffsetForArgs);void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, ID3D11CommandList* commandList,
-                                                         BOOL restoreContextState);
+void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
+HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,
+                                                    SIZE_T bytecodeLength, ID3D11ClassLinkage* classLinkage,
+                                                    ID3D11PixelShader** pixelShader);
+HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device, UINT contextFlags,
+                                                        ID3D11DeviceContext** deferredContext);
+void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context, ID3D11PixelShader* pixelShader,
+                                           ID3D11ClassInstance* const* classInstances, UINT numClassInstances);
+void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourVSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourGSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourHSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourDSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourCSSetShaderResources11(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                                                    ID3D11ShaderResourceView* const* ppShaderResourceViews);
+void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void STDMETHODCALLTYPE DetourVSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void STDMETHODCALLTYPE DetourGSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void STDMETHODCALLTYPE DetourHSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void STDMETHODCALLTYPE DetourDSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState* const* ppSamplers);
+void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context);
+void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context, UINT indexCount, UINT startIndexLocation,
+                                           INT baseVertexLocation);
+void STDMETHODCALLTYPE DetourDraw11(ID3D11DeviceContext* context, UINT vertexCount, UINT startVertexLocation);
+void STDMETHODCALLTYPE DetourDrawIndexedInstanced11(ID3D11DeviceContext* context, UINT indexCountPerInstance,
+                                                    UINT instanceCount, UINT startIndexLocation, INT baseVertexLocation,
+                                                    UINT startInstanceLocation);
+void STDMETHODCALLTYPE DetourDrawInstanced11(ID3D11DeviceContext* context, UINT vertexCountPerInstance,
+                                             UINT instanceCount, UINT startVertexLocation, UINT startInstanceLocation);
+void STDMETHODCALLTYPE DetourDrawAuto11(ID3D11DeviceContext* context);
+void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceContext* context, ID3D11Buffer* bufferForArgs,
+                                                            UINT alignedByteOffsetForArgs);
+void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* context, ID3D11Buffer* bufferForArgs,
+                                                     UINT alignedByteOffsetForArgs);
+void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, ID3D11CommandList* commandList,
+                                                  BOOL restoreContextState);
 
 // Local copy of the real original D3D11CreateDeviceAndSwapChain function address.
 // HookExport calls PatchIATAllModules which overwrites the shared
@@ -206,22 +259,25 @@ inline ResizeBuffers_t dx11_hook_oResizeBuffers = NULL;
 
 // Forward Declarations (non-static for cross-file hook collision detection from
 // dx12_hook.cpp) Helper to get VSync override settings (reduces duplication)
-VSyncOverride GetDX11VSyncOverride();bool ShouldSkipWindowForNvPresent(HWND hwnd);
+VSyncOverride GetDX11VSyncOverride();
+bool ShouldSkipWindowForNvPresent(HWND hwnd);
 
 void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
 
-void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType,
-                                                          HMODULE Software, UINT Flags,
-                                                          const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels,
-                                                          UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-                                                          IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
-                                                          D3D_FEATURE_LEVEL* pFeatureLevel,
-                                                          ID3D11DeviceContext** ppImmediateContext);HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice,
-                                                       DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain);HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, IUnknown* pDevice, HWND hWnd,
-                                                              const DXGI_SWAP_CHAIN_DESC1* pDesc,
-                                                              const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
-                                                              IDXGIOutput* pRestrictToOutput,
-                                                              IDXGISwapChain1** ppSwapChain);
+void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
+HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+                                                   UINT Flags, const D3D_FEATURE_LEVEL* pFeatureLevels,
+                                                   UINT FeatureLevels, UINT SDKVersion,
+                                                   const DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+                                                   IDXGISwapChain** ppSwapChain, ID3D11Device** ppDevice,
+                                                   D3D_FEATURE_LEVEL* pFeatureLevel,
+                                                   ID3D11DeviceContext** ppImmediateContext);
+HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                                IDXGISwapChain** ppSwapChain);
+HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pFactory, IUnknown* pDevice, HWND hWnd,
+                                                       const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+                                                       IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain);
 
 HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                           ID3D11SamplerState** ppSamplerState);

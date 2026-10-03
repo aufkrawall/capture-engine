@@ -257,7 +257,16 @@ inline std::vector<std::unique_ptr<D3D8SamplerVTableRecord>> dx8_hook_g_D3D8Samp
 
 inline thread_local void** dx8_hook_t_D3D8SamplerVTable = nullptr;
 
-inline thread_local D3D8SamplerVTableRecord* dx8_hook_t_D3D8SamplerRecord = nullptr;D3D8SamplerVTableRecord* ResolveD3D8SamplerVTable(IDirect3DDevice8* device);UINT QueryD3D8MaxAnisotropy(void* opaqueDevice);void InstallD3D8SamplerHooks(IDirect3DDevice8* device);DWORD ParseD3D8MSAA(const char* msaa);void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType, D3D8_PRESENT_PARAMETERS* pp);void InstallD3D8DeviceHooks(IDirect3DDevice8* device);void InstallD3D8CreateDeviceHook(IDirect3D8* d3d8);void TryInstallDirect3DCreate8Hook(HMODULE d3d8Module);IDirect3D8* WINAPI DetourDirect3DCreate8(UINT dx8_hook_sdkVersion);
+inline thread_local D3D8SamplerVTableRecord* dx8_hook_t_D3D8SamplerRecord = nullptr;
+D3D8SamplerVTableRecord* ResolveD3D8SamplerVTable(IDirect3DDevice8* device);
+UINT QueryD3D8MaxAnisotropy(void* opaqueDevice);
+void InstallD3D8SamplerHooks(IDirect3DDevice8* device);
+DWORD ParseD3D8MSAA(const char* msaa);
+void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType, D3D8_PRESENT_PARAMETERS* pp);
+void InstallD3D8DeviceHooks(IDirect3DDevice8* device);
+void InstallD3D8CreateDeviceHook(IDirect3D8* d3d8);
+void TryInstallDirect3DCreate8Hook(HMODULE d3d8Module);
+IDirect3D8* WINAPI DetourDirect3DCreate8(UINT dx8_hook_sdkVersion);
 
 // Globals
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
@@ -279,12 +288,28 @@ public:
     }~DX8StateHookBypassScope();
 };
 
-void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float dx8_hook_limit);D3D8GetCreationParameters_t GetD3D8GetCreationParameters(IDirect3DDevice8* device);D3D8GetBackBuffer_t GetD3D8GetBackBuffer(IDirect3DDevice8* device);D3D8CreateImageSurface_t GetD3D8CreateImageSurface(IDirect3DDevice8* device);D3D8CopyRects_t GetD3D8CopyRects(IDirect3DDevice8* device);D3D8GetFrontBuffer_t GetD3D8GetFrontBuffer(IDirect3DDevice8* device);
+void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float dx8_hook_limit);
+D3D8GetCreationParameters_t GetD3D8GetCreationParameters(IDirect3DDevice8* device);
+D3D8GetBackBuffer_t GetD3D8GetBackBuffer(IDirect3DDevice8* device);
+D3D8CreateImageSurface_t GetD3D8CreateImageSurface(IDirect3DDevice8* device);
+D3D8CopyRects_t GetD3D8CopyRects(IDirect3DDevice8* device);
+D3D8GetFrontBuffer_t GetD3D8GetFrontBuffer(IDirect3DDevice8* device);
 
 HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* dx8_hook_surface, D3D8_SURFACE_DESC_LOCAL* dx8_hook_desc);
 
-void ReleaseD3D8Surface(IDirect3DSurface8*& dx8_hook_surface);HWND ResolveD3D8TargetWindow(IDirect3DDevice8* device, HWND hDestWindowOverride);bool ResolveD3D8RenderSize(IDirect3DDevice8* device, HWND hwnd, uint32_t* outWidth, uint32_t* outHeight);bool DX8HelperRequired(SharedMemoryLayout* shm, bool isRecording);HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* dx8_hook_surface, D3D8_SURFACE_DESC_LOCAL* dx8_hook_desc);HRESULT D3D8SurfaceLockRect(IDirect3DSurface8* dx8_hook_surface, D3DLOCKED_RECT* lockedRect, const RECT* rect,
-                                   DWORD flags);HRESULT D3D8SurfaceUnlockRect(IDirect3DSurface8* dx8_hook_surface);void ReleaseD3D8Surface(IDirect3DSurface8*& dx8_hook_surface);uint8_t Expand4To8(uint32_t value);uint8_t Expand5To8(uint32_t value);uint8_t Expand6To8(uint32_t value);uint32_t PackBgra8(uint8_t blue, uint8_t green, uint8_t red, uint8_t alpha);
+void ReleaseD3D8Surface(IDirect3DSurface8*& dx8_hook_surface);
+HWND ResolveD3D8TargetWindow(IDirect3DDevice8* device, HWND hDestWindowOverride);
+bool ResolveD3D8RenderSize(IDirect3DDevice8* device, HWND hwnd, uint32_t* outWidth, uint32_t* outHeight);
+bool DX8HelperRequired(SharedMemoryLayout* shm, bool isRecording);
+HRESULT D3D8SurfaceGetDesc(IDirect3DSurface8* dx8_hook_surface, D3D8_SURFACE_DESC_LOCAL* dx8_hook_desc);
+HRESULT D3D8SurfaceLockRect(IDirect3DSurface8* dx8_hook_surface, D3DLOCKED_RECT* lockedRect, const RECT* rect,
+                            DWORD flags);
+HRESULT D3D8SurfaceUnlockRect(IDirect3DSurface8* dx8_hook_surface);
+void ReleaseD3D8Surface(IDirect3DSurface8*& dx8_hook_surface);
+uint8_t Expand4To8(uint32_t value);
+uint8_t Expand5To8(uint32_t value);
+uint8_t Expand6To8(uint32_t value);
+uint32_t PackBgra8(uint8_t blue, uint8_t green, uint8_t red, uint8_t alpha);
 
 // DX8 Capture class using D3D9Ex shared surface wrapper
 class DX8Capture : public HookCaptureBase {
@@ -315,23 +340,47 @@ public:
     // Cached D3D8 device
     IDirect3DDevice8* d3d8Device = nullptr;
     HWND overlayHwnd = NULL;
-    bool generationResetPending = false;void Cleanup() override;bool CleanupDX8(bool force = false);void PrepareForDeviceReset();void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;bool CreateD3D9ExWrapper(HWND hwnd);bool EnsureSnapshotSurface(IDirect3DDevice8* device);bool EnsureFrontBufferSurface(IDirect3DDevice8* device);bool CopyLockedPixelsToSurface9(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat,
-                                    IDirect3DSurface9* destinationSurface);bool CopyLockedPixelsToOverlayBackbuffer(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat);bool CopySurfaceToSurface9(IDirect3DSurface8* sourceSurface, D3DFORMAT sourceFormat,
-                               IDirect3DSurface9* destinationSurface);bool CopyBackBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface);bool CopyFrontBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface);bool CopyFrontBufferToOverlayBackbuffer(IDirect3DDevice8* device);bool PresentOverlay();bool CreateD3D11Device();bool CreateSharedTextures();bool CreateD3D9ExSharedSurface();bool EnsureOverlayDevice(IDirect3DDevice8* device, HWND hwnd);void Init(IDirect3DDevice8* device, HWND hwnd);void CaptureFrame(IDirect3DDevice8* device, bool useFrontBuffer = true);
+    bool generationResetPending = false;
+    void Cleanup() override;
+    bool CleanupDX8(bool force = false);
+    void PrepareForDeviceReset();
+    void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
+    bool CreateD3D9ExWrapper(HWND hwnd);
+    bool EnsureSnapshotSurface(IDirect3DDevice8* device);
+    bool EnsureFrontBufferSurface(IDirect3DDevice8* device);
+    bool CopyLockedPixelsToSurface9(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat,
+                                    IDirect3DSurface9* destinationSurface);
+    bool CopyLockedPixelsToOverlayBackbuffer(const D3DLOCKED_RECT& sourceLockedRect, D3DFORMAT sourceFormat);
+    bool CopySurfaceToSurface9(IDirect3DSurface8* sourceSurface, D3DFORMAT sourceFormat,
+                               IDirect3DSurface9* destinationSurface);
+    bool CopyBackBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface);
+    bool CopyFrontBufferToSurface9(IDirect3DDevice8* device, IDirect3DSurface9* destinationSurface);
+    bool CopyFrontBufferToOverlayBackbuffer(IDirect3DDevice8* device);
+    bool PresentOverlay();
+    bool CreateD3D11Device();
+    bool CreateSharedTextures();
+    bool CreateD3D9ExSharedSurface();
+    bool EnsureOverlayDevice(IDirect3DDevice8* device, HWND hwnd);
+    void Init(IDirect3DDevice8* device, HWND hwnd);
+    void CaptureFrame(IDirect3DDevice8* device, bool useFrontBuffer = true);
 };
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
-inline DX8Capture dx8_hook_g_DX8Capture;void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float dx8_hook_limit);void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd);HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
-                                                   const RECT* pDestRect, HWND hDestWindowOverride,
-                                                   const RGNDATA* dx8_hook_pDirtyRegion);
+inline DX8Capture dx8_hook_g_DX8Capture;
+void ApplyPrerenderLimitDX8(IDirect3DDevice8* device, float dx8_hook_limit);
+void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd);
+HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect, const RECT* pDestRect,
+                                            HWND hDestWindowOverride, const RGNDATA* dx8_hook_pDirtyRegion);
 
 // Hook: D3D8 Reset
 HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void* dx8_hook_pPresentationParameters);
 
 // Hook: D3D8 SetTextureStageState
 HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
-                                                                DWORD dx8_hook_Value);HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
-                                                                 DWORD* dx8_hook_pValue);HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device, DWORD dx8_hook_Token);
+                                                         DWORD dx8_hook_Value);
+HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                         DWORD* dx8_hook_pValue);
+HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device, DWORD dx8_hook_Token);
 
 // Hook: D3D8 CreateDevice
 HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Adapter, UINT DeviceType,

@@ -33,7 +33,7 @@ How to find code:
 | `hooking/` | inline/IAT/vtable hook primitives, grouped thread-quiesced patch transactions (`hook_patch_transaction`, `inline_hook_entry_patch`), module pinning, export resolution |
 | `wrappers/` | COM wrappers (DXGI factory/adapter/output/device/swapchain, D3D9/10/11 device + context), D3DKMT hook, Vulkan dispatch, Vulkan-on-DXGI FIFO present |
 | `present/` | central DXGI Present routing (`dxgi_shared*`: hooks, present/present1, routing, Steam, resize), swapchain lifetime/flags/resize references, present heartbeat / stage cost / re-entry guard, interposer (Smooth Motion) tracking, Vulkan WSI tables |
-| `d3d12/` | DX12 hook: ProcessFrame session (`dx12_hook_process*`), PostSL render (`dx12_hook_postsl*`), ExecuteCommandLists (`_ecl*`), FFX overlay routes (`_ffx*`, `dx12_ffx_suspend_overlay`), Streamline FG transitions, queue adoption, swapchain create/tracking, overlay glue, `dx12_overlay_policy/` |
+| `d3d12/` | DX12 hook: ProcessFrame session (`dx12_hook_process*`; `stage1..5` = the former `Phase1..5`, still named so in older wiki text), PostSL render (`dx12_hook_postsl*`), ExecuteCommandLists (`_ecl*`), FFX overlay routes (`_ffx*`, `dx12_ffx_suspend_overlay`), Streamline FG transitions, queue adoption, swapchain create/tracking, overlay glue, `dx12_overlay_policy/` |
 | `d3d11/`, `d3d9/`, `d3d8/`, `opengl/` | per-API hook: present, capture, overlay, sampler overrides |
 | `ddraw/` | DirectDraw (all surface generations) + D3D6/7 devices, CPU composite, D3D7 sidecar, texture-stage shadow |
 | `streamline/` | Streamline 1.x/2.x hooks, SL1->SL2 generation bridge (`streamline_bridge*`), DLSS-G options/OFF churn, PCL markers, OTA preferences |

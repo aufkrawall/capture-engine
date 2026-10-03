@@ -105,19 +105,26 @@ inline std::vector<D3D11InteropDevice> layer_capture_g_D3D11Devices;
 
 inline std::vector<SharedTextureEntry> layer_capture_g_TextureCache;
 
-bool SelectImportedWin32MemoryType(DeviceDispatch* disp, VkDevice device,
-                                          VkExternalMemoryHandleTypeFlagBits handleType, HANDLE handle,
-                                          uint32_t imageMemoryTypeBits,
-                                          const VkPhysicalDeviceMemoryProperties& memoryProperties,
-                                          uint32_t* layer_capture_memoryTypeIndex);bool CreateD3D11InteropDevice(IDXGIAdapter* adapter, ID3D11Device** ppDevice, ID3D11DeviceContext** ppContext);uint64_t MakeLuidKey(const LUID& luid);bool IsSpecificDxvkWrapperLoaded(const char* dllName);VulkanCaptureInteropMode DetectVulkanInteropMode();const char* VulkanInteropModeToString(VulkanCaptureInteropMode mode);D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid);uint32_t VkFormatToDXGI(VkFormat vkFormat);
+bool SelectImportedWin32MemoryType(DeviceDispatch* disp, VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType,
+                                   HANDLE handle, uint32_t imageMemoryTypeBits,
+                                   const VkPhysicalDeviceMemoryProperties& memoryProperties,
+                                   uint32_t* layer_capture_memoryTypeIndex);
+bool CreateD3D11InteropDevice(IDXGIAdapter* adapter, ID3D11Device** ppDevice, ID3D11DeviceContext** ppContext);
+uint64_t MakeLuidKey(const LUID& luid);
+bool IsSpecificDxvkWrapperLoaded(const char* dllName);
+VulkanCaptureInteropMode DetectVulkanInteropMode();
+const char* VulkanInteropModeToString(VulkanCaptureInteropMode mode);
+D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid);
+uint32_t VkFormatToDXGI(VkFormat vkFormat);
 
 // Normalize SRGB swapchain formats to their UNORM equivalents for D3D11 interop.
 // D3D11 KMT textures are created as UNORM (SRGB isn't needed for byte-level copies),
 // so the VkImage used to import them must also be UNORM for a valid format match.
 // vkCmdCopyImage between compatible 32-bit format classes (SRGB↔UNORM) is spec-valid.
-VkFormat NormalizeVkFormat(VkFormat fmt);bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev, DeviceDispatch* disp,
-                                 VkPhysicalDevice physDev, const LUID& luid, uint32_t width, uint32_t height,
-                                 uint32_t vkFormat, SharedTextureEntry& entry);
+VkFormat NormalizeVkFormat(VkFormat fmt);
+bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev, DeviceDispatch* disp,
+                          VkPhysicalDevice physDev, const LUID& luid, uint32_t width, uint32_t height,
+                          uint32_t vkFormat, SharedTextureEntry& entry);
 
 // Create Vulkan-native images with D3D11_TEXTURE NT export for cross-process sharing.
 // Used when DXVK is active: bypasses D3D11 entirely since DXVK's D3D11 produces
@@ -126,11 +133,11 @@ VkFormat NormalizeVkFormat(VkFormat fmt);bool CreateSharedTextures(D3D11InteropD
 // WDDM allocation handles without D3D11 resource metadata - D3D11's OpenSharedResource
 // returns E_INVALIDARG for them. NT handles via D3D11_TEXTURE_BIT carry proper resource
 // metadata and are openable by D3D11's OpenSharedResource1 after DuplicateHandle.
-bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev,
-                                             const LUID& luid, uint32_t width, uint32_t height, uint32_t vkFormat,
-                                             SharedTextureEntry& entry);SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev,
-                                                     const LUID& luid, uint32_t width, uint32_t height,
-                                                     uint32_t vkFormat);void DestroySharedTextureEntryResources(SharedTextureEntry& entry, DeviceDispatch* disp);
+bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev, const LUID& luid,
+                                      uint32_t width, uint32_t height, uint32_t vkFormat, SharedTextureEntry& entry);
+SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev,
+                                              const LUID& luid, uint32_t width, uint32_t height, uint32_t vkFormat);
+void DestroySharedTextureEntryResources(SharedTextureEntry& entry, DeviceDispatch* disp);
 
 struct VulkanCaptureState {
     bool initialized = false;
@@ -178,16 +185,18 @@ inline std::mutex layer_capture_g_CaptureMutex;
 
 inline std::unordered_map<VkDevice, VulkanCaptureState> layer_capture_g_CaptureStates;
 
-inline std::vector<VulkanCaptureState> layer_capture_g_RetiredCaptureStates;bool CaptureStateCopiesComplete(const VulkanCaptureState& state, DeviceDispatch* disp);void DestroyCaptureStateResources(VulkanCaptureState& state, DeviceDispatch* disp);bool SelectImportedWin32MemoryType(DeviceDispatch* disp, VkDevice device,
-                                          VkExternalMemoryHandleTypeFlagBits handleType, HANDLE handle,
-                                          uint32_t imageMemoryTypeBits,
-                                          const VkPhysicalDeviceMemoryProperties& memoryProperties,
-                                          uint32_t* layer_capture_memoryTypeIndex);VulkanCaptureState::CommandResources* EnsureCaptureCommandResources(VulkanCaptureState& state,
-                                                                           DeviceDispatch* disp, VkDevice device,
-                                                                           uint32_t queueFamilyIndex);
+inline std::vector<VulkanCaptureState> layer_capture_g_RetiredCaptureStates;
+bool CaptureStateCopiesComplete(const VulkanCaptureState& state, DeviceDispatch* disp);
+void DestroyCaptureStateResources(VulkanCaptureState& state, DeviceDispatch* disp);
+bool SelectImportedWin32MemoryType(DeviceDispatch* disp, VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType,
+                                   HANDLE handle, uint32_t imageMemoryTypeBits,
+                                   const VkPhysicalDeviceMemoryProperties& memoryProperties,
+                                   uint32_t* layer_capture_memoryTypeIndex);
+VulkanCaptureState::CommandResources* EnsureCaptureCommandResources(VulkanCaptureState& state, DeviceDispatch* disp,
+                                                                    VkDevice device, uint32_t queueFamilyIndex);
 
 // Helper to get LUID from Vulkan Physical Device
-bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid);bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint64_t luidKey, uint32_t width,
-                                     uint32_t height, uint32_t vkFormat, SharedMemoryLayout* mem,
-                                     SharedTextureEntry* outEntry,
-                                     HANDLE outKmtHandles[ENCODER_TEXTURE_SLOT_COUNT]);
+bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid);
+bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint64_t luidKey, uint32_t width, uint32_t height,
+                              uint32_t vkFormat, SharedMemoryLayout* mem, SharedTextureEntry* outEntry,
+                              HANDLE outKmtHandles[ENCODER_TEXTURE_SLOT_COUNT]);

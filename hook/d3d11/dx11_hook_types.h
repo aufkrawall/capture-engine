@@ -366,9 +366,15 @@ public:
     D3D11InternalIdentityProbeScope() {
         DX11Hook_BeginInternalIdentityProbe();
     }~D3D11InternalIdentityProbeScope();
-};bool ResolveD3D10Is10_1(ID3D10Device* device, IDXGISwapChain* swapChain);unsigned ResolveD3D11MinorUse(ID3D11Device* device);
+};
+bool ResolveD3D10Is10_1(ID3D10Device* device, IDXGISwapChain* swapChain);
+unsigned ResolveD3D11MinorUse(ID3D11Device* device);
 
-inline std::unordered_map<void**, D3D11QueryInterface_t> dx11_hook_g_D3D11QueryInterfaceOriginals;unsigned D3D11DeviceMinorFromIID(REFIID iid);unsigned D3D11ContextMinorFromIID(REFIID iid);HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object, REFIID iid, void** result);void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source);
+inline std::unordered_map<void**, D3D11QueryInterface_t> dx11_hook_g_D3D11QueryInterfaceOriginals;
+unsigned D3D11DeviceMinorFromIID(REFIID iid);
+unsigned D3D11ContextMinorFromIID(REFIID iid);
+HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object, REFIID iid, void** result);
+void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source);
 
 // Prerender Limit Fencing
 inline std::vector<ID3D11Query*> dx11_hook_g_PrerenderQueries;
@@ -634,5 +640,11 @@ inline uint64_t dx11_hook_g_SamplerConfigHash11 = 0;
 
 inline std::atomic<uint64_t> dx11_hook_g_SamplerConfigHash11Fast{0};
 
-inline thread_local bool dx11_hook_g_InOverlayRender = false;bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b);ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc);void AddReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc,
-                                    ID3D11SamplerState* replacement);bool IsReplacementSampler11(ID3D11SamplerState* sampler);void AddToReplacementSet11(ID3D11SamplerState* sampler);void ClearReplacementSamplerCache11Unlocked();void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx);
+inline thread_local bool dx11_hook_g_InOverlayRender = false;
+bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b);
+ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc);
+void AddReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc, ID3D11SamplerState* replacement);
+bool IsReplacementSampler11(ID3D11SamplerState* sampler);
+void AddToReplacementSet11(ID3D11SamplerState* sampler);
+void ClearReplacementSamplerCache11Unlocked();
+void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx);

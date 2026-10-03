@@ -247,7 +247,9 @@ public:
     bool sharedTextureHandlesAreNt[CAPTURE_TEXTURE_COUNT]{};
 
     // sharedTextureHandles are in base class
-void Cleanup() override;void RequestGenerationReset(IDXGISwapChain* swapChain);void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
+    void Cleanup() override;
+    void RequestGenerationReset(IDXGISwapChain* swapChain);
+    void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
 
     // Initialize for DX10 games - capture stays on the real D3D10 device and
     // publishes DXGI shared handles that the media-side D3D11 device opens.
@@ -259,9 +261,10 @@ bool IsCurrentD3D11DXVK();
 
     // Create a real system D3D11 device on the GPU identified by a LUID.
     // Used for DXVK games so ring buffer textures carry valid Windows NT handles.
-bool CreateSystemD3D11DeviceForLUID(int32_t luidLowPart, int32_t luidHighPart);void Init(ID3D11Device* device, IDXGISwapChain* swapChain);
+bool CreateSystemD3D11DeviceForLUID(int32_t luidLowPart, int32_t luidHighPart);
+void Init(ID3D11Device* device, IDXGISwapChain* swapChain);
 
-    // Wait for a specific query to complete (with timeout)
+// Wait for a specific query to complete (with timeout)
 bool WaitForCopy(ID3D11DeviceContext* context, int idx, DWORD timeoutMs = 10);
 
     // Get the context to use for DX11 capture operations
@@ -273,4 +276,10 @@ bool CaptureFrame(IDXGISwapChain* swapChain);
 };
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
-inline DX11Capture dx11_hook_g_DX11Capture;OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm);void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);float ResolveDX11PrerenderLimit();
+inline DX11Capture dx11_hook_g_DX11Capture;
+OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm);
+void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);
+void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);
+void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);
+void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
+float ResolveDX11PrerenderLimit();

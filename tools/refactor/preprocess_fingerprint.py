@@ -1,6 +1,6 @@
 """Fingerprint every translation unit's preprocessed token stream.
 
-    python tools/refactor/preprocess_fingerprint.py snapshot <out.json>
+    python tools/refactor/preprocess_fingerprint.py snapshot <out.json> [--normalize-whitespace]
     python tools/refactor/preprocess_fingerprint.py compare <before.json> <after.json> [mapping.json]
 
 A pure file move/include re-spelling must leave each TU's `clang -E -P` output byte-identical;
@@ -14,6 +14,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -22,6 +23,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 def rel(path: str) -> str:
     return os.path.normpath(os.path.relpath(path, ROOT)).replace("\\", "/")
+
+
+NORMALIZE_WHITESPACE = "--normalize-whitespace" in sys.argv
 
 
 def preprocess(entry: dict) -> tuple[str, str]:
@@ -43,7 +47,12 @@ def preprocess(entry: dict) -> tuple[str, str]:
     src = rel(os.path.join(entry.get("directory", ROOT), entry["file"]))
     if proc.returncode != 0:
         return src, "ERROR:" + proc.stderr.decode(errors="replace")[:400]
-    return src, hashlib.sha256(proc.stdout).hexdigest()
+    output = proc.stdout
+    if NORMALIZE_WHITESPACE:
+        # Proves a reflow (line breaks, indentation, spaces next to punctuation). Spaces between identifier
+        # or number characters are kept, so `int a` never equals `inta`.
+        output = re.sub(rb"\s*([^\w\s])\s*", rb"\1", b" ".join(output.split()))
+    return src, hashlib.sha256(output).hexdigest()
 
 
 def snapshot(out_path: str) -> None:

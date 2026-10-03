@@ -248,8 +248,17 @@ public:
         uint32_t channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
         int sampleRate = 48000;
         int priority = 10;
-    };float ComputeRaisedCosineFade(size_t index, size_t totalSamples);void ApplyPacketBoundaryFadeIn(float* interleavedSamples, size_t sampleCount, size_t channels,
-                                          size_t fadeSamples);uint32_t DefaultChannelMaskForChannels(int channels);int ParseAudioSampleRate(const AudioConfig& audioConfig);int AudioSourceLayoutPriority(AudioConfig::SourceType sourceType);TrackAudioFormat ProbeSourceTrackFormat(const AudioConfig& audioConfig);std::map<int, TrackAudioFormat> ResolveTrackAudioFormats(const AppConfig& appConfig);TrackAudioFormat GetTrackAudioFormat(int track) const;void CaptureDropFadeAnchor(AudioSource& src, int channels);float GetDropFadeAnchor(const AudioSource& src, int channel);
+    };
+    float ComputeRaisedCosineFade(size_t index, size_t totalSamples);
+    void ApplyPacketBoundaryFadeIn(float* interleavedSamples, size_t sampleCount, size_t channels, size_t fadeSamples);
+    uint32_t DefaultChannelMaskForChannels(int channels);
+    int ParseAudioSampleRate(const AudioConfig& audioConfig);
+    int AudioSourceLayoutPriority(AudioConfig::SourceType sourceType);
+    TrackAudioFormat ProbeSourceTrackFormat(const AudioConfig& audioConfig);
+    std::map<int, TrackAudioFormat> ResolveTrackAudioFormats(const AppConfig& appConfig);
+    TrackAudioFormat GetTrackAudioFormat(int track) const;
+    void CaptureDropFadeAnchor(AudioSource& src, int channels);
+    float GetDropFadeAnchor(const AudioSource& src, int channel);
     void ApplyResampledChunkFades(AudioSource& src, float* outFloats, int outSamples, int channels);
 
     // Per-track encoder with optional mixing (when multiple sources target same
@@ -312,7 +321,12 @@ public:
     SourceTimelineState d3d11TimelineState;   // Source-frame QPC for WGC-relative timing
 
     // Get current video elapsed time for audio clock compensation
-int64_t GetVideoElapsedMs() const;bool SessionUsesVfr() const;bool SessionUsesScreenGrab() const;int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const;void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs);size_t GetBufferedTimelineSamples(const AudioSource& src) const;
+    int64_t GetVideoElapsedMs() const;
+    bool SessionUsesVfr() const;
+    bool SessionUsesScreenGrab() const;
+    int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const;
+    void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs);
+    size_t GetBufferedTimelineSamples(const AudioSource& src) const;
     // Logs and reports sources that ran without their endpoint in this recording.
     bool AudioSourcesLostTheirDevice() const;
     // Logs and reports tracks whose encoder recorded content holes (samples it
@@ -332,15 +346,19 @@ int64_t GetVideoElapsedMs() const;bool SessionUsesVfr() const;bool SessionUsesSc
     // normalized to the shared 48 kHz mixing rate. `kNoAudioIngestHeadroom` doubles as the
     // "nothing observed this window" sentinel so one atomic carries both facts and no
     // observation can be lost between the reader's two accesses.
-    static constexpr int64_t kNoAudioIngestHeadroom = std::numeric_limits<int64_t>::max();void PublishAudioIngestHeadroom(int64_t headroomSamples, int sampleRate);
+    static constexpr int64_t kNoAudioIngestHeadroom = std::numeric_limits<int64_t>::max();
+    void PublishAudioIngestHeadroom(int64_t headroomSamples, int sampleRate);
 
     // Tracks fully-destroyed packets for one source and applies the bounded last-resort
     // re-anchor when the adaptive reservoir has already saturated. Re-anchoring costs a
     // one-time content skip on this source only; the alternative is permanent silence.
-void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t packetStartSamples,
-                                       int64_t exportedCursorSamples,
-                                       int64_t overlapSamples, size_t retainedWriteSamples, int resampledSamples,
-                                       int sampleRate, uint64_t nowTick);size_t DropOldestBufferedSamples(AudioSource& src, size_t samplesToDrop);void DiscardPendingAudioPackets();size_t StopAudioCaptureSources(bool discardPendingPackets);
+    void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t packetStartSamples,
+                                       int64_t exportedCursorSamples, int64_t overlapSamples,
+                                       size_t retainedWriteSamples, int resampledSamples, int sampleRate,
+                                       uint64_t nowTick);
+    size_t DropOldestBufferedSamples(AudioSource& src, size_t samplesToDrop);
+    void DiscardPendingAudioPackets();
+    size_t StopAudioCaptureSources(bool discardPendingPackets);
 
     struct FinalSourceCatchupStatus {
         bool ready = true;
@@ -349,7 +367,15 @@ void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t pack
         int64_t requestedSamples = 0;
         size_t bufferedSamples = 0;
         int64_t missingSamples = 0;
-    };FinalSourceCatchupStatus GetFinalCfrSourceCatchupStatus(int64_t targetUs) const;bool WaitForFinalCfrAudioSourceCatchup(int64_t targetUs);size_t StopCaptureSourcesAndDrainAudioLoop();void AudioThreadEntry() noexcept;bool StartAudioThread();void DrainStoppedCaptureQueuesBeforeFinalPull(int64_t targetUs);void ApplyAudioTimelineReset(uint64_t generation, int64_t startQpcMs, bool preservePendingPackets);void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false);
+    };
+    FinalSourceCatchupStatus GetFinalCfrSourceCatchupStatus(int64_t targetUs) const;
+    bool WaitForFinalCfrAudioSourceCatchup(int64_t targetUs);
+    size_t StopCaptureSourcesAndDrainAudioLoop();
+    void AudioThreadEntry() noexcept;
+    bool StartAudioThread();
+    void DrainStoppedCaptureQueuesBeforeFinalPull(int64_t targetUs);
+    void ApplyAudioTimelineReset(uint64_t generation, int64_t startQpcMs, bool preservePendingPackets);
+    void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false);
 
     // Pull Model: source counters are diagnostic/source-local; each exported
     // track advances from trackTimelineSamples so source order cannot change
@@ -402,29 +428,65 @@ void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t pack
     int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
                                            uint32_t transportGeneration) const;
     void SetInjectTransportGeneration(uint32_t transportGeneration);
-    int mixLogCounter = 0;int64_t GetLastVideoEncodeTimeUs() const;int64_t GetLastFrameFenceWaitUs() const;bool WasLastFrameDeferred() const;bool CanRepeatLastFrame();void ResetRepeatFrameCache();void ReleaseEncoderTextures();void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer);void SetSourcePrefers10BitHint(bool prefer10Bit);void SetCursorCompositionSuppressedHint(bool suppressed);void SetActiveScreenGrab(bool enabled);void SetAudioOnly(bool enabled);void InitAudioOnlyMuxer(const AppConfig* config);bool CleanupAudioOnlyMuxer();
+    int mixLogCounter = 0;
+    int64_t GetLastVideoEncodeTimeUs() const;
+    int64_t GetLastFrameFenceWaitUs() const;
+    bool WasLastFrameDeferred() const;
+    bool CanRepeatLastFrame();
+    void ResetRepeatFrameCache();
+    void ReleaseEncoderTextures();
+    void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer);
+    void SetSourcePrefers10BitHint(bool prefer10Bit);
+    void SetCursorCompositionSuppressedHint(bool suppressed);
+    void SetActiveScreenGrab(bool enabled);
+    void SetAudioOnly(bool enabled);
+    void InitAudioOnlyMuxer(const AppConfig* config);
+    bool CleanupAudioOnlyMuxer();
 
     // Trusted System QPC Frequency
-    int64_t qpcFreq = 0;bool Init(const AppConfig* config);int64_t GetLastVideoFenceWaitUs() const;void ResetAudioPullStateForRecording();bool StartRecording();void CancelUncommittedVideoRecording();bool StopRecording(bool cancelUncommittedVideo = false);bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
+    int64_t qpcFreq = 0;
+    bool Init(const AppConfig* config);
+    int64_t GetLastVideoFenceWaitUs() const;
+    void ResetAudioPullStateForRecording();
+    bool StartRecording();
+    void CancelUncommittedVideoRecording();
+    bool StopRecording(bool cancelUncommittedVideo = false);
+    bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
                       int32_t luidHigh, uint32_t sourcePid, uint32_t width, uint32_t height, uint32_t format,
                       bool isHDR, bool isShmem = false, int shmemSlot = 0,
-                      const ce::cursor::CaptureState* cursorState = nullptr);bool RepeatLastFrame(int64_t timestampQPC, const ce::cursor::CaptureState* cursorState = nullptr);bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs,
-                         const ce::cursor::CaptureState* cursorState = nullptr);void ExtendCfrToCommonAudioLattice();bool IsWgcCfrRecording() const;bool IsCfrRecording() const;double GetMaxAudioCaptureLatencyMs() const;int64_t GetMaxAudioCaptureLatencyQpc() const;void SetWgcStartupExtraDelayQpc(int64_t delayQpc);bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
+                      const ce::cursor::CaptureState* cursorState = nullptr);
+    bool RepeatLastFrame(int64_t timestampQPC, const ce::cursor::CaptureState* cursorState = nullptr);
+    bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs,
+                         const ce::cursor::CaptureState* cursorState = nullptr);
+    void ExtendCfrToCommonAudioLattice();
+    bool IsWgcCfrRecording() const;
+    bool IsCfrRecording() const;
+    double GetMaxAudioCaptureLatencyMs() const;
+    int64_t GetMaxAudioCaptureLatencyQpc() const;
+    void SetWgcStartupExtraDelayQpc(int64_t delayQpc);
+    bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
-bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
+    bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
                            int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs,
-                           const ce::cursor::CaptureState* cursorState);void AppendSyncResamplerOutput(AudioSource& src, size_t srcIdx, int channels, uint8_t** resampledData,
-                                   int outSamples);bool PumpSourceRingThroughSyncResampler(AudioSource& src, size_t srcIdx, int channels, size_t maxFloats);bool FlushCaptureResamplerForEpoch(AudioSource& src, size_t srcIdx, uint64_t oldEpoch, uint64_t newEpoch);bool ServiceAudioEpochResetOnPull(AudioSource& src, size_t srcIdx);void FlushAudioOnlyResamplerTails();
+                           const ce::cursor::CaptureState* cursorState);
+    void AppendSyncResamplerOutput(AudioSource& src, size_t srcIdx, int channels, uint8_t** resampledData,
+                                   int outSamples);
+    bool PumpSourceRingThroughSyncResampler(AudioSource& src, size_t srcIdx, int channels, size_t maxFloats);
+    bool FlushCaptureResamplerForEpoch(AudioSource& src, size_t srcIdx, uint64_t oldEpoch, uint64_t newEpoch);
+    bool ServiceAudioEpochResetOnPull(AudioSource& src, size_t srcIdx);
+    void FlushAudioOnlyResamplerTails();
 
     // PULL MODEL: Pull audio from RingBuffers and encode against the relative
     // recording timeline that also drives CFR video emission.
 void PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain = false);
 
     // Create shared D3D11 textures for Vulkan games to import
-bool CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format, SharedMemoryLayout* sharedMem);void WritePacket(AVPacket* pkt);void ReloadConfig(const AppConfig* newConfig);
-    // Applies a ReloadConfig that arrived while a recording was live. Caller holds muxMutex.
-    void ApplyConfigDeferredDuringRecording();
+bool CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format, SharedMemoryLayout* sharedMem);
+void WritePacket(AVPacket* pkt);
+void ReloadConfig(const AppConfig* newConfig);
+// Applies a ReloadConfig that arrived while a recording was live. Caller holds muxMutex.
+void ApplyConfigDeferredDuringRecording();
 
 private:
     // Identity of an app-audio capture targeting a specific track. Two app-audio
@@ -442,11 +504,14 @@ private:
     // by AudioLoop from this single owner. Process loopback requests the widest
     // routed layout once, then each route's resampler converts that common packet
     // stream to its track layout. Endpoint capture remains native.
-void CoalesceCaptureRoutes();ProcessLoopbackCapture* GetAppCaptureForRoute(size_t srcIdx);std::pair<int64_t, int64_t> GetCaptureGroupBufferedSampleRange(size_t srcIdx) const;
+    void CoalesceCaptureRoutes();
+    ProcessLoopbackCapture* GetAppCaptureForRoute(size_t srcIdx);
+    std::pair<int64_t, int64_t> GetCaptureGroupBufferedSampleRange(size_t srcIdx) const;
 
     // Shared initialization for ring buffer and sync resampler on an AudioSource.
     // Parses sample rate from config (defaults to 48000) and sets up both.
-void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx);void AudioLoop();
+    void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx);
+    void AudioLoop();
     // PullAndEncodeAudio phase helpers (keep the function a semantic unit).
     bool ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimelineUs, bool forceDrain);
     bool PullTrackBootstrap(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);

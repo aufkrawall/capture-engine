@@ -133,9 +133,11 @@ void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t ddraw_hook_directDrawC
 
 void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t ddraw_hook_directDrawCreateEx);
 
-void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);LegacyD3DSamplerVTableRecord* ResolveLegacyD3DSamplerVTable(
-    ce::legacy_d3d_sampler_state::Api api, void* ddraw_hook_device);void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, void* ddraw_hook_device, bool newDevice,
-                                        const char* ddraw_hook_reason);
+void BootstrapDirectDrawHooksOnCurrentThread(const char* ddraw_hook_reason);
+LegacyD3DSamplerVTableRecord* ResolveLegacyD3DSamplerVTable(ce::legacy_d3d_sampler_state::Api api,
+                                                            void* ddraw_hook_device);
+void InstallLegacyD3DDeviceHooks(ce::legacy_d3d_sampler_state::Api api, void* ddraw_hook_device, bool newDevice,
+                                 const char* ddraw_hook_reason);
 HWND ResolveDirectDrawTargetWindow();
 void MaybeTrackPrimarySurface(IDirectDrawSurface7* surface, const char* ddraw_hook_reason);
 void MaybeTrackPrimarySurface4(IDirectDrawSurface4* surface, const char* ddraw_hook_reason);

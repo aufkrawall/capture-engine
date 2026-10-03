@@ -109,8 +109,9 @@ TEST(StreamlineRuntimePolicyTest, PclMarkerHookFeedsLatencyProviderWithoutSynthe
 // state; genuine install failures remain visible with an initial burst and sparse heartbeat.
 TEST(StreamlineRuntimePolicyTest, RediscoveredLiveInlineHooksReconcileWithoutFailureSpam) {
     namespace fs = std::filesystem;
+    // InstallInlineHookOnce lives in the declarations header streamline_hook_internal.h includes.
     const std::string header = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h");
+        fs::current_path() / "hook" / "streamline" / "streamline_hook_declarations.h");
     const std::string inlineHook = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "hooking" / "inline_hook.cpp");
     ASSERT_FALSE(header.empty());
@@ -416,8 +417,8 @@ TEST(StreamlineRuntimePolicyTest, HookSlotIsNotRetargetedWhileTheInstalledTarget
 
 TEST(StreamlineRuntimePolicyTest, InlineHookInstallConsultsTheRetargetGuard) {
     namespace fs = std::filesystem;
-    const std::string header =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook_internal.h");
+    const std::string header = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" /
+                                                                  "streamline_hook_declarations.h");
     ASSERT_FALSE(header.empty());
 
     const size_t installer = header.find("bool InstallInlineHookOnce(void* target, void* detour");

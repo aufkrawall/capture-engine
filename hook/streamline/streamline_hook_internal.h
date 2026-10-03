@@ -135,15 +135,23 @@ inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActivePro
 inline std::atomic<uint32_t> streamline_hook_g_StartupProtectedOffChurnActiveFrameCount{0};
 uint32_t GetStartupProtectedOffChurnActiveProof();
 void NoteStartupProtectedActiveTitleFrame(uint64_t frameId);
-bool IsObserverOnlyModeActive();bool IsObserverPolicyOnlyModeActive();bool ShouldKeepPureObserverOnlyStreamlineBehavior();bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWindow);void ResetStartupProtectedOffChurnActiveProof(const char* reason);void LogAcceptedOffDuringActivatedUnconfirmedResume(const char* source, bool startupWindowActive, bool hadFSRFGPhase,
+bool IsObserverOnlyModeActive();
+bool IsObserverPolicyOnlyModeActive();
+bool ShouldKeepPureObserverOnlyStreamlineBehavior();
+bool TryServicePostSLStartupActivation(const char* source, bool clearStartupWindow);
+void ResetStartupProtectedOffChurnActiveProof(const char* reason);
+void LogAcceptedOffDuringActivatedUnconfirmedResume(const char* source, bool startupWindowActive, bool hadFSRFGPhase,
                                                     bool explicitSetOptionsActivationForCurrentComeback,
                                                     bool safePostFSRBootstrapPath, bool startupActivationPending,
                                                     bool postSLActiveButUnconfirmed,
                                                     bool postSLStartupActivationEntered, bool postSLConfirmedRendering,
                                                     bool postSLConfirmedButStartupSettling,
-                                                    bool postSLConfirmedButRuntimeStateStabilizing);void MarkStartupProtectedOffChurnObserved(const char* source, bool postSLConfirmedRendering,
+                                                    bool postSLConfirmedButRuntimeStateStabilizing);
+void MarkStartupProtectedOffChurnObserved(const char* source, bool postSLConfirmedRendering,
                                           bool postSLConfirmedButStartupSettling,
-                                          bool postSLConfirmedButRuntimeStateStabilizing);void MarkStartupProtectedActiveRuntimeProof(const char* source, int multiplier);bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComebackProof, bool postSLConfirmedRendering,
+                                          bool postSLConfirmedButRuntimeStateStabilizing);
+void MarkStartupProtectedActiveRuntimeProof(const char* source, int multiplier);
+bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComebackProof, bool postSLConfirmedRendering,
                                                    bool postSLConfirmedButStartupSettling);
 
 inline thread_local int streamline_hook_g_ExternalOverlayPresentGuardDepth = 0;
@@ -502,7 +510,8 @@ inline constexpr uint32_t streamline_hook_kDLSSGStatusFailHDRFormatNotSupported 
 
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailCommonConstantsInvalid = 1u << 3;
 
-inline constexpr uint32_t streamline_hook_kDLSSGStatusFailGetCurrentBackBufferIndex = 1u << 4;void FormatDLSSGStatusFlags(uint32_t status, char* buffer, size_t bufferSize);
+inline constexpr uint32_t streamline_hook_kDLSSGStatusFailGetCurrentBackBufferIndex = 1u << 4;
+void FormatDLSSGStatusFlags(uint32_t status, char* buffer, size_t bufferSize);
 
 // Reflex call-activity evidence. Written from the Reflex hooks with RELAXED atomics + GetTickCount64 only:
 // the manual Reflex FPS limiter's latency-critical sleep path must not gain locks, logging, or syscalls
@@ -593,11 +602,38 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame);
 
 slResult Hooked_slReflexSetOptions(const slReflexOptions& streamline_hook_options);
 
-slResult Hooked_slReflexSetConstants(const SLReflexConstants& streamline_hook_consts);const char* GetDLSSGModeName(uint32_t mode);const char* GetModuleBaseName(const char* moduleNameOrPath);bool IsStreamlineModuleName(const char* moduleNameOrPath);bool ShouldHookStreamlineCoreExports(const char* moduleNameOrPath);bool IsStreamlineCoreDynamicHookModule(const char* moduleBaseName, HMODULE);bool IsStreamlineDLSSGDynamicHookModule(const char* moduleBaseName, HMODULE);bool IsStreamlineReflexDynamicHookModule(const char* moduleBaseName, HMODULE);uint32_t GetModuleMaskBit(const char* moduleNameOrPath);void LogSkippedStreamlineCoreExportsOnce(const char* moduleBaseName, HMODULE module, bool hasGetFeature,
-                                         bool hasGetPlugin, bool hasSetD3DDevice);size_t GetModuleImageSizeBytes(HMODULE module);bool DoesAddressBelongToLoadedModule(void* address, HMODULE* ownerModule, char* ownerPath, DWORD ownerPathCapacity,
-                                     DWORD* outError);void LogStaleStreamlineOriginalBlockedOnce(const char* streamline_hook_functionName, void* original, void* validationAddress,
-                                           const char* expectedModuleRole, DWORD error);bool IsSavedStreamlineOriginalCallable(const char* streamline_hook_functionName, void* original, void* validationAddress,
-                                       const char* expectedModuleRole);PFN_slGetFeatureFunction GetCallableOriginalGetFeatureFunction();PFN_slGetPluginFunction GetCallableOriginalGetPluginFunction();PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice();PFN_slSetTag GetCallableOriginalSetTag();PFN_slSetTagForFrame GetCallableOriginalSetTagForFrame();PFN_slEvaluateFeature GetCallableOriginalEvaluateFeature();PFN_slDLSSGSetOptions GetCallableOriginalDLSSGSetOptions();PFN_slDLSSGGetState GetCallableOriginalDLSSGGetState();PFN_slReflexSleep GetCallableOriginalReflexSleep();PFN_slReflexSetOptions GetCallableOriginalReflexSetOptions();PFN_slReflexSetConstants GetCallableOriginalReflexSetConstants();uint32_t GetViewportKey(const slViewportHandle& viewport);slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source);int GetEffectiveMultiplier(const slDLSSGOptions& streamline_hook_options);
+slResult Hooked_slReflexSetConstants(const SLReflexConstants& streamline_hook_consts);
+const char* GetDLSSGModeName(uint32_t mode);
+const char* GetModuleBaseName(const char* moduleNameOrPath);
+bool IsStreamlineModuleName(const char* moduleNameOrPath);
+bool ShouldHookStreamlineCoreExports(const char* moduleNameOrPath);
+bool IsStreamlineCoreDynamicHookModule(const char* moduleBaseName, HMODULE);
+bool IsStreamlineDLSSGDynamicHookModule(const char* moduleBaseName, HMODULE);
+bool IsStreamlineReflexDynamicHookModule(const char* moduleBaseName, HMODULE);
+uint32_t GetModuleMaskBit(const char* moduleNameOrPath);
+void LogSkippedStreamlineCoreExportsOnce(const char* moduleBaseName, HMODULE module, bool hasGetFeature,
+                                         bool hasGetPlugin, bool hasSetD3DDevice);
+size_t GetModuleImageSizeBytes(HMODULE module);
+bool DoesAddressBelongToLoadedModule(void* address, HMODULE* ownerModule, char* ownerPath, DWORD ownerPathCapacity,
+                                     DWORD* outError);
+void LogStaleStreamlineOriginalBlockedOnce(const char* streamline_hook_functionName, void* original,
+                                           void* validationAddress, const char* expectedModuleRole, DWORD error);
+bool IsSavedStreamlineOriginalCallable(const char* streamline_hook_functionName, void* original,
+                                       void* validationAddress, const char* expectedModuleRole);
+PFN_slGetFeatureFunction GetCallableOriginalGetFeatureFunction();
+PFN_slGetPluginFunction GetCallableOriginalGetPluginFunction();
+PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice();
+PFN_slSetTag GetCallableOriginalSetTag();
+PFN_slSetTagForFrame GetCallableOriginalSetTagForFrame();
+PFN_slEvaluateFeature GetCallableOriginalEvaluateFeature();
+PFN_slDLSSGSetOptions GetCallableOriginalDLSSGSetOptions();
+PFN_slDLSSGGetState GetCallableOriginalDLSSGGetState();
+PFN_slReflexSleep GetCallableOriginalReflexSleep();
+PFN_slReflexSetOptions GetCallableOriginalReflexSetOptions();
+PFN_slReflexSetConstants GetCallableOriginalReflexSetConstants();
+uint32_t GetViewportKey(const slViewportHandle& viewport);
+slDLSSGOptions CloneDLSSGOptions(const slDLSSGOptions& source);
+int GetEffectiveMultiplier(const slDLSSGOptions& streamline_hook_options);
 
 struct DLSSGSetOptionsLogState {
     bool valid = false;
@@ -623,7 +659,8 @@ struct DLSSGSetOptionsLogState {
     bool streamlineFGSignalActive = false;
     bool pureObserverOnly = false;
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kUnknown;
-};void LogDLSSGSetOptionsTransition(uint32_t viewportKey, const slDLSSGOptions& requestedOptions,
+};
+void LogDLSSGSetOptionsTransition(uint32_t viewportKey, const slDLSSGOptions& requestedOptions,
                                   const slDLSSGOptions& forwardedOptions, uint32_t requestedGeneratedFrames,
                                   uint32_t capabilityMax, bool requestedEnabled, bool setOptionsCallSuppressed,
                                   bool overrideApplied, bool overrideClamped, slResult result, bool pureObserverOnly,
@@ -645,10 +682,21 @@ struct ReflexSignalLogState {
     bool runtimeFSRFGApiActive = false;
     bool streamlineFGSignalActive = false;
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kUnknown;
-};void LogStreamlineReflexSignalChange(const char* sourceName, int32_t mode, uint32_t incomingFrameLimitUs,
-                                     uint32_t forwardedFrameLimitUs, uint32_t targetIntervalUs);void MaybePrepareForStreamlineEnableTransitionFromReflex(const char* sourceName);void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, uint32_t incomingFrameLimitUs,
-                                        uint32_t forwardedFrameLimitUs, uint32_t targetIntervalUs);uint32_t GetCachedCapabilityMax(uint32_t viewportKey);void CacheCapabilityMax(uint32_t viewportKey, uint32_t capabilityMax);void ApplyCombinedDLSSFGState(bool active, int multiplier);void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool explicitSetOptionsEnableSignal,
-                                         const char* source);bool WasViewportRuntimeStateActive(uint32_t viewportKey);bool ShouldSuppressNewGetStateActivation();bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state);void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
+};
+void LogStreamlineReflexSignalChange(const char* sourceName, int32_t mode, uint32_t incomingFrameLimitUs,
+                                     uint32_t forwardedFrameLimitUs, uint32_t targetIntervalUs);
+void MaybePrepareForStreamlineEnableTransitionFromReflex(const char* sourceName);
+void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, uint32_t incomingFrameLimitUs,
+                                        uint32_t forwardedFrameLimitUs, uint32_t targetIntervalUs);
+uint32_t GetCachedCapabilityMax(uint32_t viewportKey);
+void CacheCapabilityMax(uint32_t viewportKey, uint32_t capabilityMax);
+void ApplyCombinedDLSSFGState(bool active, int multiplier);
+void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool explicitSetOptionsEnableSignal,
+                                         const char* source);
+bool WasViewportRuntimeStateActive(uint32_t viewportKey);
+bool ShouldSuppressNewGetStateActivation();
+bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state);
+void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
                                 uint32_t capabilityMax, const char* source,
                                 bool clearAllViewportStatesForDisable = false);
 void MaybeRetireGetStateOnlyReactivationBlockForSustainedGeneration(bool callSucceeded, const slDLSSGState& state,
@@ -668,130 +716,4 @@ void PublishStreamlineInlineHookTrampoline(void* trampoline, void* context) {
         trampoline ? reinterpret_cast<T>(trampoline) : publication->fallback;
 }
 
-template <typename T>
-bool InstallInlineHookOnce(void* target, void* detour, T& original, std::atomic<bool>& installedFlag,
-                           std::atomic<void*>& targetSlot, const char* hookName,
-                           std::atomic<void*>* failedTargetSlot = nullptr,
-                           std::atomic<uint32_t>* failedAttemptsSlot = nullptr) {
-    if (!target) {
-        return false;
-    }
-
-    if (target == detour) {
-        original = nullptr;
-        targetSlot.store(target, std::memory_order_release);
-        installedFlag.store(true, std::memory_order_release);
-        return true;
-    }
-
-    const void* installedTarget = targetSlot.load(std::memory_order_acquire);
-    const bool slotInstalled = installedFlag.load(std::memory_order_acquire);
-    if (slotInstalled && installedTarget == target) {
-        return false;
-    }
-
-    const void* failedTarget = failedTargetSlot ? failedTargetSlot->load(std::memory_order_acquire) : nullptr;
-    const uint32_t failedAttempts = failedAttemptsSlot ? failedAttemptsSlot->load(std::memory_order_acquire) : 0;
-    if (!ce::streamline_runtime_policy::ShouldAttemptInlineHookOnTarget(target, failedTarget, failedAttempts)) {
-        return false;
-    }
-
-    // A single process-global `original` cannot serve two live targets. Refuse the
-    // newcomer while the installed target is still mapped; the live instance keeps
-    // working and CE simply does not observe the duplicate.
-    if (!ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(
-            slotInstalled, installedTarget, target,
-            installedTarget != nullptr &&
-                DoesAddressBelongToLoadedModule(const_cast<void*>(installedTarget), nullptr, nullptr, 0, nullptr))) {
-        static std::atomic<uint32_t> s_refusedRetargetCount{0};
-        const uint32_t refusedCount = s_refusedRetargetCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (ce::log_meter::ShouldLogCadence(refusedCount, 10, 300)) {
-            HookLogImportant(
-                "Streamline Hook: Refusing to retarget %s from %p to %p — the installed target is still mapped, so a "
-                "second live instance would take over CE's single forward pointer (count=%u)",
-                hookName, installedTarget, target, refusedCount);
-        }
-        return false;
-    }
-
-    void* retainedTrampoline = nullptr;
-    if (InlineHook::TryGetInstalledTrampoline(target, detour, &retainedTrampoline)) {
-        original = reinterpret_cast<T>(retainedTrampoline);
-        targetSlot.store(target, std::memory_order_release);
-        installedFlag.store(true, std::memory_order_release);
-        if (failedTargetSlot && failedAttemptsSlot) {
-            failedTargetSlot->store(nullptr, std::memory_order_release);
-            failedAttemptsSlot->store(0, std::memory_order_release);
-        }
-        HookLogImportant(
-            "Streamline Hook: Reconciled rediscovered %s at %p with CE's retained live hook (trampoline=%p)",
-            hookName, target, retainedTrampoline);
-        return true;
-    }
-
-    StreamlineInlineHookPublication<T> publication{&original, original};
-    void* trampoline = nullptr;
-    if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishStreamlineInlineHookTrampoline<T>,
-                                      &publication)) {
-        uint32_t currentFailures = 1;
-        if (failedTargetSlot && failedAttemptsSlot) {
-            if (failedTargetSlot->load(std::memory_order_acquire) != target) {
-                failedTargetSlot->store(target, std::memory_order_release);
-                failedAttemptsSlot->store(1, std::memory_order_release);
-            } else {
-                currentFailures = failedAttemptsSlot->fetch_add(1, std::memory_order_acq_rel) + 1;
-            }
-        }
-        static std::atomic<uint32_t> s_installFailureCount{0};
-        const uint32_t failureCount = s_installFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (ce::log_meter::ShouldLogCadence(failureCount, 10, 300)) {
-            HookLogImportant("Streamline Hook: Failed to inline hook %s at %p (attempt=%u targetFailures=%u)",
-                             hookName, target, failureCount, currentFailures);
-        }
-        return false;
-    }
-
-    if (failedTargetSlot && failedAttemptsSlot) {
-        failedTargetSlot->store(nullptr, std::memory_order_release);
-        failedAttemptsSlot->store(0, std::memory_order_release);
-    }
-    targetSlot.store(target, std::memory_order_release);
-    installedFlag.store(true, std::memory_order_release);
-    HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target,
-                     trampoline);
-    return true;
-}void LogFeatureImportFallbackUnavailableOnce(const char* moduleBaseName, const char* streamline_hook_functionName, void* exportedProc,
-                                             const char* hookName, const char* reason);bool InstallFeatureImportFallbackIfPresent(const char* moduleBaseName, const char* streamline_hook_functionName, void* detour,
-                                           void* exportedProc, void** originalSlot, const char* hookName);bool TryGetOwningModulePath(void* address, char* modulePath, DWORD modulePathCapacity, DWORD* outError);bool TryInstallFeatureImportFallbackForOwningModule(void* streamline_hook_function, const char* streamline_hook_functionName, void* detour,
-                                                    void** originalSlot, std::atomic<void*>& attemptedTarget,
-                                                    const char* hookName);void LogReturnedWrapperFallbackOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target, void* wrapper,
-                                    bool hookReady);void LogProactiveFeatureHookGapOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* target);void LogFeatureLookupOutcomeOnce(std::atomic<bool>& loggedFlag, const char* hookName, void* originalTarget,
-                                  void* returnedTarget, bool hookReady);bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookDLSSGGetState(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSleep(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetOptions(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool MaybeHookReflexSetConstants(void*& streamline_hook_function, bool fallbackToReturnedWrapper);bool TryResolveDLSSGFeatureHooks(bool proactiveScan = false);bool TryResolveReflexFeatureHooks(bool proactiveScan = false);uint32_t QueryCapabilityMax(const slViewportHandle& viewport, const slDLSSGOptions* streamline_hook_options);void RegisterDynamicHooksOnce();bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath);bool OpenLoadedModuleSnapshotWithRetry(HANDLE& snapshot, MODULEENTRY32& firstEntry, DWORD& error, int& attempts,
-                                       bool& failedOnFirstEntry);bool ScanLoadedStreamlineModules(bool pinFeatureResolution = false, bool* snapshotCompleted = nullptr);void ResolveStreamlineFeatureHooks(bool pinFeatureResolution);bool AreReflexFeatureHooksComplete();bool IsPCLSetMarkerHookComplete();void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source);slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* streamline_hook_options);slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& streamline_hook_options);
-
-
-// Safe no-op stub for SL function pointers that SL returned as NULL during
-// re-entrant calls.  Steam's OverlayHookD3D3 may call slGetFeatureFunction
-// from within SL's execution context (during DllMain or FG processing).
-// If SL returns NULL, Steam calls through the NULL pointer → RIP=0 crash.
-// Instead of returning an error (which Steam may ignore while still using the
-// NULL pointer), substitute a safe stub that returns success and does nothing.
-// This allows Steam to continue overlay rendering without crashing.
-slResult SlNullFunctionStub();void* Hooked_slGetPluginFunction(const char* streamline_hook_functionName);slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* streamline_hook_functionName, void*& streamline_hook_function);slResult Hooked_slSetD3DDevice(void* streamline_hook_d3dDevice);bool StructTypesEqual(const slStructType& lhs, const slStructType& rhs);bool TryRecordOfficialUiResourceTag(const void* frameToken, const slResourceTag& tag, void* streamline_hook_commandBuffer);uint32_t LogOfficialUiTagOpportunity(const char* tagApi, const void* frameToken, uint32_t viewportKey,
-                                     const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer,
-                                     uint32_t feature = UINT_MAX, uint32_t numInputs = 0,
-                                     uint64_t localTagSignature = 0);void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const slViewportHandle& viewport,
-                            const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer);slResult Hooked_slSetTag(const slViewportHandle& viewport, const slResourceTag* tags, uint32_t numTags,
-                         void* streamline_hook_commandBuffer);slResult Hooked_slSetTagForFrame(const slBaseStructure& streamline_hook_frame, const slViewportHandle& viewport,
-                                 const slResourceTag* tags, uint32_t numTags, void* streamline_hook_commandBuffer);slResult Hooked_slEvaluateFeature(uint32_t feature, const slBaseStructure& streamline_hook_frame, const slBaseStructure** inputs,
-                                  uint32_t numInputs, void* streamline_hook_commandBuffer);
-
-// Hook for Streamline Reflex sleep. This lets CE observe game-owned Reflex
-// pacing without patching NvAPI_D3D_Sleep inside nvapi64.dll.
-slResult Hooked_slReflexSleep(const void* streamline_hook_frame);
-
-// Hook for current Streamline Reflex options — detects low-latency and FPS limiter signals.
-slResult Hooked_slReflexSetOptions(const slReflexOptions& streamline_hook_options);
-
-// Hook for legacy slReflexSetConstants — detects when game activates Reflex via Streamline.
-slResult Hooked_slReflexSetConstants(const SLReflexConstants& streamline_hook_consts);
+#include "streamline_hook_declarations.h"
