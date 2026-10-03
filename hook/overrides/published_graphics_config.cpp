@@ -33,7 +33,7 @@ void CopyPath(char (&destination)[MAX_PATH], const char* source) {
 bool ReadPublishedGraphicsConfig(SharedGraphicsConfig& out) {
     bool answered = false;
 
-    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    HANDLE discovery = OpenHostDiscoveryMapping();
     if (!discovery) {
         return false;
     }

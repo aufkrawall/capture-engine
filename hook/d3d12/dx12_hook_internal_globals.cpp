@@ -80,6 +80,7 @@ std::atomic<bool> dx12_hook_g_PostSLRuntimeStateStabilizationLogged{false};
 std::atomic<bool> dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch{false};
 
 std::atomic<uint64_t> dx12_hook_g_OverlayCoverageDrawCount{0};
+std::atomic<uint64_t> dx12_hook_g_OverlayDoubleDrawCount{0};
 
 std::atomic<uint64_t> dx12_hook_g_OverlayCoverageLastSeenDrawCount{0};
 

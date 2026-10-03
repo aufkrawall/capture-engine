@@ -68,6 +68,19 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
 // Resolve the current host session's logs directory (DiscoveryInfo.logsPath)
 // with fallback to {moduleDir}\logs. Returns false if it could not be built.
 bool GetSessionLogsDirectory(char* outDir, size_t outDirLen);
+// Opens CaptureEngine's discovery mapping (session logs path, inject pid, published config) for reading;
+// NULL when no host runs or the hook is isolated. Hook-only readers go through here; `ipc_client.cpp` and
+// `benchmark_html_report.cpp` (shared with the Vulkan layer) open it directly, and an isolated host never
+// connects IPC or finishes a benchmark.
+HANDLE OpenHostDiscoveryMapping();
+// For an in-process test host: the hook never sees a running CaptureEngine (its discovery mapping, logs
+// session, published config or injection whitelist) and logs into `logsDirectory`. Call before the first
+// log line.
+void IsolateHookFromCaptureEngineHost(const char* logsDirectory);
+// The foreground window as CE sees it: GetForegroundWindow(), or for an isolated test host the window it
+// designates (its never-activated test window must not take the desktop's focus).
+HWND HookForegroundWindow();
+void SetIsolatedHostForegroundWindow(HWND window);
 void ReportLUID(uint32_t low, uint32_t high);
 inline std::atomic<ULONGLONG>& LastLargePresentGapTickStorage() {
     static std::atomic<ULONGLONG> tick{0};

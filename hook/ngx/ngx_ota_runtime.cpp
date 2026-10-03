@@ -64,7 +64,7 @@ uint8_t ReadModeFromSharedMemory(bool& answered) {
     uint8_t mode = kNgxOtaModeDefault;
     answered = false;
 
-    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    HANDLE discovery = OpenHostDiscoveryMapping();
     if (!discovery) {
         return mode;
     }

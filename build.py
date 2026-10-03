@@ -14,6 +14,7 @@ _SOURCE_PARTS = (
     'tools/build/build_toolchain.py',
     'tools/build/build_compile_db.py',
     'tools/build/build_tests.py',
+    'tools/build/build_flow_tests.py',
     'tools/build/build_preflight.py',
     'tools/build/build_testapps.py',
     'tools/build/build_vulkan_layer.py',

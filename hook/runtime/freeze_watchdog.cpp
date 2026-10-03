@@ -36,7 +36,7 @@ static bool ShouldAllowImmediateDumpRequest(std::atomic<uint64_t>& lastDumpReque
 }
 
 static bool IsProcessInForeground(DWORD processId) {
-    HWND fgWindow = GetForegroundWindow();
+    HWND fgWindow = HookForegroundWindow();
     if (!fgWindow) {
         return false;
     }

@@ -302,7 +302,7 @@ HWND ResolveDirectDrawTargetWindow() {
         return ddraw_hook_g_DDrawBootstrapWindow;
     }
 
-    HWND foregroundWindow = GetForegroundWindow();
+    HWND foregroundWindow = HookForegroundWindow();
     DWORD foregroundPid = 0;
     if (foregroundWindow && GetWindowThreadProcessId(foregroundWindow, &foregroundPid) != 0 &&
         foregroundPid == GetCurrentProcessId()) {

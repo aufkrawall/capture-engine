@@ -175,7 +175,7 @@ void Service() {
     std::lock_guard<std::mutex> lock(sessionMutex);
     const auto now = PerfLogger::GetQpcUs();
     DWORD foregroundPid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &foregroundPid);
+    GetWindowThreadProcessId(HookForegroundWindow(), &foregroundPid);
     const bool down = foregroundPid == GetCurrentProcessId() &&
         (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
         (GetAsyncKeyState(VK_F11) & 0x8000);

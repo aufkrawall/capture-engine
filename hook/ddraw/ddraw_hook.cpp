@@ -21,7 +21,7 @@ static bool FindDirectDrawBootstrapWindow(HWND* outWindow, DWORD* outThreadId) {
     *outWindow = NULL;
     *outThreadId = 0;
 
-    HWND foregroundWindow = GetForegroundWindow();
+    HWND foregroundWindow = HookForegroundWindow();
     DWORD foregroundPid = 0;
     DWORD foregroundThreadId = 0;
     if (foregroundWindow) {

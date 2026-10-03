@@ -133,7 +133,7 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     DWORD foregroundPid = 0;
     bool processHasForeground = true;
     if (!usingDedicatedQueue) {
-        foregroundWindow = GetForegroundWindow();
+        foregroundWindow = HookForegroundWindow();
         processHasForeground = false;
         if (foregroundWindow) {
             GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
@@ -619,7 +619,7 @@ if (dx12_hook_g_Dx12FaAdapter) {
 }
 
 int foreground = 0;
-if (HWND fg = GetForegroundWindow()) {
+if (HWND fg = HookForegroundWindow()) {
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
     foreground = (pid == GetCurrentProcessId()) ? 1 : 0;

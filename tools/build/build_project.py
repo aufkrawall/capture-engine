@@ -125,6 +125,7 @@ def compile_project(
     else:
         arch_targets.append("x86")
 
+    flow_test_exe = None
     for arch in arch_targets:
         curr_env = env
         curr_clang_bin = clang_bin
@@ -376,6 +377,9 @@ def compile_project(
         )
         run_command(execute_cmd, env=curr_env)
 
+        if arch == "x64" and env.get("CE_SANITIZE") != "1":
+            flow_test_exe = build_flow_tests(curr_env, curr_clang_exe, hk_cflags, ldflags_hook, hk_src)
+
         # Verify the built binary contains the correct version
         if os.path.exists(hk_dll):
             record_verification_artifact(f"hook_dll_{arch}", hk_dll)
@@ -571,6 +575,8 @@ def compile_project(
     if should_run_tests and test_exe:
         if not run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools):
             sys.exit(1)
+    if should_run_tests and not run_flow_tests(env, flow_test_exe, gtest_filter):
+        sys.exit(1)
 
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")

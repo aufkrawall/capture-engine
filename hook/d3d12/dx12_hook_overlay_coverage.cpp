@@ -52,6 +52,7 @@ snapshot.uncoveredPresents = dx12_hook_g_OverlayCoverageTracker.UncoveredPresent
 snapshot.currentStreak = dx12_hook_g_OverlayCoverageTracker.CurrentUncoveredStreak();
 snapshot.longestStreak = dx12_hook_g_OverlayCoverageTracker.LongestUncoveredStreak();
 dx12_hook_g_OverlayCoverageLock.clear(std::memory_order_release);
+snapshot.doubleDraws = dx12_hook_g_OverlayDoubleDrawCount.load(std::memory_order_acquire);
 return snapshot;
 }
 
@@ -341,12 +342,12 @@ const char* lastGate = dx12_hook_g_OverlayCoverageLastGate.load(std::memory_orde
 const uint32_t route = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
 HookLogImportant(
     "[OVERLAY COVERAGE] %s: presents=%llu uncovered=%llu currentStreak=%llu longestStreak=%llu lastGate=%s "
-    "lastRoute=%s",
+    "lastRoute=%s doubleDraws=%llu",
     edge ? edge : "summary", static_cast<unsigned long long>(snapshot.totalPresents),
     static_cast<unsigned long long>(snapshot.uncoveredPresents),
     static_cast<unsigned long long>(snapshot.currentStreak),
     static_cast<unsigned long long>(snapshot.longestStreak), lastGate ? lastGate : "none",
-    DX12OverlayRenderRouteName(route));
+    DX12OverlayRenderRouteName(route), static_cast<unsigned long long>(snapshot.doubleDraws));
 }
 
 
@@ -364,14 +365,13 @@ dx12_hook_g_LastDX12OverlayRenderTickMs.store(GetTickCount64(), std::memory_orde
 // makes route-arbitration overlaps attributable from one run; visible flicker/dimming correlates here.
 const uint64_t lastAccountedDraws = dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
 if (drawsBefore > lastAccountedDraws && previousRoute != static_cast<uint32_t>(route)) {
-    static std::atomic<int> s_doubleDrawLogCount{0};
-    const int n = s_doubleDrawLogCount.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t n = dx12_hook_g_OverlayDoubleDrawCount.fetch_add(1, std::memory_order_acq_rel);
     if (n < 20 || (n % 300) == 0) {
         HookLogImportant(
             "[OVERLAY DOUBLE-DRAW] two overlay routes rendered in the same present window: %s then %s "
-            "(pendingDraws=%llu log=%d)",
+            "(pendingDraws=%llu log=%llu)",
             DX12OverlayRenderRouteName(previousRoute), DX12OverlayRenderRouteName(static_cast<uint32_t>(route)),
-            static_cast<unsigned long long>(drawsBefore + 1 - lastAccountedDraws), n + 1);
+            static_cast<unsigned long long>(drawsBefore + 1 - lastAccountedDraws), static_cast<unsigned long long>(n + 1));
     }
 }
 }

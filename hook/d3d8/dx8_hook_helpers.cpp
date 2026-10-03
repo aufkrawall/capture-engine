@@ -105,7 +105,7 @@ HWND ResolveD3D8TargetWindow(IDirect3DDevice8* device,  HWND hDestWindowOverride
         return dx8_hook_g_CachedHwnd;
     }
 
-    HWND foreground = GetForegroundWindow();
+    HWND foreground = HookForegroundWindow();
     if (!foreground || !IsWindow(foreground)) {
         return nullptr;
     }

@@ -99,14 +99,41 @@ void ce::SyncWithLegacyGlobals() {
     CE_LOG_DEBUG("HookCtx", "synced with legacy globals (api=%s)", GraphicsAPIName(ctx->activeAPI));
 }
 
+static std::atomic<bool> g_HookIsolatedFromHost{false};
+static char g_IsolatedLogsDirectory[MAX_PATH] = {};
+
+HANDLE OpenHostDiscoveryMapping() {
+    if (g_HookIsolatedFromHost.load(std::memory_order_acquire))
+        return NULL;
+    return OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+}
+
+void IsolateHookFromCaptureEngineHost(const char* logsDirectory) {
+    snprintf(g_IsolatedLogsDirectory, sizeof(g_IsolatedLogsDirectory), "%s", logsDirectory ? logsDirectory : "");
+    g_HookIsolatedFromHost.store(true, std::memory_order_release);
+}
+
+static std::atomic<HWND> g_IsolatedHostForegroundWindow{nullptr};
+
+HWND HookForegroundWindow() {
+    if (g_HookIsolatedFromHost.load(std::memory_order_acquire))
+        return g_IsolatedHostForegroundWindow.load(std::memory_order_acquire);
+    return GetForegroundWindow();
+}
+
+void SetIsolatedHostForegroundWindow(HWND window) {
+    g_IsolatedHostForegroundWindow.store(window, std::memory_order_release);
+}
+
 bool GetSessionLogsDirectory(char* outDir, size_t outDirLen) {
     if (!outDir || outDirLen == 0)
         return false;
     outDir[0] = '\0';
 
-    // Try session-specific logs path from DiscoveryInfo first
+    // An isolated test host's directory first, then the session-specific logs path from DiscoveryInfo
     char logDir[MAX_PATH] = {};
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+    strncpy(logDir, g_IsolatedLogsDirectory, sizeof(logDir) - 1);
+    HANDLE hDisc = logDir[0] ? NULL : OpenHostDiscoveryMapping();
     if (hDisc) {
         DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
         if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {

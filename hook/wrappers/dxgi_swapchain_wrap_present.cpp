@@ -514,7 +514,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // stall instead of disappearing or destabilizing the queue.
     UINT presentFlags = Flags;
     if (m_hWnd && !m_State.isFullscreen) {
-        HWND foreground = GetForegroundWindow();
+        HWND foreground = HookForegroundWindow();
         if (foreground != m_hWnd) {
             static std::atomic<int> s_focusLossLog{0};
             int n = s_focusLossLog.fetch_add(1, std::memory_order_relaxed);

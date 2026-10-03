@@ -274,7 +274,7 @@ bool ShouldInjectChild(const char *exePath) {
   // Primary check: only inject if the process is on the discovery whitelist.
   // This prevents injection into arbitrary child processes not explicitly
   // approved by CaptureEngine.
-  HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+  HANDLE hDisc = OpenHostDiscoveryMapping();
   if (!hDisc) {
     // No discovery memory — CaptureEngine not running or not ready. Don't inject.
     return false;

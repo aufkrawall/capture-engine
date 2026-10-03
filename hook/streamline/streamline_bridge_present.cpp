@@ -329,7 +329,7 @@ std::atomic<bool> g_fullscreenPostHooked{false};  // without it every transition
 bool SwapchainWindowIsForeground(IDXGISwapChain* swapChain, HWND* window) {
     DXGI_SWAP_CHAIN_DESC desc{};
     *window = swapChain && SUCCEEDED(swapChain->GetDesc(&desc)) ? desc.OutputWindow : nullptr;
-    HWND foreground = GetForegroundWindow();
+    HWND foreground = HookForegroundWindow();
     return *window && foreground && GetAncestor(*window, GA_ROOT) == GetAncestor(foreground, GA_ROOT);
 }
 

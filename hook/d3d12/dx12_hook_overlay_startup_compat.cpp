@@ -217,7 +217,7 @@ if (GetClientRect(gameWindow, &clientRect)) {
 }
 
 const DWORD expectedProcessId = GetCurrentProcessId();
-const HWND foregroundWindow = GetForegroundWindow();
+const HWND foregroundWindow = HookForegroundWindow();
 LONG foregroundWidth = 0;
 LONG foregroundHeight = 0;
 const bool exactWindowForeground = (foregroundWindow == gameWindow);

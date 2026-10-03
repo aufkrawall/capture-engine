@@ -90,6 +90,7 @@ struct DX12OverlayCoverageSnapshot {
     uint64_t uncoveredPresents = 0;
     uint64_t currentStreak = 0;
     uint64_t longestStreak = 0;
+    uint64_t doubleDraws = 0;  // presents that got the overlay from two routes (see NoteDX12OverlayRendered)
 };
 
 class DX12DescFreeBackend : public CustomOverlay::RendererBackend {
@@ -420,6 +421,7 @@ extern std::atomic<bool> dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirm
 extern std::atomic<bool> dx12_hook_g_PostSLRuntimeStateStabilizationLogged;
 extern std::atomic<bool> dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch;
 extern std::atomic<uint64_t> dx12_hook_g_OverlayCoverageDrawCount;
+extern std::atomic<uint64_t> dx12_hook_g_OverlayDoubleDrawCount;
 extern std::atomic<uint64_t> dx12_hook_g_OverlayCoverageLastSeenDrawCount;
 extern std::atomic<const char*> dx12_hook_g_OverlayCoverageLastGate;
 extern std::atomic<const char*> dx12_hook_g_OverlayCoverageStreakGate;

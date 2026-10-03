@@ -328,6 +328,14 @@ Default quality mode currently:
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
 - An unfiltered `--run-tests` runs seventeen Python tool self-test groups concurrently after the native suite. These include FFmpeg/dependency, build/link/PE/lint/ratchet/cache, test-app task identity, Git-clean, packaging, and A/V analysis/matrix coverage. The packaging group verifies clean config substitution, local-state/vendor-DLL exclusion, x86 separation, cleanup containment, build-order gating, the feature-to-DLL note, and a real CMake 7z round trip. Linux hardening CI also runs selected cross-host policy suites before cross-compiling.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
+- **FG flow tests** (`tools/build/build_flow_tests.py`, sources `tests/flow/`): the x64 hook step also builds
+  `build/flow_tests/` - a flow-test hook DLL (every hook DLL source except `main_dllmain.cpp`, plus common and
+  `tests/flow/flow_hook_entry.cpp`, product hook flags without LTO at `-O1`, kept out of
+  `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
+  `--run-tests` every scenario runs in its own process (4 in parallel, 180 s timeout) after the unit tests;
+  `--gtest-filter` applies to both suites. Each scenario's hook log is
+  `build/flow_tests/logs/<Suite.Test>/hook_debug.log`. Not built by `--tests-only` (it needs the hook objects)
+  or in sanitizer builds. Design and status: `refactor-roadmap.md` ("FG flow harness").
 - A self-test that scans first-party sources must scope itself to `tools/verification_stage_cache.py`'s `SOURCE_DIRS`, never walk the project root. `external/` and `ffmpeg_build/` hold roughly 76 000 vendored C/C++ files, several of them CP1252 (AMD's and Valve's copyright banners) and some unreadable mid-build, so a root walk fails with `UnicodeDecodeError` before it can report anything. `scan_native_handle_uses()` in `tools/tests/test_build_testapp_tasks.py` is the reference shape: scoped directories plus tolerant decoding, since the tokens these contract scans look for are ASCII.
 - A self-test must never hand a placeholder file to code that spawns it; see the executable-image invariant under Operational Notes.
 

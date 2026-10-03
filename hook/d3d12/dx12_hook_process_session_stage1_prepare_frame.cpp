@@ -238,7 +238,7 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
     currentProcessId = GetCurrentProcessId();
     processHasForeground = true;
     if (frameDesc.OutputWindow) {
-        foregroundWindow = GetForegroundWindow();
+        foregroundWindow = HookForegroundWindow();
         processHasForeground = false;
         if (foregroundWindow) {
             GetWindowThreadProcessId(foregroundWindow, &foregroundPid);

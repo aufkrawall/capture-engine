@@ -129,6 +129,9 @@ public:
     bool IsFGActive() const {
         return m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
     }
+    int GetFGType() const {  // as SetFGMetrics' fgType
+        return m_fgType.load(std::memory_order_relaxed);
+    }
     const char* GetFGTypeLabel() const {
         switch (m_fgType.load(std::memory_order_relaxed)) {
             case 1:

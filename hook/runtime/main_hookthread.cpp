@@ -17,7 +17,7 @@ namespace {
 // any CE log level, including none.
 std::string ResolveSessionLogDirectory(const std::string& dllDirectory) {
   std::string sessionLogsDir;
-  HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+  HANDLE hDisc = OpenHostDiscoveryMapping();
   if (hDisc) {
     DiscoveryInfo* pDisc =
         (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
@@ -215,7 +215,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     if (g_pLocalConfig && IsTraceLoggingEnabled(g_pLocalConfig->logLevel)) {
       // Read session-specific logs path from DiscoveryInfo (set by inject process)
       std::string sessionLogsDir;
-      HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+      HANDLE hDisc = OpenHostDiscoveryMapping();
       if (hDisc) {
         DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
             hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
@@ -688,7 +688,7 @@ bool isProcessWhitelistedFast(const char *name) {
 
   // 2. Shared Memory Whitelist Cache (Fastest & Safest)
   // Reliance on Shared Memory avoids Disk I/O in DllMain.
-  HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+  HANDLE hDisc = OpenHostDiscoveryMapping();
   if (hDisc) {
     DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
         hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));

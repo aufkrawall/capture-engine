@@ -611,7 +611,7 @@ return strstr(modulePath, "d3d12") != nullptr || strstr(modulePath, "D3D12") != 
 
 
 bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut, DWORD* foregroundPidOut) {
-HWND foregroundWindow = GetForegroundWindow();
+HWND foregroundWindow = HookForegroundWindow();
 DWORD foregroundPid = 0;
 bool processHasForeground = false;
 if (foregroundWindow) {

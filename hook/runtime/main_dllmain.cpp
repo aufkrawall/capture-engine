@@ -76,7 +76,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       SetCrashProcessName(fileName);
 
       // Try DiscoveryInfo for session-specific logs path
-      HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+      HANDLE hDisc = OpenHostDiscoveryMapping();
       if (hDisc) {
         DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
             hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));

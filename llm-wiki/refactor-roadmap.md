@@ -38,6 +38,7 @@ become a library other clients use for recording, overlay and 3D overrides.
 
 | # | Wave | Kind | Status |
 | --- | --- | --- | --- |
+| 0 | FG flow harness before waves 6/8/11 (section below): the real hook switching code runs in tests | test infrastructure | in progress 2026-10-03 |
 | 1 | Subsystem directory layout (repo-map.md), root-relative includes, layout helpers in `build_common.py` | mechanical | done 2026-10-02 |
 | 2 | Runtime log volume: the top families below, an ON-CHANGE gate in `log_meter.h`, shorter prefixes | behavioral (logging only) | 2a done 2026-10-02 (0.1.6946): ~25 families + hook/Vulkan prefix; remaining: service `Log()` date prefix, DisplayTiming line, PRESENT STAGE COST legend, `sl.log` verbosity |
 | 3 | `tools/log_digest.py`: a per-session digest (files, warnings/errors, transitions, top templates, gaps) so an investigation starts from ~20 KB instead of 2-16 MB | new tool | done 2026-10-02 |
@@ -50,6 +51,35 @@ become a library other clients use for recording, overlay and 3D overrides.
 | 9 | Comment density: incident narratives (session ids, dates) out of code into the wiki; code keeps the invariant | text | planned |
 | 10 | Library boundary (below) | architectural | planned |
 | 11 | DX12 frame/overlay state machine as explicit states | behavioral, hardware-validated per step | later |
+
+## FG flow harness (wave 0)
+
+Unit tests cover the FG policy predicates, not their orchestration: `hook/d3d12`, `hook/streamline`
+and `hook/ffx` (~43k lines; ProcessFrame stages, PostSL, FFX routes, swapchain handoffs) are stubbed
+out of `unit_tests.exe` (`tests/test_stubs.cpp`). Design (2026-10-03):
+- `fg_flow_tests.exe` (gtest + a WARP D3D12 "game": hidden window, device, queue, flip swapchain)
+  loads a test build of the hook as its own `capture_hook_x64.dll`: CE attributes callers by module
+  (return addresses, `capture_hook_x64.dll` name checks, stack walks), so hook code and game code must
+  not share a module. Probe: all 392 x64 hook+common TUs (minus `main_dllmain.cpp`, Vulkan layer,
+  shaders) link with no unresolved symbol and benign static init.
+- A flow entry replaces DllMain/HookThread: config from a test `config.ini`, loader/IAT/vtable hooks,
+  no IPC, no background threads; the test pumps one hook-thread pass per frame. Runtime seams only
+  (clock), so the DLL is built from the same non-LTO objects as the unit-test hook core.
+- Fake runtimes as DLLs under the real names (`sl.interposer.dll` + `sl.dlss_g.dll`,
+  `amd_fidelityfx_dx12.dll`, `gameoverlayrenderer64.dll`): CE's module/name checks see them as real.
+- One process per scenario. Invariants: overlay drawn exactly once on every present after init
+  (CE's own coverage ledger), published FG status equals the runtime state once settled, no device
+  removal or D3D12 debug-layer error on WARP, no cooldown that outlives its transition.
+- Scenarios mirror the 0.1.6951 validation runs (Talos, GTA, `dx12_fg_switch_test`, Steam / Rockstar
+  overlays): off<->DLSS, off<->FSR, DLSS<->FSR, warm DLSS OFF->ON after FSR, rapid toggles.
+
+Findings the 0.1.6951 runs gave it (session 20261003_070202): `dx12_fg_switch_test` lost the overlay
+for 1549 presents / 6.5 s after post-FSR DLSS OFF->ON (`PostSL SKIP - FG transition cooldown active
+(60 frames left)` for the whole window): the keep-drawing edge in
+`dx12_hook_process_session_draw_transition.cpp` clears `FGTransitionCooldown` but not its PostSL
+mirror, and only ProcessFrame cooldown ticks (which need the primary > 0) ever lower the mirror.
+GTA logged 4 `ResizeBuffers ... FAILED 0x887A0001` while FFX still held its buffers (refs [16,16,16],
+CE net -1600) - open, likely the game resizing before `ffxDestroyContext`.
 
 ## Library boundary (wave 10)
 

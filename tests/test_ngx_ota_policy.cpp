@@ -312,7 +312,7 @@ TEST(NgxOtaEarlyMode, ModeResolvesFromSharedMemoryBeforeTheHookThreadPublishes) 
     // anything that takes the loader lock.
     EXPECT_EQ(runtime.find("LoadLibrary"), std::string::npos)
         << "the early resolve runs on a loader-lock-reachable path and must not load anything";
-    EXPECT_NE(runtime.find("OpenFileMappingW"), std::string::npos)
+    EXPECT_NE(runtime.find("OpenHostDiscoveryMapping()"), std::string::npos)
         << "the early resolve should use shared memory, which needs no loader lock";
 }
 
