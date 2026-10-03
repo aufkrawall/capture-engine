@@ -278,7 +278,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             // pacing and freezes GTA (~900 frames). When the bundle is unavailable (no registered UI
             // texture intercepted — test app), call the minimal ProcessFrame path so the overlay
             // renders through the normal DX12 route.
-            const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+            // AMD composes the frames scheduled before a switch to a present callback the no-callback way: a frame the
+            // topmost route owns keeps this branch until its outputs are presented.
+            const bool noCallbackFSRFG =
+                DX12_IsNativeFSRInternalNoCallbackCompositionActive() || DX12_IsFFXComposingFrameOwnedByTopmost();
             const bool frameGenerationPresentationActive =
                 noCallbackFSRFG || ctx.streamlineFGRunning || ctx.runtimeOwnedSwapchainActive || ctx.callerFromStreamlineModule ||
                 ctx.callerFromFFXFrameGenerationModule || HookHasRuntimeOwnedNativeFGPresentPath();

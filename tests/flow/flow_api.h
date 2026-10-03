@@ -23,6 +23,10 @@ struct CEFlowOverlayCoverage {
     // before them on that presenter (CE numbers frames from its own first Present, the fake from the proxy's).
     uint64_t outputFrameChecks = 0;
     uint64_t outputFrameMismatches = 0;
+    // Of those, outputs whose frame's recorded overlay owner did not draw them exactly once: a topmost-owned frame's
+    // output without the final-batch draw, or a UI-baseline frame's output with it. Judged at the output itself,
+    // independent of the coverage ledger.
+    uint64_t outputOwnerViolations = 0;
 };
 
 struct CEFlowPublishedFG {

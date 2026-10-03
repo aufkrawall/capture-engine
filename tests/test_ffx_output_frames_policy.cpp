@@ -24,25 +24,23 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
-FFXFrameOwnerRecord Exact(FFXFrameOverlayOwner owner) {
+FFXFrameOwnerRecord Owned(FFXFrameOverlayOwner owner) {
     FFXFrameOwnerRecord record;
     record.owner = owner;
-    record.frameExact = true;
     return record;
 }
 
 TEST(FFXOutputFramesPolicyTest, RingReturnsOnlyTheRecordedFrame) {
     FFXFrameOwnerRing ring;
-    ring.Record(5, Exact(FFXFrameOverlayOwner::kTopmost));
+    ring.Record(5, Owned(FFXFrameOverlayOwner::kTopmost));
     EXPECT_EQ(ring.Lookup(5).owner, FFXFrameOverlayOwner::kTopmost);
-    EXPECT_TRUE(ring.Lookup(5).frameExact);
     // Another frame in the same slot, and a frame never recorded, are unknown.
     EXPECT_EQ(ring.Lookup(5 + 16).owner, FFXFrameOverlayOwner::kUnknown);
     EXPECT_EQ(ring.Lookup(6).owner, FFXFrameOverlayOwner::kUnknown);
-    ring.Record(5 + 16, Exact(FFXFrameOverlayOwner::kBaseline));
+    ring.Record(5 + 16, Owned(FFXFrameOverlayOwner::kBaseline));
     EXPECT_EQ(ring.Lookup(5).owner, FFXFrameOverlayOwner::kUnknown);
     EXPECT_EQ(ring.Lookup(5 + 16).owner, FFXFrameOverlayOwner::kBaseline);
-    ring.Record(0, Exact(FFXFrameOverlayOwner::kTopmost));
+    ring.Record(0, Owned(FFXFrameOverlayOwner::kTopmost));
     EXPECT_EQ(ring.Lookup(0).owner, FFXFrameOverlayOwner::kUnknown);
     ring.Clear();
     EXPECT_EQ(ring.Lookup(5 + 16).owner, FFXFrameOverlayOwner::kUnknown);
@@ -61,17 +59,14 @@ TEST(FFXOutputFramesPolicyTest, ComposingFrameOnlyAdvances) {
 // The enable handover as AMD orders it (session 20261003_120641, 12:07:04.937): prework N retires the UI baseline and
 // grants the final-batch route while AMD still composes frame N-1, whose outputs already carry the baseline.
 TEST(FFXOutputFramesPolicyTest, GrantDrawsOnlyOnFramesWhoseBaselineWasRetired) {
-    const FFXFrameOwnerRecord previous = Exact(FFXFrameOverlayOwner::kBaseline);
-    const FFXFrameOwnerRecord retired = Exact(FFXFrameOverlayOwner::kTopmost);
+    const FFXFrameOwnerRecord previous = Owned(FFXFrameOverlayOwner::kBaseline);
+    const FFXFrameOwnerRecord retired = Owned(FFXFrameOverlayOwner::kTopmost);
     EXPECT_FALSE(ShouldDrawTopmostOnFFXOutput(previous, /*ownershipGranted=*/true));
     EXPECT_TRUE(ShouldDrawTopmostOnFFXOutput(retired, true));
     // A routing change already revoked the grant: the frames the route owned keep their draw.
     EXPECT_TRUE(ShouldDrawTopmostOnFFXOutput(retired, false));
 
-    // Without a frame record (prework did not run) or a UI resource AMD reads live, the grant decides.
-    FFXFrameOwnerRecord live;
-    live.owner = FFXFrameOverlayOwner::kBaseline;
-    EXPECT_TRUE(ShouldDrawTopmostOnFFXOutput(live, true));
+    // Without a frame record (the prework did not run) the grant decides.
     EXPECT_FALSE(ShouldDrawTopmostOnFFXOutput(FFXFrameOwnerRecord{}, false));
     EXPECT_TRUE(ShouldDrawTopmostOnFFXOutput(FFXFrameOwnerRecord{}, true));
 }
@@ -106,7 +101,14 @@ TEST(FFXOutputFramesSourceTest, ProxyPresentBracketsAMDPresentAndRecordsTheFrame
     }
     const size_t prework = proxy.find("static void DX12_RunFFXProxyPrePresentWork(");
     EXPECT_NE(proxy.find("DX12_RecordFFXFrameOverlayOwner(frame, owner);", prework), std::string::npos);
-    EXPECT_NE(proxy.find("kUiCompositionEnableInternalDoubleBuffering", prework), std::string::npos);
+    // The route takes over only from a UI resource that keeps each frame's pixels (AMD's copy or a per-frame
+    // texture); one texture AMD reads live keeps the UI baseline as the only owner.
+    EXPECT_NE(proxy.find("DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() && DX12_IsFFXUiResourceKeptPerFrame()",
+                         prework),
+              std::string::npos);
+    const size_t perFrame = proxy.find("static bool DX12_IsFFXUiResourceKeptPerFrame()");
+    EXPECT_NE(proxy.find("kUiCompositionEnableInternalDoubleBuffering", perFrame), std::string::npos);
+    EXPECT_NE(proxy.find("s_consecutiveChanges >= 2", perFrame), std::string::npos);
     const size_t account = proxy.find("void DX12_AccountFFXRuntimeOutputForOverlayCoverage(");
     EXPECT_NE(proxy.find("AccountPresentForOverlayCoverageVerdict(", account), std::string::npos);
 }
@@ -149,6 +151,46 @@ TEST(FFXOutputFramesSourceTest, RoutingChangesAndEffectContextTeardownSpareInFli
     const size_t unregister = context.find("DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle", destroy);
     ASSERT_NE(gate, std::string::npos);
     EXPECT_LT(gate, unregister);
+}
+
+// A switch to a present callback takes effect with the game's next frame: the no-callback ECL and Present paths stay
+// on while AMD composes a frame the topmost route owns, and that state ends with the FFX presentation.
+TEST(FFXOutputFramesSourceTest, NoCallbackPathsFollowTheComposedFrame) {
+    const std::string ecl = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
+    const std::string core = ReadSource("hook/present/dxgi_shared_present_core.cpp");
+    const std::string topmost = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
+    ASSERT_FALSE(ecl.empty());
+    ASSERT_FALSE(core.empty());
+    const size_t flag = ecl.find("const bool noCallbackFSR =");
+    const size_t composing = ecl.find("DX12_IsFFXComposingFrameOwnedByTopmost()", flag);
+    const size_t transparent = ecl.find("ShouldTransparentForwardNativeFSRCallbackEcl(", flag);
+    const size_t append = ecl.find("DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(", flag);
+    ASSERT_NE(flag, std::string::npos);
+    EXPECT_LT(composing, transparent);
+    EXPECT_LT(transparent, append);
+    EXPECT_NE(core.find("DX12_IsNativeFSRInternalNoCallbackCompositionActive() || DX12_IsFFXComposingFrameOwnedByTopmost()"),
+              std::string::npos);
+    const size_t owned = topmost.find("bool DX12_IsFFXComposingFrameOwnedByTopmost()");
+    EXPECT_NE(topmost.find("g_TopmostBatchRouteTracked.load(", owned), std::string::npos);
+}
+
+// A bridge CE keeps in AMD across the game's switch to a null callback is still the route AMD calls.
+TEST(FFXOutputFramesSourceTest, RetainedCallbackBridgeKeepsTheCallbackRoute) {
+    const std::string context = ReadSource("hook/ffx/ffx_hook_context.cpp");
+    ASSERT_FALSE(context.empty());
+    const size_t active = context.find("const bool bridgeActiveForConfigure =");
+    ASSERT_NE(active, std::string::npos);
+    const size_t end = context.find(";", active);
+    EXPECT_NE(context.substr(active, end - active).find("retainedBridgeForNullCallbackToggle"), std::string::npos);
+}
+
+// Without AMD's copy of the UI resource CE alternates its two substitutes, one per registration.
+TEST(FFXOutputFramesSourceTest, SubstituteAlternatesWithoutTheSwapchainCopy) {
+    const std::string composite = ReadSource("hook/d3d12/dx12_hook_ffx_ui_composite.cpp");
+    ASSERT_FALSE(composite.empty());
+    EXPECT_NE(composite.find("g_CEUiSubstituteNextSlot = swapchainCopy ? 0 : (slot ^ 1u);"), std::string::npos);
+    EXPECT_NE(composite.find("g_CEUiSubstituteTextures[preparation->substituteSlot & 1u]"), std::string::npos);
+    EXPECT_NE(composite.find("for (ID3D12Resource*& substitute : g_CEUiSubstituteTextures)"), std::string::npos);
 }
 
 }  // namespace

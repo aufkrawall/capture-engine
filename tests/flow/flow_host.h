@@ -34,6 +34,13 @@ enum class FSRUiResource {
     kPlaceholder,  // a 1x1 placeholder with UI composition left on (GTA V Enhanced)
 };
 
+// How the game keeps the UI resource it registers intact until AMD composed the frame's outputs.
+enum class FSRUiBuffering {
+    kSwapchainCopy,   // ENABLE_INTERNAL_UI_DOUBLE_BUFFERING: AMD copies it in Present (both validation games)
+    kGameAlternates,  // no flag; the game registers one of two textures per frame
+    kSingleTexture,   // no flag; one texture every frame (AMD reads it while the game rewrites it)
+};
+
 struct GameOptions {
     // Initialize Streamline like a DLSS-G game: slInit before the device, the device from the interposer and
     // slSetD3DDevice; Streamline swapchains come from its DXGI factory proxy and get a frame token, the
@@ -41,6 +48,7 @@ struct GameOptions {
     bool streamline = false;
     SwapchainKind swapchain = SwapchainKind::kNative;
     FSRUiResource fsrUi = FSRUiResource::kNone;
+    FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
     UINT width = 640;
     UINT height = 360;
 };
@@ -150,6 +158,7 @@ private:
     UINT height_ = 0;
     SwapchainKind kind_ = SwapchainKind::kNative;
     FSRUiResource fsrUi_ = FSRUiResource::kNone;
+    FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
     ComPtr<IDXGIFactory4> nativeFactory_;
     ComPtr<IDXGIFactory4> streamlineFactory_;
     ComPtr<ID3D12Device> device_;

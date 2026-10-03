@@ -11,6 +11,11 @@
 // N-1's remaining outputs twice and judged one of them uncovered (dx12_fg_switch_test, session 20261003_120641,
 // 12:07:04.937). The composing frame therefore advances inside AMD's Present - at its first submission on the game
 // thread, which follows the wait and precedes the scheduling - or, failing that, when it returns.
+//
+// The overlay travels with its frame on every route the prework draws: the proxy backbuffer, AMD's copy of the
+// UI resource, a UI texture the game keeps per frame (alternating textures) and CE's alternating substitute. A
+// single texture AMD reads while the game rewrites it is the exception: there the UI baseline never hands over
+// (dx12_hook_ffx_proxy_present.cpp), so its frames are all baseline-owned.
 
 #include <array>
 #include <atomic>
@@ -28,9 +33,6 @@ enum class FFXFrameOverlayOwner : uint8_t {
 
 struct FFXFrameOwnerRecord {
     FFXFrameOverlayOwner owner = FFXFrameOverlayOwner::kUnknown;
-    // The overlay travels with the frame (double-buffered UI resource, proxy backbuffer). A UI resource AMD reads
-    // live at composition time carries whatever CE drew last, so its frames are judged the frame-agnostic way.
-    bool frameExact = false;
 };
 
 inline const char* FFXFrameOverlayOwnerName(FFXFrameOverlayOwner owner) {
@@ -66,8 +68,7 @@ public:
             return {};
         }
         FFXFrameOwnerRecord record;
-        record.owner = static_cast<FFXFrameOverlayOwner>((packed >> 1) & 0x7u);
-        record.frameExact = (packed & 1u) != 0;
+        record.owner = static_cast<FFXFrameOverlayOwner>(packed & 0xFFu);
         return record;
     }
 
@@ -79,7 +80,7 @@ public:
 
 private:
     static uint64_t Pack(uint64_t frame, FFXFrameOwnerRecord record) {
-        return (frame << 8) | (static_cast<uint64_t>(record.owner) << 1) | (record.frameExact ? 1u : 0u);
+        return (frame << 8) | static_cast<uint64_t>(record.owner);
     }
 
     std::array<std::atomic<uint64_t>, 16> slots_ = {};
@@ -105,11 +106,11 @@ private:
     std::atomic<uint64_t> frame_{0};
 };
 
-// Whether the final-batch route draws on an output of a frame with `record`. A frame-exact frame is drawn exactly when
-// its prework retired the baseline for it, so the frames still composing with the baseline get only the marker; other
-// frames keep the frame-agnostic ownership grant.
+// Whether the final-batch route draws on an output of a frame with `record`: exactly when its prework retired the
+// baseline for it, so the frames still composing with the baseline get only the marker. A frame without a prework
+// record keeps the frame-agnostic ownership grant.
 inline bool ShouldDrawTopmostOnFFXOutput(FFXFrameOwnerRecord record, bool ownershipGranted) {
-    if (record.frameExact) {
+    if (record.owner != FFXFrameOverlayOwner::kUnknown) {
         return record.owner == FFXFrameOverlayOwner::kTopmost;
     }
     return ownershipGranted;
@@ -120,7 +121,7 @@ struct FFXOutputVerdict {
     bool doubleDrawn = false;
 };
 
-// An output of a frame-exact frame: covered by its own topmost draw or its frame's baseline - never both.
+// An output of a recorded frame: covered by its own topmost draw or its frame's baseline - never both.
 inline FFXOutputVerdict JudgeFrameExactFFXOutput(FFXFrameOverlayOwner owner, bool topmostDrawn) {
     const bool baseline = owner == FFXFrameOverlayOwner::kBaseline;
     FFXOutputVerdict verdict;

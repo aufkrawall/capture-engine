@@ -145,9 +145,24 @@ output (routing changes now retire it when AMD composes the first frame after th
 eligible while the composing frame is topmost-owned), and destroying the FG *effect* context (before the
 swapchain context) ran the swapchain teardown boundary while AMD still presented (now only the swapchain
 context or an unknown one ends it). Flow check: the fake reports each output's true frame
-(`CEFlow_NoteRuntimeOutputFrame`), CE's attribution must keep one offset. Open: a UI resource registered
-without double buffering stays frame-agnostic (AMD reads it live); a callback <-> no-callback switch with
-FG on still flips `NativeFSRInternalNoCallbackComposition` at once.
+(`CEFlow_NoteRuntimeOutputFrame`), CE's attribution must keep one offset, and a recorded frame's owner must
+have drawn each output exactly once (`outputOwnerViolations`; an output of a topmost-owned frame that never
+reached the route counts too). Closed after the merge of the debug-layer branch (2026-10-03):
+- UI resource without AMD's copy: AMD composes from the texture registered for the frame, read live. A game
+  alternating textures keeps frames exact (the prework detects two consecutive changes,
+  `DX12_IsFFXUiResourceKeptPerFrame`); CE's substitute alternates two textures for a flagless placeholder
+  (`g_CEUiSubstituteTextures`, zero-copy); one texture every frame keeps the UI baseline as the only owner
+  (no handover: the game itself rewrites what AMD reads). Every prework-recorded frame is judged by frame.
+- Present-callback switches with FG on: CE keeps its bridge in AMD across an app->null toggle (the
+  ffxQuery wedge) but reported `bridgeActive=0`, so its no-callback routes ran beside the bridge; the
+  retained bridge now counts as active. A real no-callback -> callback switch takes effect with the next
+  frame: the ECL hook (including the transparent app-callback path) and the Present no-callback branch stay
+  on while the composing frame is topmost-owned and the route's FFX presentation lives.
+- Found on the way (flaky FlowDLSS.OffInsideTheStartupWindowIsHeldThenHonored under the debug layer): a
+  held DLSS-G OFF released by `slDLSSGGetState` was forwarded raw (DLSS-G off, CE still published 2x); it
+  now defers to the title's frame marker like the Present-side flush, else replays via
+  `Hooked_slDLSSGSetOptions` (`streamline_hook_dlssg.cpp`).
+Flow scenarios: 14, three consecutive clean full runs.
 
 Debug layer on (2026-10-03, run pending): it found two defects.
 - Every scenario crashed (0xC0000005) on CE's first overlay submit: `DX12: ECL path=realECL

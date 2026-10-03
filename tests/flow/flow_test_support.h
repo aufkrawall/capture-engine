@@ -26,6 +26,8 @@ inline void ExpectEveryPresentCoveredOnce(const FlowGame& game) {
     EXPECT_EQ(coverage.doubleDraws, 0u) << "logs: " << game.LogDirectory();
     EXPECT_EQ(coverage.outputFrameMismatches, 0u)
         << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
+    EXPECT_EQ(coverage.outputOwnerViolations, 0u)
+        << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
 }
 
 // Debug-layer failures ExpectNoDebugLayerErrors already reported: the teardown check (flow_test_environment.cpp)

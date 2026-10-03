@@ -100,14 +100,26 @@ struct OutputFrameCheck {
     int64_t offset = 0;
     uint64_t checks = 0;
     uint64_t mismatches = 0;
+    uint64_t ownerViolations = 0;
 } g_OutputFrames;
 
 }  // namespace
 
 extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* presenter, uint64_t frame) {
     DX12FFXOutputAttribution output;
-    if (!DX12_PeekFFXOutputAttribution(&output))
+    if (!DX12_PeekFFXOutputAttribution(&output)) {
+        // Composed without passing CE's no-callback route at all - while AMD composes a frame only that route
+        // draws (its UI baseline is retired), so the output shows no overlay.
+        if (DX12_IsFFXComposingFrameOwnedByTopmost()) {
+            std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
+            ++g_OutputFrames.checks;
+            ++g_OutputFrames.ownerViolations;
+            HookLogImportant("CEFlow: runtime output of game frame %llu composed outside the final-batch route while "
+                             "its frame is topmost-owned",
+                             static_cast<unsigned long long>(frame));
+        }
         return;
+    }
     std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
     if (presenter != g_OutputFrames.presenter) {
         g_OutputFrames.presenter = presenter;
@@ -115,6 +127,17 @@ extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* 
     }
     const int64_t offset = static_cast<int64_t>(output.frame) - static_cast<int64_t>(frame);
     ++g_OutputFrames.checks;
+    if (output.record.owner != ce::dx12_overlay_policy::FFXFrameOverlayOwner::kUnknown) {
+        const auto verdict = ce::dx12_overlay_policy::JudgeFrameExactFFXOutput(output.record.owner, output.topmostDrawn);
+        if (!verdict.covered || verdict.doubleDrawn) {
+            ++g_OutputFrames.ownerViolations;
+            HookLogImportant("CEFlow: runtime output of game frame %llu (CE frame %llu, owner=%s) %s",
+                             static_cast<unsigned long long>(frame), static_cast<unsigned long long>(output.frame),
+                             ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(output.record.owner),
+                             verdict.doubleDrawn ? "drawn by the final-batch route over its UI baseline"
+                                                 : "without its owner's draw");
+        }
+    }
     if (!g_OutputFrames.haveOffset) {
         g_OutputFrames.haveOffset = true;
         g_OutputFrames.offset = offset;
@@ -139,6 +162,7 @@ extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCov
     std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
     out->outputFrameChecks = g_OutputFrames.checks;
     out->outputFrameMismatches = g_OutputFrames.mismatches;
+    out->outputOwnerViolations = g_OutputFrames.ownerViolations;
 }
 
 extern "C" __declspec(dllexport) void CEFlow_GetPublishedFG(CEFlowPublishedFG* out) {

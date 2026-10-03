@@ -48,6 +48,8 @@ std::atomic<bool> g_TopmostBatchRouteReady{false};
 std::atomic<bool> g_PreviousPresentAppendSucceeded{false};
 std::atomic<bool> g_TopmostBatchOwnershipGranted{false};
 std::atomic<uint64_t> g_TopmostBatchSubmitCount{0};
+// The route tracks a live FFX presentation (g_TopmostBatchSwapChain set), readable without the mutex.
+std::atomic<bool> g_TopmostBatchRouteTracked{false};
 
 // AMD frame generation swapchain frames (policy and the AMD ordering they rely on: ffx_output_frames.h).
 std::atomic<uint64_t> g_FFXProxyFrame{0};
@@ -64,7 +66,7 @@ std::atomic<const char*> g_TopmostClearReason{nullptr};
 
 bool FrameOwnedByTopmost(uint64_t frame) {
     const ce::dx12_overlay_policy::FFXFrameOwnerRecord record = g_FFXFrameOwners.Lookup(frame);
-    return record.frameExact && record.owner == ce::dx12_overlay_policy::FFXFrameOverlayOwner::kTopmost;
+    return record.owner == ce::dx12_overlay_policy::FFXFrameOverlayOwner::kTopmost;
 }
 
 void AdvanceFFXComposingFrame(uint64_t frame, bool atFirstSubmission) {
@@ -171,6 +173,7 @@ void ReplaceRetainedPresentationObjects(IDXGISwapChain* swapChain, ID3D12Command
             oldSwapChain != swapChain || oldQueue != queue);
     g_TopmostBatchSwapChain = swapChain;
     g_TopmostBatchQueue = queue;
+    g_TopmostBatchRouteTracked.store(swapChain != nullptr, std::memory_order_release);
     if (oldSwapChain) {
         // A callback/no-callback routing edge only releases this tracker's COM references. The FFX context and
         // exact presentation identity remain alive, so keep both renderer families warm; tearing them down here
@@ -250,11 +253,11 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
         const int logCount = s_frameDecisionLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
             HookLogImportant(
-                "[OVERLAY LAYER] No-callback FSR topmost %s on an output of AMD frame %llu (owner=%s exact=%d "
-                "grant=%d log=%d) — the frame's own overlay owner decides, not the time of the grant",
+                "[OVERLAY LAYER] No-callback FSR topmost %s on an output of AMD frame %llu (owner=%s grant=%d "
+                "log=%d) — the frame's own overlay owner decides, not the time of the grant",
                 renderOverlay ? "DRAWS" : "withheld (marker only)", static_cast<unsigned long long>(outputFrame),
-                ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(frameOwner.owner), frameOwner.frameExact ? 1 : 0,
-                ownershipGranted ? 1 : 0, logCount + 1);
+                ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(frameOwner.owner), ownershipGranted ? 1 : 0,
+                logCount + 1);
         }
     }
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
@@ -304,7 +307,8 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
             renderOverlay ? "; CE is topmost across injected overlays/effects" : "; UI baseline remains sole owner");
     }
     if (renderOverlay) {
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR, frameOwner.frameExact);
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kBelowForeignChainRuntimeOwnedFSR,
+                                frameOwner.owner != ce::dx12_overlay_policy::FFXFrameOverlayOwner::kUnknown);
     }
     return true;
 }
@@ -457,15 +461,15 @@ void DX12_EndFFXProxyForward(uint64_t frame) {
 
 void DX12_RecordFFXFrameOverlayOwner(uint64_t frame, ce::dx12_overlay_policy::FFXFrameOwnerRecord record) {
     g_FFXFrameOwners.Record(frame, record);
-    // One line per owner change (UI baseline <-> topmost, exactness); steady frames are silent.
+    // One line per owner change (UI baseline <-> topmost); steady frames are silent.
     static std::atomic<uint32_t> s_lastOwner{0xFFFFFFFFu};
-    const uint32_t owner = (static_cast<uint32_t>(record.owner) << 1) | (record.frameExact ? 1u : 0u);
+    const uint32_t owner = static_cast<uint32_t>(record.owner);
     if (s_lastOwner.exchange(owner, std::memory_order_relaxed) != owner) {
         HookLogImportant(
-            "[OVERLAY LAYER] AMD FG frame %llu overlay owner -> %s (frameExact=%d composing=%llu) — its outputs are "
-            "drawn and judged by this owner",
+            "[OVERLAY LAYER] AMD FG frame %llu overlay owner -> %s (composing=%llu) — its outputs are drawn and "
+            "judged by this owner",
             static_cast<unsigned long long>(frame), ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(record.owner),
-            record.frameExact ? 1 : 0, static_cast<unsigned long long>(g_FFXComposingFrame.Current()));
+            static_cast<unsigned long long>(g_FFXComposingFrame.Current()));
     }
 }
 
@@ -483,7 +487,9 @@ bool DX12_TakeFFXOutputAttribution(DX12FFXOutputAttribution* out) {
 }
 
 bool DX12_IsFFXComposingFrameOwnedByTopmost() {
-    return FrameOwnedByTopmost(g_FFXComposingFrame.Current());
+    // Only while the route's FFX presentation lives: its teardown presents every scheduled output first.
+    return g_TopmostBatchRouteTracked.load(std::memory_order_acquire) &&
+           FrameOwnedByTopmost(g_FFXComposingFrame.Current());
 }
 
 // A routing change made by the game's ffxConfigure for its next frame: AMD composes the frames presented before it

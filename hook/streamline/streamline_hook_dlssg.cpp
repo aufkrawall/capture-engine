@@ -223,6 +223,11 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         }
     }
 
+    // A held OFF whose protection ended here, replayed below through CE's own SetOptions handling.
+    bool replayHeldOff = false;
+    slViewportHandle heldOffViewport = {};
+    slDLSSGOptions heldOffOptions = {};
+    uint32_t heldOffViewportKey = 0;
     if (!IsObserverOnlyModeActive()) {
         std::lock_guard<std::mutex> offLock(streamline_hook_g_SuppressedOffMutex);
         // The options a title passes into slDLSSGGetState are its current intent. "On" after a held OFF
@@ -283,22 +288,45 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                     postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
                     postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
             }
-            // A held OFF is the title's latest request (any SetOptions(ON) clears it), so it is forwarded once
-            // the startup protection ends, never discarded. See ForwardSuppressedOffWhenStartupProtectionEnds.
-            if (auto originalSetOptions = GetCallableOriginalDLSSGSetOptions()) {
+            // A held OFF is the title's latest request (any SetOptions(ON) clears it), so it reaches Streamline once
+            // the startup protection ends, never discarded - and through CE's SetOptions handling, so CE's runtime
+            // state follows it. Forwarded raw from here, the OFF reached DLSS-G while CE kept publishing DLSS 2x
+            // (FG flow test FlowDLSS.OffInsideTheStartupWindowIsHeldThenHonored, whenever this poll saw the
+            // protection end before the title's next frame marker). A title that marks its frames gets it replayed
+            // at that marker, as the presenter-side flush also decides.
+            if (ce::streamline_runtime_policy::ShouldReplayHeldOffOnTitleThread(
+                    true, streamline_hook_g_TitleFrameMarkerSequence.load(std::memory_order_acquire),
+                    streamline_hook_g_SuppressedOffTitleFrameSequence)) {
+                static ce::log_meter::ChangeGate s_leftToMarkerGate;
+                if (const auto verdict = s_leftToMarkerGate.Observe(ce::log_meter::FieldKey(
+                        streamline_hook_g_SuppressedOffViewportKey))) {
+                    HookLogImportant(
+                        "Streamline Hook: Held slDLSSGSetOptions(OFF) protection ended at GetState - left to the "
+                        "title thread's next frame marker (viewport=%u)%s",
+                        streamline_hook_g_SuppressedOffViewportKey,
+                        ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                }
+            } else {
                 HookLogImportant(
-                    "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via GetState — startup window "
-                    "expired (viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
+                    "Streamline Hook: Replaying held slDLSSGSetOptions(OFF) from GetState — startup window expired "
+                    "(viewport=%u settling=%d stabilizing=%d activeProofPending=%d)",
                     streamline_hook_g_SuppressedOffViewportKey, postSLConfirmedButStartupSettling ? 1 : 0,
                     effectivePostSLRuntimeStateStabilizing ? 1 : 0,
                     postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
-                const slResult offResult = originalSetOptions(streamline_hook_g_SuppressedOffViewport, streamline_hook_g_SuppressedOffOptions);
-                if (offResult != streamline_hook_kSlResultOk) {
-                    HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via GetState returned %d",
-                                     offResult);
-                }
+                replayHeldOff = true;
+                heldOffViewport = streamline_hook_g_SuppressedOffViewport;
+                heldOffOptions = streamline_hook_g_SuppressedOffOptions;
+                heldOffViewportKey = streamline_hook_g_SuppressedOffViewportKey;
+                streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
             }
-            streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
+        }
+    }
+    if (replayHeldOff) {
+        const slResult offResult = Hooked_slDLSSGSetOptions(heldOffViewport, heldOffOptions);
+        if (offResult != streamline_hook_kSlResultOk) {
+            HookLogImportant("Streamline Hook: Replayed held slDLSSGSetOptions(OFF) from GetState returned %d "
+                             "(viewport=%u)",
+                             offResult, heldOffViewportKey);
         }
     }
 

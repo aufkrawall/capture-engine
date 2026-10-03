@@ -29,7 +29,14 @@ inline std::atomic<uint32_t> g_CachedFFXUiFlags{0};
 
 inline std::atomic<bool> g_BundleTargetNeedsTransparentClear{false};
 
+// The substitute registered last (one of the two below, which hold the references). Without AMD's UI copy AMD reads the
+// registered texture while composing, so CE alternates two: frame N's outputs read one while the prework draws frame
+// N+1 into the other. With the copy only the first is used.
 inline ID3D12Resource* g_CEUiSubstituteTexture = nullptr;
+
+inline ID3D12Resource* g_CEUiSubstituteTextures[2] = {};
+
+inline uint32_t g_CEUiSubstituteNextSlot = 0;  // guarded by dx12_hook_g_FFXUiCompositeMutex
 
 inline uint32_t g_CEUiSubstituteWidth = 0;
 

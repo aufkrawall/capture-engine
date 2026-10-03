@@ -34,15 +34,18 @@ static void SetBundleTargetTexture(ID3D12Resource* targetTexture, uint32_t ffxSt
 }
 
 static ID3D12Resource* PrepareCEUiSubstituteTexture(ID3D12Device* device, uint32_t width, uint32_t height,
-                                                    DXGI_FORMAT format, D3D12_RESOURCE_STATES initialState) {
+                                                    DXGI_FORMAT format, D3D12_RESOURCE_STATES initialState,
+                                                    uint32_t slot) {
     if (!device || width == 0 || height == 0 || format == DXGI_FORMAT_UNKNOWN) {
         return nullptr;
     }
-    if (g_CEUiSubstituteTexture && IsResourceOwnedByDevice(g_CEUiSubstituteTexture, device) &&
-        g_CEUiSubstituteWidth == width && g_CEUiSubstituteHeight == height && g_CEUiSubstituteFormat == format &&
-        g_CEUiSubstituteInitialState == initialState) {
-        g_CEUiSubstituteTexture->AddRef();
-        return g_CEUiSubstituteTexture;
+    ID3D12Resource* existing = g_CEUiSubstituteTextures[slot];
+    if (existing && IsResourceOwnedByDevice(existing, device) && g_CEUiSubstituteInitialState == initialState) {
+        const D3D12_RESOURCE_DESC desc = existing->GetDesc();
+        if (desc.Width == width && desc.Height == height && desc.Format == format) {
+            existing->AddRef();
+            return existing;
+        }
     }
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D12_HEAP_PROPERTIES heapProps = {};
@@ -67,11 +70,11 @@ static ID3D12Resource* PrepareCEUiSubstituteTexture(ID3D12Device* device, uint32
                          static_cast<int>(format), static_cast<unsigned>(hr));
         return nullptr;
     }
-    tex->SetName(L"CE_FFXUiSubstituteTexture");
+    tex->SetName(slot == 0 ? L"CE_FFXUiSubstituteTexture" : L"CE_FFXUiSubstituteTexture1");
     HookLogImportant(
-        "DX12: Prepared CE substitute UI texture %ux%u fmt=%d initState=0x%X; publication waits for successful "
-        "FFX RegisterUiResource",
-        width, height, static_cast<int>(format), static_cast<unsigned>(initialState));
+        "DX12: Prepared CE substitute UI texture %ux%u fmt=%d initState=0x%X slot=%u; publication waits for "
+        "successful FFX RegisterUiResource",
+        width, height, static_cast<int>(format), static_cast<unsigned>(initialState), slot);
     return tex;
 }
 
@@ -146,7 +149,12 @@ bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_
     // COMMON/PRESENT is legitimately numeric zero. Never truth-test D3D12_RESOURCE_STATES: creating in a
     // different fallback state while forwarding/caching COMMON would make the first owner-queue barrier's
     // StateBefore false and can remove the device.
-    ID3D12Resource* ceTex = PrepareCEUiSubstituteTexture(device, bbW, bbH, substituteFmt, initialState);
+    // Without AMD's copy of the UI resource, alternate CE's two substitutes per registration (the game registers its
+    // placeholder every frame), so AMD's late outputs of one frame never read the texture drawn for the next.
+    const bool swapchainCopy = (flags & ce::ffx_api::kUiCompositionEnableInternalDoubleBuffering) != 0;
+    const uint32_t slot = swapchainCopy ? 0 : g_CEUiSubstituteNextSlot;
+    g_CEUiSubstituteNextSlot = swapchainCopy ? 0 : (slot ^ 1u);
+    ID3D12Resource* ceTex = PrepareCEUiSubstituteTexture(device, bbW, bbH, substituteFmt, initialState, slot);
     device->Release();
     if (!ceTex) {
         stageGameTexture();
@@ -160,6 +168,7 @@ bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_
     ceSubstitute->description.height = bbH;
 
     preparation->target = ceTex;
+    preparation->substituteSlot = slot;
     preparation->substitute = true;
     preparation->clearTransparent = true;
     preparation->width = bbW;
@@ -193,17 +202,21 @@ void DX12_CommitFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparatio
                 static_cast<unsigned long long>(g_FFXUiCommittedPreparationSequence));
         } else {
             g_FFXUiCommittedPreparationSequence = preparation->sequence;
-            if (preparation->substitute && g_CEUiSubstituteTexture != preparation->target) {
-                preparation->target->AddRef();
-                ID3D12Resource* oldSubstitute = g_CEUiSubstituteTexture;
+            if (preparation->substitute) {
+                ID3D12Resource*& slotTexture = g_CEUiSubstituteTextures[preparation->substituteSlot & 1u];
+                if (slotTexture != preparation->target) {
+                    preparation->target->AddRef();
+                    ID3D12Resource* oldSubstitute = slotTexture;
+                    slotTexture = preparation->target;
+                    if (oldSubstitute) {
+                        oldSubstitute->Release();
+                    }
+                }
                 g_CEUiSubstituteTexture = preparation->target;
                 g_CEUiSubstituteWidth = preparation->width;
                 g_CEUiSubstituteHeight = preparation->height;
                 g_CEUiSubstituteFormat = preparation->format;
                 g_CEUiSubstituteInitialState = preparation->initialState;
-                if (oldSubstitute) {
-                    oldSubstitute->Release();
-                }
             }
 
             SetBundleTargetTexture(preparation->target, preparation->state, preparation->flags,
@@ -272,10 +285,14 @@ void ReleaseFFXUiCompositeInfra() {
     FFXHook_ClearSubstituteUiReRegistration();
     // Release CE's own substitute UI texture (degenerate-game-texture path). Released here on teardown / device
     // change only — never from the per-frame composite path (that would blank the overlay every frame).
-    if (g_CEUiSubstituteTexture) {
-        g_CEUiSubstituteTexture->Release();
-        g_CEUiSubstituteTexture = nullptr;
+    for (ID3D12Resource*& substitute : g_CEUiSubstituteTextures) {
+        if (substitute) {
+            substitute->Release();
+            substitute = nullptr;
+        }
     }
+    g_CEUiSubstituteTexture = nullptr;
+    g_CEUiSubstituteNextSlot = 0;
     g_CEUiSubstituteWidth = 0;
     g_CEUiSubstituteHeight = 0;
     g_CEUiSubstituteFormat = DXGI_FORMAT_UNKNOWN;

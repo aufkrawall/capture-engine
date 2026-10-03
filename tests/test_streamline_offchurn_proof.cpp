@@ -195,10 +195,20 @@ TEST(StreamlineOffChurnProofSourceTest, HeldOffIsNeverDiscardedAndReplaysThrough
     const size_t getState = dlssg.find("slResult Hooked_slDLSSGGetState(");
     ASSERT_NE(getState, std::string::npos);
     const size_t supersede = dlssg.find("ShouldTitleOptionsSupersedeHeldOff(", getState);
-    const size_t getStateFlush = dlssg.find("Forwarding suppressed slDLSSGSetOptions(OFF) via GetState", getState);
+    const size_t getStateFlush = dlssg.find("Replaying held slDLSSGSetOptions(OFF) from GetState", getState);
     ASSERT_NE(supersede, std::string::npos);
     ASSERT_NE(getStateFlush, std::string::npos);
     EXPECT_LT(supersede, getStateFlush);
+    // Like the Present path it leaves the OFF to a title that marks its frames, and otherwise replays it through
+    // CE's SetOptions handling: a raw forward left CE publishing DLSS 2x after the OFF reached DLSS-G.
+    const size_t getStateHandoff = dlssg.find("ShouldReplayHeldOffOnTitleThread(", getState);
+    const size_t getStateReplay = dlssg.find("Hooked_slDLSSGSetOptions(heldOffViewport, heldOffOptions)", getState);
+    ASSERT_NE(getStateHandoff, std::string::npos);
+    ASSERT_NE(getStateReplay, std::string::npos);
+    EXPECT_LT(getStateHandoff, getStateFlush);
+    const size_t getStateEnd = dlssg.find("slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport", getState);
+    EXPECT_EQ(dlssg.substr(getState, getStateEnd - getState).find("originalSetOptions(streamline_hook_g_SuppressedOff"),
+              std::string::npos);
 
     const std::string bridge = ce::test_source::ReadLogicalSource(ce::test_source::FindSource("hook", "streamline_bridge_reflex.cpp"));
     const size_t synth = bridge.find("bool SynthesizePresentMarkers(");

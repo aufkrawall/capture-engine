@@ -574,7 +574,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
     const std::string dx12 = readFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook.cpp");
     EXPECT_NE(dx12.find("COMMON/PRESENT is legitimately numeric zero"), std::string::npos);
     EXPECT_NE(dx12.find("g_CEUiSubstituteInitialState == initialState"), std::string::npos);
-    EXPECT_NE(dx12.find("IsResourceOwnedByDevice(g_CEUiSubstituteTexture, device)"), std::string::npos);
+    EXPECT_NE(dx12.find("IsResourceOwnedByDevice(existing, device)"), std::string::npos);
     EXPECT_NE(dx12.find("preparation->sequence < g_FFXUiCommittedPreparationSequence"), std::string::npos);
 }
 

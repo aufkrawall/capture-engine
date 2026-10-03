@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-03 - FSR handover open points closed; held DLSS-G OFF via GetState fixed (run pending)
+
+- Merged the debug-layer branch (910167ab). New flow scenarios: UI resource without AMD's copy (game alternates,
+  single live texture, placeholder -> CE substitute pair) and present-callback switches with FG on; a per-output
+  owner check found the last no-callback output lost at a switch to a callback. Fixes in refactor-roadmap.md
+  ("FSR handover by AMD frame", "Closed after the merge"). A DLSS flow scenario flaked: the held OFF released by
+  `slDLSSGGetState` bypassed CE's SetOptions handling and left "DLSS 2x" published.
+
 ### 2026-10-03 - FSR overlay handover follows AMD's frames (run pending)
 
 - The 120641 "uncovered output at FSR enable" was a misattributed output plus a real 2-output double blend:

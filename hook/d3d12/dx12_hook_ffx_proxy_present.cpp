@@ -84,7 +84,8 @@ void DX12_AccountFFXRuntimeOutputForOverlayCoverage(IDXGISwapChain* realSwapChai
     // by the latest prework instead credited AMD's pipelined outputs to the wrong frame: the output after a topmost
     // grant counted as uncovered although its frame carried the UI baseline (session 20261003_120641).
     DX12FFXOutputAttribution output;
-    if (overlayRouteLive && DX12_TakeFFXOutputAttribution(&output) && output.record.frameExact) {
+    if (overlayRouteLive && DX12_TakeFFXOutputAttribution(&output) &&
+        output.record.owner != ce::dx12_overlay_policy::FFXFrameOverlayOwner::kUnknown) {
         const auto verdict =
             ce::dx12_overlay_policy::JudgeFrameExactFFXOutput(output.record.owner, output.topmostDrawn);
         if (!verdict.covered || verdict.doubleDrawn) {
@@ -133,6 +134,32 @@ bool DX12_IsFFXProxyPresentHookDriving() {
     }
     const double ageMs = static_cast<double>(now.QuadPart - lastPrework) * 1000.0 / static_cast<double>(freq.QuadPart);
     return ageMs < 1000.0;
+}
+
+// Whether the UI resource registered for this frame keeps the frame's pixels until AMD composed its outputs: AMD
+// copies it (ENABLE_INTERNAL_UI_DOUBLE_BUFFERING), or the registered texture changes every frame (the game's own
+// double buffering, CE's alternating substitute). Prework only (game thread); textures are compared, never used.
+static bool DX12_IsFFXUiResourceKeptPerFrame() {
+    static ID3D12Resource* s_previousTexture = nullptr;
+    static uint32_t s_consecutiveChanges = 0;
+    ID3D12Resource* texture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
+    s_consecutiveChanges = texture && texture != s_previousTexture ? s_consecutiveChanges + 1 : 0;
+    s_previousTexture = texture;
+    const bool swapchainCopy = (g_CachedFFXUiFlags.load(std::memory_order_acquire) &
+                                ce::ffx_api::kUiCompositionEnableInternalDoubleBuffering) != 0;
+    // Two changes in a row: one change is a new registration, not a per-frame rotation.
+    const bool perFrame = swapchainCopy || s_consecutiveChanges >= 2;
+    static int s_lastLogged = -1;
+    if (s_lastLogged != (perFrame ? 1 : 0)) {
+        s_lastLogged = perFrame ? 1 : 0;
+        HookLogImportant(
+            "[OVERLAY LAYER] FFX UI resource %s (texture=%p swapchainCopy=%d) — %s",
+            perFrame ? "kept per frame" : "read live by AMD (one texture, no swapchain copy)", (void*)texture,
+            swapchainCopy ? 1 : 0,
+            perFrame ? "the final-batch route may take over at a frame boundary"
+                     : "the UI baseline stays the overlay's only owner");
+    }
+    return perFrame;
 }
 
 static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* entryPoint, uint64_t frame) {
@@ -195,7 +222,14 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
         // Only after that marker completes and this prework retires the old UI pixels may the same-batch route
         // draw. Revoking the grant before the UI baseline resumes also closes the completion-between-prework-
         // and-ECL race: every output has exactly one CE overlay owner.
-        const bool topmostBatchReady = DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership();
+        //
+        // AMD composes a frame's outputs from the UI resource registered for it: its own copy, or the texture
+        // itself, which the game then keeps intact per frame (alternating textures; CE's substitute alternates
+        // too). A game registering one texture every frame without AMD's copy rewrites it while AMD still
+        // composes the previous frame: retiring the baseline at a frame boundary would leave those late outputs
+        // with whichever pixels AMD reads, so the UI baseline stays the only owner there.
+        const bool topmostBatchReady =
+            DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() && DX12_IsFFXUiResourceKeptPerFrame();
         static std::atomic<bool> s_uiBaselineRetiredForTopmost{false};
         if (topmostBatchReady) {
             topmostBatchOwnsOverlay = s_uiBaselineRetiredForTopmost.load(std::memory_order_acquire);
@@ -255,18 +289,15 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
     g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0, std::memory_order_release);
-    // Who draws this frame's outputs. The proxy backbuffer and a double-buffered UI resource (AMD copies it in this
-    // frame's Present) carry the overlay with the frame; a UI resource AMD reads live does not.
+    // Who draws this frame's outputs (judged per frame: dx12_overlay_policy/ffx_output_frames.h).
     using ce::dx12_overlay_policy::FFXFrameOverlayOwner;
     ce::dx12_overlay_policy::FFXFrameOwnerRecord owner;
     owner.owner = topmostBatchOwnsOverlay ? FFXFrameOverlayOwner::kTopmost
                                           : (composited ? FFXFrameOverlayOwner::kBaseline : FFXFrameOverlayOwner::kNone);
-    owner.frameExact = proxyBackbufferRoute || (g_CachedFFXUiFlags.load(std::memory_order_acquire) &
-                                                ce::ffx_api::kUiCompositionEnableInternalDoubleBuffering) != 0;
     if (composited && !proxyBackbufferRoute && !topmostBatchOwnsOverlay) {
         g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
         g_FFXUiCompositeLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback, owner.frameExact);
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback, /*frameAttributed=*/true);
     }
     DX12_RecordFFXFrameOverlayOwner(frame, owner);
 

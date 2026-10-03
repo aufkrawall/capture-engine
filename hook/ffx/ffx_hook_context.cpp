@@ -686,8 +686,12 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     // Keep per-context dedupe and its global routing/session publications ordered even when a runtime emits
     // configure packets concurrently. The provider call itself remains outside this lock.
     std::lock_guard<std::mutex> transitionLock(ffx_hook_g_FrameGenerationRoutingTransitionMutex);
-    const bool bridgeActiveForConfigure =
-        installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback || retainedBridgeForDisabledConfigure;
+    // A bridge kept across the app's switch to a null callback is still what AMD calls for every output, so the
+    // routing stays the callback route: reporting "no callback" ran CE's no-callback routes beside the bridge and
+    // handed the overlay over by the time of the switch, not by the frame AMD composes (FG flow test FlowFSR
+    // present callback changes with FG on).
+    const bool bridgeActiveForConfigure = installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback ||
+                                          retainedBridgeForDisabledConfigure || retainedBridgeForNullCallbackToggle;
     bool enabledStateChanged = parsed.enabled;
     bool routingStateChanged = true;
     {

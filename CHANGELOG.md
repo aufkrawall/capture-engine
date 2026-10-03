@@ -16,6 +16,12 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay kept showing "DLSS 2x" after DLSS frame generation was turned off right after turning it on:** an off request that arrives during DLSS-G's startup is held until the startup is over. Depending on timing it then reached DLSS-G without Capture Engine noticing, so the overlay status stayed on. It now always goes through Capture Engine's own handling.
+
+- **Overlay on FSR frame generation when the game switches its present callback while frame generation stays on:** Capture Engine keeps its own callback in AMD's runtime across such a switch but still ran its callback-less overlay routes next to it, and the last frame before a switch to a callback could lose its overlay. The overlay now follows the route AMD actually uses, frame by frame.
+
+- **Overlay hand-over with FSR UI textures that AMD reads directly:** games that keep their own HUD texture per frame (instead of letting AMD copy it) now get the same exact overlay hand-over at FSR on/off as the others. For a 1x1 placeholder without AMD's copy, Capture Engine alternates two textures instead of redrawing the one AMD is reading. A game that reuses one texture every frame keeps the overlay in that texture without a hand-over.
+
 - **Overlay drawn twice or briefly missing when turning FSR frame generation on or off (games without a present callback):** AMD still shows the previous frame while the game already prepares the next one, and Capture Engine switched its overlay route by the next frame. At every FSR enable the previous frame's outputs got the overlay twice, at every disable or swapchain switch the last frame's final output got none. The route now switches with the frame AMD actually shows.
 
 - **Overlay vanished for seconds after turning DLSS frame generation back on:** after an FSR frame generation phase, switching DLSS-G off and on again could hide the overlay for 6.5 s, and while it was off the overlay still showed "DLSS 2x". DLSS-G's last generated frame after the switch-off no longer counts as frame generation, and the overlay's transition pause always ends completely.

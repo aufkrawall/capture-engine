@@ -73,11 +73,15 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    // No-callback FSR composition: configured, or still running for a frame the topmost route owns - the game's
+    // switch to a present callback takes effect with its next frame, not with the configure call.
+    const bool noCallbackFSR =
+        dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ||
+        DX12_IsFFXComposingFrameOwnedByTopmost();
     const bool transparentNativeFSRCallbackEcl =
         ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl(
             g_FGCompat.IsFSRFGApiActive(),
-            dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire),
-            dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
+            dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire), noCallbackFSR,
             DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
             dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
             dx12_hook_s_insideCEOverlayECLDepth > 0);
@@ -266,8 +270,6 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // and ordinal signature is stable, CE joins THAT SAME batch as the final list. All other runtime-queue calls
     // remain pure forwards and avoid CE's policy/lock/module-resolution path, which would desync AMD's QPC-timed
     // pacing (ffxQuery+0x225fe). Game-queue calls continue into normal processing for frame counting.
-    const bool noCallbackFSR =
-        dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
     ExecuteCommandListsPtr noCallbackOriginal = nullptr;
     if (noCallbackFSR && dx12_hook_s_insideCEOverlayECLDepth == 0) {
         noCallbackOriginal = GetOriginalExecuteCommandLists(pThis);

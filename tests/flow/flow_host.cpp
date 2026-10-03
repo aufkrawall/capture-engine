@@ -148,6 +148,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     width_ = options.width;
     height_ = options.height;
     fsrUi_ = options.fsrUi;
+    fsrUiBuffering_ = options.fsrUiBuffering;
     WNDCLASSA windowClass{};
     windowClass.lpfnWndProc = GameWindowProc;
     windowClass.hInstance = GetModuleHandleA(nullptr);

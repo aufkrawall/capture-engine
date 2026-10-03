@@ -228,6 +228,7 @@ struct DX12FFXUiOverlayTargetPreparation {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
     uint64_t sequence = 0;
+    uint32_t substituteSlot = 0;  // which of CE's two substitute textures (dx12_hook_ffx_shared.h)
     bool substitute = false;
     bool clearTransparent = false;
 };

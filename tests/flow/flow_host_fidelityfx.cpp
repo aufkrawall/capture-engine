@@ -26,7 +26,9 @@ struct FidelityFXGame {
     bool enabled = false;
     bool presentCallback = true;
     uint64_t frameId = 1;
-    ComPtr<ID3D12Resource> ui;  // GameOptions::fsrUi; read-only for AMD, like a game's HUD texture
+    // GameOptions::fsrUi (two with FSRUiBuffering::kGameAlternates); read-only for AMD, like a game's HUD texture
+    ComPtr<ID3D12Resource> ui[2];
+    FSRUiBuffering uiBuffering = FSRUiBuffering::kSwapchainCopy;
 };
 
 namespace {
@@ -83,15 +85,19 @@ ffxReturnCode_t GameFrameGenerationCallback(ffxDispatchDescFrameGeneration* para
 }
 
 // As testapp/dx12_fg_switch_fsr.cpp declares its HUD: read-only, in shader-resource state, double-buffered by
-// the swapchain because the game rewrites it every frame.
+// the swapchain because the game rewrites it every frame (or by the game itself: FSRUiBuffering).
 void RegisterUiResource(FidelityFXGame& ffx) {
-    if (!ffx.ui || !ffx.enabled)
+    if (!ffx.ui[0] || !ffx.enabled)
         return;
+    const bool alternate = ffx.uiBuffering == FSRUiBuffering::kGameAlternates;
+    ID3D12Resource* texture = ffx.ui[alternate ? ffx.frameId % 2 : 0].Get();
     ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 ui{};
     ui.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
-    ui.uiResource = ffxApiGetResourceDX12(ffx.ui.Get(), FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ,
+    ui.uiResource = ffxApiGetResourceDX12(texture, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ,
                                           FFX_API_RESOURCE_USAGE_READ_ONLY);
-    ui.flags = FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING;
+    ui.flags = ffx.uiBuffering == FSRUiBuffering::kSwapchainCopy
+                   ? FFX_FRAMEGENERATION_UI_COMPOSITION_FLAG_ENABLE_INTERNAL_UI_DOUBLE_BUFFERING
+                   : 0;
     ffx.configure(&ffx.swapchainContext, &ui.header);
 }
 
@@ -152,12 +158,16 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
     if (ffx.createContext(&ffx.frameGenerationContext, &frameGeneration.header, nullptr) != FFX_API_RETURN_OK)
         return Fail("ffxCreateContext(frame generation)", E_FAIL);
     ffx.enabled = false;
-    if (fsrUi_ != FSRUiResource::kNone && !ffx.ui) {
+    ffx.uiBuffering = fsrUiBuffering_;
+    if (fsrUi_ != FSRUiResource::kNone && !ffx.ui[0]) {
         const bool placeholder = fsrUi_ == FSRUiResource::kPlaceholder;
-        ffx.ui = CreateFlowTexture(device_.Get(), placeholder ? 1 : width_, placeholder ? 1 : height_,
-                                   DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-                                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-                                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        const int count = fsrUiBuffering_ == FSRUiBuffering::kGameAlternates ? 2 : 1;
+        for (int i = 0; i < count; ++i) {
+            ffx.ui[i] = CreateFlowTexture(device_.Get(), placeholder ? 1 : width_, placeholder ? 1 : height_,
+                                          DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+                                          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
     }
     return true;
 }
