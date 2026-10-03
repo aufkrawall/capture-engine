@@ -74,9 +74,13 @@ out of `unit_tests.exe` (`tests/test_stubs.cpp`). Design (2026-10-03):
   (`CEFlowGame_CountPhysicalPresent`) independent of CE.
 - One process per scenario. Invariants (`tests/flow/flow_test_support.h`): CE accounts every physical
   present (ledger total == tally), none uncovered, none drawn twice, published FG status equals the
-  runtime state. DRED is armed (`CE_DX12_DRED=full`; WARP gives no breadcrumbs). The D3D12 debug layer is
-  NOT usable: CE resolves ExecuteCommandLists from D3D12Core's own queue vtable and calls it on the SDK
-  layer's wrapped queue - an AV on the first overlay submit (same hazard for RenderDoc/PIX wrappers).
+  runtime state, and no D3D12 debug-layer CORRUPTION/ERROR (`ExpectNoDebugLayerErrors`; teardown checked
+  by `flow_test_environment.cpp`). The game enables the debug layer before its device (CE already loaded)
+  and logs every message into `logs/<Suite.Test>/d3d12_debug.log` (`ID3D12InfoQueue1` callback, frame and
+  thread per line, repeats metered per ID, per-ID totals at the end; `flow_host_debug_layer.cpp`). Needs the
+  Graphics Tools optional feature. DRED stays armed (`CE_DX12_DRED=full`; WARP gives no breadcrumbs).
+  Expected WARNINGs only: id 820 (the game's own back-buffer clear has no clear value), id 1328 (CE's
+  readback buffers declare COPY_DEST, which buffers ignore).
 - Scenarios: baseline; DLSS menu toggles, OFF inside the startup window; FSR toggles with callback,
   without (game UI texture, GTA 1x1 placeholder, no UI resource); post-FSR DLSS warm resume; Talos- and
   GTA-style runtime switches with FG on (FSR on -> DLSS on -> FSR on -> native off, each in one frame).
@@ -145,10 +149,33 @@ context or an unknown one ends it). Flow check: the fake reports each output's t
 without double buffering stays frame-agnostic (AMD reads it live); a callback <-> no-callback switch with
 FG on still flips `NativeFSRInternalNoCallbackComposition` at once.
 
+Debug layer on (2026-10-03, run pending): it found two defects.
+- Every scenario crashed (0xC0000005) on CE's first overlay submit: `DX12: ECL path=realECL
+  (realECL=<D3D12Core> origECL=<d3d12SDKLayers> directD3D12=1)`. CE resolves the real ExecuteCommandLists/
+  Signal from a D3D12Core queue vtable (`TryPublishRealD3D12ECLCandidate`, `ServiceDeferredECLProbe`) and
+  called it with the debug layer's queue object. Now every call of a resolved queue method goes through
+  `DX12_MayCallResolvedQueueMethod` / `DX12_RealD3D12ECLForQueue` (`dx12_hook_queue_method_resolution.cpp`,
+  policy `dx12_overlay_policy/resolved_queue_method.h`): only a queue whose vtable lives in the method's
+  image (cached loader-free module lookup) is called directly; any other (debug layer, RenderDoc/PIX,
+  Streamline proxies, heap-copied vtables) takes the caller's unresolved path, i.e. its own vtable. Log:
+  `DX12: Resolved ExecuteCommandLists REFUSED - calling through the queue's own vtable ... at <site>`
+  (per site, on change). A source test fails any raw-loaded resolved method called without that check.
+- DLSS-G PostSL drew in PRESENT state (debug layer id 538 on `CE_OverlayCmdList`, then on the Present):
+  `PostSL barrier mode - mode=uav-only` since 63a0d64b (2026-03), whose rationale ("SL manages the BB state,
+  we don't know if it is PRESENT or RT"; PRESENT->RT on origGame hung GTA) does not hold where PostSL runs:
+  inside the runtime's own `Present` (`dxgi_shared_present_routing.cpp`, recursive Present), where D3D12
+  requires PRESENT. Now `DecidePostSLBackbufferBarrierMode` transitions PRESENT->RT->PRESENT when
+  `PostSLFGSubmitRunsOnPresentingQueue` (mirrors the Chunk3 submit chain: selected non-wrapper swapchain
+  queue, or the scQueue virtual submit); the real queue behind SL's wrapper and the wrapper bootstrap keep
+  UAV-only (the GTA cross-queue hang). Chunk3 logs `PostSL barrier invariant violated` if transitions ever
+  reach another queue. Hardware check wanted: GTA/Talos/W3 DLSS-G (pure and post-FSR), `mode=present->rt
+  ... presentingQueue=1`, no DEVICE_HUNG.
+
 Follow-ups: a fake NGX runtime (end-to-end reproduction of the NGX
 reactivation); a third-party overlay
 fake (`gameoverlayrenderer64.dll` hooking Present above CE; the user's Steam / Rockstar / EOS runs showed
-only the handled re-hook paths); CE's resolved-ECL call on wrapped queues (debug layer, capture tools);
+only the handled re-hook paths); `GetOriginalExecuteCommandLists` still falls back to the first captured
+global original for an untracked vtable (same type hazard, not hit by any scenario);
 `RegisterNativeFSRSwapchainPresentationQueue` still classifies Streamline wrappers by device identity.
 GTA's 4 `ResizeBuffers ... FAILED 0x887A0001` (refs [16,16,16] while FFX held its buffers; CE's net
 reference count negative) stay open, likely the game resizing before `ffxDestroyContext`.

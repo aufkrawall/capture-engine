@@ -557,7 +557,8 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     LARGE_INTEGER submitQpc;
     ce::hook_clock::QueryCounter(&submitQpc);
     ID3D12CommandList* lists[] = {g_FFXUiCompositeList};
-    ExecuteCommandListsPtr realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+    // CE's queue belongs to the game's device: a debug-layer device wraps it like the game's.
+    ExecuteCommandListsPtr realECL = DX12_RealD3D12ECLForQueue(submitQueue, "ffx-ui-composite");
     {
         ScopedCEOverlayECLSubmission ceOverlayECLGuard("ffx-ui-composite");
         if (realECL) {

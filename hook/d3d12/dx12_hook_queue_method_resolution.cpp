@@ -1,5 +1,7 @@
 #include "dx12_hook_internal.h"
 
+#include "common/logging/log_meter.h"
+
 namespace {
 
 bool IsReadableRange(const void* address, size_t size) {
@@ -93,7 +95,66 @@ void TryResolveMethodsFromVTable(void** vtable, const char* source) {
     TryPublishRealD3D12SignalCandidate(reinterpret_cast<SignalPtr>(vtable[14]), source);
 }
 
+const char* ModuleBaseName(const void* address, char (&path)[MAX_PATH]) {
+    if (!TryGetModulePathFromCodeAddress(address, path, sizeof(path)) || !path[0]) {
+        return "<no image>";
+    }
+    const char* slash = strrchr(path, '\\');
+    return slash ? slash + 1 : path;
+}
+
+// One line per call site and method whenever the queue implementation or the verdict changes there.
+void LogResolvedQueueMethodFit(ce::dx12_overlay_policy::ResolvedQueueMethodFit fit, ID3D12CommandQueue* queue,
+                               void** vtable, const void* method, const char* methodName, const char* site) {
+    static ce::log_meter::StreamChangeGate<16> s_siteGate;
+    static std::atomic<uint64_t> s_refusals{0};
+    const bool callable = ce::dx12_overlay_policy::MayCallResolvedQueueMethod(fit);
+    const uint64_t refusals = callable ? s_refusals.load(std::memory_order_relaxed)
+                                       : s_refusals.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto verdict = s_siteGate.Observe(ce::log_meter::FieldKey(site, methodName),
+                                            ce::log_meter::FieldKey(vtable, method, fit));
+    if (!verdict) {
+        return;
+    }
+    char vtablePath[MAX_PATH] = {};
+    char methodPath[MAX_PATH] = {};
+    HookLogImportant(
+        "DX12: Resolved %s %s on queue %p at %s: %s (vtable=%p in %s, method=%p in %s, refusals=%llu)%s",
+        methodName, callable ? "called directly" : "REFUSED - calling through the queue's own vtable", queue, site,
+        ce::dx12_overlay_policy::ResolvedQueueMethodFitName(fit), vtable, ModuleBaseName(vtable, vtablePath), method,
+        ModuleBaseName(method, methodPath), static_cast<unsigned long long>(refusals),
+        ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+}
+
 }  // namespace
+
+bool DX12_MayCallResolvedQueueMethod(ID3D12CommandQueue* queue, const void* method, const char* methodName,
+                                     const char* site) {
+    if (!method) {
+        return false;
+    }
+    void** vtable = queue ? *reinterpret_cast<void***>(queue) : nullptr;
+    HMODULE methodImage = nullptr;
+    HMODULE vtableImage = nullptr;
+    TryGetModulePathFromCodeAddress(method, nullptr, 0, &methodImage);
+    TryGetModulePathFromCodeAddress(vtable, nullptr, 0, &vtableImage);
+    const auto fit = ce::dx12_overlay_policy::ClassifyResolvedQueueMethodFit(true, methodImage, vtableImage);
+    LogResolvedQueueMethodFit(fit, queue, vtable, method, methodName, site);
+    return ce::dx12_overlay_policy::MayCallResolvedQueueMethod(fit);
+}
+
+ExecuteCommandListsPtr DX12_RealD3D12ECLForQueue(ID3D12CommandQueue* queue, const char* site) {
+    const ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+    return DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(real), "ExecuteCommandLists", site)
+               ? real
+               : nullptr;
+}
+
+SignalPtr DX12_RealD3D12SignalForQueue(ID3D12CommandQueue* queue, const char* site) {
+    const SignalPtr real = dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire);
+    return DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(real), "Signal", site) ? real
+                                                                                                        : nullptr;
+}
 
 bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source) {
     if (!candidate || dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 
 #include "tests/flow/flow_host.h"
@@ -25,6 +26,25 @@ inline void ExpectEveryPresentCoveredOnce(const FlowGame& game) {
     EXPECT_EQ(coverage.doubleDraws, 0u) << "logs: " << game.LogDirectory();
     EXPECT_EQ(coverage.outputFrameMismatches, 0u)
         << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
+}
+
+// Debug-layer failures ExpectNoDebugLayerErrors already reported: the teardown check (flow_test_environment.cpp)
+// reports only new ones.
+inline uint64_t g_reportedDebugLayerFailures = 0;
+
+// The game runs with the D3D12 debug layer (FlowGame::CreateDeviceAndSwapchain): nothing the game, CE or a fake
+// runtime does may produce a CORRUPTION or ERROR message. Every message is in logs/<Suite.Test>/d3d12_debug.log.
+// `requireWatched`: the scenario created its device, so the layer's messages must have been watched.
+inline void ExpectNoDebugLayerErrors(const char* where = "scenario", bool requireWatched = true) {
+    const D3D12DebugMessages messages = D3D12DebugMessagesSoFar();
+    if (requireWatched) {
+        EXPECT_TRUE(messages.watched) << where << ": the D3D12 debug layer's messages were not watched";
+    }
+    const uint64_t failures = messages.corruptions + messages.errors;
+    EXPECT_EQ(failures, g_reportedDebugLayerFailures)
+        << where << ": " << messages.corruptions << " CORRUPTION and " << messages.errors
+        << " ERROR debug-layer messages; first: " << messages.firstFailure << "; log: " << messages.logPath;
+    g_reportedDebugLayerFailures = failures;
 }
 
 // What the overlay shows: "<type> <multiplier>x" or off.

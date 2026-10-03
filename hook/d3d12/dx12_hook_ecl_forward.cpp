@@ -27,7 +27,9 @@ ExecuteCommandListsPtr ResolveRecursionBreakTarget(ID3D12CommandQueue* queue) {
         reinterpret_cast<const void*>(queueVtable), queueVtablePath, sizeof(queueVtablePath));
 
     const ExecuteCommandListsPtr perQueueOriginal = GetOriginalExecuteCommandLists(queue);
-    const ExecuteCommandListsPtr realD3D12Ecl = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+    // Only a resolved ECL of the queue's own implementation is a candidate (a debug-layer or capture-tool
+    // queue lives in another image even where its module classifies like D3D12's).
+    const ExecuteCommandListsPtr realD3D12Ecl = DX12_RealD3D12ECLForQueue(queue, "ECL recursion break");
     switch (dx12_overlay_policy::SelectEclRecursionBreakTarget(
         dx12_overlay_policy::ClassifyEclBreakTargetCandidate(queueVtableResolved, queueVtablePath),
         ClassifyBreakTarget(perQueueOriginal), ClassifyBreakTarget(realD3D12Ecl),
@@ -61,7 +63,7 @@ void TransparentNativeFSRCallback(ID3D12CommandQueue* queue, UINT numCommandList
     ExecuteCommandListsPtr target =
         recursionDepth == 0 ? GetOriginalExecuteCommandLists(queue) : ResolveRecursionBreakTarget(queue);
     if (!target && recursionDepth == 0)
-        target = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+        target = DX12_RealD3D12ECLForQueue(queue, "native-FSR transparent forward");
     if (!target && recursionDepth == 0)
         target = oExecuteCommandLists;
     if (!target) {

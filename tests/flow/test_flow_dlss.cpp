@@ -8,6 +8,7 @@ namespace {
 
 using ce::flow::CurrentTestName;
 using ce::flow::ExpectEveryPresentCoveredOnce;
+using ce::flow::ExpectNoDebugLayerErrors;
 using ce::flow::FlowGame;
 using ce::flow::GameOptions;
 using ce::flow::SwapchainKind;
@@ -39,6 +40,7 @@ TEST(FlowDLSS, MenuTogglesKeepTheOverlayAndPublishTheRuntimeState) {
         EXPECT_LT(game.PublishedFG().multiplier, 2) << "cycle " << cycle << "; logs: " << game.LogDirectory();
     }
     ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
 }
 
 // CE holds an OFF that arrives inside DLSS-G's startup window (GTA's startup churn) - but only until the
@@ -53,6 +55,7 @@ TEST(FlowDLSS, OffInsideTheStartupWindowIsHeldThenHonored) {
     EXPECT_FALSE(game.DLSSFrameGenerationRunning()) << "logs: " << game.LogDirectory();
     EXPECT_LT(game.PublishedFG().multiplier, 2) << "logs: " << game.LogDirectory();
     ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
 }
 
 }  // namespace

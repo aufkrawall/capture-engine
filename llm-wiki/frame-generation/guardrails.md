@@ -128,6 +128,15 @@ This page records current guardrails and tested transition families for no-FG, D
 - The pseudo-overlay is not an injected-overlay replacement for FG. It must not be used to paper over DLSS FG or FSR FG injected-overlay failures.
 
 ## Facts
+- **PostSL backbuffer barriers follow the queue that presents (2026-10-03, hardware run pending):** PostSL
+  runs inside the runtime's own Present (recursive Present in `dxgi_shared_present_routing.cpp`), where D3D12
+  requires the buffer in PRESENT. With DLSS-G on, the overlay list transitions PRESENT->RT->PRESENT when the
+  Chunk3 submit chain runs it on the swapchain's own queue (`PostSLFGSubmitRunsOnPresentingQueue`,
+  `DecidePostSLBackbufferBarrierMode`); the real queue behind Streamline's wrapper and the wrapper bootstrap
+  keep the UAV-only barriers (a transition there raced the runtime: GTA DEVICE_HUNG, 2026-03). The old
+  UAV-only mode on the presenting queue drew in PRESENT (debug layer id 538 every frame, FG flow tests).
+  Logs: `PostSL barrier mode - mode=present->rt ... presentingQueue=1` (on change) and `PostSL barrier
+  invariant violated` if transitions ever reach another queue.
 - **CURRENT CALLBACK-ROUTE DRAW-PER-OUTPUT-FRAME INVARIANT (2026-09-05):** on the FFX
   present-callback route the overlay MUST be drawn into every callback output, generated frames
   included (`desc->isGeneratedFrame == true`). Each output buffer is a separate runtime resource:

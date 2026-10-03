@@ -7,6 +7,7 @@
 // is replaced. Each scenario runs in its own process (the hook's state is process-global).
 
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
 #include <windows.h>
 #include <wrl/client.h>
@@ -47,6 +48,18 @@ struct GameOptions {
 struct StreamlineGame;  // flow_host_streamline.cpp
 struct FidelityFXGame;  // flow_host_fidelityfx.cpp
 
+// The D3D12 debug layer's messages in this process (flow_host_debug_layer.cpp); one scenario runs per process.
+struct D3D12DebugMessages {
+    bool watched = false;  // the debug layer is on and its messages reach logPath
+    uint64_t total = 0;
+    uint64_t corruptions = 0;
+    uint64_t errors = 0;
+    uint64_t warnings = 0;
+    std::string firstFailure;  // the first CORRUPTION or ERROR, for a failure message
+    std::string logPath;       // logs/<Suite.Test>/d3d12_debug.log
+};
+D3D12DebugMessages D3D12DebugMessagesSoFar();
+
 class FlowGame {
 public:
     // Loads build/flow_tests/capture_hook_x64.dll next to the executable, logging into logs/<testName>
@@ -57,7 +70,8 @@ public:
     FlowGame(const FlowGame&) = delete;
     FlowGame& operator=(const FlowGame&) = delete;
 
-    // The game's D3D12 setup: WARP device, direct queue, a 3-buffer flip-discard swapchain of `swapchain`.
+    // The game's D3D12 setup: the debug layer, WARP device, direct queue, a 3-buffer flip-discard swapchain of
+    // `swapchain`.
     bool CreateDeviceAndSwapchain(const GameOptions& options = {});
 
     // Replaces the swapchain with one of `kind` on the same device and queue (an FSR swapchain's FFX
@@ -113,6 +127,11 @@ private:
     void DestroyFidelityFXContexts();
     void EndFidelityFX();
 
+    bool EnableD3D12DebugLayer();
+    bool WatchD3D12DebugMessages();
+    void NoteD3D12DebugFrame();
+    void StopWatchingD3D12DebugMessages();
+
     std::string logDirectory_;
     std::string error_;
     HMODULE hook_ = nullptr;
@@ -134,6 +153,8 @@ private:
     ComPtr<IDXGIFactory4> nativeFactory_;
     ComPtr<IDXGIFactory4> streamlineFactory_;
     ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12InfoQueue1> infoQueue_;
+    DWORD debugMessageCookie_ = 0;
     ComPtr<ID3D12CommandQueue> queue_;
     ComPtr<IDXGISwapChain3> swapchain_;
     ComPtr<ID3D12DescriptorHeap> rtvHeap_;

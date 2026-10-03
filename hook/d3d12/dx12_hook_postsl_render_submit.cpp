@@ -166,11 +166,16 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                 captureBeforeOverlay(queue, submittedECL);
                 selectedQueueOrigECL(queue, 1, lists);
                 usedOrigECL = true;
-            } else {
+            } else if (DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(realECL),
+                                                       "ExecuteCommandLists", "PostSL selected scQueue")) {
                 submittedECL = realECL;
                 captureBeforeOverlay(queue, submittedECL);
                 realECL(queue, 1, lists);
                 usedRealECL = true;
+            } else {
+                captureBeforeOverlay(queue, nullptr);
+                queue->ExecuteCommandLists(1, lists);
+                usedVirtualCall = true;
             }
 
             static int s_postFSRDirectScQueueLog = 0;
@@ -233,7 +238,9 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
                 HookLogImportant("DX12: PostSL scQueue submit #%d on %p (origGame=%p, bypassing SL wrapper)",
                                  s_scQSubmitLog, scQueue, dx12_hook_g_OriginalGameQueue);
             s_scQSubmitLog++;
-        } else if (realQ && realECL) {
+        } else if (realQ && realECL &&
+                   DX12_MayCallResolvedQueueMethod(realQ, reinterpret_cast<const void*>(realECL),
+                                                   "ExecuteCommandLists", "PostSL real queue behind wrapper")) {
             // Direct submission: bypass SL's wrapper entirely
             submittedQueue = realQ;
             dx12_hook_s_insidePostSLOverlayECL = true;
@@ -349,7 +356,8 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
             queue->ExecuteCommandLists(1, lists);
             usedVirtualCall = true;
         }
-    } else if (realECL) {
+    } else if (realECL && DX12_MayCallResolvedQueueMethod(queue, reinterpret_cast<const void*>(realECL),
+                                                          "ExecuteCommandLists", "PostSL submit")) {
         submittedECL = realECL;
         captureBeforeOverlay(queue, submittedECL);
         realECL(queue, 1, lists);
@@ -376,6 +384,20 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
     }
 }
 const int submitPathCount = (usedRealECL ? 1 : 0) + (usedOrigECL ? 1 : 0) + (usedVirtualCall ? 1 : 0);
+// Chunk2 chose PRESENT<->RENDER_TARGET transitions for the queue that presents the backbuffer; on any other
+// queue they race the runtime's own use of it (PostSLFGSubmitRunsOnPresentingQueue must mirror this chain).
+if (submitPathCount == 1 && cachedSLFGActive && submittedQueue != scQueue &&
+    postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kPresentToRenderTarget) {
+    static std::atomic<int> s_transitionQueueInvariantLogCount{0};
+    const int logCount = s_transitionQueueInvariantLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 200) == 0) {
+        HookLogImportant(
+            "DX12: PostSL barrier invariant violated — backbuffer transitions submitted off the presenting queue "
+            "(submitted=%p queue=%p scQueue=%p realQ=%p wrapper=%p virtual=%d real=%d original=%d log=%d)",
+            submittedQueue, queue, scQueue, realQ, slWrapperQueue, usedVirtualCall ? 1 : 0, usedRealECL ? 1 : 0,
+            usedOrigECL ? 1 : 0, logCount + 1);
+    }
+}
 if (submitPathCount != 1) {
     static std::atomic<int> s_submitPathInvariantLogCount{0};
     const int logCount = s_submitPathInvariantLogCount.fetch_add(1, std::memory_order_relaxed);

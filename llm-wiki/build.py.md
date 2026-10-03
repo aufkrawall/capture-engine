@@ -334,7 +334,8 @@ Default quality mode currently:
   `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
   `--run-tests` every scenario runs in its own process (4 in parallel, 180 s timeout) after the unit tests;
   `--gtest-filter` applies to both suites. Each scenario's hook log is
-  `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log`). The dev loop for FG work:
+  `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
+  runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). The dev loop for FG work:
   `python build.py --incremental --tests-only --flow-tests --run-tests --gtest-filter="Flow*" --skip-updates
   --concise` builds the flow DLL standalone (~5-60 s, compile-database snapshot/restore) and runs only it with
   that filter. Not built in sanitizer builds. Design and status: `refactor-roadmap.md` ("FG flow harness").

@@ -32,6 +32,7 @@ void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiRes
     // Without a present callback CE attributes each output to its game frame; the fake reports the true one.
     if (!presentCallback)
         EXPECT_GT(game.Coverage().outputFrameChecks, 0u) << "logs: " << game.LogDirectory();
+    ExpectNoDebugLayerErrors();
 }
 
 TEST(FlowFSR, TogglesWithThePresentCallbackKeepTheOverlay) {

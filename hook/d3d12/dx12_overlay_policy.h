@@ -19,3 +19,4 @@
 #include "hook/d3d12/dx12_overlay_policy/swapchain_present_ledger.h"
 #include "hook/d3d12/dx12_overlay_policy/ecl_recursion_break.h"
 #include "hook/d3d12/dx12_overlay_policy/ecl_queue_registration.h"
+#include "hook/d3d12/dx12_overlay_policy/resolved_queue_method.h"

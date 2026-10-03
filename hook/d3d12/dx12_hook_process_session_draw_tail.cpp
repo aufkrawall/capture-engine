@@ -114,7 +114,10 @@ return ProcessFrameFlow::kOverlayDone;
                             // (g_CommandQueue). Must use vtable call (origECL) so
                             // SL's ECL interception handles resource state for
                             // the FSR-created backbuffers.
-                            ExecuteCommandListsPtr realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+                            //
+                            // The resolved ECL only fits queues of its own implementation: a
+                            // wrapping layer's queue (debug layer, capture tools) takes origECL.
+                            ExecuteCommandListsPtr realECL = DX12_RealD3D12ECLForQueue(eclQueue, "overlay submit");
                             bool usedRealECL = false;
                             const bool classifyFocusLossSubmitPath =
                                 dx12_hook_s_WrappedPresentFocusLossContext.valid && !processHasForeground;
@@ -445,7 +448,13 @@ return ProcessFrameFlow::kOverlayDone;
                                     if (realSignal && completionFence) {
                                         static std::atomic<UINT64> s_overlayCompletionValue{0};
                                         UINT64 compVal = ++s_overlayCompletionValue;
-                                        HRESULT compSigHr = realSignal(eclQueue, completionFence, compVal);
+                                        // A wrapping layer's queue signals through its own vtable.
+                                        const bool directSignal = DX12_MayCallResolvedQueueMethod(
+                                            eclQueue, reinterpret_cast<const void*>(realSignal), "Signal",
+                                            "overlay completion fence");
+                                        HRESULT compSigHr = directSignal
+                                                                ? realSignal(eclQueue, completionFence, compVal)
+                                                                : eclQueue->Signal(completionFence, compVal);
                                         if (SUCCEEDED(compSigHr)) {
                                             if (completionFence->GetCompletedValue() < compVal) {
                                                 HANDLE compEvent =

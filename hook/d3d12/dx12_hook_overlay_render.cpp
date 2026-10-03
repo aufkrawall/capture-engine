@@ -53,7 +53,8 @@ ce::pacing_trace::Record(ce::pacing_trace::Kind::Submit, 0, submitQueue,
 // state tracking from seeing our overlay command lists.
 // ALSO prefer realECL in non-FG mode to avoid going through stale
 // SL/hook vtable entries after FG teardown (same logic as main path).
-ExecuteCommandListsPtr realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+// A wrapping layer's queue (debug layer, capture tools) takes its own vtable's ECL.
+ExecuteCommandListsPtr realECL = DX12_RealD3D12ECLForQueue(submitQueue, "overlay command list");
 bool slActive = IsStreamlineLoaded() && IsActualFrameGenerationActive();
 {
     ScopedCEOverlayECLSubmission ceOverlayECLGuard(phase ? phase : "overlay command list");

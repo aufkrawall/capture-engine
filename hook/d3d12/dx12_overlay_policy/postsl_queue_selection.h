@@ -499,14 +499,44 @@ inline bool ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(b
     return hadFSRFGPhase && streamlineFGActive && selectedQueueIsSwapchainQueue && !queueIsSLWrapper;
 }
 
+// Whether the Streamline-FG PostSL submit chain (dx12_hook_postsl_render_submit.cpp, in its order) executes the
+// overlay list on the swapchain's own queue, the queue that presents the backbuffer: the selected queue when
+// that is the (non-wrapper) swapchain queue, or the swapchain queue's virtual submit. The real queue behind
+// Streamline's wrapper and the wrapper bootstrap run it elsewhere. `selectedQueuePathPreferred`: one of the
+// chain's selected-queue paths ahead of those (post-FSR selected/direct submit, pure-DLSS direct submit).
+inline bool PostSLFGSubmitRunsOnPresentingQueue(bool selectedQueuePathPreferred, bool scQueueVirtualSubmit,
+                                                bool selectedQueueIsNonWrapperSwapchainQueue,
+                                                bool realQueueBehindWrapperUsable,
+                                                PostSLBootstrapSubmitPath bootstrapPath, bool hasSLWrapperQueue) {
+    if (selectedQueuePathPreferred) {
+        return selectedQueueIsNonWrapperSwapchainQueue;
+    }
+    if (scQueueVirtualSubmit) {
+        return true;
+    }
+    if (realQueueBehindWrapperUsable) {
+        return false;
+    }
+    if (bootstrapPath == PostSLBootstrapSubmitPath::kWrapperOrVirtual && hasSLWrapperQueue) {
+        return false;
+    }
+    return bootstrapPath != PostSLBootstrapSubmitPath::kReject && selectedQueueIsNonWrapperSwapchainQueue;
+}
+
+// The Streamline-FG PostSL overlay draws onto the swapchain's buffer inside the runtime's Present, where D3D12
+// requires it in PRESENT. On the queue that presents it the list transitions PRESENT -> RENDER_TARGET ->
+// PRESENT around the draw (drawing in PRESENT is invalid: the D3D12 debug layer reports every frame, FG flow
+// tests 2026-10-03). On any other queue a transition races the runtime's own use of the buffer (GTA V
+// DEVICE_HUNG, 2026-03, with the overlay on the game's queue), so that case keeps the UAV-only barriers.
 inline PostSLBackbufferBarrierMode DecidePostSLBackbufferBarrierMode(bool streamlineFGActive,
-                                                                     bool useExplicitPostFSRSwapchainTransitions) {
-    if (streamlineFGActive && !useExplicitPostFSRSwapchainTransitions) {
-        return PostSLBackbufferBarrierMode::kUavBarrierOnly;
+                                                                     bool useExplicitPostFSRSwapchainTransitions,
+                                                                     bool fgOverlayRunsOnPresentingQueue = false) {
+    if (useExplicitPostFSRSwapchainTransitions || (streamlineFGActive && fgOverlayRunsOnPresentingQueue)) {
+        return PostSLBackbufferBarrierMode::kPresentToRenderTarget;
     }
 
-    if (useExplicitPostFSRSwapchainTransitions) {
-        return PostSLBackbufferBarrierMode::kPresentToRenderTarget;
+    if (streamlineFGActive) {
+        return PostSLBackbufferBarrierMode::kUavBarrierOnly;
     }
 
     return PostSLBackbufferBarrierMode::kCommonToRenderTarget;

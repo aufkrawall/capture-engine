@@ -14,6 +14,7 @@ TEST(FlowBaseline, OverlayCoversEveryPresentWithoutFrameGeneration) {
 
     EXPECT_EQ(game.PhysicalPresents(), 120u);
     ce::flow::ExpectEveryPresentCoveredOnce(game);
+    ce::flow::ExpectNoDebugLayerErrors();
 
     const CEFlowPublishedFG published = game.PublishedFG();
     EXPECT_EQ(published.type, 0);

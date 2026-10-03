@@ -120,6 +120,7 @@ FlowGame::~FlowGame() {
     // The DLL stays loaded, as an injected hook does until the process exits.
     if (shutdown_)
         shutdown_();
+    StopWatchingD3D12DebugMessages();
 }
 
 bool FlowGame::Fail(const char* what, HRESULT hr) {
@@ -175,8 +176,12 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
         if (FAILED(hr))
             return Fail("Streamline CreateDXGIFactory1", hr);
     }
-    // DRED names the operation a removed device failed on (CE dumps it into hook_debug.log). Not the debug
-    // layer: its queue wrappers are not what CE's resolved ExecuteCommandLists expects.
+    // The debug layer validates every call the game, CE and the fake runtimes make (ExpectNoDebugLayerErrors);
+    // it wraps the device's queues in objects of its own, which CE must never hand to the ExecuteCommandLists
+    // it resolved from D3D12Core. DRED names the operation a removed device failed on (CE dumps it into
+    // hook_debug.log).
+    if (!EnableD3D12DebugLayer())
+        return false;
     ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
         dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
@@ -190,6 +195,8 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
                      : D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
     if (FAILED(hr))
         return Fail("D3D12CreateDevice", hr);
+    if (!WatchD3D12DebugMessages())
+        return false;
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue_));
     if (FAILED(hr))
@@ -290,6 +297,7 @@ bool FlowGame::RenderFrame() {
     const int64_t now = clockMicroseconds_();
     if (frameStart > now)
         advanceClock_(frameStart - now);
+    NoteD3D12DebugFrame();
     PumpWindowMessages();
     const UINT index = swapchain_->GetCurrentBackBufferIndex();
     HRESULT hr = allocator_->Reset();

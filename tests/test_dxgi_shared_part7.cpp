@@ -296,6 +296,11 @@ TEST(DXGISharedTest, PostSLBackbufferBarrierModeUsesPresentTransitionsForPostFSR
     EXPECT_EQ(DecidePostSLBackbufferBarrierMode(true, false), PostSLBackbufferBarrierMode::kUavBarrierOnly);
     EXPECT_EQ(DecidePostSLBackbufferBarrierMode(true, true), PostSLBackbufferBarrierMode::kPresentToRenderTarget);
     EXPECT_EQ(DecidePostSLBackbufferBarrierMode(false, true), PostSLBackbufferBarrierMode::kPresentToRenderTarget);
+    // Streamline FG on the queue that presents the backbuffer: drawing in PRESENT is invalid (D3D12 debug layer,
+    // FG flow tests 2026-10-03), so the list transitions it; any other queue keeps UAV barriers only.
+    EXPECT_EQ(DecidePostSLBackbufferBarrierMode(true, false, true), PostSLBackbufferBarrierMode::kPresentToRenderTarget);
+    EXPECT_EQ(DecidePostSLBackbufferBarrierMode(true, false, false), PostSLBackbufferBarrierMode::kUavBarrierOnly);
+    EXPECT_EQ(DecidePostSLBackbufferBarrierMode(false, false, true), PostSLBackbufferBarrierMode::kCommonToRenderTarget);
 }
 
 TEST(DXGISharedTest, PostFSRSwapchainQueuePathDoesNotUseOffscreenCompositeInPostSL) {

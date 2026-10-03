@@ -174,7 +174,9 @@ TEST(Dx12EclRecursionBreakPolicyTest, SignalTraceDetourForwardsPerVtableOriginal
 
     const size_t perVtableLookup =
         source.find("dx12_hook_g_CommandQueueSignalOriginalByVTable.find(vtbl)", detourBegin);
-    const size_t nativeFallback = source.find("dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)", detourBegin);
+    // The resolved native Signal only for a queue of its own implementation (resolved_queue_method.h).
+    const size_t nativeFallback =
+        source.find("DX12_RealD3D12SignalForQueue(queue, \"trace Signal forward\")", detourBegin);
     const size_t globalFallback = source.find("original = oTraceCommandQueueSignal;", detourBegin);
     const size_t forward = source.find("original(queue, fence, value)", detourBegin);
     ASSERT_NE(perVtableLookup, std::string::npos);

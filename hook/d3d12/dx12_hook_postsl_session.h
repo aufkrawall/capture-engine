@@ -52,6 +52,9 @@ private:
     bool selectedQueueOrigECLMatchesRealECL;
     bool isSLWrapperQ;
     bool useExplicitPostFSRSwapchainTransitions;
+    // The backbuffer barriers recorded around the overlay draw (Chunk2), checked against the submit queue (Chunk3).
+    ce::dx12_overlay_policy::PostSLBackbufferBarrierMode postSLBarrierMode =
+        ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly;
     bool usePostSLOffscreenComposite;
     bool useExplicitPostFSRBackbufferCopyTransitions;
     bool hasSelectedQueueSubmitPath;

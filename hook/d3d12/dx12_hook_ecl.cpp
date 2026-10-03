@@ -30,7 +30,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclPassthrough)) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (!original)
-            original = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+            original = DX12_RealD3D12ECLForQueue(pThis, "ECL cost-probe passthrough");
         if (!original)
             original = oExecuteCommandLists;
         if (original)
@@ -292,8 +292,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // Skip our own overlay queue - don't count overlay submissions as game
     // command lists and don't re-register the overlay queue as the game queue.
     if (pThis == dx12_hook_g_State.overlayQueue) {
-        // During SL FG, use the real D3D12 ECL to bypass SL's vtable hook.
-        ExecuteCommandListsPtr realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+        // During SL FG, use the real D3D12 ECL to bypass SL's vtable hook - when it fits CE's queue (a
+        // debug-layer device wraps CE's queues too).
+        ExecuteCommandListsPtr realECL = DX12_RealD3D12ECLForQueue(pThis, "CE overlay queue");
         if (realECL && IsStreamlineLoaded() && IsActualFrameGenerationActive()) {
             realECL(pThis, NumCommandLists, ppCommandLists);
         } else {
@@ -349,12 +350,24 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     realQueue);
             }
         } else {
-            HookLogImportant(
-                "DX12: ECL ignored PostSL direct-queue capture candidate %p (origECL=%p realECL=%p matchesWrapper=%d "
-                "matchesCmdQ=%d matchesOrig=%d matchesScQ=%d)",
-                realQueue, (void*)original, (void*)real, realQueue == capturedSLWrapperQueue ? 1 : 0,
-                realQueue == currentCommandQueue ? 1 : 0, realQueue == dx12_hook_g_OriginalGameQueue ? 1 : 0,
-                realQueue == dx12_hook_g_SwapchainQueue ? 1 : 0);
+            // Repeats every PostSL submit while the candidate stays unusable (e.g. a debug-layer queue whose
+            // original is the layer's ECL): logged on change.
+            static ce::log_meter::ChangeGate s_ignoredCandidateGate;
+            const bool matchesWrapper = realQueue == capturedSLWrapperQueue;
+            const bool matchesCommandQueue = realQueue == currentCommandQueue;
+            const bool matchesOriginal = realQueue == dx12_hook_g_OriginalGameQueue;
+            const bool matchesSwapchainQueue = realQueue == dx12_hook_g_SwapchainQueue;
+            const auto verdict = s_ignoredCandidateGate.Observe(ce::log_meter::FieldKey(
+                realQueue, original, real, matchesWrapper, matchesCommandQueue, matchesOriginal,
+                matchesSwapchainQueue));
+            if (verdict) {
+                HookLogImportant(
+                    "DX12: ECL ignored PostSL direct-queue capture candidate %p (origECL=%p realECL=%p "
+                    "matchesWrapper=%d matchesCmdQ=%d matchesOrig=%d matchesScQ=%d)%s",
+                    realQueue, (void*)original, (void*)real, matchesWrapper ? 1 : 0, matchesCommandQueue ? 1 : 0,
+                    matchesOriginal ? 1 : 0, matchesSwapchainQueue ? 1 : 0,
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
         }
 
         if (original)
@@ -363,7 +376,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 original(pThis, NumCommandLists, ppCommandLists);
             }
         else {
-            if (real)
+            if (real && DX12_MayCallResolvedQueueMethod(pThis, reinterpret_cast<const void*>(real),
+                                                        "ExecuteCommandLists", "PostSL wrapper dispatch"))
                 {
                     ScopedHookForwardedCall forwardedCycles;
                     real(pThis, NumCommandLists, ppCommandLists);
@@ -390,7 +404,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 original(pThis, NumCommandLists, ppCommandLists);
             }
         } else {
-            ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+            ExecuteCommandListsPtr real = DX12_RealD3D12ECLForQueue(pThis, "CE overlay ECL passthrough");
             if (real) {
                 {
                     ScopedHookForwardedCall forwardedCycles;

@@ -625,6 +625,15 @@ bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQu
 void ProbeRealD3D12ECL(ID3D12Device* device);
 bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const char* source);
 bool TryPublishRealD3D12SignalCandidate(SignalPtr candidate, const char* source);
+// Whether a resolved D3D12 runtime queue method may be called with `queue`: only when the queue's vtable
+// lives in the method's image (dx12_overlay_policy/resolved_queue_method.h); a wrapping layer's queue (debug
+// layer, capture tools) must be called through its own vtable. Logs each site's decision on change.
+bool DX12_MayCallResolvedQueueMethod(ID3D12CommandQueue* queue, const void* method, const char* methodName,
+                                     const char* site);
+// The resolved real ExecuteCommandLists / Signal when it fits `queue`, otherwise nullptr (the caller's
+// unresolved path: the queue's own vtable).
+ExecuteCommandListsPtr DX12_RealD3D12ECLForQueue(ID3D12CommandQueue* queue, const char* site);
+SignalPtr DX12_RealD3D12SignalForQueue(ID3D12CommandQueue* queue, const char* site);
 bool SubmitOverlayCommandList(ID3D12CommandQueue* gameQueue, ID3D12CommandList* list, int allocatorIndex,
                               const char* phase, bool requireGameQueueDrain, bool listTouchesBackbuffer);
 void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress);

@@ -37,6 +37,7 @@ TEST(FlowSwitch, PostFSRDLSSWarmResumeKeepsTheOverlay) {
     ASSERT_TRUE(game.RenderFrames(900)) << game.Error();
     ExpectPublished(game, 1, 2, "DLSS FG warm resume");
     ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
 }
 
 // The menu switches of the 0.1.6951 runs, each in one frame: FSR FG on -> DLSS FG on (the FidelityFX swapchain
@@ -69,6 +70,7 @@ void SwitchRuntimesWithFrameGenerationOn(FlowGame& game, bool presentCallback, F
     ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
     ExpectPublished(game, 0, 1, "FSR FG -> all off");
     ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
 }
 
 TEST(FlowSwitch, TalosStyleRuntimeSwitchesKeepTheOverlay) {

@@ -449,7 +449,7 @@ HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queu
         }
     }
     if (!original) {
-        original = dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire);
+        original = DX12_RealD3D12SignalForQueue(queue, "trace Signal forward");
         if (!original)
             original = oTraceCommandQueueSignal;
     }

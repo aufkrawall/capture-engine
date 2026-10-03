@@ -32,6 +32,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Overlay coverage diagnostics missed FSR frame generation frames:** frames presented by FSR frame generation without a present callback were never counted in the session log's overlay coverage summaries, so gaps there went unreported.
 
+- **DirectX 12 games crashed with the D3D12 debug layer or a capture tool wrapping their queues:** Capture Engine handed its first overlay submit to a D3D12 function that only understands D3D12's own queue objects, so a game running with the debug layer (or under a tool that wraps queues the same way) crashed at once. Such queues are now submitted through their own interface; the log names each decision (`Resolved ExecuteCommandLists ... REFUSED - calling through the queue's own vtable`).
+
+- **Overlay drawn on DLSS frame generation frames without the required resource transition:** the overlay drew onto Streamline's output while D3D12 still had it marked ready for display, an invalid use the debug layer reported on every frame. When the overlay runs on the queue that presents the frame it now switches the image to drawing and back; the log line `PostSL barrier mode` shows the choice.
+
 - **UE5 RR preset left reflections noisy without Ray Reconstruction:** under TSR, plain DLSS SR, an RR fallback, or after RR was turned off in a game's menu, the preset still switched off Lumen's reflection denoising. Those settings now follow whether RR is actually rendering and hand the game its own values back the moment it stops. The log says `UE5 overrides: Ray Reconstruction is rendering` / `stopped rendering`.
 
 ## v0.1.6941

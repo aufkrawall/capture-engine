@@ -363,7 +363,7 @@ if (isPostTransitionProbe) {
                 queue->ExecuteCommandLists(1, probeList);
             }
         } else {
-            ExecuteCommandListsPtr eclFn = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
+            ExecuteCommandListsPtr eclFn = DX12_RealD3D12ECLForQueue(queue, "PostSL transition probe");
             if (eclFn) {
                 eclFn(queue, 1, probeList);
             } else {
@@ -406,8 +406,28 @@ if (willRender && !s_xqSyncFence) {
         HookLogImportant("DX12: PostSL FAILED to create cross-queue sync fence hr=0x%08X", fhr);
     }
 }
-const auto postSLBarrierMode = ce::dx12_overlay_policy::DecidePostSLBackbufferBarrierMode(
-    cachedSLFGActive, useExplicitPostFSRSwapchainTransitions);
+// The queue the submit chain (Chunk3) will run this list on decides its backbuffer barriers.
+const bool fgSelectedQueuePathPreferred =
+    preferSelectedSwapchainQueueSubmitAfterFSR || preferSelectedQueueDirectSubmitAfterFSR ||
+    ce::dx12_overlay_policy::ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(
+        dx12_hook_g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr,
+        selectedQueueOrigECLMatchesRealECL);
+const bool fgOverlayRunsOnPresentingQueue =
+    cachedSLFGActive &&
+    ce::dx12_overlay_policy::PostSLFGSubmitRunsOnPresentingQueue(
+        fgSelectedQueuePathPreferred,
+        ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(
+            dx12_hook_g_HadFSRFGPhase, scQueue && scQueue != dx12_hook_g_OriginalGameQueue),
+        selectedQueueIsSwapchainQueue && !isSLWrapperQ,
+        realQ && realECL &&
+            DX12_MayCallResolvedQueueMethod(realQ, reinterpret_cast<const void*>(realECL), "ExecuteCommandLists",
+                                            "PostSL real queue behind wrapper"),
+        ce::dx12_overlay_policy::SelectPostSLBootstrapSubmitPath(dx12_hook_g_HadFSRFGPhase, realQ != nullptr,
+                                                                 realECL != nullptr, selectedQueueIsSwapchainQueue,
+                                                                 selectedQueueOrigECL != nullptr),
+        slWrapperQueue != nullptr);
+postSLBarrierMode = ce::dx12_overlay_policy::DecidePostSLBackbufferBarrierMode(
+    cachedSLFGActive, useExplicitPostFSRSwapchainTransitions, fgOverlayRunsOnPresentingQueue);
 bool slFGBarrierFree = postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly;
 if (willRender && bb) {
     D3D12_RESOURCE_DESC bbDesc = bb->GetDesc();
@@ -446,9 +466,10 @@ if (willRender && !usePostSLOffscreenComposite && slFGBarrierFree) {
     list->ResourceBarrier(1, &preBarrier);
 }
 if (willRender) {
-    static bool s_loggedBarrierMode = false;
-    if (!s_loggedBarrierMode) {
-        s_loggedBarrierMode = true;
+    static ce::log_meter::ChangeGate s_barrierModeGate;
+    const auto barrierModeVerdict = s_barrierModeGate.Observe(ce::log_meter::FieldKey(
+        postSLBarrierMode, cachedSLFGActive, fgOverlayRunsOnPresentingQueue, usePostSLOffscreenComposite, queue));
+    if (barrierModeVerdict) {
         const char* barrierModeName = "common->rt";
         if (postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kUavBarrierOnly) {
             barrierModeName = "uav-only";
@@ -457,10 +478,12 @@ if (willRender) {
             barrierModeName = "present->rt";
         }
         HookLogImportant(
-            "DX12: PostSL barrier mode — mode=%s slFGBarrierFree=%d explicitPostFSR=%d offscreen=%d hadFSR=%d "
-            "xqSync=%d",
+            "DX12: PostSL barrier mode — mode=%s slFGBarrierFree=%d explicitPostFSR=%d presentingQueue=%d "
+            "offscreen=%d hadFSR=%d xqSync=%d (queue=%p scQueue=%p realQ=%p wrapper=%p)%s",
             barrierModeName, slFGBarrierFree ? 1 : 0, useExplicitPostFSRSwapchainTransitions ? 1 : 0,
-            usePostSLOffscreenComposite ? 1 : 0, dx12_hook_g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0);
+            fgOverlayRunsOnPresentingQueue ? 1 : 0, usePostSLOffscreenComposite ? 1 : 0,
+            dx12_hook_g_HadFSRFGPhase ? 1 : 0, didXQSync ? 1 : 0, queue, scQueue, realQ, slWrapperQueue,
+            ce::log_meter::SuppressedNote(barrierModeVerdict.suppressed).c_str());
     }
 }
 if (willRender) {

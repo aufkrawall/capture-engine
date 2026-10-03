@@ -9,6 +9,16 @@
   toggling no-callback FSR - expect no `INTERRUPTED` and no `[OVERLAY DOUBLE-DRAW]` at the edges, and
   `topmost withheld (marker only) on an output of AMD frame` once per enable.
 
+### 2026-10-03 - D3D12 debug layer in the FG flow harness: resolved-ECL type hazard, PostSL PRESENT draw (run pending)
+
+- All 10 flow scenarios now run with the debug layer; invariant: no CORRUPTION/ERROR (per-scenario
+  `d3d12_debug.log`). It first crashed every scenario: CE called D3D12Core's ExecuteCommandLists with the
+  SDK layer's queue object. Resolved queue methods are now only called on queues whose vtable lives in the
+  method's image, everything else goes through its own vtable (refactor-roadmap.md "FG flow harness").
+- Then DLSS-G PostSL drew onto Streamline's buffer in PRESENT state (`uav-only` barrier mode, 2026-03): it now
+  transitions PRESENT<->RT when it submits on the presenting queue. Hardware re-test wanted on GTA/Talos/W3
+  DLSS-G: look for `PostSL barrier mode - mode=present->rt ... presentingQueue=1`, no DEVICE_HUNG/REMOVED.
+
 ### 2026-10-03 - FG switching fixes validated on hardware (session 20261003_120641, 0.1.6955)
 
 - Test app, Talos, GTA switching runs: post-FSR DLSS OFF->ON keeps the overlay (no cooldown skips), status follows
