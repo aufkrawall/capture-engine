@@ -77,6 +77,15 @@ struct OverlayPresentScope {
     bool inheritCoverageIfNoDraw = false;
     const char* firstSource = nullptr;
     const char* lastSource = nullptr;
+    // Set by a site that knows exactly who drew this present (AccountPresentForOverlayCoverageVerdict).
+    bool hasVerdict = false;
+    bool verdictCovered = false;
+    bool verdictDoubleDrawn = false;
+};
+
+struct ExactPresentVerdict {
+    bool covered = false;
+    bool doubleDrawn = false;
 };
 
 thread_local OverlayPresentScope t_overlayPresentScope;
@@ -163,9 +172,11 @@ void LogSwapchainPresentEvent(const ce::dx12_overlay_policy::SwapchainPresentEve
     }
 }
 
-// Judges exactly one physical present.
+// Judges exactly one physical present. Without `verdict` it is covered by any draw since the previous judged present
+// (or FG-composed inheritance); a verdict replaces that guess and still consumes those draws.
 void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool inheritCoverageIfNoDraw,
-                                              const char* source, int mergedCalls) {
+                                              const char* source, int mergedCalls,
+                                              const ExactPresentVerdict* verdict = nullptr) {
     const uint64_t draws = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
     // Visibility cannot be interrupted before CE has established its first
     // visible overlay draw. Excluding pre-initialization Presents keeps later
@@ -174,7 +185,17 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
         return;
     }
     const uint64_t lastSeen = dx12_hook_g_OverlayCoverageLastSeenDrawCount.exchange(draws, std::memory_order_acq_rel);
-    const bool drawObserved = draws != lastSeen;
+    const bool drawObserved = verdict ? verdict->covered : draws != lastSeen;
+    if (verdict) {
+        inheritCoverageIfNoDraw = false;
+    }
+    if (verdict && verdict->doubleDrawn) {
+        const uint64_t n = dx12_hook_g_OverlayDoubleDrawCount.fetch_add(1, std::memory_order_acq_rel);
+        if (n < 20 || (n % 300) == 0) {
+            HookLogImportant("[OVERLAY DOUBLE-DRAW] two overlay owners drew one present (source=%s sc=%p log=%llu)",
+                             source ? source : "unknown", pSwapChain, static_cast<unsigned long long>(n + 1));
+        }
+    }
     const uint32_t routeMask = s_overlayRouteMaskSinceAccount.exchange(0, std::memory_order_acq_rel);
     const uint64_t nowUs = static_cast<uint64_t>(PerfLogger::GetQpcUs());
 
@@ -300,6 +321,7 @@ void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
     scope.inheritCoverageIfNoDraw = false;
     scope.firstSource = nullptr;
     scope.lastSource = nullptr;
+    scope.hasVerdict = false;
 }
 
 
@@ -315,8 +337,9 @@ void DX12_EndOverlayPresentScope() {
     if (scope.accountCalls > 0) {
         // Name the last merged site when several merged (e.g. PostSL then ProcessFrameExternal).
         const char* source = scope.lastSource ? scope.lastSource : scope.firstSource;
+        const ExactPresentVerdict verdict = {scope.verdictCovered, scope.verdictDoubleDrawn};
         AccountPhysicalPresentForOverlayCoverage(scope.swapchain, scope.inheritCoverageIfNoDraw, source,
-                                                 scope.accountCalls);
+                                                 scope.accountCalls, scope.hasVerdict ? &verdict : nullptr);
     } else {
         NoteUnaccountedPhysicalPresent(scope.swapchain);
     }
@@ -356,6 +379,30 @@ void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* 
 }
 
 
+// Accounts one presented frame whose overlay owners are known exactly (an FG runtime output attributed to the game
+// frame it shows): covered when one of them drew, double-drawn when both did.
+void AccountPresentForOverlayCoverageVerdict(bool covered, bool doubleDrawn, const char* source,
+                                             IDXGISwapChain* pSwapChain) {
+    OverlayPresentScope& scope = t_overlayPresentScope;
+    if (scope.depth > 0) {
+        ++scope.accountCalls;
+        scope.hasVerdict = true;
+        scope.verdictCovered = covered;
+        scope.verdictDoubleDrawn = doubleDrawn;
+        if (!scope.firstSource) {
+            scope.firstSource = source;
+        }
+        scope.lastSource = source;
+        if (!scope.swapchain) {
+            scope.swapchain = pSwapChain;
+        }
+        return;
+    }
+    const ExactPresentVerdict verdict = {covered, doubleDrawn};
+    AccountPhysicalPresentForOverlayCoverage(pSwapChain, false, source, 1, &verdict);
+}
+
+
 // Logs a coverage summary line. Called at FG transition edges and shutdown so
 // the scripted transition matrix can gate on "no uncovered streak > 1 present".
 
@@ -375,7 +422,9 @@ HookLogImportant(
 }
 
 
-void NoteDX12OverlayRendered(DX12OverlayRenderRoute route) {
+void NoteDX12OverlayRendered(DX12OverlayRenderRoute route, bool frameAttributed) {
+static std::atomic<bool> s_lastDrawFrameAttributed{false};
+const bool previousFrameAttributed = s_lastDrawFrameAttributed.exchange(frameAttributed, std::memory_order_acq_rel);
 const uint64_t drawsBefore = dx12_hook_g_OverlayCoverageDrawCount.fetch_add(1, std::memory_order_acq_rel);
 s_overlayRouteMaskSinceAccount.fetch_or(1u << (static_cast<uint32_t>(route) & 31u), std::memory_order_acq_rel);
 const uint32_t previousRoute =
@@ -387,8 +436,11 @@ dx12_hook_g_LastDX12OverlayRenderTickMs.store(ce::hook_clock::TickCount64(), std
 // overlay TWICE on screen (e.g. the FFX UI-composite prework and PostSL backbuffer rendering were both
 // live for ~3.5s during the GTA FSR->DLSS pre-apply window, session 20260702_092933). Diagnostic only —
 // makes route-arbitration overlaps attributable from one run; visible flicker/dimming correlates here.
+// Two frame-attributed draws are judged by their frames' outputs instead: AMD presents a frame's outputs while
+// the game's prework already draws the next frame (FG flow test FlowFSR, FSR disable edge).
 const uint64_t lastAccountedDraws = dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
-if (drawsBefore > lastAccountedDraws && previousRoute != static_cast<uint32_t>(route)) {
+if (drawsBefore > lastAccountedDraws && previousRoute != static_cast<uint32_t>(route) &&
+    !(frameAttributed && previousFrameAttributed)) {
     const uint64_t n = dx12_hook_g_OverlayDoubleDrawCount.fetch_add(1, std::memory_order_acq_rel);
     if (n < 20 || (n % 300) == 0) {
         HookLogImportant(

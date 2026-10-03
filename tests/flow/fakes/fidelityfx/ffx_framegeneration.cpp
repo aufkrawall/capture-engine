@@ -1,18 +1,21 @@
 // Fake amd_fidelityfx_framegeneration_dx12.dll: the FidelityFX API frame generation provider as CE sees it
 // (CE treats the module as an official AMD runtime by its name). ffxCreateContext(FOR_HWND) creates the real
 // swapchain from this module on a present queue of its own and hands the game a proxy with replacement back
-// buffers; a presenter thread of the proxy composes and presents every game frame - with frame generation
-// enabled first a generated frame (the game's frameGenerationCallback dispatches into this module) and then
-// the real one. Composition goes through the game's presentCallback when one is configured, otherwise the
-// provider copies itself (CE's "no-callback" FSR routes); a registered UI resource is passed to the callback
-// but not blended by the provider (scenarios judge CE's own coverage ledger, not pixels). The game thread
-// waits for each present batch (lockstep), so a scenario stays deterministic; real FFX queues instead.
+// buffers; with frame generation enabled a presenter thread of the proxy composes and presents each game frame's
+// outputs - first a generated frame (the game's frameGenerationCallback dispatches into this module, on the game
+// thread inside Present) and then the real one - while the game already runs its next frame (the pipelining and
+// its deterministic stand-in for AMD's pacing: FrameGenerationProxySwapChain). Composition goes through the
+// game's presentCallback when one is configured, otherwise the provider copies itself (CE's "no-callback" FSR
+// routes); a registered UI resource is passed to the callback but not blended by the provider (scenarios judge
+// CE's own coverage ledger, not pixels; each output's game frame goes to CE's flow entry, which checks the frame
+// CE attributed it to).
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -67,6 +70,14 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
     list->ResourceBarrier(1, &barrier);
 }
 
+// The game's Present follows AMD's FrameInterpolationSwapChainDX12::Present (FidelityFX SDK 1.1.4): it waits until
+// every output of the earlier frames is composed, dispatches frame generation through the game's callback onto an
+// interpolation queue of its own (with frame generation off: composes and presents on the game thread), schedules
+// the frame and returns. The presenter thread composes and presents the frame's outputs, generated then real.
+// AMD paces them in wall-clock time; here each waits for the game's next step instead, so every run interleaves
+// the same way: the generated output is composed before the game's Present returns and shown once the game's next
+// Present has begun (after CE's proxy prework for that frame), the real output is composed then and shown once that
+// Present has scheduled its frame.
 class FrameGenerationProxySwapChain final : public ForwardingSwapChain {
 public:
     FrameGenerationProxySwapChain(IDXGISwapChain4* real, ID3D12CommandQueue* presentQueue,
@@ -77,6 +88,13 @@ public:
         device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
         list_->Close();
+        D3D12_COMMAND_QUEUE_DESC queueDesc{};
+        device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&interpolationQueue_));
+        device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&interpolationAllocator_));
+        device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, interpolationAllocator_.Get(), nullptr,
+                                   IID_PPV_ARGS(&interpolationList_));
+        interpolationList_->Close();
+        device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&interpolationFence_));
         device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
@@ -91,23 +109,33 @@ public:
         Log(kModule, "proxy swapchain %p destroyed (real %p)", this, real_);
     }
 
+    // Presents every scheduled output, then ends the presenter thread.
     void StopPresenter() {
         {
-            std::lock_guard<std::mutex> lock(jobMutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             if (stop_)
                 return;
             stop_ = true;
         }
-        jobReady_.notify_all();
+        cv_.notify_all();
         presenter_.join();
         WaitForQueue(presentQueue_.Get());
     }
 
+    // AMD's waitForPresents (before ResizeBuffers): every scheduled output presented.
+    void WaitForPresents() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ++flushes_;
+        cv_.notify_all();
+        cv_.wait(lock, [this] { return presentedOutputs_ == scheduledOutputs_ || stop_; });
+        --flushes_;
+    }
+
     HRESULT STDMETHODCALLTYPE Present(UINT syncInterval, UINT flags) override {
-        return PresentThroughPresenter(syncInterval, flags);
+        return PresentFrame(syncInterval, flags);
     }
     HRESULT STDMETHODCALLTYPE Present1(UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS*) override {
-        return PresentThroughPresenter(syncInterval, flags);
+        return PresentFrame(syncInterval, flags);
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT index, REFIID riid, void** surface) override {
         if (index >= proxyBuffers_.size())
@@ -129,6 +157,7 @@ public:
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT count, UINT width, UINT height, DXGI_FORMAT format,
                                             UINT flags) override {
+        WaitForPresents();
         WaitForQueue(presentQueue_.Get());
         proxyBuffers_.clear();
         realBuffers_.clear();
@@ -165,6 +194,17 @@ public:
     ID3D12Device* Device() const { return device_.Get(); }
 
 private:
+    struct ScheduledFrame {
+        FrameGenerationConfig config;
+        ID3D12Resource* rendered = nullptr;
+        uint64_t frame = 0;
+        UINT64 interpolationValue = 0;
+        UINT syncInterval = 0;
+        UINT flags = 0;
+        uint64_t presentsEnteredAtSchedule = 0;
+        uint64_t scheduledFramesAtSchedule = 0;
+    };
+
     void CreateBuffers() {
         DXGI_SWAP_CHAIN_DESC1 desc{};
         real_->GetDesc1(&desc);
@@ -196,83 +236,116 @@ private:
         proxyIndex_ = 0;
     }
 
-    HRESULT PresentThroughPresenter(UINT syncInterval, UINT flags) {
-        // The game's frame must be complete on its queue before the presenter reads it.
-        WaitForQueue(gameQueue_.Get());
-        std::unique_lock<std::mutex> lock(jobMutex_);
-        jobSync_ = syncInterval;
-        jobFlags_ = flags;
-        hasJob_ = true;
-        jobReady_.notify_all();
-        jobDone_.wait(lock, [this] { return !hasJob_; });
-        return jobResult_;
-    }
-
-    void PresenterLoop() {
-        for (;;) {
-            UINT sync = 0;
-            UINT flags = 0;
-            {
-                std::unique_lock<std::mutex> lock(jobMutex_);
-                jobReady_.wait(lock, [this] { return hasJob_ || stop_; });
-                if (stop_)
-                    return;
-                sync = jobSync_;
-                flags = jobFlags_;
-            }
-            const HRESULT hr = PresentBatch(sync, flags);
-            {
-                std::lock_guard<std::mutex> lock(jobMutex_);
-                jobResult_ = hr;
-                hasJob_ = false;
-            }
-            jobDone_.notify_all();
-        }
-    }
-
-    HRESULT PresentBatch(UINT syncInterval, UINT flags) {
+    HRESULT PresentFrame(UINT syncInterval, UINT flags) {
         FrameGenerationConfig config;
         {
             std::lock_guard<std::mutex> lock(g_configMutex);
             config = g_config;
         }
-        ID3D12Resource* rendered = proxyBuffers_[proxyIndex_].Get();
-        HRESULT result = S_OK;
-        if (config.enabled && config.frameGenerationCallback) {
-            BeginList();
-            Transition(list_.Get(), rendered, D3D12_RESOURCE_STATE_PRESENT,
-                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            ffxDispatchDescFrameGeneration generation{};
-            generation.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
-            generation.commandList = list_.Get();
-            generation.presentColor = ffxApiGetResourceDX12(rendered, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-            generation.outputs[0] = ffxApiGetResourceDX12(interpolated_.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-            generation.numGeneratedFrames = 1;
-            generation.frameID = frameId_;
-            config.frameGenerationCallback(&generation, config.frameGenerationCallbackUserContext);
-            Transition(list_.Get(), rendered, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                       D3D12_RESOURCE_STATE_PRESENT);
-            SubmitList();
-            const HRESULT hr = ComposeAndPresent(config, interpolated_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                 FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, true, 0, flags);
-            if (FAILED(hr))
-                result = hr;
+        const uint64_t frame = ++framesPresented_;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            ++presentsEntered_;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return composedOutputs_ == scheduledOutputs_; });
         }
-        if (config.enabled && config.frameGenerationCallback)
-            AdvanceClock(FrameIntervalMicroseconds() / 2);
-        const HRESULT hr = ComposeAndPresent(config, rendered, D3D12_RESOURCE_STATE_PRESENT,
-                                             FFX_API_RESOURCE_STATE_COMPUTE_READ, false, syncInterval, flags);
-        if (FAILED(hr))
-            result = hr;
+        // The game's frame must be complete on its queue before the runtime reads it.
+        WaitForQueue(gameQueue_.Get());
+        ID3D12Resource* rendered = proxyBuffers_[proxyIndex_].Get();
         proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
-        ++frameId_;
-        return result;
+        if (!config.enabled || !config.frameGenerationCallback) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                ++scheduledFrames_;
+                cv_.notify_all();
+                cv_.wait(lock, [this] { return presentedOutputs_ == scheduledOutputs_; });
+            }
+            ComposeOutput(config, rendered, D3D12_RESOURCE_STATE_PRESENT, FFX_API_RESOURCE_STATE_COMPUTE_READ, false,
+                          frame);
+            return PresentOutput(syncInterval, flags, frame, /*scheduled=*/false);
+        }
+        ScheduledFrame scheduled;
+        scheduled.config = config;
+        scheduled.rendered = rendered;
+        scheduled.frame = frame;
+        scheduled.interpolationValue = DispatchGeneration(config, rendered, frame);
+        scheduled.syncInterval = syncInterval;
+        scheduled.flags = flags;
+        std::unique_lock<std::mutex> lock(mutex_);
+        scheduled.presentsEnteredAtSchedule = presentsEntered_;
+        scheduled.scheduledFramesAtSchedule = ++scheduledFrames_;
+        scheduledOutputs_ += 2;
+        jobs_.push_back(scheduled);
+        cv_.notify_all();
+        cv_.wait(lock, [this, frame] { return startedFrame_ >= frame || stop_; });
+        return S_OK;
+    }
+
+    // On the game thread, into the interpolation queue; the presenter's queue waits for it on the GPU.
+    UINT64 DispatchGeneration(const FrameGenerationConfig& config, ID3D12Resource* rendered, uint64_t frame) {
+        interpolationAllocator_->Reset();
+        interpolationList_->Reset(interpolationAllocator_.Get(), nullptr);
+        Transition(interpolationList_.Get(), rendered, D3D12_RESOURCE_STATE_PRESENT,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        ffxDispatchDescFrameGeneration generation{};
+        generation.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION;
+        generation.commandList = interpolationList_.Get();
+        generation.presentColor = ffxApiGetResourceDX12(rendered, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        generation.outputs[0] = ffxApiGetResourceDX12(interpolated_.Get(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+        generation.numGeneratedFrames = 1;
+        generation.frameID = frame;
+        config.frameGenerationCallback(&generation, config.frameGenerationCallbackUserContext);
+        Transition(interpolationList_.Get(), rendered, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_PRESENT);
+        interpolationList_->Close();
+        ID3D12CommandList* lists[] = {interpolationList_.Get()};
+        interpolationQueue_->ExecuteCommandLists(1, lists);
+        interpolationQueue_->Signal(interpolationFence_.Get(), ++interpolationValue_);
+        return interpolationValue_;
+    }
+
+    void PresenterLoop() {
+        for (;;) {
+            ScheduledFrame scheduled;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return !jobs_.empty() || stop_; });
+                if (jobs_.empty())
+                    return;
+                scheduled = jobs_.front();
+                jobs_.pop_front();
+            }
+            presentQueue_->Wait(interpolationFence_.Get(), scheduled.interpolationValue);
+            ComposeOutput(scheduled.config, interpolated_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                          FFX_API_RESOURCE_STATE_UNORDERED_ACCESS, true, scheduled.frame);
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                ++composedOutputs_;
+                startedFrame_ = scheduled.frame;
+                cv_.notify_all();
+                cv_.wait(lock, [this, &scheduled] {
+                    return presentsEntered_ > scheduled.presentsEnteredAtSchedule || flushes_ > 0 || stop_;
+                });
+            }
+            PresentOutput(0, scheduled.flags, scheduled.frame, true);
+            AdvanceClock(FrameIntervalMicroseconds() / 2);
+            ComposeOutput(scheduled.config, scheduled.rendered, D3D12_RESOURCE_STATE_PRESENT,
+                          FFX_API_RESOURCE_STATE_COMPUTE_READ, false, scheduled.frame);
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                ++composedOutputs_;
+                cv_.notify_all();
+                cv_.wait(lock, [this, &scheduled] {
+                    return scheduledFrames_ > scheduled.scheduledFramesAtSchedule || flushes_ > 0 || stop_;
+                });
+            }
+            PresentOutput(scheduled.syncInterval, scheduled.flags, scheduled.frame, true);
+        }
     }
 
     // `source` rests in `restingState`; the present callback sees it in `declaredState`.
-    HRESULT ComposeAndPresent(const FrameGenerationConfig& config, ID3D12Resource* source,
-                              D3D12_RESOURCE_STATES restingState, uint32_t declaredState, bool generated,
-                              UINT syncInterval, UINT flags) {
+    void ComposeOutput(const FrameGenerationConfig& config, ID3D12Resource* source, D3D12_RESOURCE_STATES restingState,
+                       uint32_t declaredState, bool generated, uint64_t frame) {
         const UINT realIndex = real_->GetCurrentBackBufferIndex();
         ID3D12Resource* output = realBuffers_[realIndex].Get();
         const D3D12_RESOURCE_STATES declared = declaredState == FFX_API_RESOURCE_STATE_UNORDERED_ACCESS
@@ -289,7 +362,7 @@ private:
             present.currentUI = config.ui;
             present.outputSwapChainBuffer = ffxApiGetResourceDX12(output, FFX_API_RESOURCE_STATE_PRESENT);
             present.isGeneratedFrame = generated;
-            present.frameID = frameId_;
+            present.frameID = frame;
             config.presentCallback(&present, config.presentCallbackUserContext);
         } else {
             Transition(list_.Get(), source, declared, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -300,8 +373,20 @@ private:
         }
         Transition(list_.Get(), source, declared, restingState);
         SubmitList();
+    }
+
+    // `scheduled`: an output of the presenter thread (a passthrough frame presents on the game thread).
+    HRESULT PresentOutput(UINT syncInterval, UINT flags, uint64_t frame, bool scheduled) {
+        NoteRuntimeOutputFrame(this, frame);
         const HRESULT hr = real_->Present(syncInterval, flags);
         CountPhysicalPresent();
+        if (!scheduled)
+            return hr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++presentedOutputs_;
+        }
+        cv_.notify_all();
         return hr;
     }
 
@@ -331,6 +416,11 @@ private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12CommandAllocator> allocator_;
     ComPtr<ID3D12GraphicsCommandList> list_;
+    ComPtr<ID3D12CommandQueue> interpolationQueue_;
+    ComPtr<ID3D12CommandAllocator> interpolationAllocator_;
+    ComPtr<ID3D12GraphicsCommandList> interpolationList_;
+    ComPtr<ID3D12Fence> interpolationFence_;
+    UINT64 interpolationValue_ = 0;
     ComPtr<ID3D12Fence> fence_;
     std::mutex fenceMutex_;
     HANDLE fenceEvent_ = nullptr;
@@ -340,17 +430,20 @@ private:
     ComPtr<ID3D12Resource> interpolated_;
     UINT proxyBufferCount_;
     UINT proxyIndex_ = 0;
-    uint64_t frameId_ = 1;
+    uint64_t framesPresented_ = 0;  // the game thread's
 
     std::thread presenter_;
-    std::mutex jobMutex_;
-    std::condition_variable jobReady_;
-    std::condition_variable jobDone_;
-    UINT jobSync_ = 0;
-    UINT jobFlags_ = 0;
-    bool hasJob_ = false;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<ScheduledFrame> jobs_;
+    uint64_t presentsEntered_ = 0;
+    uint64_t scheduledFrames_ = 0;
+    uint64_t scheduledOutputs_ = 0;
+    uint64_t composedOutputs_ = 0;
+    uint64_t presentedOutputs_ = 0;
+    uint64_t startedFrame_ = 0;
+    int flushes_ = 0;
     bool stop_ = false;
-    HRESULT jobResult_ = S_OK;
 };
 
 struct SwapchainContext final : Context {

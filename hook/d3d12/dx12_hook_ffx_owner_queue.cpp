@@ -422,7 +422,8 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
     ownerQueue.queue->Release();
 
     if (rendered) {
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+        // Drawn into this frame's proxy backbuffer: judged by the frame's outputs (dx12_hook_ffx_topmost_batch.cpp).
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback, /*frameAttributed=*/true);
     }
     return rendered;
 }

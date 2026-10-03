@@ -9,6 +9,7 @@
 #include "hook/d3d12/dx12_overlay_policy/overlay_submission.h"
 #include "hook/d3d12/dx12_overlay_policy/ffx_routing.h"
 #include "hook/d3d12/dx12_overlay_policy/ffx_topmost_batch.h"
+#include "hook/d3d12/dx12_overlay_policy/ffx_output_frames.h"
 #include "hook/d3d12/dx12_overlay_policy/fg_metrics_and_transitions.h"
 #include "hook/d3d12/dx12_overlay_policy/streamline_ownership.h"
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"

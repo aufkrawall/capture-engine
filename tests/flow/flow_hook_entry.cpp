@@ -13,6 +13,8 @@
 #include "hook/wrappers/wrapper_hooks.h"
 #include "tests/flow/flow_api.h"
 
+#include <mutex>
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         // Before anything reads the time: CE runs on the game's frame clock from its first reading.
@@ -87,6 +89,46 @@ extern "C" __declspec(dllexport) void CEFlow_SetForegroundWindow(HWND window) {
     SetIsolatedHostForegroundWindow(window);
 }
 
+namespace {
+
+// The game frame of each frame generation runtime output against the frame CE attributed it to: one constant
+// offset per presenter.
+struct OutputFrameCheck {
+    std::mutex mutex;
+    const void* presenter = nullptr;
+    bool haveOffset = false;
+    int64_t offset = 0;
+    uint64_t checks = 0;
+    uint64_t mismatches = 0;
+} g_OutputFrames;
+
+}  // namespace
+
+extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* presenter, uint64_t frame) {
+    DX12FFXOutputAttribution output;
+    if (!DX12_PeekFFXOutputAttribution(&output))
+        return;
+    std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
+    if (presenter != g_OutputFrames.presenter) {
+        g_OutputFrames.presenter = presenter;
+        g_OutputFrames.haveOffset = false;
+    }
+    const int64_t offset = static_cast<int64_t>(output.frame) - static_cast<int64_t>(frame);
+    ++g_OutputFrames.checks;
+    if (!g_OutputFrames.haveOffset) {
+        g_OutputFrames.haveOffset = true;
+        g_OutputFrames.offset = offset;
+    } else if (offset != g_OutputFrames.offset) {
+        ++g_OutputFrames.mismatches;
+        HookLogImportant("CEFlow: runtime output of game frame %llu attributed to CE frame %llu (offset %lld, "
+                         "earlier outputs %lld; owner=%s topmostDrawn=%d)",
+                         static_cast<unsigned long long>(frame), static_cast<unsigned long long>(output.frame),
+                         static_cast<long long>(offset), static_cast<long long>(g_OutputFrames.offset),
+                         ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(output.record.owner),
+                         output.topmostDrawn ? 1 : 0);
+    }
+}
+
 extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCoverage* out) {
     const DX12OverlayCoverageSnapshot snapshot = GetOverlayCoverageSnapshot();
     out->presents = snapshot.totalPresents;
@@ -94,6 +136,9 @@ extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCov
     out->currentUncoveredStreak = snapshot.currentStreak;
     out->longestUncoveredStreak = snapshot.longestStreak;
     out->doubleDraws = snapshot.doubleDraws;
+    std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
+    out->outputFrameChecks = g_OutputFrames.checks;
+    out->outputFrameMismatches = g_OutputFrames.mismatches;
 }
 
 extern "C" __declspec(dllexport) void CEFlow_GetPublishedFG(CEFlowPublishedFG* out) {

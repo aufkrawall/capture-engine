@@ -80,9 +80,32 @@ bool DX12_IsFFXProxyPresentHookInstalled() {
 }
 
 void DX12_AccountFFXRuntimeOutputForOverlayCoverage(IDXGISwapChain* realSwapChain, bool overlayRouteLive) {
-    // AMD composes the one UI resource the prework composited onto every output of that frame, so the first
-    // output judged after a prework stands on its draw and the frame's later outputs inherit it; a frame whose
-    // composite failed is uncovered from its first output on.
+    // An output attributed to the frame it shows is judged by that frame's owner and its own topmost draw. Judging it
+    // by the latest prework instead credited AMD's pipelined outputs to the wrong frame: the output after a topmost
+    // grant counted as uncovered although its frame carried the UI baseline (session 20261003_120641).
+    DX12FFXOutputAttribution output;
+    if (overlayRouteLive && DX12_TakeFFXOutputAttribution(&output) && output.record.frameExact) {
+        const auto verdict =
+            ce::dx12_overlay_policy::JudgeFrameExactFFXOutput(output.record.owner, output.topmostDrawn);
+        if (!verdict.covered || verdict.doubleDrawn) {
+            static std::atomic<int> s_frameVerdictLogCount{0};
+            const int logCount = s_frameVerdictLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "[OVERLAY COVERAGE] AMD FG output of frame %llu %s (owner=%s topmostDrawn=%d sc=%p log=%d)",
+                    static_cast<unsigned long long>(output.frame),
+                    verdict.doubleDrawn ? "drawn TWICE" : "has NO overlay owner",
+                    ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(output.record.owner),
+                    output.topmostDrawn ? 1 : 0, realSwapChain, logCount + 1);
+            }
+        }
+        AccountPresentForOverlayCoverageVerdict(verdict.covered, verdict.doubleDrawn, "FFXRuntimeOutputFrame",
+                                                realSwapChain);
+        return;
+    }
+    // Frame-agnostic: AMD composes the one UI resource the prework composited onto every output of that frame, so
+    // the first output judged after a prework stands on its draw and the frame's later outputs inherit it; a frame
+    // whose composite failed is uncovered from its first output on.
     static std::atomic<uint64_t> s_lastJudgedPrework{0};
     const uint64_t prework = g_FFXProxyPreworkCount.load(std::memory_order_acquire);
     const bool laterOutputOfJudgedFrame =
@@ -112,7 +135,7 @@ bool DX12_IsFFXProxyPresentHookDriving() {
     return ageMs < 1000.0;
 }
 
-static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* entryPoint) {
+static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* entryPoint, uint64_t frame) {
     const bool nativeNoCallbackCompositionActive = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
     const bool protectedStartupBackbufferRoute =
         ce::dx12_overlay_policy::ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(
@@ -232,11 +255,20 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
     g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0, std::memory_order_release);
+    // Who draws this frame's outputs. The proxy backbuffer and a double-buffered UI resource (AMD copies it in this
+    // frame's Present) carry the overlay with the frame; a UI resource AMD reads live does not.
+    using ce::dx12_overlay_policy::FFXFrameOverlayOwner;
+    ce::dx12_overlay_policy::FFXFrameOwnerRecord owner;
+    owner.owner = topmostBatchOwnsOverlay ? FFXFrameOverlayOwner::kTopmost
+                                          : (composited ? FFXFrameOverlayOwner::kBaseline : FFXFrameOverlayOwner::kNone);
+    owner.frameExact = proxyBackbufferRoute || (g_CachedFFXUiFlags.load(std::memory_order_acquire) &
+                                                ce::ffx_api::kUiCompositionEnableInternalDoubleBuffering) != 0;
     if (composited && !proxyBackbufferRoute && !topmostBatchOwnsOverlay) {
         g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
         g_FFXUiCompositeLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
-        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback, owner.frameExact);
     }
+    DX12_RecordFFXFrameOverlayOwner(frame, owner);
 
     static std::atomic<int> s_preworkLog{0};
     const int n = s_preworkLog.fetch_add(1, std::memory_order_relaxed);
@@ -317,17 +349,24 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
+    const uint64_t frame = outermost ? DX12_BeginFFXProxyFrame() : 0;
     const int64_t enterUs = PerfLogger::GetQpcUs();
     if (outermost) {
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
-        DX12_RunFFXProxyPrePresentWork(self, "Present");
+        DX12_RunFFXProxyPrePresentWork(self, "Present", frame);
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();
+    if (frame) {
+        DX12_BeginFFXProxyForward(frame);
+    }
     trace.Forward(SyncInterval, Flags);
     const HRESULT hr = original(self, SyncInterval, Flags);
+    if (frame) {
+        DX12_EndFFXProxyForward(frame);
+    }
     trace.Finish(static_cast<uint32_t>(hr));
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;
@@ -348,17 +387,24 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
     }
     const bool outermost = t_FFXProxyPresentDetourDepth++ == 0;
     auto depthGuard = ce::make_scope_guard([&]() { --t_FFXProxyPresentDetourDepth; });
+    const uint64_t frame = outermost ? DX12_BeginFFXProxyFrame() : 0;
     const int64_t enterUs = PerfLogger::GetQpcUs();
     if (outermost) {
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
-        DX12_RunFFXProxyPrePresentWork(self, "Present1");
+        DX12_RunFFXProxyPrePresentWork(self, "Present1", frame);
     }
     const int64_t forwardUs = PerfLogger::GetQpcUs();
+    if (frame) {
+        DX12_BeginFFXProxyForward(frame);
+    }
     trace.Forward(SyncInterval, Flags);
     const HRESULT hr = original(self, SyncInterval, Flags, pParams);
+    if (frame) {
+        DX12_EndFFXProxyForward(frame);
+    }
     trace.Finish(static_cast<uint32_t>(hr));
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;

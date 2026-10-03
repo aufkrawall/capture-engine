@@ -342,8 +342,11 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 // ANY runtime-owned state now, so reaching the backbuffer branch here would be a logic regression.
                 const bool amdActivelyInterpolatingOnFGQueue =
                     runtimeOwnsSwapchain && !fsrFGDisabledSuspendPending && !liveSwapchainQueueIsOriginalGameQueue;
+                // A frame the route owns keeps it while AMD composes its outputs, also after the game's configure
+                // for its next frame suspended FG (that frame's real output is composed after it).
                 const bool topmostSameBatchEligible =
-                    !steamOnlyTest && amdActivelyInterpolatingOnFGQueue &&
+                    !steamOnlyTest &&
+                    (amdActivelyInterpolatingOnFGQueue || DX12_IsFFXComposingFrameOwnedByTopmost()) &&
                     !g_SharedState.deviceRemovedFatal.load(std::memory_order_acquire) && !IsShuttingDown();
                 // This runs after the foreign Present chain has submitted its command lists but before the
                 // system Present when CE is below the chain; when CE is above it, the per-thread trace naturally

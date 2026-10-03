@@ -184,12 +184,14 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
     // This preserves callback delegation and queue ownership if the provider rejects the destroy.
     bool isFGContext = false;
     bool isFGSwapchainContext = false;
+    bool isKnownContext = false;
     bool isVulkanContext = false;
     bool isVulkanFGContext = false;
     {
         std::lock_guard<std::mutex> lock(ffx_hook_g_ContextMapMutex);
         auto it = ffx_hook_g_ContextTypeMap.find(contextHandle);
         if (it != ffx_hook_g_ContextTypeMap.end()) {
+            isKnownContext = true;
             uint32_t effectId = it->second;
             isVulkanContext = ffx_hook_g_VulkanContextSet.find(contextHandle) != ffx_hook_g_VulkanContextSet.end();
             isVulkanFGContext = isVulkanContext && ce::ffx_api::IsFrameGenerationEffectType(effectId);
@@ -218,7 +220,16 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* ffx_hook_context,  const ff
                 ffx_hook_g_PresentCallbackBridgeKeys.erase(contextHandle);
             }
             DX12_ClearFFXPresentCallbackBridge(contextHandle);
-            DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
+            // A known effect context (frame generation, upscaling) presents nothing: AMD keeps presenting what its
+            // swapchain context scheduled, and games destroy the FG context first. Tearing the presentation down
+            // here left the last FSR FG output without the topmost overlay (FG flow test FlowSwitch GTA-style);
+            // the swapchain context's destroy, or the last context's (dx12_hook_ffx.cpp), ends it.
+            if (isFGSwapchainContext || !isKnownContext) {
+                DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
+            } else {
+                HookLog("FFX Hook: effect context %p destroyed; its swapchain's presentation stays registered",
+                        contextHandle);
+            }
             ClearSubstituteUiReRegistrationForContext(contextHandle);
             if (isFGSwapchainContext) {
                 // The protected-startup latch belongs to this swapchain context, not to the process-wide

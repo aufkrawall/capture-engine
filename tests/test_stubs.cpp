@@ -153,6 +153,9 @@ bool DX12_IsNoCallbackFSRTopmostBatchActive() {
     return false;
 }
 void DX12_ClearNoCallbackFSRTopmostBatch(const char*) {}
+bool DX12_IsFFXComposingFrameOwnedByTopmost() {
+    return false;
+}
 bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     return false;
 }

@@ -253,6 +253,27 @@ bool DX12_SetNoCallbackFSRTopmostBatchOwnership(bool ownsOverlay, const char* re
 
 void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
 
+// Frames of AMD's frame generation swapchain (dx12_hook_ffx_topmost_batch.cpp; policy in
+// dx12_overlay_policy/ffx_output_frames.h). The proxy Present detour numbers each game frame and brackets its
+// forward to AMD's Present; the prework records who draws the frame's overlay; each output is attributed to the
+// frame AMD was composing at its final batch.
+uint64_t DX12_BeginFFXProxyFrame();
+void DX12_BeginFFXProxyForward(uint64_t frame);
+void DX12_EndFFXProxyForward(uint64_t frame);
+void DX12_RecordFFXFrameOverlayOwner(uint64_t frame, ce::dx12_overlay_policy::FFXFrameOwnerRecord record);
+// DX12_ClearNoCallbackFSRTopmostBatch once AMD composes a frame after the current ones.
+void DX12_ClearNoCallbackFSRTopmostBatchAfterComposedFrames(const char* reason);
+
+struct DX12FFXOutputAttribution {
+    uint64_t frame = 0;
+    ce::dx12_overlay_policy::FFXFrameOwnerRecord record;
+    bool topmostDrawn = false;
+};
+// The output this thread is composing (its batches so far).
+bool DX12_PeekFFXOutputAttribution(DX12FFXOutputAttribution* out);
+// The output this thread just presented, as DX12_ObserveNoCallbackFSRTopmostPresent left it; consumed once.
+bool DX12_TakeFFXOutputAttribution(DX12FFXOutputAttribution* out);
+
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags, ce::ffx_api::Resource* ceSubstitute, DX12FFXUiOverlayTargetPreparation* preparation);
 
 void DX12_DiscardFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparation);
@@ -441,8 +462,12 @@ DX12OverlayCoverageSnapshot GetOverlayCoverageSnapshot();
 
 void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source,
                                       IDXGISwapChain* pSwapChain = nullptr);
+void AccountPresentForOverlayCoverageVerdict(bool covered, bool doubleDrawn, const char* source,
+                                             IDXGISwapChain* pSwapChain);
 void LogOverlayCoverageSummary(const char* edge);
-void NoteDX12OverlayRendered(DX12OverlayRenderRoute route);
+// `frameAttributed`: drawn for one FG runtime frame whose outputs are judged by that frame (AMD frame generation
+// swapchain); two such draws in one present window are no double draw.
+void NoteDX12OverlayRendered(DX12OverlayRenderRoute route, bool frameAttributed = false);
 void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr);
 void SetPostSLLastWorkingQueue(ID3D12CommandQueue* queue);
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false);

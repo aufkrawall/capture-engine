@@ -321,7 +321,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
 
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided) {
     DX12_ResetBelowForeignChainFSRTopmostSubmitProof("native FSR callback routing changed");
-    DX12_ClearNoCallbackFSRTopmostBatch("native FSR callback routing changed");
+    DX12_ClearNoCallbackFSRTopmostBatchAfterComposedFrames("native FSR callback routing changed");
     const bool previousInternalNoCallbackComposition =
         dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
     const bool runtimeOwnsLivePresentPath = dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath();

@@ -210,6 +210,8 @@ bool DX12_IsNativeFSRFGSuspendedDisablePending();
 // Present and appends CE to that same batch on stable frames. This is generic across Steam/RTSS/ReShade/etc.
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
 bool DX12_IsNoCallbackFSRTopmostBatchActive();
+// Whether AMD is composing a frame whose overlay the final-batch route owns (it stays eligible for that frame).
+bool DX12_IsFFXComposingFrameOwnedByTopmost();
 void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
 // [OVERLAY COVERAGE] Judges a no-callback FSR FG output that CE's overlay reaches without ProcessFrame (AMD's
 // presenter-thread Present while the overlay rides the UI resource); `overlayRouteLive` false judges it alone.

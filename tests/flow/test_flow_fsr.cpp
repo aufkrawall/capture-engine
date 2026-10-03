@@ -29,6 +29,9 @@ void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiRes
         ExpectPublished(game, 0, 1, "FSR FG off");
     }
     ExpectEveryPresentCoveredOnce(game);
+    // Without a present callback CE attributes each output to its game frame; the fake reports the true one.
+    if (!presentCallback)
+        EXPECT_GT(game.Coverage().outputFrameChecks, 0u) << "logs: " << game.LogDirectory();
 }
 
 TEST(FlowFSR, TogglesWithThePresentCallbackKeepTheOverlay) {

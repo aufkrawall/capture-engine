@@ -117,22 +117,35 @@ after every no-callback FSR enable in `dx12_fg_switch_test` (gates `unknown`/`ze
 retires the UI-resource baseline after the topmost route's marker-only proof, but AMD's pipelined
 presenter had already submitted that output's final batch without a draw - break-before-make by one
 output. The lockstep fakes cannot show it (each frame's outputs are presented inside the game's Present).
-Also fixed then: 600 false `Physical Present left the coverage ledger` reports (CE's swapchain wrapper
+Fixed after the run (see "FSR handover by AMD frame" below). Also fixed then: 600 false `Physical Present left the coverage ledger` reports (CE's swapchain wrapper
 accounted outside a scope; its Presents now own the scope) and GTA's UI-tag log flood (3/4/6-tag calls
 alternating on one stream, 47% of hook_debug.log; the call shape is now part of the stream).
 
-Next step agreed with the user (2026-10-03): close the FSR-enable handover output, then resume the refactor.
-Plan: (1) give the FFX fake a pipelined presenter (outputs of frame N presented while the game thread is
-already in frame N+1's proxy Present / prework) so a no-callback FSR enable reproduces the uncovered output;
-(2) make the handover make-before-break: the UI baseline (prework in `dx12_hook_ffx_proxy_present.cpp`,
-`DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership` -> clearOnly composite -> `DX12_SetNoCallbackFSRTopmostBatchOwnership`)
-may retire only once a topmost draw (`DX12_TryAppendNoCallbackFSRTopmostOverlayToECL` in
-`dx12_hook_ffx_topmost_batch.cpp`, `draw=1`) covers the output that follows, without double blending; (3) the
-user then runs dx12_fg_switch_test toggling no-callback FSR. Evidence: 20261003_120641 p164 12:07:04.937
-(prework #4 `ownership GRANTED`, then frame #4 Present with no draw). A parallel session fixes CE's resolved
-ExecuteCommandLists on wrapped queues (`dx12_hook_ecl*.cpp`, debug layer in the flow game) - avoid those files.
+FSR handover by AMD frame (2026-10-03, hardware run pending). AMD's proxy `Present(N)` first waits until every
+output of the earlier frames is composed (FidelityFX SDK 1.1.4 `FrameInterpolationSwapChainDX12::Present`:
+`waitForFenceValue(compositionFenceCPU, previousFramesSentForPresentation)`), then copies the double-buffered
+UI resource, dispatches N's interpolation on the game thread and schedules N; the presenter composes N's
+generated then real output (composition = the final ECL batch CE appends to), pacing between them. CE's
+prework N runs before that wait, so frame N-1 can still be composing: in 120641 p164 the game thread sat
+46 ms in `Present(C)` waiting for frame B's compositions (CE's presenter-thread backend init), prework #4
+granted, and frame C's two outputs (#5, #6, UI baseline from prework #3) got topmost draws too - a 2-output
+double blend; the reported "uncovered" #4 was frame B's (covered) output judged after prework #4. Fix:
+the proxy detour numbers frames and brackets AMD's Present; AMD's first submission inside it (or its
+return) advances the "composing frame"; each output takes the frame at its final batch; the prework
+records the frame's owner (UI baseline / topmost / none; exact for double-buffered UI and proxy-backbuffer
+routes); the topmost route draws on exactly the topmost-owned frames and the ledger judges FFX outputs by
+frame (`hook/d3d12/dx12_overlay_policy/ffx_output_frames.h`, `dx12_hook_ffx_topmost_batch.cpp`). The new
+fake (AMD's structure, deterministic holds instead of pacing) also found two break-before-make edges:
+the game's `ffxConfigure(enabled=0)` for frame N+1 cleared the route before AMD composed frame N's real
+output (routing changes now retire it when AMD composes the first frame after them; the route stays
+eligible while the composing frame is topmost-owned), and destroying the FG *effect* context (before the
+swapchain context) ran the swapchain teardown boundary while AMD still presented (now only the swapchain
+context or an unknown one ends it). Flow check: the fake reports each output's true frame
+(`CEFlow_NoteRuntimeOutputFrame`), CE's attribution must keep one offset. Open: a UI resource registered
+without double buffering stays frame-agnostic (AMD reads it live); a callback <-> no-callback switch with
+FG on still flips `NativeFSRInternalNoCallbackComposition` at once.
 
-Follow-ups: the FSR-enable handover output above; a fake NGX runtime (end-to-end reproduction of the NGX
+Follow-ups: a fake NGX runtime (end-to-end reproduction of the NGX
 reactivation); a third-party overlay
 fake (`gameoverlayrenderer64.dll` hooking Present above CE; the user's Steam / Rockstar / EOS runs showed
 only the handled re-hook paths); CE's resolved-ECL call on wrapped queues (debug layer, capture tools);

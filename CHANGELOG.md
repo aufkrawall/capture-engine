@@ -16,6 +16,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay drawn twice or briefly missing when turning FSR frame generation on or off (games without a present callback):** AMD still shows the previous frame while the game already prepares the next one, and Capture Engine switched its overlay route by the next frame. At every FSR enable the previous frame's outputs got the overlay twice, at every disable or swapchain switch the last frame's final output got none. The route now switches with the frame AMD actually shows.
+
 - **Overlay vanished for seconds after turning DLSS frame generation back on:** after an FSR frame generation phase, switching DLSS-G off and on again could hide the overlay for 6.5 s, and while it was off the overlay still showed "DLSS 2x". DLSS-G's last generated frame after the switch-off no longer counts as frame generation, and the overlay's transition pause always ends completely.
 
 - **Overlay hidden for about half a second after leaving FSR frame generation:** switching from FSR frame generation (already off) to a DLSS or native swapchain no longer pauses the overlay; it is redrawn on the new swapchain at once.

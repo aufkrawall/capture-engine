@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-03 - FSR overlay handover follows AMD's frames (run pending)
+
+- The 120641 "uncovered output at FSR enable" was a misattributed output plus a real 2-output double blend:
+  AMD's Present(N) waits for frame N-1's compositions after CE's prework N. CE now attributes outputs to
+  frames (refactor-roadmap.md "FSR handover by AMD frame"); the AMD-faithful fake also exposed a missing
+  last output at FSR disable and at FG-context destroy, both fixed. Hardware check: `dx12_fg_switch_test`
+  toggling no-callback FSR - expect no `INTERRUPTED` and no `[OVERLAY DOUBLE-DRAW]` at the edges, and
+  `topmost withheld (marker only) on an output of AMD frame` once per enable.
+
 ### 2026-10-03 - FG switching fixes validated on hardware (session 20261003_120641, 0.1.6955)
 
 - Test app, Talos, GTA switching runs: post-FSR DLSS OFF->ON keeps the overlay (no cooldown skips), status follows

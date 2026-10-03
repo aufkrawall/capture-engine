@@ -351,13 +351,15 @@ TEST(FFXTopmostBatchSourceTest, RoutingEdgesRetainWarmStateAndHotDiagnosticsAreS
     EXPECT_EQ(ffx.find("\"DX12: Cached runtime-owned callback HDR source\""), std::string::npos);
 }
 
-TEST(FFXTopmostBatchSourceTest, CallbackRoutingChangeImmediatelyRetiresBothTopmostRoutes) {
+// The no-callback route retires for the frames after the change; the frames AMD still composes keep it.
+TEST(FFXTopmostBatchSourceTest, CallbackRoutingChangeRetiresBothTopmostRoutes) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
     ASSERT_FALSE(source.empty());
 
     const size_t configured = source.find("void DX12_OnNativeFSRPresentCallbackRoutingConfigured(");
     const size_t appRouteReset = source.find("DX12_ResetBelowForeignChainFSRTopmostSubmitProof(", configured);
-    const size_t noCallbackRouteReset = source.find("DX12_ClearNoCallbackFSRTopmostBatch(", configured);
+    const size_t noCallbackRouteReset =
+        source.find("DX12_ClearNoCallbackFSRTopmostBatchAfterComposedFrames(", configured);
     const size_t stateWrite = source.find("dx12_hook_g_FFXPresentCallbackBridgeExpected.store(", configured);
     ASSERT_NE(configured, std::string::npos);
     ASSERT_NE(appRouteReset, std::string::npos);
