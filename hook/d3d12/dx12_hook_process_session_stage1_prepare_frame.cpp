@@ -3,7 +3,7 @@
 #include "dx12_hook_process_session.h"
 
 
-ProcessFrameFlow FrameProcessSession::Phase1() {
+ProcessFrameFlow FrameProcessSession::PrepareFrame() {
 
     // Diagnostic: when the D3D12 debug layer is enabled (CE_DX12_DEBUG_LAYER), flush
     // its validation messages each frame so the overlay submit's messages (including

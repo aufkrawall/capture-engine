@@ -269,8 +269,8 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   hit `0x887A002B` on submit #1. UE then terminated (CrashReportClient, no CE
   dump). Fix: `ShouldBypassInvisibleWindowCreateSwapchainSideEffects` parks
   the create queue plus capture evidence (`deferred_swapchain_create_ledger.h`,
-  `dx12_hook_deferred_swapchain_create.cpp`); Phase1 promotes it on that
-  swapchain's first visible Present, ahead of Phase2's queue choice, replaying
+  `dx12_hook_deferred_swapchain_create.cpp`); PrepareFrame promotes it on that
+  swapchain's first visible Present, ahead of TrackSwapchainAndSelectQueue's queue choice, replaying
   the create path's protected-FFX check and queue capture (not Present-hook
   refresh, wrapping, or cooldown). A visible create for the same HWND
   supersedes the record; a readable `GetDevice` queue that differs from the

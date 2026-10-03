@@ -611,7 +611,7 @@ ProcessFrameFlow FrameProcessSession::pw5_c3() {
     return ProcessFrameFlow::kContinue;
 }
 
-ProcessFrameFlow FrameProcessSession::Phase6Tail() {
+ProcessFrameFlow FrameProcessSession::PublishPostOverlayCapture() {
 // The overlay-free capture sits inside the overlay draw chain. When that chain
 // did not run (overlay backend not initialized, e.g. on a runtime-owned FSR FG
 // chain, or its draw was skipped) the frame is still recorded here.

@@ -1,6 +1,6 @@
 #include "mediaengine_internal.h"
 
-bool MediaEngine::PullTrackEncodeSourcesC1(AudioPullState& s, int track, size_t srcIdx) {
+bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t srcIdx) {
     auto& effectiveSourceClockDriftLagMs = s.effectiveSourceClockDriftLagMs;
     auto& CHANNELS = s.CHANNELS;
     auto& targetLatencySamples = s.targetLatencySamples;
@@ -142,7 +142,7 @@ bool MediaEngine::PullTrackEncodeSourcesC1(AudioPullState& s, int track, size_t 
                 }
     return true;
 }
-bool MediaEngine::PullTrackEncodeSourcesC2(AudioPullState& s, int /*track*/, size_t srcIdx) {
+bool MediaEngine::MixSourceIntoTrack(AudioPullState& s, int /*track*/, size_t srcIdx) {
     auto& CHANNELS = s.CHANNELS;
     auto& totalFloats = s.totalFloats;
     auto& mixBuffer = s.mixBuffer;

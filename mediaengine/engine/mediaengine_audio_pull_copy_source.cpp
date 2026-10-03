@@ -1,6 +1,6 @@
 #include "mediaengine_internal.h"
 
-bool MediaEngine::PullTrackEncodeSourcesB(AudioPullState& s, int track, size_t srcIdx) {
+bool MediaEngine::CopySourcePostResampleSamples(AudioPullState& s, int track, size_t srcIdx) {
     auto& CHANNELS = s.CHANNELS;
     auto& totalFloats = s.totalFloats;
     auto& activeSources = s.activeSources;

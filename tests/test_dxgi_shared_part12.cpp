@@ -73,7 +73,7 @@ TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIs
     ASSERT_NE(proofArm, std::string::npos);
     EXPECT_LT(proofArm - recoveryQueueArm, static_cast<size_t>(400));
 
-    // Phase1 feeds the proof into the logical-replacement decision so an ABA-equal pointer still counts
+    // PrepareFrame feeds the proof into the logical-replacement decision so an ABA-equal pointer still counts
     // as a new swapchain lifetime.
     const size_t processFrame = text.find("void ProcessFrame(");
     ASSERT_NE(processFrame, std::string::npos);
@@ -83,10 +83,10 @@ TEST(DXGISharedSourceTest, ExactGameSwapchainRecoveryLifetimeProofArmsFeedsAndIs
     ASSERT_NE(replacementDecision, std::string::npos);
     EXPECT_LT(proofLeg, replacementDecision);
 
-    // Phase2 consumes the proof exactly once at the top of the replacement handler, before any
+    // TrackSwapchainAndSelectQueue consumes the proof exactly once at the top of the replacement handler, before any
     // preserve-path evaluation can return without touching the proof (a stale armed proof would
     // otherwise reprocess the replacement on every subsequent ABA-equal Present).
-    const size_t phase2 = text.find("FrameProcessSession::Phase2()");
+    const size_t phase2 = text.find("FrameProcessSession::TrackSwapchainAndSelectQueue()");
     ASSERT_NE(phase2, std::string::npos);
     const size_t consume = text.find("dx12_hook_g_ExactGameSwapchainRecoverySwapchain.compare_exchange_strong(",
                                      phase2);

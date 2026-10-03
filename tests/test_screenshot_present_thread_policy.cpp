@@ -356,12 +356,12 @@ TEST(ScreenshotPresentThreadPolicyTest, SuspendedStreamlineOutputKeepsCaptureOrd
     const std::string submit =
         ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_postsl_render_submit.cpp");
     const std::string phase4 =
-        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_phase4.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_stage4_sync_focus_hold.cpp");
     const std::string process = ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process.cpp");
     const std::string prePresent =
         ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_overlay_present.cpp");
     const std::string phase1 =
-        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_phase1.cpp");
+        ReadSource(std::filesystem::path("hook") / "d3d12" / "dx12_hook_process_session_stage1_prepare_frame.cpp");
     ASSERT_FALSE(capture.empty());
     ASSERT_FALSE(submit.empty());
     ASSERT_FALSE(phase4.empty());
@@ -385,7 +385,7 @@ TEST(ScreenshotPresentThreadPolicyTest, SuspendedStreamlineOutputKeepsCaptureOrd
     EXPECT_NE(phase4.find("WasPostSLPresentedOutputCaptureRouted"), std::string::npos);
     EXPECT_NE(phase4.find("ShouldSkipCaptureForTargetCadence()"), std::string::npos);
     EXPECT_EQ(process.find("ShouldSkipCaptureForTargetCadence()"), std::string::npos)
-        << "base cadence cannot be consumed before Phase1 chooses the suspended PostSL route";
+        << "base cadence cannot be consumed before PrepareFrame chooses the suspended PostSL route";
     EXPECT_NE(submit.find("MarkPostSLOffKeepAlivePrePresentDrawn"), std::string::npos);
 
     constexpr const char* kPresentedCallback =

@@ -93,7 +93,7 @@ TEST(DXGISharedSourceTest, PresentBootstrapPreservesE9AndDetoursFF25ForeignEntri
 TEST(DXGISharedSourceTest, RuntimeWorkerCannotReplaceTrackedSourcePresentThread) {
     namespace fs = std::filesystem;
     const fs::path phase2Source =
-        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp";
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_stage2_swapchain_queue.cpp";
     ASSERT_TRUE(fs::exists(phase2Source));
     const std::string phase2 = ce::test_source::ReadFile(phase2Source);
     ASSERT_FALSE(phase2.empty());

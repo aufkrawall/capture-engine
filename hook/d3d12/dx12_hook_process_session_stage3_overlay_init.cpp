@@ -1,7 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
 
-ProcessFrameFlow FrameProcessSession::Phase3() {
+ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
 {
     static ID3D12CommandQueue* s_initialQueue = nullptr;
     static ID3D12CommandQueue* s_currentFGQueue = nullptr;
@@ -555,7 +555,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         // Skip only the overlay init: capture needs no overlay backend, and a
         // runtime-owned FSR chain can keep the normal overlay uninitialized for
         // its whole life (after DLSS FG -> FSR FG no recording went live,
-        // logs/20260929_142415). Phase4 onwards gates overlay work on
+        // logs/20260929_142415). InitOverlaySyncAndFocusHold onwards gates overlay work on
         // overlayInit/syncInit.
         return ProcessFrameFlow::kSkipOverlayInit;
     }

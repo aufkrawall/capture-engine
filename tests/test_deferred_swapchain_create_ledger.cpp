@@ -189,16 +189,16 @@ TEST(DeferredSwapchainCreateLedgerTest, EveryHiddenWindowCreateBypassParksItsQue
 }
 
 TEST(DeferredSwapchainCreateLedgerTest, TheFirstVisiblePresentPromotesBeforeAQueueIsChosen) {
-    const std::string phase1 = ReadSource("hook/d3d12/dx12_hook_process_session_phase1.cpp");
+    const std::string phase1 = ReadSource("hook/d3d12/dx12_hook_process_session_stage1_prepare_frame.cpp");
     const size_t invisibleSkip = phase1.find("ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(");
     const size_t promote = phase1.find("PromoteParkedCreateSwapchainOnVisiblePresent(pSwapChain)");
     ASSERT_NE(invisibleSkip, std::string::npos);
     ASSERT_NE(promote, std::string::npos);
     EXPECT_LT(invisibleSkip, promote) << "only a Present whose window is visible may promote";
 
-    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_phase2.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp");
     EXPECT_EQ(phase2.find("PromoteParkedCreateSwapchainOnVisiblePresent"), std::string::npos)
-        << "Phase2 chooses the overlay queue; promotion belongs in Phase1, ahead of it";
+        << "TrackSwapchainAndSelectQueue chooses the overlay queue; promotion belongs in PrepareFrame, ahead of it";
 
     const std::string glue = ReadSource("hook/d3d12/dx12_hook_deferred_swapchain_create.cpp");
     const size_t fn = glue.find("void PromoteParkedCreateSwapchainOnVisiblePresent(");

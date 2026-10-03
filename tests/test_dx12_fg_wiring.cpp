@@ -17,7 +17,7 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 }
 
 // Session 20260923_233317 (Talos FSR FG -> DLSS FG): the fresh-handoff exemption escaped the
-// inactive-runtime-owned init defer but the NEXT gate in the same Phase3 block keyed its defer on
+// inactive-runtime-owned init defer but the NEXT gate in the same InitOverlayBackend block keyed its defer on
 // command tracking the handoff had not populated yet (and the SL-off grace it keys on is re-seeded
 // by the same transition's late outer observer), so the overlay still stayed gone. Both gates must
 // accept the same exemption.
@@ -40,7 +40,7 @@ TEST(Dx12FgWiring, FreshHandoffExemptionIsAcceptedByBothInitDeferralGates) {
         /*freshStreamlineHandoffOnSubmittableQueue=*/false));
 }
 
-// Source invariant: the two Phase3 init-deferral gates carry the SAME fresh-handoff exemption, the
+// Source invariant: the two InitOverlayBackend init-deferral gates carry the SAME fresh-handoff exemption, the
 // call site hands both the same variable, and the handoff's "submittable queue" proof is this
 // swapchain's own tracked submit path — the global realECL pointer proves nothing about it and a
 // handoff queue CE has never submitted on must not qualify.
@@ -63,7 +63,7 @@ TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
               std::string::npos)
         << "the queue-settle defer must accept the same fresh-handoff exemption";
 
-    const std::string phase3 = ReadSource("hook/d3d12/dx12_hook_process_session_phase3.cpp");
+    const std::string phase3 = ReadSource("hook/d3d12/dx12_hook_process_session_stage3_overlay_init.cpp");
     ASSERT_FALSE(phase3.empty());
     EXPECT_NE(phase3.find("deferInactiveRuntimeOwnedInit(freshStreamlineHandoffOnSubmittableQueue)"),
               std::string::npos);
@@ -89,7 +89,7 @@ TEST(Dx12FgWiring, BothInitDeferralGatesAcceptTheSameFreshHandoffExemption) {
 // listed at the cooldown and reinit gates but missing from the drain gate, so every such switch ran a
 // blocking WaitForSingleObject(drainEvent, 200) on the Present thread for an overlay state kept live.
 TEST(Dx12FgWiring, OuterSLFGOffKeepLiveExceptionsAreSharedByAllThreeGates) {
-    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_phase5.cpp");
+    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_stage5_fg_transition.cpp");
     ASSERT_FALSE(phase5.empty());
 
     const size_t sharedDef = phase5.find("const bool keepOverlayLiveAcrossOuterOff =");
@@ -279,7 +279,7 @@ TEST(Dx12FgWiring, PresentInterposerPrivateChainWithoutSafeQueueFailsClosed) {
 // Source invariant: the fail-closed guard must run before generic queue routing and skip the draw
 // outright, or the first submit on the private chain's backbuffers from a foreign queue returns.
 TEST(Dx12FgWiring, PresentInterposerFailClosedGuardRunsBeforeGenericQueueRouting) {
-    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_phase2.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp");
     ASSERT_FALSE(phase2.empty());
     const size_t failClosed = phase2.find("ShouldPassThroughPresentInterposerPrivateChainWithoutOverlayDraw(");
     const size_t routing = phase2.find("DecideSwapchainOverlayRouting(");

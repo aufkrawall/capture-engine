@@ -211,7 +211,7 @@ void MediaEngine::PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain) {
             continue;
         if (!PullTrackGapAndBuffer(s, track, srcIndices))
             continue;
-        if (!PullTrackEncodeSourcesA(s, track, srcIndices))
+        if (!PullTrackEncodeSources(s, track, srcIndices))
             continue;
         if (!PullTrackSyncMonitoring(s, track, srcIndices))
             continue;

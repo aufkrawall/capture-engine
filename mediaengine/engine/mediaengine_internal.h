@@ -451,10 +451,10 @@ void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig,
     bool ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimelineUs, bool forceDrain);
     bool PullTrackBootstrap(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);
     bool PullTrackGapAndBuffer(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);
-    bool PullTrackEncodeSourcesA(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);
-    bool PullTrackEncodeSourcesB(AudioPullState& s, int track, size_t srcIdx);
-    bool PullTrackEncodeSourcesC1(AudioPullState& s, int track, size_t srcIdx);
-    bool PullTrackEncodeSourcesC2(AudioPullState& s, int track, size_t srcIdx);
+    bool PullTrackEncodeSources(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);
+    bool CopySourcePostResampleSamples(AudioPullState& s, int track, size_t srcIdx);
+    bool ReportAppAudioConsume(AudioPullState& s, int track, size_t srcIdx);
+    bool MixSourceIntoTrack(AudioPullState& s, int track, size_t srcIdx);
     bool PullTrackSyncMonitoring(AudioPullState& s, int track, const std::vector<size_t>& srcIndices);
     // AudioLoop phase helpers (keep the function a semantic unit).
     bool AudioLoopInit(AudioLoopState& s);

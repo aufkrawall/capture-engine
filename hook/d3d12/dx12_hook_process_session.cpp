@@ -34,32 +34,32 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicat
 
 void FrameProcessSession::Run() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-    flow = Phase1();
+    flow = PrepareFrame();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
-    flow = Phase2();
+    flow = TrackSwapchainAndSelectQueue();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
-    // This renderer owns an independent backbuffer/queue/completion contract. Run it before Phase3: once the
-    // transition cooldown reaches zero, Phase3 skips normal-backend initialization while runtime-owned FSR
-    // presentation is active (the frame continues only for capture). The route must not depend on anything Phase3
+    // This renderer owns an independent backbuffer/queue/completion contract. Run it before InitOverlayBackend: once the
+    // transition cooldown reaches zero, InitOverlayBackend skips normal-backend initialization while runtime-owned FSR
+    // presentation is active (the frame continues only for capture). The route must not depend on anything InitOverlayBackend
     // or later decides, or the proven topmost owner retires and the callback baseline resumes, changing the
     // translucent overlay blend and putting foreign overlays above CE again.
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL) {
         independentFSRTopmostCompositedThisPresent =
             TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR();
     }
-    flow = Phase3();
+    flow = InitOverlayBackend();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
-    flow = Phase4();
+    flow = InitOverlaySyncAndFocusHold();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
-    flow = Phase5();
+    flow = HandleOuterFGTransition();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
@@ -67,7 +67,7 @@ void FrameProcessSession::Run() {
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
-    flow = Phase6Tail();
+    flow = PublishPostOverlayCapture();
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }

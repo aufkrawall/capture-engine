@@ -12,7 +12,7 @@
 // equivalent in handling because of where the original goto targets sat:
 //
 //   kSkipOverlayInit - the old `goto skipOverlayInit` jumped to the first statement of
-//                      Phase4, which is exactly where Run() continues after Phase3 returns.
+//                      InitOverlaySyncAndFocusHold, which is exactly where Run() continues after InitOverlayBackend returns.
 //   kSkipOverlayDraw - its label sat immediately before overlay_done with nothing between.
 //   kOverlayDone     - the overlay_done label itself, which is still a real goto target.
 //
@@ -136,7 +136,7 @@ public:
     bool captureAfterOverlay = false;
     bool captureBeforeOverlay = false;
     // Set where the overlay draw chain publishes the overlay-free capture.
-    // Phase6Tail publishes it when that chain never got there.
+    // PublishPostOverlayCapture publishes it when that chain never got there.
     bool captureBeforeOverlayPublished = false;
     bool delayOverlayRenderAfterSyncInit;
     bool suppressOverlayRenderForLoadedStartupOverlay;
@@ -186,13 +186,13 @@ public:
     HRESULT closeHr;
 
 
-    ProcessFrameFlow Phase1();
+    ProcessFrameFlow PrepareFrame();
     void EndPostFSRNonFGRecoveryOnProvenSwapchainChange(bool normalRouteOwnershipProven,
                                                         bool exactPrewarmedStreamlineHandoff);
-    ProcessFrameFlow Phase2();
-    ProcessFrameFlow Phase3();
-    ProcessFrameFlow Phase4();
-    ProcessFrameFlow Phase5();
+    ProcessFrameFlow TrackSwapchainAndSelectQueue();
+    ProcessFrameFlow InitOverlayBackend();
+    ProcessFrameFlow InitOverlaySyncAndFocusHold();
+    ProcessFrameFlow HandleOuterFGTransition();
     ProcessFrameFlow DrawOverlayFrame();
     ProcessFrameFlow DrawFrameTransition();
     ProcessFrameFlow DrawCooldownAndRoute();
@@ -217,5 +217,5 @@ public:
     ProcessFrameFlow DrawResetElse();
     ProcessFrameFlow DrawNullList();
     ProcessFrameFlow pw5_c3();
-    ProcessFrameFlow Phase6Tail();
+    ProcessFrameFlow PublishPostOverlayCapture();
 };

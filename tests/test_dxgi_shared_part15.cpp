@@ -176,7 +176,7 @@ TEST(DXGISharedSourceTest, GuardedSteamPresentChecksTheHookPointerAtTheCallSite)
 // The queue-settle defer (a guard for a DEPARTING runtime's leftover queue) waited for cmdQ==scQ, which
 // never happens there, so the overlay stayed gone until the game closed. The INCOMING runtime's fresh
 // swapchain on a submittable queue must initialize the overlay immediately — at BOTH init-deferral gates
-// of the Phase3 block: the second gate keys its defer on command tracking the handoff has not populated
+// of the InitOverlayBackend block: the second gate keys its defer on command tracking the handoff has not populated
 // yet, so an exemption at the first gate alone just walks into the second one.
 TEST(DXGISharedTest, FreshStreamlineHandoffSwapchainInitIsNotDeferredByQueueSettle) {
     using ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit;
@@ -297,8 +297,8 @@ TEST(DXGISharedTest, ExactPrewarmedStreamlineHandoffIsNotHeldQuietByStalePostFSR
 
 TEST(DXGISharedSourceTest, SwapchainChangeEndsPostFSRRecoveryBeforeConsumingProofOrCoolingDown) {
     namespace fs = std::filesystem;
-    const fs::path phase1 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase1.cpp";
-    const fs::path phase2 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp";
+    const fs::path phase1 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_stage1_prepare_frame.cpp";
+    const fs::path phase2 = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_stage2_swapchain_queue.cpp";
     ASSERT_TRUE(fs::exists(phase1));
     ASSERT_TRUE(fs::exists(phase2));
     const std::string gate = ce::test_source::ReadLogicalSource(phase1);

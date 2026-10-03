@@ -2,7 +2,7 @@
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
-ProcessFrameFlow FrameProcessSession::Phase2() {
+ProcessFrameFlow FrameProcessSession::TrackSwapchainAndSelectQueue() {
 if (processLogicalSwapchainReplacement) {
     if (pSwapChain == dx12_hook_g_LastSwapChain &&
         (exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||

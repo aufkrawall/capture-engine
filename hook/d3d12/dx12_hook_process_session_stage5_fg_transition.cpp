@@ -1,7 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
 
-ProcessFrameFlow FrameProcessSession::Phase5() {
+ProcessFrameFlow FrameProcessSession::HandleOuterFGTransition() {
 if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit) {
     bool outerSLFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     bool previousOuterSLFGRunning = dx12_hook_g_OuterTrackedSLFGRunning.load(std::memory_order_acquire);

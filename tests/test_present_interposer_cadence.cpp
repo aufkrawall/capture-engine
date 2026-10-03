@@ -222,7 +222,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 
     // The overlay queue for that chain is the chain's own queue, never the application's.
     const std::string phase2 = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_phase2.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_stage2_swapchain_queue.cpp");
     ASSERT_FALSE(phase2.empty());
     const size_t interposerRoute = phase2.find("ShouldUsePresentInterposerOutputQueue(");
     ASSERT_NE(interposerRoute, std::string::npos);

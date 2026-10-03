@@ -202,31 +202,31 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackHandoffProvesRouteBeforeFirstVisibleT
 
 TEST(FFXTopmostBatchSourceTest, AppCallbackTopmostRouteRunsBeforeNormalBackendEarlyReturns) {
     const std::string processSession = ReadSource("hook/d3d12/dx12_hook_process_session.cpp");
-    const std::string phase3Source = ReadSource("hook/d3d12/dx12_hook_process_session_phase3.cpp");
-    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_phase5.cpp");
+    const std::string phase3Source = ReadSource("hook/d3d12/dx12_hook_process_session_stage3_overlay_init.cpp");
+    const std::string phase5 = ReadSource("hook/d3d12/dx12_hook_process_session_stage5_fg_transition.cpp");
     const std::string drawMain = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
     ASSERT_FALSE(processSession.empty());
     ASSERT_FALSE(phase3Source.empty());
     ASSERT_FALSE(phase5.empty());
     ASSERT_FALSE(drawMain.empty());
 
-    const size_t phase2 = processSession.find("flow = Phase2();");
+    const size_t phase2 = processSession.find("flow = TrackSwapchainAndSelectQueue();");
     const size_t independentRoute =
         processSession.find("TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()", phase2);
-    const size_t phase3 = processSession.find("flow = Phase3();", independentRoute);
+    const size_t phase3 = processSession.find("flow = InitOverlayBackend();", independentRoute);
     ASSERT_NE(phase2, std::string::npos);
     ASSERT_NE(independentRoute, std::string::npos);
     ASSERT_NE(phase3, std::string::npos);
     EXPECT_LT(phase2, independentRoute);
     EXPECT_LT(independentRoute, phase3)
-        << "normal-backend Phase3 returns after the FSR cooldown and must not preempt the independent route";
+        << "normal-backend InitOverlayBackend returns after the FSR cooldown and must not preempt the independent route";
     const size_t runtimeOwnedSkip =
         phase3Source.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(");
     const size_t runtimeOwnedFlow = phase3Source.find("return ProcessFrameFlow::", runtimeOwnedSkip);
     ASSERT_NE(runtimeOwnedSkip, std::string::npos);
     ASSERT_NE(runtimeOwnedFlow, std::string::npos);
     EXPECT_EQ(phase3Source.find("return ProcessFrameFlow::kSkipOverlayInit;", runtimeOwnedSkip), runtimeOwnedFlow)
-        << "Phase3's runtime-owned FSR deferral skips only the normal-backend init";
+        << "InitOverlayBackend's runtime-owned FSR deferral skips only the normal-backend init";
 
     const size_t drawFrame = phase5.find("ProcessFrameFlow FrameProcessSession::DrawOverlayFrame()");
     ASSERT_NE(drawFrame, std::string::npos);

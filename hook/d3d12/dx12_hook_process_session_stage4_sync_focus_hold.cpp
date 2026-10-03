@@ -1,9 +1,9 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
 
-ProcessFrameFlow FrameProcessSession::Phase4() {
-// Phase3 returns kSkipOverlayInit to reach this point: the original code used a
-// `goto skipOverlayInit` whose label sat here, and Run() calling Phase4 after Phase3
+ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
+// InitOverlayBackend returns kSkipOverlayInit to reach this point: the original code used a
+// `goto skipOverlayInit` whose label sat here, and Run() calling InitOverlaySyncAndFocusHold after InitOverlayBackend
 // lands in the same place.
 
     // CRITICAL FIX: Decrement FG transition cooldown when overlayInit=true but syncInit=false.
@@ -359,7 +359,7 @@ ProcessFrameFlow FrameProcessSession::Phase4() {
     captureUsePostSL = recording &&
                        (DX12_ShouldUseStreamlineFinalOutputCapture() ||
                         DXGIShared::WasPostSLPresentedOutputCaptureRouted());
-    // Evaluate base cadence only after Phase1 has had the opportunity to route
+    // Evaluate base cadence only after PrepareFrame has had the opportunity to route
     // a suspended output through its exact PostSL queue. This prevents both
     // routes from consuming the same cadence budget at the transition seam.
     if (processCapture && recording && !captureUsePostSL && ShouldSkipCaptureForTargetCadence()) {

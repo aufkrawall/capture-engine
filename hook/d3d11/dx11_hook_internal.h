@@ -200,7 +200,7 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice
 
 #include "dx11_hook_types.h"
 
-#include "dx11_hook_types2.h"
+#include "dx11_hook_state_types.h"
 
 class DX11Capture : public HookCaptureBase {
 public:

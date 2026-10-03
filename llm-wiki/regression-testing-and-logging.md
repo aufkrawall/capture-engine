@@ -46,10 +46,10 @@ Primary sources:
 - `hook/ffx/ffx_hook_install.cpp`
 - `common/ipc/process_ipc.cpp`
 - `common/ipc/process_ipc.h`
-- `captureengine/media/media_main_encoder_05_loop_wgc_select.cpp`
+- `captureengine/media/media_main_encoder_05a_loop_wgc_select.cpp`
 - `mediaengine/video/video_encoder_write.cpp`
 - `mediaengine/engine/mediaengine_audio_loop_commit.cpp`
-- `mediaengine/engine/mediaengine_audio_pull_encode_c.cpp`
+- `mediaengine/engine/mediaengine_audio_pull_mix_source.cpp`
 - `tests/test_dx12_fg_trace_replay.cpp`
 - `tests/test_dxgi_shared.cpp`
 - `tests/test_crash_dump_policy.cpp`
@@ -157,7 +157,7 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   entry on the next policy tick while the source stays below target, and the
   enter hold (120 ms) is shorter than the flap cycle. The log is gated on
   `encoderTooSlowForTargetCurrent || !bufferedReserveRecovered`
-  (`captureengine/media/media_main_encoder_05_loop_wgc_select.cpp`); flap entries are
+  (`captureengine/media/media_main_encoder_05a_loop_wgc_select.cpp`); flap entries are
   still counted in the session summary (`lowSourceImmediateExits`), and source
   state stays visible at 1 Hz in the CFR jitter-budget diagnostics. This is a
   log-only gate; the flap itself was left unchanged pending runtime smoothness
@@ -418,7 +418,7 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
 - If a real-world report says app audio sounds delayed despite exact final durations, inspect `Source primed ... lateStart`, `Late app source live join`, `qjoin/qjoinKeep`, started-source underruns, and crash/probe evidence. Exact final stream length is required but not sufficient for content sync.
 - **`total_us` in `perf_metrics_*.csv` is not comparable across overlay routes, and comparing it that way
   invents performance problems that do not exist.** For D3D12 it is the whole `ProcessFrame` span
-  (`dx12_hook_process_session_phase1.cpp` sets `perfMetrics.qpcUs`, `FrameProcessSession::LogFrameMetrics`
+  (`dx12_hook_process_session_stage1_prepare_frame.cpp` sets `perfMetrics.qpcUs`, `FrameProcessSession::LogFrameMetrics`
   closes it), so it includes the overlay render only when the overlay draws on the **normal** route. On
   the PostSL and FFX present-callback routes the draw happens at a different call site and falls outside
   the span entirely; its cost is reported by `[OVERLAY COST] ... ceAvgUs=` instead. Session

@@ -1,6 +1,6 @@
 #include "mediaengine_internal.h"
 
-bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const std::vector<size_t>& srcIndices) {
+bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std::vector<size_t>& srcIndices) {
     auto& isCfrRecording = s.isCfrRecording;
     auto& isWgcCfrRecording = s.isWgcCfrRecording;
     auto& baseTargetLatencySamples = s.baseTargetLatencySamples;
@@ -739,11 +739,11 @@ bool MediaEngine::PullTrackEncodeSourcesA(AudioPullState& s, int track, const st
                         (int)srcIdx, src.postResampleBuffer.size() / CHANNELS, MAX_POST_RESAMPLE_FLOATS / CHANNELS);
                 }
 
-                if (!PullTrackEncodeSourcesB(s, track, srcIdx))
+                if (!CopySourcePostResampleSamples(s, track, srcIdx))
                     continue;
-                if (!PullTrackEncodeSourcesC1(s, track, srcIdx))
+                if (!ReportAppAudioConsume(s, track, srcIdx))
                     continue;
-                if (!PullTrackEncodeSourcesC2(s, track, srcIdx))
+                if (!MixSourceIntoTrack(s, track, srcIdx))
                     continue;
             }
     return true;

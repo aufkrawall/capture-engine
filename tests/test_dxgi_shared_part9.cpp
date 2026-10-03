@@ -254,9 +254,9 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
     // The process-session phases decide swapchain replacement (phase 1) and exact-backend preservation
     // (phase 2) before the generic cleanup paths (overlay unit) can run.
     const std::string phase1 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_phase1.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_stage1_prepare_frame.cpp");
     const std::string phase2 =
-        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_phase2.cpp");
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp");
     ASSERT_FALSE(phase1.empty());
     ASSERT_FALSE(phase2.empty());
     EXPECT_NE(phase1.find("ShouldProcessLogicalSwapchainReplacement("), std::string::npos);
