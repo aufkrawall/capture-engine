@@ -121,6 +121,17 @@ Also fixed then: 600 false `Physical Present left the coverage ledger` reports (
 accounted outside a scope; its Presents now own the scope) and GTA's UI-tag log flood (3/4/6-tag calls
 alternating on one stream, 47% of hook_debug.log; the call shape is now part of the stream).
 
+Next step agreed with the user (2026-10-03): close the FSR-enable handover output, then resume the refactor.
+Plan: (1) give the FFX fake a pipelined presenter (outputs of frame N presented while the game thread is
+already in frame N+1's proxy Present / prework) so a no-callback FSR enable reproduces the uncovered output;
+(2) make the handover make-before-break: the UI baseline (prework in `dx12_hook_ffx_proxy_present.cpp`,
+`DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership` -> clearOnly composite -> `DX12_SetNoCallbackFSRTopmostBatchOwnership`)
+may retire only once a topmost draw (`DX12_TryAppendNoCallbackFSRTopmostOverlayToECL` in
+`dx12_hook_ffx_topmost_batch.cpp`, `draw=1`) covers the output that follows, without double blending; (3) the
+user then runs dx12_fg_switch_test toggling no-callback FSR. Evidence: 20261003_120641 p164 12:07:04.937
+(prework #4 `ownership GRANTED`, then frame #4 Present with no draw). A parallel session fixes CE's resolved
+ExecuteCommandLists on wrapped queues (`dx12_hook_ecl*.cpp`, debug layer in the flow game) - avoid those files.
+
 Follow-ups: the FSR-enable handover output above; a fake NGX runtime (end-to-end reproduction of the NGX
 reactivation); a third-party overlay
 fake (`gameoverlayrenderer64.dll` hooking Present above CE; the user's Steam / Rockstar / EOS runs showed
