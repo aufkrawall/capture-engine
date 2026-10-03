@@ -1,6 +1,6 @@
 # Installer and uninstaller
 
-Last verified: 2026-10-02 (source, unit tests, native `--files-only` and off-screen UI tests). Interactive
+Last verified: source/unit tests 2026-10-03; native `--files-only` and off-screen UI tests 2026-10-02. Interactive
 runs that touch the machine - UAC prompt, service/startup registration, PawnIO, Installed Apps, shortcuts, launch as
 the user - are **unverified** and need a manual run. Stale-risk: medium.
 
@@ -72,6 +72,8 @@ Integrity (CRC-32 per file, footer and index) only; there is no publisher signat
   older than the child), which reuses `Apply()` from `startup_control.cpp` for the exact tray semantics, rollback
   and preference record. The owner is the desktop shell's user, not setup's token. PawnIO uses the existing
   `--install-pawnio` role (hash + Authenticode verified there). Failures in these steps are warnings, never a rollback.
+  The service stages under the selected application folder's `ElevationService` subtree; updates migrate the registered
+  runtime from older locations (including the legacy `Program Files/CaptureEngine` root). See `elevation-and-startup.md`.
 - **Installed Apps** record carries `CaptureEngineSetupRecord=1`; entries without it (another installer's, e.g. the
   rejected attempt's) are not trusted as our install folder.
 - **Defaults.** Fresh: all shortcuts, service, autostart, PawnIO on; administrator mode off. Updates keep each earlier

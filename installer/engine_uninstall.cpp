@@ -203,10 +203,6 @@ UninstallResult RunUninstall(const UninstallRequest& request, const ProgressFn& 
     for (const char* name : kDataDirectories)
         RemoveDirectoryW(JoinPath(directory, Widen(name)).c_str());
     RemoveDirectoryW(directory.c_str());
-    // The service's protected runtime parent, left behind once its child is gone.
-    const std::wstring programFiles = request.filesOnly ? std::wstring() : ProgramFilesDirectory();
-    if (!programFiles.empty())
-        RemoveDirectoryW(JoinPath(programFiles, L"CaptureEngine").c_str());
 
     report(100, L"Done.");
     result.success = true;

@@ -16,6 +16,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Elevation service installed in the wrong folder:** the service now runs from a protected runtime inside the actual Capture Engine install folder, including custom locations. Updating migrates an existing service out of the separate `C:\Program Files\CaptureEngine` folder; uninstall also handles older registrations.
+
 - **Overlay kept showing "DLSS 2x" after DLSS frame generation was turned off right after turning it on:** an off request that arrives during DLSS-G's startup is held until the startup is over. Depending on timing it then reached DLSS-G without Capture Engine noticing, so the overlay status stayed on. It now always goes through Capture Engine's own handling.
 
 - **Overlay on FSR frame generation when the game switches its present callback while frame generation stays on:** Capture Engine keeps its own callback in AMD's runtime across such a switch but still ran its callback-less overlay routes next to it, and the last frame before a switch to a callback could lose its overlay. The overlay now follows the route AMD actually uses, frame by frame.

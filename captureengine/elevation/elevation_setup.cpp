@@ -1,5 +1,6 @@
 #include "startup_control.h"
 #include "elevation_client.h"
+#include "common/setup/elevation_runtime_policy.h"
 #include "common/logging/logging.h"
 #include <shlobj.h>
 #include <filesystem>
@@ -23,10 +24,14 @@ struct ServiceHandles {
 };
 
 fs::path ServiceDirectory() {
+    return ServiceDirectoryForExecutable(ce::elevation::ExecutablePath());
+}
+
+fs::path LegacyServiceParent() {
     wchar_t* programFiles = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, nullptr, &programFiles)))
         return {};
-    fs::path result = fs::path(programFiles) / L"CaptureEngine" / L"ElevationService";
+    fs::path result = fs::path(programFiles) / L"CaptureEngine";
     CoTaskMemFree(programFiles);
     return result;
 }
@@ -50,7 +55,7 @@ bool SafeDirectory(const fs::path& directory, bool create) {
     return security.Get() && CreateDirectoryW(directory.c_str(), security.Get());
 }
 
-DWORD ValidateRegistration(SC_HANDLE service, const fs::path& directory, fs::path* runtime = nullptr) {
+DWORD ValidateRegistration(SC_HANDLE service, fs::path* runtime) {
     DWORD bytes = 0;
     QueryServiceConfigW(service, nullptr, 0, &bytes);
     std::vector<BYTE> storage(bytes);
@@ -58,29 +63,36 @@ DWORD ValidateRegistration(SC_HANDLE service, const fs::path& directory, fs::pat
         !QueryServiceConfigW(service, reinterpret_cast<QUERY_SERVICE_CONFIGW*>(storage.data()), bytes, &bytes))
         return GetLastError();
     const auto* config = reinterpret_cast<const QUERY_SERVICE_CONFIGW*>(storage.data());
-    const std::wstring binary = config->lpBinaryPathName;
-    if (binary.size() < 3 || binary.front() != L'"' || binary.back() != L'"')
-        return ERROR_INVALID_DATA;
-    const fs::path executable = binary.substr(1, binary.size() - 2);
-    const fs::path candidate = executable.parent_path();
-    const std::wstring leaf = candidate.filename().wstring();
+    const fs::path candidate = RegisteredServiceRuntime(config->lpBinaryPathName);
     if (config->dwServiceType != SERVICE_WIN32_OWN_PROCESS ||
-        _wcsicmp(config->lpServiceStartName, L"LocalSystem") != 0 || candidate.parent_path() != directory ||
-        executable.filename() != L"captureengine_elevation_service.exe" || leaf.size() != 40 ||
-        leaf.substr(0, 8) != L"runtime-" || !SafeDirectory(candidate, false))
+        _wcsicmp(config->lpServiceStartName, L"LocalSystem") != 0 || candidate.empty() ||
+        !SafeDirectory(candidate.parent_path().parent_path(), false) ||
+        !SafeDirectory(candidate.parent_path(), false) || !SafeDirectory(candidate, false))
         return ERROR_INVALID_DATA;
-    for (wchar_t character : leaf.substr(8)) {
-        if (!((character >= L'0' && character <= L'9') || (character >= L'a' && character <= L'f')))
-            return ERROR_INVALID_DATA;
-    }
     wchar_t owner[256]{};
     bytes = sizeof(owner);
     if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\CaptureEngineElevation\\Parameters",
                      L"OwnerSid", RRF_RT_REG_SZ, nullptr, owner, &bytes) != ERROR_SUCCESS ||
         owner != OwnerSid())
         return ERROR_ACCESS_DENIED;
-    if (runtime)
-        *runtime = candidate;
+    *runtime = candidate;
+    return ERROR_SUCCESS;
+}
+
+DWORD RemoveRuntime(const fs::path& runtime) {
+    // Delete only the validated runtime; keep unrelated files and install roots.
+    if (!SafeDirectory(runtime.parent_path().parent_path(), false) ||
+        !SafeDirectory(runtime.parent_path(), false) || !SafeDirectory(runtime, false))
+        return ERROR_ACCESS_DENIED;
+    std::error_code error;
+    fs::remove_all(runtime, error);
+    if (error)
+        return static_cast<DWORD>(error.value());
+    RemoveDirectoryW(runtime.parent_path().c_str());
+    const fs::path legacy = LegacyServiceParent();
+    if (!legacy.empty() && runtime.parent_path().parent_path() == legacy &&
+        legacy != ServiceDirectory().parent_path())
+        RemoveDirectoryW(legacy.c_str());
     return ERROR_SUCCESS;
 }
 
@@ -167,7 +179,8 @@ DWORD InstallElevationService() {
     if (!ce::elevation::IsElevated())
         return ERROR_ELEVATION_REQUIRED;
     const fs::path directory = ServiceDirectory();
-    if (directory.empty() || !SafeDirectory(directory.parent_path(), true) || !SafeDirectory(directory, true))
+    // The application folder keeps its own ACL; only the service subtree is protected.
+    if (directory.empty() || !SafeDirectory(directory.parent_path(), false) || !SafeDirectory(directory, true))
         return ERROR_ACCESS_DENIED;
     ServiceHandles handles;
     handles.manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
@@ -177,7 +190,7 @@ DWORD InstallElevationService() {
     fs::path oldRuntime;
     bool wasRunning = false;
     if (handles.service) {
-        const DWORD valid = ValidateRegistration(handles.service, directory, &oldRuntime);
+        const DWORD valid = ValidateRegistration(handles.service, &oldRuntime);
         if (valid != ERROR_SUCCESS)
             return valid;
         SERVICE_STATUS_PROCESS status{};
@@ -186,6 +199,7 @@ DWORD InstallElevationService() {
                                   sizeof(status), &bytes))
             return GetLastError();
         wasRunning = status.dwCurrentState != SERVICE_STOPPED;
+        LogInfo("[ElevationService] Replacing registered runtime (relocating=%d)", oldRuntime.parent_path() != directory);
     } else if (GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST)
         return GetLastError();
     std::array<unsigned char, 16> nonce{};
@@ -290,25 +304,26 @@ DWORD InstallElevationService() {
         } else
             LogError("[ElevationService] Failed to restore previous service runtime");
     } else if (result == ERROR_SUCCESS && !oldRuntime.empty()) {
-        std::error_code ignored;
-        fs::remove_all(oldRuntime, ignored);
+        const DWORD cleanup = RemoveRuntime(oldRuntime);
+        if (cleanup != ERROR_SUCCESS)
+            LogWarn("[ElevationService] Previous runtime cleanup incomplete (error=%lu)", cleanup);
     }
+    if (result == ERROR_SUCCESS)
+        LogInfo("[ElevationService] Service registered in the application folder's protected runtime");
     return result;
 }
 
 DWORD RemoveElevationService() {
     if (!ce::elevation::IsElevated())
         return ERROR_ELEVATION_REQUIRED;
-    const fs::path directory = ServiceDirectory();
-    if (directory.empty() || !SafeDirectory(directory.parent_path(), false) || !SafeDirectory(directory, false))
-        return ERROR_ACCESS_DENIED;
     ServiceHandles handles;
     handles.manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!handles.manager)
         return GetLastError();
     handles.service = OpenServiceW(handles.manager, ce::elevation::kServiceName, SERVICE_ALL_ACCESS);
+    fs::path runtime;
     if (handles.service) {
-        const DWORD valid = ValidateRegistration(handles.service, directory);
+        const DWORD valid = ValidateRegistration(handles.service, &runtime);
         if (valid != ERROR_SUCCESS)
             return valid;
         // Prevent a still-connected sensor from restarting the service during removal.
@@ -331,11 +346,14 @@ DWORD RemoveElevationService() {
         handles.service = nullptr;
     } else if (GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST)
         return GetLastError();
-    // Only the fixed protected service root is removable; never touch PawnIO or user data.
-    std::error_code error;
-    fs::remove_all(directory, error);
-    if (error)
-        return static_cast<DWORD>(error.value());
+    if (!runtime.empty()) {
+        const DWORD cleanup = RemoveRuntime(runtime);
+        if (cleanup != ERROR_SUCCESS) {
+            LogWarn("[ElevationService] Removed service runtime cleanup incomplete (error=%lu)", cleanup);
+            return cleanup;
+        }
+        LogInfo("[ElevationService] Removed registered runtime");
+    }
     return WaitElevationServiceRemoved();
 }
 }  // namespace ce::startup

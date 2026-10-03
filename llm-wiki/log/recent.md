@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-03 - Elevation service follows the actual application install folder
+
+- Root cause: `elevation_setup.cpp` staged under the fixed Program Files/CaptureEngine root while setup defaults
+  to Program Files/Capture Engine. Runtime staging now follows the executable's directory, including custom installs.
+- Validated SCM runtime paths allow replacement/removal of legacy and relocated installs, preserve rollback to the
+  old runtime, and remove only runtime files/empty service directories. Service setup leaves the application ACL alone.
+- Four path/layout regressions cover normal/custom/portable/UNC roots, legacy relocation and invalid registrations;
+  setup/removal transition and cleanup diagnostics added. See `elevation-and-startup.md`; live SCM migration is unverified.
+- Validation: syntax check and resumed product/package gate passed (0.1.6959), filtered to elevation/startup/installer
+  suites. Unfiltered suite: 4352/4353 passed; unchanged `LogMeterTest.StreamlineUiTagCallShapesAreSeparateStreams`
+  expected 6 lines but got 601 from StreamChangeGate slot collisions. Log-meter files were not changed here.
+
 ### 2026-10-03 - FSR handover open points closed; held DLSS-G OFF via GetState fixed (run pending)
 
 - Merged the debug-layer branch (910167ab). New flow scenarios: UI resource without AMD's copy (game alternates,

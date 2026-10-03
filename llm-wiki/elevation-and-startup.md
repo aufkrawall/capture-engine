@@ -1,6 +1,6 @@
 # Elevation service and Windows startup
 
-Last source verification: 2026-10-01. Runtime verification remains in progress.
+Last source verification: 2026-10-03. Runtime verification remains in progress.
 
 ## Summary and source anchors
 
@@ -54,12 +54,20 @@ the other registration and restores the preceding registration on failure. Chang
 full elevation while autostart is enabled reconciles immediately; current recording
 and process elevation are unchanged.
 
-Setup stages an immutable nonce runtime under the native ProgramFiles known folder,
-CaptureEngine/ElevationService/runtime-<32 hex digits>. Protected owner/DACLs
+Setup stages an immutable nonce runtime under the running application's actual directory,
+ElevationService/runtime-<32 hex digits> (`common/setup/elevation_runtime_policy.h`). The default installed path is
+Program Files/Capture Engine/ElevationService, and custom/portable locations follow the executable. Protected owner/DACLs
 prevent ordinary modification. The service binary, four pinned LHM assemblies,
 license notices and available service PDBs are copied. Setup/replacement/removal
 require UAC. The installing SID can query/start the service. PawnIO driver setup
 remains independent.
+
+Replacement/removal derive the preceding runtime from the administrator-owned SCM registration, validating the
+exact service binary/nonce layout, LocalSystem role, non-reparse directories and installing SID. This permits migration
+from the legacy Program Files/CaptureEngine/ElevationService root and from a previous installation location while
+keeping rollback pointed at the old runtime. Cleanup deletes only that validated runtime and empty service directories;
+the legacy CaptureEngine parent is removed only when empty and not the current application folder. The application
+folder's ACL is never rewritten by service setup. Path/layout regression coverage: tests/test_elevation_runtime_policy.cpp.
 
 The local-only byte pipe validates magic/version/opcode/length/sequence before use.
 Hello authenticates actual peer SID/session, matching executable and a self/direct

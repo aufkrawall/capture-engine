@@ -39,7 +39,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | --- | ---: | --- |
 | `dx12-injection-bootstrap.md` | 58 | startup/late injection, process discovery, loader hooks, IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, media stop/finalize, log routing |
-| `elevation-and-startup.md` | 8 | elevation service broker, UAC ownership, autostart |
+| `elevation-and-startup.md` | 8 | elevation service broker, install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `third-party-dll-loading.md` | 14 | ReShade / OptiScaler / Special K loading by the hook |
