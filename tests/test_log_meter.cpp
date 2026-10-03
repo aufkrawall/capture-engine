@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "common/logging/log_meter.h"
+#include "hook/streamline/streamline_ui_tag_log.h"
 
 namespace log_meter = ce::log_meter;
 
@@ -149,4 +150,19 @@ TEST(LogMeterChangeGateTest, ForceLogsAnUnchangedLineWithItsSwallowedRepeats) {
     EXPECT_TRUE(forced.log);
     EXPECT_EQ(forced.suppressed, 2u);
     EXPECT_FALSE(gate.Observe(key).log);
+}
+
+// GTA V Enhanced tags 3, 4 and 6 resources in turn on one viewport every frame. Each call shape is its own
+// stream, so the UI tag diagnostics log each shape once plus the every-300th heartbeat, not every call.
+TEST(LogMeterTest, StreamlineUiTagCallShapesAreSeparateStreams) {
+    ce::log_meter::StreamChangeGate<16> gate;
+    const char* api = "slSetTagForFrame";
+    const uint32_t shapes[] = {3, 4, 6};
+    int logged = 0;
+    for (uint32_t call = 1; call <= 900; ++call) {
+        const uint32_t numTags = shapes[call % 3];
+        const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 0, numTags, 0);
+        logged += gate.ObserveOrEvery(stream, ce::log_meter::FieldKey(numTags, 7u), call, 300) ? 1 : 0;
+    }
+    EXPECT_EQ(logged, 6);  // three first appearances, three heartbeats (calls 300, 600, 900)
 }

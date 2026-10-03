@@ -109,7 +109,20 @@ Defects it found and fixed (2026-10-03; user evidence session 20261003_070202, b
 - FSR -> Streamline swapchain change with FG off blanked 90 presents (generic "FG active within 300
   frames" guard); a change proven on the game queue with nothing generating frames reinitializes at once.
 
-Follow-ups: a fake NGX runtime (end-to-end reproduction of the NGX reactivation); a third-party overlay
+Hardware validation (session 20261003_120641, 0.1.6955, user: "all was working very well"): zero
+`PostSL SKIP - FG transition cooldown` lines; the NGX gate fired once at the DLSS-G in-flight frame after
+OFF (12:07:21.479) and ignored it; Talos 3885 presents / 0 uncovered, GTA 5640 / 1 (one present in FSR
+startup); published status followed every Off/DLSS/FSR switch. Remaining: one uncovered output 15-80 ms
+after every no-callback FSR enable in `dx12_fg_switch_test` (gates `unknown`/`zero-ecl-skip`): the prework
+retires the UI-resource baseline after the topmost route's marker-only proof, but AMD's pipelined
+presenter had already submitted that output's final batch without a draw - break-before-make by one
+output. The lockstep fakes cannot show it (each frame's outputs are presented inside the game's Present).
+Also fixed then: 600 false `Physical Present left the coverage ledger` reports (CE's swapchain wrapper
+accounted outside a scope; its Presents now own the scope) and GTA's UI-tag log flood (3/4/6-tag calls
+alternating on one stream, 47% of hook_debug.log; the call shape is now part of the stream).
+
+Follow-ups: the FSR-enable handover output above; a fake NGX runtime (end-to-end reproduction of the NGX
+reactivation); a third-party overlay
 fake (`gameoverlayrenderer64.dll` hooking Present above CE; the user's Steam / Rockstar / EOS runs showed
 only the handled re-hook paths); CE's resolved-ECL call on wrapped queues (debug layer, capture tools);
 `RegisterNativeFSRSwapchainPresentationQueue` still classifies Streamline wrappers by device identity.

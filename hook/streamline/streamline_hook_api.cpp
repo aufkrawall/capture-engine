@@ -1,6 +1,7 @@
 #include "streamline_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
+#include "hook/streamline/streamline_ui_tag_log.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
 
@@ -255,8 +256,8 @@ uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken
         tagSet = ce::log_meter::FieldKey(tagSet, tags[i].type, tags[i].lifecycle, tags[i].extent.left, tags[i].extent.top,
                                          tags[i].extent.width, tags[i].extent.height);
     }
-    const auto verdict = s_uiTagSetGate.ObserveOrEvery(ce::log_meter::FieldKey(tagApi, feature, viewportKey), tagSet,
-                                                       opportunity, 300);
+    const auto verdict = s_uiTagSetGate.ObserveOrEvery(
+        ce::streamline_ui_tag_log::Stream(tagApi, feature, viewportKey, numTags, numInputs), tagSet, opportunity, 300);
     if (!verdict) {
         return 0;
     }

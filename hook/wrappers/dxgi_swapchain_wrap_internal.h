@@ -1,6 +1,6 @@
 #pragma once
 
-struct ScopedAvGuard;
+class ScopedAvGuard;
 
 struct ScopedResizeGuard;
 

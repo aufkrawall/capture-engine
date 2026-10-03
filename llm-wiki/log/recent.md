@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-03 - FG switching fixes validated on hardware (session 20261003_120641, 0.1.6955)
+
+- Test app, Talos, GTA switching runs: post-FSR DLSS OFF->ON keeps the overlay (no cooldown skips), status follows
+  every switch, Talos 0 / GTA 1 uncovered presents. Left: one output at each no-callback FSR enable (topmost-route
+  handover race, refactor-roadmap.md "FG flow harness"). Fixed after the run: false ledger reports through CE's
+  swapchain wrapper, GTA UI-tag log flood.
+
 ### 2026-10-03 - FG flow harness closes the switching test gap; seven FG defects fixed (run pending)
 
 - `fg_flow_tests.exe` runs the real hook against faithful fake Streamline/FidelityFX runtimes in 10 scenarios

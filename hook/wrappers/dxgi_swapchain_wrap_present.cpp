@@ -444,9 +444,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             DX12_ClearWrappedPresentFocusLossContext();
         }
     });
+    // One overlay-coverage scope per physical present: the wrapper's ProcessFrameExternal and the DetourPresent
+    // the real Present re-enters below judge the same present (a second scope there read as unaccounted).
+    bool overlayPresentScopeOpen = false;
+    auto overlayPresentScopeGuard = ::ce::make_scope_guard([&] {
+        if (overlayPresentScopeOpen) {
+            DX12_EndOverlayPresentScope();
+        }
+    });
     if (m_IsD3D12) {
         DX12_SetWrappedPresentFocusLossContext("Present", callCount, SyncInterval, Flags);
         dx12PresentContextArmed = true;
+        DX12_BeginOverlayPresentScope(pRealCached);
+        overlayPresentScopeOpen = true;
     }
 
     if (m_IsD3D12) {
@@ -691,9 +701,19 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
             DX12_ClearWrappedPresentFocusLossContext();
         }
     });
+    // One overlay-coverage scope per physical present: the wrapper's ProcessFrameExternal and the DetourPresent
+    // the real Present1 re-enters below judge the same present (a second scope there read as unaccounted).
+    bool overlayPresentScopeOpen = false;
+    auto overlayPresentScopeGuard = ::ce::make_scope_guard([&] {
+        if (overlayPresentScopeOpen) {
+            DX12_EndOverlayPresentScope();
+        }
+    });
     if (m_IsD3D12) {
         DX12_SetWrappedPresentFocusLossContext("Present1", callCount, SyncInterval, PresentFlags);
         dx12PresentContextArmed = true;
+        DX12_BeginOverlayPresentScope(pReal1Cached);
+        overlayPresentScopeOpen = true;
     }
     if (m_IsD3D12) {
         // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)

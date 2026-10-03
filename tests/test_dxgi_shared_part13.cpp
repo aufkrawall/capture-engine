@@ -566,3 +566,26 @@ TEST(DXGISharedSourceTest, FGTransitionCooldownEndsOnlyTogetherWithItsPostSLMirr
     }
     EXPECT_EQ(helperDefinitions, 1);
 }
+
+// dx12_fg_switch_test presents through CE's swapchain wrapper: its ProcessFrameExternal accounted the present
+// outside any scope, then the real Present re-entered DetourPresent, whose own scope judged nothing and was
+// reported as "Physical Present left the coverage ledger" (600 false reports, session 20261003_120641). Both
+// wrapper Presents open the one scope before ProcessFrameExternal and keep it across the real Present.
+TEST(DXGISharedSourceTest, WrappedPresentsOwnTheirOverlayCoverageScope) {
+    namespace fs = std::filesystem;
+    const std::string text = ce::test_source::ReadFile(
+        ce::test_source::FindSource("hook", "dxgi_swapchain_wrap_present.cpp"));
+    ASSERT_FALSE(text.empty());
+    for (const char* method : {"CWrapDXGISwapChain::Present(", "CWrapDXGISwapChain::Present1("}) {
+        const size_t body = text.find(method);
+        ASSERT_NE(body, std::string::npos) << method;
+        const size_t scope = text.find("DX12_BeginOverlayPresentScope(", body);
+        const size_t guard = text.find("DX12_EndOverlayPresentScope();", body);
+        const size_t processFrame = text.find("DX12_ProcessFrameExternal(", body);
+        ASSERT_NE(scope, std::string::npos) << method;
+        ASSERT_NE(guard, std::string::npos) << method;
+        ASSERT_NE(processFrame, std::string::npos) << method;
+        EXPECT_LT(guard, processFrame) << method << ": the scope guard is armed before the frame is processed";
+        EXPECT_LT(scope, processFrame) << method;
+    }
+}
