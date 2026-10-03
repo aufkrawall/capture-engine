@@ -46,6 +46,7 @@ become a library other clients use for recording, overlay and 3D overrides.
 | 6 | State grouping: loose `dx12_hook_g_*` / `streamline_hook_g_*` globals into named state structs per concern | mechanical | planned |
 | 7 | Size-split units named by content: DX12 `FrameProcessSession::Phase1..5/Phase6Tail` -> `PrepareFrame`, `TrackSwapchainAndSelectQueue`, `InitOverlayBackend`, `InitOverlaySyncAndFocusHold`, `HandleOuterFGTransition`, `PublishPostOverlayCapture` (files `..._stage1_prepare_frame.cpp` .. `stage5_fg_transition.cpp`); media encoder `..._2/_3` continuations and audio-pull `encode_a/b/c` renamed. Stage prefixes stay where file order is the pipeline order (source-policy tests read siblings in sorted order) | mechanical | 7a done 2026-10-03; remaining: the `Draw*` chunk chain (`DrawSc3Front`, `DrawResetElse`...) | 
 | 8 | Policy calls with many positional `bool`s to named input structs | mechanical | planned |
+| 7b | Packed declarations (`void A();void B();` from the de-inline generator) one per line: 486 split, whitespace-proof 937/937 | mechanical | done 2026-10-03 |
 | 9 | Comment density: incident narratives (session ids, dates) out of code into the wiki; code keeps the invariant | text | planned |
 | 10 | Library boundary (below) | architectural | planned |
 | 11 | DX12 frame/overlay state machine as explicit states | behavioral, hardware-validated per step | later |

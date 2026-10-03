@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-03 - Refactor waves 4-7: docs, dead code, unit names, header reflow (0.1.6951)
+
+- AGENTS.md 25->15 KB, wiki `index.md` 33->7 KB, `current.md` 89->8 KB (full text archived). Dead code: 29
+  compiler-proven unused statics (510 lines, incl. the forbidden D3D11On12 bridge) and the never-compiled D3D12
+  COM wrappers (1,316 lines). DX12 `Phase1..5` are now named stages (`stage1_prepare_frame` ..
+  `stage5_fg_transition`); media encoder and audio-pull continuations got content names.
+- 486 packed declarations split one per line; proof `preprocess_fingerprint.py --normalize-whitespace`: 937/937
+  TUs identical. Lint green after a baseline refresh (1363 -> 1336). Tools: `tools/refactor/{syntax_check,
+  remove_unused,rename_units,split_jammed_declarations}.py`.
+- Lesson: source-policy tests read a unit's sibling files in sorted order, so renames must keep pipeline order
+  in file names (stage prefixes), or the tests' cross-file position checks flip.
+
 ### 2026-10-02 - Log volume wave 2a: on-change gates, one-line hook installs, shorter prefix (0.1.6946, run pending)
 
 - `ce::log_meter::ChangeGate`/`KeyedOnce` (log_meter.h) now meter ~25 repeat families; conventions and the new
