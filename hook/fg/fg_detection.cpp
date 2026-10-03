@@ -1,4 +1,5 @@
 #include "fg_detection.h"
+#include "hook/runtime/hook_clock.h"
 #include <cmath>
 #include <cstring>
 #include "common/logging/log_meter.h"
@@ -53,7 +54,7 @@ int64_t FGCompatibility::GetCurrentTimeUs() const {
         qpcFreq = f.QuadPart;
     }
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     return (qpc.QuadPart * 1000000) / qpcFreq;
 }
 
@@ -610,7 +611,7 @@ void FGCompatibility::CheckForNvPresent() {
     // Throttle checks to at most once per second when not yet detected.
     // NvPresent64 may load after our hook is installed.
     static std::atomic<ULONGLONG> s_lastCheckTick{0};
-    ULONGLONG nowTick = GetTickCount64();
+    ULONGLONG nowTick = ce::hook_clock::TickCount64();
     ULONGLONG lastTick = s_lastCheckTick.load(std::memory_order_acquire);
     if (nvPresentChecked.load(std::memory_order_acquire) && lastTick != 0 && nowTick - lastTick < 1000) {
         return;

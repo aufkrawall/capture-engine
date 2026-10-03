@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
 void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicationSourcePresent,
@@ -13,7 +14,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicat
     }
     s_inProcessFrame = true;
     auto reentryGuard = ce::make_scope_guard([&]() { s_inProcessFrame = false; });
-    dx12_hook_g_LastProcessFrameTickMs.store(GetTickCount64(), std::memory_order_release);
+    dx12_hook_g_LastProcessFrameTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
     CleanupDeferredPostSLQueuesIfSafe("DX12: ProcessFrame deferred PostSL cleanup");
     static bool s_firstFrame = true;
     if (s_firstFrame) {

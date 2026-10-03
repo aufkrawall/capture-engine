@@ -10,6 +10,8 @@ public:
     ~IPCClient();
 
     bool Connect();
+    // An isolated test host (tests/flow) hands over its own host memory: no mapping, no events, no discovery.
+    void AttachIsolatedHostMemory(SharedMemoryLayout* memory);
     // Atomically publishes a new host mapping while intentionally retaining the
     // previous mapping. In-flight detours can therefore finish against the old
     // session without a use-after-unmap during host restart.

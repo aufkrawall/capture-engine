@@ -448,13 +448,25 @@ inline bool ShouldProcessLogicalSwapchainReplacement(bool pointerAddressChanged,
 // 90-frame reinit cooldown on its first Present. Re-check every live ownership
 // and device guard so a resumed FG mode, FSR takeover, mismatched route, or
 // removed device still keeps the protective cooldown.
+// A swapchain change proven on the game's own queue while no frame generation runs (FSR's swapchain replaced by
+// a native or Streamline one after FG was switched off): no runtime queue holds work the overlay must wait out,
+// so the generic "FG was recently active" transition cooldown would only blank it (FG flow test FlowSwitch: 90
+// presents after FSR -> Streamline).
+inline bool ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(
+    bool normalRouteOwnershipProven, bool frameGenerationCurrentlyActive, bool streamlineFGRunning,
+    bool fsrFGApiActive, bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain, bool deviceRemoved) {
+    return normalRouteOwnershipProven && !frameGenerationCurrentlyActive && !streamlineFGRunning && !fsrFGApiActive &&
+           !nativeFSRInternalNoCallbackComposition && !runtimeOwnsSwapchain && !deviceRemoved;
+}
+
 inline bool ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
     bool exactNormalReturnSwapchainProof, bool normalRouteOwnershipProven, bool frameGenerationCurrentlyActive,
     bool streamlineFGRunning, bool fsrFGApiActive, bool nativeFSRInternalNoCallbackComposition,
     bool runtimeOwnsSwapchain, bool deviceRemoved) {
-    return exactNormalReturnSwapchainProof && normalRouteOwnershipProven && !frameGenerationCurrentlyActive &&
-           !streamlineFGRunning && !fsrFGApiActive && !nativeFSRInternalNoCallbackComposition &&
-           !runtimeOwnsSwapchain && !deviceRemoved;
+    return exactNormalReturnSwapchainProof &&
+           ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(
+               normalRouteOwnershipProven, frameGenerationCurrentlyActive, streamlineFGRunning, fsrFGApiActive,
+               nativeFSRInternalNoCallbackComposition, runtimeOwnsSwapchain, deviceRemoved);
 }
 
 inline bool ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(bool streamlineTurnedOff,

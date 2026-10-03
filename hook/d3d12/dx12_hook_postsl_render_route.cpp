@@ -2,6 +2,43 @@
 #include "common/logging/log_meter.h"
 #include "dx12_hook_postsl_session.h"
 
+// The probe-0 barrier target, created once per device. Released only with the overlay state: the GPU executes
+// the recorded barriers after the probe returns, and a texture released right after recording them was a
+// use-after-free that removed the device (FG flow test FlowSwitch: WARP faulted in UMContext::Barrier on freed
+// memory; the failure was read as "queue not ready").
+static ID3D12Resource* PostFSRProbeScratch(ID3D12Device* device) {
+    ID3D12Resource*& scratch = dx12_hook_g_State.postFSRProbeScratch;
+    if (scratch) {
+        ID3D12Device* owner = nullptr;
+        scratch->GetDevice(IID_PPV_ARGS(&owner));
+        if (owner) {
+            owner->Release();
+        }
+        if (owner == device) {
+            return scratch;
+        }
+        scratch->Release();  // the previous device's; its queues no longer run CE's probe lists
+        scratch = nullptr;
+    }
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC scratchDesc = {};
+    scratchDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    scratchDesc.Width = 64;
+    scratchDesc.Height = 64;
+    scratchDesc.DepthOrArraySize = 1;
+    scratchDesc.MipLevels = 1;
+    scratchDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scratchDesc.SampleDesc.Count = 1;
+    scratchDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &scratchDesc,
+                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&scratch)))) {
+        scratch = nullptr;
+    }
+    return scratch;
+}
+
 PostSLFlow PostSLRenderSession::Chunk2() {
 if (isPostFSRProbe) {
     // Log comprehensive diagnostics on first probe frame
@@ -45,23 +82,7 @@ if (isPostFSRProbe) {
 
     if (dx12_hook_g_PostFSRProbeLevel.load(std::memory_order_acquire) == 0) {
         // Probe 0: Scratch resource barrier on origGame — confirms queue works.
-        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-        D3D12_HEAP_PROPERTIES heapProps = {};
-        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-        D3D12_RESOURCE_DESC scratchDesc = {};
-        scratchDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        scratchDesc.Width = 64;
-        scratchDesc.Height = 64;
-        scratchDesc.DepthOrArraySize = 1;
-        scratchDesc.MipLevels = 1;
-        scratchDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        scratchDesc.SampleDesc.Count = 1;
-        scratchDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        ID3D12Resource* scratch = nullptr;
-        HRESULT scratchHr =
-            dev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &scratchDesc,
-                                         D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&scratch));
-        if (SUCCEEDED(scratchHr) && scratch) {
+        if (ID3D12Resource* scratch = PostFSRProbeScratch(dev)) {
             D3D12_RESOURCE_BARRIER barriers[2] = {};
             barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             barriers[0].Transition.pResource = scratch;
@@ -74,7 +95,6 @@ if (isPostFSRProbe) {
             barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
             barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(2, barriers);
-            scratch->Release();
         }
     } else if (dx12_hook_g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 1) {
         // Probe 1: PRESENT→RT→PRESENT on backbuffer via SL's wrapper queue.
@@ -224,7 +244,8 @@ if (isPostFSRProbe) {
 
         if (FAILED(probeHr)) {
             // DEVICE_REMOVED from BB barrier is FATAL — skip to barrier-free.
-            // Scratch barrier failures are non-fatal (queue just isn't ready).
+            // A scratch-barrier failure found the device already removed by earlier work; the next level
+            // keeps probing rather than giving up.
             int skipTo = (dx12_hook_g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 1)
                              ? 2
                              : dx12_hook_g_PostFSRProbeLevel.load(std::memory_order_acquire) + 1;

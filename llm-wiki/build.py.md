@@ -334,8 +334,10 @@ Default quality mode currently:
   `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
   `--run-tests` every scenario runs in its own process (4 in parallel, 180 s timeout) after the unit tests;
   `--gtest-filter` applies to both suites. Each scenario's hook log is
-  `build/flow_tests/logs/<Suite.Test>/hook_debug.log`. Not built by `--tests-only` (it needs the hook objects)
-  or in sanitizer builds. Design and status: `refactor-roadmap.md` ("FG flow harness").
+  `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log`). The dev loop for FG work:
+  `python build.py --incremental --tests-only --flow-tests --run-tests --gtest-filter="Flow*" --skip-updates
+  --concise` builds the flow DLL standalone (~5-60 s, compile-database snapshot/restore) and runs only it with
+  that filter. Not built in sanitizer builds. Design and status: `refactor-roadmap.md` ("FG flow harness").
 - A self-test that scans first-party sources must scope itself to `tools/verification_stage_cache.py`'s `SOURCE_DIRS`, never walk the project root. `external/` and `ffmpeg_build/` hold roughly 76 000 vendored C/C++ files, several of them CP1252 (AMD's and Valve's copyright banners) and some unreadable mid-build, so a root walk fails with `UnicodeDecodeError` before it can report anything. `scan_native_handle_uses()` in `tools/tests/test_build_testapp_tasks.py` is the reference shape: scoped directories plus tolerant decoding, since the tokens these contract scans look for are ASCII.
 - A self-test must never hand a placeholder file to code that spawns it; see the executable-image invariant under Operational Notes.
 

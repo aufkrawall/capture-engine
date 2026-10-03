@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 
@@ -74,8 +75,8 @@ if (!skip) {
                 "currentCallbackProof=%d stableProof=%d stableFor=%llums sameQueue=%d deviceHr=0x%08X "
                 "internalNoCallback=%d) "
                 "— using the game Present path while native FSR presentation is suspended or its callback is quiet",
-                lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0, ffxStalled ? 1 : 0,
-                assumedSince ? (GetTickCount64() - assumedSince) : 0,
+                lastCallback, ownedSince ? (ce::hook_clock::TickCount64() - ownedSince) : 0, ffxStalled ? 1 : 0,
+                assumedSince ? (ce::hook_clock::TickCount64() - assumedSince) : 0,
                 static_cast<unsigned long long>(currentFFXProofSince), directFFXApiConfirmation ? 1 : 0,
                 explicitNativeFSROffPending ? 1 : 0, currentFFXPresentCallbackProof ? 1 : 0,
                 progressProof.proof ? 1 : 0, progressProof.stableMs,
@@ -122,7 +123,7 @@ if (skip && explicitNativeFSROffPending && runtimeOwnedNativeFGPresentPath) {
     const int logCount = s_retainedNativeFSRSuspendSkipLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 300) == 0) {
         const ULONGLONG lastCallback = dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = ce::hook_clock::TickCount64();
         HookLogImportant(
             "DX12: Keeping separate overlay GPU work suppressed during native-FSR suspension; retained FFX "
             "present-callback bridge remains authoritative (runtime=%s callbackEver=%d lastCallbackAge=%llums "
@@ -138,7 +139,7 @@ if (skip && explicitNativeFSROffPending && runtimeOwnedNativeFGPresentPath) {
 // ffxConfigure/callback proof must stay suppressed. GTA Enhanced removes
 // the device on the first normal overlay ECL in that unproven state.
 {
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = ce::hook_clock::TickCount64();
     ULONGLONG suppressedSince = dx12_hook_g_OverlaySuppressedSinceMs.load(std::memory_order_acquire);
     if (suppressedSince == 0) {
         dx12_hook_g_OverlaySuppressedSinceMs.store(now, std::memory_order_release);

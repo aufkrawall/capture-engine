@@ -522,6 +522,10 @@ void DX12OverlayState::Cleanup() {
         offscreenRtvHeap->Release();
         offscreenRtvHeap = nullptr;
     }
+    if (postFSRProbeScratch) {
+        postFSRProbeScratch->Release();
+        postFSRProbeScratch = nullptr;
+    }
     offscreenWidth = 0;
     offscreenHeight = 0;
     offscreenFormat = DXGI_FORMAT_UNKNOWN;

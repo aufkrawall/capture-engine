@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
 
 DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat);  // forward decl — defined below
@@ -17,7 +18,7 @@ static void SetBundleTargetTexture(ID3D12Resource* targetTexture, uint32_t ffxSt
     g_CachedFFXUiFlags.store(flags, std::memory_order_release);
     g_BundleTargetNeedsTransparentClear.store(needsTransparentClear, std::memory_order_release);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
-    g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+    g_FFXUiCompositeLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
     static std::atomic<uint64_t> s_uiCacheUpdateCount{0};
     const uint64_t n = s_uiCacheUpdateCount.fetch_add(1, std::memory_order_relaxed);
     const bool changed = prev != targetTexture;
@@ -554,7 +555,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
 
     // QPC stamp at ECL submit (for the timeline ring buffer — CPU-side submit→return causality).
     LARGE_INTEGER submitQpc;
-    QueryPerformanceCounter(&submitQpc);
+    ce::hook_clock::QueryCounter(&submitQpc);
     ID3D12CommandList* lists[] = {g_FFXUiCompositeList};
     ExecuteCommandListsPtr realECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
     {
@@ -603,9 +604,9 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         }
     }
     LARGE_INTEGER returnQpc;
-    QueryPerformanceCounter(&returnQpc);
+    ce::hook_clock::QueryCounter(&returnQpc);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
-    g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+    g_FFXUiCompositeLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
 
     // Record this composite call in the timeline ring buffer for freeze diagnosis.
     const int gameEclCount = dx12_hook_g_CommandListsExecutedThisFrame.load(std::memory_order_relaxed);

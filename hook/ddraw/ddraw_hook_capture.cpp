@@ -1,4 +1,5 @@
 #include "ddraw_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 static ce::graphics_api_identity::DirectDrawVersion DirectDrawVersionFromIID(REFIID iid) {
     if (IsEqualIID(iid, IID_IDirectDraw7))
@@ -444,7 +445,7 @@ void NotePresentationComplete() {
         qpcFreq = frequency.QuadPart;
     }
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     ddraw_hook_g_PerfMetrics.Update(DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq));
 
     g_SharedFpsLimiter.SetIPCClient(g_IPC);
@@ -454,7 +455,7 @@ void NotePresentationComplete() {
     // the screen, or nothing being composited at all - is the signature of the
     // loading-screen and menu paths, and is not recoverable from the overlay.
     constexpr uint32_t kPresentationMixLogIntervalMs = 10000;
-    const uint32_t nowTick = static_cast<uint32_t>(GetTickCount());
+    const uint32_t nowTick = static_cast<uint32_t>(ce::hook_clock::TickCount());
     auto& diag = ddraw_hook_g_PresentationDiagnostics;
     const uint32_t lastTick = diag.lastLogTick.load(std::memory_order_relaxed);
     if (lastTick == 0 || nowTick - lastTick >= kPresentationMixLogIntervalMs) {

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void NoteStartupBlockingRenderModuleActivityFromECL(ID3D12CommandQueue* queue, const void* callerAddress) {
@@ -41,7 +42,7 @@ if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HAND
     return;
 }
 
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 dx12_hook_s_lastStartupBlockingRenderModuleActivityMs.store(now, std::memory_order_release);
 
 static std::atomic<int> s_blockingModuleActivityLogCount{0};
@@ -88,7 +89,7 @@ if (!startupCompatActive || !blockingOverlayModule || actualFGActive || !IsWindo
     return false;
 }
 
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 if (s_firstOverlayDetectedMs == 0) {
     s_firstOverlayDetectedMs = now;
 }
@@ -143,7 +144,7 @@ if (dx12_hook_g_State.overlayInit || ce::overlay_compat::GetStartupBlockingOverl
     return false;
 }
 
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 if (s_firstDeferredInitEligibleMs == 0) {
     s_firstDeferredInitEligibleMs = now;
 }
@@ -221,7 +222,7 @@ const HWND foregroundWindow = HookForegroundWindow();
 LONG foregroundWidth = 0;
 LONG foregroundHeight = 0;
 const bool exactWindowForeground = (foregroundWindow == gameWindow);
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 const bool usableSameProcessForegroundWindow =
     !exactWindowForeground && ce::overlay_compat::IsUsableSameProcessForegroundWindow(
                                   foregroundWindow, expectedProcessId, &foregroundWidth, &foregroundHeight);

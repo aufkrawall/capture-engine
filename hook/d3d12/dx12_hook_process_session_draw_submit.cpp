@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitSetup() {
@@ -76,7 +77,7 @@ return ProcessFrameFlow::kOverlayDone;
                         }
                     }
 
-                    dx12_hook_s_startupOverlayResourcePrimeMs = GetTickCount64();
+                    dx12_hook_s_startupOverlayResourcePrimeMs = ce::hook_clock::TickCount64();
                     HookLogImportant(
                         "DX12: DX12 overlay resource priming submitted, delaying first overlay draw for "
                         "%llums",
@@ -102,7 +103,7 @@ return ProcessFrameFlow::kOverlayDone;
                     }
                 }
                 QueryPerformanceFrequency(&perfFreq);
-                QueryPerformanceCounter(&perfQI);
+                ce::hook_clock::QueryCounter(&perfQI);
     return ProcessFrameFlow::kContinue;
 }
 
@@ -148,7 +149,7 @@ if (bufferIdx >= (UINT)dx12_hook_g_State.bufferCount) {
 // are held persistently.
 bb = nullptr;
 bbNeedsRelease = false;
-QueryPerformanceCounter(&perfGetBuf);
+ce::hook_clock::QueryCounter(&perfGetBuf);
 if (SUCCEEDED(sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb))) && bb) {
     bbNeedsRelease = true;
     // Recreate RTV for this buffer index (cheap CPU-side op).
@@ -658,7 +659,7 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
 
                                     overlayDrawRecorded =
                                         usedPrimaryOverlayBackend || !offscreenCompositeRequired;
-                                    QueryPerformanceCounter(&perfRecord);
+                                    ce::hook_clock::QueryCounter(&perfRecord);
 
                                     // GPU-breadcrumb: stamp the END of CE's overlay command list. If the GPU reaches
                                     // this marker but ffxQuery still wedges, CE's GPU work is NOT the stall (look to a

@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 constexpr size_t kMaxPinnedStreamlineFeatureQueryModules = 16;
@@ -676,7 +677,7 @@ bool AreReflexFeatureHooksComplete() {
 void RetryResolveReflexFeatureHooksForRuntimeActivity(const char* source) {
     const bool reflexComplete = AreReflexFeatureHooksComplete();
     const bool pclComplete = !GetModuleHandleA("sl.pcl.dll") || IsPCLSetMarkerHookComplete();
-    const uint64_t nowMs = GetTickCount64();
+    const uint64_t nowMs = ce::hook_clock::TickCount64();
     const uint64_t previousMs = streamline_hook_g_ReflexFeatureHookRetryLastMs.load(std::memory_order_acquire);
     const uint32_t currentAttempts = streamline_hook_g_RuntimeReflexRetryAttempts.load(std::memory_order_acquire);
 

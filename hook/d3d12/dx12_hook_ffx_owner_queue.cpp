@@ -3,6 +3,10 @@
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "common/logging/log_meter.h"
 
+namespace DXGIShared {
+bool IsStreamlineModuleHandle(HMODULE moduleHandle);
+}
+
 static std::atomic<bool> g_BelowForeignChainFSRTopmostSubmitProven{false};
 static std::atomic<bool> g_BelowForeignChainFSRTopmostRouteArmed{false};
 
@@ -108,9 +112,47 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
                                                 "ffxCreateContext descriptor");
 }
 
+void DX12_AdoptFFXDescriptorGameQueueAsOriginal(ID3D12CommandQueue* gameQueue) {
+    if (!gameQueue || gameQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+        return;
+    }
+    // A Streamline proxy queue (its vtable lives in a Streamline module) is not the game's own queue; CE learns
+    // that one from the proxy's submissions. The device is no test: games hand their native device to
+    // slSetD3DDevice too.
+    HMODULE vtableModule = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       *reinterpret_cast<LPCWSTR*>(gameQueue), &vtableModule);
+    if (vtableModule && DXGIShared::IsStreamlineModuleHandle(vtableModule)) {
+        return;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        if (dx12_hook_g_OriginalGameQueue) {
+            return;
+        }
+        gameQueue->AddRef();
+        dx12_hook_g_OriginalGameQueue = gameQueue;
+        dx12_hook_g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
+    }
+    HookLogImportant(
+        "DX12: Captured original game queue %p from the FFX swapchain create descriptor - the game presents "
+        "through FidelityFX from its first frame, and the real swapchain AMD creates next presents on AMD's "
+        "internal queue",
+        gameQueue);
+}
+
 bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain) {
     ID3D12CommandQueue* protectedInnerPresentQueue = ReferenceDeferredOfficialFFXTakeoverQueue();
     if (!protectedInnerPresentQueue) {
+        return false;
+    }
+    bool bindingExists = false;
+    {
+        std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
+        bindingExists = g_NativeFSRSwapchainQueueBindings.find(swapChain) != g_NativeFSRSwapchainQueueBindings.end();
+    }
+    if (bindingExists) {
+        protectedInnerPresentQueue->Release();
         return false;
     }
 

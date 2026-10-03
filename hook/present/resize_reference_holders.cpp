@@ -1,4 +1,5 @@
 #include "resize_reference_holders.h"
+#include "hook/runtime/hook_clock.h"
 
 #include <psapi.h>
 
@@ -70,7 +71,7 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
     LARGE_INTEGER frequency = {};
     LARGE_INTEGER started = {};
     QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&started);
+    ce::hook_clock::QueryCounter(&started);
 
     std::vector<holders::ImageRange> images;
     std::vector<ModuleName> names;
@@ -105,7 +106,7 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
     bool budgetExhausted = false;
     const auto elapsedUs = [&]() {
         LARGE_INTEGER now = {};
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
         return frequency.QuadPart > 0 ? (now.QuadPart - started.QuadPart) * 1'000'000 / frequency.QuadPart : 0;
     };
     for (uintptr_t address = lowest; address < highest && !budgetExhausted;) {
@@ -150,7 +151,7 @@ size_t LogBackBufferReferenceHolders(void* const* buffers, UINT bufferCount, con
     }
 
     LARGE_INTEGER finished = {};
-    QueryPerformanceCounter(&finished);
+    ce::hook_clock::QueryCounter(&finished);
     const double elapsedMs =
         frequency.QuadPart > 0 ? 1000.0 * static_cast<double>(finished.QuadPart - started.QuadPart) /
                                      static_cast<double>(frequency.QuadPart)

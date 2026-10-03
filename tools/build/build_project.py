@@ -52,6 +52,133 @@ def log_tests_only_uncompiled_product_sources() -> None:
     )
 
 
+def make_hook_ldflags(arch: str, clang_exe: str, mingw_lib: str, std_lib_path: str, vulkan_lib: str) -> List[str]:
+    """Hook DLL link flags for one architecture, without the PDB flag (it names the output)."""
+    # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
+    # This prevents crash during DLL load when injecting into games that don't use D3D12/D3D11/etc
+    ldflags_hook: List[str] = [
+        "-shared",
+        "-static",
+    ]
+    if IS_LINUX:
+        ldflags_hook.extend(["-static-libgcc", "-static-libstdc++"])
+
+    # Add lib path for non-Linux
+    if not IS_LINUX:
+        if arch == "x86" and std_lib_path:
+            ldflags_hook.append("-L" + std_lib_path)
+        elif mingw_lib:
+            ldflags_hook.append("-L" + mingw_lib)
+
+    ldflags_hook.extend(
+        [
+            "-ld3d9",
+            "-ld3d10",
+            "-ld3d11",
+            "-ld3dcompiler",
+            "-ldxguid",
+            "-lws2_32",
+            "-lole32",
+            "-luuid",
+            "-lwinmm",
+            "-luser32",
+            "-lgdi32",
+            "-lopengl32",
+            "-lversion",
+            "-ldxgi",
+            "-ld3d12",
+            "-lpdh",
+            "-lpsapi",
+            "-lavrt",
+            "-ldbghelp",
+            "-lbcrypt",
+            "-lntdll",
+            "-ladvapi32",
+        ]
+    )
+    ldflags_hook.append(vulkan_lib)
+
+    ldflags_hook.extend(LD_OPT_FLAGS)
+    if arch == "x86" and IS_LINUX:
+        ldflags_hook.append("-Wl,--allow-multiple-definition")
+    if arch == "x64":
+        ldflags_hook.extend(get_x64_linker_flags(clang_exe))
+
+    # LLD linker - use on Windows MSYS2, fallback to default on Linux
+    if not IS_LINUX:
+        ldflags_hook.extend(["-fuse-ld=lld", "-Wl,--exclude-all-symbols"])
+        if arch == "x86":
+            ldflags_hook.extend(
+                [
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-stdlib=libstdc++",
+                    "-static-libstdc++",
+                    "-rtlib=libgcc",
+                    "--unwindlib=libgcc",
+                    "-lpthread",
+                ]
+            )
+    return ldflags_hook
+
+
+def make_hook_cflags(arch: str, clang_exe: str) -> List[str]:
+    """Hook DLL compile flags for one architecture (the flow-test build derives its flags from these)."""
+    # Hook DLL must use conservative arch flags (injected into game processes
+    # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
+    if arch == "x64":
+        hook_base_cflags = make_cpp_cflags(
+            HOOK_OPT_FLAGS_X64,
+            compiler_exe=clang_exe,
+            suppress_microsoft_exception_spec=True,
+        )
+    else:
+        hook_base_cflags = make_cpp_cflags(
+            HOOK_OPT_FLAGS_X86,
+            compiler_exe=clang_exe,
+            arch_flags=(
+                [
+                    "--target=i686-w64-mingw32",
+                    "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
+                    "-mstackrealign",
+                    "-stdlib=libstdc++",
+                ]
+                if not IS_LINUX
+                else []
+            ),
+            suppress_microsoft_exception_spec=True,
+            enable_cfg=False,
+        )
+
+    hk_cflags = (
+        hook_base_cflags
+        + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
+        + [  # Vulkan hooks now in layer
+            # The Streamline SDK headers, for the generation bridge only.
+            #
+            # The bridge translates a 1.x game's calls into 2.x ones, which means
+            # constructing sl::Constants, sl::ResourceTag, sl::DLSSOptions and friends.
+            # Hand-mirroring those in the hook DLL is a claim about somebody else's ABI
+            # per struct, and the first such mirror (sl::Preferences) was already wrong
+            # on its first write - BaseStructure puts `next` at 0 and `structType` at 8,
+            # the reverse of how the declaration reads. Using the real headers removes
+            # that entire class of bug instead of re-verifying it eight more times.
+            #
+            # Isolation-aware via FG_SDK_INCLUDE_DIR, and the SDK is prepared before the
+            # hook DLL compiles. CE's own `sl*`-prefixed types live in the global
+            # namespace, so they do not collide with the SDK's `sl::` ones.
+            "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
+        ]
+    )
+
+    # Add Vulkan headers include path (from MSYS2 on Linux)
+    if IS_LINUX:
+        vulkan_include = os.path.join(get_linux_msys2_dir(), "clang64", "include")
+        if os.path.exists(vulkan_include):
+            hk_cflags.extend(["-idirafter", vulkan_include])
+    return hk_cflags
+
+
 def compile_project(
     env,
     clang_bin,
@@ -106,6 +233,11 @@ def compile_project(
         log_tests_only_uncompiled_product_sources()
         if should_run_tests and test_exe:
             if not run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools):
+                sys.exit(1)
+        if "--flow-tests" in sys.argv:
+            setup_fg_sdk_for_host(skip_updates=skip_updates)
+            flow_test_exe = build_flow_tests_standalone(env)
+            if should_run_tests and not run_flow_tests(env, flow_test_exe, gtest_filter):
                 sys.exit(1)
         log("Tests-only mode: stopping after unit test build/run")
         return
@@ -225,126 +357,9 @@ def compile_project(
                 continue
             raise RuntimeError(f"Vulkan import library unavailable for {arch}")
 
-        # Use delay-load for graphics DLLs so the hook can load even in games that don't have them
-        # This prevents crash during DLL load when injecting into games that don't use D3D12/D3D11/etc
-        ldflags_hook: List[str] = [
-            "-shared",
-            "-static",
-        ]
-        if IS_LINUX:
-            ldflags_hook.extend(["-static-libgcc", "-static-libstdc++"])
-
-        # Add lib path for non-Linux
-        if not IS_LINUX:
-            if arch == "x86" and std_lib_path:
-                ldflags_hook.append("-L" + std_lib_path)
-            elif mingw_lib:
-                ldflags_hook.append("-L" + mingw_lib)
-
-        ldflags_hook.extend(
-            [
-                "-ld3d9",
-                "-ld3d10",
-                "-ld3d11",
-                "-ld3dcompiler",
-                "-ldxguid",
-                "-lws2_32",
-                "-lole32",
-                "-luuid",
-                "-lwinmm",
-                "-luser32",
-                "-lgdi32",
-                "-lopengl32",
-                "-lversion",
-                "-ldxgi",
-                "-ld3d12",
-                "-lpdh",
-                "-lpsapi",
-                "-lavrt",
-                "-ldbghelp",
-                "-lbcrypt",
-                "-lntdll",
-                "-ladvapi32",
-            ]
-        )
-        ldflags_hook.append(vulkan_lib)
-
-        ldflags_hook.extend(LD_OPT_FLAGS)
-        if arch == "x86" and IS_LINUX:
-            ldflags_hook.append("-Wl,--allow-multiple-definition")
-        if arch == "x64":
-            ldflags_hook.extend(get_x64_linker_flags(curr_clang_exe))
-
-        # LLD linker - use on Windows MSYS2, fallback to default on Linux
-        if not IS_LINUX:
-            ldflags_hook.extend(["-fuse-ld=lld", "-Wl,--exclude-all-symbols"])
-            if arch == "x86":
-                ldflags_hook.extend(
-                    [
-                        "--target=i686-w64-mingw32",
-                        "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
-                        "-stdlib=libstdc++",
-                        "-static-libstdc++",
-                        "-rtlib=libgcc",
-                        "--unwindlib=libgcc",
-                        "-lpthread",
-                    ]
-                )
-
+        ldflags_hook = make_hook_ldflags(arch, curr_clang_exe, mingw_lib, std_lib_path, vulkan_lib)
         append_windows_pdb_linker_flag(ldflags_hook, hk_dll)
-
-        # Hook DLL must use conservative arch flags (injected into game processes
-        # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
-        if arch == "x64":
-            hook_base_cflags = make_cpp_cflags(
-                HOOK_OPT_FLAGS_X64,
-                compiler_exe=curr_clang_exe,
-                suppress_microsoft_exception_spec=True,
-            )
-        else:
-            hook_base_cflags = make_cpp_cflags(
-                HOOK_OPT_FLAGS_X86,
-                compiler_exe=curr_clang_exe,
-                arch_flags=(
-                    [
-                        "--target=i686-w64-mingw32",
-                        "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
-                        "-mstackrealign",
-                        "-stdlib=libstdc++",
-                    ]
-                    if not IS_LINUX
-                    else []
-                ),
-                suppress_microsoft_exception_spec=True,
-                enable_cfg=False,
-            )
-
-        hk_cflags = (
-            hook_base_cflags
-            + ["-DVK_NO_PROTOTYPES", "-DBUILDING_CAPTURE_HOOK"]
-            + [  # Vulkan hooks now in layer
-                # The Streamline SDK headers, for the generation bridge only.
-                #
-                # The bridge translates a 1.x game's calls into 2.x ones, which means
-                # constructing sl::Constants, sl::ResourceTag, sl::DLSSOptions and friends.
-                # Hand-mirroring those in the hook DLL is a claim about somebody else's ABI
-                # per struct, and the first such mirror (sl::Preferences) was already wrong
-                # on its first write - BaseStructure puts `next` at 0 and `structType` at 8,
-                # the reverse of how the declaration reads. Using the real headers removes
-                # that entire class of bug instead of re-verifying it eight more times.
-                #
-                # Isolation-aware via FG_SDK_INCLUDE_DIR, and the SDK is prepared before the
-                # hook DLL compiles. CE's own `sl*`-prefixed types live in the global
-                # namespace, so they do not collide with the SDK's `sl::` ones.
-                "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
-            ]
-        )
-
-        # Add Vulkan headers include path (from MSYS2 on Linux)
-        if IS_LINUX:
-            vulkan_include = os.path.join(get_linux_msys2_dir(), "clang64", "include")
-            if os.path.exists(vulkan_include):
-                hk_cflags.extend(["-idirafter", vulkan_include])
+        hk_cflags = make_hook_cflags(arch, curr_clang_exe)
 
         hk_objs: List[str] = []
         src_obj_pairs: List[tuple[str, str]] = []

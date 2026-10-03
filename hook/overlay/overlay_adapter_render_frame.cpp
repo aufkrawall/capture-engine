@@ -1,4 +1,5 @@
 #include "overlay_adapter_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/metrics/benchmark_manager.h"
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
@@ -32,12 +33,12 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         // a publication stamp produced in the sensor process, so it has to use
         // the same conversion the producer used, including its overflow guard.
         LARGE_INTEGER displayTimingNow = {};
-        QueryPerformanceCounter(&displayTimingNow);
+        ce::hook_clock::QueryCounter(&displayTimingNow);
         currentQpcUs = DisplayTimingQpcToUs(displayTimingNow.QuadPart, PerfLogger::GetQpcFrequency());
         metrics->SetFrameTimeSource(cfg.frameTimeSource);
         metrics->ConsumeDisplayTiming(sharedMem->displayTiming, currentQpcUs);
         const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
-        const DWORD sourceNow = GetTickCount();
+        const DWORD sourceNow = ce::hook_clock::TickCount();
         if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
             // The observed source is recorded whatever the rate limit then
             // decides. Leaving it behind on a suppressed transition made every
@@ -77,7 +78,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         // Without this line that shape is only recoverable by re-deriving it
         // from the per-frame CSV.
         constexpr DWORD kPacingHealthLogIntervalMs = 10000;
-        const DWORD pacingNow = GetTickCount();
+        const DWORD pacingNow = ce::hook_clock::TickCount();
         if (pacingNow - lastPacingHealthLogTime >= kPacingHealthLogIntervalMs) {
             lastPacingHealthLogTime = pacingNow;
             HookLogImportant(
@@ -112,7 +113,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
 
     // Update throttling
-    DWORD now = GetTickCount();
+    DWORD now = ce::hook_clock::TickCount();
     const bool latencyJustEnabled =
         cfg.showSystemLatency && (!hasRenderedConfig || !lastRenderedConfig.showSystemLatency);
     bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval || latencyJustEnabled;
@@ -252,7 +253,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     frameLayout.recordingStatusDark =
         sharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture) &&
         ce::recording_indicator::IsStarting(frameLayout.recordingState);
-    uint64_t nowTick64 = GetTickCount64();
+    uint64_t nowTick64 = ce::hook_clock::TickCount64();
     if (cfg.showRecording && frameLayout.recordingActive) {
         int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
         if (startTime > 0) {

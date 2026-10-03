@@ -1,4 +1,5 @@
 #include "fg_session_state.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 #include <algorithm>
@@ -309,7 +310,7 @@ SnapshotBuildResult BuildSnapshotNoLock(SessionState& state) {
 
     const ULONGLONG startupUntil =
         DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
-    const ULONGLONG nowMs = GetTickCount64();
+    const ULONGLONG nowMs = ce::hook_clock::TickCount64();
     snapshot.startupWindowActive = startupUntil != 0 && startupUntil > nowMs;
     snapshot.startupWindowRemainingMs = snapshot.startupWindowActive ? (startupUntil - nowMs) : 0;
 
@@ -722,7 +723,7 @@ void EmitFGEvent(FGEventKind kind, const char* source, void* ptrA, void* ptrB,
     event.hintedRuntimeMode = hintedRuntimeMode;
     event.hintedActive = hintedActive;
     event.hintedExplicitActivation = hintedExplicitActivation;
-    event.timestampMs = GetTickCount64();
+    event.timestampMs = ce::hook_clock::TickCount64();
     event.sessionEpoch = snapshot.sessionEpoch;
     event.runtimeEpoch = snapshot.runtimeEpoch;
     event.swapchainEpoch = snapshot.swapchainEpoch;

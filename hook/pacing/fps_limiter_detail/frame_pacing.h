@@ -4,6 +4,7 @@
 // after the class body; kept inline so the hot path is unchanged.
 
 #include "hook/pacing/fps_limiter.h"
+#include "hook/runtime/hook_clock.h"
 
 inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps, int cadenceScale,
                                                                   bool preserveCaptureSyncPhase) {
@@ -178,7 +179,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     }
 
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
 
     if (qpcFrequency == 0) {
         LARGE_INTEGER freq;
@@ -229,7 +230,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
             if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
                 kernelTimerWaitCount_.fetch_add(1, std::memory_order_relaxed);
                 WaitForSingleObject(highResTimer, static_cast<DWORD>((coarseUs + 999) / 1000 + 2));
-                QueryPerformanceCounter(&now);
+                ce::hook_clock::QueryCounter(&now);
                 const int64_t coarseOvershootUs =
                     std::max<int64_t>(0, (now.QuadPart - coarseTargetTick) * 1000000 / qpcFrequency);
                 RecordTimerOvershoot(coarseOvershootUs);
@@ -254,7 +255,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
         }
 
         // Recalculate remaining time
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
         diff = targetTick - now.QuadPart;
         diffUs = (diff * 1000000) / qpcFrequency;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include "hook/runtime/hook_clock.h"
 #include <atomic>
 #include <cstddef>
 #include <format>
@@ -88,7 +89,7 @@ inline std::atomic<ULONGLONG>& LastLargePresentGapTickStorage() {
 }
 
 inline void MarkLargePresentGap() {
-    LastLargePresentGapTickStorage().store(GetTickCount64(), std::memory_order_release);
+    LastLargePresentGapTickStorage().store(ce::hook_clock::TickCount64(), std::memory_order_release);
 }
 
 inline bool HasRecentLargePresentGap(uint32_t maxAgeMs) {
@@ -96,7 +97,7 @@ inline bool HasRecentLargePresentGap(uint32_t maxAgeMs) {
     if (lastTick == 0) {
         return false;
     }
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = ce::hook_clock::TickCount64();
     return now >= lastTick && (now - lastTick) <= maxAgeMs;
 }
 extern char g_ProcessName[260];

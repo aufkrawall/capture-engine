@@ -3,6 +3,7 @@
 // thread. Writing the dump itself lives in freeze_watchdog_dump.cpp.
 
 #include "freeze_watchdog.h"
+#include "hook/runtime/hook_clock.h"
 #include <tlhelp32.h>
 #include <algorithm>
 #include <chrono>
@@ -17,7 +18,7 @@
 FreezeWatchdog g_RenderWatchdog;
 
 static uint64_t GetCurrentMicros() {
-    auto now = std::chrono::steady_clock::now();
+    auto now = ce::hook_clock::SteadyNow();
     return std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 }
 
@@ -339,7 +340,7 @@ void FreezeWatchdog::PollCrossApiPresentLiveness() {
     // A stale tick produces no heartbeat, and only a publication that remains
     // in flight can keep the Vulkan render loop authoritative after that.
     if (!sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
-            currentPid, GetTickCount64(), static_cast<uint32_t>(kCrossApiPresentMaxAgeMs))) {
+            currentPid, ce::hook_clock::TickCount64(), static_cast<uint32_t>(kCrossApiPresentMaxAgeMs))) {
         return;
     }
 

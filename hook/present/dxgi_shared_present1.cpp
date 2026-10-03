@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 #include "hook/fg/fg_cost_probe.h"
@@ -458,7 +459,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard =
         ce::make_scope_guard([]() {
-            g_SharedState.lastPresentReturnTickMs.store(GetTickCount64(), std::memory_order_release);
+            g_SharedState.lastPresentReturnTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
             g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
         });
 

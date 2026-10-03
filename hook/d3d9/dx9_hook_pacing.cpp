@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void EnsureDwmFlushLoaded() {
@@ -74,7 +75,7 @@ void WaitUsHighRes(int64_t waitUs) {
 int GetDesktopRefreshHzCached() {
 
 
-    DWORD now = GetTickCount();
+    DWORD now = ce::hook_clock::TickCount();
     if (dx9_hook_g_RefreshHzCached > 0 && (now - dx9_hook_g_RefreshHzLastTick) < 2000) {
         return dx9_hook_g_RefreshHzCached;
     }
@@ -108,7 +109,7 @@ void PaceToRefreshQpc() {
 
     const int64_t frameTicks = qpcFreq / (int64_t)hz;
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
 
     if (dx9_hook_g_LastPacedQpc == 0) {
         dx9_hook_g_LastPacedQpc = now.QuadPart;
@@ -131,7 +132,7 @@ void PaceToRefreshQpc() {
         const int kMaxIterations = 100000;  // Prevent infinite spinning
 
         for (;;) {
-            QueryPerformanceCounter(&now);
+            ce::hook_clock::QueryCounter(&now);
             if (now.QuadPart >= target)
                 break;
             // Safety checks: timeout or max iterations
@@ -202,7 +203,7 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
         static thread_local UINT lastLiveInterval = 0;
         static thread_local int lastFallback = -1;
         static thread_local DWORD lastTick = 0;
-        DWORD now = GetTickCount();
+        DWORD now = ce::hook_clock::TickCount();
         if (hz != lastHz || (int)shouldPace != lastShouldPace || liveInterval != lastLiveInterval ||
             (int)needsFullscreenFallback != lastFallback || (now - lastTick) > 2000) {
             if (needsFullscreenFallback) {
@@ -247,11 +248,11 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
     // and avoids double-pacing (which can create weird stable cadences like ~100
     // FPS).
     EnsureDwmFlushLoaded();
-    const DWORD nowTick = GetTickCount();
+    const DWORD nowTick = ce::hook_clock::TickCount();
     if (dx9_hook_g_DwmFlush && nowTick >= s_DwmDisabledUntilTick) {
         const int64_t qpcFreq = GetQpcFreqCached();
         LARGE_INTEGER t0, t1;
-        QueryPerformanceCounter(&t0);
+        ce::hook_clock::QueryCounter(&t0);
 
         // DwmFlush can hang indefinitely with DXVK - use a timeout mechanism
         // Use a separate thread with a timeout to prevent indefinite blocking
@@ -277,7 +278,7 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
             dx9_hook_g_DwmFlush();
         }
 
-        QueryPerformanceCounter(&t1);
+        ce::hook_clock::QueryCounter(&t1);
         const int64_t dwmUs = (qpcFreq > 0) ? ((t1.QuadPart - t0.QuadPart) * 1000000) / qpcFreq : 0;
 
         // If DwmFlush blocks, only accept it if it matches the expected refresh
@@ -294,7 +295,7 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
 
             static DWORD lastDecisionLogTick = 0;
             static int lastAccept = -1;
-            const DWORD nowTick = GetTickCount();
+            const DWORD nowTick = ce::hook_clock::TickCount();
             if (lastAccept != (acceptDwm ? 1 : 0) || (nowTick - lastDecisionLogTick) > 2000) {
                 lastDecisionLogTick = nowTick;
                 lastAccept = acceptDwm ? 1 : 0;

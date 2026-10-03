@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* backBuffer) {
@@ -55,16 +56,16 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                             }
 
                             LARGE_INTEGER captureStart, captureEnd;
-                            QueryPerformanceCounter(&captureStart);
+                            ce::hook_clock::QueryCounter(&captureStart);
                             CompleteGDIInteropCapture(gdiCopySurfaces[readIdx], readTimestampQpc);
-                            QueryPerformanceCounter(&captureEnd);
+                            ce::hook_clock::QueryCounter(&captureEnd);
                             zeroCopyReadbackUs = static_cast<int32_t>(
                                 ((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / gdiQpcFreq);
                         }
                         gdiLastCaptureQpc = readTimestampQpc;
                     }
                     LARGE_INTEGER now;
-                    QueryPerformanceCounter(&now);
+                    ce::hook_clock::QueryCounter(&now);
                     gdiBufferTimestampQpc[gdiWriteIdx] = now.QuadPart;
                     gdiHasPrevFrame = true;
                     gdiWriteIdx = 1 - gdiWriteIdx;
@@ -88,7 +89,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
             qpcFreq = f.QuadPart;
         }
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
 
         if (useD3D11Staging) {
             // Restructured D3D11 staging pipeline:
@@ -119,9 +120,9 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
 
                     if (shmemQueries[consumeIdx]) {
                         LARGE_INTEGER qwStart, qwEnd;
-                        QueryPerformanceCounter(&qwStart);
+                        ce::hook_clock::QueryCounter(&qwStart);
                         HRESULT queryHr = shmemQueries[consumeIdx]->GetData(nullptr, 0, 0);
-                        QueryPerformanceCounter(&qwEnd);
+                        ce::hook_clock::QueryCounter(&qwEnd);
                         stagingQueryWaitUs =
                             static_cast<int32_t>(((qwEnd.QuadPart - qwStart.QuadPart) * 1000000) / qpcFreq);
 
@@ -147,19 +148,19 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                         } else {
                             // Inline fallback: process on render thread
                             LARGE_INTEGER lockStart, lockEnd;
-                            QueryPerformanceCounter(&lockStart);
+                            ce::hook_clock::QueryCounter(&lockStart);
 
                             D3DLOCKED_RECT rect;
                             DWORD lockFlags = D3DLOCK_READONLY | D3DLOCK_NOSYSLOCK;
                             HRESULT lockHr = shmemSurfaces[consumeIdx]->LockRect(&rect, NULL, lockFlags);
 
-                            QueryPerformanceCounter(&lockEnd);
+                            ce::hook_clock::QueryCounter(&lockEnd);
                             stagingLockRectUs =
                                 static_cast<int32_t>(((lockEnd.QuadPart - lockStart.QuadPart) * 1000000) / qpcFreq);
 
                             if (SUCCEEDED(lockHr)) {
                                 LARGE_INTEGER uploadStart, uploadEnd;
-                                QueryPerformanceCounter(&uploadStart);
+                                ce::hook_clock::QueryCounter(&uploadStart);
 
                                 const int idx = AcquirePublishedTextureSlot();
                                 const bool canUpload = idx >= 0 && d3d11Context && sharedTextures[idx];
@@ -169,7 +170,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                                 }
                                 shmemSurfaces[consumeIdx]->UnlockRect();
 
-                                QueryPerformanceCounter(&uploadEnd);
+                                ce::hook_clock::QueryCounter(&uploadEnd);
                                 stagingD3D11UploadUs = static_cast<int32_t>(
                                     ((uploadEnd.QuadPart - uploadStart.QuadPart) * 1000000) / qpcFreq);
 
@@ -225,7 +226,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 if (stagingUseGpuIntermediate && stagingRenderSurfaces[submitIdx]) {
                     // GPU blit: backBuffer -> intermediate render target (fast, no DMA)
                     LARGE_INTEGER stretchStart, stretchEnd;
-                    QueryPerformanceCounter(&stretchStart);
+                    ce::hook_clock::QueryCounter(&stretchStart);
                     HRESULT stretchHr = device->StretchRect(backBuffer, nullptr, stagingRenderSurfaces[submitIdx],
                                                             nullptr, D3DTEXF_NONE);
 
@@ -248,9 +249,9 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                         }
                         // Direct readback (no deferred path without intermediate)
                         LARGE_INTEGER readbackStart, submitEnd;
-                        QueryPerformanceCounter(&readbackStart);
+                        ce::hook_clock::QueryCounter(&readbackStart);
                         HRESULT readbackHr = device->GetRenderTargetData(backBuffer, shmemSurfaces[submitIdx]);
-                        QueryPerformanceCounter(&submitEnd);
+                        ce::hook_clock::QueryCounter(&submitEnd);
                         stagingStretchRectUs = 0;
                         stagingReadbackSubmitUs =
                             static_cast<int32_t>(((submitEnd.QuadPart - readbackStart.QuadPart) * 1000000) / qpcFreq);
@@ -264,7 +265,7 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                             stagingLastSubmitQpc = submitEnd.QuadPart;
                         }
                     } else {
-                        QueryPerformanceCounter(&stretchEnd);
+                        ce::hook_clock::QueryCounter(&stretchEnd);
                         stagingStretchRectUs =
                             static_cast<int32_t>(((stretchEnd.QuadPart - stretchStart.QuadPart) * 1000000) / qpcFreq);
                         // Defer GetRenderTargetData to after Present (PostPresentReadback).
@@ -275,9 +276,9 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 } else {
                     // Direct readback (no intermediate - must happen before Present)
                     LARGE_INTEGER readbackStart, submitEnd;
-                    QueryPerformanceCounter(&readbackStart);
+                    ce::hook_clock::QueryCounter(&readbackStart);
                     HRESULT readbackHr = device->GetRenderTargetData(backBuffer, shmemSurfaces[submitIdx]);
-                    QueryPerformanceCounter(&submitEnd);
+                    ce::hook_clock::QueryCounter(&submitEnd);
                     stagingStretchRectUs = 0;
                     stagingReadbackSubmitUs =
                         static_cast<int32_t>(((submitEnd.QuadPart - readbackStart.QuadPart) * 1000000) / qpcFreq);
@@ -437,7 +438,7 @@ void DX9Capture::CompletePendingZeroCopy() {
         const int64_t frameTimestampQpc = zeroCopyPendingTimestampQpc;
 
         LARGE_INTEGER queryStart, queryEnd;
-        QueryPerformanceCounter(&queryStart);
+        ce::hook_clock::QueryCounter(&queryStart);
 
         IDirect3DQuery9* completionQuery = useDirectD3D9SharedRing ? directSharedQueries9[idx] : zeroCopyQuery;
         if (completionQuery) {
@@ -452,7 +453,7 @@ void DX9Capture::CompletePendingZeroCopy() {
         }
         zeroCopyPendingCopy = false;
         zeroCopyPendingTimestampQpc = 0;
-        QueryPerformanceCounter(&queryEnd);
+        ce::hook_clock::QueryCounter(&queryEnd);
         zeroCopyQueryWaitUs = static_cast<int32_t>(((queryEnd.QuadPart - queryStart.QuadPart) * 1000000) / qpcFreq);
 
         if (useDirectD3D9SharedRing) {
@@ -470,12 +471,12 @@ void DX9Capture::CompletePendingZeroCopy() {
         }
         if (d3d11Context && d3d11SharedTexture && sharedTextures[idx]) {
             LARGE_INTEGER copyStart;
-            QueryPerformanceCounter(&copyStart);
+            ce::hook_clock::QueryCounter(&copyStart);
 
             d3d11Context->CopySubresourceRegion(sharedTextures[idx], 0, 0, 0, 0, d3d11SharedTexture, 0, NULL);
 
             LARGE_INTEGER copyEnd;
-            QueryPerformanceCounter(&copyEnd);
+            ce::hook_clock::QueryCounter(&copyEnd);
 
             SignalPublishedTextureFrame(idx, frameTimestampQpc);
 
@@ -521,9 +522,9 @@ void DX9Capture::PostPresentReadback(IDirect3DDevice9* device) {
             stagingPendingBlitIdx = -1;
 
             LARGE_INTEGER readbackStart, readbackEnd;
-            QueryPerformanceCounter(&readbackStart);
+            ce::hook_clock::QueryCounter(&readbackStart);
             HRESULT readbackHr = device->GetRenderTargetData(stagingRenderSurfaces[idx], shmemSurfaces[idx]);
-            QueryPerformanceCounter(&readbackEnd);
+            ce::hook_clock::QueryCounter(&readbackEnd);
             stagingReadbackSubmitUs =
                 static_cast<int32_t>(((readbackEnd.QuadPart - readbackStart.QuadPart) * 1000000) / qpcFreq);
 

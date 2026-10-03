@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_overlay_shared.h"
 
 
@@ -57,7 +58,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-            GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+            ce::hook_clock::TickCount64() <
+                dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             dx12_hook_g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, dx12_hook_g_HadFSRFGPhase, dx12_hook_g_SwapchainQueue != nullptr,

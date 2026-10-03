@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void DX11Capture::Cleanup() {
@@ -109,10 +110,10 @@ bool DX11Capture::WaitForCopy(ID3D11DeviceContext* context,  int idx,  DWORD tim
 
         if (!copyQueries[idx])
             return true;  // No query = assume complete
-        DWORD start = GetTickCount();
+        DWORD start = ce::hook_clock::TickCount();
         BOOL data = FALSE;
         while (context->GetData(copyQueries[idx], &data, sizeof(data), 0) == S_FALSE) {
-            if (GetTickCount() - start > timeoutMs) {
+            if (ce::hook_clock::TickCount() - start > timeoutMs) {
                 return false;  // Timeout
             }
             SwitchToThread();  // Yield CPU

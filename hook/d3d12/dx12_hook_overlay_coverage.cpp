@@ -1,4 +1,6 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
+#include "common/logging/log_meter.h"
 
 
 const char* DX12OverlayRenderRouteName(uint32_t route) {
@@ -221,7 +223,7 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
     if (result.uncoveredStreakStarted) {
         const char* streakGate = dx12_hook_g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
         dx12_hook_g_OverlayCoverageStreakGate.store(streakGate, std::memory_order_relaxed);
-        const uint64_t startTick = GetTickCount64();
+        const uint64_t startTick = ce::hook_clock::TickCount64();
         dx12_hook_g_OverlayCoverageStreakStartTickMs.store(startTick, std::memory_order_relaxed);
         const bool startConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
         dx12_hook_g_OverlayCoverageStreakStartConfirmed.store(startConfirmed, std::memory_order_relaxed);
@@ -249,7 +251,7 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
             const char* lastGate = dx12_hook_g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
             const uint32_t route = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
             const uint64_t startTick = dx12_hook_g_OverlayCoverageStreakStartTickMs.load(std::memory_order_relaxed);
-            const uint64_t durationMs = startTick ? (GetTickCount64() - startTick) : 0;
+            const uint64_t durationMs = startTick ? (ce::hook_clock::TickCount64() - startTick) : 0;
             const bool confirmedDuringStreak =
                 dx12_hook_g_OverlayCoverageStreakStartConfirmed.load(std::memory_order_relaxed);
             HookLogImportant(
@@ -262,6 +264,26 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
                 source ? source : "unknown", pSwapChain, static_cast<unsigned long long>(snapshot.totalPresents),
                 static_cast<unsigned long long>(snapshot.uncoveredPresents));
         }
+    }
+}
+
+// A physical Present that no accounting site judged is invisible to the ledger: it can show no overlay
+// without counting as uncovered (FG flow test FlowFSR no-callback: every FSR FG output went unaccounted).
+void NoteUnaccountedPhysicalPresent(IDXGISwapChain* pSwapChain) {
+    if (!ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(
+            dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire))) {
+        return;
+    }
+    static std::atomic<uint32_t> s_unaccounted{0};
+    static ce::log_meter::ChangeGate s_gate;
+    const uint32_t unaccounted = s_unaccounted.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto verdict =
+        s_gate.ObserveOrEvery(ce::log_meter::FieldKey(pSwapChain, GetCurrentThreadId()), unaccounted, 600);
+    if (verdict) {
+        HookLogImportant(
+            "[OVERLAY COVERAGE] Physical Present left the coverage ledger - no accounting site judged it "
+            "(sc=%p tid=0x%lX unaccounted=%u)%s",
+            pSwapChain, GetCurrentThreadId(), unaccounted, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
 }
 
@@ -295,6 +317,8 @@ void DX12_EndOverlayPresentScope() {
         const char* source = scope.lastSource ? scope.lastSource : scope.firstSource;
         AccountPhysicalPresentForOverlayCoverage(scope.swapchain, scope.inheritCoverageIfNoDraw, source,
                                                  scope.accountCalls);
+    } else {
+        NoteUnaccountedPhysicalPresent(scope.swapchain);
     }
     scope.swapchain = nullptr;
     scope.accountCalls = 0;
@@ -356,7 +380,7 @@ const uint64_t drawsBefore = dx12_hook_g_OverlayCoverageDrawCount.fetch_add(1, s
 s_overlayRouteMaskSinceAccount.fetch_or(1u << (static_cast<uint32_t>(route) & 31u), std::memory_order_acq_rel);
 const uint32_t previousRoute =
     dx12_hook_g_LastDX12OverlayRenderRoute.exchange(static_cast<uint32_t>(route), std::memory_order_acq_rel);
-dx12_hook_g_LastDX12OverlayRenderTickMs.store(GetTickCount64(), std::memory_order_release);
+dx12_hook_g_LastDX12OverlayRenderTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
 // [OVERLAY DOUBLE-DRAW] detector: a draw already happened since the last ACCOUNTED present
 // (drawsBefore > lastSeen) and it came from a DIFFERENT route — i.e. two overlay routes rendered
 // within the same present window. One route re-drawing is benign; two different routes can show the

@@ -73,13 +73,18 @@ TEST(RayReconstructionForceSourceTest, PublishesResolvedPolicyAndRestoresBeforeH
 TEST(RayReconstructionForceSourceTest, InstallsGraphicsHooksBeforePotentiallyExpensiveEngineDiscovery) {
     const std::string hookThread = ReadProjectSource("hook/runtime/main_hookthread.cpp");
 
-    const size_t initialHookInstall = hookThread.find("CheckAndInstallHooks();");
+    // The initial install pass is InstallHookThreadHooks() (defined after HookThread, shared with the flow
+    // tests' entry); it ends with the graphics hooks.
+    const size_t initialHookInstall = hookThread.find("InstallHookThreadHooks();");
     const size_t initialRRRefresh = hookThread.find("RefreshOverrides(initialGraphicsConfig)");
     ASSERT_NE(initialHookInstall, std::string::npos);
     ASSERT_NE(initialRRRefresh, std::string::npos);
     EXPECT_LT(initialHookInstall, initialRRRefresh);
+    const size_t installBody = hookThread.find("void InstallHookThreadHooks() {");
+    ASSERT_NE(installBody, std::string::npos);
+    EXPECT_NE(hookThread.find("CheckAndInstallHooks();", installBody), std::string::npos);
 
-    const size_t periodicHookInstall = hookThread.find("CheckAndInstallHooks();", initialHookInstall + 1);
+    const size_t periodicHookInstall = hookThread.find("CheckAndInstallHooks();");
     const size_t periodicRRRefresh = hookThread.find("RefreshOverrides(activeGraphicsConfig)");
     ASSERT_NE(periodicHookInstall, std::string::npos);
     ASSERT_NE(periodicRRRefresh, std::string::npos);

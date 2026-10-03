@@ -126,8 +126,9 @@ TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchi
     const size_t processFrame = text.find("void ProcessFrame(");
     ASSERT_NE(processFrame, std::string::npos);
     const size_t lifetimeDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", processFrame);
+    // The authoritative DLSS-off return is the exact-proof case of the FG-inactive original-queue decision.
     const size_t decision =
-        text.find("ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(", processFrame);
+        text.find("ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(", processFrame);
     const size_t consume =
         text.find("dx12_hook_g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(", processFrame);
     const size_t preserve = text.find("ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(", processFrame);

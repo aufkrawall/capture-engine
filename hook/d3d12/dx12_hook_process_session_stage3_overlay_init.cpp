@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
@@ -108,7 +109,8 @@ ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
             }
             const bool lastWorkingQueueStillActiveDuringRecentTeardown =
                 dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-                GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+                ce::hook_clock::TickCount64() <
+                    dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
             const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
                 dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
@@ -379,7 +381,8 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-            GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+            ce::hook_clock::TickCount64() <
+                dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
         int slOffSwapchainGrace = dx12_hook_g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
         // Retained no-callback FSR suspension: AMD keeps the FI swapchain + queue latched while the
         // app renders on origGame, so the queue-settle condition below can never be met — the policy
@@ -660,7 +663,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
 
                 if (dx12_hook_s_startupOverlayActivationStage ==
                     StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit) {
-                    dx12_hook_s_startupOverlayActivationStageMs = GetTickCount64();
+                    dx12_hook_s_startupOverlayActivationStageMs = ce::hook_clock::TickCount64();
                     HookLogImportant(
                         "DX12: Startup compat staged activation - backend init complete, delaying RTV init for "
                         "%llums",

@@ -5,6 +5,7 @@ struct ScopedAvGuard;
 struct ScopedResizeGuard;
 
 #include "dxgi_swapchain_wrap.h"
+#include "hook/runtime/hook_clock.h"
 
 #include <d3d10.h>
 
@@ -170,7 +171,7 @@ inline bool ShouldYieldToVulkanLayer() {
     }
 
     return shm->runtimeState.IsVulkanPresentRecentForProcess(
-        GetCurrentProcessId(), GetTickCount64(), 200);
+        GetCurrentProcessId(), ce::hook_clock::TickCount64(), 200);
 }
 
 inline const char* DetectWrappedSwapchainApi(IUnknown* pDevice, bool isD3D12) {

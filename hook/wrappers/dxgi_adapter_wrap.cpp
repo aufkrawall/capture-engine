@@ -3,6 +3,7 @@
  */
 
 #include "dxgi_adapter_wrap.h"
+#include "hook/runtime/hook_clock.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_output_wrap.h"
 #include "hook/present/dxgi_video_memory_log_policy.h"
@@ -48,7 +49,7 @@ bool ShouldLogVideoMemoryQueryResult(UINT nodeIndex, DXGI_MEMORY_SEGMENT_GROUP m
             videoMemoryInfo->CurrentUsage, videoMemoryInfo->AvailableForReservation);
     }
 
-    const uint64_t nowMs = GetTickCount64();
+    const uint64_t nowMs = ce::hook_clock::TickCount64();
     const uint64_t lastLogMs = state.lastLogMs.load(std::memory_order_relaxed);
     if (!ce::dxgi_video_memory_log_policy::ShouldLogVideoMemoryQuery(callCount, nowMs, lastLogMs, valueChanged,
                                                                      failed)) {

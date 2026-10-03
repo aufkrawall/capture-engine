@@ -1,4 +1,5 @@
 #include "dx8_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void DX8Capture::CaptureFrame(IDirect3DDevice8* device,  bool useFrontBuffer) {
@@ -51,7 +52,7 @@ void DX8Capture::CaptureFrame(IDirect3DDevice8* device,  bool useFrontBuffer) {
             qpcFreq = f.QuadPart;
         }
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
         const bool copied = useFrontBuffer ? CopyFrontBufferToSurface9(device, d3d9SharedSurface)

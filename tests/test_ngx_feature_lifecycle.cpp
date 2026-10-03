@@ -213,3 +213,14 @@ TEST(NgxFeatureLifecycleTest, UpdatesReusedHandleAndFailsClosedAtCapacity) {
     EXPECT_EQ(registry.RecordCreated(&secondStorage, 1), ce::ngx_lifecycle::RecordResult::kFull);
     EXPECT_EQ(registry.RecordCreated(nullptr, 1), ce::ngx_lifecycle::RecordResult::kInvalid);
 }
+
+// 0.1.6951 dx12_fg_switch_test (session 20261003_070202): DLSS-G evaluated the in-flight frame on its presenter
+// thread right after the game's accepted slDLSSGSetOptions(OFF); that evaluation reactivated DLSS FG in CE,
+// published 2x for the whole off phase and armed the cooldown whose PostSL mirror later hid the overlay.
+TEST(NgxFeatureLifecycleTest, FrameGenerationEvaluationDoesNotReactivateAgainstStreamlinesHeldOff) {
+    using ce::ngx_lifecycle::ShouldNGXEvaluationActivateFrameGeneration;
+    EXPECT_TRUE(ShouldNGXEvaluationActivateFrameGeneration(2, false));
+    EXPECT_TRUE(ShouldNGXEvaluationActivateFrameGeneration(4, false));
+    EXPECT_FALSE(ShouldNGXEvaluationActivateFrameGeneration(2, true));
+    EXPECT_FALSE(ShouldNGXEvaluationActivateFrameGeneration(0, false));
+}

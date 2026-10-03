@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 #include "dx12_hook_ecl_forward.h"
 
@@ -15,6 +16,25 @@ void PublishD3D12UseFromPresentedSwapchain(IDXGISwapChain* swapChain) {
             swapChain);
         device->Release();
     }
+}
+// [OVERLAY COVERAGE] Whether a present without an overlay draw of its own still shows CE's overlay.
+// SL-owned transport presents (SL FG running with the PostSL callback installed) and zero-ECL interpolated
+// frames inherit coverage from the previous covered present - their visible overlay is composed by the FG
+// runtime / drawn per re-entrant present, not by this ProcessFrame call.
+//
+// Inheritance is ONLY valid while the overlay backend is bound to the CURRENT swapchain (g_State.overlayInit):
+// the runtime can only carry forward a real overlay-composed frame if one exists on the live chain. During a
+// swapchain change / suspend where overlayInit was invalidated and reinit is deferred, the new swapchain
+// presents fresh frames WITHOUT CE's overlay, so inheriting would falsely mask a real blank (session
+// 20260613_145008: a ~800ms DLSS-FG suspend blank counted as covered because zero-ECL proxy presents inherited
+// while overlayInit was false). Gating inheritance on overlayInit counts that window as uncovered.
+bool CoverageInheritsFGComposedOverlay(bool isInterpolatedFrame, bool streamlineFGRunning) {
+    const bool overlayBackendBoundToCurrentSwapchain = dx12_hook_g_State.overlayInit;
+    return ce::dx12_streamline_ui_overlay::HasActiveCoverage() ||
+           (overlayBackendBoundToCurrentSwapchain &&
+            (isInterpolatedFrame ||
+             (streamlineFGRunning &&
+              DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr)));
 }
 }  // namespace
 
@@ -54,6 +74,12 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
     const bool isInterpolatedFrame = (count == 0);
     if (applicationSourcePresent && !isInterpolatedFrame)
         DX12_ObserveApplicationSourcePresentTiming();
+    // The no-callback FSR FG backbuffer route's presents are judged like DX12_ProcessFrameExternal's.
+    const bool coverageInherits = CoverageInheritsFGComposedOverlay(
+        isInterpolatedFrame, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+    auto overlayCoverageGuard = ce::make_scope_guard([coverageInherits, pSwapChain]() {
+        AccountPresentForOverlayCoverage(coverageInherits, "ProcessFrameMinimal", pSwapChain);
+    });
     bool processCapture = ce::dx12_ecl_forward::IsPresentedFrameForCapture(count, callbackVerdict) &&
                           !DX12_ShouldUseStreamlineFinalOutputCapture();
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -369,26 +395,8 @@ if (applicationSourcePresent && !isInterpolatedFrame)
 
 // [OVERLAY COVERAGE] account this top-level processed present on every exit
 // path (function-scope guard so all skip returns below are included).
-// SL-owned transport presents (SL FG running with the PostSL callback
-// installed) and zero-ECL interpolated frames inherit coverage from the
-// previous covered present — their visible overlay is composed by the FG
-// runtime / drawn per re-entrant present, not by this ProcessFrame call.
-//
-// Inheritance is ONLY valid while the overlay backend is bound to the CURRENT
-// swapchain (g_State.overlayInit): the runtime can only carry forward a real
-// overlay-composed frame if one exists on the live chain. During a swapchain
-// change / suspend where overlayInit was invalidated and reinit is deferred,
-// the new swapchain presents fresh frames WITHOUT CE's overlay, so inheriting
-// would falsely mask a real blank (session 20260613_145008: a ~800ms DLSS-FG
-// suspend blank counted as covered because zero-ECL proxy presents inherited
-// while overlayInit was false). Gate inheritance on overlayInit so that window
-// counts as uncovered and the blank is measured.
-const bool overlayBackendBoundToCurrentSwapchain = dx12_hook_g_State.overlayInit;
 const bool coverageInheritsFGComposedOverlay =
-    ce::dx12_streamline_ui_overlay::HasActiveCoverage() ||
-    (overlayBackendBoundToCurrentSwapchain &&
-     (isInterpolatedFrame || (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(
-                                                         std::memory_order_acquire) != nullptr)));
+    CoverageInheritsFGComposedOverlay(isInterpolatedFrame, streamlineFGRunning);
 auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay, pSwapChain]() {
     AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal", pSwapChain);
 });
@@ -455,7 +463,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
 const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
 const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
     dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-    GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
     ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
         postFSRNonFGRecovery, recentStreamlineTeardown, postSLLastWorkingQueueStillActiveDuringRecentTeardown);
@@ -694,7 +702,7 @@ if (ce::dx12_overlay_policy::ShouldClearStaleRuntimeOwnedStreamlineNoFGAfterReal
             dx12_hook_g_SwapchainQueue = dx12_hook_g_OriginalGameQueue;
             dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
             dx12_hook_g_SwapchainQueue->AddRef();
-            dx12_hook_g_SwapchainQueueCaptureTime = GetTickCount64();
+            dx12_hook_g_SwapchainQueueCaptureTime = ce::hook_clock::TickCount64();
             HookLogImportant(
                 "DX12: Restored g_SwapchainQueue to original game queue %p after stale runtime-owned cleanup",
                 dx12_hook_g_OriginalGameQueue);

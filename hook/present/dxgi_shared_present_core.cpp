@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, const char* presentName) {
     const bool runtimeOwnsSwapchain = DXGIShared::DoesFGRuntimeOwnSwapchain();
@@ -386,6 +387,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                         CostScope overlayStage(CostStage::kOverlay);
                         DX12_CompositeOverlayOntoCachedFFXUiResource();
                     }
+                    DX12_AccountFFXRuntimeOutputForOverlayCoverage(pSwapChain, true);
                 } else if (amdActivelyInterpolatingOnFGQueue) {
                     // DEFENSIVE GUARD RAIL: the backbuffer submit is forbidden ONLY while AMD is actively
                     // interpolating on its own FG queue. The route selector never produces kMinimalBackbuffer in
@@ -400,6 +402,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                             "interpolates on its FG queue (crash boundary; overlay rides UI composition only) log=%d",
                             guardLog + 1);
                     }
+                    DX12_AccountFFXRuntimeOutputForOverlayCoverage(pSwapChain, false);
                 } else {
                     // Backbuffer submit is safe here: AMD does not own this swapchain (non-runtime-owned escape
                     // hatch), OR a no-callback SUSPENSION (FG disabled, AMD not interpolating), OR a STALE
@@ -466,12 +469,12 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         // wait here means CE's overlay GPU work hung, vs a slow real Present means the swapchain
         // flip blocked on the hung GPU.
         LARGE_INTEGER diagWaitT0, diagWaitT1, diagWaitFreq;
-        QueryPerformanceCounter(&diagWaitT0);
+        ce::hook_clock::QueryCounter(&diagWaitT0);
         {
             CostScope overlayWaitStage(CostStage::kOverlayWait);
             InvokeDX12WaitForOverlayCompletion(nullptr);
         }
-        QueryPerformanceCounter(&diagWaitT1);
+        ce::hook_clock::QueryCounter(&diagWaitT1);
         QueryPerformanceFrequency(&diagWaitFreq);
         const double diagWaitMs =
             (double)(diagWaitT1.QuadPart - diagWaitT0.QuadPart) * 1000.0 / (double)diagWaitFreq.QuadPart;

@@ -1,4 +1,5 @@
 #include <wrl/client.h>
+#include "hook/runtime/hook_clock.h"
 
 #include "dx12_hook_internal.h"
 #include "dx12_hook_main_shared.h"
@@ -101,7 +102,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         const ULONGLONG startupWindowRemainingMs =
             startupWindowActive
                 ? (DXGIShared::g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire) -
-                   GetTickCount64())
+                   ce::hook_clock::TickCount64())
                 : 0;
         const bool startupTopLevelPresentConsumed =
             DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
@@ -165,14 +166,14 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                         dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire))) {
                     dx12_hook_g_SwapchainQueue = dx12_hook_g_PostSLLastWorkingQueue;
                     dx12_hook_g_SwapchainQueue->AddRef();
-                    dx12_hook_g_SwapchainQueueCaptureTime = GetTickCount64();
+                    dx12_hook_g_SwapchainQueueCaptureTime = ce::hook_clock::TickCount64();
                     dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(
                         dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire),
                         std::memory_order_release);
                     if (!dx12_hook_g_FGRuntimeOwnsSwapchain) {
                         dx12_hook_g_FGRuntimeOwnsSwapchain = true;
                         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
-                        dx12_hook_g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
+                        dx12_hook_g_FGRuntimeOwnsSwapchainSince = ce::hook_clock::TickCount64();
                     }
                     HookLogImportant(
                         "DX12: Streamline FG ON — warm resume restored preserved confirmed-PostSL proxy queue %p "
@@ -491,8 +492,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         }
 
         if (!preserveRuntimeOwnedFSRTakeover && preserveConfirmedPostSLProxyResources) {
-            dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
-            dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+            EndFGTransitionCooldown();
             dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.store(true, std::memory_order_release);
             // The direct state-change callback already owns this OFF edge. Keep
             // the later ProcessFrame outer tracker from replaying a destructive

@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 // Inline hook trampolines (set by inline hook installation)
 static PFN_D3D9_Present_Inline oD3D9PresentTrampoline = nullptr;
@@ -232,9 +233,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
     DX9_PresentBegin(device, backBuffer);
 
     LARGE_INTEGER p0, p1;
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr = oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_PresentCallTiming.presentCallTime = p1.QuadPart - p0.QuadPart;
 
     DX9_PresentEnd(device, backBuffer);
@@ -294,9 +295,9 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentExInline(IDirect3DDevice9Ex* d
     DX9_PresentBegin(device, backBuffer);
 
     LARGE_INTEGER p0, p1;
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr = oD3D9PresentExTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_PresentCallTiming.presentCallTime = p1.QuadPart - p0.QuadPart;
 
     DX9_PresentEnd(device, backBuffer);
@@ -359,10 +360,10 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9SwapChainPresentInline(IDirect3DSwapC
     }
 
     LARGE_INTEGER p0, p1;
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr =
         oD3D9SwapChainPresentTrampoline(swapChain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_PresentCallTiming.presentCallTime = p1.QuadPart - p0.QuadPart;
 
     if (device) {

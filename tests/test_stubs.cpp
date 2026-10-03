@@ -157,6 +157,7 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     return false;
 }
 void DX12_ProcessFrameMinimal(IDXGISwapChain*, bool, bool) {}
+void DX12_AccountFFXRuntimeOutputForOverlayCoverage(IDXGISwapChain*, bool) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() {
     return false;
 }

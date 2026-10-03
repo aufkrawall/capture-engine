@@ -14,6 +14,7 @@
  */
 
 #include "shared_capture.h"
+#include "hook/runtime/hook_clock.h"
 #include <cwchar>
 #include <iterator>
 #include <string>
@@ -616,7 +617,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISw
     if (timestampQpc > 0) {
         qpc.QuadPart = timestampQpc;
     } else {
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
     }
 
     // Execute

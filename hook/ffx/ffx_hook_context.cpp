@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "common/logging/log_meter.h"
 #include "hook/fg/fg_cost_probe.h"
@@ -83,8 +84,11 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
     const auto contextBackend =
         ce::ffx_api::ParseCreateContextBackend(reinterpret_cast<const ce::ffx_api::ApiHeader*>(ffx_hook_desc));
     const bool duringStreamlineStartup = DXGIShared::IsStreamlineStartupTransitionWindowActive();
+    if (parsedSwapChainCreate.recognized && parsedSwapChainCreate.gameQueue) {
+        DX12_AdoptFFXDescriptorGameQueueAsOriginal(static_cast<ID3D12CommandQueue*>(parsedSwapChainCreate.gameQueue));
+    }
 
-    const ULONGLONG createStartedMs = GetTickCount64();
+    const ULONGLONG createStartedMs = ce::hook_clock::TickCount64();
     // Call original first
     ffxReturnCode_t result = CallFfxCreateContextOriginalGuarded(originalCreate, ffx_hook_context, ffx_hook_desc, memCb);
     if (parsedSwapChainCreate.recognized) {
@@ -95,7 +99,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
             failedCreateCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (sample <= 8 || (sample != 0 && (sample & (sample - 1)) == 0)) {
             HookLogImportant("FFX Hook: swapchain context create result=0x%X elapsedMs=%llu queue=%p outputSlot=%p count=%u",
-                             static_cast<unsigned>(result), static_cast<unsigned long long>(GetTickCount64() - createStartedMs),
+                             static_cast<unsigned>(result),
+                             static_cast<unsigned long long>(ce::hook_clock::TickCount64() - createStartedMs),
                              parsedSwapChainCreate.gameQueue, parsedSwapChainCreate.swapChainOutput, count);
         }
     }

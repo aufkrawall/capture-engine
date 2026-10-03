@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
@@ -231,13 +232,14 @@ if (processLogicalSwapchainReplacement) {
             auto* swapchainChangeDevice = g_Device.load(std::memory_order_acquire);
             const bool swapchainChangeDeviceRemoved =
                 swapchainChangeDevice != nullptr && FAILED(swapchainChangeDevice->GetDeviceRemovedReason());
-            const bool immediateReinitAfterAuthoritativeDLSSOffNormalReturn =
-                ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
-                    exactPostDLSSOffNormalReturnSwapchainProof, postFSRNormalRouteOwnershipProven,
-                    fgCurrentlyActive, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                    g_FGCompat.IsFSRFGApiActive(),
+            const bool immediateReinitOnFGInactiveOriginalQueue =
+                ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(
+                    postFSRNormalRouteOwnershipProven, fgCurrentlyActive,
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
                     dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                     dx12_hook_g_FGRuntimeOwnsSwapchain, swapchainChangeDeviceRemoved);
+            const bool immediateReinitAfterAuthoritativeDLSSOffNormalReturn =
+                exactPostDLSSOffNormalReturnSwapchainProof && immediateReinitOnFGInactiveOriginalQueue;
             authoritativeDLSSOffNormalReturnReinitializedThisPresent =
                 immediateReinitAfterAuthoritativeDLSSOffNormalReturn;
             nativeFSRGameSwapchainRecoveryReinitializedThisPresent =
@@ -270,7 +272,7 @@ if (processLogicalSwapchainReplacement) {
             // instead of the 90-frame cooldown (session 20260614_023730: 89/90-present blanks).
             const ULONGLONG lastFFXCallbackTickMs = dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
             const bool ffxPresentCallbackActiveForDLSSOff =
-                lastFFXCallbackTickMs != 0 && (GetTickCount64() - lastFFXCallbackTickMs) < 1000;
+                lastFFXCallbackTickMs != 0 && (ce::hook_clock::TickCount64() - lastFFXCallbackTickMs) < 1000;
             const bool immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue = ce::dx12_overlay_policy::
                 ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
                     DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
@@ -289,7 +291,7 @@ if (processLogicalSwapchainReplacement) {
             }
             if (guardSwapchainReinit &&
                 (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
-                 immediateReinitAfterAuthoritativeDLSSOffNormalReturn ||
+                 immediateReinitOnFGInactiveOriginalQueue ||
                  immediateReinitAfterConfirmedPostSLSuspension ||
                  immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue)) {
                 // Enable direction: the enabled ffxConfigure already finalized
@@ -302,8 +304,7 @@ if (processLogicalSwapchainReplacement) {
                 // the overlay immediately instead of blanking it for the
                 // generic transition cooldown.
                 const int previousCooldown = dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire);
-                dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
-                dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+                EndFGTransitionCooldown();
                 dx12_hook_g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
                 dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
                 dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -318,6 +319,7 @@ if (processLogicalSwapchainReplacement) {
                     immediateReinitAfterNoCallbackFFXTakeover ? "finalized no-callback official FFX takeover"
                     : immediateReinitAfterAuthoritativeDLSSOffNormalReturn
                         ? "authoritative DLSS-off native swapchain return (exact route, no blank)"
+                    : immediateReinitOnFGInactiveOriginalQueue ? "proven on the game queue with FG inactive (no blank)"
                     : immediateReinitAfterConfirmedPostSLSuspension
                         ? "confirmed-PostSL DLSS-FG suspension (proxy stays live, no blank)"
                     : immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue
@@ -490,7 +492,7 @@ gameQueue = nullptr;
         dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
         dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-        GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+        ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
     ID3D12CommandQueue* const interposerOutputQueue = DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
     const bool interposerPrivateChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
     if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(interposerPrivateChain,
@@ -557,7 +559,8 @@ gameQueue = nullptr;
                 HookLogImportant(
                     "DX12: ProcessFrame — FG runtime owns swapchain but scQueue is null, SKIPPING overlay "
                     "(origGame=%p, fsrFGHeur=%d, fgOwnedSince=%llums ago) #%d",
-                    dx12_hook_g_OriginalGameQueue, fsrFGNow ? 1 : 0, GetTickCount64() - dx12_hook_g_FGRuntimeOwnsSwapchainSince,
+                    dx12_hook_g_OriginalGameQueue, fsrFGNow ? 1 : 0,
+                    ce::hook_clock::TickCount64() - dx12_hook_g_FGRuntimeOwnsSwapchainSince,
                     s_fgOwnSkipLog);
             }
         return ProcessFrameFlow::kReturn;

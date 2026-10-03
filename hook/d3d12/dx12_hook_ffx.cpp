@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/pacing/pacing_trace.h"
 #include "dx12_hook_ffx_shared.h"
 
@@ -467,7 +468,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                    : 0;
     }
 
-    dx12_hook_g_LastFFXPresentCallbackTickMs.store(GetTickCount64(), std::memory_order_release);
+    dx12_hook_g_LastFFXPresentCallbackTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
 
     // This bridge runs once per displayed output frame, so anything it adds is
     // multiplied by the frame-generation factor. Time it against the runtime

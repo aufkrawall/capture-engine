@@ -1,4 +1,5 @@
 #include "hook_patch_transaction.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/runtime/process_thread_walk.h"
 
@@ -31,7 +32,7 @@ ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize,
 
 void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
     const DWORD currentThreadId = GetCurrentThreadId();
-    const ULONGLONG enterMs = GetTickCount64();
+    const ULONGLONG enterMs = ce::hook_clock::TickCount64();
     try {
         threads_.reserve(1024);
     } catch (...) {
@@ -138,7 +139,7 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
     // Measure here, report from the destructor. Nothing on this path may log:
     // the logger takes a lock and can allocate, and a suspended peer thread may
     // be holding either.
-    quiesceElapsedMs_ = GetTickCount64() - enterMs;
+    quiesceElapsedMs_ = ce::hook_clock::TickCount64() - enterMs;
     quiescePasses_ = passesRun;
     usedSystemSnapshot_ = usedSystemSnapshot;
 }

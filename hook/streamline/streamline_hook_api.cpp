@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
@@ -475,7 +476,7 @@ slResult Hooked_slReflexSleep(const void* streamline_hook_frame) {
     // DLSSG-health evidence only: relaxed atomics + GetTickCount64 (shared-page read). No locks, no
     // logging, no syscalls — the manual Reflex FPS limiter's latency path through this hook is unchanged.
     streamline_hook_g_ReflexSleepObservedCount.fetch_add(1, std::memory_order_relaxed);
-    streamline_hook_g_ReflexSleepLastTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    streamline_hook_g_ReflexSleepLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_relaxed);
 
     const bool ownsSleepBoundary = g_ReflexLimiter.BeginGameSleepBoundary("Streamline");
 
@@ -506,7 +507,7 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& streamline_hook_option
 
     slReflexOptions adjustedOptions = streamline_hook_options;
     streamline_hook_g_ReflexSetOptionsObservedCount.fetch_add(1, std::memory_order_relaxed);
-    streamline_hook_g_ReflexSetOptionsLastTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    streamline_hook_g_ReflexSetOptionsLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_relaxed);
     streamline_hook_g_ReflexLastForwardedMode.store(streamline_hook_options.mode, std::memory_order_relaxed);
     const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
     const auto frameLimitForwarding = ce::streamline_runtime_policy::ResolveStreamlineReflexFrameLimitForwarding(

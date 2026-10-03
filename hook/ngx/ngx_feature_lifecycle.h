@@ -194,4 +194,12 @@ class FeatureHandleRegistry {
     std::array<Slot, Capacity> slots_{};
 };
 
+// An NGX frame generation evaluation marks DLSS FG active, except while Streamline holds the game's accepted
+// explicit DLSS-G OFF: DLSS-G still evaluates the frame in flight when the OFF lands, and taking that for
+// activity republished DLSS FG 2x for the whole off phase and armed a transition cooldown whose PostSL mirror
+// later hid the overlay for 1549 presents (session 20261003_070202, dx12_fg_switch_test 07:05:34.653).
+inline bool ShouldNGXEvaluationActivateFrameGeneration(int evaluatedMultiplier, bool streamlineHoldsExplicitOff) {
+    return evaluatedMultiplier > 0 && !streamlineHoldsExplicitOff;
+}
+
 }  // namespace ce::ngx_lifecycle

@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "common/platform/ansi_path.h"
@@ -298,9 +299,9 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   // The helper suspends this whole process while it writes, this thread
   // included, so the wait can overrun its timeout by the full write time.
   // Elapsed wall time is what the game actually stood still for.
-  const ULONGLONG waitStartMs = GetTickCount64();
+  const ULONGLONG waitStartMs = ce::hook_clock::TickCount64();
   const DWORD waitResult = WaitForSingleObject(pi.hProcess, kExternalDumpHelperWaitMs);
-  const unsigned long long waitElapsedMs = GetTickCount64() - waitStartMs;
+  const unsigned long long waitElapsedMs = ce::hook_clock::TickCount64() - waitStartMs;
   if (waitResult == WAIT_TIMEOUT) {
     HookLogImportant(
         "FatalExitDump: External pre-termination dump helper still running after timeout "

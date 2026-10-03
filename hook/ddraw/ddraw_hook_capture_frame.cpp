@@ -1,4 +1,5 @@
 #include "ddraw_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include <utility>
 
@@ -343,7 +344,7 @@ void DDrawCapture::CaptureFrame(void* bits, int pitch, uint32_t sourceBitCount, 
 
         // Capture timestamps are published as raw QPC values.
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
 
         // Map staging texture and copy from DDraw surface
         D3D11_MAPPED_SUBRESOURCE mapped = {};

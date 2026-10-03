@@ -14,6 +14,7 @@
 // value distance from it, and only then resolves the missing names from the
 // same allocation.
 #include "main_ue5_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/overrides/ue5_console_registry.h"
 
@@ -271,16 +272,16 @@ void SweepForRegistryMap(const std::vector<Anchor>& anchors, RegistryMap& map,
   std::vector<uint8_t> buffer(kChunkBytes);
   uint64_t passBytes = 0;
   ++progress.passes;
-  const ULONGLONG enumerateStart = GetTickCount64();
+  const ULONGLONG enumerateStart = ce::hook_clock::TickCount64();
   const std::vector<Region> regions = CollectHeapRegions(progress.cursor);
-  enumerateMs = GetTickCount64() - enumerateStart;
+  enumerateMs = ce::hook_clock::TickCount64() - enumerateStart;
   for (const Region& region : regions) {
     const ce::ue5_registry::RegionSpan span{region.base, region.size};
     if (ce::ue5_registry::RegionAlreadySwept(span, progress.cursor))
       continue;
     for (std::size_t offset = ce::ue5_registry::SweepResumeOffset(span, progress.cursor);
          offset < region.size; offset += kChunkBytes - kChunkOverlap) {
-      if (passBytes >= kScanBudgetBytes || GetTickCount64() >= deadline) {
+      if (passBytes >= kScanBudgetBytes || ce::hook_clock::TickCount64() >= deadline) {
         // Park on the chunk that was not read, not on the one that was: the
         // next pass re-reads it whole, so nothing falls through the pause.
         progress.cursor = region.base + offset;
@@ -449,7 +450,7 @@ std::size_t ResolveMissingAcrossRegions(const std::vector<Region>& regions, std:
   std::size_t installed = 0;
   for (std::size_t visited = 0; visited < regions.size(); ++visited) {
     const std::size_t index = (g_resolveRegionCursor + visited) % regions.size();
-    if (GetTickCount64() >= deadline) {
+    if (ce::hook_clock::TickCount64() >= deadline) {
       g_resolveRegionCursor = index;
       return installed;
     }
@@ -621,7 +622,7 @@ bool ResolveMissingThroughConsoleRegistry() {
   // that lets the closing verdict below say "absent" instead of "not seen".
   if (ce::ue5_registry::SweepCanContinue(g_sweep, kMaxSweepPasses, kMaxSweepBytes)) {
     const bool wasValid = g_map.valid;
-    const ULONGLONG start = GetTickCount64();
+    const ULONGLONG start = ce::hook_clock::TickCount64();
     const uint64_t before = g_sweep.sweptBytes;
     ULONGLONG enumerateMs = 0;
     SweepForRegistryMap(anchors, g_map, g_sweep, start + kScanBudgetMs, enumerateMs);
@@ -633,7 +634,7 @@ bool ResolveMissingThroughConsoleRegistry() {
           "across %zu region(s), first=%p) after %llu MB in %llums",
           g_map.name, g_map.valueOffset, CountConfirmedAnchors(anchors), anchors.size(),
           g_map.regions.size(), reinterpret_cast<void*>(g_map.regions.front().base), passMb,
-          static_cast<unsigned long long>(GetTickCount64() - start));
+          static_cast<unsigned long long>(ce::hook_clock::TickCount64() - start));
     }
     if (g_sweep.complete) {
       HookLogImportant(
@@ -675,7 +676,7 @@ bool ResolveMissingThroughConsoleRegistry() {
 
   const std::size_t installed =
       ResolveMissingAcrossRegions(g_map.regions, g_map.valueOffset, missing, GetModuleHandleW(nullptr),
-                                  GetTickCount64() + kResolveBudgetMs);
+                                  ce::hook_clock::TickCount64() + kResolveBudgetMs);
   // Reported, not installed: a show flag force bit is recognised and left alone.
   ReportConfirmedBitReferences("console registry");
   ProbeShowFlagBitNumbers();

@@ -1,4 +1,5 @@
 #include "hook_cpu_cost.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/runtime/hook_common.h"
 #include "common/logging/logging.h"
@@ -33,7 +34,7 @@ void ReportHookCpuCostIfDue() {
     if (!HookCpuCostMeasurementEnabled()) {
         return;
     }
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = ce::hook_clock::TickCount64();
     uint64_t last = s_lastReportTickMs.load(std::memory_order_relaxed);
     if (now - last < 10'000) {
         return;

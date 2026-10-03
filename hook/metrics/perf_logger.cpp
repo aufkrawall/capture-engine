@@ -1,4 +1,5 @@
 #include "perf_logger.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/pacing/pacing_trace.h"
 #include <windows.h>
 #include <cstring>
@@ -174,7 +175,7 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
 
 int64_t PerfLogger::GetQpcUs() {
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
     return DisplayTimingQpcToUs(now.QuadPart, GetCachedQpcFrequency());
 }
 
@@ -291,7 +292,7 @@ void PerfLogger::ResetDebugSummaryLocked() {
 ScopedPerfTimer::ScopedPerfTimer(int32_t* resultUs) : resultUs_(resultUs), startQpc_(0) {
     if (resultUs_) {
         LARGE_INTEGER start;
-        QueryPerformanceCounter(&start);
+        ce::hook_clock::QueryCounter(&start);
         startQpc_ = start.QuadPart;
     }
 }
@@ -299,7 +300,7 @@ ScopedPerfTimer::ScopedPerfTimer(int32_t* resultUs) : resultUs_(resultUs), start
 ScopedPerfTimer::~ScopedPerfTimer() {
     if (resultUs_ && startQpc_ > 0) {
         LARGE_INTEGER end;
-        QueryPerformanceCounter(&end);
+        ce::hook_clock::QueryCounter(&end);
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
         int64_t elapsedUs = ((end.QuadPart - startQpc_) * 1000000) / freq.QuadPart;

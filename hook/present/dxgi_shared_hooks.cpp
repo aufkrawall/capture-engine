@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dxgi_color_space_hook_policy.h"
 #include "resize_reconcile_hook_policy.h"
 
@@ -715,7 +716,7 @@ void InstallHooksIfPending(IDXGISwapChain* pSwapChain) {
 
 namespace DXGIShared {
 void Init() {
-    g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
+    g_SharedState.lastSwapchainCreation = ce::hook_clock::SteadyNow();
     // Early detection of NVIDIA Smooth Motion module
     g_FGCompat.CheckForNvPresent();
 }

@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/metrics/hook_cpu_cost.h"
 #include "hook/pacing/pacing_trace_boundary.h"
@@ -420,10 +421,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     ScopedHookCpuCost presentCpuCost(HookPresentCpuCost());
     ReportHookCpuCostIfDue();
     LARGE_INTEGER diagPresentT0;
-    QueryPerformanceCounter(&diagPresentT0);
+    ce::hook_clock::QueryCounter(&diagPresentT0);
     auto diagPresentTimer = ce::make_scope_guard([&]() {
         LARGE_INTEGER diagPresentT1, diagPresentFreq;
-        QueryPerformanceCounter(&diagPresentT1);
+        ce::hook_clock::QueryCounter(&diagPresentT1);
         QueryPerformanceFrequency(&diagPresentFreq);
         const double diagPresentMs =
             (double)(diagPresentT1.QuadPart - diagPresentT0.QuadPart) * 1000.0 / (double)diagPresentFreq.QuadPart;

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
@@ -513,10 +514,10 @@ return ProcessFrameFlow::kOverlayDone;
                                 }
                             }
                             cmdRecordOk = true;
-                            QueryPerformanceCounter(&perfSubmit);
+                            ce::hook_clock::QueryCounter(&perfSubmit);
                         }
 
-                        QueryPerformanceCounter(&perfEnd);
+                        ce::hook_clock::QueryCounter(&perfEnd);
                         if (diagnostics && perfFreq.QuadPart > 0) {
                             const auto toUs = [&](LONGLONG ticks) {
                                 return (ticks * 1000000) / perfFreq.QuadPart;

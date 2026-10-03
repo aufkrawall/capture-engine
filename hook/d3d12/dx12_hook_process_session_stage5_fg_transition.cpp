@@ -100,8 +100,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 "instead of re-entering transition cooldown");
         } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
                    keepOverlayLiveAcrossOuterOff) {
-            dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
-            dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+            EndFGTransitionCooldown();
             HookLogImportant(
                 "DX12: [outer] %s — bypassing generic reinit cooldown "
                 "(scQueue=%p origGame=%p devHr=0x%08X)",

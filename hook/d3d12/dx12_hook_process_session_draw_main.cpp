@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 #include "dx12_sampler_hooks.h"
 
@@ -271,7 +272,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
     static LARGE_INTEGER s_lastProcessFrameTime = {};
     static bool s_lastSceneBlockSuppressedRoute = false;
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
 
     // While the overlay is presented via a runtime-owned / FSR-callback / PostSL
     // route, this scene block runs at a reduced cadence, so its delta is a

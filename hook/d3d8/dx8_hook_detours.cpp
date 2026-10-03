@@ -1,4 +1,5 @@
 #include "dx8_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/present/present_reentry_guard.h"
 
@@ -369,7 +370,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
         qpcFreq = f.QuadPart;
     }
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
     dx8_hook_g_PerfMetrics.Update(us);
 

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -17,7 +18,7 @@ int64_t GetQpcFrequency() {
 
 int64_t GetCurrentQpc() {
     LARGE_INTEGER value{};
-    QueryPerformanceCounter(&value);
+    ce::hook_clock::QueryCounter(&value);
     return value.QuadPart;
 }
 

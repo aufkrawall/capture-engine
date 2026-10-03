@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 
@@ -23,7 +24,7 @@ void DX12_OnSwapchainResizeBegin() {
 
     }
 
-    DXGIShared::g_SharedState.lastSwapchainCreation = std::chrono::steady_clock::now();
+    DXGIShared::g_SharedState.lastSwapchainCreation = ce::hook_clock::SteadyNow();
 
     std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
 

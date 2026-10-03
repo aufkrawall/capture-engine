@@ -78,6 +78,7 @@ Build Modes & Targets:
   --force-rebuild          Physically remove build/obj before building
   --resume                 Resume immediately preceding failed build with same build ID (requires --skip-updates)
   --tests-only             Build only unit test dependencies/executable; reuses current product identity
+  --flow-tests             With --tests-only: also build and run the FG flow tests (build/flow_tests)
   --no-build               Skip all compilation and linking; run only requested actions (--run-tests, --lint, etc.)
   --production             Build signed production binaries (requires CE_PRODUCTION_BUILD=1)
 

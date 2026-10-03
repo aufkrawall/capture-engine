@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::DrawFrameTransition() {
@@ -413,7 +414,7 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
                     // NVIDIA_SM (false positive from Present rate measurement).
                     // Clearing scQueue in that window causes ProcessFrame to fall
                     // back to origGame, which FSR FG uses internally → deadlock.
-                    ULONGLONG age = GetTickCount64() - dx12_hook_g_SwapchainQueueCaptureTime;
+                    ULONGLONG age = ce::hook_clock::TickCount64() - dx12_hook_g_SwapchainQueueCaptureTime;
                     if (age < 5000) {
                         HookLogImportant(
                             "DX12: FG type change to %s — PRESERVING g_SwapchainQueue %p (captured %llu ms "
@@ -585,9 +586,9 @@ if (dx12_hook_g_FGTransitionCooldown > 0) {
         }
         // The transition bookkeeping (GPU drain, queue/heuristic resets)
         // already ran in the arming block; only the multi-frame draw
-        // suppression is removed. PostSL is not the transport here, so
-        // leave its state untouched.
-        dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
+        // suppression is removed - its PostSL mirror included, which would
+        // otherwise stay armed until PostSL is the transport again.
+        EndFGTransitionCooldown();
         // A stale scene-transition cooldown (e.g. armed during the prior FSR
         // phase) must never blank the live overlay C1 just decided to keep
         // drawing — clearing it here is the safety net for the phantom-arming

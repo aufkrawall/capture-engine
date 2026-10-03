@@ -2,6 +2,7 @@
 #if defined(_M_X64) || defined(__x86_64__)
 
 #include "streamline_bridge_present.h"
+#include "hook/runtime/hook_clock.h"
 
 #include <dxgi1_2.h>
 
@@ -88,7 +89,7 @@ std::atomic<int64_t> g_previousPresentQpc{0};
 
 int64_t QpcNow() {
     LARGE_INTEGER now{};
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
     return now.QuadPart;
 }
 

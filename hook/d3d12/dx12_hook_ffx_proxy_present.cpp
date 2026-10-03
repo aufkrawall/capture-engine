@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 
@@ -78,6 +79,18 @@ bool DX12_IsFFXProxyPresentHookInstalled() {
     return g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire);
 }
 
+void DX12_AccountFFXRuntimeOutputForOverlayCoverage(IDXGISwapChain* realSwapChain, bool overlayRouteLive) {
+    // AMD composes the one UI resource the prework composited onto every output of that frame, so the first
+    // output judged after a prework stands on its draw and the frame's later outputs inherit it; a frame whose
+    // composite failed is uncovered from its first output on.
+    static std::atomic<uint64_t> s_lastJudgedPrework{0};
+    const uint64_t prework = g_FFXProxyPreworkCount.load(std::memory_order_acquire);
+    const bool laterOutputOfJudgedFrame =
+        overlayRouteLive && s_lastJudgedPrework.exchange(prework, std::memory_order_acq_rel) == prework;
+    AccountPresentForOverlayCoverage(laterOutputOfJudgedFrame,
+                                     overlayRouteLive ? "FFXRuntimeOutput" : "FFXRuntimeOutputRefused", realSwapChain);
+}
+
 bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework() {
     return t_InsideFFXProxyPresentPrework;
 }
@@ -87,7 +100,7 @@ bool DX12_IsFFXProxyPresentHookDriving() {
         return false;
     }
     LARGE_INTEGER now, freq;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
     QueryPerformanceFrequency(&freq);
     const uint64_t lastPrework = g_FFXProxyPreworkLastQpc.load(std::memory_order_acquire);
     if (!lastPrework || freq.QuadPart <= 0) {
@@ -123,7 +136,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     t_InsideFFXProxyPresentPrework = true;
     auto preworkScope = ce::make_scope_guard([]() { t_InsideFFXProxyPresentPrework = false; });
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     g_FFXProxyPreworkLastTid.store(GetCurrentThreadId(), std::memory_order_release);
     const uint64_t preworkNum = g_FFXProxyPreworkCount.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -136,13 +149,24 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // the target-compatible FFX owner queue. Queue order guarantees game draw -> CE overlay -> AMD's internal
     // gameFence handoff -> Present, without the staged internal present queue or a CPU wait. The substitute
     // re-assert stays skipped because AMD is not consuming the UI resource in either passthrough state.
+    //
+    // NO UI RESOURCE: a game that registers none (its HUD is part of the interpolated image) gets nothing
+    // composited over AMD's outputs, so the overlay takes the same path as that HUD - the proxy backbuffer AMD
+    // interpolates and presents, drawn here like the two exceptions above (FG flow test FlowFSR without a UI
+    // resource: every FSR FG output had no overlay).
     bool composited;
     bool topmostBatchOwnsOverlay = false;
     const bool suspendBackbufferRoute = !protectedStartupBackbufferRoute && DX12_IsNativeFSRFGSuspendedDisablePending();
-    const bool proxyBackbufferRoute = protectedStartupBackbufferRoute || suspendBackbufferRoute;
+    const bool noUiResourceBackbufferRoute =
+        !protectedStartupBackbufferRoute && !suspendBackbufferRoute && !DX12_IsFFXUiResourceCachedForBundle();
+    const bool proxyBackbufferRoute =
+        protectedStartupBackbufferRoute || suspendBackbufferRoute || noUiResourceBackbufferRoute;
+    const int currentPreworkRoute =
+        protectedStartupBackbufferRoute ? 2 : (suspendBackbufferRoute ? 1 : (noUiResourceBackbufferRoute ? 3 : 0));
+    static constexpr const char* kPreworkRouteNames[] = {"active-ui-resource", "suspend-backbuffer",
+                                                         "protected-startup-backbuffer", "no-ui-resource-backbuffer"};
     if (proxyBackbufferRoute) {
-        composited = DX12_CompositeOverlayOntoSuspendBackbuffer(
-            proxy, protectedStartupBackbufferRoute ? "protected-startup-backbuffer" : "suspend-backbuffer");
+        composited = DX12_CompositeOverlayOntoSuspendBackbuffer(proxy, kPreworkRouteNames[currentPreworkRoute]);
     } else {
         // A marker-only append first proves the learned final ECL route without blending CE a second time.
         // Only after that marker completes and this prework retires the old UI pixels may the same-batch route
@@ -194,28 +218,23 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     }
     static std::atomic<void*> s_lastPreworkRouteProxy{nullptr};
     static std::atomic<int> s_lastPreworkRoute{-1};
-    const int currentPreworkRoute = protectedStartupBackbufferRoute ? 2 : (suspendBackbufferRoute ? 1 : 0);
     void* previousPreworkProxy = s_lastPreworkRouteProxy.exchange(proxy, std::memory_order_acq_rel);
     const int previousPreworkRoute = s_lastPreworkRoute.exchange(currentPreworkRoute, std::memory_order_acq_rel);
     if (previousPreworkProxy != proxy || previousPreworkRoute != currentPreworkRoute) {
         HookLogImportant(
             "DX12: FFX proxy overlay route transition %s -> %s at prework #%llu (proxy=%p composited=%d) — "
             "the first present after the configure transition selected the new target",
-            previousPreworkProxy != proxy || previousPreworkRoute < 0
-                ? "uninitialized"
-                : (previousPreworkRoute == 2
-                       ? "protected-startup-backbuffer"
-                       : (previousPreworkRoute == 1 ? "suspend-backbuffer" : "active-ui-resource")),
-            protectedStartupBackbufferRoute ? "protected-startup-backbuffer"
-                                            : (suspendBackbufferRoute ? "suspend-backbuffer" : "active-ui-resource"),
-            static_cast<unsigned long long>(preworkNum), (void*)proxy, composited ? 1 : 0);
+            previousPreworkProxy != proxy || previousPreworkRoute < 0 ? "uninitialized"
+                                                                      : kPreworkRouteNames[previousPreworkRoute],
+            kPreworkRouteNames[currentPreworkRoute], static_cast<unsigned long long>(preworkNum), (void*)proxy,
+            composited ? 1 : 0);
     }
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
     g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0, std::memory_order_release);
     if (composited && !proxyBackbufferRoute && !topmostBatchOwnsOverlay) {
         g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
-        g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+        g_FFXUiCompositeLastTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     }
 
@@ -226,10 +245,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
             "DX12: FFX proxy-present prework #%llu via %s (proxy=%p tid=0x%04X composited=%d route=%s) — composite "
             "on the GAME thread before AMD's Present (log=%d)",
             static_cast<unsigned long long>(preworkNum), entryPoint ? entryPoint : "Present", (void*)proxy,
-            GetCurrentThreadId(), composited ? 1 : 0,
-            protectedStartupBackbufferRoute ? "protected-startup-backbuffer"
-                                            : (suspendBackbufferRoute ? "suspend-backbuffer" : "ui-resource"),
-            n + 1);
+            GetCurrentThreadId(), composited ? 1 : 0, kPreworkRouteNames[currentPreworkRoute], n + 1);
     }
 }
 
@@ -453,7 +469,7 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
     }
     g_FFXProxySwapchain = swapChain;
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     g_FFXProxyPresentHookInstallQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
     g_FFXProxyPreworkLastQpc.store(0, std::memory_order_release);
     g_FFXProxyPreworkCount.store(0, std::memory_order_relaxed);

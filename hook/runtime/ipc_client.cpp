@@ -19,6 +19,12 @@ bool IPCClient::Connect() {
     return ConnectLocked();
 }
 
+void IPCClient::AttachIsolatedHostMemory(SharedMemoryLayout* memory) {
+    std::lock_guard<std::mutex> lock(connectionMutex);
+    pSharedMem = memory;
+    publishedSharedMem.store(memory, std::memory_order_release);
+}
+
 bool IPCClient::Reconnect() {
     std::lock_guard<std::mutex> lock(connectionMutex);
 

@@ -275,7 +275,8 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     // When IPC is connected, we ONLY write to shared memory.
     // The logger_service.cpp consumer reads from SHM and writes to file.
     // This prevents duplicate log entries.
-    if (!forceDirectFile && g_IPC) {
+    // An isolated test host has no logger service draining the ring: its lines go straight to the file.
+    if (!forceDirectFile && g_IPC && !g_HookIsolatedFromHost.load(std::memory_order_acquire)) {
         // Load pointer atomically in case it's being torn down (unlikely but safe)
         SharedMemoryLayout* shm = g_IPC->GetSharedMem();
         if (shm) {

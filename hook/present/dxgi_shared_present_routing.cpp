@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 namespace DXGIShared {
@@ -381,7 +382,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
     g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
     auto presentInFlightGuard =
         ce::make_scope_guard([]() {
-            g_SharedState.lastPresentReturnTickMs.store(GetTickCount64(), std::memory_order_release);
+            g_SharedState.lastPresentReturnTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
             g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
         });
 
@@ -603,11 +604,11 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         if (g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
             if (s_invalidSinceQpc == 0) {
                 LARGE_INTEGER now;
-                QueryPerformanceCounter(&now);
+                ce::hook_clock::QueryCounter(&now);
                 s_invalidSinceQpc = now.QuadPart;
             }
             LARGE_INTEGER now, freq;
-            QueryPerformanceCounter(&now);
+            ce::hook_clock::QueryCounter(&now);
             QueryPerformanceFrequency(&freq);
             double elapsedMs = (double)(now.QuadPart - s_invalidSinceQpc) * 1000.0 / (double)freq.QuadPart;
             if (elapsedMs > 3000.0) {

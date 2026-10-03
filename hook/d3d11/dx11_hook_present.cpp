@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_policy.h"
 
 namespace {
@@ -291,7 +292,7 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT Sy
     // presenting.
     if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory()) {
         if (sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
-                GetCurrentProcessId(), GetTickCount64(), 200)) {
+                GetCurrentProcessId(), ce::hook_clock::TickCount64(), 200)) {
             if (dx11_hook_oPresent1)
                 return dx11_hook_oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
             return dx11_hook_oPresent(pSwapChain, SyncInterval, PresentFlags);

@@ -23,6 +23,7 @@
 
 // clang-format off
 #include <windows.h>
+#include "hook/runtime/hook_clock.h"
 // clang-format on
 #include <intrin.h>
 #include <atomic>
@@ -310,7 +311,7 @@ public:
 
 private:
     ULONGLONG NowTickMs() const {
-        return tickSource_.nowMs ? tickSource_.nowMs(tickSource_.context) : GetTickCount64();
+        return tickSource_.nowMs ? tickSource_.nowMs(tickSource_.context) : ce::hook_clock::TickCount64();
     }
     TickSource tickSource_{};  // see SetTickSourceForTesting
 

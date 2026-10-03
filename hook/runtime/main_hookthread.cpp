@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/platform/path_utils.h"
 #include "child_inject_policy.h"
 #include "hook/overlay/overlay_gpu_timing.h"
@@ -371,96 +372,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     return 0;
   }
 
-  // Use IAT patching for kernel32/advapi32 hooks.
-  //
-  // DllMain already ran this once (see InstallKernel32LoaderHooks). Repeating it
-  // here is the point rather than waste: PatchIATAllModules is idempotent per
-  // import slot, and everything the process mapped between DllMain and now -
-  // which for a Streamline/NGX title is most of the interesting set - has an
-  // import table that did not exist during the first pass.
-  EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
-  InstallKernel32LoaderHooks("hook thread");
-
-  FFXHook::RegisterDynamicHooks();
-  RemixHook::RegisterDynamicHooks();
-  RemixHook::Install();
-  IATHook::InitializeGetProcAddressHook();
-
-  // When the profile configures runtime override paths (dlss_sr_dll_path,
-  // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override
-  // copies NOW so name-based loads later resolve to them instead of the game's
-  // own (often older) runtime. The LoadLibrary redirect alone cannot cover
-  // Streamline-internal loads, which run through the IAT of modules that load
-  // after this snapshot pass.
-  //
-  // The sl.* half is the exception: it waits for evidence that this process
-  // uses Streamline, because mapping sl.interposer.dll costs a Vulkan game its
-  // native WSI present path. The monitor loop below places it when that
-  // evidence arrives.
-  PreloadConfiguredGraphicsRuntimeDlls();
-
-  // Install the low-level loader observer before optional diagnostic hooks.
-  // FFX/Streamline can initialize on another thread while HookThread is still
-  // bootstrapping; module observation must already be live during any later
-  // entry-patch transaction so their first exported calls cannot escape.
-  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
-    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
-      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
-        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
-          void *trampoline = nullptr;
-          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
-                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
-            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
-          } else {
-            HookLog("Failed to install LdrLoadDll hook");
-          }
-        }
-      }
-    }
-  } else {
-    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
-  }
-
-  // GTA and some middleware can terminate with fail-fast style status codes
-  // before VEH/UEF crash filters get control. Keep this narrow and passive:
-  // one CE-owned dump for current-process fatal exits, then forward. The
-  // graphics module observer above remains active while these optional hooks
-  // are installed.
-  TryInstallFatalTerminationDumpHooks();
-
-  // Answer the NGX ShowDlssIndicator registry probe for dlss_debug_overlay.
-  // This must be an inline hook on the shared advapi32 exports, not an IAT
-  // patch: nvngx_dlss.dll / nvngx_dlssg.dll are the modules that read the value
-  // and they load minutes into a session, long after any IAT snapshot taken
-  // here would have been applied.
-  if (CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
-    ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
-        g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
-  } else {
-    const uint64_t claim = PublishedInheritedRendererClaim();
-    HookLogImportant(
-        "DLSS indicator: skipped because inherited child renderer PID %lu owns "
-        "the process-local registry probe of client PID %lu",
-        static_cast<unsigned long>(ce::inherited_renderer::RendererPid(claim)),
-        static_cast<unsigned long>(ce::inherited_renderer::ClientPid(claim)));
-  }
-
-  // Retain inject-side coverage for OpenGL and already-loaded ICDs. Vulkan's
-  // ordinary path is patched earlier by the Vulkan layer, before vkCreateDevice.
-  ce::nv_lod_spread::Install(GetActiveGraphicsConfig().nvLodSpreadFix
-                                 ? ce::nv_lod_spread::Mode::kOn
-                                 : ce::nv_lod_spread::Mode::kOff);
-
-  HookLogImportant("HookThread: IAT hooks installed");
-
-  // Install the graphics hooks before any optional engine-memory discovery.
-  // UE5 CVar discovery can take several seconds in large shipping modules;
-  // running it first lets the game create its initial swapchain before the
-  // DXGI queue-capture hooks exist and strands the PostSL overlay without an
-  // authoritative queue.
-  CheckAndInstallHooks();
-  MarkHookLifecycleBootstrapComplete();
-  CompleteInheritedRendererBootstrap(true);
+  InstallHookThreadHooks();
 
   const GraphicsConfig initialGraphicsConfig = GetActiveGraphicsConfig();
   UE5::RefreshOverrides(initialGraphicsConfig);
@@ -468,7 +380,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   HookLogImportant("HookThread: All hooks installed, entering exit monitor loop");
 
   // Monitor Loop - Waits for Event OR Timeout (for Exit Checks)
-  DWORD lastPeriodicHookCheck = GetTickCount();
+  DWORD lastPeriodicHookCheck = ce::hook_clock::TickCount();
   while (true) {
     // Wait for event (signaled by LoadLibrary) or timeout (100ms)
     DWORD waitResult = WAIT_TIMEOUT;
@@ -478,7 +390,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       Sleep(100);
     }
 
-    DWORD now = GetTickCount();
+    DWORD now = ce::hook_clock::TickCount();
     ce::pacing_trace::Service();
     ce::present_stage_cost::ReportPresentStageCostIfDue();
     ce::overlay_gpu_timing::Service();
@@ -623,7 +535,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         break;
       }
       s_WasRecording = false;
-      lastPeriodicHookCheck = GetTickCount();
+      lastPeriodicHookCheck = ce::hook_clock::TickCount();
       continue;
     }
 
@@ -639,7 +551,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
             break;
           }
           s_WasRecording = false;
-          lastPeriodicHookCheck = GetTickCount();
+          lastPeriodicHookCheck = ce::hook_clock::TickCount();
           continue;
         }
       } else {
@@ -650,7 +562,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
             break;
           }
           s_WasRecording = false;
-          lastPeriodicHookCheck = GetTickCount();
+          lastPeriodicHookCheck = ce::hook_clock::TickCount();
           continue;
         }
       }
@@ -659,7 +571,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
         break;
       }
       s_WasRecording = false;
-      lastPeriodicHookCheck = GetTickCount();
+      lastPeriodicHookCheck = ce::hook_clock::TickCount();
       continue;
     }
   }
@@ -769,4 +681,100 @@ bool IsServiceProcess(const char *name) {
       _stricmp(name, "GamebarFTServer.exe") == 0 ||
       _stricmp(name, "WerFault.exe") == 0 || // Windows Error Reporting
       _stricmp(name, "ApplicationFrameHost.exe") == 0); // SpecialK lists this
+}
+
+// The hook thread's install sequence once the host connection exists: loader and GetProcAddress hooks,
+// dynamic FFX/Remix hooks, optional loader/termination/registry hooks, then the graphics hooks. The
+// flow-test entry (tests/flow/flow_hook_entry.cpp) runs the same sequence without a host.
+void InstallHookThreadHooks() {
+  // Use IAT patching for kernel32/advapi32 hooks.
+  //
+  // DllMain already ran this once (see InstallKernel32LoaderHooks). Repeating it
+  // here is the point rather than waste: PatchIATAllModules is idempotent per
+  // import slot, and everything the process mapped between DllMain and now -
+  // which for a Streamline/NGX title is most of the interesting set - has an
+  // import table that did not exist during the first pass.
+  EarlyLog("HookThread: Initializing IAT-based kernel32 hooks...");
+  InstallKernel32LoaderHooks("hook thread");
+
+  FFXHook::RegisterDynamicHooks();
+  RemixHook::RegisterDynamicHooks();
+  RemixHook::Install();
+  IATHook::InitializeGetProcAddressHook();
+
+  // When the profile configures runtime override paths (dlss_sr_dll_path,
+  // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override
+  // copies NOW so name-based loads later resolve to them instead of the game's
+  // own (often older) runtime. The LoadLibrary redirect alone cannot cover
+  // Streamline-internal loads, which run through the IAT of modules that load
+  // after this snapshot pass.
+  //
+  // The sl.* half is the exception: it waits for evidence that this process
+  // uses Streamline, because mapping sl.interposer.dll costs a Vulkan game its
+  // native WSI present path. The monitor loop below places it when that
+  // evidence arrives.
+  PreloadConfiguredGraphicsRuntimeDlls();
+
+  // Install the low-level loader observer before optional diagnostic hooks.
+  // FFX/Streamline can initialize on another thread while HookThread is still
+  // bootstrapping; module observation must already be live during any later
+  // entry-patch transaction so their first exported calls cannot escape.
+  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
+    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
+      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
+        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
+          void *trampoline = nullptr;
+          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
+                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
+            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
+          } else {
+            HookLog("Failed to install LdrLoadDll hook");
+          }
+        }
+      }
+    }
+  } else {
+    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
+  }
+
+  // GTA and some middleware can terminate with fail-fast style status codes
+  // before VEH/UEF crash filters get control. Keep this narrow and passive:
+  // one CE-owned dump for current-process fatal exits, then forward. The
+  // graphics module observer above remains active while these optional hooks
+  // are installed.
+  TryInstallFatalTerminationDumpHooks();
+
+  // Answer the NGX ShowDlssIndicator registry probe for dlss_debug_overlay.
+  // This must be an inline hook on the shared advapi32 exports, not an IAT
+  // patch: nvngx_dlss.dll / nvngx_dlssg.dll are the modules that read the value
+  // and they load minutes into a session, long after any IAT snapshot taken
+  // here would have been applied.
+  if (CurrentProcessOwnsProcessLocalRuntimeOverrides()) {
+    ce::dlss_indicator::Install(ce::dlss_indicator::ParseMode(
+        g_pLocalConfig ? g_pLocalConfig->graphics.dlssDebugOverlay : std::string()));
+  } else {
+    const uint64_t claim = PublishedInheritedRendererClaim();
+    HookLogImportant(
+        "DLSS indicator: skipped because inherited child renderer PID %lu owns "
+        "the process-local registry probe of client PID %lu",
+        static_cast<unsigned long>(ce::inherited_renderer::RendererPid(claim)),
+        static_cast<unsigned long>(ce::inherited_renderer::ClientPid(claim)));
+  }
+
+  // Retain inject-side coverage for OpenGL and already-loaded ICDs. Vulkan's
+  // ordinary path is patched earlier by the Vulkan layer, before vkCreateDevice.
+  ce::nv_lod_spread::Install(GetActiveGraphicsConfig().nvLodSpreadFix
+                                 ? ce::nv_lod_spread::Mode::kOn
+                                 : ce::nv_lod_spread::Mode::kOff);
+
+  HookLogImportant("HookThread: IAT hooks installed");
+
+  // Install the graphics hooks before any optional engine-memory discovery.
+  // UE5 CVar discovery can take several seconds in large shipping modules;
+  // running it first lets the game create its initial swapchain before the
+  // DXGI queue-capture hooks exist and strands the PostSL overlay without an
+  // authoritative queue.
+  CheckAndInstallHooks();
+  MarkHookLifecycleBootstrapComplete();
+  CompleteInheritedRendererBootstrap(true);
 }

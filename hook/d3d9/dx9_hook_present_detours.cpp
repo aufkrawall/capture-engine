@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* pSourceRect,  CONST RECT* pDestRect,
@@ -38,9 +39,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device,  CONST RECT* p
     LARGE_INTEGER p1;
     IDirect3DSurface9* backBuffer = nullptr;
     DX9_PresentBegin(device, backBuffer);
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr = dx9_hook_oPresent(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_Timing.presentCallTime = p1.QuadPart - p0.QuadPart;
     DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
@@ -98,9 +99,9 @@ HRESULT STDMETHODCALLTYPE DetourPresentEx(IDirect3DDevice9Ex* device,  CONST REC
     }
     IDirect3DSurface9* backBuffer = nullptr;
     DX9_PresentBegin(device, backBuffer);
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr = dx9_hook_oPresentEx(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_Timing.presentCallTime = p1.QuadPart - p0.QuadPart;
     DX9_PresentEnd(device, backBuffer);
     int64_t qpcFreq = GetQpcFreqCached();
@@ -168,9 +169,9 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
             ownsPresentScope = true;
         }
     }
-    QueryPerformanceCounter(&p0);
+    ce::hook_clock::QueryCounter(&p0);
     HRESULT hr = dx9_hook_oPresentSwap(swap, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-    QueryPerformanceCounter(&p1);
+    ce::hook_clock::QueryCounter(&p1);
     dx9_hook_g_Timing.presentCallTime = p1.QuadPart - p0.QuadPart;
 
     if (device) {

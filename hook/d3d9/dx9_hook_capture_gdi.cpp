@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void DX9Capture::GDICaptureThreadProc() {
@@ -30,12 +31,12 @@ void DX9Capture::GDICaptureThreadProc() {
             gdiBufferBusy[surfIdx].store(true, std::memory_order_release);
 
             LARGE_INTEGER captureStart;
-            QueryPerformanceCounter(&captureStart);
+            ce::hook_clock::QueryCounter(&captureStart);
 
             CompleteGDIInteropCapture(gdiCopySurfaces[surfIdx], frame.timestampQPC);
 
             LARGE_INTEGER captureEnd;
-            QueryPerformanceCounter(&captureEnd);
+            ce::hook_clock::QueryCounter(&captureEnd);
             int32_t captureUs =
                 static_cast<int32_t>(((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / qpcFreq);
 

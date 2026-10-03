@@ -4,6 +4,7 @@
 // after the class body; kept inline so the hot path is unchanged.
 
 #include "hook/pacing/reflex_limiter.h"
+#include "hook/runtime/hook_clock.h"
 
 inline void ReflexLimiter::SetTargetFps(int fps) {
     const uint32_t oldInterval = targetIntervalUs_.load(std::memory_order_acquire);
@@ -64,7 +65,7 @@ inline void ReflexLimiter::ApplyHybridPacingBeforeNativeSleep() {
     }
 
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
 
     int64_t targetTick = hybridTargetTick_.load(std::memory_order_acquire);
     if (targetTick == 0) {
@@ -81,7 +82,7 @@ inline void ReflexLimiter::ApplyHybridPacingBeforeNativeSleep() {
         } else {
             _mm_pause();
         }
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
     }
 
     hybridTargetTick_.store(targetTick + intervalTicks, std::memory_order_release);

@@ -532,13 +532,14 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     ASSERT_NE(prepare, std::string::npos);
     const size_t store = ffx.find("StoreSubstituteUiReRegistration(ffx_hook_context, originalConfigure", prepare);
     ASSERT_NE(store, std::string::npos);
-    // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
+    // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook, through
+    // the guarded forward that pauses CE's entry breakpoint (a bare call trapped back into the hook).
     // The re-assert consults the driver policy and refuses outside the proxy-present prework.
     const size_t reRegFn = ffx.find("FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource()");
     ASSERT_NE(reRegFn, std::string::npos);
     const size_t guard = ffx.find("MayReassertSubstituteUiResource", reRegFn);
     const size_t reRegResult = ffx.find("const ffxReturnCode_t result =", reRegFn);
-    const size_t forward = ffx.find("ffx_hook_g_SubstReRegConfigure(", reRegResult);
+    const size_t forward = ffx.find("CallFfxConfigureOriginalGuarded(", reRegResult);
     ASSERT_NE(reRegResult, std::string::npos);
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(forward, std::string::npos);

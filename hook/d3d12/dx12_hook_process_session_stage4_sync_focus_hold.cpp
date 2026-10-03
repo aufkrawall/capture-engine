@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
@@ -119,7 +120,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
     if (stagedSyncInitPending && !stagedSyncInitOwnedByRuntime) {
         if (dx12_hook_s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit &&
             dx12_hook_s_startupOverlayActivationStageMs != 0) {
-            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG now = ce::hook_clock::TickCount64();
             const ULONGLONG elapsedSinceBackendInit = now - dx12_hook_s_startupOverlayActivationStageMs;
             if (elapsedSinceBackendInit < dx12_hook_kStartupOverlayPostBackendInitSettleMs) {
                 static std::atomic<int> s_postBackendStageLogCount{0};
@@ -163,7 +164,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
                 }
             }
             dx12_hook_s_startupOverlayActivationStage = StartupOverlayActivationStage::kDelaySyncInitAfterRTVInit;
-            dx12_hook_s_startupOverlayActivationStageMs = GetTickCount64();
+            dx12_hook_s_startupOverlayActivationStageMs = ce::hook_clock::TickCount64();
             HookLogImportant(
                 "DX12: Startup compat staged activation - RTV init complete, delaying sync init for %llums",
                 dx12_hook_kStartupOverlayPostRTVInitSettleMs);
@@ -173,7 +174,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
         if (dx12_hook_s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelaySyncInitAfterRTVInit &&
             dx12_hook_s_startupOverlayActivationStageMs != 0) {
-            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG now = ce::hook_clock::TickCount64();
             const ULONGLONG elapsedSinceRTVInit = now - dx12_hook_s_startupOverlayActivationStageMs;
             if (elapsedSinceRTVInit < dx12_hook_kStartupOverlayPostRTVInitSettleMs) {
                 static std::atomic<int> s_postRtvStageLogCount{0};
@@ -202,7 +203,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
         if (dx12_hook_g_State.syncInit) {
             ResetStartupOverlayBackendActivationStage();
-            dx12_hook_s_startupOverlaySyncInitMs = GetTickCount64();
+            dx12_hook_s_startupOverlaySyncInitMs = ce::hook_clock::TickCount64();
             HookLogImportant(
                 "DX12: Startup compat staged activation - sync init complete, delaying overlay rendering for %llums",
                 dx12_hook_kStartupOverlayPostSyncInitSettleMs);
@@ -379,7 +380,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && !deferOverlayWorkAfterResume &&
         dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && dx12_hook_s_startupOverlaySyncInitMs != 0) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = ce::hook_clock::TickCount64();
         const ULONGLONG msSinceSyncInit = now - dx12_hook_s_startupOverlaySyncInitMs;
         const bool processNeedsRenderDelay = startupOverlayCompatibilityActive;
         const bool actualFGActive = IsActualFrameGenerationActive();
@@ -446,7 +447,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && !deferOverlayWorkAfterResume &&
         dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && dx12_hook_s_startupOverlayResourcePrimeMs != 0) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = ce::hook_clock::TickCount64();
         const ULONGLONG msSinceResourcePrime = now - dx12_hook_s_startupOverlayResourcePrimeMs;
         const bool preserveLiveStartupOverlayDuringInactiveSL =
             ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
@@ -477,7 +478,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
     if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_s_insideECL && !deferOverlayWorkAfterResume &&
         dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && dx12_hook_s_startupOverlayFirstDrawProbeMs != 0) {
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now = ce::hook_clock::TickCount64();
         const ULONGLONG msSinceProbe = now - dx12_hook_s_startupOverlayFirstDrawProbeMs;
         if (shouldRunStartupOverlayDrawProbe && msSinceProbe < dx12_hook_kStartupOverlayFirstDrawProbeSettleMs) {
             static std::atomic<int> s_firstDrawProbeWaitLogCount{0};

@@ -1,4 +1,5 @@
 #include "main_ue5_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
 
@@ -284,7 +285,7 @@ void RefreshOverrides(const GraphicsConfig& config) {
   // polling for state the engine changes on its own schedule (a game-side
   // Set(), a CVar registered during world init); neither guards a race.
   static ULONGLONG lastServiceTick = 0;
-  const ULONGLONG now = GetTickCount64();
+  const ULONGLONG now = ce::hook_clock::TickCount64();
   if (now - lastServiceTick < 1000)
     return;
   lastServiceTick = now;

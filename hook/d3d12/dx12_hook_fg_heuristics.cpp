@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void ResetAuthoritativeFSRRealFrameOnlyStreak() {
@@ -72,7 +73,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     currentSwapchainQueue != nullptr);
 const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
     dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-    GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
         postFSRNonFGRecovery, false, postSLLastWorkingQueueStillActiveDuringRecentTeardown)) {
     if (blockedReason) {
@@ -108,7 +109,7 @@ if (!dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire
     return false;
 }
 
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 const ULONGLONG lastCallback = dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
 if (lastCallback != 0) {
     constexpr ULONGLONG kStallThresholdMs = 2000;
@@ -136,7 +137,7 @@ result.progressResolved = dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedA
 
 const ULONGLONG assumedSince = dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
 if (result.progressResolved && assumedSince != 0) {
-    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG now = ce::hook_clock::TickCount64();
     result.stableMs = (now >= assumedSince) ? (now - assumedSince) : 0;
 }
 
@@ -168,7 +169,7 @@ const ULONGLONG firstStallMs = dx12_hook_g_FFXPresentCallbackFirstStallEverDetec
 if (firstStallMs == 0) {
     return 0;
 }
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 return (now >= firstStallMs) ? (now - firstStallMs) : 0;
 }
 
@@ -184,7 +185,7 @@ if (callbackEverFired) {
     return;
 }
 ULONGLONG expected = 0;
-dx12_hook_g_FFXPresentCallbackFirstStallEverDetectedMs.compare_exchange_strong(expected, GetTickCount64(),
+dx12_hook_g_FFXPresentCallbackFirstStallEverDetectedMs.compare_exchange_strong(expected, ce::hook_clock::TickCount64(),
                                                                      std::memory_order_acq_rel);
 }
 
@@ -218,7 +219,7 @@ if (logCount >= 5 && (logCount % 600) != 0) {
     return;
 }
 
-const ULONGLONG now = GetTickCount64();
+const ULONGLONG now = ce::hook_clock::TickCount64();
 const ULONGLONG lastCallback = dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
 const ULONGLONG assumedSince = dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
 const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
@@ -331,7 +332,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     currentSwapchainQueue != nullptr);
 const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
 const bool postSLRecentTeardownActivity =
-    GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 return ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceForCurrentFrame(
     postFSRNonFGRecovery, recentStreamlineTeardown, postSLRecentTeardownActivity);
 }

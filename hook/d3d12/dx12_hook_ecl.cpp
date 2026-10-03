@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "hook/pacing/pacing_trace.h"
 
@@ -130,13 +131,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     const bool diagEclIsOverlayQueue = (pThis == dx12_hook_g_State.overlayQueue);
     const bool diagEclEnabled = !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclDiagnosticsOff);
     LARGE_INTEGER diagEclStart;
-    QueryPerformanceCounter(&diagEclStart);
+    ce::hook_clock::QueryCounter(&diagEclStart);
     auto diagEclTimer = ce::make_scope_guard([&]() {
         if (!diagEclEnabled) {
             return;
         }
         LARGE_INTEGER diagEclEnd, diagEclFreq;
-        QueryPerformanceCounter(&diagEclEnd);
+        ce::hook_clock::QueryCounter(&diagEclEnd);
         QueryPerformanceFrequency(&diagEclFreq);
         const double diagEclMs =
             (double)(diagEclEnd.QuadPart - diagEclStart.QuadPart) * 1000.0 / (double)diagEclFreq.QuadPart;
@@ -151,7 +152,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         // Approximate sum via double CAS-free add (relaxed; diagnostic only).
         s_eclWindowSumMs.store(s_eclWindowSumMs.load(std::memory_order_relaxed) + diagEclMs, std::memory_order_relaxed);
         const uint32_t windowCount = s_eclWindowCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        const ULONGLONG nowMs = GetTickCount64();
+        const ULONGLONG nowMs = ce::hook_clock::TickCount64();
         ULONGLONG windowStart = s_eclWindowStartMs.load(std::memory_order_relaxed);
         if (windowStart == 0) {
             s_eclWindowStartMs.compare_exchange_strong(windowStart, nowMs, std::memory_order_relaxed);
@@ -507,7 +508,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             dx12_hook_g_SwapchainQueue != nullptr);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-            GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+            ce::hook_clock::TickCount64() <
+                dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 
         // Capture SL's wrapper queue: during SL FG, any DIRECT queue in ECL
         // that's NOT origGame/scQueue/primaryQ is likely SL's COM wrapper.
@@ -551,7 +553,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 }
 
                 const ULONGLONG lastProcessFrameTickMs = dx12_hook_g_LastProcessFrameTickMs.load(std::memory_order_acquire);
-                const ULONGLONG nowMs = GetTickCount64();
+                const ULONGLONG nowMs = ce::hook_clock::TickCount64();
                 const ULONGLONG processFrameDormantMs = lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs
                                                             ? (nowMs - lastProcessFrameTickMs)
                                                             : 0;

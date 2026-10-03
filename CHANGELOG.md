@@ -16,6 +16,20 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay vanished for seconds after turning DLSS frame generation back on:** after an FSR frame generation phase, switching DLSS-G off and on again could hide the overlay for 6.5 s, and while it was off the overlay still showed "DLSS 2x". DLSS-G's last generated frame after the switch-off no longer counts as frame generation, and the overlay's transition pause always ends completely.
+
+- **Overlay hidden for about half a second after leaving FSR frame generation:** switching from FSR frame generation (already off) to a DLSS or native swapchain no longer pauses the overlay; it is redrawn on the new swapchain at once.
+
+- **Possible GPU device loss when DLSS frame generation starts after FSR:** a temporary resource Capture Engine used to test the game's queue was freed before the GPU had used it.
+
+- **Possible freeze on the first FSR frame generation frame in games with a placeholder UI texture (GTA V Enhanced style):** re-registering Capture Engine's UI texture could re-enter Capture Engine's own hook and deadlock.
+
+- **No overlay on FSR frame generation frames in games without a UI texture:** games that let FSR frame generation interpolate their HUD (no UI resource, no present callback) now show the overlay the same way.
+
+- **Overlay could be submitted on AMD's internal queue:** a game that creates its FSR frame generation swapchain before presenting anything else made Capture Engine mistake AMD's present queue for the game's own, the case known to crash AMD's runtime.
+
+- **Overlay coverage diagnostics missed FSR frame generation frames:** frames presented by FSR frame generation without a present callback were never counted in the session log's overlay coverage summaries, so gaps there went unreported.
+
 - **UE5 RR preset left reflections noisy without Ray Reconstruction:** under TSR, plain DLSS SR, an RR fallback, or after RR was turned off in a game's menu, the preset still switched off Lumen's reflection denoising. Those settings now follow whether RR is actually rendering and hand the game its own values back the moment it stops. The log says `UE5 overrides: Ray Reconstruction is rendering` / `stopped rendering`.
 
 ## v0.1.6941

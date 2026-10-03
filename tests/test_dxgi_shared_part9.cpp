@@ -736,14 +736,21 @@ TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueF
     ASSERT_NE(prework, std::string::npos);
     const size_t startupGate = text.find("ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(", prework);
     const size_t suspensionGate = text.find("DX12_IsNativeFSRFGSuspendedDisablePending()", prework);
+    // No registered UI resource: the overlay rides the proxy backbuffer AMD interpolates (FG flow test FlowFSR).
+    const size_t noUiResourceGate = text.find("DX12_IsFFXUiResourceCachedForBundle()", prework);
+    const size_t routeNames = text.find("kPreworkRouteNames[]", prework);
     const size_t backbufferCall = text.find("DX12_CompositeOverlayOntoSuspendBackbuffer(", prework);
     ASSERT_NE(startupGate, std::string::npos);
     ASSERT_NE(suspensionGate, std::string::npos);
+    ASSERT_NE(noUiResourceGate, std::string::npos);
+    ASSERT_NE(routeNames, std::string::npos);
     ASSERT_NE(backbufferCall, std::string::npos);
     EXPECT_LT(startupGate, backbufferCall);
     EXPECT_LT(suspensionGate, backbufferCall);
-    EXPECT_NE(text.find("protected-startup-backbuffer", backbufferCall), std::string::npos);
-    EXPECT_NE(text.find("suspend-backbuffer", backbufferCall), std::string::npos);
+    EXPECT_LT(noUiResourceGate, backbufferCall);
+    EXPECT_NE(text.find("protected-startup-backbuffer", routeNames), std::string::npos);
+    EXPECT_NE(text.find("suspend-backbuffer", routeNames), std::string::npos);
+    EXPECT_NE(text.find("no-ui-resource-backbuffer", routeNames), std::string::npos);
 
     // The backbuffer composite must resolve against the actual target resource and use the selected owner
     // queue. It must not use the foreign dedicated-queue path or wait on the CPU.

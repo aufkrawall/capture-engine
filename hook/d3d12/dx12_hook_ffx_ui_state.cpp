@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
 
 
@@ -49,7 +50,7 @@ void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason) {
         "fenceMatch=%d compositionActive=%d lastTickMs=%llu nowMs=%llu",
         reason ? reason : "freeze", frame, static_cast<unsigned long long>(fenceVal),
         static_cast<unsigned long long>(fenceCompleted), fenceVal == fenceCompleted ? 1 : 0, compositionActive ? 1 : 0,
-        static_cast<unsigned long long>(lastTickMs), static_cast<unsigned long long>(GetTickCount64()));
+        static_cast<unsigned long long>(lastTickMs), static_cast<unsigned long long>(ce::hook_clock::TickCount64()));
     DumpFFXUiCompositeTimeline(reason);
     // Proxy-present driver + re-assert bracket state (defined later in this file / ffx_hook.cpp): shows in
     // one freeze dump whether the game-thread driver was live and whether a substitute re-assert was
@@ -63,7 +64,7 @@ bool DX12_IsFFXUiResourceCompositionActive() {
     }
     // Recency-gated so it auto-disables once FG turns off and the per-frame UI-resource configures stop.
     const uint64_t last = g_FFXUiCompositeLastTickMs.load(std::memory_order_acquire);
-    return last != 0 && (GetTickCount64() - last) < 500;
+    return last != 0 && (ce::hook_clock::TickCount64() - last) < 500;
 }
 bool DX12_ShouldCacheFFXUiResourceForBundle() {
     return dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
@@ -105,7 +106,7 @@ bool IsResourceOwnedByDevice(ID3D12Resource* resource, ID3D12Device* expectedDev
 }
 void DX12_NoteFfxConfigureForward(uint64_t configureType) {
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     g_LastFfxConfigureForwardQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_relaxed);
     const uint64_t frame = g_FfxConfigureFrame.fetch_add(1, std::memory_order_relaxed) + 1;
     // Log RegisterUiResource (type=0x30002) calls with frame context so the FG-configure (0x20002) and

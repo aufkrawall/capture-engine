@@ -1,6 +1,8 @@
 #include "nvngx_hook_internal.h"
 
 #include "rr_handoff_gate.h"
+#include "common/logging/log_meter.h"
+#include "hook/streamline/streamline_hook.h"
 
 namespace {
 
@@ -101,12 +103,25 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     }
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
     if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result))) {
-        if (IsFrameGenerationFeature(expectedFeature) && evaluatedFGMultiplier > 0) {
+        const bool streamlineHoldsExplicitOff = StreamlineHook::HoldsExplicitDLSSGOff();
+        if (IsFrameGenerationFeature(expectedFeature) &&
+            ce::ngx_lifecycle::ShouldNGXEvaluationActivateFrameGeneration(evaluatedFGMultiplier,
+                                                                          streamlineHoldsExplicitOff)) {
             g_FGCompat.SetDLSSFGMultiplier(evaluatedFGMultiplier);
             g_FGCompat.SetDLSSFGActive(true);
             if (g_IPC && g_IPC->GetSharedMem()) {
                 auto& state = g_IPC->GetSharedMem()->dlssState;
                 state.PublishFGState(GetCurrentProcessId(), true, evaluatedFGMultiplier);
+            }
+        }
+        if (IsFrameGenerationFeature(expectedFeature) && evaluatedFGMultiplier > 0) {
+            // Once per held-OFF episode: the first evaluation that would have reactivated DLSS FG.
+            static ce::log_meter::ChangeGate s_heldOffGate;
+            if (s_heldOffGate.Observe(streamlineHoldsExplicitOff ? 1 : 0) && streamlineHoldsExplicitOff) {
+                HookLogImportant(
+                    "NVNGX FG: %s EvaluateFeature (%dx) while Streamline holds the game's explicit DLSS-G OFF - "
+                    "an in-flight frame, not a reactivation (tid=0x%lX)",
+                    api, evaluatedFGMultiplier, GetCurrentThreadId());
             }
         }
         const auto evaluation = nvngx_hook_g_FeatureRegistry.MarkEvaluated(const_cast<void*>(handle));

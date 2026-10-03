@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 // PostSL/Streamline startup activation, serviced from the ExecuteCommandLists detour.
 //
@@ -56,7 +57,7 @@ void DX12_ServiceECLPostSLStartupActivation() {
         ce::dx12_overlay_policy::ShouldContinueECLDrivenPostSLStartupProgress(
             overlayVisible, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
             callbackInstalled, activationSwapchainAvailable, dx12_hook_g_HadFSRFGPhase, safePostFSRBootstrapPath);
-    const ULONGLONG nowMs = GetTickCount64();
+    const ULONGLONG nowMs = ce::hook_clock::TickCount64();
     const ULONGLONG lastVisibleOverlayStartupProgressTriggerMs =
         s_lastVisibleOverlayStartupProgressTriggerMs.load(std::memory_order_acquire);
     const bool visibleOverlayStartupProgressTick = continueVisibleOverlayStartupProgress && !windowActive &&

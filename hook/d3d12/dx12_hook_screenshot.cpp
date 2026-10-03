@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "common/ipc/inject_transport_snapshot.h"
 
@@ -199,7 +200,7 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
     }
     DXGIShared::SetLatestSourceFrameIndex(desc.frameNumber);
     static uint64_t s_lastPublishLineageLogTick = 0;
-    uint64_t nowTick = GetTickCount64();
+    uint64_t nowTick = ce::hook_clock::TickCount64();
     if (nowTick - s_lastPublishLineageLogTick >= 1000) {
         HookLog("DX12: Publish frame=%u ring=%u tex=%d fence=%llu ts=%llu bb=%u depth=%u flags=0x%X "
                 "displaySequence=%llu/%u", desc.frameNumber, wIdx,
@@ -244,7 +245,7 @@ void DX12_DescribeCaptureBindingForResize(IDXGISwapChain* swapChain, char* out, 
     if (binding.lastCaptureQpc > 0) {
         LARGE_INTEGER now{};
         LARGE_INTEGER frequency{};
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
         QueryPerformanceFrequency(&frequency);
         if (frequency.QuadPart > 0)
             lastCopyAgeMs = (now.QuadPart - binding.lastCaptureQpc) * 1000 / frequency.QuadPart;

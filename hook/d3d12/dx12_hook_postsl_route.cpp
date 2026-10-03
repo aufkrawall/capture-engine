@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 #include "hook/fg/fg_cost_probe.h"
@@ -69,7 +70,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     currentSwapchainQueue != nullptr);
 const bool lastWorkingQueueStillActiveDuringRecentTeardown =
     dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-    GetTickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+    ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
         recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
         pQueue == primaryQ, pQueue == dx12_hook_g_OriginalGameQueue, pQueue == currentSwapchainQueue,
@@ -162,7 +163,7 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
         dx12_hook_g_SwapchainQueue->Release();
     dx12_hook_g_SwapchainQueue = pQueue;
     dx12_hook_g_SwapchainQueue->AddRef();
-    dx12_hook_g_SwapchainQueueCaptureTime = GetTickCount64();
+    dx12_hook_g_SwapchainQueueCaptureTime = ce::hook_clock::TickCount64();
 
 
     // Track whether an FG runtime owns this swapchain/queue
@@ -270,7 +271,7 @@ if (dx12_hook_g_SwapchainQueue != pQueue) {
     if (runtimeOwns && !dx12_hook_g_FGRuntimeOwnsSwapchain) {
         dx12_hook_g_FGRuntimeOwnsSwapchain = true;
         DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(true, std::memory_order_release);
-        dx12_hook_g_FGRuntimeOwnsSwapchainSince = GetTickCount64();
+        dx12_hook_g_FGRuntimeOwnsSwapchainSince = ce::hook_clock::TickCount64();
         runtimeOwnershipJustActivated = true;
         ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
         dx12_hook_s_pendingLateRuntimeOwnedStartupHandoff.store(true, std::memory_order_release);

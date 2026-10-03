@@ -1,4 +1,5 @@
 #include "overlay_adapter_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
                                    const FrameLayoutSnapshot& frameLayout, bool refreshLayout) {
@@ -93,7 +94,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (std::strcmp(rowDigest, lastLoggedRowDigest) != 0) {
             std::snprintf(lastLoggedRowDigest, sizeof(lastLoggedRowDigest), "%s", rowDigest);
             ++rowDigestChanges;
-            const ULONGLONG rowNowMs = GetTickCount64();
+            const ULONGLONG rowNowMs = ce::hook_clock::TickCount64();
             const bool validityChanged = std::strcmp(rowValidity, lastLoggedRowValidity) != 0;
             if (validityChanged || rowNowMs - lastRowDigestLogMs >= 60000) {
                 std::snprintf(lastLoggedRowValidity, sizeof(lastLoggedRowValidity), "%s", rowValidity);
@@ -367,7 +368,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     float recentMaxFrameTime = cachedMaxFrameTime;
     float recentAvgFrameTime = cachedAvgFrameTimeForColor;
     if (showGraph) {
-        DWORD ftNow = GetTickCount();
+        DWORD ftNow = ce::hook_clock::TickCount();
         if ((ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
             lastMaxFrameTimeUpdateTime = ftNow;
             int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;

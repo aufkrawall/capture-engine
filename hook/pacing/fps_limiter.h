@@ -2,6 +2,7 @@
 
 // clang-format off
 #include <windows.h>
+#include "hook/runtime/hook_clock.h"
 #include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
 // clang-format on
 #include <intrin.h>
@@ -440,7 +441,7 @@ private:
             return clock_.now(clock_.context);
         }
         LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
         return now.QuadPart;
     }
     uint32_t missedFrames = 0;  // Track frames where limiter couldn't keep up

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "dx12_hook_postsl_session.h"
 
 
@@ -25,7 +26,7 @@ finalOutputCapture =
                                           cachedSLFGActive);
 entryLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
-const ULONGLONG nowMs = GetTickCount64();
+const ULONGLONG nowMs = ce::hook_clock::TickCount64();
 const ULONGLONG lastProcessFrameTickMs = dx12_hook_g_LastProcessFrameTickMs.load(std::memory_order_acquire);
 processFrameRecentlySeen = lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs &&
                                       (nowMs - lastProcessFrameTickMs) < kDormantProcessFrameThresholdMs;

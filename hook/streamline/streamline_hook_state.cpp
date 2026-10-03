@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 }
@@ -515,7 +516,7 @@ bool ShouldSuppressNewGetStateActivation() {
     }
 
     const ULONGLONG suppressUntilMs = streamline_hook_g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
-    return suppressUntilMs != 0 && GetTickCount64() < suppressUntilMs;
+    return suppressUntilMs != 0 && ce::hook_clock::TickCount64() < suppressUntilMs;
 
 }
 

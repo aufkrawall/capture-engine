@@ -188,6 +188,8 @@ struct DX12OverlayState {
     UINT offscreenWidth = 0;
     UINT offscreenHeight = 0;
     DXGI_FORMAT offscreenFormat = DXGI_FORMAT_UNKNOWN;
+    // The post-FSR PostSL queue probe's barrier target; it must outlive every probe list the GPU still executes.
+    ID3D12Resource* postFSRProbeScratch = nullptr;
 
     // Dedicated overlay command queue for FG-safe rendering.
     // When FG is active, overlay commands execute on this queue with CPU-side
@@ -461,6 +463,14 @@ extern std::atomic<int> dx12_hook_g_SceneTransitionCooldown;
 extern ID3D12CommandQueue* dx12_hook_g_PreFGGameQueue;
 extern ID3D12CommandQueue* dx12_hook_g_OriginalGameQueue;
 extern std::atomic<int> dx12_hook_g_FGTransitionCooldown;
+// Ends the FG transition cooldown together with its PostSL mirror. The mirror only counts down while the
+// cooldown does, so a mirror left armed outlives it: PostSL then skipped every frame once DLSS-G became the
+// transport again (0.1.6951 dx12_fg_switch_test: "PostSL SKIP - FG transition cooldown active (60 frames
+// left)" for 1549 presents / 6.5 s after a warm DLSS-G resume).
+inline void EndFGTransitionCooldown() {
+    dx12_hook_g_FGTransitionCooldown.store(0, std::memory_order_release);
+    dx12_hook_g_PostSLCooldownRemaining.store(0, std::memory_order_release);
+}
 extern int dx12_hook_g_FramesSinceFGActive;
 extern DX12DescFreeBackend* dx12_hook_g_DescFreeBackend;
 extern DX12OverlayState dx12_hook_g_State;

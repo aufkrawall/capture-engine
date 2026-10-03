@@ -210,7 +210,7 @@ TEST(PureDLSSStartupStallDumpSourceTest, PresentReturnIsRecordedOnEveryTransport
         ASSERT_FALSE(source.empty()) << file;
         const size_t enter = source.find("presentInFlightDepth.fetch_add(1");
         ASSERT_NE(enter, std::string::npos) << file;
-        const size_t stamp = source.find("lastPresentReturnTickMs.store(GetTickCount64()", enter);
+        const size_t stamp = source.find("lastPresentReturnTickMs.store(ce::hook_clock::TickCount64()", enter);
         const size_t leave = source.find("presentInFlightDepth.fetch_sub(1", enter);
         ASSERT_NE(stamp, std::string::npos) << file;
         ASSERT_NE(leave, std::string::npos) << file;

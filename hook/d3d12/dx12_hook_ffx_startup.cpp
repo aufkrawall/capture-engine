@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown() {
@@ -22,7 +23,7 @@ dx12_hook_g_ProtectedOfficialFFXStartupBeginMs.store(0, std::memory_order_releas
 void ArmProtectedOfficialFFXStartupProgressTracking(const char* reason) {
 dx12_hook_g_ProtectedOfficialFFXStartupProcessFrameSkips.store(0, std::memory_order_release);
 dx12_hook_g_ProtectedOfficialFFXStartupECLPassThroughs.store(0, std::memory_order_release);
-dx12_hook_g_ProtectedOfficialFFXStartupBeginMs.store(GetTickCount64(), std::memory_order_release);
+dx12_hook_g_ProtectedOfficialFFXStartupBeginMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
 HookLogImportant("DX12: Protected official FFX startup progress tracking armed (%s)",
                  reason && reason[0] ? reason : "unknown");
 }
@@ -492,7 +493,7 @@ if (ce::dx12_overlay_policy::ShouldFinalizeProtectedOfficialFFXStartupAfterSusta
 static std::atomic<int> s_protectedOfficialFFXProgressOnlyLogCount{0};
 const int logCount = s_protectedOfficialFFXProgressOnlyLogCount.fetch_add(1, std::memory_order_relaxed);
 if (logCount < 10 || (logCount % 600) == 0) {
-    const ULONGLONG nowMs = GetTickCount64();
+    const ULONGLONG nowMs = ce::hook_clock::TickCount64();
     const ULONGLONG beginMs = dx12_hook_g_ProtectedOfficialFFXStartupBeginMs.load(std::memory_order_acquire);
     HookLogImportant(
         "DX12: Protected official FFX startup has sustained frame progress but remains quiesced until direct "

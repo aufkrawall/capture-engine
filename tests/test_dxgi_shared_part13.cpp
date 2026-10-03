@@ -523,3 +523,46 @@ TEST(DXGISharedSourceTest, NoForeignOverlayHandlerIsInvokedWhileCEInterceptsBelo
     EXPECT_LT(declineReturn, handlerResolution);
     EXPECT_NE(steam.find("already drew above this call", belowChainGuard), std::string::npos);
 }
+
+// FG flow test FlowSwitch: after FSR FG was switched off, the game's Streamline swapchain arrived on its own queue
+// and the generic "FG was active within 300 frames" guard blanked the overlay for 90 presents. A change proven on
+// the game queue with nothing generating frames reinitializes at once; every FG or runtime-ownership signal, an
+// unproven queue or a removed device keeps the guard.
+TEST(DXGISharedTest, FGInactiveOriginalQueueSwapchainChangeReinitializesWithoutCooldown) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain;
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(true, false, false, false, false,
+                                                                                 false, false));
+    for (int blocker = 0; blocker < 7; ++blocker) {
+        bool args[7] = {true, false, false, false, false, false, false};
+        args[blocker] = !args[blocker];
+        EXPECT_FALSE(ShouldReinitOverlayImmediatelyOnFGInactiveOriginalQueueSwapchain(
+            args[0], args[1], args[2], args[3], args[4], args[5], args[6]))
+            << "blocker " << blocker;
+    }
+}
+
+// The FG transition cooldown has a PostSL mirror that only counts down while the cooldown does. The keep-drawing
+// edge once ended the cooldown alone, the mirror stayed at 60 and PostSL skipped 1549 presents after a warm DLSS-G
+// resume (0.1.6951 dx12_fg_switch_test). Every site that ends the cooldown goes through EndFGTransitionCooldown().
+TEST(DXGISharedSourceTest, FGTransitionCooldownEndsOnlyTogetherWithItsPostSLMirror) {
+    namespace fs = std::filesystem;
+    const fs::path hookRoot = fs::current_path() / "hook";
+    ASSERT_TRUE(fs::exists(hookRoot));
+    int helperDefinitions = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(hookRoot)) {
+        const std::string extension = entry.path().extension().string();
+        if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".h"))
+            continue;
+        const std::string text = ce::test_source::ReadFile(entry.path());
+        for (const char* bareEnd : {"FGTransitionCooldown.store(0", "FGTransitionCooldown = 0;"}) {
+            for (size_t at = text.find(bareEnd); at != std::string::npos; at = text.find(bareEnd, at + 1)) {
+                const size_t helper = text.rfind("inline void EndFGTransitionCooldown()", at);
+                const bool insideHelper = helper != std::string::npos && text.find('}', helper) > at;
+                EXPECT_TRUE(insideHelper) << entry.path().string() << " ends the FG transition cooldown without "
+                                          << "its PostSL mirror; use EndFGTransitionCooldown()";
+                helperDefinitions += insideHelper ? 1 : 0;
+            }
+        }
+    }
+    EXPECT_EQ(helperDefinitions, 1);
+}

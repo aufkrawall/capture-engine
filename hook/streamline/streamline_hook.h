@@ -33,6 +33,10 @@ bool IsDLSSFGRequestedViaStreamline();
 // request after a provisional GetState-only activation already surfaced.
 bool HasExplicitSetOptionsActivationForCurrentComeback();
 
+// True from the game's accepted slDLSSGSetOptions(OFF) until an explicit enable (or sustained generation
+// evidence): DLSS FG activity seen anywhere else must not switch CE's FG state back on meanwhile.
+bool HoldsExplicitDLSSGOff();
+
 // Called by the DX12 FFX handoff path when authoritative FFX runtime traffic
 // takes ownership of the swapchain. Clears cached Streamline viewport state so
 // stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.

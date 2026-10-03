@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-03 - FG flow harness closes the switching test gap; seven FG defects fixed (run pending)
+
+- `fg_flow_tests.exe` runs the real hook against faithful fake Streamline/FidelityFX runtimes in 10 scenarios
+  (DLSS/FSR toggles, FSR with/without callback and UI resource, post-FSR DLSS warm resume, Talos/GTA-style
+  runtime switches with FG on). Design, invariants and the defect list with session evidence:
+  refactor-roadmap.md ("FG flow harness"). Dev loop: build.py.md (`--tests-only --flow-tests`).
+- Hardware re-test wanted: `dx12_fg_switch_test` post-FSR DLSS OFF->ON (was 1549 presents without overlay and a
+  DLSS 2x status while off), GTA FSR FG (coverage summaries should now count every output; look for
+  `Physical Present left the coverage ledger` - it should not appear), and any FSR -> DLSS -> FSR -> off chain.
+
 ### 2026-10-03 - Refactor waves 4-7: docs, dead code, unit names, header reflow (0.1.6951)
 
 - AGENTS.md 25->15 KB, wiki `index.md` 33->7 KB, `current.md` 89->8 KB (full text archived). Dead code: 29

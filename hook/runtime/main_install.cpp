@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 #include "hook/hooking/module_pin.h"
@@ -51,7 +52,7 @@ void CheckAndInstallHooks() {
     const uint64_t claim = sharedMemory->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
     vulkanLayerOwned = sharedMemory->runtimeState.IsVulkanLayerOwnedByProcess(currentPid) ||
                        sharedMemory->runtimeState.IsVulkanPresentRecentForProcess(
-                           currentPid, GetTickCount64(), 2000);
+                           currentPid, ce::hook_clock::TickCount64(), 2000);
     if (claim != 0 && !ce::vulkan_layer_claim::BelongsToProcess(claim, currentPid)) {
       static std::atomic<uint64_t> s_lastRejectedVulkanClaim{0};
       if (s_lastRejectedVulkanClaim.exchange(claim, std::memory_order_relaxed) != claim) {
@@ -304,9 +305,9 @@ void CheckAndInstallHooks() {
         g_DX11Hook = new DX11Hook();
         LARGE_INTEGER _t1, _t2, _freq;
         QueryPerformanceFrequency(&_freq);
-        QueryPerformanceCounter(&_t1);
+        ce::hook_clock::QueryCounter(&_t1);
         g_DX11Hook->Init();
-        QueryPerformanceCounter(&_t2);
+        ce::hook_clock::QueryCounter(&_t2);
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
         HookLog("D3D10/11 hooks installed (init=%.1f ms)", _initMs);
@@ -340,9 +341,9 @@ void CheckAndInstallHooks() {
     g_DX9Hook = new DX9Hook();
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
-    QueryPerformanceCounter(&_t1);
+    ce::hook_clock::QueryCounter(&_t1);
     g_DX9Hook->Init();
-    QueryPerformanceCounter(&_t2);
+    ce::hook_clock::QueryCounter(&_t2);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DX9 hooks installed (hook ptr=%p, init=%.1f ms)", (void*)g_DX9Hook, _initMs);
@@ -373,10 +374,10 @@ void CheckAndInstallHooks() {
     g_DDrawHook = new DDrawHook();
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
-    QueryPerformanceCounter(&_t1);
+    ce::hook_clock::QueryCounter(&_t1);
     g_DDrawHook->Init();
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    QueryPerformanceCounter(&_t2);
+    ce::hook_clock::QueryCounter(&_t2);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;
     HookLog("DDraw hooks installed (init=%.1f ms)", _initMs);
@@ -390,11 +391,11 @@ void CheckAndInstallHooks() {
     g_DX8Hook = new DX8Hook();
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
-    QueryPerformanceCounter(&_t1);
+    ce::hook_clock::QueryCounter(&_t1);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_DX8Hook->Init();
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    QueryPerformanceCounter(&_t2);
+    ce::hook_clock::QueryCounter(&_t2);
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
     HookLog("DX8 hooks installed (init=%.1f ms)", _initMs);
   }
@@ -406,10 +407,10 @@ void CheckAndInstallHooks() {
     LARGE_INTEGER _t1, _t2, _freq;
     QueryPerformanceFrequency(&_freq);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    QueryPerformanceCounter(&_t1);
+    ce::hook_clock::QueryCounter(&_t1);
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_OpenGLHook->Init();
-    QueryPerformanceCounter(&_t2);
+    ce::hook_clock::QueryCounter(&_t2);
     double _initMs = (double)(_t2.QuadPart - _t1.QuadPart) * 1000.0 / _freq.QuadPart;  // NOLINT(bugprone-narrowing-conversions)
     HookLog("OpenGL hooks installed (init=%.1f ms)", _initMs);
   } else if (!s_vulkanActive && !g_OpenGLHook && d3d12UseEvidence && GetModuleHandleA("opengl32.dll")) {

@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
 // Bookkeeping for the expensive half of ffx_hook_InstallHooksForModule (the IAT walks and the cached-slot scan):
@@ -41,7 +42,7 @@ FfxModuleSweep ffx_hook_DecideModuleSweep(HMODULE module) {
     sweep.inputs.unroutedCallEvidence = ffx_hook_g_UnroutedCallEvidence.load(std::memory_order_acquire);
     sweep.reason = ce::ffx_module_rescan::Decide(SlotFor(module).state, sweep.inputs);
     if (sweep.Run()) {
-        QueryPerformanceCounter(&sweep.start);
+        ce::hook_clock::QueryCounter(&sweep.start);
     }
     return sweep;
 }
@@ -55,7 +56,7 @@ void ffx_hook_CompleteModuleSweep(const FfxModuleSweep& sweep, const char* modul
 
     LARGE_INTEGER end = {};
     LARGE_INTEGER frequency = {};
-    QueryPerformanceCounter(&end);
+    ce::hook_clock::QueryCounter(&end);
     QueryPerformanceFrequency(&frequency);
     const double sweepMs =
         static_cast<double>(end.QuadPart - sweep.start.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart);

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "common/platform/ansi_path.h"
 
@@ -519,7 +520,7 @@ if (FAILED(deviceHr) || !queueDevice || FAILED(sc3Hr) || !swapChain3) {
     return false;
 }
 
-const ULONGLONG startedMs = GetTickCount64();
+const ULONGLONG startedMs = ce::hook_clock::TickCount64();
 bool ready = false;
 bool overlayInit = false;
 bool syncInit = false;
@@ -571,7 +572,8 @@ HookLogImportant(
     "(source=%s sc=%p queue=%p device=%p fmt=%d buffers=%u elapsed=%llums init=%d sync=%d rtv=%p)",
     ready ? "READY" : "INCOMPLETE", context ? context : "unknown", swapChain, swapchainQueue, queueDevice,
     static_cast<int>(desc.BufferDesc.Format), desc.BufferCount,
-    static_cast<unsigned long long>(GetTickCount64() - startedMs), overlayInit ? 1 : 0, syncInit ? 1 : 0, rtvHeap);
+    static_cast<unsigned long long>(ce::hook_clock::TickCount64() - startedMs),
+    overlayInit ? 1 : 0, syncInit ? 1 : 0, rtvHeap);
 
 swapChain3->Release();
 queueDevice->Release();

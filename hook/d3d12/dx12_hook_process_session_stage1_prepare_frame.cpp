@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
 
@@ -254,7 +255,7 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         int64_t cooldownEnd = dx12_hook_g_OverlayCooldownUntilQpc.load(std::memory_order_acquire);
         if (cooldownEnd > 0) {
             LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
+            ce::hook_clock::QueryCounter(&now);
             if (now.QuadPart < cooldownEnd) {
                 inTransitionCooldown = true;
             } else {
@@ -505,7 +506,8 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
     postResumeSettleRemainingMs = 0;
     startupOverlayCompatibilityActive = IsStartupOverlayCompatibilityActive();
     runtimeOwnedSwapchainActiveMs = (dx12_hook_g_FGRuntimeOwnsSwapchain && dx12_hook_g_FGRuntimeOwnsSwapchainSince != 0)
-                                                        ? (GetTickCount64() - dx12_hook_g_FGRuntimeOwnsSwapchainSince)
+                                                        ? (ce::hook_clock::TickCount64() -
+                                                           dx12_hook_g_FGRuntimeOwnsSwapchainSince)
                                                         : dx12_hook_kStartupOverlayPostResumeSettleMs;
     runtimeOwnedSwapchainNeedsExtraResumeSettle =
         ce::dx12_overlay_policy::ShouldDeferStartupOverlayWorkAfterResume(

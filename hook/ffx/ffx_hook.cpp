@@ -1,4 +1,5 @@
 #include "ffx_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 // Re-assert bracket (freeze diagnosis): non-zero QPC + tid while a re-assert's ffxConfigure forward is
 // in flight. A freeze dump showing a stuck bracket pinpoints a registerUiResource lock wedge immediately
@@ -38,21 +39,35 @@ FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
         }
         return FFXSubstituteUiReRegistrationResult::kFailed;
     }
-    std::lock_guard<std::mutex> lock(ffx_hook_g_SubstReRegMutex);
-    if (!ffx_hook_g_SubstReRegConfigure || !ffx_hook_g_SubstReRegContext) {
+    // Copied out so the forward runs unlocked: a forward that reaches Hooked_ffxConfigure (whose substitute
+    // bookkeeping takes this mutex) must never find it held by its own thread.
+    PfnFfxConfigure configure = nullptr;
+    ffxContext context = nullptr;
+    ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource desc = {};
+    {
+        std::lock_guard<std::mutex> lock(ffx_hook_g_SubstReRegMutex);
+        configure = ffx_hook_g_SubstReRegConfigure;
+        context = ffx_hook_g_SubstReRegContext;
+        desc = ffx_hook_g_SubstReRegDesc;
+    }
+    if (!configure || !context) {
         return FFXSubstituteUiReRegistrationResult::kFailed;
     }
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     g_SubstReRegInFlightTid.store(GetCurrentThreadId(), std::memory_order_release);
     g_SubstReRegInFlightQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
-    const ffxReturnCode_t result =
-        ffx_hook_g_SubstReRegConfigure(&ffx_hook_g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&ffx_hook_g_SubstReRegDesc));
+    // Guarded like every other forward: while CE's ffxConfigure entry breakpoint is armed (no-callback FG via a
+    // GetProcAddress-resolved export), a bare call to the export trapped back into Hooked_ffxConfigure, which
+    // took CE's substitute for a game texture and re-locked the mutex above - a permanent freeze on the first
+    // FSR FG frame (FG flow test FlowFSR substitute UI resource).
+    const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(
+        configure, &context, reinterpret_cast<const ffxConfigureDescHeader*>(&desc));
     g_SubstReRegInFlightQpc.store(0, std::memory_order_release);
     g_SubstReRegInFlightTid.store(0, std::memory_order_release);
     if (result != ffx_hook_FFX_API_RETURN_OK) {
-        HookLogImportant("FFX Hook: substitute UI-resource re-registration FAILED (ctx=%p result=%d)",
-                         (void*)ffx_hook_g_SubstReRegContext, static_cast<int>(result));
+        HookLogImportant("FFX Hook: substitute UI-resource re-registration FAILED (ctx=%p result=%d)", (void*)context,
+                         static_cast<int>(result));
         return FFXSubstituteUiReRegistrationResult::kFailed;
     }
     static std::atomic<int> s_reRegLog{0};
@@ -60,8 +75,8 @@ FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
     if (n < 10 || (n % 600) == 0) {
         HookLogImportant(
             "FFX Hook: re-registered CE substitute UI resource %p (ctx=%p tid=0x%04X) so AMD composites it over "
-            "GTA's per-frame 1x1 (log=%d)",
-            ffx_hook_g_SubstReRegDesc.uiResource.resource, (void*)ffx_hook_g_SubstReRegContext, GetCurrentThreadId(), n + 1);
+            "the game's per-frame placeholder (log=%d)",
+            desc.uiResource.resource, (void*)context, GetCurrentThreadId(), n + 1);
     }
     return FFXSubstituteUiReRegistrationResult::kSucceeded;
 }

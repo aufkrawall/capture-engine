@@ -3,6 +3,7 @@
 // reference it, and hand the winner to the installer. Memory primitives live
 // in main_ue5_memory.cpp, installation in main_ue5_install.cpp.
 #include "main_ue5_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "common/platform/module_enumeration.h"
 
@@ -279,7 +280,7 @@ void LogUnvalidatedCandidate(const ModuleView& image, const Candidate& raw, std:
 }
 
 bool ScanModule(HMODULE module, std::vector<uint8_t>* seenLiterals) {
-  const ULONGLONG scanStart = GetTickCount64();
+  const ULONGLONG scanStart = ce::hook_clock::TickCount64();
   ScopedModuleReference reference(module);
   if (!reference.Get())
     return false;
@@ -393,7 +394,7 @@ bool ScanModule(HMODULE module, std::vector<uint8_t>* seenLiterals) {
       continue;
     }
     installedAny |= ApplyCandidate(image, *bestCandidate, discoveredCandidateCount, matchCount,
-                                   GetTickCount64() - scanStart);
+                                   ce::hook_clock::TickCount64() - scanStart);
   }
   return installedAny;
 }
@@ -427,7 +428,7 @@ bool ScanAllLoadedModules() {
     return false;
   }
 
-  const ULONGLONG start = GetTickCount64();
+  const ULONGLONG start = ce::hook_clock::TickCount64();
   bool installedAny = false;
   std::vector<uint8_t> seenLiterals(kCVarCount, 0);
   HMODULE mainModule = GetModuleHandleW(nullptr);
@@ -470,7 +471,7 @@ bool ScanAllLoadedModules() {
       detail += "; found but no validated CVar object: " + missingCandidates;
     HookLogImportant(
         "UE5 overrides: installed %zu/%zu requested persistent CVars across %zu modules in %llums%s",
-        active, desired, modules.size(), static_cast<unsigned long long>(GetTickCount64() - start),
+        active, desired, modules.size(), static_cast<unsigned long long>(ce::hook_clock::TickCount64() - start),
         detail.c_str());
   }
   return installedAny;

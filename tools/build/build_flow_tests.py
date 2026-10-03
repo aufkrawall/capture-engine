@@ -11,6 +11,16 @@ FLOW_TEST_OUTPUT_DIR = (
     os.path.join(ISOLATED_BUILD_ROOT, "flow_tests") if ISOLATED_BUILD_ROOT else os.path.join(BUILD_DIR, "flow_tests")
 )
 FLOW_HOOK_ENTRY_SOURCE = "flow_hook_entry.cpp"
+# Fake frame-generation runtimes, built under the real module names (CE identifies runtimes by module):
+# (DLL, sources under tests/flow/fakes - .cpp compiled, .rc through windres, .def handed to the linker).
+FLOW_FAKE_MODULES = (
+    ("sl.interposer.dll", ("streamline/sl_interposer.cpp", "streamline/sl_version.rc", "streamline/sl.interposer.def")),
+    ("sl.common.dll", ("streamline/sl_common.cpp", "streamline/sl_version.rc")),
+    ("sl.dlss_g.dll", ("streamline/sl_dlss_g.cpp", "streamline/sl_version.rc")),
+    ("sl.reflex.dll", ("streamline/sl_reflex.cpp", "streamline/sl_version.rc")),
+    ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
+    ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
+)
 FLOW_TEST_TIMEOUT_SECONDS = 180
 FLOW_TEST_PARALLEL_PROCESSES = 4
 
@@ -67,13 +77,29 @@ def build_flow_tests(env, clang_exe, hook_cflags, hook_ldflags, hook_sources) ->
     )
 
     host_cflags = make_cpp_cflags(UNIT_TEST_OPT_FLAGS_X64, compiler_exe=clang_exe) + [
-        "-I" + os.path.join(MSYS2_DIR, "clang64", "include")
+        "-I" + os.path.join(MSYS2_DIR, "clang64", "include"),
+        "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
+        "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx", "Kits", "FidelityFX", "api", "include"),
+        "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx", "Kits", "FidelityFX", "framegeneration", "include"),
     ]
-    host_pairs = []
-    for src in flow_test_host_sources():
-        rel_path = os.path.relpath(src, PROJECT_ROOT)
-        host_pairs.append((src, os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".host.o").replace("\\", "/")))
+    def host_objects(sources):
+        pairs = []
+        for src in sources:
+            rel_path = os.path.relpath(src, PROJECT_ROOT)
+            pairs.append((src, os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".host.o").replace("\\", "/")))
+        return pairs
+
+    host_pairs = host_objects(flow_test_host_sources())
     parallel_compile(env, clang_exe, host_cflags, host_pairs)
+    # The game plays CaptureEngine's inject host (it publishes the host memory with the host's own
+    # UpdateSharedMemoryFromConfig), so it links that unit and common - kept out of compile_commands.json.
+    host_side_pairs = host_objects(list(common_sources()) + [find_module_source("captureengine", "inject_config.cpp")])
+    compile_commands_snapshot = list(COMPILE_COMMANDS)
+    try:
+        parallel_compile(env, clang_exe, host_cflags, host_side_pairs)
+    finally:
+        COMPILE_COMMANDS[:] = compile_commands_snapshot
+    host_pairs += host_side_pairs
     flow_exe = os.path.join(FLOW_TEST_OUTPUT_DIR, "fg_flow_tests.exe")
     msys_lib = os.path.join(MSYS2_DIR, "clang64", "lib")
     exe_ldflags = [
@@ -85,6 +111,16 @@ def build_flow_tests(env, clang_exe, hook_cflags, hook_ldflags, hook_sources) ->
         "-ldxgi",
         "-luser32",
         "-ladvapi32",
+        "-lole32",
+        "-lshell32",
+        "-lshlwapi",
+        "-lbcrypt",
+        "-lversion",
+        "-luuid",
+        "-lws2_32",
+        "-lgdi32",
+        "-lpsapi",
+        "-ldbghelp",
     ]
     append_windows_pdb_linker_flag(exe_ldflags, flow_exe)
     exe_cmd = [clang_exe] + [obj for _, obj in host_pairs] + exe_ldflags + ["-o", flow_exe]
@@ -94,11 +130,66 @@ def build_flow_tests(env, clang_exe, hook_cflags, hook_ldflags, hook_sources) ->
         flow_exe,
         required_outputs=[flow_exe] + ([pdb_path_for_binary(flow_exe)] if IS_WINDOWS else []),
     )
+    build_flow_fake_modules(env, clang_exe, host_cflags, obj_dir)
     shutil.copy2(
         os.path.join(PROJECT_ROOT, "captureengine", "config.ini.template"),
         os.path.join(FLOW_TEST_OUTPUT_DIR, "config.ini"),
     )
     return flow_exe
+
+
+def build_flow_fake_modules(env, clang_exe, host_cflags, obj_dir) -> None:
+    fakes_dir = os.path.join(FLOW_TEST_SOURCE_DIR, "fakes")
+    fake_cflags = host_cflags
+    compile_pairs, links = [], []
+    for dll, sources in FLOW_FAKE_MODULES:
+        module_obj_dir = os.path.join(obj_dir, "fakes", os.path.splitext(dll)[0])
+        inputs = []
+        for source in sources:
+            path = os.path.join(fakes_dir, *source.split("/"))
+            stem = os.path.splitext(os.path.basename(source))[0]
+            if source.endswith(".cpp"):
+                obj = os.path.join(module_obj_dir, stem + ".o").replace("\\", "/")
+                compile_pairs.append((path, obj))
+                inputs.append(obj)
+            elif source.endswith(".rc"):
+                res_obj = os.path.join(module_obj_dir, stem + ".res.o").replace("\\", "/")
+                os.makedirs(module_obj_dir, exist_ok=True)
+                run_command([get_windres_exe("x64"), path, "-o", res_obj], env=env, cwd=os.path.dirname(path))
+                inputs.append(res_obj)
+            else:
+                inputs.append(path)
+        links.append((dll, inputs))
+    parallel_compile(env, clang_exe, fake_cflags, compile_pairs)
+    for dll, inputs in links:
+        output = os.path.join(FLOW_TEST_OUTPUT_DIR, dll)
+        ldflags = ["-shared", "-static", "-fuse-ld=lld", "-ld3d12", "-ldxgi", "-luser32"]
+        append_windows_pdb_linker_flag(ldflags, output)
+        run_cached_link(
+            [clang_exe] + inputs + ldflags + ["-o", output],
+            env,
+            output,
+            required_outputs=[output] + ([pdb_path_for_binary(output)] if IS_WINDOWS else []),
+        )
+
+
+def build_flow_tests_standalone(env) -> Optional[str]:
+    """The --tests-only --flow-tests loop: the flow harness alone, from the x64 hook flags."""
+    clang_exe = get_compiler_exe("x64")
+    vulkan_lib = get_linux_vulkan_import_lib_path("x64")
+    if clang_exe is None or vulkan_lib is None:
+        log("FG flow tests: x64 compiler or Vulkan import library unavailable")
+        return None
+    mingw_lib = "" if IS_LINUX else os.path.join(MSYS2_DIR, "clang64", "lib")
+    excluded = {os.path.join(PROJECT_ROOT, *rel.split("/")) for rel in HOOK_DLL_EXCLUDED_SOURCES}
+    hook_sources = [src for src in hook_dll_sources() if src not in excluded]
+    return build_flow_tests(
+        env,
+        clang_exe,
+        make_hook_cflags("x64", clang_exe),
+        make_hook_ldflags("x64", clang_exe, mingw_lib, "", vulkan_lib),
+        hook_sources,
+    )
 
 
 def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> List[str]:

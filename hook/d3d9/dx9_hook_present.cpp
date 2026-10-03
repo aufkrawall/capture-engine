@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 // Present hook helpers
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
@@ -85,7 +86,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         qpcFreq = f.QuadPart;
     }
     LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    ce::hook_clock::QueryCounter(&qpc);
     dx9_hook_g_Timing.startTime = qpc.QuadPart;
     dx9_hook_g_Timing.fpsLimitTime = 0;
     dx9_hook_g_Timing.presentCallTime = 0;
@@ -154,7 +155,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         // Draw overlay
         int64_t overlayStart = 0;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         overlayStart = qpc.QuadPart;
 
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -217,12 +218,12 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         };
 
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         dx9_hook_g_Timing.overlayTime = qpc.QuadPart - overlayStart;
 
         // CPU Prerender Limit
         int64_t prerenderStart = 0;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         prerenderStart = qpc.QuadPart;
 
         if (!dxvkVulkanCapture) {
@@ -232,12 +233,12 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
 
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         dx9_hook_g_Timing.prerenderTime = qpc.QuadPart - prerenderStart;
 
         // Capture logic
         int64_t captureStart = 0;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         captureStart = qpc.QuadPart;
 
         // Lambda for capture operation
@@ -314,7 +315,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             doScreenshot();
         }
 
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         dx9_hook_g_Timing.captureTime = qpc.QuadPart - captureStart;
 
         // FPS limiter moved to PresentEnd (after PostPresentReadback) so that
@@ -352,11 +353,11 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             limiterFreq = f.QuadPart;
         }
         LARGE_INTEGER limiterQpc;
-        QueryPerformanceCounter(&limiterQpc);
+        ce::hook_clock::QueryCounter(&limiterQpc);
         int64_t fpsLimitStart = limiterQpc.QuadPart;
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply();
-        QueryPerformanceCounter(&limiterQpc);
+        ce::hook_clock::QueryCounter(&limiterQpc);
         dx9_hook_g_Timing.fpsLimitTime = limiterQpc.QuadPart - fpsLimitStart;
 
         // Update performance metrics AFTER limiter — the post-blocking QPC ensures
@@ -379,7 +380,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             qpcFreq = f.QuadPart;
         }
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         int64_t totalTime = qpc.QuadPart - dx9_hook_g_Timing.startTime;
         int64_t totalUs = (totalTime * 1000000) / qpcFreq;
         int64_t fpsLimitUs = (dx9_hook_g_Timing.fpsLimitTime * 1000000) / qpcFreq;

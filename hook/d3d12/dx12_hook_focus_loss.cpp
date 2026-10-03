@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_main_shared.h"
 
@@ -598,7 +599,7 @@ if (!active) {
 }
 
 LARGE_INTEGER now, freq;
-QueryPerformanceCounter(&now);
+ce::hook_clock::QueryCounter(&now);
 QueryPerformanceFrequency(&freq);
 static LARGE_INTEGER s_last = {};
 const double gapMs =
@@ -636,7 +637,7 @@ slot.foreground = foreground;
 
 // Periodic residency snapshot (~1/s) so steady-state budget/usage is visible even without a stall.
 static std::atomic<ULONGLONG> s_lastResLogMs{0};
-const ULONGLONG nowMs = GetTickCount64();
+const ULONGLONG nowMs = ce::hook_clock::TickCount64();
 ULONGLONG prevMs = s_lastResLogMs.load(std::memory_order_relaxed);
 if (nowMs - prevMs >= 1000 && s_lastResLogMs.compare_exchange_strong(prevMs, nowMs, std::memory_order_relaxed)) {
     HookLogImportant(

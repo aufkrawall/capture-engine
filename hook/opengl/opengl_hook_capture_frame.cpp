@@ -1,4 +1,5 @@
 #include "opengl_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void OpenGLCapture::CaptureFrame(HDC hDC) {
@@ -70,7 +71,7 @@ void OpenGLCapture::CaptureFrame(HDC hDC) {
         writeIndex.store(idx, std::memory_order_relaxed);
 
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
 
         // Preserve application bindings. Capture runs at SwapBuffers, but many
         // engines assume these bindings carry into construction of the next frame.

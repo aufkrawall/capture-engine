@@ -201,7 +201,7 @@ TEST(ProcessThreadWalkSourceTest, QuiescencePrefersTheProcessScopedWalkAndKeepsT
     // A whole-process freeze that takes real time has to be visible in the log,
     // and the report has to happen AFTER every peer resumes: the logger takes a
     // lock and can allocate, and a suspended peer may hold either.
-    const size_t measure = source.find("quiesceElapsedMs_ = GetTickCount64() - enterMs;");
+    const size_t measure = source.find("quiesceElapsedMs_ = ce::hook_clock::TickCount64() - enterMs;");
     const size_t destructor = source.find("ThreadQuiescence::~ThreadQuiescence()");
     const size_t report = source.find("ThreadQuiescence: %zu peer thread(s) suspended for");
     ASSERT_NE(measure, std::string::npos);

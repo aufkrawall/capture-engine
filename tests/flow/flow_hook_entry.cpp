@@ -8,12 +8,15 @@
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/present/dxgi_shared_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/runtime/main_internal.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "tests/flow/flow_api.h"
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
+        // Before anything reads the time: CE runs on the game's frame clock from its first reading.
+        ce::hook_clock::EnableVirtual();
         g_hModule = module;
         DisableThreadLibraryCalls(module);
         char logsDirectory[MAX_PATH] = {};
@@ -37,19 +40,36 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) 
     return TRUE;
 }
 
-// What DllMain and the hook thread do before the hook thread's service loop, minus IPC and threads.
-extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath) {
+// The host's shared memory attached to CE's IPC client as main_hookthread.cpp attaches a connected one.
+void AttachIsolatedHost(SharedMemoryLayout* memory) {
+    g_IPC = new IPCClient();
+    g_IPC->AttachIsolatedHostMemory(memory);
+    g_pSharedMem = memory;
+    g_pSharedMem->SetSourcePid(GetCurrentProcessId());
+    ce::CreateHookContext();
+    if (auto* context = ce::GetHookContext()) {
+        context->hookModule = g_hModule;
+        ce::SyncWithLegacyGlobals();
+        context->hookLifecycle.TransitionTo(ce::HookState::Connected);
+    }
+}
+
+// What DllMain and the hook thread do before the hook thread's service loop, minus threads and the IPC
+// connection (main_dllmain.cpp, then main_hookthread.cpp up to InstallHookThreadHooks).
+extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, SharedMemoryLayout* hostMemory) {
+    if (!hostMemory)
+        return false;
     InitializeHookLifecycleControl();
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
     g_LocalConfigLoaded.store(true, std::memory_order_release);
     GetActiveGraphicsConfig();
-    InstallKernel32LoaderHooks("flow");
+    AttachIsolatedHost(hostMemory);
+    InstallKernel32LoaderHooks("DllMain");
     InitializeWrapperHooks();
     InstallGlobalVTableHooks();
     InitializeThirdPartyOverlayDetection();
-    CheckAndInstallHooks();
-    MarkHookLifecycleBootstrapComplete();
+    InstallHookThreadHooks();
     HookLogImportant("CEFlow: hook initialized for an isolated test host (config=%s)", configPath);
     return true;
 }
@@ -82,6 +102,19 @@ extern "C" __declspec(dllexport) void CEFlow_GetPublishedFG(CEFlowPublishedFG* o
         out->type = metrics->GetFGType();
         out->multiplier = metrics->GetFGMultiplier();
     }
+}
+
+extern "C" __declspec(dllexport) void CEFlow_AdvanceClock(int64_t microseconds) {
+    ce::hook_clock::AdvanceMicroseconds(microseconds);
+}
+
+extern "C" __declspec(dllexport) int64_t CEFlow_ClockMicroseconds() {
+    LARGE_INTEGER counter{};
+    LARGE_INTEGER frequency{};
+    ce::hook_clock::QueryCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+    return counter.QuadPart / frequency.QuadPart * 1000000 + counter.QuadPart % frequency.QuadPart * 1000000 /
+                                                                  frequency.QuadPart;
 }
 
 extern "C" __declspec(dllexport) void CEFlow_Shutdown() {

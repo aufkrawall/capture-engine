@@ -1,4 +1,5 @@
 #include "opengl_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/present/present_reentry_guard.h"
 
@@ -526,7 +527,7 @@ static void SwapEnd(HDC hdc) {
             qpcFreq = f.QuadPart;
         }
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         int64_t us = DisplayTimingQpcToUs(qpc.QuadPart, qpcFreq);
         opengl_hook_g_PerfMetrics.Update(us);
 

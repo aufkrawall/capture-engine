@@ -138,6 +138,11 @@ bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format);
 // original game queue on the target resource's device (the wrapper's underlying submission path).
 void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                       ID3D12CommandQueue* presentationQueue);
+// The same descriptor's game queue becomes CE's original game queue when CE has none yet: a game that creates
+// its FFX swapchain before presenting anything else would otherwise make AMD's internal present queue (the
+// queue of the first real swapchain CE sees) the "game" queue, classify active FSR FG as a stale latch and
+// submit the overlay on AMD's presenter queue. Call before forwarding the create.
+void DX12_AdoptFFXDescriptorGameQueueAsOriginal(ID3D12CommandQueue* gameQueue);
 // Recover the descriptor-equivalent owner from the retained pre-FSR original game queue when ffxCreateContext
 // was already in flight before CE routed a cached export pointer. The protected inner DXGI create is required
 // evidence only: its queue is FFX's internal present queue and must never be used as the owner binding.
@@ -206,6 +211,9 @@ bool DX12_IsNativeFSRFGSuspendedDisablePending();
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
 bool DX12_IsNoCallbackFSRTopmostBatchActive();
 void DX12_ClearNoCallbackFSRTopmostBatch(const char* reason);
+// [OVERLAY COVERAGE] Judges a no-callback FSR FG output that CE's overlay reaches without ProcessFrame (AMD's
+// presenter-thread Present while the overlay rides the UI resource); `overlayRouteLive` false judges it alone.
+void DX12_AccountFFXRuntimeOutputForOverlayCoverage(IDXGISwapChain* realSwapChain, bool overlayRouteLive);
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSourcePresent,
                               bool frameGenerationPresentationActive);

@@ -8,6 +8,8 @@
 
 #include <cstdint>
 
+struct SharedMemoryLayout;  // common/ipc/shared_defs.h
+
 extern "C" {
 
 struct CEFlowOverlayCoverage {
@@ -23,14 +25,21 @@ struct CEFlowPublishedFG {
     int multiplier = 0;  // below 2: frame generation shown as off
 };
 
-// Environment variable the host sets before loading the DLL: the directory the hook logs into.
+// Environment variables the host sets before loading the DLL: the directory the hook logs into, and the frame
+// interval of its game in microseconds (the fake runtimes space generated frames inside it).
 constexpr const char* kCEFlowLogDirectoryVariable = "CE_FLOW_LOG_DIR";
+constexpr const char* kCEFlowFrameIntervalVariable = "CE_FLOW_FRAME_INTERVAL_US";
 
-using CEFlow_Init_t = bool (*)(const char* configPath);
+// `hostMemory` is the inject host's shared memory, published by the test game as CaptureEngine publishes it
+// (UpdateSharedMemoryFromConfig); CE uses it as a connected host's.
+using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostMemory);
 using CEFlow_PumpHookThread_t = void (*)();
 using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);
 using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
 using CEFlow_Shutdown_t = void (*)();
+// The hook runs on a virtual clock (hook/runtime/hook_clock.h) that only these move.
+using CEFlow_AdvanceClock_t = void (*)(int64_t microseconds);
+using CEFlow_ClockMicroseconds_t = int64_t (*)();
 
 }  // extern "C"

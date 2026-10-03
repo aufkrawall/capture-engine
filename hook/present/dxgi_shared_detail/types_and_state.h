@@ -1,6 +1,7 @@
 #pragma once
 
 #include <dxgi1_4.h>
+#include "hook/runtime/hook_clock.h"
 #include <windows.h>
 #include <atomic>
 #include <chrono>
@@ -150,11 +151,12 @@ static constexpr ULONGLONG kStreamlineStartupTransitionGraceMs = 3000;
 
 inline void ArmStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
     g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
-    g_SharedState.streamlineStartupTransitionUntilMs.store(GetTickCount64() + durationMs, std::memory_order_release);
+    g_SharedState.streamlineStartupTransitionUntilMs.store(ce::hook_clock::TickCount64() + durationMs,
+                                                       std::memory_order_release);
 }
 
 inline void ExtendStreamlineStartupTransitionWindow(ULONGLONG durationMs = kStreamlineStartupTransitionGraceMs) {
-    const ULONGLONG extendedUntilMs = GetTickCount64() + durationMs;
+    const ULONGLONG extendedUntilMs = ce::hook_clock::TickCount64() + durationMs;
     ULONGLONG currentUntilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
 
     while (currentUntilMs < extendedUntilMs &&
@@ -176,7 +178,7 @@ inline void ResetStreamlineStartupTransitionState() {
 
 inline bool IsStreamlineStartupTransitionWindowActive() {
     const ULONGLONG untilMs = g_SharedState.streamlineStartupTransitionUntilMs.load(std::memory_order_acquire);
-    return untilMs != 0 && GetTickCount64() < untilMs;
+    return untilMs != 0 && ce::hook_clock::TickCount64() < untilMs;
 }
 
 // Set pending swapchain for lazy hook installation (called from DX12 hook)

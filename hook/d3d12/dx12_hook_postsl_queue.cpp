@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 
 void WaitForInFlightPostSLCallbacks(const char* reason) {
@@ -159,7 +160,7 @@ if (!queue) {
 }
 
 constexpr ULONGLONG kPostSLRecentTeardownActivityMs = 250;
-dx12_hook_g_PostSLRecentTeardownActivityUntilMs.store(GetTickCount64() + kPostSLRecentTeardownActivityMs,
+dx12_hook_g_PostSLRecentTeardownActivityUntilMs.store(ce::hook_clock::TickCount64() + kPostSLRecentTeardownActivityMs,
                                             std::memory_order_release);
 static std::atomic<int> s_postSLRecentTeardownLogCount{0};
 const int logCount = s_postSLRecentTeardownLogCount.fetch_add(1, std::memory_order_relaxed);

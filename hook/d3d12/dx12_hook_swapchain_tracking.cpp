@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_apply.h"
 #include "hook/present/swapchain_create_recovery.h"
 
@@ -322,7 +323,7 @@ DXGIShared::RepairVTableHooksIfNeeded();
 void StartTransitionCooldown() {
 LARGE_INTEGER freq, now;
 QueryPerformanceFrequency(&freq);
-QueryPerformanceCounter(&now);
+ce::hook_clock::QueryCounter(&now);
 dx12_hook_g_OverlayCooldownUntilQpc.store(now.QuadPart + freq.QuadPart * dx12_hook_kTransitionCooldownMs / 1000,
                                 std::memory_order_release);
 // Discard any pending deferred Signal — the queue may change during FG switch

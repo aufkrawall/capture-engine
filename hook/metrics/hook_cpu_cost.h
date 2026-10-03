@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include "hook/runtime/hook_clock.h"
 
 #include <atomic>
 #include <cstdint>
@@ -58,7 +59,7 @@ private:
 
 inline int64_t HookQpcTicks() {
     LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    ce::hook_clock::QueryCounter(&now);
     return now.QuadPart;
 }
 

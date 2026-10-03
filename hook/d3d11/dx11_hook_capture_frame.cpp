@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -165,7 +166,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
             }
 
             LARGE_INTEGER qpc;
-            QueryPerformanceCounter(&qpc);
+            ce::hook_clock::QueryCounter(&qpc);
             int64_t timestamp = qpc.QuadPart;
 
             cachedDevice10->CopyResource(sharedTextures10[writeIdx], backbuffer10);
@@ -273,7 +274,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
         }
 
         LARGE_INTEGER qpc;
-        QueryPerformanceCounter(&qpc);
+        ce::hook_clock::QueryCounter(&qpc);
         int64_t timestamp = qpc.QuadPart;
 
         // Perform GPU copy: backbuffer -> shared texture

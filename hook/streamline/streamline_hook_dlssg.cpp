@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "streamline_bridge_v1_abi.h"
 
@@ -148,7 +149,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         }
         if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(streak, streamline_hook_kDLSSGHealthWarnStreak,
                                                                                     streamline_hook_kDLSSGHealthWarnRepeat)) {
-            const uint64_t nowMs = GetTickCount64();
+            const uint64_t nowMs = ce::hook_clock::TickCount64();
             const uint64_t sleepCount = streamline_hook_g_ReflexSleepObservedCount.load(std::memory_order_relaxed);
             const uint64_t sleepCountAtLastLog =
                 streamline_hook_g_ReflexSleepCountAtLastHealthLog.exchange(sleepCount, std::memory_order_relaxed);
@@ -204,7 +205,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         const int logCount = s_recentFfxTakeoverSuppressedGetStateLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 128) == 0) {
             const ULONGLONG suppressUntilMs = streamline_hook_g_SuppressNewGetStateActivationUntilMs.load(std::memory_order_acquire);
-            const ULONGLONG nowMs = GetTickCount64();
+            const ULONGLONG nowMs = ce::hook_clock::TickCount64();
             const ULONGLONG remainingMs = suppressUntilMs > nowMs ? (suppressUntilMs - nowMs) : 0;
             const bool persistentBlock =
                 streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
@@ -641,7 +642,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
             const bool wasBlockingUnsafePostFSRGetStateOnlyReactivation =
                 streamline_hook_g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.exchange(false, std::memory_order_acq_rel);
             if (previousSuppressUntilMs != 0) {
-                const ULONGLONG nowMs = GetTickCount64();
+                const ULONGLONG nowMs = ce::hook_clock::TickCount64();
                 if (previousSuppressUntilMs > nowMs) {
                     HookLogImportant(
                         "Streamline Hook: Cleared recent-authoritative-FFX GetState suppression due to explicit "

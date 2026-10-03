@@ -1,0 +1,7 @@
+; Exports of the fake sl.interposer.dll whose names the system DLLs own (see sl_interposer.cpp).
+EXPORTS
+    CreateDXGIFactory=flowCreateDXGIFactory
+    CreateDXGIFactory1=flowCreateDXGIFactory1
+    CreateDXGIFactory2=flowCreateDXGIFactory2
+    D3D12CreateDevice=flowD3D12CreateDevice
+    vkCreateSwapchainKHR=flowVkCreateSwapchainKHR

@@ -1,4 +1,5 @@
 #include "streamline_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 #include "hook/overlay/overlay_compat.h"
 
 namespace StreamlineHook {
@@ -60,6 +61,10 @@ bool HasExplicitSetOptionsActivationForCurrentComeback() {
     // changing the fact that the live comeback itself was activated by a fresh
     // OFF->ON SetOptions edge.
     return streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
+}
+
+bool HoldsExplicitDLSSGOff() {
+    return streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.load(std::memory_order_acquire);
 }
 }
 
@@ -327,8 +332,9 @@ void OnAuthoritativeFFXTakeover() {
         }
     }
 
-    streamline_hook_g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + streamline_hook_kAuthoritativeFFXTakeoverGetStateSuppressMs,
-                                                 std::memory_order_release);
+    streamline_hook_g_SuppressNewGetStateActivationUntilMs.store(
+        ce::hook_clock::TickCount64() + streamline_hook_kAuthoritativeFFXTakeoverGetStateSuppressMs,
+        std::memory_order_release);
     streamline_hook_g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     streamline_hook_g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
@@ -353,8 +359,9 @@ void OnAuthoritativeFFXTakeover() {
 
 namespace StreamlineHook {
 void OnAuthoritativeStreamlineStartupHandoff() {
-    streamline_hook_g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + streamline_hook_kAuthoritativeFFXTakeoverGetStateSuppressMs,
-                                                 std::memory_order_release);
+    streamline_hook_g_SuppressNewGetStateActivationUntilMs.store(
+        ce::hook_clock::TickCount64() + streamline_hook_kAuthoritativeFFXTakeoverGetStateSuppressMs,
+        std::memory_order_release);
     streamline_hook_g_ConfirmedDLSSReflexSuspendPending.store(false, std::memory_order_release);
     streamline_hook_g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("authoritative Streamline startup handoff");
@@ -525,6 +532,26 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     const bool effectivePostSLRuntimeStateStabilizing = deferral.effectivePostSLRuntimeStateStabilizing;
     const bool acceptActivatedUnconfirmedResumeOff = deferral.acceptActivatedUnconfirmedResumeOff;
     const bool shouldKeepDeferred = deferral.keepDeferred;
+    if (streamline_hook_g_SuppressedSetOptionsOffDuringStartup) {
+        // A held OFF is the title's latest request; say what keeps it, whenever that changes.
+        static ce::log_meter::ChangeGate s_heldOffStateGate;
+        const auto verdict = s_heldOffStateGate.Observe(ce::log_meter::FieldKey(
+            shouldKeepDeferred, windowStillActive, activationPending, postSLActiveButUnconfirmed,
+            postSLStartupActivationEntered, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+            effectivePostSLRuntimeStateStabilizing, postSLConfirmedButOffChurnAwaitingActiveProof,
+            acceptActivatedUnconfirmedResumeOff));
+        if (verdict) {
+            HookLogImportant(
+                "Streamline Hook: Held slDLSSGSetOptions(OFF) %s (window=%d pending=%d activeButUnconfirmed=%d "
+                "activationEntered=%d confirmed=%d settling=%d stabilizing=%d awaitingActiveProof=%d "
+                "acceptResumeOff=%d)%s",
+                shouldKeepDeferred ? "stays deferred" : "protection ended", windowStillActive ? 1 : 0,
+                activationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, postSLStartupActivationEntered ? 1 : 0,
+                postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                effectivePostSLRuntimeStateStabilizing ? 1 : 0, postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0,
+                acceptActivatedUnconfirmedResumeOff ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
     if (shouldKeepDeferred) {
         if (ce::dx12_overlay_policy::ShouldServicePostSLStartupActivationWhileOffChurnDeferred(
                 shouldKeepDeferred, windowStillActive, activationPending, postSLStartupActivationEntered,

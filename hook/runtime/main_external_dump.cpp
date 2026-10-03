@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -35,7 +36,7 @@ ExternalDumpGateDecision BeginExternalDumpCaptureForSignature(
   decision.key = ce::crash_dump_policy::BuildExternalDumpSignatureKey(signature);
   decision.strongSignature = ce::crash_dump_policy::IsStrongExternalDumpSignature(signature);
 
-  const ULONGLONG nowMs = GetTickCount64();
+  const ULONGLONG nowMs = ce::hook_clock::TickCount64();
   std::lock_guard<std::mutex> lock(g_ExternalDumpStormMutex);
   ExternalDumpStormRecord& record = g_ExternalDumpStormRecords[decision.key];
   if (record.hitCount == 0 || (nowMs >= record.firstHitMs &&

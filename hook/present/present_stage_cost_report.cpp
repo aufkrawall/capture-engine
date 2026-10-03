@@ -1,4 +1,5 @@
 #include "present_stage_cost.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "hook/runtime/hook_common.h"
 #include "hook/metrics/hook_cpu_cost.h"
@@ -85,7 +86,7 @@ int FormatRoleSummary(const RoleSummary& summary, uint64_t windowMs, char* buffe
 void ReportPresentStageCostIfDue() {
     static constexpr uint64_t kWindowMs = 10'000;
     static uint64_t s_windowStartMs = 0;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = ce::hook_clock::TickCount64();
     if (s_windowStartMs == 0) {
         s_windowStartMs = now;
         return;

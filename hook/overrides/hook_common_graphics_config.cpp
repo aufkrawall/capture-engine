@@ -4,6 +4,7 @@
 // the result. Split out of hook_common.cpp, which owns process-global state
 // bridging and file logging; this unit is the config half of it.
 #include "hook/runtime/hook_common.h"
+#include "hook/runtime/hook_clock.h"
 #include <string.h>
 #include <windows.h>
 #include <mutex>
@@ -27,7 +28,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
                                   ? currentSharedMemory->configVersion.load(std::memory_order_acquire)
                                   : 0;
 
-    DWORD now = GetTickCount();
+    DWORD now = ce::hook_clock::TickCount();
     if (currentSharedMemory == lastSharedMemory && currentVersion == lastVersion && (now - lastUpdateTick < 1000)) {
         return mergedConfig;
     }
@@ -323,7 +324,7 @@ const GraphicsConfig& GetActiveGraphicsConfigCached() {
         currentVersion = currentSharedMemory->configVersion.load(std::memory_order_acquire);
     }
 
-    const DWORD now = GetTickCount();
+    const DWORD now = ce::hook_clock::TickCount();
     const bool localRefreshDue = !hasSharedConfig && now - lastRefreshTick >= 1000;
     if (!initialized || currentSharedMemory != cachedSharedMemory || currentVersion != cachedVersion ||
         localRefreshDue) {

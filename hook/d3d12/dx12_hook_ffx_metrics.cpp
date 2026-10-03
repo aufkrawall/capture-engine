@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 #include "dx12_hook_ffx_shared.h"
 #include "hook/metrics/hook_cost_window.h"
@@ -31,7 +32,7 @@ void DX12_UpdateFFXPresentCallbackFrameTiming(PerformanceMetrics* metrics,
     // ConsumeDisplayTiming serializes its cursor, so a visible renderer cannot consume samples twice.
     if (auto* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr) {
         LARGE_INTEGER now = {};
-        QueryPerformanceCounter(&now);
+        ce::hook_clock::QueryCounter(&now);
         metrics->ConsumeDisplayTiming(sharedMem->displayTiming,
                                       DisplayTimingQpcToUs(now.QuadPart, PerfLogger::GetQpcFrequency()));
     }
