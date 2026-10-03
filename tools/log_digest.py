@@ -218,15 +218,35 @@ def section_problems(files: list[FileStats], limit: int) -> list[str]:
             group = groups.setdefault(key, [0, line.time, line.time, line])
             group[0] += 1
             group[2] = line.time
-    if not groups:
+    floods = flood_lines(files)
+    if not groups and not floods:
         return ["## problems", "- none matched (warnings, errors, failures, device removal, dumps, lost lines)"]
-    out = [f"## problems ({len(groups)} templates; first occurrence order)"]
+    out = [f"## problems ({len(groups)} templates; first occurrence order)"] + floods
     for (name, _tmpl), (count, first, last, example) in list(groups.items())[:limit]:
         where = f"p{example.process} " if example.process.isdigit() else ""
         times = first if count == 1 else f"{first}-{last} x{count}"
         out.append(f"- [{name} {where}{times}] {example.message[:220]}")
     if len(groups) > limit:
         out.append(f"- ... {len(groups) - limit} more templates (raise --problem-groups or narrow --since/--until)")
+    return out
+
+
+# A line that repeats this often is unmetered hot-path logging: it crowds out and (through the hook's
+# log ring) drops the lines that matter - 0.1.6951 lost 1412 GTA lines to 102k UI-tag lines.
+FLOOD_MIN_LINES = 5000
+FLOOD_MIN_SHARE = 0.2
+
+
+def flood_lines(files: list[FileStats]) -> list[str]:
+    out = []
+    for stats in files:
+        if stats.vendor or len(stats.parsed) < FLOOD_MIN_LINES:
+            continue
+        counter = Counter(template(line.message) for line in stats.parsed)
+        for key, count in counter.most_common(3):
+            if count >= FLOOD_MIN_LINES and count >= FLOOD_MIN_SHARE * len(stats.parsed):
+                out.append(f"- [{stats.name}] LOG FLOOD x{count} ({100 * count // len(stats.parsed)}% of the file; "
+                           f"meter it with ce::log_meter): {key[:160]}")
     return out
 
 
@@ -339,6 +359,7 @@ def self_test() -> int:
             "[10:00:07.000] [T:0003] [S:9] [old.exe] Recording started",
         ])
         write("captureengine.log", ["[2026-10-02 10:00:01.000] [ERROR] [Controller] Recording failed to start"])
+        write("inject.log", [f"[2026-10-02 10:00:02.{i % 1000:03d}] [INFO] tag opportunity #{i}" for i in range(6000)])
         write("sl.log", ["vendor noise"] * 3)
         text = digest(session)
         checks = {
@@ -351,6 +372,7 @@ def self_test() -> int:
             "lost line reported": "1 line(s) lost between #0 and #6" in text,
             "silence reported": "silent 4.8s" in text,
             "vendor marked": "sl.log" in text and "vendor log" in text,
+            "flood reported": "LOG FLOOD x6000" in text,
         }
         failed = [name for name, ok in checks.items() if not ok]
         if failed:

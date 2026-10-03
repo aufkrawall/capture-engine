@@ -6,7 +6,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Session logs are much smaller and easier to read:** lines that repeated unchanged every frame or every second (overlay submits, queue choices, frame-generation decisions, controller loop timing, config re-reads for every whitelisted game) are now written when something changes, with a "(+N unchanged)" count instead of the copies. Each hook installation is one line instead of about twenty, the Steam overlay is reported once instead of on every hook pass, and FPS-limiter stats and Vulkan layer lines are no longer written to two files. Nothing that marks a change, a failure or a recovery was removed.
+- **Session logs are much smaller and easier to read:** lines that repeated unchanged every frame or every second (overlay submits, queue choices, frame-generation decisions, Streamline UI-tag records, controller loop timing, config re-reads for every whitelisted game) are now written when something changes, with a "(+N unchanged)" count instead of the copies. Each hook installation is one line instead of about twenty, the Steam overlay is reported once instead of on every hook pass, and FPS-limiter stats and Vulkan layer lines are no longer written to two files. Nothing that marks a change, a failure or a recovery was removed.
 
 - **Shorter hook log lines:** `hook_debug.log` lines read `time T<thread> #<line> p<pid> message`. The line number counts per file, so a gap now always means a lost line, and each process's first line names its executable and pid.
 

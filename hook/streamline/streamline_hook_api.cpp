@@ -245,14 +245,17 @@ uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken
                                      const slResourceTag* tags,  uint32_t numTags,  void* streamline_hook_commandBuffer, 
                                      uint32_t feature,  uint32_t numInputs, uint64_t localTagSignature) {
     static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
-    static ce::log_meter::ChangeGate s_uiTagSetGate;
+    // Games interleave slSetTagForFrame and slEvaluateFeature calls (and features/viewports) every frame;
+    // each of those is its own stream, or every alternation reads as a tag-set change.
+    static ce::log_meter::StreamChangeGate<16> s_uiTagSetGate;
     const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    uint64_t tagSet = ce::log_meter::FieldKey(tagApi, feature, viewportKey, numTags, numInputs, localTagSignature);
+    uint64_t tagSet = ce::log_meter::FieldKey(numTags, numInputs, localTagSignature);
     for (uint32_t i = 0; tags && i < numTags; ++i) {
         tagSet = ce::log_meter::FieldKey(tagSet, tags[i].type, tags[i].lifecycle, tags[i].extent.left, tags[i].extent.top,
                                          tags[i].extent.width, tags[i].extent.height);
     }
-    const auto verdict = s_uiTagSetGate.ObserveOrEvery(tagSet, opportunity, 300);
+    const auto verdict = s_uiTagSetGate.ObserveOrEvery(ce::log_meter::FieldKey(tagApi, feature, viewportKey), tagSet,
+                                                       opportunity, 300);
     if (!verdict) {
         return 0;
     }

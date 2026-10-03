@@ -116,8 +116,16 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   repeats it stands for. `ObserveOrEvery(key, callIndex, stride)` adds a heartbeat;
   `Force(key)` logs a window's last line. Examples: PostSL `SUBMIT`
   (`hook/d3d12/dx12_hook_postsl_render_submit.cpp`), Reinit/Post-transition/PostFGOff
-  windows, `FG LEGACY DECISION` (`hook/fg/fg_session_state.cpp`), Streamline UI-tag
-  opportunities (tag-set signature, `hook/streamline/streamline_hook_api.cpp`).
+  windows, `FG LEGACY DECISION` (`hook/fg/fg_session_state.cpp`).
+- **Interleaved sources need a gate each**: when several queues, threads or API entry
+  points share one line, a single ChangeGate keyed by source+state sees a "change" at
+  every alternation and logs them all. Use `StreamChangeGate<N>::Observe(stream, key)`
+  (stream = the source, key = the state). 0.1.6951 regressed exactly this way: Streamline
+  UI-tag opportunities (`hook/streamline/streamline_hook_api.cpp`, slSetTagForFrame and
+  slEvaluateFeature alternate every frame) wrote 102k lines in three minutes of GTA and the
+  hook log ring dropped 1412 lines; the protected-FFX ECL pass-through
+  (`hook/d3d12/dx12_hook_ecl.cpp`, game and runtime queues) wrote 3k. `log_digest.py`
+  now reports any template with >=5000 lines and >=20% of a file as `LOG FLOOD`.
 - **Once per key**: `ce::log_meter::KeyedOnce<N>` for "once per module/handle" lines
   (Steam overlay detection, late-loaded CreateProcess patching, FFX modules without exports).
 - **Narrative to one line**: a multi-step operation logs one summary line (inline-hook

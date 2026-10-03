@@ -412,10 +412,12 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 "(queue=%p lists=%u eclProgress=%u)",
                 pThis, NumCommandLists, progressCount);
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
-            static ce::log_meter::ChangeGate s_protectedOfficialFFXECLPassThroughGate;
+            // The game's and the runtime's queues submit interleaved: one stream per queue and thread.
+            static ce::log_meter::StreamChangeGate<16> s_protectedOfficialFFXECLPassThroughGate;
             const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
             const auto verdict = s_protectedOfficialFFXECLPassThroughGate.ObserveOrEvery(
-                ce::log_meter::FieldKey(pThis, GetCurrentThreadId()), static_cast<uint32_t>(logCount) + 1, 1024);
+                ce::log_meter::FieldKey(pThis, GetCurrentThreadId()), ce::log_meter::FieldKey(NumCommandLists),
+                static_cast<uint32_t>(logCount) + 1, 1024);
             if (verdict) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "

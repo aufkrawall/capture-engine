@@ -79,6 +79,12 @@ public:
         return Decide(key, 0, stride != 0 && callIndex % stride == 0);
     }
 
+    // Forgets the last key and the swallowed repeats (a StreamChangeGate slot changing owner).
+    void Reset() noexcept {
+        lastKey_.store(UINT64_MAX, std::memory_order_release);
+        suppressed_.store(0, std::memory_order_release);
+    }
+
 private:
     Verdict Decide(uint64_t key, uint64_t nowMs, bool force) noexcept {
         const uint64_t previous = lastKey_.exchange(key, std::memory_order_acq_rel);
@@ -106,6 +112,40 @@ struct SuppressedNote {
             std::snprintf(text, sizeof(text), " (+%llu unchanged)", static_cast<unsigned long long>(suppressed));
     }
     const char* c_str() const noexcept { return text; }
+};
+
+// One ChangeGate per stream, for a line that interleaved sources share (several queues, threads or API
+// entry points): a single gate keyed by source and state together sees a change at every alternation
+// and logs them all. `stream` picks the gate, `key` is the state as for ChangeGate. Streams hash onto
+// `Capacity` slots; a stream that finds its slot owned by another takes it over and logs its next line
+// (the evicted stream's swallowed-repeat count is dropped), so a collision logs too much, never too little.
+template <size_t Capacity>
+class StreamChangeGate {
+public:
+    ChangeGate::Verdict Observe(uint64_t stream, uint64_t key, uint64_t nowMs = 0) noexcept {
+        return SlotFor(stream).Observe(key, nowMs);
+    }
+
+    ChangeGate::Verdict ObserveOrEvery(uint64_t stream, uint64_t key, uint32_t callIndex, uint32_t stride) noexcept {
+        return SlotFor(stream).ObserveOrEvery(key, callIndex, stride);
+    }
+
+private:
+    struct Slot {
+        std::atomic<uint64_t> owner{UINT64_MAX};  // unowned; FieldKey never yields UINT64_MAX
+        ChangeGate gate;
+    };
+
+    ChangeGate& SlotFor(uint64_t stream) noexcept {
+        Slot& slot = slots_[((stream * 0x9E3779B97F4A7C15ull) >> 32) % Capacity];  // raw pointers are aligned
+        if (slot.owner.load(std::memory_order_acquire) != stream &&
+            slot.owner.exchange(stream, std::memory_order_acq_rel) != stream) {
+            slot.gate.Reset();
+        }
+        return slot.gate;
+    }
+
+    Slot slots_[Capacity];
 };
 
 // Remembers the first `Capacity` distinct keys, for "log once per module/handle/target" lines.

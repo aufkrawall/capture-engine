@@ -91,6 +91,54 @@ TEST(LogMeterKeyedOnceTest, ReportsEachKeyOnceAndOverflowsTowardLogging) {
     EXPECT_FALSE(once.FirstTime(10));
 }
 
+// 0.1.6951 GTA session: slSetTagForFrame and slEvaluateFeature alternated through one ChangeGate keyed by
+// api+tags, so every call was a "change" - 102k UI-tag lines in three minutes and 1412 lines lost.
+TEST(LogMeterStreamChangeGateTest, InterleavedStreamsAreMeteredPerStream) {
+    const uint64_t setTagForFrame = log_meter::FieldKey(1);
+    const uint64_t evaluateFeature = log_meter::FieldKey(2);
+    const uint64_t tagsA = log_meter::FieldKey(10);
+    const uint64_t tagsB = log_meter::FieldKey(20);
+
+    log_meter::ChangeGate shared;
+    int sharedLogged = 0;
+    log_meter::StreamChangeGate<16> perStream;
+    int perStreamLogged = 0;
+    for (int frame = 0; frame < 100; ++frame) {
+        sharedLogged += shared.Observe(log_meter::FieldKey(setTagForFrame, tagsA)).log ? 1 : 0;
+        sharedLogged += shared.Observe(log_meter::FieldKey(evaluateFeature, tagsB)).log ? 1 : 0;
+        perStreamLogged += perStream.Observe(setTagForFrame, tagsA).log ? 1 : 0;
+        perStreamLogged += perStream.Observe(evaluateFeature, tagsB).log ? 1 : 0;
+    }
+    EXPECT_EQ(sharedLogged, 200) << "one gate for two interleaved streams logs every call";
+    EXPECT_EQ(perStreamLogged, 2);
+
+    const auto changed = perStream.Observe(setTagForFrame, tagsB);
+    EXPECT_TRUE(changed.log);
+    EXPECT_EQ(changed.suppressed, 99u) << "a stream reports only its own swallowed repeats";
+    EXPECT_FALSE(perStream.Observe(evaluateFeature, tagsB).log);
+}
+
+TEST(LogMeterStreamChangeGateTest, SlotTakeoverLogsTooMuchNeverTooLittle) {
+    log_meter::StreamChangeGate<1> gate;
+    const uint64_t key = log_meter::FieldKey(7);
+    EXPECT_TRUE(gate.Observe(100, key).log);
+    EXPECT_FALSE(gate.Observe(100, key).log);
+    EXPECT_TRUE(gate.Observe(200, key).log) << "a stream taking over a slot logs its first line";
+    EXPECT_TRUE(gate.Observe(100, key).log);
+    EXPECT_TRUE(gate.Observe(0, key).log) << "stream 0 is a stream, not an unowned slot";
+    EXPECT_FALSE(gate.Observe(0, key).log);
+}
+
+TEST(LogMeterStreamChangeGateTest, HeartbeatStrideCountsAllStreams) {
+    log_meter::StreamChangeGate<16> gate;
+    const uint64_t key = log_meter::FieldKey(3);
+    int logged = 0;
+    for (uint32_t call = 1; call <= 600; ++call) {
+        logged += gate.ObserveOrEvery(call % 2, key, call, 300).log ? 1 : 0;
+    }
+    EXPECT_EQ(logged, 4) << "first line of each stream plus the heartbeats at calls 300 and 600";
+}
+
 TEST(LogMeterChangeGateTest, ForceLogsAnUnchangedLineWithItsSwallowedRepeats) {
     log_meter::ChangeGate gate;
     const uint64_t key = log_meter::FieldKey(5);
