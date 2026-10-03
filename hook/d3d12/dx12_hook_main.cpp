@@ -49,11 +49,6 @@ std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out);
 static void FindAndWrapPreExistingSwapchains();
 
-static DX12Context GetDX12Context() {
-    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-    return DX12Context(g_Device.load(), g_CommandQueue.load());
-}
-
 void EnsureDX12Hook() {
     if (!g_dx12HookInstance) {
         g_dx12HookInstance = new DX12Hook();

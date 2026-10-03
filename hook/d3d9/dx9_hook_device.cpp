@@ -99,31 +99,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
 // Hook: Direct3DCreate9Ex (Export)
 static Direct3DCreate9Ex_t oDirect3DCreate9Ex = nullptr;
 
-static HRESULT WINAPI DetourDirect3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppOut) {
-    EarlyLog("DX9: Direct3DCreate9Ex called (Intercepted)");
-    HRESULT hr = oDirect3DCreate9Ex(SDKVersion, ppOut);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && ppOut && *ppOut) {
-        uintptr_t* vtable = *(uintptr_t**)*ppOut;
-
-        // Hook CreateDevice (16)
-        if (!dx9_hook_oCreateDevice) {
-            if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&dx9_hook_oCreateDevice) ==
-                VTableHook::Success) {
-                EarlyLog("DX9: IDirect3D9::CreateDevice hook installed via Create9Ex");
-            }
-        }
-
-        // Hook CreateDeviceEx (20)
-        if (!oCreateDeviceEx) {
-            if (VTableHook::Create(&vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx) ==
-                VTableHook::Success) {
-                EarlyLog("DX9: IDirect3D9Ex::CreateDeviceEx hook installed via Create9Ex");
-            }
-        }
-    }
-    return hr;
-}
-
 void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
 
 

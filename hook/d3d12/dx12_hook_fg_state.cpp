@@ -48,28 +48,6 @@ void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const cha
     NoteDX12OverlayCoverageGate(gate ? gate : "transport-present-uncovered");
     AccountPresentForOverlayCoverage(inheritCoverageIfNoDraw, source ? source : "transport-present");
 }
-static void LogDX12OverlayVisibilityGap(const char* context, const char* reason, ULONGLONG warnAfterMs = 250) {
-    const ULONGLONG lastRenderMs = dx12_hook_g_LastDX12OverlayRenderTickMs.load(std::memory_order_acquire);
-    if (!lastRenderMs) {
-        return;
-    }
-
-    const ULONGLONG nowMs = GetTickCount64();
-    if (nowMs < lastRenderMs || nowMs - lastRenderMs < warnAfterMs) {
-        return;
-    }
-
-    static std::atomic<int> s_visibilityGapLogCount{0};
-    const int logCount = s_visibilityGapLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 20 || (logCount % 300) == 0) {
-        const uint32_t route = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
-        HookLogImportant("DX12: Overlay visibility gap while %s (%s) — lastRenderAge=%llums lastRoute=%s log=%d",
-                         context && context[0] ? context : "transitioning",
-                         reason && reason[0] ? reason : "waiting for safe render route",
-                         static_cast<unsigned long long>(nowMs - lastRenderMs), DX12OverlayRenderRouteName(route),
-                         logCount + 1);
-    }
-}
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
     return dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire) ||
            (dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) &&

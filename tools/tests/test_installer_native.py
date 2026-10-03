@@ -19,7 +19,9 @@ from pathlib import Path
 from tools import installer_payload as payload
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STUB = Path(os.environ.get("CE_INSTALLER_STUB") or PROJECT_ROOT / "build" / "installer" / "captureengine_setup_stub.exe")
+STUB = Path(
+    os.environ.get("CE_INSTALLER_STUB") or PROJECT_ROOT / "build" / "installer" / "captureengine_setup_stub.exe"
+)
 
 CONFIG_V1 = b"[Output]\r\noutput_dir=\r\n; shipped default v1\r\n"
 CONFIG_V2 = b"[Output]\r\noutput_dir=\r\n; shipped default v2\r\n[New]\r\nfeature=1\r\n"
@@ -276,7 +278,9 @@ class NativeInstallerTest(unittest.TestCase):
         (self.target / "captures" / "clip.mkv").write_bytes(b"rec")
         self.install(2)  # also leaves config.ini.new behind
         self.uninstall()
-        remaining = sorted(str(p.relative_to(self.target)).replace("\\", "/") for p in self.target.rglob("*") if p.is_file())
+        remaining = sorted(
+            str(p.relative_to(self.target)).replace("\\", "/") for p in self.target.rglob("*") if p.is_file()
+        )
         self.assertEqual(remaining, ["captures/clip.mkv", "config.ini", "logs/a.log", "notes.txt"])
         self.assertFalse((self.target / "ffmpeg").exists())
         self.assertFalse((self.target / "plugins").exists())

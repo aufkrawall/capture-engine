@@ -257,7 +257,9 @@ def build_index(entries: Iterable[Entry]) -> bytes:
     for entry in entries:
         encoded = entry.path.encode("utf-8")
         index += struct.pack("<H", len(encoded)) + encoded
-        index += struct.pack("<IIQQQII", entry.method, entry.flags, entry.offset, entry.stored_size, entry.size, entry.crc, 0)
+        index += struct.pack(
+            "<IIQQQII", entry.method, entry.flags, entry.offset, entry.stored_size, entry.size, entry.crc, 0
+        )
     return bytes(index)
 
 

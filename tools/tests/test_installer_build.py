@@ -84,7 +84,8 @@ class InstallerBuildTest(unittest.TestCase):
                     build.verify_uninstaller_surface(str(dirty))
 
     def test_the_release_workflow_publishes_the_setup_program(self):
-        workflow = (Path(build.PROJECT_ROOT) / ".github" / "workflows" / "release-stable.yml").read_text(encoding="utf-8")
+        workflow_path = Path(build.PROJECT_ROOT) / ".github" / "workflows" / "release-stable.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
         self.assertEqual(workflow.count("build/packages/captureengine-setup-"), 2)  # attestation and upload
         self.assertEqual(build.SETUP_PACKAGE_NAME, "captureengine-setup.exe")
 

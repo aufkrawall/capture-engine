@@ -5,24 +5,6 @@
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "hook/present/present_callback_association.h"
-static bool KnownDLSSFGModuleLoaded() {
-    if (dx12_hook_g_KnownDLSSFGModuleSeen.load(std::memory_order_acquire)) {
-        return true;
-    }
-
-    constexpr const wchar_t* kKnownDLSSFGModules[] = {
-        L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll", L"sl.dlss_g.dll", L"nvngx_dlssg.dll", L"nvngx_dlss.dll",
-    };
-
-    for (const wchar_t* moduleName : kKnownDLSSFGModules) {
-        if (GetModuleHandleW(moduleName)) {
-            dx12_hook_g_KnownDLSSFGModuleSeen.store(true, std::memory_order_release);
-            return true;
-        }
-    }
-
-    return false;
-}
 
 static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc) {
     if (!desc) {

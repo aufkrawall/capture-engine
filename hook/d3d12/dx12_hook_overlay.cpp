@@ -567,40 +567,6 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         queueDevice = nullptr;
     }
 }
-static bool DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {
-    if (!queue || !device)
-        return false;
-
-    // NON-BLOCKING DRAIN: Use a flush approach instead of waiting
-    // to avoid deadlocking when called from the submit thread.
-    ID3D12Fence* fence = nullptr;
-    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
-        return false;
-
-    // Signal the fence but don't wait - if we're on the submit thread,
-    // waiting would deadlock. The fence will be processed when the
-    // game next submits work.
-    queue->Signal(fence, 1);
-
-    // Quick check if already completed (GPU was idle)
-    if (fence->GetCompletedValue() >= 1) {
-        fence->Release();
-        return true;
-    }
-
-    // Optional: very short wait for already-in-flight work (1ms)
-    // This helps if the GPU is just finishing up, without blocking
-    // the submit thread for long.
-    HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if (event) {
-        if (fence->SetEventOnCompletion(1, event) == S_OK) {
-            WaitForSingleObject(event, 1);  // 1ms non-blocking wait
-        }
-        CloseHandle(event);
-    }
-    fence->Release();
-    return true;
-}
 void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     auto cleanupFFXPresentCallbackBackend = [preserveNativeFSRPresentCallbackBackend]() {
         if (preserveNativeFSRPresentCallbackBackend) {

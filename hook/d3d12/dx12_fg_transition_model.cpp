@@ -23,48 +23,6 @@ ObservedRuntimeMode ToObservedRuntimeModeFromSession(ce::fg_runtime::RuntimeMode
     }
 }
 
-OverlayRenderMode ToLegacyRenderMode(ce::fg_session::FGOverlayBackendMode mode) {
-    switch (mode) {
-        case ce::fg_session::FGOverlayBackendMode::kSuppressed:
-            return OverlayRenderMode::kSuppressed;
-        case ce::fg_session::FGOverlayBackendMode::kStartupBypass:
-            return OverlayRenderMode::kStartupBypass;
-        case ce::fg_session::FGOverlayBackendMode::kPostSL:
-            return OverlayRenderMode::kPostSL;
-        case ce::fg_session::FGOverlayBackendMode::kRuntimeOwnedFSRCallback:
-            return OverlayRenderMode::kRuntimeOwnedPreSL;
-        case ce::fg_session::FGOverlayBackendMode::kPostFSRRecovery:
-            return OverlayRenderMode::kRecoveryPostFSROff;
-        case ce::fg_session::FGOverlayBackendMode::kNormalPreSL:
-        default:
-            return OverlayRenderMode::kNormalPreSL;
-    }
-}
-
-TransitionPhase ToLegacyPhase(ce::fg_session::FGStartupPhase phase, bool runtimeChanged, bool fgChanged,
-                              bool previousWasFG, bool currentIsFG, bool currentStreamlineFGRunning,
-                              bool previousStreamlineFGRunning, bool recoveringPostFSRNonFG) {
-    if (!currentStreamlineFGRunning && previousStreamlineFGRunning && currentIsFG) {
-        return TransitionPhase::kSuspended;
-    }
-
-    if (recoveringPostFSRNonFG || phase == ce::fg_session::FGStartupPhase::kHandoffPending ||
-        phase == ce::fg_session::FGStartupPhase::kChurnWindow) {
-        return TransitionPhase::kRecovering;
-    }
-
-    if (runtimeChanged && previousWasFG && currentIsFG) {
-        return TransitionPhase::kSwitching;
-    }
-    if (fgChanged && currentIsFG) {
-        return TransitionPhase::kEnabling;
-    }
-    if (fgChanged && !currentIsFG) {
-        return TransitionPhase::kDisabling;
-    }
-    return TransitionPhase::kStable;
-}
-
 OverlayRenderMode ResolveRenderMode(const Input& input) {
     if (input.overlaySuppressed) {
         return OverlayRenderMode::kSuppressed;

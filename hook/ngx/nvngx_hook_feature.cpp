@@ -1,4 +1,5 @@
 #include "nvngx_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/hooking/module_export_resolver.h"
 
 #include <array>
@@ -96,12 +97,9 @@ static void UpdateDLSSVersion() {
                     state.versionMinor = minor;
                     state.versionPatch = patch;
 
-                    // Install() retries until nvngx.dll loads; report each distinct version once.
-                    static std::atomic<uint32_t> s_lastLoggedVersion{0};
-                    const uint32_t packedVersion = (static_cast<uint32_t>(major) << 20) |
-                                                   (static_cast<uint32_t>(minor) << 10) | static_cast<uint32_t>(patch);
+                    static ce::log_meter::ChangeGate s_versionGate;  // Install() retries until nvngx.dll loads
                     if (g_IPC->GetSharedMem()->GetDebugLogging() &&
-                        s_lastLoggedVersion.exchange(packedVersion, std::memory_order_relaxed) != packedVersion) {
+                        s_versionGate.Observe(ce::log_meter::FieldKey(major, minor, patch))) {
                         NVNGXLog("NVNGX: Detected Version from %S: v%d.%d.%d", fileName, major, minor, patch);
                     }
                 }
@@ -122,8 +120,6 @@ static char GetPresetChar(int qualityValue) {
     // This handles cases where SetI hook was missed or game bypassed it, but we
     // want to show the target. Also, if we are overriding, this is likely what is
     // active.
-
-    char configChar = '?';
     const auto& cfg = GetActiveGraphicsConfig();
 
     // Map qualityValue to specific config
@@ -641,8 +637,8 @@ void NVNGXHook::Install() {
         // connected if game just started. But GetSharedMem() checks connection.
         if (g_IPC && g_IPC->GetSharedMem()) {
             g_IPC->GetSharedMem()->dlssState.srPreset = PresetIDToChar(presetVal);
-            static std::atomic<uint32_t> s_lastLoggedForcedPreset{0};
-            if (s_lastLoggedForcedPreset.exchange(presetVal, std::memory_order_relaxed) != presetVal)
+            static ce::log_meter::ChangeGate s_forcedPresetGate;  // once per value, not per Install() retry
+            if (s_forcedPresetGate.Observe(ce::log_meter::FieldKey(presetVal)))
                 NVNGXLog("NVNGX: Config forced SR Preset to '%c' (via Install)", PresetIDToChar(presetVal));
         }
     }

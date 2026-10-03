@@ -32,7 +32,8 @@ RULES: list[tuple[str, str]] = [
     (r"^hook/main(_[a-z0-9_]+)?\.(cpp|h)$", "hook/runtime"),
     (r"^hook/main_ue5[a-z0-9_]*\.(cpp|h)$", "hook/runtime"),
     # hooking primitives
-    (r"^hook/wrappers/(inline_hook|iat_hook|iat_import_table|vtable_hook|hook_patch_transaction|hook_system|custom_hook)", "hook/hooking"),
+    (r"^hook/wrappers/(inline_hook|iat_hook|iat_import_table|vtable_hook|hook_patch_transaction|hook_system|"
+     r"custom_hook)", "hook/hooking"),
     (r"^hook/common/(hook_jump_policy|vtable_slot_owner|module_export_resolver|module_pin)", "hook/hooking"),
     # COM / API wrappers
     (r"^hook/wrappers/", "hook/wrappers"),
@@ -55,19 +56,26 @@ RULES: list[tuple[str, str]] = [
     (r"^hook/apis/ffx_", "hook/ffx"),
     (r"^hook/common/ffx_", "hook/ffx"),
     (r"^hook/apis/(nvngx_|remix_)", "hook/ngx"),
-    (r"^hook/common/(nvngx_|ngx_|dlss_indicator_spoof|dlssg_health_policy|nv_lod_spread_override|remix_frame_generation_policy|rr_handoff_gate)", "hook/ngx"),
+    (r"^hook/common/(nvngx_|ngx_|dlss_indicator_spoof|dlssg_health_policy|nv_lod_spread_override|"
+     r"remix_frame_generation_policy|rr_handoff_gate)", "hook/ngx"),
     (r"^hook/common/fg_", "hook/fg"),
     # central present routing and swapchain lifetime
-    (r"^hook/common/(dxgi_shared|dxgi_factory_policy|dxgi_color_space_hook_policy|dxgi_presentation_color|presentation_color|dxgi_video_memory_log_policy)", "hook/present"),
-    (r"^hook/common/(present_|swapchain_|resize_|deferred_swapchain_create_ledger|backbuffer_reference_trace|steam_recovery_armed_threads)", "hook/present"),
-    (r"^hook/common/(vulkan_dxgi_fifo_|vulkan_wsi_surface_table|vulkan_layer_metering_bridge|vulkan_renderer_policy)", "hook/present"),
+    (r"^hook/common/(dxgi_shared|dxgi_factory_policy|dxgi_color_space_hook_policy|dxgi_presentation_color|"
+     r"presentation_color|dxgi_video_memory_log_policy)", "hook/present"),
+    (r"^hook/common/(present_|swapchain_|resize_|deferred_swapchain_create_ledger|backbuffer_reference_trace|"
+     r"steam_recovery_armed_threads)", "hook/present"),
+    (r"^hook/common/(vulkan_dxgi_fifo_|vulkan_wsi_surface_table|vulkan_layer_metering_bridge|"
+     r"vulkan_renderer_policy)", "hook/present"),
     # overlay
-    (r"^hook/common/(custom_overlay|overlay_|cached_overlay_renderer|custom_font|graph_scroll_policy|legacy_overlay_cache)", "hook/overlay"),
+    (r"^hook/common/(custom_overlay|overlay_|cached_overlay_renderer|custom_font|graph_scroll_policy|"
+     r"legacy_overlay_cache)", "hook/overlay"),
     # pacing, latency, metrics
     (r"^hook/common/(fps_limiter|reflex_limiter|reflex_defs|pacing_|capture_pacing)", "hook/pacing"),
-    (r"^hook/common/(streamline_pcl_latency|system_metrics|system_latency_|performance_metrics|perf_logger|benchmark_|hook_thread_stage_cost|hook_cost_window|hook_cpu_cost)", "hook/metrics"),
+    (r"^hook/common/(streamline_pcl_latency|system_metrics|system_latency_|performance_metrics|perf_logger|"
+     r"benchmark_|hook_thread_stage_cost|hook_cost_window|hook_cpu_cost)", "hook/metrics"),
     # graphics overrides
-    (r"^hook/common/(sampler_override|mip_bias_range|ue5_|hook_common_graphics_config|hook_common_vsync|published_graphics_config)", "hook/overrides"),
+    (r"^hook/common/(sampler_override|mip_bias_range|ue5_|hook_common_graphics_config|hook_common_vsync|"
+     r"published_graphics_config)", "hook/overrides"),
     (r"^hook/common/sharpen_", "hook/sharpen"),
     # capture
     (r"^hook/capture/", "hook/capture"),
@@ -75,9 +83,12 @@ RULES: list[tuple[str, str]] = [
     # everything else under hook/common is runtime plumbing
     (r"^hook/common/", "hook/runtime"),
     # ------------------------------------------------------- captureengine/
-    (r"^captureengine/(main|tray|hotkey_input_hook|status_overlay_sync|host_metrics|windows_gpu_scheduling|mediaengine_loader)", "captureengine/app"),
+    (r"^captureengine/(main|tray|hotkey_input_hook|status_overlay_sync|host_metrics|windows_gpu_scheduling|"
+     r"mediaengine_loader)", "captureengine/app"),
     (r"^captureengine/(injection|inject_|process_start_poll)", "captureengine/injection"),
-    (r"^captureengine/(media_main|wgc_capture|dxgi_dup_capture|screenshot|screen_grab_privacy_runtime|process_loopback_worker_host|capture_cadence_diagnostics|encoder_loop_stage_cost|recording_manifest)", "captureengine/media"),
+    (r"^captureengine/(media_main|wgc_capture|dxgi_dup_capture|screenshot|screen_grab_privacy_runtime|"
+     r"process_loopback_worker_host|capture_cadence_diagnostics|encoder_loop_stage_cost|"
+     r"recording_manifest)", "captureengine/media"),
     (r"^captureengine/display_timing_", "captureengine/display_timing"),
     (r"^captureengine/(sensor_|clr_interop|pawnio_)", "captureengine/sensors"),
     (r"^captureengine/(elevation_|startup_|service_lifetime_wait)", "captureengine/elevation"),
@@ -85,18 +96,24 @@ RULES: list[tuple[str, str]] = [
     (r"^captureengine/pseudo_overlay", "captureengine/pseudo_overlay"),
     # --------------------------------------------------------------- common/
     (r"^common/(config|live_stream_config|face_camera_config|benchmark_config)", "common/config"),
-    (r"^common/(process_ipc|shared_defs|inject_transport_snapshot|elevation_|display_timing_shared|av_sync_latency_channel)", "common/ipc"),
+    (r"^common/(process_ipc|shared_defs|inject_transport_snapshot|elevation_|display_timing_shared|"
+     r"av_sync_latency_channel)", "common/ipc"),
     (r"^common/(crash_|wer_dump_adoption|wow64_stack_range_policy|cpp_exception_message)", "common/crash"),
     (r"^common/(logging|log_meter|log_privacy)", "common/logging"),
-    (r"^common/(capture_|cfr_rational_grid|frame_queue|frame_timing|rate_window_utils|cursor_capture_state|reserved_capture_output|output_completion_notification|recording_lifecycle|wgc_pool_lease|inject_frame_|gpu_scheduling_policy|screen_grab_privacy)", "common/capture"),
-    (r"^common/(inject_overlay_policy|pseudo_overlay_|recording_indicator_policy|hotkey_matcher|keyboard_hook_policy)", "common/overlay"),
+    (r"^common/(capture_|cfr_rational_grid|frame_queue|frame_timing|rate_window_utils|cursor_capture_state|"
+     r"reserved_capture_output|output_completion_notification|recording_lifecycle|wgc_pool_lease|"
+     r"inject_frame_|gpu_scheduling_policy|screen_grab_privacy)", "common/capture"),
+    (r"^common/(inject_overlay_policy|pseudo_overlay_|recording_indicator_policy|hotkey_matcher|"
+     r"keyboard_hook_policy)", "common/overlay"),
     (r"^common/(mip_bias_limits|mip_mapping_policy|sharpen_policy|vulkan_layer_)", "common/graphics"),
     (r"^common/(startup_policy|installer_setup_policy)", "common/setup"),
     (r"^common/utils/", "common/platform"),
     (r"^common/", "common/platform"),
     # ----------------------------------------------------------- mediaengine/
     (r"^mediaengine/mediaengine", "mediaengine/engine"),
-    (r"^mediaengine/(audio_|app_audio_|process_loopback|process_audio_session_monitor|process_tree_selection)", "mediaengine/audio"),
+    (r"^mediaengine/(audio_|app_audio_|process_loopback|process_audio_session_monitor|process_tree_selection)"
+     r"^mediaengine/(audio_|app_audio_|process_loopback|process_audio_session_monitor|"
+     r"process_tree_selection)", "mediaengine/audio"),
     (r"^mediaengine/(video_|face_camera_|cursor_|encode_geometry_policy)", "mediaengine/video"),
     (r"^mediaengine/(matroska_timing|mux_)", "mediaengine/mux"),
 ]
@@ -316,7 +333,8 @@ def apply(mapping: dict[str, str]) -> None:
 
 # ------------------------------------------------------------------ path references
 
-PATH_RE = re.compile(r"(?<![A-Za-z0-9_./\\-])((?:hook|common|mediaengine|captureengine)/[A-Za-z0-9_./]+?\.(?:cpp|hpp|h|inl|c))\b")
+PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./\\-])((?:hook|common|mediaengine|captureengine)/[A-Za-z0-9_./]+?\.(?:cpp|hpp|h|inl|c))\b")
 # "a" / "b" / "c.cpp" (C++ std::filesystem) or "a", "b", "c.cpp" (os.path.join); first component may be
 # wrapped as path("a").
 CHAIN_RE = re.compile(r'"(hook|common|mediaengine|captureengine)"(\)?)((?:\s*[,/]\s*"[A-Za-z0-9_.]+")+)')

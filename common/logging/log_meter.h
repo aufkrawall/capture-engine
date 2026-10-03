@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <type_traits>
 
 // SPDX-License-Identifier: MIT
@@ -32,19 +33,21 @@ inline bool ShouldLogCadence(uint32_t callIndex, uint32_t firstBurstCount, uint3
 // The fields of a log line that make it a different line, folded into one key (FNV-1a over each
 // field's bytes). Leave counters, sequence numbers and rotating back-buffer pointers out: a key
 // should change exactly when a reader would say the state changed.
+template <typename Field>
+inline void MixFieldBytes(uint64_t& hash, const Field& field) noexcept {
+    static_assert(std::is_trivially_copyable_v<Field>, "FieldKey hashes raw field bytes");
+    unsigned char bytes[sizeof(Field)];
+    std::memcpy(bytes, static_cast<const void*>(std::addressof(field)), sizeof(Field));
+    for (unsigned char byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+}
+
 template <typename... Fields>
 inline uint64_t FieldKey(const Fields&... fields) noexcept {
-    static_assert((std::is_trivially_copyable_v<Fields> && ...), "FieldKey hashes raw field bytes");
     uint64_t hash = 14695981039346656037ull;
-    auto mix = [&hash](const auto& field) {
-        unsigned char bytes[sizeof(field)];
-        std::memcpy(bytes, &field, sizeof(field));
-        for (unsigned char byte : bytes) {
-            hash ^= byte;
-            hash *= 1099511628211ull;
-        }
-    };
-    (mix(fields), ...);
+    (MixFieldBytes(hash, fields), ...);
     return hash == UINT64_MAX ? hash - 1 : hash;  // UINT64_MAX is ChangeGate's "nothing seen yet"
 }
 

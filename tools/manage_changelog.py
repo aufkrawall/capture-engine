@@ -284,7 +284,8 @@ def generate_release_notes(
         notes,
         "\n### Release Assets\n",
         f"- `captureengine-{clean_v}.7z`: core product binaries, PDBs, FFmpeg closure, and default configuration",
-        f"- `captureengine-setup-{clean_v}.exe`: graphical installer and uninstaller (shortcuts, startup, elevation service, optional PawnIO driver)",
+        f"- `captureengine-setup-{clean_v}.exe`: graphical installer and uninstaller "
+        "(shortcuts, startup, elevation service, optional PawnIO driver)",
         f"- `testapps-{clean_v}.7z`: standalone graphics & frame generation test executables and diagnostic tools",
         f"- `ffmpeg-corresponding-source-{clean_v}.7z`: complete LGPL corresponding source archive",
         "- `latest_manifest.json` / `latest_summary.txt`: full build and verification evidence\n",

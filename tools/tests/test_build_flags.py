@@ -273,7 +273,8 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertTrue(module_sources, "no screenshot encoding sources found")
         self.assertEqual(module_sources, build.STRICT_FP_SCREENSHOT_SOURCES)
         for name in build.STRICT_FP_SCREENSHOT_SOURCES:
-            self.assertTrue(Path(build.find_module_source("captureengine", name)).is_file(), f"{name} is registered but does not exist")
+            registered = Path(build.find_module_source("captureengine", name))
+            self.assertTrue(registered.is_file(), f"{name} is registered but does not exist")
 
     def test_linux_llvm_readobj_resolution_uses_host_executable(self) -> None:
         with patch.object(build, "IS_LINUX", True), patch.object(
@@ -649,7 +650,8 @@ class BuildFlagPolicyTest(unittest.TestCase):
         bump_version.assert_not_called()
 
     def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
-        cpp = (Path(build.PROJECT_ROOT) / "common" / "graphics" / "vulkan_layer_registration.cpp").read_text(encoding="utf-8")
+        cpp_path = Path(build.PROJECT_ROOT) / "common" / "graphics" / "vulkan_layer_registration.cpp"
+        cpp = cpp_path.read_text(encoding="utf-8")
         self.assertIn('return std::wstring(baseName) + L"_b" + std::to_wstring(GetCurrentBuildNumber());', cpp)
         self.assertIn('implementation_version', cpp)
 

@@ -208,36 +208,6 @@ static bool ColorFillSurfaceRect(IDirectDrawSurface7* surface, const DDSURFACEDE
     return SUCCEEDED(hr);
 }
 
-static void FillSurfaceRect(DDSURFACEDESC2& desc, const RECT& rect, uint32_t packedColor) {
-    const int bytesPerPixel = std::max(1, static_cast<int>(desc.ddpfPixelFormat.dwRGBBitCount / 8U));
-    const int width = static_cast<int>(desc.dwWidth);
-    const int height = static_cast<int>(desc.dwHeight);
-    const int left = std::clamp(static_cast<int>(rect.left), 0, width);
-    const int right = std::clamp(static_cast<int>(rect.right), 0, width);
-    const int top = std::clamp(static_cast<int>(rect.top), 0, height);
-    const int bottom = std::clamp(static_cast<int>(rect.bottom), 0, height);
-
-    if (left >= right || top >= bottom)
-        return;
-
-    for (int y = top; y < bottom; ++y) {
-        uint8_t* row = static_cast<uint8_t*>(desc.lpSurface) + static_cast<ptrdiff_t>(y) * desc.lPitch;
-        if (bytesPerPixel == 4) {
-            auto* pixels = reinterpret_cast<uint32_t*>(row) + left;
-            std::fill(pixels, pixels + (right - left), packedColor);
-            continue;
-        }
-        if (bytesPerPixel == 2) {
-            auto* pixels = reinterpret_cast<uint16_t*>(row) + left;
-            std::fill(pixels, pixels + (right - left), static_cast<uint16_t>(packedColor));
-            continue;
-        }
-
-        for (int x = left; x < right; ++x)
-            StorePixel(row + x * bytesPerPixel, bytesPerPixel, packedColor);
-    }
-}
-
 static void DrawFrameToSurface(IDirectDrawSurface7* surface) {
     if (!surface)
         return;

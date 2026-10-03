@@ -3,15 +3,10 @@
 # licenses, PE hardening, packaging). See build_project_finalize.py for the tail.
 
 
-# Project-relative hook sources the product hook DLL must NOT compile: the D3D12 device/commandqueue
-# wrappers (MinGW ABI incompatibility — MSYS2's D3D12 headers use WIDL_EXPLICIT_AGGREGATE_RETURNS
-# with a different vtable layout) and the WIP stable-hook unit. Single source of truth for both the
-# hook compile set and the tests-only coverage warning.
-HOOK_DLL_EXCLUDED_SOURCES = (
-    "hook/wrappers/d3d12_device_wrap.cpp",
-    "hook/wrappers/d3d12_commandqueue_wrap.cpp",
-    "hook/d3d12/dx12_hook_stable.cpp",
-)
+# Project-relative hook sources the product hook DLL must NOT compile. Single source of truth for both
+# the hook compile set and the tests-only coverage warning. Empty since 2026-10-02: the never-compiled
+# D3D12 device/command-queue COM wrappers (MinGW D3D12 headers use a different vtable layout) were deleted.
+HOOK_DLL_EXCLUDED_SOURCES: tuple = ()
 
 
 def should_warn_tests_only_uncovered_source(src_path: str, product_obj_path: str) -> bool:

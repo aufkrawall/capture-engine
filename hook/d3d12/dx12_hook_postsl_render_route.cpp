@@ -375,7 +375,6 @@ if (isPostTransitionProbe) {
         return PostSLFlow::kReturn;
 }
 static ID3D12Fence* s_xqSyncFence = nullptr;
-static uint64_t s_xqSyncVal = 0;
 bool didXQSync = false;
 if (willRender && !s_xqSyncFence) {
     // Create fence lazily (needed for SL queue → origGame post-submit sync)

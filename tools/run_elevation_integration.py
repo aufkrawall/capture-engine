@@ -11,7 +11,8 @@ from pathlib import Path
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--installed", type=Path, default=Path(__file__).resolve().parents[1] / "installed" / "captureengine")
+    default_installed = Path(__file__).resolve().parents[1] / "installed" / "captureengine"
+    parser.add_argument("--installed", type=Path, default=default_installed)
     parser.add_argument("--diagnostics", action="store_true", help="Retain private fixture logs on failure")
     args = parser.parse_args()
     source = args.installed.resolve()
@@ -27,7 +28,8 @@ def main() -> int:
         for binary in source.glob(pattern):
             shutil.copy2(binary, fixture / binary.name)
     config = (source.parents[1] / "captureengine" / "config.ini.template").read_text(encoding="utf-8")
-    config = config.replace("log_level=trace", "log_level=debug" if args.diagnostics else "log_level=none").replace("poll_interval_ms=1000", "poll_interval_ms=250")
+    config = config.replace("log_level=trace", "log_level=debug" if args.diagnostics else "log_level=none")
+    config = config.replace("poll_interval_ms=1000", "poll_interval_ms=250")
     (fixture / "config.ini").write_text(config, encoding="utf-8")
     print("Windows will request UAC for temporary service setup and removal.", flush=True)
     # Native test refuses an existing service, exercises ordinary tokens and the

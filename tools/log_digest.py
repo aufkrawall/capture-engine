@@ -167,11 +167,12 @@ def is_problem(line: Line) -> bool:
 
 
 def human(size: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return str(size)
+    value = float(size)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
 
 
 def section_files(files: list[FileStats]) -> list[str]:

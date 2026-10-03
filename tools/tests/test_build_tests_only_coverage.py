@@ -48,7 +48,7 @@ class TestsOnlyCoverageWarningTest(unittest.TestCase):
         self.assertIn("TESTS_ONLY_PSEUDO_OVERLAY_SOURCES", source)
         self.assertIn("hook/hooking/hook_system.cpp", source)
         # The hook compile exclusions must be shared between the product compile set and the warning.
-        self.assertIn("HOOK_DLL_EXCLUDED_SOURCES = (", source)
+        self.assertIn("HOOK_DLL_EXCLUDED_SOURCES: tuple = (", source)
         self.assertIn("rel in HOOK_DLL_EXCLUDED_SOURCES", source)
         self.assertIn("for rel in HOOK_DLL_EXCLUDED_SOURCES", source)
 

@@ -23,11 +23,8 @@ struct SwapchainState {
     bool captureInitialized = false;
 };
 
-static std::mutex g_SwapchainMapMutex;
 static std::unordered_map<VkSwapchainKHR, SwapchainState> g_SwapchainMap;
 
-// Queue tracking
-static std::mutex g_QueueMapMutex;
 static std::unordered_map<VkQueue, VkDevice> g_QueueToDevice;
 
 // OPTIMIZATION: Thread-local cache for queue lookups to avoid mutex contention

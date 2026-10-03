@@ -35,10 +35,6 @@ void PublishDirect3DCreate9Trampoline(void* trampoline, void* context) {
 
 static std::atomic<bool> g_InlineHooksInProgress{false};  // Guard against re-entry (atomic for thread safety)
 
-static bool g_HooksInitialized = false;
-
-static bool g_ResetHooksInstalled = false;
-
 static int64_t g_LastSleepUs = 0;
 
 DX9InternalBypassScope::DX9InternalBypassScope() {
@@ -499,21 +495,6 @@ static bool InstallD3D9InlineHooks() {
     LogDirect("InstallD3D9InlineHooks complete (success=%d)", anySuccess ? 1 : 0);
     EarlyLog("DX9: InstallD3D9InlineHooks complete (success=%d)", anySuccess ? 1 : 0);
     return anySuccess;
-}
-
-static int GetMSAASampleCount(IDirect3DDevice9* device) {
-    IDirect3DSurface9* rt = nullptr;
-    if (SUCCEEDED(device->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC desc;
-        HRESULT hr = rt->GetDesc(&desc);
-        rt->Release();
-        if (SUCCEEDED(hr)) {
-            if (desc.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES && desc.MultiSampleType <= D3DMULTISAMPLE_16_SAMPLES) {
-                return (int)desc.MultiSampleType;
-            }
-        }
-    }
-    return 0;
 }
 
 void DX9Hook::Init() {

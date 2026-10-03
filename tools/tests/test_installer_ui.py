@@ -186,7 +186,9 @@ class SetupWindowTest(unittest.TestCase):
         self.assertFalse(self.checked(desktop))
         self.assertIn(self.text(self.control(window, ID_NEXT)), ("Install", "Update"))
         self.click(window, ID_NEXT)
-        self.wait_until(lambda: self.text(self.control(window, ID_NEXT)) == "Finish", "setup never reached its result page")
+        self.wait_until(
+            lambda: self.text(self.control(window, ID_NEXT)) == "Finish", "setup never reached its result page"
+        )
         self.assertFalse(self.visible(window, ID_CANCEL))
         self.click(window, ID_NEXT)
         self.assertEqual(self.process.wait(timeout=20), 0)
@@ -214,7 +216,10 @@ class SetupWindowTest(unittest.TestCase):
 
     def test_uninstall_window_confirms_removes_and_keeps_data_by_default(self):
         subprocess.run(
-            [str(self.setup), "--files-only", f"--dir={self.target}", "/S"], check=True, timeout=120, capture_output=True
+            [str(self.setup), "--files-only", f"--dir={self.target}", "/S"],
+            check=True,
+            timeout=120,
+            capture_output=True,
         )
         (self.target / "logs" / "a.log").write_bytes(b"log")
         window = self.launch("--uninstall")

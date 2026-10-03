@@ -114,7 +114,9 @@ Other tooling:
   `dependency_pgp.py` + `pgp-keys/`, `source_download.py`, `rehearse_dependency_closure.py`.
 - `tools/refactor/` - one-shot refactoring scripts: `relayout.py` (this layout; mapping in
   `build/relayout_mapping.json` after a run), `preprocess_fingerprint.py` (proves a pure move left
-  every TU's preprocessed output byte-identical), older splitter/de-inline scripts.
+  every TU's preprocessed output byte-identical), `syntax_check.py` (seconds-fast `-fsyntax-only` of changed
+  product TUs), `remove_unused.py` (deletes compiler-proven dead statics from a clang_tidy.log), older
+  splitter/de-inline scripts.
 - `tools/analysis/`, `tools/tracing/` - capture A/V analysis, DX12/GPU tracing.
 - Baselines: `tools/clang_tidy_baseline.json`, `tools/file_size_baseline.json`,
   `tools/source_line_length_baseline.json`.

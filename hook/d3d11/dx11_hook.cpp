@@ -7,12 +7,6 @@
 // Prevents render thread stalls during resource destruction
 ce::DeferredReleaseQueue g_DeferredRelease;
 
-static ID3D10Device* g_pd3d10Device = NULL;
-
-static IDXGISwapChain* g_pSwapChain = NULL;
-
-static bool g_IsDX10Device = false;
-
 namespace {
 class ScopedInternalDXGISwapchainProbe {
 public:

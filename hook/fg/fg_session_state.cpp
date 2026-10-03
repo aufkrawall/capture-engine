@@ -269,11 +269,6 @@ void UpdateSessionManifestIfNeeded(SessionState& state, const FGSessionSnapshot&
     state.manifestInitialized = true;
 }
 
-bool QueueProofEquals(const FGQueueProof& a, const FGQueueProof& b) {
-    return a.ptr == b.ptr && a.valid == b.valid && a.runtimeOwned == b.runtimeOwned &&
-           a.wrapperDerived == b.wrapperDerived && a.directBehindWrapper == b.directBehindWrapper;
-}
-
 SnapshotBuildResult BuildSnapshotNoLock(SessionState& state) {
     SnapshotBuildResult result;
     FGSessionSnapshot& snapshot = result.snapshot;
