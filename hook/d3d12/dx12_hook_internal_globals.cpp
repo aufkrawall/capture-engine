@@ -79,22 +79,7 @@ std::atomic<bool> dx12_hook_g_PostSLRuntimeStateStabilizationLogged{false};
 
 std::atomic<bool> dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch{false};
 
-std::atomic<uint64_t> dx12_hook_g_OverlayCoverageDrawCount{0};
-std::atomic<uint64_t> dx12_hook_g_OverlayDoubleDrawCount{0};
-
-std::atomic<uint64_t> dx12_hook_g_OverlayCoverageLastSeenDrawCount{0};
-
-std::atomic<const char*> dx12_hook_g_OverlayCoverageLastGate{nullptr};
-
-std::atomic<const char*> dx12_hook_g_OverlayCoverageStreakGate{nullptr};
-
-std::atomic<uint64_t> dx12_hook_g_OverlayCoverageStreakStartTickMs{0};
-
-std::atomic<bool> dx12_hook_g_OverlayCoverageStreakStartConfirmed{false};
-
-ce::dx12_overlay_policy::OverlayPresentCoverageTracker dx12_hook_g_OverlayCoverageTracker;
-
-std::atomic_flag dx12_hook_g_OverlayCoverageLock = ATOMIC_FLAG_INIT;
+DX12OverlayCoverageState g_DX12OverlayCoverage;
 
 thread_local bool dx12_hook_g_RequireExactPostSLStartupTransportDraw = false;
 

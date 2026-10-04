@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
+#include "hook/d3d12/dx12_overlay_policy/protected_ffx_startup.h"
 
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
@@ -422,15 +423,28 @@ extern std::atomic<bool> dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationE
 extern std::atomic<bool> dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed;
 extern std::atomic<bool> dx12_hook_g_PostSLRuntimeStateStabilizationLogged;
 extern std::atomic<bool> dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch;
-extern std::atomic<uint64_t> dx12_hook_g_OverlayCoverageDrawCount;
-extern std::atomic<uint64_t> dx12_hook_g_OverlayDoubleDrawCount;
-extern std::atomic<uint64_t> dx12_hook_g_OverlayCoverageLastSeenDrawCount;
-extern std::atomic<const char*> dx12_hook_g_OverlayCoverageLastGate;
-extern std::atomic<const char*> dx12_hook_g_OverlayCoverageStreakGate;
-extern std::atomic<uint64_t> dx12_hook_g_OverlayCoverageStreakStartTickMs;
-extern std::atomic<bool> dx12_hook_g_OverlayCoverageStreakStartConfirmed;
-extern ce::dx12_overlay_policy::OverlayPresentCoverageTracker dx12_hook_g_OverlayCoverageTracker;
-extern std::atomic_flag dx12_hook_g_OverlayCoverageLock;
+struct DX12OverlayCoverageState {
+    std::atomic<uint64_t> drawCount{0};
+    std::atomic<uint64_t> doubleDrawCount{0};
+    std::atomic<uint64_t> lastSeenDrawCount{0};
+    std::atomic<const char*> lastGate{nullptr};
+    std::atomic<const char*> streakGate{nullptr};
+    std::atomic<uint64_t> streakStartTickMs{0};
+    std::atomic<bool> streakStartConfirmed{false};
+    ce::dx12_overlay_policy::OverlayPresentCoverageTracker tracker;
+    std::atomic_flag lock = ATOMIC_FLAG_INIT;
+};
+extern DX12OverlayCoverageState g_DX12OverlayCoverage;
+
+inline std::atomic<uint64_t>& dx12_hook_g_OverlayCoverageDrawCount = g_DX12OverlayCoverage.drawCount;
+inline std::atomic<uint64_t>& dx12_hook_g_OverlayDoubleDrawCount = g_DX12OverlayCoverage.doubleDrawCount;
+inline std::atomic<uint64_t>& dx12_hook_g_OverlayCoverageLastSeenDrawCount = g_DX12OverlayCoverage.lastSeenDrawCount;
+inline std::atomic<const char*>& dx12_hook_g_OverlayCoverageLastGate = g_DX12OverlayCoverage.lastGate;
+inline std::atomic<const char*>& dx12_hook_g_OverlayCoverageStreakGate = g_DX12OverlayCoverage.streakGate;
+inline std::atomic<uint64_t>& dx12_hook_g_OverlayCoverageStreakStartTickMs = g_DX12OverlayCoverage.streakStartTickMs;
+inline std::atomic<bool>& dx12_hook_g_OverlayCoverageStreakStartConfirmed = g_DX12OverlayCoverage.streakStartConfirmed;
+inline ce::dx12_overlay_policy::OverlayPresentCoverageTracker& dx12_hook_g_OverlayCoverageTracker = g_DX12OverlayCoverage.tracker;
+inline std::atomic_flag& dx12_hook_g_OverlayCoverageLock = g_DX12OverlayCoverage.lock;
 extern thread_local bool dx12_hook_g_RequireExactPostSLStartupTransportDraw;
 extern thread_local bool dx12_hook_g_PostSLDrawBelongsToEnclosingProcessFramePresent;
 extern std::atomic<int> dx12_hook_g_OverlayHandoffVerboseLogPresents;

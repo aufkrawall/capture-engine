@@ -6,6 +6,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Encapsulate DirectX 12 overlay coverage state:** grouped loose global overlay coverage tracking variables into a cohesive, domain-owned `DX12OverlayCoverageState` structure.
+
+- **Streamline diagnostic log metering resilience:** multi-stream change gates now resolve hash collisions with 2-way probing, preventing alternating call shapes from repeatedly resetting log suppression gates.
+
 - **Session logs are much smaller and easier to read:** lines that repeated unchanged every frame or every second (overlay submits, queue choices, frame-generation decisions, Streamline UI-tag records, controller loop timing, config re-reads for every whitelisted game) are now written when something changes, with a "(+N unchanged)" count instead of the copies. Each hook installation is one line instead of about twenty, the Steam overlay is reported once instead of on every hook pass, and FPS-limiter stats and Vulkan layer lines are no longer written to two files. Nothing that marks a change, a failure or a recovery was removed.
 
 - **Shorter hook log lines:** `hook_debug.log` lines read `time T<thread> #<line> p<pid> message`. The line number counts per file, so a gap now always means a lost line, and each process's first line names its executable and pid.
