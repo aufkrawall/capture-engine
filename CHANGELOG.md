@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording and frame-generation regression contracts:** documented the state, resource lifetime and timing guarantees used to verify recording cancellation, overlay handover and encode recovery during the core refactor.
+
 - **Screenshot controls use the controller API:** screenshot hotkeys now use a controller-owned engine handle and share screenshot notifications with API callers.
 
 - **Streamline code comments and archive dated incident logs to wiki:** stripped historical session timestamps and diagnostic narratives across hook thread initialization, swapchain wrapper present tracking, DLSS frame multiplier defaults, and queue reinitialization while archiving durable architectural knowledge in `llm-wiki/log/recent.md`.

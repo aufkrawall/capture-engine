@@ -1,0 +1,96 @@
+# Core refactor contracts
+
+Last verified: 2026-10-04 against fe805f58; native unit suite and 14 FG flow scenarios passed.
+Baseline closing product/package gate: 0.1.6974.
+
+This page records source-backed ownership contracts for the core refactor. It is not
+an independent engine/library specification. Source and tests outrank this page.
+
+## Baseline and investigation method
+
+Repeat these investigations before/after each relevant slice using the same entry points:
+
+| Investigation | Initial implementation context | Distributed decisions |
+| --- | --- | --- |
+| Stop a pending recording, then start again | main_internal.h, main_recording.cpp, libcaptureengine_controller.cpp: 1,509 lines, approximately 16,473 tokens | requested flag, pending intent/tick, tray state, transport stop acceptance, process release |
+| Explain PostSL route retirement and stale render cancellation | dx12_hook_types.h, postsl_route/queue/render_entry/render_submit.cpp: 2,886 lines, approximately 40,428 tokens | activation/confirmation, cancellation epoch, render lock, callback/GPU drain, queue references |
+| Explain encode failure, repeat and timeline commitment | media_main_encoder_08_loop_encode.cpp, _07_loop_emit.cpp, mediaengine_frame.cpp: 2,015 lines, approximately 28,517 tokens | boolean/deferred side channel, candidate/cache promotion, leases, source timing and output commitment |
+
+Paths in the table use module-unique basenames; see repo-map.md. Approximate tokens
+are UTF-8-decoded character counts divided by four, not model tokenizer measurements.
+These are fixed investigation scopes, not repository-wide architecture measurements.
+Completion requires fewer caller decisions, not simply smaller files or headers.
+
+## Recording and IPC
+
+- Controller intent is not media phase. Start command acknowledgement does not prove live output;
+  pending acknowledgement does not prove no file exists. Media finalization is asynchronous.
+- Explicit stop clears requested ownership, pending start and presentation before child stop.
+  Media gets the first request; inject is fallback. Media self-exits after finalization and the
+  controller releases its active endpoint/handle so the next start gets a fresh child.
+- Video needs inject and media; audio-only also supports direct media acceptance. Sensor readiness
+  failure is nonfatal for video. A media integrity failure disables automatic recording.
+- Existing CapturePipelinePhase/lifecycle helpers remain the media authority. Do not add another
+  media state machine to the controller. Ordinary frontend code consumes commands/observations.
+- Discovery/shared mappings require exact ABI validation. Release/acquire and existing generation
+  protocols remain unchanged. Independently read health atomics are observations, not a coherent
+  multi-field snapshot. No reader-only lock can coordinate a different process's writer.
+- Session commands are controller-thread operations. Test transport/presentation adapters are
+  internal; no test interfaces or C++ objects enter the external C ABI.
+
+Sources: captureengine/app/main_recording.cpp, main_internal.h, libcaptureengine_controller.cpp;
+common/capture/recording_lifecycle.h; common/ipc/process_ipc.h and shared_defs_detail/capture_state.h.
+Coverage: test_libcaptureengine.cpp, test_process_ipc.cpp, test_recording_start_feedback.cpp,
+test_shared_runtime_state.cpp. Boundary fake-backend tests alone do not test session bookkeeping.
+
+## Media outcomes and time
+
+- Source leases remain caller-owned. Deferred candidates retain retry ownership. A fallback repeat
+  does not promote the rejected fresh candidate into the cached last frame.
+- First-video/audio anchors commit only after the encoder accepts the first video output. No
+  failure/defer may commit pixels that did not become output. Acceptance is not packet/GPU completion.
+- Source QPC, scheduled output QPC, microseconds, audio 100 ns timestamps and frame indices are
+  different quantities. Inject encoded-duration commitment and WGC scheduled live timing differ.
+- Preserve shared handles, fences, adapter/process identity, cursor/capture origin, generations,
+  ring-slot lifetimes and privacy behavior. No extra copies or virtual interfaces per frame.
+- Existing positional ProcessFrame and descriptor SubmitFrame DLL exports keep their contracts.
+  Rich results require additive versioned exports, not altered signatures under old names.
+
+Sources: mediaengine/engine/mediaengine_frame.cpp and mediaengine.h;
+captureengine/media/media_main_encoder_08_loop_encode.cpp and _07_loop_emit.cpp;
+common/capture/inject_frame_ring_lease.h and common/ipc/inject_transport_snapshot.h.
+Coverage: test_mediaengine_frame_abi.cpp, test_inject_frame_ring_lease.cpp,
+test_cfr_rational_grid.cpp, test_frame_timing_utils.cpp, audio sync/finalization tests.
+
+## PostSL and DX12
+
+- Publish callback cancellation/epoch invalidation before waiting for render-lock ownership.
+  Already-entered callbacks check their entry epoch before GPU submission.
+- CPU callback lifetime and GPU completion are separate proofs. Retain existing queue/resource
+  references and release points, including deferred retirement. No blanket COM retention.
+- SDK presence, accepted settings, observed generation, overlay route and visible status differ.
+  Queue discovery remains observational and does not create live probe queues.
+- Success must not execute failed-GetBuffer or failed-reset recovery. The frame backbuffer has
+  one normal release point and idempotent destructor cleanup for early exits.
+- Preserve reentry, runtime-owned present/multi-output handover, independent FSR composition,
+  capture-before/after-overlay, queue selection and fences. Avoid new waits/locks/allocations.
+
+Sources: hook/d3d12/dx12_hook_postsl_route.cpp, dx12_hook_postsl_queue.cpp,
+dx12_hook_postsl_render_entry.cpp, dx12_hook_postsl_render_submit.cpp;
+dx12_hook_process_session.h and its draw units.
+Coverage: test_dxgi_shared_part11.cpp and tests/flow. Replace historical source assertions only
+after actual orchestration tests demonstrably catch the same failures.
+
+## Design choices and validation limits
+
+Use a recording session, validated domain IPC operations, source-specific submission adapters,
+PostSL lifecycle transactions and DX12 draw transactions. Reject forwarding managers, universal
+channels, generic frame unions, individual locked setters and renamed generated chunk trees.
+
+Agent execution covers native unit and FG flow tests, with regular verified local commits and
+fresh setup packages. Real-game, capture/A/V matrix and hardware performance checks belong to
+the user. WARP/fake SDK runtimes exercise real hook orchestration but cannot certify vendor/game
+compatibility. Do not claim performance improvement from an interface change.
+
+Independent engine DLL/configuration/telemetry, events, preview/packet output, dynamic
+reconfiguration and plugin/frame hierarchies remain deferred independent feature work.
