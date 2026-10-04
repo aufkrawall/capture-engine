@@ -4,6 +4,10 @@
 
 Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6941).
 
+### New
+
+- **Public C ABI library interface (`libcaptureengine.h`):** introduced standard C application binary interface headers defining opaque engine handles, typed configuration structures, lifecycle controls, and recording event dispatchers for embedding Capture Engine into external host applications.
+
 ### Improved
 
 - **Streamline code comments and archive dated incident logs to wiki:** stripped historical session timestamps and diagnostic narratives across hook thread initialization, swapchain wrapper present tracking, DLSS frame multiplier defaults, and queue reinitialization while archiving durable architectural knowledge in `llm-wiki/log/recent.md`.
