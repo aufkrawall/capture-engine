@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Typed descriptors for DirectX 12 focus-loss and swapchain policies:** replaced multi-boolean positional parameters across focus-loss overlay fence synchronization and non-presentable backbuffer hold checks with structured parameter descriptors `D3D12FocusLossImmediateFenceDesc` and `D3D12NonPresentableSwapchainHoldDesc`, isolating focus-loss synchronization logic into `focus_loss_policy.h`.
+
 - **Structured D3D11 frame submission descriptor:** replaced the multi-parameter Direct3D 11 / WGC frame processing signature with structured parameter descriptor `D3D11FrameSubmissionDesc`, clarifying frame parameter passing across capture and encoding loops while retaining inline compatibility forwarders.
 
 - **Type-safe video frame submission descriptor:** replaced the 14-parameter inject video frame processing call with structured parameter descriptor `VideoFrameSubmissionDesc`, improving readability and maintainability across encoder loops while preserving backward-compatible forwarders.

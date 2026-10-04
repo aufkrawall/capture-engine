@@ -721,6 +721,7 @@ bool IsD3D12ModuleAddress(void* address);
 void CaptureCreateSwapchainAccessDeniedExhaustedDump(HWND hWnd, const char* context);
 void ClearFocusLossPendingOverlayFence(const char* reason, UINT64 fenceValue, UINT64 completedValue);
 bool ShouldHoldOverlayDrawForPendingFocusLossFence();
+const char* DescribeFocusLossImmediateFenceSkip(const ce::dx12_overlay_policy::D3D12FocusLossImmediateFenceDesc& desc);
 const char* DescribeFocusLossImmediateFenceSkip(bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize, bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,  bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue, UINT64 fenceValue);
 void RequestImmediateFocusLossFenceDumpOnce(const char* reason, UINT64 fenceValue, UINT64 completedValue, ID3D12CommandQueue* queue, const DX12WrappedPresentFocusLossContext& presentContext, HWND foregroundWindow, DWORD foregroundPid, HWND gameWindow, DWORD processId, DWORD waitResult, DWORD waitLastError);
 void RequestFocusLossDeviceRemovalDumpOnce(const char* reason, HRESULT deviceRemovedReason, const DX12WrappedPresentFocusLossContext& presentContext, HWND foregroundWindow, DWORD foregroundPid, HWND gameWindow, DWORD processId, ID3D12CommandQueue* queue);

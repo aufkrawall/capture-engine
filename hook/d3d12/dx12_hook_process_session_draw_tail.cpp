@@ -330,13 +330,15 @@ return ProcessFrameFlow::kOverlayDone;
                                 // The Steam-ECL deferred submit was retired in c4a93a44; nothing
                                 // enables it any more, so this predicate is constant.
                                 constexpr bool steamDeferredOverlaySubmit = false;
-                                const bool focusLossImmediateFence = ce::dx12_overlay_policy::
-                                    ShouldSignalD3D12FocusLossOverlayFenceImmediately(
-                                        presentContext.valid, !frameDesc.Windowed, processHasForeground,
-                                        iconicWindow, zeroSizedSwapchain, true, deviceLostForFence,
-                                        anyFGForFence, runtimeOwnedPresentation, useDedicated,
-                                        steamDeferredOverlaySubmit, dx12_hook_g_State.fence != nullptr,
-                                        dx12_hook_g_State.fenceEvent != nullptr, eclQueue != nullptr, next);
+                                const ce::dx12_overlay_policy::D3D12FocusLossImmediateFenceDesc immediateFenceDesc{
+                                    presentContext.valid, !frameDesc.Windowed, processHasForeground,
+                                    iconicWindow, zeroSizedSwapchain, true, deviceLostForFence,
+                                    anyFGForFence, runtimeOwnedPresentation, useDedicated,
+                                    steamDeferredOverlaySubmit, dx12_hook_g_State.fence != nullptr,
+                                    dx12_hook_g_State.fenceEvent != nullptr, eclQueue != nullptr, next};
+                                const bool focusLossImmediateFence =
+                                    ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+                                        immediateFenceDesc);
 
                                 if (!focusLossImmediateFence && presentContext.valid &&
                                     !processHasForeground) {
@@ -350,13 +352,7 @@ return ProcessFrameFlow::kOverlayDone;
                                             "flags=0x%08X next=%llu event=%p fgActive=%d runtimeOwned=%d "
                                             "dedicated=%d steamDeferred=%d deviceLost=%d realECL=%d "
                                             "directD3D12=%d descFree=%d offscreen=%d)",
-                                            DescribeFocusLossImmediateFenceSkip(
-                                                presentContext.valid, !frameDesc.Windowed,
-                                                processHasForeground, iconicWindow, zeroSizedSwapchain,
-                                                true, deviceLostForFence, anyFGForFence,
-                                                runtimeOwnedPresentation, useDedicated,
-                                                steamDeferredOverlaySubmit, dx12_hook_g_State.fence != nullptr,
-                                                dx12_hook_g_State.fenceEvent != nullptr, eclQueue != nullptr, next),
+                                            DescribeFocusLossImmediateFenceSkip(immediateFenceDesc),
                                             presentContext.presentName ? presentContext.presentName
                                                                        : "Present",
                                             presentContext.callCount, eclQueue, foregroundWindow,

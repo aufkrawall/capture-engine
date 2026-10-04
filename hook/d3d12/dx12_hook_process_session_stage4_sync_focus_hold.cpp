@@ -257,12 +257,20 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
     // invisible-safe not-presentable hold during the Alt+Tab mode switch instead of hanging.
     haveReliablePresentResultSignal =
         dx12_hook_s_WrappedPresentFocusLossContext.valid || dx12_hook_g_HaveD3D12PresentResultSignal.load(std::memory_order_acquire);
+    const ce::dx12_overlay_policy::D3D12NonPresentableSwapchainHoldDesc holdDesc{
+        haveReliablePresentResultSignal,
+        !frameDesc.Windowed,
+        swapchainOccluded,
+        iconicWindow,
+        zeroSizedSwapchain,
+        focusLossBackgroundFrameGenerationActive,
+        focusLossBackgroundRuntimeOwnedPresentation,
+        focusLossBackgroundUsingDedicatedQueue,
+        focusLossBackgroundSteamDeferredSubmit,
+        focusLossBackgroundDeviceLost,
+        gameQueue != nullptr};
     focusLossBackgroundBackbufferHold =
-        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
-            haveReliablePresentResultSignal, !frameDesc.Windowed, swapchainOccluded, iconicWindow, zeroSizedSwapchain,
-            focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
-            focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
-            focusLossBackgroundDeviceLost, gameQueue != nullptr);
+        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(holdDesc);
     if (focusLossBackgroundBackbufferHold) {
         // Keep the device-removal dump window open across the not-presentable
         // period and the following presentable transition (the risky DXGI

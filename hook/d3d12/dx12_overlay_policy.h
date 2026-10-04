@@ -12,6 +12,7 @@
 #include "hook/d3d12/dx12_overlay_policy/ffx_output_frames.h"
 #include "hook/d3d12/dx12_overlay_policy/fg_metrics_and_transitions.h"
 #include "hook/d3d12/dx12_overlay_policy/streamline_ownership.h"
+#include "hook/d3d12/dx12_overlay_policy/focus_loss_policy.h"
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
 #include "hook/d3d12/dx12_overlay_policy/postsl_queue_selection.h"
 #include "hook/d3d12/dx12_overlay_policy/postsl_keepalive.h"

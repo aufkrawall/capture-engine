@@ -13,11 +13,8 @@ extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPres
 
     const auto& ctx = *context;
     const auto& info = *flushInfo;
-    const bool shouldWait = ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
-        ctx.isD3D12Swapchain, ctx.isFullscreen, ctx.processHasForeground, ctx.isIconic, ctx.hasZeroSize,
-        ctx.presentSucceeded, ctx.presentDeviceLost, ctx.frameGenerationActive, ctx.runtimeOwnedPresentation,
-        ctx.usingDedicatedQueue, info.hadDeferredSignal, info.signalSucceeded, info.hasFence, info.hasFenceEvent,
-        info.fenceValue);
+    const bool shouldWait =
+        ce::dx12_overlay_policy::ShouldWaitForD3D12FocusLossPostPresentOverlayFence(ctx, info);
 
     if (!shouldWait) {
         if (!ctx.processHasForeground || info.hadDeferredSignal) {
@@ -315,38 +312,52 @@ return false;
 }
 
 
-const char* DescribeFocusLossImmediateFenceSkip(bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize, bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation, bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue, UINT64 fenceValue) {
-if (!isWrappedD3D12Present)
-    return "not-wrapped-present";
-if (isFullscreen)
-    return "fullscreen";
-if (processHasForeground)
-    return "foreground";
-if (isIconic)
-    return "iconic";
-if (hasZeroSize)
-    return "zero-sized";
-if (!overlaySubmitSucceeded)
-    return "overlay-not-submitted";
-if (deviceLost)
-    return "device-lost";
-if (frameGenerationActive)
-    return "frame-generation-active";
-if (runtimeOwnedPresentation)
-    return "runtime-owned-presentation";
-if (usingDedicatedQueue)
-    return "dedicated-queue";
-if (steamDeferredOverlaySubmit)
-    return "steam-deferred-submit";
-if (!hasFence)
-    return "no-fence";
-if (!hasFenceEvent)
-    return "no-fence-event";
-if (!hasQueue)
-    return "no-queue";
-if (fenceValue == 0)
-    return "zero-fence-value";
-return "policy";
+const char* DescribeFocusLossImmediateFenceSkip(
+    const ce::dx12_overlay_policy::D3D12FocusLossImmediateFenceDesc& desc) {
+    if (!desc.isWrappedD3D12Present)
+        return "not-wrapped-present";
+    if (desc.isFullscreen)
+        return "fullscreen";
+    if (desc.processHasForeground)
+        return "foreground";
+    if (desc.isIconic)
+        return "iconic";
+    if (desc.hasZeroSize)
+        return "zero-sized";
+    if (!desc.overlaySubmitSucceeded)
+        return "overlay-not-submitted";
+    if (desc.deviceLost)
+        return "device-lost";
+    if (desc.frameGenerationActive)
+        return "frame-generation-active";
+    if (desc.runtimeOwnedPresentation)
+        return "runtime-owned-presentation";
+    if (desc.usingDedicatedQueue)
+        return "dedicated-queue";
+    if (desc.steamDeferredOverlaySubmit)
+        return "steam-deferred-submit";
+    if (!desc.hasFence)
+        return "no-fence";
+    if (!desc.hasFenceEvent)
+        return "no-fence-event";
+    if (!desc.hasQueue)
+        return "no-queue";
+    if (desc.fenceValue == 0)
+        return "zero-fence-value";
+    return "policy";
+}
+
+const char* DescribeFocusLossImmediateFenceSkip(
+    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic,
+    bool hasZeroSize, bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive,
+    bool runtimeOwnedPresentation, bool usingDedicatedQueue, bool steamDeferredOverlaySubmit,
+    bool hasFence, bool hasFenceEvent, bool hasQueue, UINT64 fenceValue) {
+    const ce::dx12_overlay_policy::D3D12FocusLossImmediateFenceDesc desc{
+        isWrappedD3D12Present, isFullscreen, processHasForeground, isIconic,
+        hasZeroSize, overlaySubmitSucceeded, deviceLost, frameGenerationActive,
+        runtimeOwnedPresentation, usingDedicatedQueue, steamDeferredOverlaySubmit,
+        hasFence, hasFenceEvent, hasQueue, fenceValue};
+    return DescribeFocusLossImmediateFenceSkip(desc);
 }
 
 
