@@ -2,6 +2,7 @@
 
 #include "libcaptureengine_internal.h"
 #include "main_internal.h"
+#include "common/ipc/inject_control_channel.h"
 
 namespace {
 ce_engine_t* g_ControllerEngine = nullptr;
@@ -24,42 +25,9 @@ ce_status_t TakeControllerScreenshot() {
         screenshotSaved = TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
     }
     // Show the same result in the inject overlay (hooked game).
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (hDisc) {
-        auto* pDisc = static_cast<DiscoveryInfo*>(MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
-        if (pDisc) {
-            if (ValidateDiscoveryInfo(pDisc)) {
-                const uint32_t injPid = pDisc->GetInjectPid();
-                if (injPid != 0) {
-                    wchar_t shmName[64];
-                    GenerateSharedMemName(shmName, 64, injPid);
-                    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-                    if (hShm) {
-                        auto* pShm = static_cast<SharedMemoryLayout*>(
-                            MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout)));
-                        if (pShm && ValidateSharedMemory(pShm)) {
-                            const OverlayNotificationType notification =
-                                screenshotSaved ? OverlayNotificationType::ScreenshotSaved
-                                                : OverlayNotificationType::ScreenshotFailed;
-                            pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification),
-                                                                      std::memory_order_release);
-                            pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
-                                                                        std::memory_order_release);
-                        } else if (pShm) {
-                            LogError(
-                                "[Controller] Screenshot notification rejected incompatible inject shared memory ABI");
-                        }
-                        if (pShm) {
-                            UnmapViewOfFile(pShm);
-                        }
-                        CloseHandle(hShm);
-                    }
-                }
-            }
-            UnmapViewOfFile(pDisc);
-        }
-        CloseHandle(hDisc);
-    }
+    ce::ipc::InjectControlChannel(main_g_hInjectProcess).PublishNotification(
+        screenshotSaved ? OverlayNotificationType::ScreenshotSaved : OverlayNotificationType::ScreenshotFailed,
+        GetTickCount64() + 2000ULL);
     return screenshotSaved ? CE_SUCCESS : CE_ERROR_IO_FAILURE;
 }
 

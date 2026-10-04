@@ -295,11 +295,12 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
-    const size_t helperBegin = controllerSource.find("RequestRecordingStopAndReleaseMedia(");
-    const size_t helperEnd = controllerSource.find("void CheckRecordingFailureState()", helperBegin);
+    const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
+    const size_t helperBegin = adapter.find("RequestRecordingStopAndReleaseMedia(");
+    const size_t helperEnd = adapter.find("class ControllerEffects", helperBegin);
     ASSERT_NE(helperBegin, std::string::npos);
     ASSERT_NE(helperEnd, std::string::npos);
-    const std::string helper = controllerSource.substr(helperBegin, helperEnd - helperBegin);
+    const std::string helper = adapter.substr(helperBegin, helperEnd - helperBegin);
     const size_t mediaRequest = helper.find("RequestChildRecordingStop(main_g_MediaClient.get()");
     const size_t injectFallback = helper.find("RequestChildRecordingStop(main_g_InjectClient.get()");
     const size_t endpointRelease = helper.find("main_g_MediaClient->Disconnect()");
@@ -313,7 +314,6 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_NE(controllerSource.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
     EXPECT_NE(controllerSource.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
     // The session regression exercises the timeout/order; the adapter preserves child transport ownership.
-    const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
     EXPECT_NE(adapter.find("RequestRecordingStopAndReleaseMedia(reason, timeoutMs)"), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 

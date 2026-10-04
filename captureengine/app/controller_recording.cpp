@@ -2,19 +2,57 @@
 
 #include "main_internal.h"
 #include "common/config/live_stream_config.h"
+#include "common/ipc/inject_control_channel.h"
 
 namespace {
 using namespace ce::controller;
 RecordingSession* g_Session = nullptr;
 
+bool RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+                                      DWORD timeoutMs) {
+    if (!client || !client->IsConnected())
+        return false;
+
+    ProcessResponse response = ProcessResponse::Error;
+    if (!client->SendCommand(ProcessCommand::StopRecording, nullptr, &response, timeoutMs) ||
+        response == ProcessResponse::Error) {
+        LogWarn("[Controller] %s did not accept the recording stop (%s)", childName,
+                reason ? reason : "unspecified");
+        return false;
+    }
+
+    LogInfo("[Controller] %s accepted the recording stop (%s)", childName, reason ? reason : "unspecified");
+    return true;
+}
+
+bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
+    // Ask media first. It acknowledges before finalization, so controller UI work
+    // does not wait for trailer writing or the post-mux probe. Media clears the
+    // hook-facing shared state before acknowledging. The inject command is only a
+    // fallback when the private media channel cannot accept the request.
+    const bool mediaAccepted = RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
+    const bool stopAccepted =
+        mediaAccepted || RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+    if (!stopAccepted) {
+        LogWarn("[Controller] No recording child accepted the stop (%s); process teardown is the final fallback",
+                reason ? reason : "unspecified");
+    }
+
+    // Media self-exits after finalization. Drop the controller's reference now so
+    // the next recording creates a fresh authenticated child.
+    if (main_g_MediaClient)
+        main_g_MediaClient->Disconnect();
+    CloseProcessHandle(main_g_hMediaProcess);
+    return stopAccepted;
+}
+
+
 class ControllerEffects final : public RecordingEffects {
 public:
     void PrepareIdentity() override { PrepareRecordingDiagnosticIdentity(); }
     bool PublishIntent(RecordingStartIntent intent, const char* reason) override {
-        const bool published = WithInjectSharedMem([&](SharedMemoryLayout* memory) {
-            memory->runtimeState.SetRecordingStartIntent(intent);
-            memory->runtimeState.audioOnly.store(intent == RecordingStartIntent::AudioOnly, std::memory_order_release);
-        });
+        const bool published = static_cast<bool>(ce::ipc::InjectControlChannel(main_g_hInjectProcess)
+            .PublishRecordingIntent(intent));
         if (main_g_PseudoOverlay)
             main_g_PseudoOverlay->SetRecordingStartIntent(intent);
         LogInfo("[ControllerSession] request=%llu intent=%u published=%d reason=%s",
@@ -58,10 +96,8 @@ public:
                 uint64_t elapsedMs, bool exact) override {
         switch (notice) {
             case RecordingNotice::Clear:
-                WithInjectSharedMem([](SharedMemoryLayout* memory) {
-                    memory->runtimeState.notificationExpiry.store(0, std::memory_order_release);
-                    memory->runtimeState.notificationType.store(0, std::memory_order_release);
-                });
+                ce::ipc::InjectControlChannel(main_g_hInjectProcess)
+                    .PublishNotification(OverlayNotificationType::None, 0);
                 break;
             case RecordingNotice::Requested:
                 if (main_g_Tray)
@@ -74,11 +110,8 @@ public:
                 if (elapsedMs)
                     LogWarn("[Controller] Stop requested %llu ms after start, before controller observed recording live; awaiting media finalization",
                             static_cast<unsigned long long>(elapsedMs));
-                WithInjectSharedMem([](SharedMemoryLayout* memory) {
-                    memory->runtimeState.notificationType.store(
-                        static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing), std::memory_order_release);
-                    memory->runtimeState.notificationExpiry.store(GetTickCount64() + 60000ULL, std::memory_order_release);
-                });
+                ce::ipc::InjectControlChannel(main_g_hInjectProcess)
+                    .PublishNotification(OverlayNotificationType::RecordingFinalizing, GetTickCount64() + 60000ULL);
                 if (main_g_PseudoOverlay)
                     main_g_PseudoOverlay->ShowRecordingFinalizingNotification();
                 break;
@@ -91,18 +124,11 @@ public:
         }
     }
     void ClearMediaFailure(uint32_t failure, bool mediaGone) override {
-        WithInjectSharedMem([&](SharedMemoryLayout* memory) {
-            if (failure) {
-                memory->runtimeState.recordingFailureCode.compare_exchange_strong(
-                    failure, static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_acq_rel);
-            }
-            if (mediaGone) {
-                memory->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
-                memory->runtimeState.captureRequested.store(false, std::memory_order_release);
-                memory->runtimeState.isRecording.store(false, std::memory_order_release);
-                memory->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-            }
-        });
+        const ce::ipc::InjectControlChannel channel(main_g_hInjectProcess);
+        if (failure)
+            channel.ConsumeRecordingFailure(failure);
+        if (mediaGone)
+            channel.ClearDeadMediaState();
     }
     void DisableAutomaticRecording() override {
         if (main_g_AutoRecordEnabled) {
@@ -147,14 +173,12 @@ void ReconcileControllerRecording(bool includeChildHealth) {
     ce::controller::RecordingObservation observation;
     observation.request = g_Session->Snapshot().request;
     observation.now = GetTickCount64();
-    WithInjectSharedMem([&](SharedMemoryLayout* memory) {
-        observation.failure = memory->runtimeState.recordingFailureCode.load(std::memory_order_acquire);
-        if (includeChildHealth) {
-            observation.live = memory->runtimeState.isRecording.load(std::memory_order_acquire);
-            observation.liveSince = memory->runtimeState.recordingStartTime.load(std::memory_order_acquire);
-        }
-    });
+    ce::ipc::RecordingHealthObservation health;
+    ce::ipc::InjectControlChannel(main_g_hInjectProcess).ReadRecordingHealth(health);
+    observation.failure = health.failure;
     if (includeChildHealth) {
+        observation.live = health.live;
+        observation.liveSince = health.liveSince;
         observation.mediaAvailable = main_g_hMediaProcess && IsProcessRunning(main_g_hMediaProcess) &&
                                      main_g_MediaClient && main_g_MediaClient->IsConnected();
         observation.injectAvailable = main_g_hInjectProcess && IsProcessRunning(main_g_hInjectProcess) &&

@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording and screenshot feedback:** controller intent, health and notification updates now reject incompatible or replaced inject mappings and release mappings on every failure. Regression tests cover reconnects and publication across Windows processes.
+
 - **Recording start, stop and failure feedback:** controller actions now share one recording session, with regression coverage for pending cancellation, uncertain acknowledgements, late observations and audio-only fallback. A stop during child readiness cannot resume a cancelled start.
 
 - **Recording and frame-generation regression contracts:** documented the state, resource lifetime and timing guarantees used to verify recording cancellation, overlay handover and encode recovery during the core refactor.

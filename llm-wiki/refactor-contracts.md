@@ -104,3 +104,20 @@ Readiness may pump messages: nested start is rejected and a reentrant stop cance
 before any start command. Request identity is local, not a claim of remote authentication.
 Tests compile the real session, including a stop within the readiness adapter. Historical
 controller substring assertions are replaced by behavior tests; process/ABI/UI wiring guards stay.
+
+## Validated controller IPC (implemented)
+
+common/ipc/inject_control_channel owns per-operation discovery and payload views, validates both
+ABIs and the expected live process handle, and rechecks discovery after payload mapping. A new
+operation rediscovers the target; no borrowed view or public mapped-pointer callback escapes.
+Intent, notification, independent health observations, conditional failure consumption and dead
+media-state clearing preserve existing atomic orders and wire layouts. A successful CAS operation
+means mapping validation succeeded; it does not promise consumption if the failure changed.
+Unavailable, map failure, invalid discovery/payload ABI and stale target are distinct outcomes.
+Rejection diagnostics use ChangeGate, with status and process identity. Frame rings remain specialized.
+
+Production-path tests use isolated named mappings and a bounded child unit-test process. They cover
+publication visibility, malformed ABI, target withdrawal/replacement/reconnect, short payload mapping
+failure, missing discovery/payload, compare-exchange preservation and rejection handle cleanup.
+The controller's stop transport helpers are private to controller_recording.cpp. Screenshot capture
+still owns its original pseudo-overlay scope; only notification publication changed.

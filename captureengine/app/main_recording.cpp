@@ -1,16 +1,12 @@
 #include "main_internal.h"
 #include "libcaptureengine_controller.h"
 
-#include "common/config/live_stream_config.h"
-#include "common/capture/recording_lifecycle.h"
+#include "common/ipc/inject_control_channel.h"
 
 void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming) {
-    WithInjectSharedMem([&](SharedMemoryLayout* memory) {
-        memory->runtimeState.notificationType.store(
-            static_cast<uint32_t>(streaming ? OverlayNotificationType::StreamingFailed
-                                            : OverlayNotificationType::RecordingFailed), std::memory_order_release);
-        memory->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
-    });
+    ce::ipc::InjectControlChannel(main_g_hInjectProcess).PublishNotification(
+        streaming ? OverlayNotificationType::StreamingFailed : OverlayNotificationType::RecordingFailed,
+        GetTickCount64() + 7000ULL);
     LogError("[ControllerSession] Recording failure (%s, streaming=%d request=%llu)", reason, streaming ? 1 : 0,
              static_cast<unsigned long long>(ControllerRecordingSnapshot().request));
 }
