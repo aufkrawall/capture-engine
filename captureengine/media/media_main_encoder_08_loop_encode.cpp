@@ -1,13 +1,13 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
+#include "candidate_completion.h"
 
 void MediaEncoderSession::LoopEncode() {
         if (frameToProcess) {
             LARGE_INTEGER startEnc, endEnc;
             QueryPerformanceCounter(&startEnc);
 
-            bool encodeSucceeded = true;
-            bool encodeDeferred = false;
+            SubmissionResult submission;
             const bool duplicateFromDrain = isDuplicate && isDrainPhase;
 
             const int64_t idealQpc =
@@ -66,27 +66,7 @@ void MediaEncoderSession::LoopEncode() {
                     cursorState = &scheduledCursorState;
                 }
                 if (frameToProcess->isInjectMode) {
-                    if (!frameToProcess->isShmem && MediaEngine_SetInjectTransportGeneration) {
-                        MediaEngine_SetInjectTransportGeneration(frameToProcess->transportGeneration);
-                    }
-                    const VideoFrameSubmissionDesc submissionDesc{
-                        (uint64_t)frameToProcess->sharedHandle,
-                        (uint64_t)frameToProcess->fenceHandle,
-                        frameToProcess->fenceValue,
-                        frameToProcess->timestamp,
-                        frameToProcess->luidLow,
-                        frameToProcess->luidHigh,
-                        frameToProcess->sourcePid,
-                        frameToProcess->width,
-                        frameToProcess->height,
-                        frameToProcess->format,
-                        frameToProcess->isHDR,
-                        frameToProcess->isShmem,
-                        static_cast<int>(frameToProcess->shmemSlot),
-                        cursorState,
-                    };
-                    encodeSucceeded = MediaEngine_ProcessFrame(&submissionDesc);
-                    encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+                    submission = ce::media::submission::Inject(*frameToProcess, cursorState);
                 } else {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledOutputQpc) : -1;
@@ -95,21 +75,17 @@ void MediaEncoderSession::LoopEncode() {
                                                    : frameToProcess->timestamp;
                     const auto privacyDecision = evaluateScreenGrabPrivacy(frameToProcess);
                     if (privacyDecision.useBlackFrame) {
-                        encodeSucceeded =
+                        submission =
                             submitPrivacyBlackFrame(*frameToProcess, wgcMediaTimestampQpc, scheduledOutputQpc,
                                                     liveTimelineElapsedUs);
                     } else {
                         SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
-                        const D3D11FrameSubmissionDesc desc{
-                            frameToProcess->texture, wgcMediaTimestampQpc, frameToProcess->width,
-                            frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
-                            frameToProcess->captureTop, liveTimelineElapsedUs, cursorState};
-                        encodeSucceeded = MediaEngine_ProcessFrameD3D11(&desc);
-                        if (encodeSucceeded && privacyRuntime.IsEnabled()) {
+                        submission = ce::media::submission::ScreenGrab(*frameToProcess, wgcMediaTimestampQpc,
+                            liveTimelineElapsedUs, cursorState);
+                        if (submission.Accepted() && privacyRuntime.IsEnabled()) {
                             privacyRuntime.CommitRealOutput();
                         }
                     }
-                    encodeDeferred = false;
                 }
             };
 
@@ -119,32 +95,18 @@ void MediaEncoderSession::LoopEncode() {
             const bool attemptedFreshInjectCandidate =
                 attemptedFreshCandidate && frameToProcess && frameToProcess->isInjectMode;
             encodeCurrentFrame();
-            const bool recoveredFreshEncodeFailure =
-                !encodeSucceeded &&
-                recoverScheduledFreshEncodeFailure(scheduledLiveCfrTick, encodeSucceeded, encodeDeferred,
-                                                   scheduledOutputQpc, frameToProcess, "main fresh frame");
-            if (recoveredFreshEncodeFailure) {
-                encodeSucceeded = true;
-                encodeDeferred = false;
+            const bool freshAccepted = submission.Accepted();
+            if (!freshAccepted)
+                submission = recoverScheduledFreshEncodeFailure(scheduledLiveCfrTick, submission,
+                    scheduledOutputQpc, frameToProcess, "main fresh frame");
+            const bool recoveredFreshEncodeFailure = submission.Accepted() &&
+                (!freshAccepted || submission.output != ce::media::SubmissionOutput::FreshSource);
+            if (recoveredFreshEncodeFailure)
                 isDuplicate = true;
-            }
-            observeVideoOutputAttempt(encodeSucceeded, encodeDeferred, "main");
+            observeVideoOutputAttempt(submission, "main");
 
-            if (attemptedFreshCandidate && !encodeDeferred) {
-                if (recoveredFreshEncodeFailure) {
-                    // The scheduled output contains the previous cached frame,
-                    // not this candidate. Consume its ownership without
-                    // changing last-successful source metadata.
-                    if (frame.isInjectMode) {
-                        frame.injectRingLease.Reset();
-                    } else {
-                        releaseWgcLeaseAfterMediaEngineCopy(frame, "main encode-failure repeat");
-                        ReleaseQueuedFrameTexture(frame);
-                    }
-                    frame = QueuedFrame{};
-                    frameToProcess = media_main_g_HasLastFrame ? &media_main_g_LastFrame : nullptr;
-                    popped = false;
-                } else if (encodeSucceeded) {
+            if (attemptedFreshCandidate) {
+                ce::media::submission::detail::CompleteCandidate(submission, freshAccepted, [&] {
                     if (frame.isInjectMode) {
                         // The synchronous call has finished using the shared
                         // slot. Deferred candidates never enter this branch and
@@ -160,20 +122,19 @@ void MediaEncoderSession::LoopEncode() {
                     frame = QueuedFrame{};
                     media_main_g_HasLastFrame = true;
                     frameToProcess = &media_main_g_LastFrame;
-                } else {
-                    // A hard fresh-frame failure consumed the synchronous call
-                    // but emitted nothing. Release the candidate (including its
-                    // inject ring lease) and preserve g_LastFrame unchanged.
+                }, [&](bool emittedReplacement) {
                     if (frame.isInjectMode) {
                         frame.injectRingLease.Reset();
                     } else {
+                        if (emittedReplacement)
+                            releaseWgcLeaseAfterMediaEngineCopy(frame, "main encode-failure repeat");
                         ReleaseQueuedFrameTexture(frame);
                     }
                     frame = QueuedFrame{};
-                    frameToProcess = nullptr;
+                    frameToProcess = emittedReplacement && media_main_g_HasLastFrame ? &media_main_g_LastFrame : nullptr;
                     popped = false;
-                }
-            } else if (encodeSucceeded && frameToProcess && !frameToProcess->isInjectMode) {
+                });
+            } else if (submission.Accepted() && frameToProcess && !frameToProcess->isInjectMode) {
                 releaseWgcLeaseAfterMediaEngineCopy(*frameToProcess, "main duplicate fallback");
             }
 
@@ -188,11 +149,11 @@ void MediaEncoderSession::LoopEncode() {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - media_main_kEncodeEmaAlpha) + pureEncodeMs * media_main_kEncodeEmaAlpha;
                 }
             }
-            if (attemptedFreshWgcCandidate && encodeSucceeded && !recoveredFreshEncodeFailure) {
+            if (attemptedFreshWgcCandidate && submission.Accepted() && !recoveredFreshEncodeFailure) {
                 ce::capture_policy::UpdateWgcServiceTimeEma(currentEncodeMs, pureEncodeMs, media_main_kEncodeEmaAlpha,
                                                             smoothedWgcFreshServiceMs, wgcFreshServiceSamples);
             }
-            if (attemptedFreshInjectCandidate && encodeSucceeded && !recoveredFreshEncodeFailure) {
+            if (attemptedFreshInjectCandidate && submission.Accepted() && !recoveredFreshEncodeFailure) {
                 observeInjectFreshService(currentEncodeMs, pureEncodeMs);
             }
             const bool encoderStartupWindowActive =
@@ -204,7 +165,7 @@ void MediaEncoderSession::LoopEncode() {
             // alone. Keep the guard consistent rather than resting on an invariant nothing
             // states - clang-analyzer reports a path where popped is set without a frame.
             if (popped && frameToProcess && frameToProcess->isInjectMode) {
-                if (encodeDeferred) {
+                if (submission.Deferred()) {
                     const InjectFrameLineage deferredLineage = MakeInjectFrameLineage(*frameToProcess);
                     frameCreditAccumulator = std::max(frameCreditAccumulator, 1.0);
                     media_main_g_InjectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
@@ -251,10 +212,9 @@ void MediaEncoderSession::LoopEncode() {
                     if (consumesCfrTick && isLivePhase && hasRepeatLastFramePath) {
                         isDuplicate = true;
                         duplicateFromDeferred = true;
-                        encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
-                        encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
-                        observeVideoOutputAttempt(encodeSucceeded, encodeDeferred, "deferred-frame repeat");
-                        if (!encodeSucceeded || encodeDeferred) {
+                        submission = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
+                        observeVideoOutputAttempt(submission, "deferred-frame repeat");
+                        if (!submission.Accepted() || submission.Deferred()) {
                             if (scheduledLiveCfrTick) {
                                 cadenceCounters.liveTickMissCount++;
                             }
@@ -274,7 +234,7 @@ void MediaEncoderSession::LoopEncode() {
                     media_main_g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
 
-                if (popped && frameToProcess && frameToProcess->isInjectMode && encodeSucceeded) {
+                if (popped && frameToProcess && frameToProcess->isInjectMode && submission.Accepted()) {
                     const double currentFenceMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
                     if (smoothedInjectFenceMs == 0.0) {
                         smoothedInjectFenceMs = currentFenceMs;
@@ -300,7 +260,7 @@ void MediaEncoderSession::LoopEncode() {
                 }
                 lastDeferredLineage = {};
 
-                if (encodeSucceeded && !isDuplicate && frameToProcess) {
+                if (submission.Accepted() && !isDuplicate && frameToProcess) {
                     if (frameToProcess->timestamp > 0) {
 
                         lastEmittedInjectSourceQpc = frameToProcess->timestamp;
@@ -316,12 +276,12 @@ void MediaEncoderSession::LoopEncode() {
                         media_main_g_pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
-                if (encodeSucceeded && frameToProcess) {
+                if (submission.Accepted() && frameToProcess) {
                     frameToProcess->injectRingLease.Reset();
                 }
             } else {
                 cadenceCounters.consecutiveDeferredFrames = 0;
-                if (encodeSucceeded && media_main_g_pSharedMem) {
+                if (submission.Accepted() && media_main_g_pSharedMem) {
                     media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     if (isLivePhase) {
                         media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -331,7 +291,7 @@ void MediaEncoderSession::LoopEncode() {
                 }
             }
 
-            if (encodeSucceeded && !isDuplicate && frameToProcess && !frameToProcess->isInjectMode) {
+            if (submission.Accepted() && !isDuplicate && frameToProcess && !frameToProcess->isInjectMode) {
                 if (frameToProcess->timestamp > 0) {
                     lastEmittedWgcSourceQpc = frameToProcess->timestamp;
                 }
@@ -342,13 +302,13 @@ void MediaEncoderSession::LoopEncode() {
                 hasSuccessfulWgcCursorMetadata = true;
             }
 
-            if (encodeSucceeded && !isDuplicate && frameToProcess) {
+            if (submission.Accepted() && !isDuplicate && frameToProcess) {
                 cadenceCounters.frameAgeAccumUs += frameAgeUs;
                 cadenceCounters.frameAgeSamples++;
                 cadenceCounters.frameAgeMaxUs = std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
             }
 
-            if (encodeSucceeded) {
+            if (submission.Accepted()) {
                 if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode && !isDuplicate &&
                     wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick && !wgcDelayRealizationRecordedThisTick) {
                     recordWgcDelayRealization(signedSelectionErrorUs, signedRawSelectionErrorUs);
@@ -569,23 +529,23 @@ void MediaEncoderSession::LoopEncode() {
         }
 }
 
-void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& frame, const char* context) {
+void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& observedFrame, const char* context) {
     const ce::capture_policy::InjectLineageObservation lineage =
-        injectLineage.Observe(frame.transportGeneration, frame.frameIndex, frame.textureIndex);
+        injectLineage.Observe(observedFrame.transportGeneration, observedFrame.frameIndex, observedFrame.textureIndex);
     if (lineage.generationReset &&
         ce::capture_policy::ShouldLogInjectLineageGenerationReset(lineage.generationResetCount)) {
         LogInfo(
             "[EncoderThread] Inject lineage restarted%s: transport generation %u -> %u, frame=%u after "
             "frame=%u (ring=%u tex=%d resets=%u); frame/texture-slot checks now compare within the new "
             "generation only",
-            context, lineage.previousGeneration, frame.transportGeneration, frame.frameIndex,
-            lineage.previousGenerationLastFrame, frame.ringIndex, frame.textureIndex, lineage.generationResetCount);
+            context, lineage.previousGeneration, observedFrame.transportGeneration, observedFrame.frameIndex,
+            lineage.previousGenerationLastFrame, observedFrame.ringIndex, observedFrame.textureIndex, lineage.generationResetCount);
     }
     if (lineage.lineageRegression) {
         LogWarn("[EncoderThread] Inject lineage regression%s: encoded frame=%u after frame=%u (ring=%u tex=%d "
                 "gen=%u ts=%lld)",
-                context, frame.frameIndex, lineage.previousFrameIndex, frame.ringIndex, frame.textureIndex,
-                frame.transportGeneration, static_cast<long long>(frame.timestamp));
+                context, observedFrame.frameIndex, lineage.previousFrameIndex, observedFrame.ringIndex, observedFrame.textureIndex,
+                observedFrame.transportGeneration, static_cast<long long>(observedFrame.timestamp));
         if (media_main_g_pSharedMem) {
             media_main_g_pSharedMem->runtimeState.frameIndexRegressions.fetch_add(1, std::memory_order_relaxed);
         }
@@ -593,9 +553,9 @@ void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& frame, 
     if (lineage.textureReuse) {
         LogWarn("[EncoderThread] Texture slot reuse anomaly%s: tex=%d frame=%u previous=%u ring=%u fence=%llu "
                 "gen=%u ts=%lld",
-                context, frame.textureIndex, frame.frameIndex, lineage.previousTextureFrame, frame.ringIndex,
-                static_cast<unsigned long long>(frame.fenceValue), frame.transportGeneration,
-                static_cast<long long>(frame.timestamp));
+                context, observedFrame.textureIndex, observedFrame.frameIndex, lineage.previousTextureFrame, observedFrame.ringIndex,
+                static_cast<unsigned long long>(observedFrame.fenceValue), observedFrame.transportGeneration,
+                static_cast<long long>(observedFrame.timestamp));
         if (media_main_g_pSharedMem) {
             media_main_g_pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(1, std::memory_order_relaxed);
         }

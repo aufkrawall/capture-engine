@@ -147,3 +147,24 @@ The deferred flag is cleared before inactive encoder rejection so a prior attemp
 the new result. Existing failure diagnostics stay at their original encoder boundaries; loader
 incompatibility logs name the missing export. Broad ABI/sanitizer verification remains outside the
 agreed agent execution scope and must be recorded in final pending validation.
+
+## Source submission adapters and candidate completion (implemented)
+
+captureengine/media/frame_submission.h is the small caller contract. The inject implementation binds
+transport generation and preserves shared handles, fence, adapter/process identity, dimensions and
+cursor; the D3D11 implementation preserves capture origin and separates media timestamp from explicit
+scheduled elapsed time. Privacy black frames use the same D3D11 adapter with zero capture origin.
+Both borrow sources; Repeat submits no external candidate. Caller scheduling and fence/lease policies
+stay in MediaEncoderSession. No production media caller uses a paired deferred query or legacy submission.
+
+Fresh/repeat/drain/catch-up/deferred-retry/recovery/blackout paths now carry V1 outcomes. Recovery queries
+the repeat cache only after failure, preserving the original successful-path call count. The statically
+bound CompleteCandidate operation admits promotion only for an accepted original fresh output, retains
+retry candidates and otherwise invokes source-specific discard/release. This prevents cached-black
+fallback from adopting unencoded source metadata. WGC catch-up counts that output as a repeat.
+
+Tests compile the real source adapters with controlled DLL slots and run actual ring-lease ownership
+through completion, including deferred retention, accepted transfer, rejected/recovered discard and
+cached-black output accepted without source adoption. Privacy gating source protections remain; only
+obsolete boolean/deferred and descriptive-comment assertions changed. Invalid result-boundary feedback
+uses ChangeGate; existing failure/recovery and lineage diagnostics preserve timing and correlation.

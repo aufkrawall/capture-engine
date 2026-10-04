@@ -22,7 +22,7 @@ void MediaEncoderSession::LoopWgcSelect() {
 
         const bool canPreserveLastFrameAcrossPathHandoff =
             !config.video.useVFR &&
-            ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame) &&
+            MediaEngine_RepeatLastFrameWithResultV1 &&
             MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
         if (media_main_g_HasLastFrame &&
             !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, media_main_g_LastFrame.isInjectMode) &&
@@ -44,7 +44,7 @@ void MediaEncoderSession::LoopWgcSelect() {
 
         hasRepeatLastFramePath =
             !config.video.useVFR &&
-            ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
+            MediaEngine_RepeatLastFrameWithResultV1;
         // Warmup frames never reach the file, but the WGC/DXGI look-ahead reservoir they
         // build is handed to the live output intact. Tracking focus from the first warmup
         // tick opens the verified-focus interval before that reservoir content is captured,
@@ -67,7 +67,6 @@ void MediaEncoderSession::SelectWgcFrameUniformPath() {
                 updateWgcIngressPressure(popped ? "post-select" : "post-hold");
             } else {
                 // VFR: keep the existing lowest-latency newest-frame sampling.
-                QueuedFrame temp;
         SelectWgcFrameUniformVfr();
             }
 }
@@ -562,8 +561,7 @@ if (scheduledWgcTelemetryTick) {
         (wgcSourceAtOrAboveTarget || wgcSourceHealthyForEncoderLimitedCurrent);
     const bool wgcRepeatAvailableForPacer =
         media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode &&
-        ((MediaEngine_RepeatLastFrameWithTimeline != nullptr) ||
-         (MediaEngine_RepeatLastFrame != nullptr)) &&
+        (MediaEngine_RepeatLastFrameWithResultV1 != nullptr) &&
         MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
     const bool wgcPacingCapacityPressure =
         wgcCapacityPressureActiveCurrent || outputShortfallTicks > 0;

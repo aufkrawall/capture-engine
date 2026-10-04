@@ -20,17 +20,17 @@ if (!config.video.useVFR) {
     // textures whose GPU copy has already completed instead of blocking on the
     // newest frame's fence.
     drainedInjectFrames.clear();
-    QueuedFrame temp;
-    while (media_main_g_FrameQueue.Pop(temp, 0)) {
-        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
-            DiscardQueuedFrame(temp);
+    QueuedFrame ingestFrame;
+    while (media_main_g_FrameQueue.Pop(ingestFrame, 0)) {
+        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
+            DiscardQueuedFrame(ingestFrame);
             continue;
         }
-        if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, temp.isInjectMode)) {
-            discardActivePathMismatchFrame(temp, "inject CFR queue", true);
+        if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, ingestFrame.isInjectMode)) {
+            discardActivePathMismatchFrame(ingestFrame, "inject CFR queue", true);
             continue;
         }
-        drainedInjectFrames.push_back(std::move(temp));
+        drainedInjectFrames.push_back(std::move(ingestFrame));
     }
 
     const size_t firstNewBufferedFrame = bufferedInjectFrames.size();
@@ -75,14 +75,14 @@ if (!config.video.useVFR) {
         ++pacingEmaUpdates;
     }
 
-    const size_t injectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
+    const size_t requiredInjectReserve = ce::capture_policy::GetInjectReserveFrames(
         config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
     // Only the physical GPU/fence safety tail is protected from selection. The A/V
     // content delay is a timestamp target below; treating it as additional protected
     // frames hides every useful candidate at normal queue depth and creates trim/repeat
     // churn even when the game supplies one fresh frame per CFR tick.
     size_t protectedInjectTailFrames =
-        ce::capture_policy::GetMinBufferedInjectFrames(injectReserveFrames, recordingOutputLive);
+        ce::capture_policy::GetMinBufferedInjectFrames(requiredInjectReserve, recordingOutputLive);
     int64_t livePlayoutTargetQpc = 0;
     const int64_t leadToleranceQpc =
         ce::capture_policy::GetInjectCfrSelectionLeadToleranceQpc(targetIntervalTicks);
@@ -101,9 +101,9 @@ if (!config.video.useVFR) {
     }
 
     const size_t minimumRequiredInjectFrames =
-        injectReserveFrames + injectContentDelayFrames + 2;
+        requiredInjectReserve + injectContentDelayFrames + 2;
     const size_t desiredBaselineMaxBufferedInjectFrames =
-        std::max(ce::capture_policy::GetMaxBufferedInjectFrames(injectReserveFrames, recordingOutputLive,
+        std::max(ce::capture_policy::GetMaxBufferedInjectFrames(requiredInjectReserve, recordingOutputLive,
                                                                 recordingLiveTick, GetTickCount64()),
                  minimumRequiredInjectFrames);
     int64_t timestampPhaseQpc = 0;
@@ -140,7 +140,7 @@ if (!config.video.useVFR) {
     const size_t maxBufferedInjectFrames =
         recordingOutputLive
             ? ce::capture_policy::GetInjectTimestampRetentionLimit(
-                  baselineMaxBufferedInjectFrames, injectReserveFrames, requiredTimestampSpanQpc,
+                  baselineMaxBufferedInjectFrames, requiredInjectReserve, requiredTimestampSpanQpc,
                   predictedSourceIntervalQpc, maximumRetentionLimit)
             : baselineMaxBufferedInjectFrames;
     injectTimestampRetentionLimit = maxBufferedInjectFrames;
@@ -390,20 +390,20 @@ if (!config.video.useVFR) {
     }
 } else {
     // VFR: keep the existing newest-frame sampling for the lowest latency.
-    QueuedFrame temp;
-    while (media_main_g_FrameQueue.Pop(temp, 0)) {
-        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
-            DiscardQueuedFrame(temp);
+    QueuedFrame ingestFrame;
+    while (media_main_g_FrameQueue.Pop(ingestFrame, 0)) {
+        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
+            DiscardQueuedFrame(ingestFrame);
             continue;
         }
-        if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, temp.isInjectMode)) {
-            discardActivePathMismatchFrame(temp, "inject VFR queue", true);
+        if (!ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, ingestFrame.isInjectMode)) {
+            discardActivePathMismatchFrame(ingestFrame, "inject VFR queue", true);
             continue;
         }
         if (popped && !frame.isInjectMode && frame.texture) {
             frame.texture->Release();
         }
-        frame = std::move(temp);
+        frame = std::move(ingestFrame);
         popped = true;
     }
 }
@@ -544,55 +544,51 @@ media_main_g_EncoderRunning.store(false, std::memory_order_release);
 
 }
 
-bool MediaEncoderSession::submitPrivacyBlackFrame(const QueuedFrame& referenceFrame, int64_t mediaTimestampQpc, int64_t scheduledQpc, int64_t timelineElapsedUs) {
-
-if (!privacyRuntime.SubmitBlack(referenceFrame.texture, referenceFrame.isHDR, mediaTimestampQpc,
-                                scheduledQpc, timelineElapsedUs, useScreenGrab && !config.video.useVFR)) {
-    requestPrivacyFailClosedStop("opaque-black frame submission failed");
-    return false;
-}
-return true;
-
+MediaEncoderSession::SubmissionResult MediaEncoderSession::submitPrivacyBlackFrame(const QueuedFrame& referenceFrame,
+    int64_t mediaTimestampQpc, int64_t scheduledQpc, int64_t timelineElapsedUs) {
+    auto result = privacyRuntime.SubmitBlack(referenceFrame.texture, referenceFrame.isHDR, mediaTimestampQpc,
+                                            scheduledQpc, timelineElapsedUs, useScreenGrab && !config.video.useVFR);
+    if (!result.Accepted())
+        requestPrivacyFailClosedStop("opaque-black frame submission failed");
+    return result;
 }
 
-bool MediaEncoderSession::repeatLastFrameForScheduledQpc(int64_t scheduledQpc) {
+MediaEncoderSession::SubmissionResult MediaEncoderSession::repeatLastFrameForScheduledQpc(int64_t scheduledQpc) {
 
 if (useScreenGrab && privacyRuntime.IsEnabled()) {
     const auto privacyDecision = evaluateScreenGrabPrivacy(nullptr);
     if (privacyDecision.useBlackFrame) {
         if (!media_main_g_HasLastFrame || media_main_g_LastFrame.isInjectMode) {
             requestPrivacyFailClosedStop("no screen-grab texture is available for an opaque-black tick");
-            return false;
+            return ce::media::UnacceptedSubmission(false, false);
         }
-        return submitPrivacyBlackFrame(media_main_g_LastFrame, scheduledQpc,
-                                       scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
+        auto result = submitPrivacyBlackFrame(media_main_g_LastFrame, scheduledQpc,
+                                               scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
+        result.source = ce::media::SourceDisposition::NoCandidate;
+        return result;
     }
 }
 ce::cursor::CaptureState cursorState;
 if (config.video.captureCursor && media_main_g_HasLastFrame && !privacyRuntime.RepeatCacheIsBlack()) {
     cursorState = selectCursorStateForScheduledQpc(scheduledQpc, media_main_g_LastFrame, "repeat");
 }
-bool succeeded = false;
-if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
-    succeeded = MediaEngine_RepeatLastFrameWithTimeline(
-        scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc), &cursorState);
-} else {
-    succeeded = MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &cursorState);
-}
-if (succeeded && useScreenGrab && privacyRuntime.IsEnabled()) {
+auto result = ce::media::submission::Repeat(scheduledQpc,
+    useScreenGrab && !config.video.useVFR ? computeLiveTimelineElapsedUs(scheduledQpc) : -1, &cursorState);
+if (result.Accepted() && useScreenGrab && privacyRuntime.IsEnabled()) {
     privacyRuntime.CommitRepeatOutput();
 }
-return succeeded;
+return result;
 
 }
 
-bool MediaEncoderSession::recoverScheduledFreshEncodeFailure(bool scheduledCfrTick, bool freshEncodeSucceeded, bool freshEncodeDeferred, int64_t scheduledQpc, const QueuedFrame* failedFrame, const char* context) {
+MediaEncoderSession::SubmissionResult MediaEncoderSession::recoverScheduledFreshEncodeFailure(bool scheduledCfrTick,
+    const SubmissionResult& fresh, int64_t scheduledQpc, const QueuedFrame* failedFrame, const char* context) {
 
 const bool repeatCacheAvailable = MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
 if (!ce::capture_policy::ShouldRepeatAfterScheduledFreshEncodeFailure(
-        scheduledCfrTick, freshEncodeSucceeded, freshEncodeDeferred, hasRepeatLastFramePath,
+        scheduledCfrTick, fresh.Accepted(), fresh.Deferred(), hasRepeatLastFramePath,
         repeatCacheAvailable)) {
-    return false;
+    return fresh;
 }
 
 // The failed WGC attempt may have changed cursor suppression to
@@ -602,15 +598,14 @@ if (failedFrame && !failedFrame->isInjectMode && hasSuccessfulWgcCursorMetadata)
     SyncDuplicationCursorSuppression(lastSuccessfulWgcCursorEmbedded);
 }
 
-const bool repeatSucceeded = repeatLastFrameForScheduledQpc(scheduledQpc);
-const bool repeatDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
-if (!repeatSucceeded || repeatDeferred) {
+auto repeat = repeatLastFrameForScheduledQpc(scheduledQpc);
+if (!repeat.Accepted()) {
     LogWarn(
         "[EncoderThread] CFR fresh encode failed and cached-repeat recovery also failed: context=%s "
         "scheduledQpc=%lld repeatSucceeded=%d repeatDeferred=%d",
-        context ? context : "unknown", static_cast<long long>(scheduledQpc), repeatSucceeded ? 1 : 0,
-        repeatDeferred ? 1 : 0);
-    return false;
+        context ? context : "unknown", static_cast<long long>(scheduledQpc), repeat.Accepted() ? 1 : 0,
+        repeat.Deferred() ? 1 : 0);
+    return fresh;
 }
 
 static uint64_t s_freshEncodeRecoveryCount = 0;
@@ -622,12 +617,14 @@ if (s_freshEncodeRecoveryCount <= 5 || (s_freshEncodeRecoveryCount % 120ull) == 
         context ? context : "unknown", static_cast<long long>(scheduledQpc),
         static_cast<unsigned long long>(s_freshEncodeRecoveryCount));
 }
-return true;
+// Recovery emitted cached/black output; the rejected original candidate is release eligible.
+repeat.source = ce::media::SourceDisposition::ReleaseEligible;
+return repeat;
 
 }
 
-void MediaEncoderSession::observeVideoOutputAttempt(bool emitted, bool deferred, const char* context) {
-if (!ce::capture_policy::ObserveVideoOutputAttempt(videoOutputFailureStreak, emitted, deferred, GetTickCount64())) {
+void MediaEncoderSession::observeVideoOutputAttempt(const SubmissionResult& result, const char* context) {
+if (!ce::capture_policy::ObserveVideoOutputAttempt(videoOutputFailureStreak, result.Accepted(), result.Deferred(), GetTickCount64())) {
     return;
 }
 LogError(
@@ -695,7 +692,7 @@ MediaEncoderSession::updateInjectOverloadRepeatPacer(bool freshCandidateAvailabl
         smoothedInputPerTick, injectInputPredictor.IsCalibrated(), predictedFps, targetFps);
     const bool repeatAvailable =
         media_main_g_HasLastFrame && media_main_g_LastFrame.isInjectMode &&
-        MediaEngine_RepeatLastFrame && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+        MediaEngine_RepeatLastFrameWithResultV1 && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
     const uint32_t overloadFlags = loadEncoderOverloadFlags();
     const bool capacityPressure =
         outputShortfallTicks > 0 || overloadFlags != 0 ||

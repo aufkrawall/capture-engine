@@ -143,14 +143,14 @@ GateDecision ScreenGrabPrivacyRuntime::Evaluate(bool activeScreenGrab, HWND targ
     return decision;
 }
 
-bool ScreenGrabPrivacyRuntime::SubmitBlack(ID3D11Texture2D* referenceTexture, bool isHdr, int64_t mediaTimestampQpc,
+ce::media::FrameSubmissionResultV1 ScreenGrabPrivacyRuntime::SubmitBlack(ID3D11Texture2D* referenceTexture, bool isHdr, int64_t mediaTimestampQpc,
                                            int64_t scheduledQpc, int64_t timelineElapsedUs,
                                            bool useExplicitCfrTimeline) {
     const uint64_t previousBlackGeneration = blackTexture_.Generation();
     if (!blackTexture_.Prepare(referenceTexture)) {
         LogError("[PrivacyBlackout] GPU opaque-black texture preparation failed");
         ResetMediaRepeatCache();
-        return false;
+        return ce::media::UnacceptedSubmission(false);
     }
     if (previousBlackGeneration != 0 && previousBlackGeneration != blackTexture_.Generation()) {
         gate_.ResetTarget();
@@ -159,26 +159,23 @@ bool ScreenGrabPrivacyRuntime::SubmitBlack(ID3D11Texture2D* referenceTexture, bo
     }
 
     const ce::cursor::CaptureState hiddenCursor;
-    bool succeeded =
-        MediaEngine_ProcessFrameD3D11 &&
-        MediaEngine_ProcessFrameD3D11(blackTexture_.Get(), mediaTimestampQpc, blackTexture_.Width(),
-                                      blackTexture_.Height(), isHdr, 0, 0, timelineElapsedUs,
-                                      &hiddenCursor);
-    if (!succeeded && repeatCacheIsBlack_ && gate_.LastOutputWasBlack() && MediaEngine_CanRepeatLastFrame &&
+    auto result = ce::media::submission::Black(
+        {blackTexture_.Get(), blackTexture_.Width(), blackTexture_.Height(), isHdr},
+        mediaTimestampQpc, timelineElapsedUs, &hiddenCursor);
+    if (!result.Accepted() && repeatCacheIsBlack_ && gate_.LastOutputWasBlack() && MediaEngine_CanRepeatLastFrame &&
         MediaEngine_CanRepeatLastFrame()) {
-        succeeded = useExplicitCfrTimeline && MediaEngine_RepeatLastFrameWithTimeline
-                        ? MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc, timelineElapsedUs, &hiddenCursor)
-                        : (MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &hiddenCursor));
+        result = ce::media::submission::Repeat(scheduledQpc, useExplicitCfrTimeline ? timelineElapsedUs : -1,
+                                               &hiddenCursor);
     }
-    if (!succeeded) {
+    if (!result.Accepted()) {
         LogError("[PrivacyBlackout] GPU opaque-black frame encode failed");
         ResetMediaRepeatCache();
-        return false;
+        return ce::media::UnacceptedSubmission(false);
     }
 
     gate_.CommitOutput(true);
     repeatCacheIsBlack_ = true;
-    return true;
+    return result;
 }
 
 void ScreenGrabPrivacyRuntime::CommitRealOutput() {

@@ -48,9 +48,9 @@ void MediaEncoderSession::LoopEmit() {
             if (privacyDecision.useBlackFrame && media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode) {
                 LARGE_INTEGER privacyVfrQpc = {};
                 QueryPerformanceCounter(&privacyVfrQpc);
-                const bool blackSucceeded =
+                const auto blackSubmission =
                     submitPrivacyBlackFrame(media_main_g_LastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
-                if (blackSucceeded && media_main_g_pSharedMem) {
+                if (blackSubmission.Accepted() && media_main_g_pSharedMem) {
                     media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -69,11 +69,10 @@ void MediaEncoderSession::LoopEmit() {
                 !useScreenGrab && lastSuccessfullyEncodedInjectLineage.IsValid()
                     ? lastSuccessfullyEncodedInjectLineage
                     : (media_main_g_HasLastFrame ? MakeInjectFrameLineage(media_main_g_LastFrame) : InjectFrameLineage{});
-            bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
-            bool encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+            const auto submission = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
             QueryPerformanceCounter(&repeatEndEnc);
 
-            if (encodeSucceeded && !encodeDeferred) {
+            if (submission.Accepted()) {
                 double currentEncodeMs =
                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
@@ -266,7 +265,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     const int64_t repeatScheduledQpc =
         scheduledOutputQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
-    if (!useScreenGrab && !config.video.useVFR && MediaEngine_ProcessFrame) {
+    if (!useScreenGrab && !config.video.useVFR && MediaEngine_SubmitFrameWithResultV1) {
         const size_t catchupInjectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
             config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
         const size_t catchupMinBufferedInjectFrames = ce::capture_policy::GetMinBufferedInjectFrames(
@@ -344,28 +343,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     cadenceCounters.RecordOutputScheduleError(signedOutputScheduleErrorUs);
                 }
 
-                if (!catchupFrame.isShmem && MediaEngine_SetInjectTransportGeneration) {
-                    MediaEngine_SetInjectTransportGeneration(catchupFrame.transportGeneration);
-                }
-                const VideoFrameSubmissionDesc submissionDesc{
-                    (uint64_t)catchupFrame.sharedHandle,
-                    (uint64_t)catchupFrame.fenceHandle,
-                    catchupFrame.fenceValue,
-                    catchupFrame.timestamp,
-                    catchupFrame.luidLow,
-                    catchupFrame.luidHigh,
-                    catchupFrame.sourcePid,
-                    catchupFrame.width,
-                    catchupFrame.height,
-                    catchupFrame.format,
-                    catchupFrame.isHDR,
-                    catchupFrame.isShmem,
-                    static_cast<int>(catchupFrame.shmemSlot),
-                    &catchupFrame.cursorState,
-                };
-                const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(&submissionDesc);
-                const bool catchupEncodeDeferred =
-                    MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+                const auto catchupSubmission = ce::media::submission::Inject(catchupFrame, &catchupFrame.cursorState);
                 QueryPerformanceCounter(&catchupEndEnc);
 
                 const double currentEncodeMs =
@@ -380,14 +358,14 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                             smoothedEncodeMs * (1.0 - media_main_kEncodeEmaAlpha) + pureEncodeMs * media_main_kEncodeEmaAlpha;
                     }
                 }
-                if (catchupEncodeSucceeded && !catchupEncodeDeferred) {
+                if (catchupSubmission.Accepted()) {
                     observeInjectFreshService(currentEncodeMs, pureEncodeMs);
                 }
                 UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                             ce::capture_policy::IsEncoderStartupWindow(
                                                 recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
-                if (catchupEncodeSucceeded && !catchupEncodeDeferred) {
+                if (catchupSubmission.Accepted()) {
                     if (media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode) {
                         ReleaseQueuedFrameTexture(media_main_g_LastFrame);
                     }
@@ -444,7 +422,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     continue;
                 }
 
-                if (catchupEncodeDeferred) {
+                if (catchupSubmission.Deferred()) {
                     media_main_g_InjectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
                     if (media_main_g_pSharedMem) {
                         media_main_g_pSharedMem->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
@@ -473,7 +451,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     }
 
 
-    if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
+    if (allowFreshCatchup && useScreenGrab && MediaEngine_SubmitFrameD3D11WithResultV1 && !bufferedWgcFrames.empty()) {
         const int64_t catchupGridTick = encoderGridTickCount + 1;
         int64_t catchupSelectionTargetQpc = computeWgcSelectionTargetForTick(
             repeatScheduledQpc, catchupGridTick, wgcSelectionDelayAppliedThisTick);
@@ -535,29 +513,28 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
 
             const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
             const auto privacyDecision = evaluateScreenGrabPrivacy(&catchupFrame);
-            bool freshCatchupEncodeSucceeded = false;
+            SubmissionResult catchupSubmission;
             if (privacyDecision.useBlackFrame) {
-                freshCatchupEncodeSucceeded =
+                catchupSubmission =
                     submitPrivacyBlackFrame(catchupFrame, catchupFrame.timestamp, repeatScheduledQpc,
                                             catchupTimelineElapsedUs);
             } else {
                 SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
                 const ce::cursor::CaptureState catchupCursorState =
                     selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
-                const D3D11FrameSubmissionDesc desc{
-                    catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
-                    catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                    catchupTimelineElapsedUs, &catchupCursorState};
-                freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(&desc);
-                if (freshCatchupEncodeSucceeded && privacyRuntime.IsEnabled()) {
+                catchupSubmission = ce::media::submission::ScreenGrab(catchupFrame, catchupFrame.timestamp,
+                    catchupTimelineElapsedUs, &catchupCursorState);
+                if (catchupSubmission.Accepted() && privacyRuntime.IsEnabled()) {
                     privacyRuntime.CommitRealOutput();
                 }
             }
-            const bool recoveredCatchupEncodeFailure =
-                !freshCatchupEncodeSucceeded &&
-                recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc, &catchupFrame,
-                                                   "WGC grid-matched fresh-catchup");
-            if (!freshCatchupEncodeSucceeded && !recoveredCatchupEncodeFailure) {
+            const bool freshAccepted = catchupSubmission.Accepted();
+            if (!freshAccepted)
+                catchupSubmission = recoverScheduledFreshEncodeFailure(true, catchupSubmission, repeatScheduledQpc,
+                    &catchupFrame, "WGC fresh catch-up");
+            const bool recoveredCatchupEncodeFailure = catchupSubmission.Accepted() &&
+                (!freshAccepted || catchupSubmission.output != ce::media::SubmissionOutput::FreshSource);
+            if (!freshAccepted && !recoveredCatchupEncodeFailure) {
                 ReleaseQueuedFrameTexture(catchupFrame);
                 ++cadenceCounters.liveTickMissCount;
                 break;
@@ -577,7 +554,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                                        : smoothedEncodeMs * (1.0 - media_main_kEncodeEmaAlpha) +
                                              pureEncodeMs * media_main_kEncodeEmaAlpha;
             }
-            if (freshCatchupEncodeSucceeded) {
+            if (freshAccepted && !recoveredCatchupEncodeFailure) {
                 ce::capture_policy::UpdateWgcServiceTimeEma(
                     currentEncodeMs, pureEncodeMs, media_main_kEncodeEmaAlpha, smoothedWgcFreshServiceMs,
                     wgcFreshServiceSamples);
@@ -695,10 +672,9 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
 
     LARGE_INTEGER repeatStartEnc, repeatEndEnc;
     QueryPerformanceCounter(&repeatStartEnc);
-    bool repeatSucceeded = repeatLastFrameForScheduledQpc(repeatScheduledQpc);
-    bool repeatDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+    const auto repeatSubmission = repeatLastFrameForScheduledQpc(repeatScheduledQpc);
     QueryPerformanceCounter(&repeatEndEnc);
-    if (!repeatSucceeded || repeatDeferred) {
+    if (!repeatSubmission.Accepted()) {
         cadenceCounters.liveTickMissCount++;
         break;
     }

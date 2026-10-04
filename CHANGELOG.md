@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording frame retries and timing:** inject and screen-grab submission adapters now carry explicit outcomes through fresh, repeat, drain, catch-up and privacy-blackout paths, retaining deferred source leases without separate deferred queries.
+
 - **Recording frame acceptance:** added versioned submission results that distinguish fresh output, repeats, deferred retries and committed video/audio timing while preserving existing DLL entry points. Incompatible media DLLs fail clearly and clear every resolved function pointer.
 
 - **Recording and screenshot feedback:** controller intent, health and notification updates now reject incompatible or replaced inject mappings and release mappings on every failure. Regression tests cover reconnects and publication across Windows processes.
@@ -49,6 +51,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **Privacy-blackout repeat recovery:** a successful cached-black repeat no longer promotes the unencoded fresh candidate as the last successful source or counts it as fresh catch-up output. Candidate ownership regressions exercise real ring leases.
 
 - **Recording retry feedback:** an inactive inject or repeat encoder attempt now clears a previous deferred-fence result, preventing rejected attempts from being reported as still waiting for that earlier frame.
 

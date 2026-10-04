@@ -1,6 +1,7 @@
 #pragma once
 
 #include "media_encoder_session_summary.h"
+#include "frame_submission.h"
 #include "media_main_internal.h"
 
 // Session state for the encoder thread (formerly the single EncoderThreadFunc body in
@@ -14,6 +15,7 @@ public:
     void Run();
 
 private:
+    using SubmissionResult = ce::media::FrameSubmissionResultV1;
     const AppConfig& config;
 
     // Active tryPopBufferedWgcFrameForTarget call parameters (the decomposed selection
@@ -644,13 +646,13 @@ private:
     void observeScreenGrabPrivacyWarmup();
     ce::screen_grab_privacy::GateDecision evaluateScreenGrabPrivacy(const QueuedFrame* freshFrame);
     void requestPrivacyFailClosedStop(const char* reason);
-    bool submitPrivacyBlackFrame(const QueuedFrame& referenceFrame, int64_t mediaTimestampQpc,
+    SubmissionResult submitPrivacyBlackFrame(const QueuedFrame& referenceFrame, int64_t mediaTimestampQpc,
                                            int64_t scheduledQpc, int64_t timelineElapsedUs);
-    bool repeatLastFrameForScheduledQpc(int64_t scheduledQpc);
-    bool recoverScheduledFreshEncodeFailure(bool scheduledCfrTick, bool freshEncodeSucceeded,
-                                                      bool freshEncodeDeferred, int64_t scheduledQpc,
+    SubmissionResult repeatLastFrameForScheduledQpc(int64_t scheduledQpc);
+    SubmissionResult recoverScheduledFreshEncodeFailure(bool scheduledCfrTick, const SubmissionResult& fresh,
+                                                      int64_t scheduledQpc,
                                                       const QueuedFrame* failedFrame, const char* context);
-    void observeVideoOutputAttempt(bool emitted, bool deferred, const char* context);
+    void observeVideoOutputAttempt(const SubmissionResult& result, const char* context);
     void releaseWgcLeaseAfterMediaEngineCopy(QueuedFrame& encodedFrame, const char* context);
     void recordDuplicate(const QueuedFrame* duplicateFrame, const InjectFrameLineage* duplicateLineage,
                                    bool duplicateFromDrainReason, bool duplicateFromDeferredReason,

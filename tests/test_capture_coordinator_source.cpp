@@ -472,7 +472,7 @@ TEST(CaptureCoordinatorSourceTest, SourceEpochInvalidatesMediaEngineRepeatPixels
     EXPECT_NE(source.find("CFR fresh encode failure recovered with cached duplicate"), std::string::npos);
 }
 
-TEST(CaptureCoordinatorSourceTest, FreshFrameMetadataCommitsOnlyAfterSuccessfulEncode) {
+TEST(CaptureCoordinatorSourceTest, FreshFrameOwnershipUsesTestedCompletionTransaction) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
@@ -480,7 +480,8 @@ TEST(CaptureCoordinatorSourceTest, FreshFrameMetadataCommitsOnlyAfterSuccessfulE
     EXPECT_NE(source.find("const bool attemptedFreshCandidate = popped && frameToProcess == &frame"),
               std::string::npos);
     EXPECT_NE(source.find("media_main_g_LastFrame = std::move(frame);"), std::string::npos);
-    EXPECT_NE(source.find("preserve g_LastFrame unchanged"), std::string::npos);
+    EXPECT_NE(source.find("CompleteCandidate(submission, freshAccepted"), std::string::npos);
+    EXPECT_EQ(source.find("MediaEngine_WasLastFrameDeferred"), std::string::npos);
     EXPECT_NE(source.find("frame.injectRingLease.Reset();"), std::string::npos);
     EXPECT_NE(source.find("Deferred candidates never enter this branch"), std::string::npos);
 }
@@ -619,7 +620,7 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyGatesEveryVideoSubmissionSha
     EXPECT_NE(vfr.find("submitPrivacyBlackFrame(media_main_g_LastFrame"), std::string::npos);
 
     const size_t freshBegin = source.find("const auto privacyDecision = evaluateScreenGrabPrivacy(frameToProcess)");
-    const size_t freshEnd = source.find("encodeDeferred = false", freshBegin);
+    const size_t freshEnd = source.find("const bool attemptedFreshCandidate", freshBegin);
     ASSERT_NE(freshBegin, std::string::npos);
     ASSERT_NE(freshEnd, std::string::npos);
     EXPECT_NE(source.substr(freshBegin, freshEnd - freshBegin).find("submitPrivacyBlackFrame(*frameToProcess"),
@@ -637,7 +638,8 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyBlackFailureCannotRevealCach
     EXPECT_NE(runtime.find("ResetMediaRepeatCache();"), std::string::npos);
     EXPECT_NE(runtime.find("const ce::cursor::CaptureState hiddenCursor"), std::string::npos);
     EXPECT_NE(runtime.find("&hiddenCursor"), std::string::npos);
-    EXPECT_NE(runtime.find("MediaEngine_ProcessFrameD3D11(blackTexture_.Get()"), std::string::npos);
+    EXPECT_NE(runtime.find("ce::media::submission::Black("), std::string::npos);
+    EXPECT_NE(runtime.find("{blackTexture_.Get(),"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyUsesOnlyPassiveWindowStateQueries) {

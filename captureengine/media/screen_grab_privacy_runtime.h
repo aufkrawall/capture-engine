@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <cstdint>
 #include "common/capture/screen_grab_privacy.h"
+#include "frame_submission.h"
 
 namespace ce::screen_grab_privacy {
 
@@ -19,7 +20,7 @@ public:
                                bool stableCaptureTarget, const FullscreenFocusSnapshot& focus);
     GateDecision Evaluate(bool activeScreenGrab, HWND targetWindow, HMONITOR targetMonitor, bool stableCaptureTarget,
                           const FullscreenFocusSnapshot& focus, bool hasFreshFrame, int64_t freshFrameQpc);
-    bool SubmitBlack(ID3D11Texture2D* referenceTexture, bool isHdr, int64_t mediaTimestampQpc, int64_t scheduledQpc,
+    ce::media::FrameSubmissionResultV1 SubmitBlack(ID3D11Texture2D* referenceTexture, bool isHdr, int64_t mediaTimestampQpc, int64_t scheduledQpc,
                      int64_t timelineElapsedUs, bool useExplicitCfrTimeline);
     void CommitRealOutput();
     void CommitRepeatOutput();
