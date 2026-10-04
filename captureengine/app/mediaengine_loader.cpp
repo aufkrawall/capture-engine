@@ -40,15 +40,82 @@ MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSup
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
 MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel = nullptr;
 
+MediaEngine_SubmitFrameWithResultV1_t MediaEngine_SubmitFrameWithResultV1 = nullptr;
+MediaEngine_SubmitFrameD3D11WithResultV1_t MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
+MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
+
 static HMODULE g_MediaEngineModule = nullptr;
 
-template <typename T>
-static bool GetFunc(HMODULE hModule, const char* name, T* outPtr) {
-    *outPtr = (T)GetProcAddress(hModule, name);
+template <typename T, typename Resolver>
+static bool GetFunc(HMODULE hModule, const char* name, T* outPtr, Resolver resolve) {
+    *outPtr = reinterpret_cast<T>(resolve(hModule, name));
     if (!*outPtr) {
         LogError("[MediaEngine] Failed to get function: %s", name);
         return false;
     }
+    return true;
+}
+
+template <typename Resolver>
+static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
+    bool success = true;
+    success &= GetFunc(module, "MediaEngine_SubmitFrameWithResultV1", &MediaEngine_SubmitFrameWithResultV1, resolve);
+    success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11WithResultV1", &MediaEngine_SubmitFrameD3D11WithResultV1, resolve);
+    success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithResultV1", &MediaEngine_RepeatLastFrameWithResultV1, resolve);
+    success &= GetFunc(module, "MediaEngine_SetLogCallback", &MediaEngine_SetLogCallback, resolve);
+    success &= GetFunc(module, "DLL_Log", &DLL_Log, resolve);
+    success &= GetFunc(module, "MediaEngine_Init", &MediaEngine_Init, resolve);
+    success &= GetFunc(module, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig, resolve);
+    success &= GetFunc(module, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab, resolve);
+    success &=
+        GetFunc(module, "MediaEngine_SetWgcStartupExtraDelayQpc", &MediaEngine_SetWgcStartupExtraDelayQpc, resolve);
+    success &= GetFunc(module, "MediaEngine_SubmitFrame", &MediaEngine_ProcessFrame, resolve);
+    success &= GetFunc(module, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame, resolve);
+    success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithTimeline",
+                       &MediaEngine_RepeatLastFrameWithTimeline, resolve);
+    success &= GetFunc(module, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame, resolve);
+    success &= GetFunc(module, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache, resolve);
+    success &= GetFunc(module, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11, resolve);
+    success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw, resolve);
+    success &= GetFunc(module, "MediaEngine_StartRecording", &MediaEngine_StartRecording, resolve);
+    success &= GetFunc(module, "MediaEngine_StopRecording", &MediaEngine_StopRecording, resolve);
+    success &= GetFunc(module, "MediaEngine_GetLastOutputDegradedFlags",
+                       &MediaEngine_GetLastOutputDegradedFlags, resolve);
+    success &= GetFunc(module, "MediaEngine_ReleaseEncoderTextures", &MediaEngine_ReleaseEncoderTextures, resolve);
+    success &= GetFunc(module, "MediaEngine_GetD3D11Device", &MediaEngine_GetD3D11Device, resolve);
+    success &=
+        GetFunc(module, "MediaEngine_ReleaseSharedD3D11Device", &MediaEngine_ReleaseSharedD3D11Device, resolve);
+    success &= GetFunc(module, "MediaEngine_CreateSharedCaptureTextures",
+                       &MediaEngine_CreateSharedCaptureTextures, resolve);
+    success &=
+        GetFunc(module, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs, resolve);
+    success &=
+        GetFunc(module, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs, resolve);
+    success &= GetFunc(module, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred, resolve);
+    success &= GetFunc(module, "MediaEngine_QueryInjectFrameCopyCompletion",
+                       &MediaEngine_QueryInjectFrameCopyCompletion, resolve);
+    success &= GetFunc(module, "MediaEngine_SetInjectTransportGeneration",
+                       &MediaEngine_SetInjectTransportGeneration, resolve);
+    success &= GetFunc(module, "MediaEngine_Shutdown", &MediaEngine_Shutdown, resolve);
+    success &= GetFunc(module, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem, resolve);
+    success &= GetFunc(module, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11, resolve);
+    success &= GetFunc(module, "MediaEngine_UnlockD3D11", &MediaEngine_UnlockD3D11, resolve);
+    success &= GetFunc(module, "MediaEngine_SetSourcePrefers10Bit", &MediaEngine_SetSourcePrefers10Bit, resolve);
+    success &= GetFunc(module, "MediaEngine_SetCursorCompositionSuppressed",
+                       &MediaEngine_SetCursorCompositionSuppressed, resolve);
+    success &= GetFunc(module, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly, resolve);
+    success &= GetFunc(module, "MediaEngine_MeasureRenderEndpointLatency",
+                       &MediaEngine_MeasureRenderEndpointLatency, resolve);
+    success &= GetFunc(module, "MediaEngine_SetRenderLatencyChannel",
+                       &MediaEngine_SetRenderLatencyChannel, resolve);
+
+    if (!success) {
+        LogError("[MediaEngine] Incompatible mediaengine.dll: required exports are missing");
+        MediaEngine_Unload();  // clear every pointer into the rejected module, not just its handle
+        return false;
+    }
+
+    LogInfo("[MediaEngine] All function pointers resolved");
     return true;
 }
 
@@ -75,62 +142,7 @@ bool MediaEngine_Load(const char* exeDir) {
     }
     LogInfo("[MediaEngine] Loaded successfully");
 
-    bool success = true;
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetLogCallback", &MediaEngine_SetLogCallback);
-    success &= GetFunc(g_MediaEngineModule, "DLL_Log", &DLL_Log);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_Init", &MediaEngine_Init);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab);
-    success &=
-        GetFunc(g_MediaEngineModule, "MediaEngine_SetWgcStartupExtraDelayQpc", &MediaEngine_SetWgcStartupExtraDelayQpc);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SubmitFrame", &MediaEngine_ProcessFrame);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrameWithTimeline",
-                       &MediaEngine_RepeatLastFrameWithTimeline);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SubmitFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastOutputDegradedFlags",
-                       &MediaEngine_GetLastOutputDegradedFlags);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ReleaseEncoderTextures", &MediaEngine_ReleaseEncoderTextures);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetD3D11Device", &MediaEngine_GetD3D11Device);
-    success &=
-        GetFunc(g_MediaEngineModule, "MediaEngine_ReleaseSharedD3D11Device", &MediaEngine_ReleaseSharedD3D11Device);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_CreateSharedCaptureTextures",
-                       &MediaEngine_CreateSharedCaptureTextures);
-    success &=
-        GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs);
-    success &=
-        GetFunc(g_MediaEngineModule, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_QueryInjectFrameCopyCompletion",
-                       &MediaEngine_QueryInjectFrameCopyCompletion);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetInjectTransportGeneration",
-                       &MediaEngine_SetInjectTransportGeneration);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_Shutdown", &MediaEngine_Shutdown);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_UnlockD3D11", &MediaEngine_UnlockD3D11);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSourcePrefers10Bit", &MediaEngine_SetSourcePrefers10Bit);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetCursorCompositionSuppressed",
-                       &MediaEngine_SetCursorCompositionSuppressed);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_MeasureRenderEndpointLatency",
-                       &MediaEngine_MeasureRenderEndpointLatency);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetRenderLatencyChannel",
-                       &MediaEngine_SetRenderLatencyChannel);
-
-    if (!success) {
-        LogError("[MediaEngine] Failed to get all function pointers");
-        MediaEngine_Unload();  // clear every pointer into the rejected module, not just its handle
-        return false;
-    }
-
-    LogInfo("[MediaEngine] All function pointers resolved");
-    return true;
+    return ResolveMediaEngineExports(g_MediaEngineModule, &GetProcAddress);
 }
 
 void MediaEngine_Unload() {
@@ -139,6 +151,9 @@ void MediaEngine_Unload() {
         g_MediaEngineModule = nullptr;
     }
 
+    MediaEngine_SubmitFrameWithResultV1 = nullptr;
+    MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
+    MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
     MediaEngine_SetLogCallback = nullptr;
     DLL_Log = nullptr;
     MediaEngine_Init = nullptr;

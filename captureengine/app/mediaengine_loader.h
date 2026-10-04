@@ -8,6 +8,7 @@
 #include "common/capture/cursor_capture_state.h"
 #include "mediaengine/engine/d3d11_frame_submission_desc.h"
 #include "mediaengine/engine/video_frame_submission_desc.h"
+#include "mediaengine/engine/frame_submission_result.h"
 
 // Forward declaration
 struct SharedMemoryLayout;
@@ -54,6 +55,16 @@ typedef void (*MediaEngine_SetCursorCompositionSuppressed_t)(bool suppressed);
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            double* outLatencyMs);
 typedef void (*MediaEngine_SetRenderLatencyChannel_t)(void* channelBlock);
+
+typedef bool (*MediaEngine_SubmitFrameWithResultV1_t)(const VideoFrameSubmissionDesc*,
+                                                       ce::media::FrameSubmissionResultV1*);
+typedef bool (*MediaEngine_SubmitFrameD3D11WithResultV1_t)(const D3D11FrameSubmissionDesc*,
+                                                            ce::media::FrameSubmissionResultV1*);
+typedef bool (*MediaEngine_RepeatLastFrameWithResultV1_t)(int64_t, int64_t, const ce::cursor::CaptureState*,
+                                                           ce::media::FrameSubmissionResultV1*);
+extern MediaEngine_SubmitFrameWithResultV1_t MediaEngine_SubmitFrameWithResultV1;
+extern MediaEngine_SubmitFrameD3D11WithResultV1_t MediaEngine_SubmitFrameD3D11WithResultV1;
+extern MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWithResultV1;
 
 // Function pointers (set by MediaEngine_Load)
 extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;

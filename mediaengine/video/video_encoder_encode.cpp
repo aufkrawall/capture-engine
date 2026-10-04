@@ -3,12 +3,11 @@
 #include "encode_geometry_policy.h"
 
 bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t fenceValue, int64_t timestamp,
-                               uint32_t sourcePid, int width, int height, int format, bool isHDR, bool isShmem,
+                               uint32_t sourcePid, int frameWidth, int frameHeight, int format, bool isHDR, bool isShmem,
                                int shmemSlot) {
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
     if (!recordingRequested)
         return false;
-
-    lastFrameDeferred.store(false, std::memory_order_relaxed);
 
     // Debug: Log every 60th frame entry to verify loop
     if (encodeFrameCounter % 60 == 0) {
@@ -20,17 +19,17 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
     const bool contractChanged =
         initDone && (isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput);
-    if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, static_cast<uint32_t>(width),
-                                                  static_cast<uint32_t>(height), lockedGeometryWidth,
+    if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, static_cast<uint32_t>(frameWidth),
+                                                  static_cast<uint32_t>(frameHeight), lockedGeometryWidth,
                                                   lockedGeometryHeight) ==
         ce::encode_geometry::SourceChangeAction::kFinalizeAndStop) {
         RequestStopForSourceContractChange("inject source", isHDR, wants10BitInput);
         return false;
     }
-    if (!ReinitForFormatModeChange(isHDR, wants10BitInput, width, height))
+    if (!ReinitForFormatModeChange(isHDR, wants10BitInput, frameWidth, frameHeight))
         return false;
 
-    if (!HandleResolutionChange(width, height))
+    if (!HandleResolutionChange(frameWidth, frameHeight))
         return false;
 
     if (!EnsureDevice())

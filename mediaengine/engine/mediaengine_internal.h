@@ -1,5 +1,7 @@
 #pragma once
 
+#include "frame_submission_result.h"
+
 class MediaEngine;
 
 #include "mediaengine.h"
@@ -452,9 +454,12 @@ public:
     void CancelUncommittedVideoRecording();
     bool StopRecording(bool cancelUncommittedVideo = false);
     bool ProcessFrame(const VideoFrameSubmissionDesc& desc);
+    ce::media::FrameSubmissionResultV1 SubmitInjectFrame(const VideoFrameSubmissionDesc& desc);
     bool RepeatLastFrame(int64_t timestampQPC, const ce::cursor::CaptureState* cursorState = nullptr);
     bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs,
                          const ce::cursor::CaptureState* cursorState = nullptr);
+    ce::media::FrameSubmissionResultV1 SubmitRepeat(int64_t timestampQPC, int64_t timelineElapsedUs,
+                                                   const ce::cursor::CaptureState* cursorState);
     void ExtendCfrToCommonAudioLattice();
     bool IsWgcCfrRecording() const;
     bool IsCfrRecording() const;
@@ -465,6 +470,7 @@ public:
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     bool ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc);
+    ce::media::FrameSubmissionResultV1 SubmitD3D11Frame(const D3D11FrameSubmissionDesc& desc);
     void AppendSyncResamplerOutput(AudioSource& src, size_t srcIdx, int channels, uint8_t** resampledData,
                                    int outSamples);
     bool PumpSourceRingThroughSyncResampler(AudioSource& src, size_t srcIdx, int channels, size_t maxFloats);

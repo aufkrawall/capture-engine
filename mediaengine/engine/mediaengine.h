@@ -12,6 +12,7 @@
 #include "common/capture/cursor_capture_state.h"
 #include "video_frame_submission_desc.h"
 #include "d3d11_frame_submission_desc.h"
+#include "frame_submission_result.h"
 
 extern "C" {
 
@@ -80,6 +81,15 @@ MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timest
                                                    int64_t timelineElapsedUs = -1,
                                                    const ce::cursor::CaptureState* cursorState = nullptr);
 MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc);
+
+// V1 returns true only when descriptor/output storage is valid. Inspect result.status for ingestion.
+// result.size must equal sizeof(FrameSubmissionResultV1); invalid storage is never overwritten.
+MEDIAENGINE_API bool MediaEngine_SubmitFrameWithResultV1(const VideoFrameSubmissionDesc* desc,
+                                                         ce::media::FrameSubmissionResultV1* result);
+MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11WithResultV1(const D3D11FrameSubmissionDesc* desc,
+                                                              ce::media::FrameSubmissionResultV1* result);
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithResultV1(int64_t timestamp, int64_t timelineElapsedUs,
+    const ce::cursor::CaptureState* cursorState, ce::media::FrameSubmissionResultV1* result);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();

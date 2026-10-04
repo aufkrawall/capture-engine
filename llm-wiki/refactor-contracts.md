@@ -121,3 +121,29 @@ publication visibility, malformed ABI, target withdrawal/replacement/reconnect, 
 failure, missing discovery/payload, compare-exchange preservation and rejection handle cleanup.
 The controller's stop transport helpers are private to controller_recording.cpp. Screenshot capture
 still owns its original pseudo-overlay scope; only notification publication changed.
+
+## Media submission result (implemented; caller migration follows)
+
+frame_submission_result.h defines the additive 40-byte, 8-byte-aligned V1 output, with fixed-width
+status, output origin, candidate disposition, first-output commitment and microsecond timeline
+fields. All three WithResultV1 exports require exact result size and leave invalid storage untouched.
+Their bool reports boundary validity; result.status reports ingestion. No engine or inactive recording
+is a valid rejected result. Existing positional, descriptor, repeat and deferred-query exports retain
+signatures and adapt the same internal operations to legacy booleans. The loader requires the V1
+exports and clears every legacy/new pointer on rejection/unload.
+
+SubmitAndCommit is a statically bound production seam around Encode, local deferral classification
+and the existing successful anchor/timeline/audio commit. It adds no dispatch layer, frame copy or
+lock; API/mux lock ordering and cache promotion stay unchanged. Fresh accepted source becomes release
+eligible, deferred fresh source remains retryable, and repeats carry no source candidate. None of these
+outcomes proves GPU completion or synchronous packet emission; ring owners still enforce fences.
+Inject results report committed encoded duration (or the existing VFR value). WGC fresh and WGC CFR
+repeat results distinguish scheduled video timing from the encoded-duration audio pull target.
+
+Tests: test_submission_transaction.cpp exercises that production orchestration with controlled
+operations and an actual inactive VideoEncoder; test_mediaengine_frame_abi.cpp calls the real PE
+exports; test_mediaengine_loader.cpp compiles the actual private resolver/unload orchestration.
+The deferred flag is cleared before inactive encoder rejection so a prior attempt cannot classify
+the new result. Existing failure diagnostics stay at their original encoder boundaries; loader
+incompatibility logs name the missing export. Broad ABI/sanitizer verification remains outside the
+agreed agent execution scope and must be recorded in final pending validation.

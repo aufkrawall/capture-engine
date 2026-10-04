@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "submission_transaction.h"
 
 #include <libavutil/log.h>
 
@@ -260,6 +261,37 @@ MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc
         return mediaengine_g_Engine->ProcessFrameD3D11(*desc);
     }
     return false;
+}
+
+MEDIAENGINE_API bool MediaEngine_SubmitFrameWithResultV1(const VideoFrameSubmissionDesc* desc,
+                                                         ce::media::FrameSubmissionResultV1* result) {
+    if (!desc)
+        return false;
+    return ce::media::detail::PublishSubmissionResult(result, [&] {
+        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitInjectFrame(*desc)
+                                   : ce::media::UnacceptedSubmission(false);
+    });
+}
+
+MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11WithResultV1(const D3D11FrameSubmissionDesc* desc,
+                                                              ce::media::FrameSubmissionResultV1* result) {
+    if (!desc)
+        return false;
+    return ce::media::detail::PublishSubmissionResult(result, [&] {
+        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitD3D11Frame(*desc)
+                                   : ce::media::UnacceptedSubmission(false);
+    });
+}
+
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithResultV1(int64_t timestamp, int64_t timelineElapsedUs,
+    const ce::cursor::CaptureState* cursorState, ce::media::FrameSubmissionResultV1* result) {
+    return ce::media::detail::PublishSubmissionResult(result, [&] {
+        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitRepeat(timestamp, timelineElapsedUs, cursorState)
+                                   : ce::media::UnacceptedSubmission(false, false);
+    });
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,

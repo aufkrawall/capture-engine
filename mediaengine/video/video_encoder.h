@@ -180,6 +180,7 @@ public:
     void ReleasePreservedEncoderTextures();
 
 private:
+    friend struct VideoEncoderTestAccess;
     // Per-frame cursor draw decision: configured cursor inclusion minus the
     // runtime embedded-cursor suppression. Capability/init paths must keep
     // using captureCursor directly (suppression can flip mid-session).

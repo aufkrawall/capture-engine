@@ -42,3 +42,45 @@ TEST(MediaEngineFrameAbiTest, DescriptorEntryPointsHaveDistinctExportsAndRejectN
     EXPECT_FALSE(inject(nullptr));
     EXPECT_FALSE(d3d11(nullptr));
 }
+
+TEST(MediaEngineFrameAbiTest, VersionedResultExportsValidateStorageAndReportInactiveRejection) {
+    using Result = ce::media::FrameSubmissionResultV1;
+    using Inject = bool (*)(const VideoFrameSubmissionDesc*, Result*);
+    using D3D11 = bool (*)(const D3D11FrameSubmissionDesc*, Result*);
+    using Repeat = bool (*)(int64_t, int64_t, const ce::cursor::CaptureState*, Result*);
+    const HMODULE module = GetModuleHandleW(nullptr);
+    const auto inject = reinterpret_cast<Inject>(GetProcAddress(module, "MediaEngine_SubmitFrameWithResultV1"));
+    const auto d3d11 = reinterpret_cast<D3D11>(GetProcAddress(module, "MediaEngine_SubmitFrameD3D11WithResultV1"));
+    const auto repeat = reinterpret_cast<Repeat>(GetProcAddress(module, "MediaEngine_RepeatLastFrameWithResultV1"));
+    ASSERT_NE(inject, nullptr);
+    ASSERT_NE(d3d11, nullptr);
+    ASSERT_NE(repeat, nullptr);
+    VideoFrameSubmissionDesc injectDesc{};
+    D3D11FrameSubmissionDesc screenDesc{};
+    Result result;
+    EXPECT_FALSE(inject(nullptr, &result));
+    EXPECT_FALSE(d3d11(nullptr, &result));
+    EXPECT_FALSE(inject(&injectDesc, nullptr));
+    EXPECT_FALSE(d3d11(&screenDesc, nullptr));
+    EXPECT_FALSE(repeat(0, -1, nullptr, nullptr));
+    for (uint32_t size : {0u, 39u, 41u}) {
+        result.size = size;
+        result.videoTimelineUs = 123;
+        EXPECT_FALSE(inject(&injectDesc, &result));
+        EXPECT_FALSE(d3d11(&screenDesc, &result));
+        EXPECT_FALSE(repeat(0, -1, nullptr, &result));
+        EXPECT_EQ(result.size, size);
+        EXPECT_EQ(result.videoTimelineUs, 123);
+    }
+    result.size = sizeof(result);
+    EXPECT_TRUE(inject(&injectDesc, &result));
+    EXPECT_FALSE(result.Accepted());
+    EXPECT_EQ(result.output, ce::media::SubmissionOutput::None);
+    EXPECT_EQ(result.firstOutputCommitted, 0u);
+    EXPECT_EQ(result.videoTimelineUs, -1);
+    EXPECT_TRUE(d3d11(&screenDesc, &result));
+    EXPECT_FALSE(result.Accepted());
+    EXPECT_TRUE(repeat(0, -1, nullptr, &result));
+    EXPECT_FALSE(result.Accepted());
+    EXPECT_EQ(result.source, ce::media::SourceDisposition::NoCandidate);
+}

@@ -421,11 +421,10 @@ void VideoEncoder::ObserveFreshFrameDynamicOverlayPressure(ID3D11Texture2D* acce
 }
 
 bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline) {
+    lastFrameDeferred.store(false, std::memory_order_relaxed);
     if (!recordingRequested) {
         return false;
     }
-
-    lastFrameDeferred.store(false, std::memory_order_relaxed);
 
     const bool dynamicRepeatSourceAvailable = repeatSourceNeedsOverlayRecompose && repeatSourceFrameTexture;
     const bool freezeDynamicOverlaysForRepeat =
