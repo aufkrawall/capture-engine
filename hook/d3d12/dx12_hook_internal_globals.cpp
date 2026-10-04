@@ -1,25 +1,7 @@
 #include "dx12_hook_internal.h"
 
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
-std::recursive_mutex dx12_hook_g_ExecuteCommandListsHookStateMutex;
-
-std::map<void**, ExecuteCommandListsPtr> dx12_hook_g_ExecuteCommandListsOriginalByVTable;
-
-std::map<void**, SignalPtr> dx12_hook_g_CommandQueueSignalOriginalByVTable;
-
-std::atomic<uint64_t> dx12_hook_g_ExecuteCommandListsCaptureGeneration{0};
-
-std::atomic<void**> dx12_hook_g_LastExecuteCommandListsVTable{nullptr};
-
-std::atomic<ExecuteCommandListsPtr> dx12_hook_g_LastExecuteCommandListsOriginal{nullptr};
-
-std::atomic<ExecuteCommandListsPtr> dx12_hook_g_RealD3D12ECL{nullptr};
-
-std::atomic<SignalPtr> dx12_hook_g_RealD3D12Signal{nullptr};
-
-std::atomic<ID3D12Fence*> dx12_hook_g_OverlayCompletionFence{nullptr};
-
-std::atomic<bool> dx12_hook_g_ProbeRealD3D12ECLDeferred{false};
+DX12ECLState g_DX12ECLState;
 
 PFN_CreateSwapChain dx12_hook_oCreateSwapChain = nullptr;
 
@@ -424,5 +406,3 @@ std::atomic<uint64_t> dx12_hook_g_Dx12FaCount{0};
 IDXGIAdapter3* dx12_hook_g_Dx12FaAdapter = nullptr;
 
 std::atomic<bool> dx12_hook_s_initDelayComplete{false};
-
-std::atomic<int> dx12_hook_g_ECLCallCount{0};

@@ -92,7 +92,6 @@ extern CreateCommittedResourcePtr oCreateCommittedResource;
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
 extern CommandQueueSignalPtr oTraceCommandQueueSignal;
-extern std::map<void**, SignalPtr> dx12_hook_g_CommandQueueSignalOriginalByVTable;
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
 #elif defined(_MSC_VER)

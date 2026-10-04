@@ -6,6 +6,7 @@
 #include <dxgi1_6.h>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -384,21 +385,46 @@ struct Dx12FocusAnalysisSample {
 
 // ---- shared globals (definitions in dx12_hook_internal_globals.cpp) ----
 
-extern std::recursive_mutex dx12_hook_g_ExecuteCommandListsHookStateMutex;
-extern std::map<void**, ExecuteCommandListsPtr> dx12_hook_g_ExecuteCommandListsOriginalByVTable;
-extern std::atomic<uint64_t> dx12_hook_g_ExecuteCommandListsCaptureGeneration;
-extern std::atomic<void**> dx12_hook_g_LastExecuteCommandListsVTable;
-extern std::atomic<ExecuteCommandListsPtr> dx12_hook_g_LastExecuteCommandListsOriginal;
-extern std::atomic<ExecuteCommandListsPtr> dx12_hook_g_RealD3D12ECL;
-extern std::atomic<SignalPtr> dx12_hook_g_RealD3D12Signal;
-extern std::atomic<ID3D12Fence*> dx12_hook_g_OverlayCompletionFence;
-extern std::atomic<bool> dx12_hook_g_ProbeRealD3D12ECLDeferred;
+struct DX12ECLState {
+    std::recursive_mutex hookStateMutex;
+    std::map<void**, ExecuteCommandListsPtr> originalByVTable;
+    std::map<void**, SignalPtr> signalOriginalByVTable;
+    std::atomic<uint64_t> captureGeneration{0};
+    std::atomic<void**> lastVTable{nullptr};
+    std::atomic<ExecuteCommandListsPtr> lastOriginal{nullptr};
+    std::atomic<ExecuteCommandListsPtr> realECL{nullptr};
+    std::atomic<SignalPtr> realSignal{nullptr};
+    std::atomic<ID3D12Fence*> overlayCompletionFence{nullptr};
+    std::atomic<bool> probeRealECLDeferred{false};
+    std::atomic<int> callCount{0};
+};
+extern DX12ECLState g_DX12ECLState;
+
+inline std::recursive_mutex& dx12_hook_g_ExecuteCommandListsHookStateMutex = g_DX12ECLState.hookStateMutex;
+inline std::map<void**, ExecuteCommandListsPtr>& dx12_hook_g_ExecuteCommandListsOriginalByVTable = g_DX12ECLState.originalByVTable;
+inline std::map<void**, SignalPtr>& dx12_hook_g_CommandQueueSignalOriginalByVTable = g_DX12ECLState.signalOriginalByVTable;
+inline std::atomic<uint64_t>& dx12_hook_g_ExecuteCommandListsCaptureGeneration = g_DX12ECLState.captureGeneration;
+inline std::atomic<void**>& dx12_hook_g_LastExecuteCommandListsVTable = g_DX12ECLState.lastVTable;
+inline std::atomic<ExecuteCommandListsPtr>& dx12_hook_g_LastExecuteCommandListsOriginal = g_DX12ECLState.lastOriginal;
+inline std::atomic<ExecuteCommandListsPtr>& dx12_hook_g_RealD3D12ECL = g_DX12ECLState.realECL;
+inline std::atomic<SignalPtr>& dx12_hook_g_RealD3D12Signal = g_DX12ECLState.realSignal;
+inline std::atomic<ID3D12Fence*>& dx12_hook_g_OverlayCompletionFence = g_DX12ECLState.overlayCompletionFence;
+inline std::atomic<bool>& dx12_hook_g_ProbeRealD3D12ECLDeferred = g_DX12ECLState.probeRealECLDeferred;
+inline std::atomic<int>& dx12_hook_g_ECLCallCount = g_DX12ECLState.callCount;
 extern PFN_CreateSwapChain dx12_hook_oCreateSwapChain;
 extern PFN_CreateSwapChainForHwnd dx12_hook_oCreateSwapChainForHwnd;
 extern void** dx12_hook_s_savedCreateSwapChainForHwndVtable;
 extern ID3D12GraphicsCommandList* dx12_hook_s_descFreeCmdList;
 extern D3D12_CPU_DESCRIPTOR_HANDLE dx12_hook_s_descFreeRtv;
 extern ID3D12Fence* dx12_hook_s_descFreeSlotFence;
+extern UINT64 dx12_hook_s_descFreeSlotGuardValue;
+extern thread_local uint64_t dx12_hook_s_PostSLSuccessfulSubmitSequence;
+extern std::atomic<ULONGLONG> dx12_hook_g_LastProcessFrameTickMs;
+extern std::atomic<ULONGLONG> dx12_hook_g_LastFFXPresentCallbackTickMs;
+extern std::atomic<bool> dx12_hook_g_FFXPresentCallbackBridgeExpected;
+extern std::atomic<bool> dx12_hook_g_NativeFSRInternalNoCallbackComposition;
+extern std::atomic<ULONGLONG> dx12_hook_g_LastDX12OverlayRenderTickMs;
+extern std::atomic<uint32_t> dx12_hook_g_LastDX12OverlayRenderRoute;
 struct DX12PostSLRuntimeState {
     std::atomic<bool> active{false};
     std::atomic<int> cooldownRemaining{0};
@@ -674,4 +700,3 @@ extern Dx12FocusAnalysisSample dx12_hook_g_Dx12FaRing[dx12_hook_kDx12FaRingSize]
 extern std::atomic<uint64_t> dx12_hook_g_Dx12FaCount;
 extern IDXGIAdapter3* dx12_hook_g_Dx12FaAdapter;
 extern std::atomic<bool> dx12_hook_s_initDelayComplete;
-extern std::atomic<int> dx12_hook_g_ECLCallCount;
