@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Encapsulate DirectX 12 Post-Streamline runtime state:** grouped loose global PostSL flags, epoch tracking, cooldown counters, and synchronization mutexes into a cohesive `DX12PostSLRuntimeState` structure.
+
 - **Encapsulate DirectX 12 overlay coverage state:** grouped loose global overlay coverage tracking variables into a cohesive, domain-owned `DX12OverlayCoverageState` structure.
 
 - **Streamline diagnostic log metering resilience:** multi-stream change gates now resolve hash collisions with 2-way probing, preventing alternating call shapes from repeatedly resetting log suppression gates.

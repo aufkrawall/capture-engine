@@ -33,15 +33,7 @@ ID3D12Fence* dx12_hook_s_descFreeSlotFence = nullptr;
 
 UINT64 dx12_hook_s_descFreeSlotGuardValue = 0;
 
-std::atomic<bool> dx12_hook_g_PostSLOverlayActive{false};
-
-std::atomic<int> dx12_hook_g_PostSLCooldownRemaining{0};
-
-std::atomic<bool> dx12_hook_g_PostSLExplicitOffKeepAlive{false};
-
-std::atomic<bool> dx12_hook_g_PostSLWarmResumePreservationPending{false};
-
-std::atomic<IDXGISwapChain*> dx12_hook_g_LastSuccessfulPostSLSwapchain{nullptr};
+DX12PostSLRuntimeState g_DX12PostSLRuntime;
 
 thread_local uint64_t dx12_hook_s_PostSLSuccessfulSubmitSequence = 0;
 
@@ -57,27 +49,6 @@ std::atomic<ULONGLONG> dx12_hook_g_LastDX12OverlayRenderTickMs{0};
 
 std::atomic<uint32_t> dx12_hook_g_LastDX12OverlayRenderRoute{static_cast<uint32_t>(DX12OverlayRenderRoute::kNone)};
 
-std::atomic<bool> dx12_hook_g_PostSLSyntheticStartupTakeoverLogged{false};
-
-std::atomic<int> dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount{0};
-
-std::atomic<bool> dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested{false};
-
-std::atomic<uint32_t> dx12_hook_g_PostSLLifecycleEpoch{0};
-
-std::mutex dx12_hook_g_PostSLRenderMutex;
-
-std::atomic<uint32_t> dx12_hook_g_StreamlineEnableCallsInFlight{0};
-
-std::atomic<bool> dx12_hook_g_PostSLConfirmedRendering{false};
-
-std::atomic<bool> dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch{false};
-
-std::atomic<bool> dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed{false};
-
-std::atomic<bool> dx12_hook_g_PostSLRuntimeStateStabilizationLogged{false};
-
-std::atomic<bool> dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch{false};
 
 DX12OverlayCoverageState g_DX12OverlayCoverage;
 
@@ -89,9 +60,6 @@ std::atomic<int> dx12_hook_g_OverlayHandoffVerboseLogPresents{0};
 
 std::atomic<uint32_t> dx12_hook_g_OverlayHandoffVerbosePrevRoute{0};
 
-std::atomic<int> dx12_hook_g_PostSLStallCounter{0};
-
-std::atomic<int> dx12_hook_g_PostSLStableFrameCount{0};
 
 std::atomic<bool> dx12_hook_g_ResetQueueChangeHeuristic{false};
 
