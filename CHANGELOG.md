@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Encapsulate Streamline hook runtime globals:** grouped loose global interception targets, failure retry counters, viewport runtime states, and module teardown trackers into a unified `StreamlineHookState` structure.
+
 - **Encapsulate DirectX 12 command queue interception state:** grouped loose global command queue dispatch tables, real function pointers, and command list execution tracking into a unified `DX12ECLState` structure.
 
 - **Encapsulate DirectX 12 Post-Streamline runtime state:** grouped loose global PostSL flags, epoch tracking, cooldown counters, and synchronization mutexes into a cohesive `DX12PostSLRuntimeState` structure.

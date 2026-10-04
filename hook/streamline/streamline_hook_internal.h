@@ -330,254 +330,294 @@ struct ViewportFGState {
     bool operator!=(const ViewportFGState& o) const { return !(*this == o); }
 };
 
-inline std::mutex streamline_hook_g_InitMutex;
+struct StreamlineHookState {
+    std::mutex initMutex;
+    std::mutex stateMutex;
+    std::mutex moduleHookMutex;
+    std::mutex featureHookMutex;
+    std::mutex acceptedD3D12DeviceMutex;
+    ID3D12Device* acceptedD3D12Device = nullptr;
+    std::atomic<bool> dynamicHooksRegistered{false};
+    std::atomic<bool> streamlineUsesD3D12{false};
+    std::atomic<bool> noModulesLogged{false};
+    std::atomic<bool> moduleSnapshotFailureLogged{false};
+    std::atomic<bool> moduleSnapshotRetrySuccessLogged{false};
+    std::atomic<uint32_t> iatPatchesMask{0};
+    std::atomic<uint32_t> installedModuleMask{0};
 
-inline std::mutex streamline_hook_g_StateMutex;
+    std::atomic<void*> slGetFeatureFunctionTarget{nullptr};
+    std::atomic<void*> slGetPluginFunctionTarget{nullptr};
+    std::atomic<void*> slSetD3DDeviceTarget{nullptr};
+    std::atomic<void*> slSetTagTarget{nullptr};
+    std::atomic<void*> slSetTagForFrameTarget{nullptr};
+    std::atomic<void*> slEvaluateFeatureTarget{nullptr};
+    std::atomic<void*> vulkanCreateSwapchainTarget{nullptr};
 
-inline std::mutex streamline_hook_g_ModuleHookMutex;
+    std::atomic<void*> dlssgSetOptionsTarget{nullptr};
+    std::atomic<void*> dlssgGetStateTarget{nullptr};
+    std::atomic<void*> reflexSleepTarget{nullptr};
+    std::atomic<void*> reflexSetOptionsTarget{nullptr};
+    std::atomic<void*> reflexSetConstantsTarget{nullptr};
 
-inline std::mutex streamline_hook_g_FeatureHookMutex;
+    std::atomic<void*> dlssgSetOptionsImportFallbackAttemptedTarget{nullptr};
+    std::atomic<void*> dlssgGetStateImportFallbackAttemptedTarget{nullptr};
+    std::atomic<void*> reflexSleepImportFallbackAttemptedTarget{nullptr};
+    std::atomic<void*> reflexSetOptionsImportFallbackAttemptedTarget{nullptr};
+    std::atomic<void*> reflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 
-inline std::mutex streamline_hook_g_AcceptedD3D12DeviceMutex;
+    std::atomic<void*> dlssgSetOptionsFailedTarget{nullptr};
+    std::atomic<uint32_t> dlssgSetOptionsFailedAttempts{0};
+    std::atomic<void*> dlssgGetStateFailedTarget{nullptr};
+    std::atomic<uint32_t> dlssgGetStateFailedAttempts{0};
+    std::atomic<void*> reflexSleepFailedTarget{nullptr};
+    std::atomic<uint32_t> reflexSleepFailedAttempts{0};
+    std::atomic<void*> reflexSetOptionsFailedTarget{nullptr};
+    std::atomic<uint32_t> reflexSetOptionsFailedAttempts{0};
+    std::atomic<void*> reflexSetConstantsFailedTarget{nullptr};
+    std::atomic<uint32_t> reflexSetConstantsFailedAttempts{0};
+    std::atomic<void*> pclSetMarkerFailedTarget{nullptr};
+    std::atomic<uint32_t> pclSetMarkerFailedAttempts{0};
 
-inline ID3D12Device* streamline_hook_g_AcceptedD3D12Device = nullptr;
+    std::atomic<int> reflexSleepUnavailableQueries{0};
+    std::atomic<int> reflexSetOptionsUnavailableQueries{0};
+    std::atomic<int> reflexSetConstantsUnavailableQueries{0};
+    std::atomic<int> pclUnavailableQueries{0};
+    std::atomic<uint32_t> runtimeReflexRetryAttempts{0};
 
-inline std::atomic<bool> streamline_hook_g_DynamicHooksRegistered{false};
+    std::atomic<bool> slGetFeatureFunctionHooked{false};
+    std::atomic<bool> slGetPluginFunctionHooked{false};
+    std::atomic<bool> slSetD3DDeviceHooked{false};
+    std::atomic<bool> slSetTagHooked{false};
+    std::atomic<bool> slSetTagForFrameHooked{false};
+    std::atomic<bool> slEvaluateFeatureHooked{false};
+    std::atomic<bool> vulkanCreateSwapchainHooked{false};
+    void* original_vkCreateSwapchainKHR = nullptr;
+    std::atomic<uint32_t> lastUpscalerEvaluation{0xFFFFFFFFu};
 
-inline std::atomic<bool> streamline_hook_g_StreamlineUsesD3D12{false};
+    std::atomic<bool> dlssgSetOptionsHooked{false};
+    std::atomic<bool> dlssgGetStateHooked{false};
+    std::atomic<bool> reflexSleepHooked{false};
+    std::atomic<bool> reflexSetOptionsHooked{false};
+    std::atomic<bool> reflexSetConstantsHooked{false};
 
-inline std::atomic<bool> streamline_hook_g_NoModulesLogged{false};
+    std::atomic<bool> dlssgSetOptionsReturnedWrapperFallbackLogged{false};
+    std::atomic<bool> dlssgGetStateReturnedWrapperFallbackLogged{false};
+    std::atomic<bool> reflexSleepReturnedWrapperFallbackLogged{false};
+    std::atomic<bool> reflexSetOptionsReturnedWrapperFallbackLogged{false};
+    std::atomic<bool> reflexSetConstantsReturnedWrapperFallbackLogged{false};
 
-inline std::atomic<bool> streamline_hook_g_ModuleSnapshotFailureLogged{false};
+    std::atomic<bool> dlssgSetOptionsProactiveFallbackLogged{false};
+    std::atomic<bool> dlssgGetStateProactiveFallbackLogged{false};
+    std::atomic<bool> reflexSleepProactiveFallbackLogged{false};
+    std::atomic<bool> reflexSetOptionsProactiveFallbackLogged{false};
+    std::atomic<bool> reflexSetConstantsProactiveFallbackLogged{false};
 
-inline std::atomic<bool> streamline_hook_g_ModuleSnapshotRetrySuccessLogged{false};
+    std::atomic<bool> dlssgSetOptionsLookupLogged{false};
+    std::atomic<bool> dlssgGetStateLookupLogged{false};
+    std::atomic<bool> reflexSleepLookupLogged{false};
+    std::atomic<bool> reflexSetOptionsLookupLogged{false};
+    std::atomic<bool> reflexSetConstantsLookupLogged{false};
 
-inline std::atomic<uint32_t> streamline_hook_g_IATPatchesMask{0};
+    std::atomic<ULONGLONG> reflexFeatureHookRetryLastMs{0};
 
-inline std::atomic<uint32_t> streamline_hook_g_InstalledModuleMask{0};
+    std::unordered_map<uint32_t, ViewportFGState> viewportStates;
+    std::unordered_map<uint32_t, ViewportFGState> viewportLoggedStates;
+    std::unordered_map<uint32_t, uint32_t> viewportCapabilityMax;
 
-inline std::atomic<void*> streamline_hook_g_SLGetFeatureFunctionTarget{nullptr};
+    std::atomic<ULONGLONG> suppressNewGetStateActivationUntilMs{0};
+    std::atomic<bool> blockGetStateOnlyReactivationUntilExplicitSetOptions{false};
+    std::atomic<bool> blockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
+    std::atomic<bool> currentComebackActivatedViaExplicitSetOptions{false};
+    std::atomic<bool> acceptedRuntimeOffAwaitingSetOptions{false};
+    std::atomic<bool> confirmedDLSSReflexSuspendPending{false};
+    std::atomic<bool> startupWindowOffExtensionPending{false};
 
-inline std::atomic<void*> streamline_hook_g_SLGetPluginFunctionTarget{nullptr};
+    std::mutex suppressedOffMutex;
+    bool suppressedSetOptionsOffDuringStartup = false;
+    slViewportHandle suppressedOffViewport = {};
+    slDLSSGOptions suppressedOffOptions = {};
+    uint32_t suppressedOffViewportKey = 0;
+    std::atomic<uint64_t> titleFrameMarkerSequence{0};
+    uint64_t suppressedOffTitleFrameSequence = 0;
 
-inline std::atomic<void*> streamline_hook_g_SLSetD3DDeviceTarget{nullptr};
+    std::atomic<uint64_t> reflexSleepObservedCount{0};
+    std::atomic<uint64_t> reflexSleepLastTickMs{0};
+    std::atomic<uint64_t> reflexSetOptionsObservedCount{0};
+    std::atomic<uint64_t> reflexSetOptionsLastTickMs{0};
+    std::atomic<int32_t> reflexLastForwardedMode{-1};
 
-inline std::atomic<void*> streamline_hook_g_SLSetTagTarget{nullptr};
+    std::atomic<uint64_t> dlssgNotInterpolatingStreak{0};
+    std::atomic<uint64_t> reflexSleepCountAtLastHealthLog{0};
+    std::atomic<uint32_t> dlssgLastObservedStatus{0};
 
-inline std::atomic<void*> streamline_hook_g_SLSetTagForFrameTarget{nullptr};
+    PFN_slGetFeatureFunction original_slGetFeatureFunction = nullptr;
+    PFN_slGetPluginFunction original_slGetPluginFunction = nullptr;
+    PFN_slSetD3DDevice original_slSetD3DDevice = nullptr;
+    PFN_slSetTag original_slSetTag = nullptr;
+    PFN_slSetTagForFrame original_slSetTagForFrame = nullptr;
+    PFN_slEvaluateFeature original_slEvaluateFeature = nullptr;
 
-inline std::atomic<void*> streamline_hook_g_SLEvaluateFeatureTarget{nullptr};
+    std::atomic<uint64_t> streamlineModuleUnloadGeneration{0};
+    std::atomic<bool> streamlineTeardownInFlight{false};
 
-inline std::atomic<void*> streamline_hook_g_VulkanCreateSwapchainTarget{nullptr};
+    PFN_slDLSSGSetOptions original_slDLSSGSetOptions = nullptr;
+    PFN_slDLSSGGetState original_slDLSSGGetState = nullptr;
+    PFN_slReflexSleep original_slReflexSleep = nullptr;
+    PFN_slReflexSetOptions original_slReflexSetOptions = nullptr;
+    PFN_slReflexSetConstants original_slReflexSetConstants = nullptr;
+};
 
-inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_DLSSGGetStateTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSleepTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsTarget{nullptr};
+inline StreamlineHookState g_StreamlineHookState;
 
-inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsImportFallbackAttemptedTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_DLSSGGetStateImportFallbackAttemptedTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSleepImportFallbackAttemptedTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsImportFallbackAttemptedTarget{nullptr};
-inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
+inline std::mutex& streamline_hook_g_InitMutex = g_StreamlineHookState.initMutex;
+inline std::mutex& streamline_hook_g_StateMutex = g_StreamlineHookState.stateMutex;
+inline std::mutex& streamline_hook_g_ModuleHookMutex = g_StreamlineHookState.moduleHookMutex;
+inline std::mutex& streamline_hook_g_FeatureHookMutex = g_StreamlineHookState.featureHookMutex;
+inline std::mutex& streamline_hook_g_AcceptedD3D12DeviceMutex = g_StreamlineHookState.acceptedD3D12DeviceMutex;
+inline ID3D12Device*& streamline_hook_g_AcceptedD3D12Device = g_StreamlineHookState.acceptedD3D12Device;
+inline std::atomic<bool>& streamline_hook_g_DynamicHooksRegistered = g_StreamlineHookState.dynamicHooksRegistered;
+inline std::atomic<bool>& streamline_hook_g_StreamlineUsesD3D12 = g_StreamlineHookState.streamlineUsesD3D12;
+inline std::atomic<bool>& streamline_hook_g_NoModulesLogged = g_StreamlineHookState.noModulesLogged;
+inline std::atomic<bool>& streamline_hook_g_ModuleSnapshotFailureLogged = g_StreamlineHookState.moduleSnapshotFailureLogged;
+inline std::atomic<bool>& streamline_hook_g_ModuleSnapshotRetrySuccessLogged = g_StreamlineHookState.moduleSnapshotRetrySuccessLogged;
+inline std::atomic<uint32_t>& streamline_hook_g_IATPatchesMask = g_StreamlineHookState.iatPatchesMask;
+inline std::atomic<uint32_t>& streamline_hook_g_InstalledModuleMask = g_StreamlineHookState.installedModuleMask;
 
-inline std::atomic<void*> streamline_hook_g_DLSSGSetOptionsFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_DLSSGSetOptionsFailedAttempts{0};
-inline std::atomic<void*> streamline_hook_g_DLSSGGetStateFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_DLSSGGetStateFailedAttempts{0};
-inline std::atomic<void*> streamline_hook_g_ReflexSleepFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_ReflexSleepFailedAttempts{0};
-inline std::atomic<void*> streamline_hook_g_ReflexSetOptionsFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_ReflexSetOptionsFailedAttempts{0};
-inline std::atomic<void*> streamline_hook_g_ReflexSetConstantsFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_ReflexSetConstantsFailedAttempts{0};
-inline std::atomic<void*> streamline_hook_g_PCLSetMarkerFailedTarget{nullptr};
-inline std::atomic<uint32_t> streamline_hook_g_PCLSetMarkerFailedAttempts{0};
+inline std::atomic<void*>& streamline_hook_g_SLGetFeatureFunctionTarget = g_StreamlineHookState.slGetFeatureFunctionTarget;
+inline std::atomic<void*>& streamline_hook_g_SLGetPluginFunctionTarget = g_StreamlineHookState.slGetPluginFunctionTarget;
+inline std::atomic<void*>& streamline_hook_g_SLSetD3DDeviceTarget = g_StreamlineHookState.slSetD3DDeviceTarget;
+inline std::atomic<void*>& streamline_hook_g_SLSetTagTarget = g_StreamlineHookState.slSetTagTarget;
+inline std::atomic<void*>& streamline_hook_g_SLSetTagForFrameTarget = g_StreamlineHookState.slSetTagForFrameTarget;
+inline std::atomic<void*>& streamline_hook_g_SLEvaluateFeatureTarget = g_StreamlineHookState.slEvaluateFeatureTarget;
+inline std::atomic<void*>& streamline_hook_g_VulkanCreateSwapchainTarget = g_StreamlineHookState.vulkanCreateSwapchainTarget;
 
-inline std::atomic<int> streamline_hook_g_ReflexSleepUnavailableQueries{0};
-inline std::atomic<int> streamline_hook_g_ReflexSetOptionsUnavailableQueries{0};
+inline std::atomic<void*>& streamline_hook_g_DLSSGSetOptionsTarget = g_StreamlineHookState.dlssgSetOptionsTarget;
+inline std::atomic<void*>& streamline_hook_g_DLSSGGetStateTarget = g_StreamlineHookState.dlssgGetStateTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSleepTarget = g_StreamlineHookState.reflexSleepTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetOptionsTarget = g_StreamlineHookState.reflexSetOptionsTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetConstantsTarget = g_StreamlineHookState.reflexSetConstantsTarget;
+
+inline std::atomic<void*>& streamline_hook_g_DLSSGSetOptionsImportFallbackAttemptedTarget = g_StreamlineHookState.dlssgSetOptionsImportFallbackAttemptedTarget;
+inline std::atomic<void*>& streamline_hook_g_DLSSGGetStateImportFallbackAttemptedTarget = g_StreamlineHookState.dlssgGetStateImportFallbackAttemptedTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSleepImportFallbackAttemptedTarget = g_StreamlineHookState.reflexSleepImportFallbackAttemptedTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetOptionsImportFallbackAttemptedTarget = g_StreamlineHookState.reflexSetOptionsImportFallbackAttemptedTarget;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetConstantsImportFallbackAttemptedTarget = g_StreamlineHookState.reflexSetConstantsImportFallbackAttemptedTarget;
+
+inline std::atomic<void*>& streamline_hook_g_DLSSGSetOptionsFailedTarget = g_StreamlineHookState.dlssgSetOptionsFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_DLSSGSetOptionsFailedAttempts = g_StreamlineHookState.dlssgSetOptionsFailedAttempts;
+inline std::atomic<void*>& streamline_hook_g_DLSSGGetStateFailedTarget = g_StreamlineHookState.dlssgGetStateFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_DLSSGGetStateFailedAttempts = g_StreamlineHookState.dlssgGetStateFailedAttempts;
+inline std::atomic<void*>& streamline_hook_g_ReflexSleepFailedTarget = g_StreamlineHookState.reflexSleepFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_ReflexSleepFailedAttempts = g_StreamlineHookState.reflexSleepFailedAttempts;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetOptionsFailedTarget = g_StreamlineHookState.reflexSetOptionsFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_ReflexSetOptionsFailedAttempts = g_StreamlineHookState.reflexSetOptionsFailedAttempts;
+inline std::atomic<void*>& streamline_hook_g_ReflexSetConstantsFailedTarget = g_StreamlineHookState.reflexSetConstantsFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_ReflexSetConstantsFailedAttempts = g_StreamlineHookState.reflexSetConstantsFailedAttempts;
+inline std::atomic<void*>& streamline_hook_g_PCLSetMarkerFailedTarget = g_StreamlineHookState.pclSetMarkerFailedTarget;
+inline std::atomic<uint32_t>& streamline_hook_g_PCLSetMarkerFailedAttempts = g_StreamlineHookState.pclSetMarkerFailedAttempts;
+
+inline std::atomic<int>& streamline_hook_g_ReflexSleepUnavailableQueries = g_StreamlineHookState.reflexSleepUnavailableQueries;
+inline std::atomic<int>& streamline_hook_g_ReflexSetOptionsUnavailableQueries = g_StreamlineHookState.reflexSetOptionsUnavailableQueries;
 inline constexpr int kReflexSetConstantsUnavailableQueryLimit = 3;
-inline std::atomic<int> streamline_hook_g_ReflexSetConstantsUnavailableQueries{0};
-inline std::atomic<int> streamline_hook_g_PCLUnavailableQueries{0};
-inline std::atomic<uint32_t> streamline_hook_g_RuntimeReflexRetryAttempts{0};
+inline std::atomic<int>& streamline_hook_g_ReflexSetConstantsUnavailableQueries = g_StreamlineHookState.reflexSetConstantsUnavailableQueries;
+inline std::atomic<int>& streamline_hook_g_PCLUnavailableQueries = g_StreamlineHookState.pclUnavailableQueries;
+inline std::atomic<uint32_t>& streamline_hook_g_RuntimeReflexRetryAttempts = g_StreamlineHookState.runtimeReflexRetryAttempts;
 
-inline std::atomic<bool> streamline_hook_g_SLGetFeatureFunctionHooked{false};
-inline std::atomic<bool> streamline_hook_g_SLGetPluginFunctionHooked{false};
-inline std::atomic<bool> streamline_hook_g_SLSetD3DDeviceHooked{false};
-inline std::atomic<bool> streamline_hook_g_SLSetTagHooked{false};
-inline std::atomic<bool> streamline_hook_g_SLSetTagForFrameHooked{false};
-inline std::atomic<bool> streamline_hook_g_SLEvaluateFeatureHooked{false};
-inline std::atomic<bool> streamline_hook_g_VulkanCreateSwapchainHooked{false};
-inline void* streamline_hook_g_Original_vkCreateSwapchainKHR = nullptr;
-inline std::atomic<uint32_t> streamline_hook_g_LastUpscalerEvaluation{0xFFFFFFFFu};
+inline std::atomic<bool>& streamline_hook_g_SLGetFeatureFunctionHooked = g_StreamlineHookState.slGetFeatureFunctionHooked;
+inline std::atomic<bool>& streamline_hook_g_SLGetPluginFunctionHooked = g_StreamlineHookState.slGetPluginFunctionHooked;
+inline std::atomic<bool>& streamline_hook_g_SLSetD3DDeviceHooked = g_StreamlineHookState.slSetD3DDeviceHooked;
+inline std::atomic<bool>& streamline_hook_g_SLSetTagHooked = g_StreamlineHookState.slSetTagHooked;
+inline std::atomic<bool>& streamline_hook_g_SLSetTagForFrameHooked = g_StreamlineHookState.slSetTagForFrameHooked;
+inline std::atomic<bool>& streamline_hook_g_SLEvaluateFeatureHooked = g_StreamlineHookState.slEvaluateFeatureHooked;
+inline std::atomic<bool>& streamline_hook_g_VulkanCreateSwapchainHooked = g_StreamlineHookState.vulkanCreateSwapchainHooked;
+inline void*& streamline_hook_g_Original_vkCreateSwapchainKHR = g_StreamlineHookState.original_vkCreateSwapchainKHR;
+inline std::atomic<uint32_t>& streamline_hook_g_LastUpscalerEvaluation = g_StreamlineHookState.lastUpscalerEvaluation;
 
-inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsHooked{false};
-inline std::atomic<bool> streamline_hook_g_DLSSGGetStateHooked{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSleepHooked{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsHooked{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsHooked{false};
+inline std::atomic<bool>& streamline_hook_g_DLSSGSetOptionsHooked = g_StreamlineHookState.dlssgSetOptionsHooked;
+inline std::atomic<bool>& streamline_hook_g_DLSSGGetStateHooked = g_StreamlineHookState.dlssgGetStateHooked;
+inline std::atomic<bool>& streamline_hook_g_ReflexSleepHooked = g_StreamlineHookState.reflexSleepHooked;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetOptionsHooked = g_StreamlineHookState.reflexSetOptionsHooked;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetConstantsHooked = g_StreamlineHookState.reflexSetConstantsHooked;
 
-inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsReturnedWrapperFallbackLogged{false};
-inline std::atomic<bool> streamline_hook_g_DLSSGGetStateReturnedWrapperFallbackLogged{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSleepReturnedWrapperFallbackLogged{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsReturnedWrapperFallbackLogged{false};
-inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsReturnedWrapperFallbackLogged{false};
+inline std::atomic<bool>& streamline_hook_g_DLSSGSetOptionsReturnedWrapperFallbackLogged = g_StreamlineHookState.dlssgSetOptionsReturnedWrapperFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_DLSSGGetStateReturnedWrapperFallbackLogged = g_StreamlineHookState.dlssgGetStateReturnedWrapperFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSleepReturnedWrapperFallbackLogged = g_StreamlineHookState.reflexSleepReturnedWrapperFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetOptionsReturnedWrapperFallbackLogged = g_StreamlineHookState.reflexSetOptionsReturnedWrapperFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetConstantsReturnedWrapperFallbackLogged = g_StreamlineHookState.reflexSetConstantsReturnedWrapperFallbackLogged;
 
-inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsProactiveFallbackLogged{false};
-inline std::atomic<bool> streamline_hook_g_DLSSGGetStateProactiveFallbackLogged{false};
+inline std::atomic<bool>& streamline_hook_g_DLSSGSetOptionsProactiveFallbackLogged = g_StreamlineHookState.dlssgSetOptionsProactiveFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_DLSSGGetStateProactiveFallbackLogged = g_StreamlineHookState.dlssgGetStateProactiveFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSleepProactiveFallbackLogged = g_StreamlineHookState.reflexSleepProactiveFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetOptionsProactiveFallbackLogged = g_StreamlineHookState.reflexSetOptionsProactiveFallbackLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetConstantsProactiveFallbackLogged = g_StreamlineHookState.reflexSetConstantsProactiveFallbackLogged;
 
+inline std::atomic<bool>& streamline_hook_g_DLSSGSetOptionsLookupLogged = g_StreamlineHookState.dlssgSetOptionsLookupLogged;
+inline std::atomic<bool>& streamline_hook_g_DLSSGGetStateLookupLogged = g_StreamlineHookState.dlssgGetStateLookupLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSleepLookupLogged = g_StreamlineHookState.reflexSleepLookupLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetOptionsLookupLogged = g_StreamlineHookState.reflexSetOptionsLookupLogged;
+inline std::atomic<bool>& streamline_hook_g_ReflexSetConstantsLookupLogged = g_StreamlineHookState.reflexSetConstantsLookupLogged;
 
-inline std::atomic<bool> streamline_hook_g_ReflexSleepProactiveFallbackLogged{false};
+inline std::atomic<ULONGLONG>& streamline_hook_g_ReflexFeatureHookRetryLastMs = g_StreamlineHookState.reflexFeatureHookRetryLastMs;
 
-inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsProactiveFallbackLogged{false};
+inline std::unordered_map<uint32_t, ViewportFGState>& streamline_hook_g_ViewportStates = g_StreamlineHookState.viewportStates;
+inline std::unordered_map<uint32_t, ViewportFGState>& streamline_hook_g_ViewportLoggedStates = g_StreamlineHookState.viewportLoggedStates;
+inline std::unordered_map<uint32_t, uint32_t>& streamline_hook_g_ViewportCapabilityMax = g_StreamlineHookState.viewportCapabilityMax;
 
-inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsProactiveFallbackLogged{false};
-
-inline std::atomic<bool> streamline_hook_g_DLSSGSetOptionsLookupLogged{false};
-
-inline std::atomic<bool> streamline_hook_g_DLSSGGetStateLookupLogged{false};
-
-inline std::atomic<bool> streamline_hook_g_ReflexSleepLookupLogged{false};
-
-inline std::atomic<bool> streamline_hook_g_ReflexSetOptionsLookupLogged{false};
-
-inline std::atomic<bool> streamline_hook_g_ReflexSetConstantsLookupLogged{false};
-
-inline std::atomic<ULONGLONG> streamline_hook_g_ReflexFeatureHookRetryLastMs{0};
-
-inline std::unordered_map<uint32_t, ViewportFGState> streamline_hook_g_ViewportStates;
-
-// The last viewport state written to the log, per viewport. See
-// UpdateViewportRuntimeState: the map above cannot answer what was reported.
-inline std::unordered_map<uint32_t, ViewportFGState> streamline_hook_g_ViewportLoggedStates;
-
-inline std::unordered_map<uint32_t, uint32_t> streamline_hook_g_ViewportCapabilityMax;
-
-inline std::atomic<ULONGLONG> streamline_hook_g_SuppressNewGetStateActivationUntilMs{0};
-
+inline std::atomic<ULONGLONG>& streamline_hook_g_SuppressNewGetStateActivationUntilMs = g_StreamlineHookState.suppressNewGetStateActivationUntilMs;
 inline constexpr ULONGLONG streamline_hook_kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 
-inline std::atomic<bool> streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
-
-// Sustained-generation retire bound for the block above: consecutive GetState
-// samples whose DLSSGState generation evidence keeps advancing before the block
-// is retired as stale. GTA polls GetState roughly per frame, so 3 samples cannot
-// retire the block on a one-frame blip while a real GetState-only re-enable
-// recovers within ~3 frames.
+inline std::atomic<bool>& streamline_hook_g_BlockGetStateOnlyReactivationUntilExplicitSetOptions = g_StreamlineHookState.blockGetStateOnlyReactivationUntilExplicitSetOptions;
 inline constexpr uint32_t streamline_hook_kGetStateOnlyBlockGenerationRetireSamples = 3;
 
-inline std::atomic<bool> streamline_hook_g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
+inline std::atomic<bool>& streamline_hook_g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap = g_StreamlineHookState.blockGetStateOnlyReactivationUntilSafePostFSRBootstrap;
+inline std::atomic<bool>& streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions = g_StreamlineHookState.currentComebackActivatedViaExplicitSetOptions;
+inline std::atomic<bool>& streamline_hook_g_AcceptedRuntimeOffAwaitingSetOptions = g_StreamlineHookState.acceptedRuntimeOffAwaitingSetOptions;
+inline std::atomic<bool>& streamline_hook_g_ConfirmedDLSSReflexSuspendPending = g_StreamlineHookState.confirmedDLSSReflexSuspendPending;
+inline std::atomic<bool>& streamline_hook_g_StartupWindowOffExtensionPending = g_StreamlineHookState.startupWindowOffExtensionPending;
 
-inline std::atomic<bool> streamline_hook_g_CurrentComebackActivatedViaExplicitSetOptions{false};
+inline std::mutex& streamline_hook_g_SuppressedOffMutex = g_StreamlineHookState.suppressedOffMutex;
+inline bool& streamline_hook_g_SuppressedSetOptionsOffDuringStartup = g_StreamlineHookState.suppressedSetOptionsOffDuringStartup;
+inline slViewportHandle& streamline_hook_g_SuppressedOffViewport = g_StreamlineHookState.suppressedOffViewport;
+inline slDLSSGOptions& streamline_hook_g_SuppressedOffOptions = g_StreamlineHookState.suppressedOffOptions;
+inline uint32_t& streamline_hook_g_SuppressedOffViewportKey = g_StreamlineHookState.suppressedOffViewportKey;
+inline std::atomic<uint64_t>& streamline_hook_g_TitleFrameMarkerSequence = g_StreamlineHookState.titleFrameMarkerSequence;
+inline uint64_t& streamline_hook_g_SuppressedOffTitleFrameSequence = g_StreamlineHookState.suppressedOffTitleFrameSequence;
 
-inline std::atomic<bool> streamline_hook_g_AcceptedRuntimeOffAwaitingSetOptions{false};
-
-inline std::atomic<bool> streamline_hook_g_ConfirmedDLSSReflexSuspendPending{false};
-
-inline std::atomic<bool> streamline_hook_g_StartupWindowOffExtensionPending{false};
-
-inline std::mutex streamline_hook_g_SuppressedOffMutex;
-
-inline bool streamline_hook_g_SuppressedSetOptionsOffDuringStartup = false;
-
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivial value initialization cannot throw
-inline slViewportHandle streamline_hook_g_SuppressedOffViewport = {};
-
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivial value initialization cannot throw
-inline slDLSSGOptions streamline_hook_g_SuppressedOffOptions = {};
-
-inline uint32_t streamline_hook_g_SuppressedOffViewportKey = 0;
-
-// Title frames marked (PCL present-start forwarded on the title's own thread). The held OFF records the
-// value at hold time: once the title has marked a frame since, it is replayed on the title's thread at
-// its next marker instead of from a Present detour. Guarded by streamline_hook_g_SuppressedOffMutex.
-inline std::atomic<uint64_t> streamline_hook_g_TitleFrameMarkerSequence{0};
-inline uint64_t streamline_hook_g_SuppressedOffTitleFrameSequence = 0;
-
-// --- DLSSG activation-health diagnostics (GTA cold-start DLSS FG "active but not interpolating", session
-// 20260702_094955: optionsMode=on, updateActive=1, yet presents stayed at base rate with
-// numFramesActuallyPresented==1 and no fps gain) --------------------------------------------------------
-// sl.dlss_g reports WHY it declines to interpolate in DLSSGState.status (sl_dlss_g.h DLSSGStatus bitflags).
-// DLSSG hard-requires Reflex, and GTA's Reflex is historically flaky even without CE (user report), so
-// eDLSSGStatusFailReflexNotDetectedAtRuntime is the prime suspect — the health monitor pairs the status
-// decode with Reflex call-activity evidence so one run pins the failing precondition.
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailResolutionTooLow = 1u << 0;
-
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailReflexNotDetectedAtRuntime = 1u << 1;
-
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailHDRFormatNotSupported = 1u << 2;
-
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailCommonConstantsInvalid = 1u << 3;
-
 inline constexpr uint32_t streamline_hook_kDLSSGStatusFailGetCurrentBackBufferIndex = 1u << 4;
 void FormatDLSSGStatusFlags(uint32_t status, char* buffer, size_t bufferSize);
 
-// Reflex call-activity evidence. Written from the Reflex hooks with RELAXED atomics + GetTickCount64 only:
-// the manual Reflex FPS limiter's latency-critical sleep path must not gain locks, logging, or syscalls
-// (GetTickCount64 is a shared-page memory read). Read from the GetState-side health monitor.
-inline std::atomic<uint64_t> streamline_hook_g_ReflexSleepObservedCount{0};
+inline std::atomic<uint64_t>& streamline_hook_g_ReflexSleepObservedCount = g_StreamlineHookState.reflexSleepObservedCount;
+inline std::atomic<uint64_t>& streamline_hook_g_ReflexSleepLastTickMs = g_StreamlineHookState.reflexSleepLastTickMs;
+inline std::atomic<uint64_t>& streamline_hook_g_ReflexSetOptionsObservedCount = g_StreamlineHookState.reflexSetOptionsObservedCount;
+inline std::atomic<uint64_t>& streamline_hook_g_ReflexSetOptionsLastTickMs = g_StreamlineHookState.reflexSetOptionsLastTickMs;
+inline std::atomic<int32_t>& streamline_hook_g_ReflexLastForwardedMode = g_StreamlineHookState.reflexLastForwardedMode;
 
-inline std::atomic<uint64_t> streamline_hook_g_ReflexSleepLastTickMs{0};
+inline std::atomic<uint64_t>& streamline_hook_g_DLSSGNotInterpolatingStreak = g_StreamlineHookState.dlssgNotInterpolatingStreak;
+inline std::atomic<uint64_t>& streamline_hook_g_ReflexSleepCountAtLastHealthLog = g_StreamlineHookState.reflexSleepCountAtLastHealthLog;
+inline std::atomic<uint32_t>& streamline_hook_g_DLSSGLastObservedStatus = g_StreamlineHookState.dlssgLastObservedStatus;
 
-inline std::atomic<uint64_t> streamline_hook_g_ReflexSetOptionsObservedCount{0};
-
-inline std::atomic<uint64_t> streamline_hook_g_ReflexSetOptionsLastTickMs{0};
-
-inline std::atomic<int32_t> streamline_hook_g_ReflexLastForwardedMode{-1};
-
-// Health-monitor state (GetState thread(s) only; relaxed is fine for diagnostics).
-inline std::atomic<uint64_t> streamline_hook_g_DLSSGNotInterpolatingStreak{0};
-
-inline std::atomic<uint64_t> streamline_hook_g_ReflexSleepCountAtLastHealthLog{0};
-
-inline std::atomic<uint32_t> streamline_hook_g_DLSSGLastObservedStatus{0};
-
-// GTA polls slDLSSGGetState roughly per frame, so the first warning lands within a handful of frames of a
-// failed activation and repeats sparsely afterwards (deterministic sample counts, not wall-clock).
 inline constexpr uint64_t streamline_hook_kDLSSGHealthWarnStreak = 8;
-
 inline constexpr uint64_t streamline_hook_kDLSSGHealthWarnRepeat = 512;
 
-inline PFN_slGetFeatureFunction streamline_hook_g_Original_slGetFeatureFunction = nullptr;
+inline PFN_slGetFeatureFunction& streamline_hook_g_Original_slGetFeatureFunction = g_StreamlineHookState.original_slGetFeatureFunction;
+inline PFN_slGetPluginFunction& streamline_hook_g_Original_slGetPluginFunction = g_StreamlineHookState.original_slGetPluginFunction;
+inline PFN_slSetD3DDevice& streamline_hook_g_Original_slSetD3DDevice = g_StreamlineHookState.original_slSetD3DDevice;
+inline PFN_slSetTag& streamline_hook_g_Original_slSetTag = g_StreamlineHookState.original_slSetTag;
+inline PFN_slSetTagForFrame& streamline_hook_g_Original_slSetTagForFrame = g_StreamlineHookState.original_slSetTagForFrame;
+inline PFN_slEvaluateFeature& streamline_hook_g_Original_slEvaluateFeature = g_StreamlineHookState.original_slEvaluateFeature;
 
-inline PFN_slGetPluginFunction streamline_hook_g_Original_slGetPluginFunction = nullptr;
+inline std::atomic<uint64_t>& streamline_hook_g_StreamlineModuleUnloadGeneration = g_StreamlineHookState.streamlineModuleUnloadGeneration;
+inline std::atomic<bool>& streamline_hook_g_StreamlineTeardownInFlight = g_StreamlineHookState.streamlineTeardownInFlight;
 
-inline PFN_slSetD3DDevice streamline_hook_g_Original_slSetD3DDevice = nullptr;
-
-inline PFN_slSetTag streamline_hook_g_Original_slSetTag = nullptr;
-
-inline PFN_slSetTagForFrame streamline_hook_g_Original_slSetTagForFrame = nullptr;
-
-inline PFN_slEvaluateFeature streamline_hook_g_Original_slEvaluateFeature = nullptr;
-
-// Bumped by every tracked sl.* module unload (OnModuleUnloaded). The proactive feature-hook
-// resolution calls into sl.interposer's slGetFeatureFunction, whose internal dispatch can point
-// into a feature plugin (sl.dlss_g / sl.reflex) that the runtime already unmapped — the
-// DLSS->FSR switch test crashed exactly there (20260812_042259: DEP at a freed sl.dlss_g
-// address from sl_interposer!slGetFeatureFunction+0x162). Resolution snapshots this generation
-// before pinning the modules and rejects the query when a teardown started in between.
-inline std::atomic<uint64_t> streamline_hook_g_StreamlineModuleUnloadGeneration{0};
-
-// Set by every tracked sl.* module unload (OnModuleUnloaded) and cleared by the next sl.* module
-// load (OnModuleLoaded). While set, the Streamline runtime is being torn down or its plugin table
-// is stale, so feature-function resolution must not call sl.interposer's slGetFeatureFunction: its
-// internal dispatch can walk into a plugin that was already unmapped (session 20260813_160845:
-// DEP at a freed sl.dlss_d address from sl_interposer!slGetFeatureFunction+0x162 while only
-// sl.reflex + sl.interposer were pinned; that plugin had no hook slots, so its unload logged
-// nothing but still bumped the unload generation — the generation snapshot cannot detect a
-// teardown that already completed). Event-driven: no sleeps, timers, or polling.
-inline std::atomic<bool> streamline_hook_g_StreamlineTeardownInFlight{false};
-
-inline PFN_slDLSSGSetOptions streamline_hook_g_Original_slDLSSGSetOptions = nullptr;
-
-inline PFN_slDLSSGGetState streamline_hook_g_Original_slDLSSGGetState = nullptr;
-
-inline PFN_slReflexSleep streamline_hook_g_Original_slReflexSleep = nullptr;
-
-inline PFN_slReflexSetOptions streamline_hook_g_Original_slReflexSetOptions = nullptr;
-
-inline PFN_slReflexSetConstants streamline_hook_g_Original_slReflexSetConstants = nullptr;
+inline PFN_slDLSSGSetOptions& streamline_hook_g_Original_slDLSSGSetOptions = g_StreamlineHookState.original_slDLSSGSetOptions;
+inline PFN_slDLSSGGetState& streamline_hook_g_Original_slDLSSGGetState = g_StreamlineHookState.original_slDLSSGGetState;
+inline PFN_slReflexSleep& streamline_hook_g_Original_slReflexSleep = g_StreamlineHookState.original_slReflexSleep;
+inline PFN_slReflexSetOptions& streamline_hook_g_Original_slReflexSetOptions = g_StreamlineHookState.original_slReflexSetOptions;
+inline PFN_slReflexSetConstants& streamline_hook_g_Original_slReflexSetConstants = g_StreamlineHookState.original_slReflexSetConstants;
 
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* streamline_hook_functionName, void*& streamline_hook_function);
 
