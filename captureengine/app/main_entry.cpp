@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "include/libcaptureengine.h"
 #include "common/config/config_reload_policy.h"
 #include "common/config/config_text_encoding.h"
 #include "common/platform/path_utils.h"
@@ -59,47 +60,7 @@ void DispatchHotkey(int hotkeyId) {
     if (hotkeyId != HOTKEY_ID_SCREENSHOT)
         return;
 
-    if (main_g_PseudoOverlay)
-        main_g_PseudoOverlay->BeginScreenshotCapture();
-    const bool screenshotSaved = TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
-    if (main_g_PseudoOverlay) {
-        main_g_PseudoOverlay->EndScreenshotCapture();
-        main_g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
-    }
-    // Show the same result in the inject overlay (hooked game).
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!hDisc)
-        return;
-    DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (!ValidateDiscoveryInfo(pDisc)) {
-        if (pDisc)
-            UnmapViewOfFile(pDisc);
-        CloseHandle(hDisc);
-        return;
-    }
-    uint32_t injPid = pDisc->GetInjectPid();
-    UnmapViewOfFile(pDisc);
-    CloseHandle(hDisc);
-    if (injPid == 0)
-        return;
-    wchar_t shmName[64];
-    GenerateSharedMemName(shmName, 64, injPid);
-    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-    if (!hShm)
-        return;
-    auto* pShm =
-        (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-    if (pShm && ValidateSharedMemory(pShm)) {
-        const OverlayNotificationType notification =
-            screenshotSaved ? OverlayNotificationType::ScreenshotSaved : OverlayNotificationType::ScreenshotFailed;
-        pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification), std::memory_order_release);
-        pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
-    } else if (pShm) {
-        LogError("[Controller] Screenshot notification rejected incompatible inject shared memory ABI");
-    }
-    if (pShm)
-        UnmapViewOfFile(pShm);
-    CloseHandle(hShm);
+    ce_engine_take_screenshot(nullptr);
 }
 
 // Controller main function

@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Connect Capture Engine host to public C ABI:** refactored application hotkey dispatch and screenshot notifications in `main_entry.cpp` to consume the standard `libcaptureengine` C ABI, decoupling front-end dispatch from monolithic controller state.
+
 - **Streamline code comments and archive dated incident logs to wiki:** stripped historical session timestamps and diagnostic narratives across hook thread initialization, swapchain wrapper present tracking, DLSS frame multiplier defaults, and queue reinitialization while archiving durable architectural knowledge in `llm-wiki/log/recent.md`.
 
 - **Modular encoder session summary structures:** decoupled capture session summary and starved episode telemetry structures into dedicated header `media_encoder_session_summary.h`, maintaining strict line ceiling limits across media encoder session state.
