@@ -94,3 +94,13 @@ compatibility. Do not claim performance improvement from an interface change.
 
 Independent engine DLL/configuration/telemetry, events, preview/packet output, dynamic
 reconfiguration and plugin/frame hierarchies remain deferred independent feature work.
+
+## Recording owner (implemented)
+
+recording_session.{h,cpp} owns requested/pending/live-observation bookkeeping and command
+results. ControllerMain owns its scope; controller_recording.cpp adapts existing processes and
+presentation. All frontend decisions read a value snapshot; recording globals are removed.
+Readiness may pump messages: nested start is rejected and a reentrant stop cancels continuation
+before any start command. Request identity is local, not a claim of remote authentication.
+Tests compile the real session, including a stop within the readiness adapter. Historical
+controller substring assertions are replaced by behavior tests; process/ABI/UI wiring guards stay.

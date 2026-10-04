@@ -4,230 +4,31 @@
 #include "common/config/live_stream_config.h"
 #include "common/capture/recording_lifecycle.h"
 
-namespace {
-bool IsControllerLiveStreamOutput() {
-    return main_g_LiveStreamRecording;
-}
-}  // namespace
-
-// Publish a recording-failure notification through the inject shared-memory
-// channel that both the inject overlay and the pseudo overlay consume. The
-// notification is transient (7 s, matching the finalization failure duration)
-// and is only shown once the overlays are back in the idle recording state.
 void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming) {
-    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-        sharedMemory->runtimeState.notificationType.store(
+    WithInjectSharedMem([&](SharedMemoryLayout* memory) {
+        memory->runtimeState.notificationType.store(
             static_cast<uint32_t>(streaming ? OverlayNotificationType::StreamingFailed
-                                            : OverlayNotificationType::RecordingFailed),
-            std::memory_order_release);
-        sharedMemory->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
+                                            : OverlayNotificationType::RecordingFailed), std::memory_order_release);
+        memory->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
     });
-    LogInfo("[Controller] %s failure notification published (%s)", streaming ? "Stream" : "Recording",
-            reason ? reason : "unspecified");
+    LogError("[ControllerSession] Recording failure (%s, streaming=%d request=%llu)", reason, streaming ? 1 : 0,
+             static_cast<unsigned long long>(ControllerRecordingSnapshot().request));
 }
 
-void CheckRecordingFailureState() {
-    if (!main_g_Recording)
-        return;
+void CheckRecordingFailureState() { ReconcileControllerRecording(false); }
 
-    uint32_t failureCode = static_cast<uint32_t>(RecordingFailureCode::None);
-    if (!WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-            failureCode = sharedMemory->runtimeState.recordingFailureCode.load(std::memory_order_acquire);
-        }) ||
-        failureCode == static_cast<uint32_t>(RecordingFailureCode::None)) {
-        return;
-    }
-
-    LogError("[Controller] Recording failed with code %u; stopping all recording state", failureCode);
-    RequestRecordingStopAndReleaseMedia("recording failure", 1000);
-
-    main_g_Recording = false;
-    PublishRecordingStartIntent(RecordingStartIntent::Idle, "recording failure");
-    PublishRecordingFailureOverlayNotification("recording failure", IsControllerLiveStreamOutput());
-    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-        // Consume the code so a stale value cannot fail a later recording start
-        // before the media process resets it itself.
-        sharedMemory->runtimeState.recordingFailureCode.store(
-            static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_release);
-    });
-    if (main_g_AutoRecordEnabled) {
-        LogError("[Controller] Auto-record disabled after a recording-integrity failure");
-        main_g_AutoRecordEnabled = false;
-        main_g_AutoRecordStartTime = 0;
-    }
-    if (main_g_Tray)
-        main_g_Tray->SetRecordingState(false);
-}
-
-// Every explicit stop must clear controller ownership as well as the media intent. Otherwise
-// the next toggle would stop again, and the tray would still show recording as active.
-bool StopControllerRecording(const char* reason) {
-    const bool active = main_g_Recording ||
-                        main_g_RecordingStartIntent.load(std::memory_order_acquire) != RecordingStartIntent::Idle;
-    const uint64_t pendingStartTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
-    main_g_Recording = false;
-    if (pendingStartTick) {
-        LogWarn("[Controller] Stop requested %llu ms after start, before controller observed recording live; awaiting media finalization",
-                static_cast<unsigned long long>(GetTickCount64() - pendingStartTick));
-    }
-    PublishRecordingStartIntent(RecordingStartIntent::Idle, reason);
-    if (main_g_Tray)
-        main_g_Tray->SetRecordingState(false);
-    if (!active)
-        return true;
-    WithInjectSharedMem([&](SharedMemoryLayout* shm) {
-        shm->runtimeState.notificationType.store(static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing),
-                                                 std::memory_order_release);
-        shm->runtimeState.notificationExpiry.store(GetTickCount64() + 60000ULL, std::memory_order_release);
-    });
-    if (main_g_PseudoOverlay)
-        main_g_PseudoOverlay->ShowRecordingFinalizingNotification();
-    const bool accepted = RequestRecordingStopAndReleaseMedia(reason, 5000);
-    if (accepted)
-        LogInfo("[Controller] Recording stop accepted; media finalization continues asynchronously");
-    else
-        LogWarn("[Controller] Recording stop state cleared, but media finalization acceptance is unknown");
-    return accepted;
-}
-
-// Toggle recording - controller notifies inject which sets shared memory
-// Media process polls shared memory flags - more reliable than pipe IPC
 void ToggleRecording() {
-    if (!main_g_Recording) {
-        main_g_Recording = true;
-        main_g_LiveStreamRecording = ce::live_stream::IsLiveStreamTarget(main_g_Config.video.outputDir);
-        PrepareRecordingDiagnosticIdentity();
-        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
-            shm->runtimeState.notificationExpiry.store(0, std::memory_order_release);
-            shm->runtimeState.notificationType.store(static_cast<uint32_t>(OverlayNotificationType::None),
-                                                     std::memory_order_release);
-        });
-        PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
-        main_g_RecordingStartRequestTick.store(GetTickCount64(), std::memory_order_release);
-        LogInfo("[Controller] Starting recording...");
-
-        // Inject recording uses the sensor child even when no sensor overlay
-        // rows are enabled: it publishes exact screen-change timestamps for
-        // final DLSS-G outputs. Failure is non-fatal because the hook's virtual
-        // output clock remains a smooth fallback.
-        if (!EnsureSensorProcessReady()) {
-            LogWarn("[Controller] Display-timing sensor unavailable; inject recording will use virtual final-output timing");
-        }
-
-        if (!EnsureMediaProcessReady(10000)) {
-            LogError("[Controller] Media process is not ready, cannot start recording");
-            main_g_Recording = false;
-            if (main_g_Tray)
-                main_g_Tray->SetRecordingState(false);
-            PublishRecordingStartIntent(RecordingStartIntent::Idle, "media readiness failure");
-            PublishRecordingFailureOverlayNotification("media readiness failure", IsControllerLiveStreamOutput());
-            return;
-        }
-
-        // Notify inject process - it sets shared memory flags and media polls them
-        if (main_g_InjectClient && main_g_InjectClient->IsConnected()) {
-            ProcessResponse resp;
-            // This ack only proves inject accepted the command and set cmdStartRecording. The
-            // media process is still starting up and needs seconds to reach a live recording, so
-            // reporting "started" here would be a claim the controller cannot make. The truthful
-            // transition is logged by CheckChildProcessHealth when isRecording goes live.
-            if (main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                LogInfo("[Controller] Recording start request delivered to inject; waiting for media to go live");
-            } else {
-                LogError("[Controller] Failed to notify inject process - retrying once");
-                // Retry once on failure
-                if (main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                    LogInfo("[Controller] Recording start request delivered to inject on retry; waiting for media "
-                            "to go live");
-                } else {
-                    LogError("[Controller] Recording start failed");
-                    main_g_Recording = false;
-                    PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject start command failure");
-                    PublishRecordingFailureOverlayNotification("inject start command failure",
-                                                               IsControllerLiveStreamOutput());
-                }
-            }
-        } else {
-            LogError("[Controller] Inject process is not connected, cannot start recording");
-            main_g_Recording = false;
-            PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject unavailable");
-            PublishRecordingFailureOverlayNotification("inject unavailable", IsControllerLiveStreamOutput());
-        }
-    } else {
+    if (ControllerRecordingSnapshot().requested)
         StopControllerRecording("record hotkey");
-    }
-
-    if (main_g_Tray)
-        main_g_Tray->SetRecordingState(main_g_Recording);
+    else
+        StartControllerRecording(RecordingStartIntent::Video, "record hotkey");
 }
 
-// Audio-only recording toggle (no video capture/encoding)
 void ToggleAudioOnlyRecording() {
-    if (!main_g_Recording) {
-        main_g_Recording = true;
-        main_g_LiveStreamRecording = false;
-        PrepareRecordingDiagnosticIdentity();
-        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
-            shm->runtimeState.notificationExpiry.store(0, std::memory_order_release);
-            shm->runtimeState.notificationType.store(static_cast<uint32_t>(OverlayNotificationType::None),
-                                                     std::memory_order_release);
-        });
-        const bool audioOnlySet =
-            PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only hotkey");
-        main_g_RecordingStartRequestTick.store(GetTickCount64(), std::memory_order_release);
-        LogInfo("[Controller] Starting audio-only recording...");
-
-        if (!EnsureMediaProcessReady(10000)) {
-            LogError("[Controller] Media process is not ready, cannot start audio-only recording");
-            main_g_Recording = false;
-            if (main_g_Tray)
-                main_g_Tray->SetRecordingState(false);
-            PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only media readiness failure");
-            PublishRecordingFailureOverlayNotification("audio-only media readiness failure");
-            return;
-        }
-
-        if (!audioOnlySet) {
-            LogWarn("[Controller] No inject shared memory found for audio-only flag - media will use separate IPC");
-            PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only shared-state retry");
-        }
-
-        bool startCommandDelivered = false;
-
-        // Notify inject process - it sets cmdStartRecording in shared memory.
-        // The audio-only flag and pending intent were already published above.
-        if (main_g_InjectClient && main_g_InjectClient->IsConnected()) {
-            ProcessResponse resp;
-            if (main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                startCommandDelivered = true;
-                LogInfo("[Controller] Audio-only recording request delivered through inject");
-            } else {
-                LogWarn("[Controller] Failed to notify inject for audio-only recording; trying media directly");
-            }
-        }
-
-        // Also notify media directly. This is authoritative when inject is unavailable
-        // and harmless when the shared-memory request won the race first.
-        if (main_g_MediaClient && main_g_MediaClient->IsConnected()) {
-            ProcessResponse resp = ProcessResponse::Error;
-            if (main_g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000) &&
-                resp != ProcessResponse::Error) {
-                startCommandDelivered = true;
-                LogInfo("[Controller] Audio-only recording request accepted by media");
-            }
-        }
-        if (!startCommandDelivered) {
-            LogError("[Controller] Audio-only recording start failed");
-            main_g_Recording = false;
-            PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only start command failure");
-            PublishRecordingFailureOverlayNotification("audio-only start command failure");
-        }
-    } else {
+    if (ControllerRecordingSnapshot().requested)
         StopControllerRecording("audio-only hotkey");
-    }
-
-    if (main_g_Tray)
-        main_g_Tray->SetRecordingState(main_g_Recording);
+    else
+        StartControllerRecording(RecordingStartIntent::AudioOnly, "audio-only hotkey");
 }
 
 // Toggle the injected in-game overlay on/off at runtime. The inject process owns
@@ -268,7 +69,7 @@ void ToggleBenchmark() {
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
-    PublishRecordingStartIntent(RecordingStartIntent::Idle, "controller shutdown");
+    ShutdownControllerRecording();
 
     // Signal Logger and Sensor processes to exit via named event
     wchar_t shutdownEventName[64];
@@ -407,90 +208,7 @@ void CheckChildProcessHealth() {
         return;  // Check once per second
     lastCheck = GetTickCount();
 
-    RecordingStartIntent recordingStartIntent = main_g_RecordingStartIntent.load(std::memory_order_acquire);
-    if (main_g_Recording && recordingStartIntent != RecordingStartIntent::Idle) {
-        WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-            if (sharedMemory->runtimeState.isRecording.load(std::memory_order_acquire)) {
-                // The media process published a live recording. This, not the inject command
-                // ack, is the moment a recording actually exists; anything stopped before it
-                // produces no output at all, so the elapsed time is reported to make that
-                // startup window visible in the log.
-                // This check runs once per second, so the elapsed time comes from media's own live
-                // stamp; the observation delay is logged separately.
-                const uint64_t requestTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
-                const ce::recording_lifecycle::RecordingStartupTiming timing =
-                    ce::recording_lifecycle::ResolveRecordingStartupTiming(
-                        requestTick, sharedMemory->runtimeState.recordingStartTime.load(std::memory_order_acquire),
-                        GetTickCount64());
-                LogInfo(
-                    "[Controller] Recording is live (%s, %llu ms after the start request; observed after %llu ms, "
-                    "liveStamp=%s)",
-                    recordingStartIntent == RecordingStartIntent::AudioOnly ? "audio-only" : "video",
-                    static_cast<unsigned long long>(timing.startupMs),
-                    static_cast<unsigned long long>(timing.observedMs), timing.exact ? "media" : "unavailable");
-                recordingStartIntent = RecordingStartIntent::Idle;
-                main_g_RecordingStartIntent.store(RecordingStartIntent::Idle, std::memory_order_release);
-            }
-        });
-    }
-
-    const bool recordingStartPending = main_g_Recording && recordingStartIntent != RecordingStartIntent::Idle;
-    const bool mediaUnavailable = recordingStartPending &&
-                                  (!main_g_hMediaProcess || !IsProcessRunning(main_g_hMediaProcess) || !main_g_MediaClient ||
-                                   !main_g_MediaClient->IsConnected());
-    const bool injectUnavailable = recordingStartPending && recordingStartIntent == RecordingStartIntent::Video &&
-                                   (!main_g_hInjectProcess || !IsProcessRunning(main_g_hInjectProcess) || !main_g_InjectClient ||
-                                    !main_g_InjectClient->IsConnected());
-    if (mediaUnavailable || injectUnavailable) {
-        const char* failedChild = mediaUnavailable ? "media" : "inject";
-        LogError("[Controller] Required %s process/channel exited before recording became live; cancelling start intent",
-                 failedChild);
-        RequestRecordingStopAndReleaseMedia("required child exited before recording live", 1000);
-        main_g_Recording = false;
-        PublishRecordingStartIntent(RecordingStartIntent::Idle, "required child exited before recording live");
-        PublishRecordingFailureOverlayNotification(
-            "required child exited before recording live",
-            recordingStartIntent == RecordingStartIntent::Video && IsControllerLiveStreamOutput());
-        if (main_g_Tray) {
-            main_g_Tray->SetRecordingState(false);
-        }
-    }
-
-    // A live recording whose media process died cannot finalize through the
-    // normal stop path: no failure code and no completion notification will
-    // ever arrive from it. Report the failed capture in both overlays and clear
-    // the hook-facing recording state so the REC indicator cannot stay stuck
-    // after the process is gone; the recovery below still respawns an idle
-    // media process for the next recording.
-    bool recordingLive = false;
-    bool recordingLiveAudioOnly = false;
-    WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-        recordingLive = sharedMemory->runtimeState.isRecording.load(std::memory_order_acquire);
-        recordingLiveAudioOnly = sharedMemory->runtimeState.audioOnly.load(std::memory_order_acquire);
-    });
-    const bool mediaGoneWhileLive =
-        main_g_Recording && recordingLive && (!main_g_hMediaProcess || !IsProcessRunning(main_g_hMediaProcess));
-    if (mediaGoneWhileLive) {
-        LogError("[Controller] Media process exited while recording was live; recording failed");
-        main_g_Recording = false;
-        WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-            sharedMemory->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
-            sharedMemory->runtimeState.captureRequested.store(false, std::memory_order_release);
-            sharedMemory->runtimeState.isRecording.store(false, std::memory_order_release);
-            sharedMemory->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-        });
-        PublishRecordingStartIntent(RecordingStartIntent::Idle, "media process exited while recording live");
-        PublishRecordingFailureOverlayNotification("media process exited while recording live",
-                                                   !recordingLiveAudioOnly && IsControllerLiveStreamOutput());
-        if (main_g_AutoRecordEnabled) {
-            LogError("[Controller] Auto-record disabled after the media process exited during recording");
-            main_g_AutoRecordEnabled = false;
-            main_g_AutoRecordStartTime = 0;
-        }
-        if (main_g_Tray) {
-            main_g_Tray->SetRecordingState(false);
-        }
-    }
+    ReconcileControllerRecording(true);
 
     auto recoverProcess = [](ProcessMode mode, HANDLE& process, ProcessIPCClient* client, const char* name,
                              bool expected, bool& recoveryFailureReported) {

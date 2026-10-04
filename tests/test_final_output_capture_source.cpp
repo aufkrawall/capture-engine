@@ -137,15 +137,14 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
     const std::string toggle =
         FunctionBody(recording, "void ToggleRecording()", "void ToggleAudioOnlyRecording()");
     ASSERT_FALSE(toggle.empty());
-    const size_t sensorReady = toggle.find("EnsureSensorProcessReady()");
-    const size_t startCommand = toggle.find("ProcessCommand::StartRecording");
-    ASSERT_NE(sensorReady, std::string::npos);
-    ASSERT_NE(startCommand, std::string::npos);
-    EXPECT_LT(sensorReady, startCommand);
+    EXPECT_NE(toggle.find("StartControllerRecording(RecordingStartIntent::Video"), std::string::npos);
+    const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
+    EXPECT_NE(adapter.find("EnsureSensorProcessReady()"), std::string::npos);
+    // Actual intent/sensor/readiness ordering is exercised by RecordingSessionTest.
     const std::string sensorPolicy = FunctionBody(
         controller, "inline bool ShouldStartSensorProcess", "inline bool HardwareSensorServiceConfigEquals");
     ASSERT_FALSE(sensorPolicy.empty());
-    EXPECT_NE(sensorPolicy.find("main_g_Recording"), std::string::npos)
+    EXPECT_NE(sensorPolicy.find("ControllerRecordingSnapshot().requested"), std::string::npos)
         << "a config reload must not stop display timing during an active recording";
     EXPECT_NE(sensor.find("GetRecordingStartIntent() == RecordingStartIntent::Video"), std::string::npos)
         << "the collector must arm from intent before inject capture becomes live";

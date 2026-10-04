@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-04 - Owned controller recording session
+
+- ControllerMain scopes recording_session; controller_recording adapts processes, tray and overlay feedback.
+  Requested/pending ownership, output mode, diagnostic serial and acknowledgement interpretation no longer
+  live in frontend globals. API/hotkey/automatic paths use the same commands and value snapshots.
+- Readiness can dispatch messages. Tests exercise nested start rejection and a reentrant stop canceling
+  the original start before child dispatch. Unknown stop acknowledgement permits restart without claiming
+  that no output exists; media keeps asynchronous finalization ownership.
+- Real-session regressions replace controller substring policy assertions. Native suite and all 14 FG flow
+  scenarios passed the product/package gate (0.1.6975); real games and capture/A/V validation remain pending.
+- Current contracts and attribution limits: `refactor-contracts.md`. Validated IPC mapping is the next slice.
+
 ### 2026-10-04 - Review of 3719efc6 through d66cf21e: controller boundary, DLL ABI and log ownership
 
 - The descriptor refactors changed dynamically resolved C exports under their original names. An old DLL could

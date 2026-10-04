@@ -64,7 +64,7 @@ ce_status_t TakeControllerScreenshot() {
 }
 
 ce_recording_intent_t ControllerRecordingIntent() {
-    const auto intent = main_g_RecordingStartIntent.load(std::memory_order_acquire);
+    const auto intent = ControllerRecordingSnapshot().pendingIntent;
     switch (intent) {
         case RecordingStartIntent::Video:
             return CE_RECORDING_INTENT_VIDEO;
@@ -81,21 +81,21 @@ ce_status_t ControllerCommand(ce::api::Command command, ce_recording_intent_t in
         return CE_ERROR_INVALID_STATE;
     switch (command) {
         case Command::Start:
-            if (main_g_Recording || ControllerRecordingIntent() != CE_RECORDING_INTENT_IDLE)
+            if (ControllerRecordingSnapshot().requested || ControllerRecordingIntent() != CE_RECORDING_INTENT_IDLE)
                 return CE_ERROR_INVALID_STATE;
             LogDebug("[EngineAPI] Recording start requested (intent=%d reason=%s)", static_cast<int>(intent),
                      reason && *reason ? reason : "engine API start");
-            if (intent == CE_RECORDING_INTENT_AUDIO_ONLY)
-                ToggleAudioOnlyRecording();
-            else
-                ToggleRecording();
-            return main_g_Recording ? CE_SUCCESS : CE_ERROR_PROCESS_FAILURE;
+            return StartControllerRecording(
+                       intent == CE_RECORDING_INTENT_AUDIO_ONLY ? RecordingStartIntent::AudioOnly
+                                                              : RecordingStartIntent::Video,
+                       reason && *reason ? reason : "engine API start") == ce::controller::CommandOutcome::Accepted
+                       ? CE_SUCCESS : CE_ERROR_PROCESS_FAILURE;
         case Command::Stop:
             return StopControllerRecording(reason && *reason ? reason : "engine API stop") ? CE_SUCCESS
                                                                                            : CE_ERROR_IPC_FAILURE;
         case Command::ToggleVideo:
         case Command::ToggleAudio:
-            if (main_g_Recording || ControllerRecordingIntent() != CE_RECORDING_INTENT_IDLE)
+            if (ControllerRecordingSnapshot().requested || ControllerRecordingIntent() != CE_RECORDING_INTENT_IDLE)
                 return ControllerCommand(Command::Stop, CE_RECORDING_INTENT_IDLE, "engine API toggle");
             return ControllerCommand(
                 Command::Start,

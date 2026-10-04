@@ -312,7 +312,9 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
 
     EXPECT_NE(controllerSource.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
     EXPECT_NE(controllerSource.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(reason, 5000)"), std::string::npos);
+    // The session regression exercises the timeout/order; the adapter preserves child transport ownership.
+    const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
+    EXPECT_NE(adapter.find("RequestRecordingStopAndReleaseMedia(reason, timeoutMs)"), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 
     const size_t stopCase = mediaSource.find("case ProcessCommand::StopRecording:");

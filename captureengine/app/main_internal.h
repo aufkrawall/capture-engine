@@ -71,6 +71,7 @@
 #include "captureengine/sensors/sensor_bridge_host.h"
 
 #include "tray.h"
+#include "controller_recording.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -122,19 +123,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 // Controller state
 inline bool main_g_Running = true;
-
-inline bool main_g_Recording = false;
-inline bool main_g_LiveStreamRecording = false;
-
-inline uint32_t main_g_RecordingSerial = 0;
-
-inline std::atomic<RecordingStartIntent> main_g_RecordingStartIntent{RecordingStartIntent::Idle};
-
-// Tick of the hotkey/request that published the pending start intent. A recording is not live
-// when the child accepts the command: the disposable media process still has to load its engine,
-// resolve the A/V delay and route capture. This anchors the truthful "recording is live" report
-// in CheckChildProcessHealth so the log cannot claim a start the media process has not made.
-inline std::atomic<uint64_t> main_g_RecordingStartRequestTick{0};
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 inline AppConfig main_g_Config;
@@ -272,16 +260,6 @@ inline bool ShouldStartMediaProcessAtStartup() {
     return main_g_AutoRecordEnabled;
 }
 
-inline void PrepareRecordingDiagnosticIdentity() {
-    if (main_g_hMediaProcess && IsProcessRunning(main_g_hMediaProcess) && !g_RecordingId.empty())
-        return;
-
-    char recordingId[24]{};
-    snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(++main_g_RecordingSerial));
-    g_RecordingId = recordingId;
-    LogInfo("[Controller] Recording diagnostic identity allocated: %s", g_RecordingId.c_str());
-}
-
 inline bool ShouldStartLoggerProcess(const AppConfig& config) {
     return IsAnyLoggingEnabled(config.logLevel);
 }
@@ -289,7 +267,7 @@ inline bool ShouldStartLoggerProcess(const AppConfig& config) {
 inline bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM ||
            ShouldStartOverlayDisplayTiming(config.overlay.showOverlay, config.overlay.showSystemLatency) ||
-           main_g_Recording;
+           ControllerRecordingSnapshot().requested;
 }
 
 inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
@@ -382,7 +360,7 @@ inline DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck, DWORD configCheckInt
 
     if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
         DWORD elapsed = now - main_g_AutoRecordStartTime;
-        DWORD nextAutoActionMs = !main_g_Recording ? main_g_AutoRecordDelayMs : (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs);
+        DWORD nextAutoActionMs = !ControllerRecordingSnapshot().requested ? main_g_AutoRecordDelayMs : (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs);
         if (elapsed >= nextAutoActionMs) {
             return 0;
         }
@@ -646,33 +624,6 @@ inline bool WithInjectSharedMem(const std::function<void(SharedMemoryLayout*)>& 
     UnmapViewOfFile(pShm);
     CloseHandle(hShm);
     return true;
-}
-
-inline bool PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
-    main_g_RecordingStartIntent.store(intent, std::memory_order_release);
-    if (intent == RecordingStartIntent::Idle) {
-        // Every abort/stop path funnels through here, so a pending start tick cannot survive into
-        // a later recording and mis-report its startup window. Callers that want to report on the
-        // pending start read the tick before clearing the intent.
-        main_g_RecordingStartRequestTick.store(0, std::memory_order_release);
-    }
-    const bool published = WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
-        sharedMemory->runtimeState.SetRecordingStartIntent(intent);
-        if (intent != RecordingStartIntent::AudioOnly) {
-            sharedMemory->runtimeState.audioOnly.store(false, std::memory_order_release);
-        } else {
-            sharedMemory->runtimeState.audioOnly.store(true, std::memory_order_release);
-        }
-    });
-    if (main_g_PseudoOverlay) {
-        main_g_PseudoOverlay->SetRecordingStartIntent(intent);
-    }
-    LogInfo("[Controller] Recording start intent=%s published=%d reason=%s",
-            intent == RecordingStartIntent::Video       ? "video"
-            : intent == RecordingStartIntent::AudioOnly ? "audio-only"
-                                                        : "idle",
-            published ? 1 : 0, reason ? reason : "unspecified");
-    return published;
 }
 
 inline bool RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,

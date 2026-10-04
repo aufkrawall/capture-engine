@@ -300,7 +300,7 @@ void SyncPseudoOverlayConfiguration(const char* reason) {
         LogInfo("[Controller] Initializing pseudo-overlay (%s)...", reason ? reason : "configuration");
         auto overlay = std::make_unique<PseudoOverlay>();
         overlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
-        overlay->SetRecordingStartIntent(main_g_RecordingStartIntent.load(std::memory_order_acquire));
+        overlay->SetRecordingStartIntent(ControllerRecordingSnapshot().pendingIntent);
         HMODULE hMod = GetModuleHandle(NULL);
         if (!overlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
             LogError("[Controller] Failed to initialize pseudo-overlay");

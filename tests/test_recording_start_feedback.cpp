@@ -9,6 +9,7 @@
 
 #include "source_fragment_reader.h"
 
+// Controller lifecycle ordering/failure checks now exercise RecordingSession in test_recording_session.cpp.
 namespace {
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
@@ -17,44 +18,7 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 
 }  // namespace
 
-TEST(RecordingStartFeedbackSourceTest, ControllerPublishesIntentBeforeReadinessWaits) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
 
-    const size_t videoToggle = source.find("void ToggleRecording() {");
-    const size_t videoIntent = source.find(
-        "PublishRecordingStartIntent(RecordingStartIntent::Video, \"record hotkey\")", videoToggle);
-    const size_t videoReady = source.find("EnsureMediaProcessReady(10000)", videoToggle);
-    ASSERT_NE(videoToggle, std::string::npos);
-    ASSERT_NE(videoIntent, std::string::npos);
-    ASSERT_NE(videoReady, std::string::npos);
-    EXPECT_LT(videoIntent, videoReady);
-
-    const size_t audioToggle = source.find("void ToggleAudioOnlyRecording() {");
-    const size_t audioIntent = source.find(
-        "PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, \"audio-only hotkey\")", audioToggle);
-    const size_t audioReady = source.find("EnsureMediaProcessReady(10000)", audioToggle);
-    ASSERT_NE(audioToggle, std::string::npos);
-    ASSERT_NE(audioIntent, std::string::npos);
-    ASSERT_NE(audioReady, std::string::npos);
-    EXPECT_LT(audioIntent, audioReady);
-}
-
-TEST(RecordingStartFeedbackSourceTest, ControllerClearsIntentOnEveryOwnedTerminalClass) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-
-    EXPECT_NE(source.find("\"media readiness failure\""), std::string::npos);
-    EXPECT_NE(source.find("\"inject start command failure\""), std::string::npos);
-    EXPECT_NE(source.find("\"inject unavailable\""), std::string::npos);
-    EXPECT_NE(source.find("\"audio-only media readiness failure\""), std::string::npos);
-    EXPECT_NE(source.find("\"audio-only start command failure\""), std::string::npos);
-    EXPECT_NE(source.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
-    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-    EXPECT_NE(source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)"), std::string::npos);
-    EXPECT_NE(source.find("\"required child exited before recording live\""), std::string::npos);
-    EXPECT_NE(source.find("\"controller shutdown\""), std::string::npos);
-}
 
 TEST(RecordingStartFeedbackSourceTest, MediaOwnsLiveAndTerminalIntentTransitions) {
     const std::string source = ReadSource("captureengine/media/media_main.cpp");
@@ -178,29 +142,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay)
     EXPECT_EQ(pseudo.find("\"Recording saved - video degraded\""), std::string::npos);
 }
 
-TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
-    const size_t helper = source.find("bool StopControllerRecording(const char* reason)");
-    ASSERT_NE(helper, std::string::npos);
-    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", helper);
-    ASSERT_NE(stopLine, std::string::npos);
-    const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
-    EXPECT_NE(notifCall, std::string::npos);
-}
 
-TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-    const size_t helper = source.find("bool StopControllerRecording(const char* reason)");
-    ASSERT_NE(helper, std::string::npos);
-    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", helper);
-    ASSERT_NE(stopLine, std::string::npos);
-    const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
-    EXPECT_NE(notifCall, std::string::npos);
-}
 
 TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinalization) {
     const std::string source = ReadSource("captureengine/media/media_main.cpp");
@@ -250,76 +192,9 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesFailureNotificationOnStartF
     EXPECT_NE(source.find("notificationExpiry.store(GetTickCount64() + 7000ULL", publish), std::string::npos);
 }
 
-TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnFailureCode) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("void PublishRecordingFailureOverlayNotification("), std::string::npos);
-    const size_t check = source.find("void CheckRecordingFailureState()");
-    ASSERT_NE(check, std::string::npos);
-    const size_t notif = source.find(
-        "PublishRecordingFailureOverlayNotification(\"recording failure\", IsControllerLiveStreamOutput())",
-        check);
-    EXPECT_NE(notif, std::string::npos);
-    const size_t reset = source.find("recordingFailureCode.store(", check);
-    EXPECT_NE(reset, std::string::npos);
-}
 
-TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationOnStartAborts) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    const std::vector<std::pair<std::string, bool>> cases = {
-        {"\"media readiness failure\"", true},
-        {"\"inject start command failure\"", true},
-        {"\"inject unavailable\"", true},
-        {"\"audio-only media readiness failure\"", false},
-        {"\"audio-only start command failure\"", false},
-    };
-    for (const auto& [reason, streamingAware] : cases) {
-        const size_t intent = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, " + reason + ")");
-        ASSERT_NE(intent, std::string::npos) << reason;
-        const size_t notif = source.find("PublishRecordingFailureOverlayNotification(", intent);
-        ASSERT_NE(notif, std::string::npos) << reason;
-        const size_t callEnd = source.find(");", notif);
-        ASSERT_NE(callEnd, std::string::npos) << reason;
-        const std::string call = source.substr(notif, callEnd + 2 - notif);
-        EXPECT_NE(call.find(reason), std::string::npos) << reason;
-        if (streamingAware) {
-            EXPECT_NE(call.find("IsControllerLiveStreamOutput()"), std::string::npos) << reason;
-        } else {
-            EXPECT_EQ(call.find("IsControllerLiveStreamOutput()"), std::string::npos) << reason;
-        }
-    }
-}
 
-TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenChildDiesBeforeLive) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    const size_t block = source.find("\"required child exited before recording live\"");
-    ASSERT_NE(block, std::string::npos);
-    const size_t notification = source.find("PublishRecordingFailureOverlayNotification(", block);
-    ASSERT_NE(notification, std::string::npos);
-    EXPECT_NE(source.find("\"required child exited before recording live\"", notification), std::string::npos);
-    EXPECT_NE(source.find("recordingStartIntent == RecordingStartIntent::Video && IsControllerLiveStreamOutput()",
-                          notification),
-              std::string::npos);
-}
 
-TEST(RecordingStartFeedbackSourceTest, ControllerPublishesFailureNotificationWhenMediaDiesLive) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-    const size_t block = source.find("if (mediaGoneWhileLive) {");
-    ASSERT_NE(block, std::string::npos);
-    const size_t notification = source.find("PublishRecordingFailureOverlayNotification(", block);
-    ASSERT_NE(notification, std::string::npos);
-    EXPECT_NE(source.find("\"media process exited while recording live\"", notification), std::string::npos);
-    EXPECT_NE(source.find("!recordingLiveAudioOnly && IsControllerLiveStreamOutput()", notification),
-              std::string::npos);
-    EXPECT_NE(source.find("runtimeState.isRecording.store(false", block), std::string::npos);
-    EXPECT_NE(source.find(
-                  "PublishRecordingStartIntent(RecordingStartIntent::Idle, \"media process exited while recording live\")",
-                  block),
-              std::string::npos);
-}
 
 TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {
     const std::string api = ReadSource("mediaengine/engine/mediaengine.h");
@@ -411,62 +286,8 @@ TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFi
 // The inject ack only proves inject set cmdStartRecording; the media process may still be
 // seconds away from a live recording. Logging "Recording started" there reported a recording
 // that did not exist and, in the aborted case, never would.
-TEST(RecordingStartFeedbackSourceTest, ControllerReportsRecordingLiveOnlyWhenMediaPublishesIt) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
 
-    EXPECT_EQ(source.find("LogInfo(\"[Controller] Recording started\")"), std::string::npos)
-        << "the inject command ack is not evidence that a recording started";
-    EXPECT_NE(source.find("Recording start request delivered to inject"), std::string::npos);
 
-    // The truthful transition is owned by the health check, which observes the media process's
-    // published isRecording state.
-    const size_t health = source.find("void CheckChildProcessHealth()");
-    ASSERT_NE(health, std::string::npos);
-    const size_t isRecording = source.find("runtimeState.isRecording.load(std::memory_order_acquire)", health);
-    ASSERT_NE(isRecording, std::string::npos);
-    const size_t live = source.find("Recording is live", isRecording);
-    EXPECT_NE(live, std::string::npos);
-
-    // The health check polls once per second; the reported startup must come from media's own
-    // live stamp, not from when the poll happened to notice (20260927_195021: +5453 vs +6375 ms).
-    const size_t resolve = source.find("ce::recording_lifecycle::ResolveRecordingStartupTiming(", isRecording);
-    ASSERT_NE(resolve, std::string::npos);
-    EXPECT_LT(resolve, live);
-    EXPECT_NE(source.find("runtimeState.recordingStartTime.load(std::memory_order_acquire)", resolve),
-              std::string::npos);
-}
-
-// The controller's own evidence for the aborted case: how long the start had been pending when
-// the stop arrived. The tick is armed on every start and cleared by every idle transition so it
-// cannot leak into a later recording.
-TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStartupWindow) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(source.empty());
-
-    EXPECT_NE(source.find("main_g_RecordingStartRequestTick.store(GetTickCount64()"), std::string::npos);
-    EXPECT_NE(source.find("before controller observed recording live"), std::string::npos);
-    EXPECT_NE(source.find("awaiting media finalization"), std::string::npos);
-    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-
-    const size_t publish = source.find("inline bool PublishRecordingStartIntent(");
-    ASSERT_NE(publish, std::string::npos);
-    const size_t idleClear = source.find("main_g_RecordingStartRequestTick.store(0", publish);
-    EXPECT_NE(idleClear, std::string::npos) << "every idle transition must disarm the pending-start tick";
-
-    // Reported before the intent is cleared, otherwise the tick is already gone.
-    const size_t stopReport = source.find("before controller observed recording live");
-    const size_t stopIntent =
-        source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", stopReport);
-    ASSERT_NE(stopReport, std::string::npos);
-    ASSERT_NE(stopIntent, std::string::npos);
-    EXPECT_LT(stopReport, stopIntent);
-}
-
-// The ~3.2 s render->loopback probe is what makes the startup window long enough to swallow a
-// short recording. Because the media process is disposable, a process-memory cache can never hit
-// across recordings; the controller-owned session channel is what makes the probe cost once per
-// CE session. The deliberately removed disk cache must stay removed.
 TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposableMediaProcesses) {
     const std::string spawn = ReadSource("common/ipc/process_ipc_client.cpp");
     const std::string mediaMain = ReadSource("captureengine/media/media_main.cpp");

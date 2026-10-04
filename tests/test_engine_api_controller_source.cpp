@@ -11,25 +11,19 @@ std::string Source(const char* name) {
 }
 }  // namespace
 
-TEST(EngineApiControllerSourceTest, ExplicitStopClearsOwnershipAndShowsFinalizationBeforeIPC) {
-    const std::string source = Source("main_recording.cpp");
-    const size_t start = source.find("bool StopControllerRecording(const char* reason)");
-    const size_t end = source.find("void ToggleRecording()", start);
-    ASSERT_NE(start, std::string::npos);
-    ASSERT_NE(end, std::string::npos);
-    const std::string body = source.substr(start, end - start);
-    const size_t ipc = body.find("RequestRecordingStopAndReleaseMedia(reason, 5000)");
-    ASSERT_NE(ipc, std::string::npos);
-    for (const char* transition : {"main_g_Recording = false", "main_g_RecordingStartRequestTick.exchange(0",
-                                   "PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)",
-                                   "SetRecordingState(false)", "ShowRecordingFinalizingNotification()"}) {
-        const size_t pos = body.find(transition);
-        ASSERT_NE(pos, std::string::npos) << transition;
-        EXPECT_LT(pos, ipc) << transition;
+TEST(EngineApiControllerSourceTest, FrontendsUseTheOwnedRecordingSession) {
+    const auto recording = Source("main_recording.cpp");
+    const auto api = Source("libcaptureengine_controller.cpp");
+    EXPECT_NE(recording.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
+    EXPECT_NE(recording.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
+    EXPECT_NE(recording.find("StartControllerRecording(RecordingStartIntent::Video"), std::string::npos);
+    EXPECT_NE(api.find("StartControllerRecording("), std::string::npos);
+    EXPECT_NE(api.find("StopControllerRecording("), std::string::npos);
+    EXPECT_NE(Source("main_entry.cpp").find("ControllerRecordingSessionScope recordingSession"), std::string::npos);
+    for (const auto& source : {recording, api, Source("main_internal.h")}) {
+        EXPECT_EQ(source.find("main_g_Recording"), std::string::npos);
+        EXPECT_EQ(source.find("main_g_LiveStreamRecording"), std::string::npos);
     }
-    EXPECT_NE(body.find("return accepted;"), std::string::npos);
-    EXPECT_NE(source.find("StopControllerRecording(\"record hotkey\")", end), std::string::npos);
-    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")", end), std::string::npos);
 }
 
 TEST(EngineApiControllerSourceTest, PollUsesControllerThreadDispatchAndAnEventWait) {

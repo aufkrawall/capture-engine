@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording start, stop and failure feedback:** controller actions now share one recording session, with regression coverage for pending cancellation, uncertain acknowledgements, late observations and audio-only fallback. A stop during child readiness cannot resume a cancelled start.
+
 - **Recording and frame-generation regression contracts:** documented the state, resource lifetime and timing guarantees used to verify recording cancellation, overlay handover and encode recovery during the core refactor.
 
 - **Screenshot controls use the controller API:** screenshot hotkeys now use a controller-owned engine handle and share screenshot notifications with API callers.

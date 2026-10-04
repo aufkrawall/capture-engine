@@ -95,6 +95,7 @@ void DispatchControllerMessage(const MSG& msg) {
 
 // Controller main function
 int ControllerMain(HINSTANCE hInstance) {
+    ControllerRecordingSessionScope recordingSession;
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
     PrimeStartupCursor();
@@ -325,10 +326,10 @@ int ControllerMain(HINSTANCE hInstance) {
         // Auto-record logic
         if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
             DWORD elapsed = GetTickCount() - main_g_AutoRecordStartTime;
-            if (!main_g_Recording && elapsed >= main_g_AutoRecordDelayMs) {
+            if (!ControllerRecordingSnapshot().requested && elapsed >= main_g_AutoRecordDelayMs) {
                 LogInfo("[Controller] Auto-record: starting recording...");
                 ToggleRecording();
-            } else if (main_g_Recording && elapsed >= (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs)) {
+            } else if (ControllerRecordingSnapshot().requested && elapsed >= (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs)) {
                 LogInfo("[Controller] Auto-record: stopping recording...");
                 ToggleRecording();
                 main_g_Running = false;  // Exit after auto-record completes
