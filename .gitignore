@@ -72,6 +72,7 @@ __pycache__/
 *~
 obj/
 nul
+temp/
 
 # Generated analysis output
 analysis_logs/
