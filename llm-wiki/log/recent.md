@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-04 - Code comment narrative streamlining and durable knowledge archiving
+
+- Hook thread takeover ordering: `slInit` hook routing requires early installation in DllMain because games can call
+  `slInit` within hundreds of milliseconds of process startup; late-hook fallback only covers on-demand module loads.
+- Streamline 2.x bridge activation occurs ahead of inline hook installation and runtime preloading to prevent resource races.
+- Swapchain wrapper present counter feed prevents false present stall detections during leave-entry mode.
+
 ### 2026-10-03 - Elevation service follows the actual application install folder
 
 - Root cause: `elevation_setup.cpp` staged under the fixed Program Files/CaptureEngine root while setup defaults

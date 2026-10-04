@@ -265,11 +265,10 @@ if (processLogicalSwapchainReplacement) {
                     currentSwapchainQueue != nullptr && dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
                         currentSwapchainQueue == dx12_hook_g_PostSLLastWorkingQueue);
             // DLSS-FG OFF over a runtime-owned (FSR-history) swapchain whose ownership latch is
-            // STALE: DLSS-PostSL was the actual presenter (change queue == g_PostSLLastWorkingQueue),
+            // stale: DLSS-PostSL was the actual presenter (change queue == g_PostSLLastWorkingQueue),
             // but the keep-alive could not arm (blocked by runtimeOwnedNativeFGPresentPath), so the
-            // suspension predicate above misses it. FSR is not actually presenting (api inactive,
-            // present callback quiet), so reinit the warm backend immediately on the same queue
-            // instead of the 90-frame cooldown (session 20260614_023730: 89/90-present blanks).
+            // suspension predicate above misses it. Reinit warm backend immediately on the same queue
+            // instead of waiting for the 90-frame cooldown.
             const ULONGLONG lastFFXCallbackTickMs = dx12_hook_g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
             const bool ffxPresentCallbackActiveForDLSSOff =
                 lastFFXCallbackTickMs != 0 && (ce::hook_clock::TickCount64() - lastFFXCallbackTickMs) < 1000;

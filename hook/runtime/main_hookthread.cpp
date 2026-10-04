@@ -57,7 +57,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
   // Fast D3D-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
   // hook-thread work (module scans, IPC waits, periodic passes). A game that initializes D3D12
-  // within the first second (e.g. dx12_fg_switch_test via Steam + RTSS, session 20260812_044326)
+  // within the first second (e.g. dx12_fg_switch_test via Steam + RTSS)
   // otherwise creates its swapchain before these hooks exist; in the leave-the-entry mode (two
   // or more foreign overlays) an unwrapped pre-existing swapchain means CE never sees a Present
   // and the overlay never appears. DX12Hook::Init retries this when dxgi.dll was not loaded yet.
@@ -118,12 +118,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       }
       ce::ngx_ota::PublishPolicy(otaMode, logLevel, ngxLogDir.c_str());
       // Retry only. DllMain is where this actually installs; reaching it here
-      // means the interposer was not mapped that early, which is the case for a
-      // title that loads Streamline on demand rather than importing it.
-      //
-      // Installing it HERE was measurably too late: session 20260918_224737 has
-      // CE's DllMain at 22:47:47.137 and this line at 22:47:47.688, with the
-      // game's slInit landing in between - "installed=1, seen through CE=0".
+      // means the interposer was loaded on demand rather than imported.
+      // If a title calls slInit before this point, the initial route is missed.
       ce::streamline_ota::InstallSlInitRouteIfConfigured();
     }
     // NVIDIA's Vulkan WSI can end at an internal DXGI flip swapchain. For the
@@ -148,20 +144,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // second, CE-owned runtime beside a 1.x game's own and repoint the game's
     // sl.interposer imports at CE.
     //
-    // This is the first import takeover the hook thread does once it has a config,
-    // and the position is the point. A 1.x game reaches its own Streamline within a few
-    // hundred milliseconds of CE's DllMain - session 20260821_151738 has it there
-    // by 15:18:12.3, against a DllMain at 15:18:11.99 - and the previous position,
-    // after the pre-termination dump hooks, was roughly 550 ms further on, most of
-    // it spent quiescing peer threads to install inline hooks. Every stage between
-    // here and there is work the bridge does not need and the game does not wait
-    // for. It also has to stay ahead of the runtime preload below: both mechanisms
-    // want the same configured folder for opposite purposes, and an active bridge
-    // stands the sl.* substitution down entirely.
-    //
-    // The takeover itself is only import-table writes; loading and initialising
-    // the 2.x runtime happens behind it, so arriving here early costs nothing and
-    // a game call that lands mid-bring-up waits rather than races.
+    // This is the first import takeover the hook thread does once it has a config.
+    // A 1.x game reaches its own Streamline within milliseconds of CE's DllMain,
+    // well ahead of inline hook installation and runtime preloading. Arriving early
+    // ensures the bridge activates before other mechanisms can compete for the configured folder.
+    // The takeover modifies import tables; runtime initialization runs safely behind it.
     if (!inheritedRenderer)
       ce::streamline_bridge::TryActivate();
 

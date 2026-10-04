@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Streamline code comments and archive dated incident logs to wiki:** stripped historical session timestamps and diagnostic narratives across hook thread initialization, swapchain wrapper present tracking, DLSS frame multiplier defaults, and queue reinitialization while archiving durable architectural knowledge in `llm-wiki/log/recent.md`.
+
 - **Modular encoder session summary structures:** decoupled capture session summary and starved episode telemetry structures into dedicated header `media_encoder_session_summary.h`, maintaining strict line ceiling limits across media encoder session state.
 
 - **Typed descriptors for DirectX 12 focus-loss and swapchain policies:** replaced multi-boolean positional parameters across focus-loss overlay fence synchronization and non-presentable backbuffer hold checks with structured parameter descriptors `D3D12FocusLossImmediateFenceDesc` and `D3D12NonPresentableSwapchainHoldDesc`, isolating focus-loss synchronization logic into `focus_loss_policy.h`.

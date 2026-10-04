@@ -313,18 +313,12 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                 } else {
                     // DLSS Frame Generation - Feature IDs 9 and 0xB (11).
                     // Current DLSS runtimes also carry 2x/3x/4x MFG through the
-                    // FrameGenerationMultiplier parameter on these legacy IDs;
-                    // do not hardcode 2x (session 20260811_222500: Talos
-                    // configured for 4x MFG but late inject showed DLSS 2x).
+                    // FrameGenerationMultiplier parameter on these legacy IDs; do not hardcode 2x.
                     const int resolvedMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
                         GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
                         ReadNVNGXFGMultiplierParam(params, parameterOriginals));
-                    // slDLSSGSetOptions (hooked at startup or via the late-inject
-                    // feature-function resolution) is the authoritative multiplier
-                    // source for FG v2+ games; the 2x CreateFeature default must
-                    // not clobber a latched Streamline multiplier (session
-                    // 20260811_231851: transient 4->2 flap before SetOptions
-                    // re-asserted 4).
+                    // slDLSSGSetOptions is the authoritative multiplier source for FG v2+ games;
+                    // the 2x CreateFeature default must not clobber a latched Streamline multiplier.
                     const int fgMultiplier = (resolvedMultiplier >= 3 || g_FGCompat.GetFGMultiplier() < 2)
                                                  ? resolvedMultiplier
                                                  : g_FGCompat.GetFGMultiplier();

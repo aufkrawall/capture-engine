@@ -377,10 +377,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     DXGIShared::NoteOverlayCompositeSite(DXGIShared::OverlayCompositeSite::kSwapchainWrapper,
                                          "CWrapDXGISwapChain::Present");
 
-    // In leave-entry mode the Streamline-runtime wrapper is CE's ONLY present entry point
-    // (DetourPresent never runs), so feed the Streamline present-stall detector here. Without
-    // this, slDLSSGSetOptions compares a frozen counter and falsely dumps "Present STALLED
-    // for 30 frames — vtable hook bypassed?" (session 20260812_040330).
+    // In leave-entry mode the Streamline-runtime wrapper is CE's only present entry point
+    // (DetourPresent never runs), so feed the Streamline present-stall detector here to
+    // prevent false present stall detections in slDLSSGSetOptions.
     if (m_StreamlineRuntimeNonRetaining) {
         DXGIShared::g_PresentCallCounter.fetch_add(1, std::memory_order_relaxed);
     }
