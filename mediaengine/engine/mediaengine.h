@@ -10,6 +10,7 @@
 #include <d3d12.h>
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
+#include "video_frame_submission_desc.h"
 
 extern "C" {
 
@@ -47,11 +48,7 @@ MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc);
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);
 
 // Process a frame from D3D12 shared handle (inject mode)
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem = false, int shmemSlot = 0,
-                                              const ce::cursor::CaptureState* cursorState = nullptr);
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc);
 
 // Re-emit the previously encoded video frame content as a true duplicate.
 // Returns false if no prior frame exists or the duplicate encode failed.
@@ -167,3 +164,16 @@ MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit);
 // cursor) so the recording does not show a double cursor.
 MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed);
 }
+
+#ifdef __cplusplus
+inline bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+                                     int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
+                                     uint32_t width, uint32_t height, uint32_t format, bool isHDR,
+                                     bool isShmem = false, int shmemSlot = 0,
+                                     const ce::cursor::CaptureState* cursorState = nullptr) {
+    const VideoFrameSubmissionDesc desc{textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh,
+                                        sourcePid,     width,       height,     format,    isHDR,   isShmem,
+                                        shmemSlot,     cursorState};
+    return MediaEngine_ProcessFrame(&desc);
+}
+#endif

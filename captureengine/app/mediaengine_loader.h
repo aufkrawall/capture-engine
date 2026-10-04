@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
+#include "mediaengine/engine/video_frame_submission_desc.h"
 
 // Forward declaration
 struct SharedMemoryLayout;
@@ -20,10 +21,7 @@ typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
 typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
 typedef void (*MediaEngine_SetActiveScreenGrab_t)(bool activeScreenGrab);
 typedef void (*MediaEngine_SetWgcStartupExtraDelayQpc_t)(int64_t delayQpc);
-typedef bool (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                           int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                           uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
-                                           int shmemSlot, const ce::cursor::CaptureState* cursorState);
+typedef bool (*MediaEngine_ProcessFrame_t)(const VideoFrameSubmissionDesc* desc);
 typedef bool (*MediaEngine_RepeatLastFrame_t)(int64_t timestamp, const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int64_t timelineElapsedUs,
                                                           const ce::cursor::CaptureState* cursorState);

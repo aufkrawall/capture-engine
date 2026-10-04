@@ -451,10 +451,7 @@ public:
     bool StartRecording();
     void CancelUncommittedVideoRecording();
     bool StopRecording(bool cancelUncommittedVideo = false);
-    bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
-                      int32_t luidHigh, uint32_t sourcePid, uint32_t width, uint32_t height, uint32_t format,
-                      bool isHDR, bool isShmem = false, int shmemSlot = 0,
-                      const ce::cursor::CaptureState* cursorState = nullptr);
+    bool ProcessFrame(const VideoFrameSubmissionDesc& desc);
     bool RepeatLastFrame(int64_t timestampQPC, const ce::cursor::CaptureState* cursorState = nullptr);
     bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs,
                          const ce::cursor::CaptureState* cursorState = nullptr);

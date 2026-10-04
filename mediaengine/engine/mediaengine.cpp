@@ -177,15 +177,13 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     ReleaseSharedD3D11DeviceGlobals();
 }
 
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem, int shmemSlot,
-                                              const ce::cursor::CaptureState* cursorState) {
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc) {
+    if (!desc) {
+        return false;
+    }
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->ProcessFrame(textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh, sourcePid,
-                                      width, height, format, isHDR, isShmem, shmemSlot, cursorState);
+        return mediaengine_g_Engine->ProcessFrame(*desc);
     }
     return false;
 }

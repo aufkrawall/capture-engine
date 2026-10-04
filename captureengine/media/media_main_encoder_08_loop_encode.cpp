@@ -69,13 +69,23 @@ void MediaEncoderSession::LoopEncode() {
                     if (!frameToProcess->isShmem && MediaEngine_SetInjectTransportGeneration) {
                         MediaEngine_SetInjectTransportGeneration(frameToProcess->transportGeneration);
                     }
-                    encodeSucceeded = MediaEngine_ProcessFrame(
-                        (uint64_t)frameToProcess->sharedHandle, (uint64_t)frameToProcess->fenceHandle,
-                        frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,
-                        frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
-                        frameToProcess->height, frameToProcess->format, frameToProcess->isHDR, frameToProcess->isShmem,
-                        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                        frameToProcess->shmemSlot, cursorState);
+                    const VideoFrameSubmissionDesc submissionDesc{
+                        (uint64_t)frameToProcess->sharedHandle,
+                        (uint64_t)frameToProcess->fenceHandle,
+                        frameToProcess->fenceValue,
+                        frameToProcess->timestamp,
+                        frameToProcess->luidLow,
+                        frameToProcess->luidHigh,
+                        frameToProcess->sourcePid,
+                        frameToProcess->width,
+                        frameToProcess->height,
+                        frameToProcess->format,
+                        frameToProcess->isHDR,
+                        frameToProcess->isShmem,
+                        static_cast<int>(frameToProcess->shmemSlot),
+                        cursorState,
+                    };
+                    encodeSucceeded = MediaEngine_ProcessFrame(&submissionDesc);
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
                     const int64_t liveTimelineElapsedUs =

@@ -1,71 +1,67 @@
 #include "mediaengine_internal.h"
 
 
-bool MediaEngine::ProcessFrame(uint64_t handle,  uint64_t fenceHandle,  uint64_t fenceVal,  int64_t timestampQPC,  int32_t luidLow, 
-                      int32_t luidHigh,  uint32_t sourcePid,  uint32_t width,  uint32_t height,  uint32_t format, 
-                      bool isHDR,  bool isShmem,  int shmemSlot, 
-                      const ce::cursor::CaptureState* cursorState) {
+bool MediaEngine::ProcessFrame(const VideoFrameSubmissionDesc& desc) {
+    std::lock_guard<std::recursive_mutex> lock(muxMutex);
+    if (!videoEnc || !recording)
+        return false;
 
+    // Use CaptureEngine's steady_clock for duration to avoid Game QPC /
+    // Frequency mismatch issues
+    auto now = std::chrono::steady_clock::now();
 
-        std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (!videoEnc || !recording)
-            return false;
+    // Calculate QPC based timestamp for debugging/Legacy Start Time
+    int64_t debugTimestamp = (qpcFreq > 0) ? (desc.timestamp * 1000) / qpcFreq : desc.timestamp;
 
-        // Use CaptureEngine's steady_clock for duration to avoid Game QPC /
-        // Frequency mismatch issues
-        auto now = std::chrono::steady_clock::now();
+    const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
 
-        // Calculate QPC based timestamp for debugging/Legacy Start Time
-        int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
+    const int64_t steadyElapsedUs =
+        commitsFirstVideoFrame
+            ? 0
+            : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+    int64_t realElapsedUs = steadyElapsedUs;
+    if (SessionUsesVfr()) {
+        realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, desc.timestamp, steadyElapsedUs, injectTimelineState);
+    } else {
+        realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
+    }
 
-        const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
+    // Maybe we want preview later? For now, recording only.
+    videoEnc->SetAdapterLUID(desc.luidLow, desc.luidHigh);
+    if (desc.cursorState) {
+        videoEnc->SetCursorCaptureState(*desc.cursorState);
+    }
+    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+    bool res = videoEnc->EncodeFrame((HANDLE)desc.textureHandle, (HANDLE)desc.fenceHandle, desc.fenceValue,
+                                     realElapsedUs, desc.sourcePid, desc.width,
+                                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+                                     desc.height, desc.format, desc.isHDR, desc.isShmem, desc.shmemSlot);
 
-        const int64_t steadyElapsedUs =
-            commitsFirstVideoFrame
-                ? 0
-                : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
-        int64_t realElapsedUs = steadyElapsedUs;
-        if (SessionUsesVfr()) {
-            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
-        } else {
-            realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
-        }
+    if (!res && videoEnc->WasLastFrameDeferred()) {
+        return false;
+    }
+    if (!res) {
+        return false;
+    }
 
-        // Maybe we want preview later? For now, recording only.
-        videoEnc->SetAdapterLUID(luidLow, luidHigh);
-        if (cursorState) {
-            videoEnc->SetCursorCaptureState(*cursorState);
-        }
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedUs, sourcePid, width,
-                                         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                                         height, format, isHDR, isShmem, shmemSlot);
-
-        if (!res && videoEnc->WasLastFrameDeferred()) {
-            return false;
-        }
-        if (!res) {
-            return false;
-        }
-
-        if (commitsFirstVideoFrame) {
-            // Commit the media/audio anchor only after the encoder accepted the
-            // first frame. A failed/deferred candidate must not discard audio
-            // or establish a PTS origin for pixels that were never emitted.
-            this->firstVideoFrameMs = debugTimestamp;
-            this->firstVideoFrameCommitted = true;
-            this->recordingStartTime = now;
-            const int64_t startQpc100ns =
-                (qpcFreq > 0 && timestampQPC > 0)
-                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(timestampQPC),
-                                                                                 static_cast<uint64_t>(qpcFreq)))
-                    : 0;
-            DLL_Log(
-                "MediaEngine: First successfully encoded inject frame at %lld ms (QPC: %lld) - syncing audio "
-                "(StartQPC: %lld)",
-                debugTimestamp, timestampQPC, debugTimestamp);
-            SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
-        }
+    if (commitsFirstVideoFrame) {
+        // Commit the media/audio anchor only after the encoder accepted the
+        // first frame. A failed/deferred candidate must not discard audio
+        // or establish a PTS origin for pixels that were never emitted.
+        this->firstVideoFrameMs = debugTimestamp;
+        this->firstVideoFrameCommitted = true;
+        this->recordingStartTime = now;
+        const int64_t startQpc100ns =
+            (qpcFreq > 0 && desc.timestamp > 0)
+                ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(desc.timestamp),
+                                                                             static_cast<uint64_t>(qpcFreq)))
+                : 0;
+        DLL_Log(
+            "MediaEngine: First successfully encoded inject frame at %lld ms (QPC: %lld) - syncing audio "
+            "(StartQPC: %lld)",
+            debugTimestamp, desc.timestamp, debugTimestamp);
+        SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
+    }
 
         const bool cfrRecording = IsCfrRecording();
         const int64_t committedElapsedUs = cfrRecording && videoEnc ? videoEnc->GetExpectedFinalDurationUs()

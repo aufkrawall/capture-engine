@@ -347,13 +347,23 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 if (!catchupFrame.isShmem && MediaEngine_SetInjectTransportGeneration) {
                     MediaEngine_SetInjectTransportGeneration(catchupFrame.transportGeneration);
                 }
-                const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(
-                    (uint64_t)catchupFrame.sharedHandle, (uint64_t)catchupFrame.fenceHandle,
-                    catchupFrame.fenceValue, catchupFrame.timestamp, catchupFrame.luidLow,
-                    catchupFrame.luidHigh, catchupFrame.sourcePid, catchupFrame.width, catchupFrame.height,
-                    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                    catchupFrame.format, catchupFrame.isHDR, catchupFrame.isShmem, catchupFrame.shmemSlot,
-                    &catchupFrame.cursorState);
+                const VideoFrameSubmissionDesc submissionDesc{
+                    (uint64_t)catchupFrame.sharedHandle,
+                    (uint64_t)catchupFrame.fenceHandle,
+                    catchupFrame.fenceValue,
+                    catchupFrame.timestamp,
+                    catchupFrame.luidLow,
+                    catchupFrame.luidHigh,
+                    catchupFrame.sourcePid,
+                    catchupFrame.width,
+                    catchupFrame.height,
+                    catchupFrame.format,
+                    catchupFrame.isHDR,
+                    catchupFrame.isShmem,
+                    static_cast<int>(catchupFrame.shmemSlot),
+                    &catchupFrame.cursorState,
+                };
+                const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(&submissionDesc);
                 const bool catchupEncodeDeferred =
                     MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 QueryPerformanceCounter(&catchupEndEnc);
