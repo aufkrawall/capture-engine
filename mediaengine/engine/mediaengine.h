@@ -11,6 +11,7 @@
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
 #include "video_frame_submission_desc.h"
+#include "d3d11_frame_submission_desc.h"
 
 extern "C" {
 
@@ -67,15 +68,7 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
-// texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)
-// timestamp: Source frame timestamp in QPC ticks
-// timelineElapsedUs: Optional CFR timeline override in microseconds since the first
-//                    emitted video frame. Pass -1 to derive timing from the media
-//                    engine's steady clock as before.
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                   int64_t timelineElapsedUs,
-                                                   const ce::cursor::CaptureState* cursorState);
+MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();
@@ -175,5 +168,15 @@ inline bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandl
                                         sourcePid,     width,       height,     format,    isHDR,   isShmem,
                                         shmemSlot,     cursorState};
     return MediaEngine_ProcessFrame(&desc);
+}
+
+inline bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                                         bool isHDR, int32_t captureLeft = 0, int32_t captureTop = 0,
+                                         int64_t timelineElapsedUs = -1,
+                                         const ce::cursor::CaptureState* cursorState = nullptr) {
+    const D3D11FrameSubmissionDesc desc{texture,     timestamp,  width,             height,
+                                        isHDR,       captureLeft, captureTop,        timelineElapsedUs,
+                                        cursorState};
+    return MediaEngine_ProcessFrameD3D11(&desc);
 }
 #endif

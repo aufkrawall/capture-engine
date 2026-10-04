@@ -228,14 +228,13 @@ MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width
     return false;
 }
 
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                   int64_t timelineElapsedUs,
-                                                   const ce::cursor::CaptureState* cursorState) {
+MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
+    if (!desc) {
+        return false;
+    }
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop,
-                                           timelineElapsedUs, cursorState);
+        return mediaengine_g_Engine->ProcessFrameD3D11(*desc);
     }
     return false;
 }

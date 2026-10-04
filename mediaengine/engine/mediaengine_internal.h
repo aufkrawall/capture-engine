@@ -464,9 +464,7 @@ public:
     bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
-    bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
-                           int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs,
-                           const ce::cursor::CaptureState* cursorState);
+    bool ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc);
     void AppendSyncResamplerOutput(AudioSource& src, size_t srcIdx, int channels, uint8_t** resampledData,
                                    int outSamples);
     bool PumpSourceRingThroughSyncResampler(AudioSource& src, size_t srcIdx, int channels, size_t maxFloats);

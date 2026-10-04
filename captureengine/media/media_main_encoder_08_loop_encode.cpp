@@ -100,10 +100,11 @@ void MediaEncoderSession::LoopEncode() {
                                                     liveTimelineElapsedUs);
                     } else {
                         SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
-                        encodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                        const D3D11FrameSubmissionDesc desc{
                             frameToProcess->texture, wgcMediaTimestampQpc, frameToProcess->width,
                             frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
-                            frameToProcess->captureTop, liveTimelineElapsedUs, cursorState);
+                            frameToProcess->captureTop, liveTimelineElapsedUs, cursorState};
+                        encodeSucceeded = MediaEngine_ProcessFrameD3D11(&desc);
                         if (encodeSucceeded && privacyRuntime.IsEnabled()) {
                             privacyRuntime.CommitRealOutput();
                         }

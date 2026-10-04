@@ -282,14 +282,20 @@ bool MediaEngine::PrepareFrameD3D11(void* texture,  uint32_t width,  uint32_t he
 }
 
 
-bool MediaEngine::ProcessFrameD3D11(void* texture,  int64_t timestampQPC,  uint32_t width,  uint32_t height,  bool isHDR, 
-                           int32_t captureLeft,  int32_t captureTop,  int64_t timelineElapsedUs, 
-                           const ce::cursor::CaptureState* cursorState) {
+bool MediaEngine::ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc) {
+    std::lock_guard<std::recursive_mutex> lock(muxMutex);
+    if (!videoEnc || !recording)
+        return false;
 
-
-        std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        if (!videoEnc || !recording)
-            return false;
+    const int64_t timestampQPC = desc.timestamp;
+    const uint32_t width = desc.width;
+    const uint32_t height = desc.height;
+    const bool isHDR = desc.isHDR;
+    const int32_t captureLeft = desc.captureLeft;
+    const int32_t captureTop = desc.captureTop;
+    const int64_t timelineElapsedUs = desc.timelineElapsedUs;
+    const auto* cursorState = desc.cursorState;
+    void* texture = desc.texture;
 
         auto now = std::chrono::steady_clock::now();
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;

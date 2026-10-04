@@ -544,10 +544,11 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
                 const ce::cursor::CaptureState catchupCursorState =
                     selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
-                freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                const D3D11FrameSubmissionDesc desc{
                     catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
                     catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                    catchupTimelineElapsedUs, &catchupCursorState);
+                    catchupTimelineElapsedUs, &catchupCursorState};
+                freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(&desc);
                 if (freshCatchupEncodeSucceeded && privacyRuntime.IsEnabled()) {
                     privacyRuntime.CommitRealOutput();
                 }

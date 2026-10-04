@@ -17,7 +17,7 @@ MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimelin
 MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame = nullptr;
 MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache = nullptr;
 MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11 = nullptr;
-MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11 = nullptr;
+MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
 MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags = nullptr;
@@ -90,7 +90,7 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastOutputDegradedFlags",

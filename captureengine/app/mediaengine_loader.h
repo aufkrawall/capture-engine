@@ -2,10 +2,11 @@
 
 #include <d3d11.h>
 #include <d3d12.h>
-#include <stdbool.h>
+#include <cstddef>
 #include <stdint.h>
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
+#include "mediaengine/engine/d3d11_frame_submission_desc.h"
 #include "mediaengine/engine/video_frame_submission_desc.h"
 
 // Forward declaration
@@ -28,9 +29,7 @@ typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int
 typedef bool (*MediaEngine_CanRepeatLastFrame_t)();
 typedef void (*MediaEngine_ResetRepeatFrameCache_t)();
 typedef bool (*MediaEngine_PrepareFrameD3D11_t)(void* texture, uint32_t width, uint32_t height, bool isHDR);
-typedef bool (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState);
+typedef bool (*MediaEngine_ProcessFrameD3D11_t)(const D3D11FrameSubmissionDesc* desc);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef bool (*MediaEngine_StopRecording_t)(bool cancelUncommittedVideo);
 typedef uint32_t (*MediaEngine_GetLastOutputDegradedFlags_t)();
@@ -69,7 +68,30 @@ extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWith
 extern MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame;
 extern MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache;
 extern MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11;
-extern MediaEngine_ProcessFrameD3D11_t MediaEngine_ProcessFrameD3D11;
+struct MediaEngineProcessFrameD3D11Caller {
+    MediaEngine_ProcessFrameD3D11_t raw = nullptr;
+
+    MediaEngineProcessFrameD3D11Caller& operator=(std::nullptr_t) noexcept {
+        raw = nullptr;
+        return *this;
+    }
+
+    operator bool() const noexcept { return raw != nullptr; }
+
+    bool operator()(const D3D11FrameSubmissionDesc* desc) const {
+        return (raw && desc) ? raw(desc) : false;
+    }
+
+    bool operator()(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                    bool isHDR, int32_t captureLeft, int32_t captureTop,
+                    int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState) const {
+        if (!raw) return false;
+        const D3D11FrameSubmissionDesc desc{texture, timestamp, width, height, isHDR,
+                                            captureLeft, captureTop, timelineElapsedUs, cursorState};
+        return raw(&desc);
+    }
+};
+extern MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
 extern MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags;

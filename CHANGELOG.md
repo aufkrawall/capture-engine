@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Structured D3D11 frame submission descriptor:** replaced the multi-parameter Direct3D 11 / WGC frame processing signature with structured parameter descriptor `D3D11FrameSubmissionDesc`, clarifying frame parameter passing across capture and encoding loops while retaining inline compatibility forwarders.
+
 - **Type-safe video frame submission descriptor:** replaced the 14-parameter inject video frame processing call with structured parameter descriptor `VideoFrameSubmissionDesc`, improving readability and maintainability across encoder loops while preserving backward-compatible forwarders.
 
 - **Encapsulate Streamline hook runtime globals:** grouped loose global interception targets, failure retry counters, viewport runtime states, and module teardown trackers into a unified `StreamlineHookState` structure.
