@@ -121,7 +121,7 @@ void LogResolvedQueueMethodFit(ce::dx12_overlay_policy::ResolvedQueueMethodFit f
     HookLogImportant(
         "DX12: Resolved %s %s on queue %p at %s: %s (vtable=%p in %s, method=%p in %s, refusals=%llu)%s",
         methodName, callable ? "called directly" : "REFUSED - calling through the queue's own vtable", queue, site,
-        ce::dx12_overlay_policy::ResolvedQueueMethodFitName(fit), vtable, ModuleBaseName(vtable, vtablePath), method,
+        ce::dx12_overlay_policy::ResolvedQueueMethodFitName(fit), vtable, ModuleBaseName(static_cast<const void*>(vtable), vtablePath), method,
         ModuleBaseName(method, methodPath), static_cast<unsigned long long>(refusals),
         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
 }
@@ -137,7 +137,7 @@ bool DX12_MayCallResolvedQueueMethod(ID3D12CommandQueue* queue, const void* meth
     HMODULE methodImage = nullptr;
     HMODULE vtableImage = nullptr;
     TryGetModulePathFromCodeAddress(method, nullptr, 0, &methodImage);
-    TryGetModulePathFromCodeAddress(vtable, nullptr, 0, &vtableImage);
+    TryGetModulePathFromCodeAddress(static_cast<const void*>(vtable), nullptr, 0, &vtableImage);
     const auto fit = ce::dx12_overlay_policy::ClassifyResolvedQueueMethodFit(true, methodImage, vtableImage);
     LogResolvedQueueMethodFit(fit, queue, vtable, method, methodName, site);
     return ce::dx12_overlay_policy::MayCallResolvedQueueMethod(fit);

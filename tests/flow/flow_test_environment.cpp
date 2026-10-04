@@ -11,6 +11,7 @@ public:
     void TearDown() override { ce::flow::ExpectNoDebugLayerErrors("teardown", false); }
 };
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - GoogleTest requires registration before its library-provided main
 [[maybe_unused]] ::testing::Environment* const g_flowTeardownChecks =
     ::testing::AddGlobalTestEnvironment(new FlowTeardownChecks);
 

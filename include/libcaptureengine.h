@@ -3,8 +3,9 @@
  * Copyright (c) 2026 aufkrawall
  *
  * libcaptureengine: Public C Application Binary Interface (ABI) for Capture Engine.
- * Provides opaque handles, structured configuration, and life-cycle controls
- * for embedding Capture Engine into host applications or external front-ends.
+ * Controller-bound API groundwork. The shipping executable owns the runtime;
+ * an independently embeddable library is not built yet. All engine operations
+ * must run on the controller thread. NULL is never a valid engine handle.
  */
 
 #ifndef LIBCAPTUREENGINE_H
@@ -34,9 +35,8 @@ extern "C" {
 #  endif
 #endif
 
-#define CE_VERSION_MAJOR 0
-#define CE_VERSION_MINOR 1
-#define CE_VERSION_PATCH 6968
+/* Header ABI revision, independent of the runtime product build number. */
+#define CE_ABI_VERSION 1
 
 /**
  * Return status codes for libcaptureengine functions.
@@ -83,6 +83,8 @@ typedef struct ce_engine ce_engine_t;
 
 /**
  * Engine configuration descriptor.
+ * Currently only NULL or default configuration is supported when attaching to
+ * the controller; custom values return CE_ERROR_UNSUPPORTED.
  */
 typedef struct ce_engine_config {
     uint32_t struct_size;          /**< Set to sizeof(ce_engine_config_t) for ABI compatibility */
@@ -116,7 +118,9 @@ typedef struct ce_recording_stats {
 CE_API ce_status_t ce_engine_config_init_default(ce_engine_config_t* config);
 
 /**
- * Create a new Capture Engine instance.
+ * Attach a handle to the initialized controller on its owning thread.
+ * Only one handle is supported. Before controller initialization, returns
+ * CE_ERROR_NOT_INITIALIZED; a second handle returns CE_ERROR_ALREADY_INITIALIZED.
  *
  * @param config Pointer to configuration descriptor, or NULL for defaults.
  * @param out_engine Output pointer to receive the created engine handle.
@@ -125,7 +129,8 @@ CE_API ce_status_t ce_engine_config_init_default(ce_engine_config_t* config);
 CE_API ce_status_t ce_engine_create(const ce_engine_config_t* config, ce_engine_t** out_engine);
 
 /**
- * Destroy a Capture Engine instance and release all associated resources.
+ * Release the attached handle. The controller and any recording keep running;
+ * call ce_engine_stop_recording first when stopping the recording is desired.
  *
  * @param engine The engine handle to destroy.
  * @return CE_SUCCESS on success, error code otherwise.
@@ -134,6 +139,7 @@ CE_API ce_status_t ce_engine_destroy(ce_engine_t* engine);
 
 /**
  * Start recording with the requested intent (Video or Audio-Only).
+ * Success means the start request was delivered, not that media is already live.
  *
  * @param engine The engine handle.
  * @param intent The recording stream mode.
@@ -144,6 +150,7 @@ CE_API ce_status_t ce_engine_start_recording(ce_engine_t* engine, ce_recording_i
 
 /**
  * Stop active recording.
+ * Success means stop acceptance; media finalization continues asynchronously.
  *
  * @param engine The engine handle.
  * @param reason Human-readable termination reason for logging/diagnostics (optional).
@@ -193,6 +200,7 @@ CE_API ce_status_t ce_engine_take_screenshot(ce_engine_t* engine);
 
 /**
  * Query whether recording is currently active.
+ * Reports controller intent, including an accepted start still waiting for media.
  *
  * @param engine The engine handle.
  * @param out_is_recording Output boolean receiving true if active, false otherwise.
@@ -202,6 +210,8 @@ CE_API ce_status_t ce_engine_is_recording(const ce_engine_t* engine, bool* out_i
 
 /**
  * Query current recording statistics.
+ * Currently returns CE_ERROR_UNSUPPORTED and leaves the descriptor unchanged.
+ * The caller must set out_stats->struct_size to sizeof(ce_recording_stats_t).
  *
  * @param engine The engine handle.
  * @param out_stats Output statistics descriptor to populate.
@@ -211,6 +221,8 @@ CE_API ce_status_t ce_engine_get_recording_stats(const ce_engine_t* engine, ce_r
 
 /**
  * Process pending engine events and message pump callbacks.
+ * Waits until input or timeout, then dispatches pending controller messages.
+ * UINT32_MAX is rejected because Windows interprets it as an infinite wait.
  *
  * @param engine The engine handle.
  * @param timeout_ms Maximum time to wait in milliseconds (0 for non-blocking poll).
@@ -227,7 +239,7 @@ CE_API ce_status_t ce_engine_poll_events(ce_engine_t* engine, uint32_t timeout_m
 CE_API const char* ce_status_to_string(ce_status_t status);
 
 /**
- * Retrieve the library version string (e.g. "0.1.6968").
+ * Retrieve the runtime product version string from the generated build identity.
  *
  * @return Static null-terminated version string.
  */

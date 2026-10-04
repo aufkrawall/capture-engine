@@ -83,14 +83,14 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab);
     success &=
         GetFunc(g_MediaEngineModule, "MediaEngine_SetWgcStartupExtraDelayQpc", &MediaEngine_SetWgcStartupExtraDelayQpc);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrame", &MediaEngine_ProcessFrame);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SubmitFrame", &MediaEngine_ProcessFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrameWithTimeline",
                        &MediaEngine_RepeatLastFrameWithTimeline);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11);
-    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SubmitFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_GetLastOutputDegradedFlags",
@@ -125,8 +125,7 @@ bool MediaEngine_Load(const char* exeDir) {
 
     if (!success) {
         LogError("[MediaEngine] Failed to get all function pointers");
-        FreeLibrary(g_MediaEngineModule);
-        g_MediaEngineModule = nullptr;
+        MediaEngine_Unload();  // clear every pointer into the rejected module, not just its handle
         return false;
     }
 

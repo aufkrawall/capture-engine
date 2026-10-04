@@ -180,7 +180,7 @@ TEST(FFXOutputFramesSourceTest, RetainedCallbackBridgeKeepsTheCallbackRoute) {
     ASSERT_FALSE(context.empty());
     const size_t active = context.find("const bool bridgeActiveForConfigure =");
     ASSERT_NE(active, std::string::npos);
-    const size_t end = context.find(";", active);
+    const size_t end = context.find(';', active);
     EXPECT_NE(context.substr(active, end - active).find("retainedBridgeForNullCallbackToggle"), std::string::npos);
 }
 

@@ -79,7 +79,7 @@ public:
         return Decide(key, 0, stride != 0 && callIndex % stride == 0);
     }
 
-    // Forgets the last key and the swallowed repeats (a StreamChangeGate slot changing owner).
+    // Forgets the last key and the swallowed repeats for a new diagnostic sequence.
     void Reset() noexcept {
         lastKey_.store(UINT64_MAX, std::memory_order_release);
         suppressed_.store(0, std::memory_order_release);
@@ -117,17 +117,22 @@ struct SuppressedNote {
 // One ChangeGate per stream, for a line that interleaved sources share (several queues, threads or API
 // entry points): a single gate keyed by source and state together sees a change at every alternation
 // and logs them all. `stream` picks the gate, `key` is the state as for ChangeGate. Streams hash onto
-// `Capacity` slots; a stream that finds its slot owned by another takes it over and logs its next line
-// (the evicted stream's swallowed-repeat count is dropped), so a collision logs too much, never too little.
+// `Capacity` slots with bounded probing. Once claimed, a slot keeps its owner: publishing a new owner before
+// resetting its gate lets racing callers lose first appearances or mix unrelated streams' state.
+// Streams without a slot log every call, so saturation logs too much, never too little.
 template <size_t Capacity>
 class StreamChangeGate {
+    static_assert(Capacity > 0, "StreamChangeGate needs at least one slot");
+
 public:
     ChangeGate::Verdict Observe(uint64_t stream, uint64_t key, uint64_t nowMs = 0) noexcept {
-        return SlotFor(stream).Observe(key, nowMs);
+        ChangeGate* gate = SlotFor(stream);
+        return gate ? gate->Observe(key, nowMs) : ChangeGate::Verdict{true, 0};
     }
 
     ChangeGate::Verdict ObserveOrEvery(uint64_t stream, uint64_t key, uint32_t callIndex, uint32_t stride) noexcept {
-        return SlotFor(stream).ObserveOrEvery(key, callIndex, stride);
+        ChangeGate* gate = SlotFor(stream);
+        return gate ? gate->ObserveOrEvery(key, callIndex, stride) : ChangeGate::Verdict{true, 0};
     }
 
 private:
@@ -136,33 +141,22 @@ private:
         ChangeGate gate;
     };
 
-    ChangeGate& SlotFor(uint64_t stream) noexcept {
+    ChangeGate* SlotFor(uint64_t stream) noexcept {
+        if (stream == UINT64_MAX)
+            return nullptr;  // reserved empty owner; raw stream keys must also fail toward logging
         const size_t idx0 = ((stream * 0x9E3779B97F4A7C15ull) >> 32) % Capacity;
-        Slot& s0 = slots_[idx0];
-        if (s0.owner.load(std::memory_order_acquire) == stream) {
-            return s0.gate;
-        }
-        if constexpr (Capacity > 1) {
-            const size_t idx1 = (idx0 + 1) % Capacity;
-            Slot& s1 = slots_[idx1];
-            if (s1.owner.load(std::memory_order_acquire) == stream) {
-                return s1.gate;
+        for (size_t probe = 0; probe < Capacity; ++probe) {
+            Slot& slot = slots_[(idx0 + probe) % Capacity];
+            uint64_t owner = slot.owner.load(std::memory_order_acquire);
+            if (owner == stream) {
+                return &slot.gate;
             }
-            uint64_t expected = UINT64_MAX;
-            if (s0.owner.compare_exchange_strong(expected, stream, std::memory_order_acq_rel)) {
-                s0.gate.Reset();
-                return s0.gate;
-            }
-            expected = UINT64_MAX;
-            if (s1.owner.compare_exchange_strong(expected, stream, std::memory_order_acq_rel)) {
-                s1.gate.Reset();
-                return s1.gate;
+            if (owner == UINT64_MAX &&
+                (slot.owner.compare_exchange_strong(owner, stream, std::memory_order_acq_rel) || owner == stream)) {
+                return &slot.gate;
             }
         }
-        if (s0.owner.exchange(stream, std::memory_order_acq_rel) != stream) {
-            s0.gate.Reset();
-        }
-        return s0.gate;
+        return nullptr;
     }
 
     Slot slots_[Capacity];

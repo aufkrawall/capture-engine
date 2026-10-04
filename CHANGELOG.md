@@ -6,11 +6,11 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
-- **Public C ABI library interface (`libcaptureengine.h`):** introduced standard C application binary interface headers defining opaque engine handles, typed configuration structures, lifecycle controls, and recording event dispatchers for embedding Capture Engine into external host applications.
+- **Controller C API groundwork:** added opaque handles and recording, overlay, benchmark and screenshot controls for the existing controller. An independently embeddable library, custom API configuration and complete recording statistics are still pending.
 
 ### Improved
 
-- **Connect Capture Engine host to public C ABI:** refactored application hotkey dispatch and screenshot notifications in `main_entry.cpp` to consume the standard `libcaptureengine` C ABI, decoupling front-end dispatch from monolithic controller state.
+- **Screenshot controls use the controller API:** screenshot hotkeys now use a controller-owned engine handle and share screenshot notifications with API callers.
 
 - **Streamline code comments and archive dated incident logs to wiki:** stripped historical session timestamps and diagnostic narratives across hook thread initialization, swapchain wrapper present tracking, DLSS frame multiplier defaults, and queue reinitialization while archiving durable architectural knowledge in `llm-wiki/log/recent.md`.
 
@@ -30,7 +30,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Encapsulate DirectX 12 overlay coverage state:** grouped loose global overlay coverage tracking variables into a cohesive, domain-owned `DX12OverlayCoverageState` structure.
 
-- **Streamline diagnostic log metering resilience:** multi-stream change gates now resolve hash collisions with 2-way probing, preventing alternating call shapes from repeatedly resetting log suppression gates.
+- **Streamline diagnostic log metering resilience:** multi-stream change gates now resolve hash collisions across their fixed slot pool, keeping alternating call shapes independently metered.
 
 - **Session logs are much smaller and easier to read:** lines that repeated unchanged every frame or every second (overlay submits, queue choices, frame-generation decisions, Streamline UI-tag records, controller loop timing, config re-reads for every whitelisted game) are now written when something changes, with a "(+N unchanged)" count instead of the copies. Each hook installation is one line instead of about twenty, the Steam overlay is reported once instead of on every hook pass, and FPS-limiter stats and Vulkan layer lines are no longer written to two files. Nothing that marks a change, a failure or a recovery was removed.
 
@@ -41,6 +41,12 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **Recording controls could report success without working:** the controller API now rejects invalid handles, wrong-thread calls and invalid recording modes, returns command failures, and reports unsupported configuration and statistics explicitly. Stopping clears the recording flag, pending start and tray state so the next toggle starts correctly; event polling handles hotkeys and quit messages without millisecond polling sleeps. The reported version follows the actual application build.
+
+- **Recording could crash with mismatched media DLLs:** typed frame submissions now use distinct DLL exports while the original exports retain their calling contract. A rejected DLL also clears its function pointers.
+
+- **Concurrent diagnostic streams could lose changes:** log suppression slots now keep their owners; excess streams are logged instead of resetting a gate another thread is using. Colliding streams use all free slots before overflowing, keeping their separate suppression counts.
 
 - **Elevation service installed in the wrong folder:** the service now runs from a protected runtime inside the actual Capture Engine install folder, including custom locations. Updating migrates an existing service out of the separate `C:\Program Files\CaptureEngine` folder; uninstall also handles older registrations.
 

@@ -11,6 +11,9 @@
 
 namespace ce::flow::fake {
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 2, 3)))
+#endif
 inline void Log(const char* module, const char* format, ...) {
     static std::mutex s_mutex;
     char directory[MAX_PATH] = {};

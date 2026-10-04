@@ -8,7 +8,7 @@ struct VideoFrameSubmissionDesc {
     uint64_t textureHandle = 0;
     uint64_t fenceHandle = 0;
     uint64_t fenceValue = 0;
-    int64_t timestamp = 0;
+    int64_t timestamp = 0;  // source timestamp in QPC ticks
     int32_t luidLow = 0;
     int32_t luidHigh = 0;
     uint32_t sourcePid = 0;
@@ -18,5 +18,5 @@ struct VideoFrameSubmissionDesc {
     bool isHDR = false;
     bool isShmem = false;
     int shmemSlot = 0;
-    const ce::cursor::CaptureState* cursorState = nullptr;
+    const ce::cursor::CaptureState* cursorState = nullptr;  // borrowed for this submission only
 };

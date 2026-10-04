@@ -1,6 +1,6 @@
 #include "main_internal.h"
 
-#include "include/libcaptureengine.h"
+#include "libcaptureengine_controller.h"
 #include "common/config/config_reload_policy.h"
 #include "common/config/config_text_encoding.h"
 #include "common/platform/path_utils.h"
@@ -60,7 +60,37 @@ void DispatchHotkey(int hotkeyId) {
     if (hotkeyId != HOTKEY_ID_SCREENSHOT)
         return;
 
-    ce_engine_take_screenshot(nullptr);
+    ce_engine_take_screenshot(GetControllerEngine());
+}
+
+void DispatchControllerMessage(const MSG& msg) {
+    if (msg.message == WM_QUIT) {
+        main_g_Running = false;
+        return;
+    }
+    if (msg.message == main_kMsgCompleteControllerStartup) {
+        if (!CompleteControllerStartup()) {
+            ShutdownChildProcesses();
+            main_g_Running = false;
+        } else {
+            // Offered once startup is complete so the prompt cannot
+            // delay child spawning, and on its own thread so it cannot
+            // swallow hotkeys from this loop.
+            ce::pawnio::OfferInstallationAsync(main_g_Config.hardwareSensors);
+        }
+        return;
+    }
+    if (msg.message == main_kMsgHotkeyFromInputHook) {
+        LogDebug("[Hotkey] Keyboard-hook delivery id=%d vk=0x%02X total=%llu", static_cast<int>(msg.wParam),
+                 static_cast<unsigned>(msg.lParam),
+                 static_cast<unsigned long long>(GetHotkeyInputHookDeliveredCount()));
+    }
+    if (msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook) {
+        DispatchHotkey(static_cast<int>(msg.wParam));
+        return;
+    }
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
 }
 
 // Controller main function
@@ -123,6 +153,12 @@ int ControllerMain(HINSTANCE hInstance) {
     main_g_ControllerStartupTiming.complete = false;
     PostThreadMessage(GetCurrentThreadId(), main_kMsgCompleteControllerStartup, 0, 0);
 
+    ControllerApiSession controllerApi;
+    if (!controllerApi.IsReady()) {
+        LogError("[Controller] Failed to initialize controller API");
+        main_g_Running = false;
+    }
+
     // Main message loop
     MSG msg;
 
@@ -165,33 +201,7 @@ int ControllerMain(HINSTANCE hInstance) {
                 msgHookHotkeys++;
             else if (msg.message != WM_QUIT && msg.message != main_kMsgCompleteControllerStartup)
                 msgOthers++;
-            if (msg.message == WM_QUIT) {
-                main_g_Running = false;
-                continue;
-            }
-            if (msg.message == main_kMsgCompleteControllerStartup) {
-                if (!CompleteControllerStartup()) {
-                    ShutdownChildProcesses();
-                    main_g_Running = false;
-                } else {
-                    // Offered once startup is complete so the prompt cannot
-                    // delay child spawning, and on its own thread so it cannot
-                    // swallow hotkeys from this loop.
-                    ce::pawnio::OfferInstallationAsync(main_g_Config.hardwareSensors);
-                }
-                continue;
-            }
-            if (msg.message == main_kMsgHotkeyFromInputHook) {
-                LogDebug("[Hotkey] Keyboard-hook delivery id=%d vk=0x%02X total=%llu", static_cast<int>(msg.wParam),
-                         static_cast<unsigned>(msg.lParam),
-                         static_cast<unsigned long long>(GetHotkeyInputHookDeliveredCount()));
-            }
-            if (msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook) {
-                DispatchHotkey(static_cast<int>(msg.wParam));
-                continue;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+            DispatchControllerMessage(msg);
         }
 
         const int64_t postMsgUs = Log_GetQpcUs();
@@ -395,7 +405,7 @@ int ControllerMain(HINSTANCE hInstance) {
     tray.reset();
 
     LogInfo("[Controller] Exiting");
-    return 0;
+    return controllerApi.IsReady() ? 0 : 1;
 }
 
 // Main entry point
@@ -606,8 +616,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (mode == ProcessMode::Controller) {
         // If restarted from a prior instance, wait for that instance to exit cleanly
         // so its single-instance mutex and ports are fully released.
-        const char* cmdLine = GetCommandLineA();
-        const char* restartArg = strstr(cmdLine, "--restart-from-pid=");
+        const char* fullCommandLine = GetCommandLineA();
+        const char* restartArg = strstr(fullCommandLine, "--restart-from-pid=");
         if (restartArg) {
             uint32_t priorPid = 0;
             const char* val = restartArg + 19;

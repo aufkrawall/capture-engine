@@ -48,6 +48,7 @@ public:
     operator uint32_t() const override { return index; }
     uint32_t index = 0;
 };
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - SDK frame tokens only initialize their index and vtable
 FrameTokenImpl g_frameTokens[8];
 std::atomic<uint32_t> g_nextFrame{0};
 

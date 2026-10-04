@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-09-23 (first-chance crash handling, helper exception streams, late IPC replies, output-finalization retention, and injected callback regressions)
+Log-meter slot ownership cross-checked: 2026-10-04. Other sections last cross-checked: 2026-09-23 (first-chance crash handling, helper exception streams, late IPC replies, output-finalization retention, and injected callback regressions)
 
 Primary sources:
 - `AGENTS.md`
@@ -120,7 +120,11 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
 - **Interleaved sources need a gate each**: when several queues, threads or API entry
   points share one line, a single ChangeGate keyed by source+state sees a "change" at
   every alternation and logs them all. Use `StreamChangeGate<N>::Observe(stream, key)`
-  (stream = the source, key = the state). 0.1.6951 regressed exactly this way: Streamline
+  (stream = the source, key = the state). Bounded probing uses all free capacity for collisions. Claimed slots
+  keep their owners: resetting a gate after publishing a new owner can race observations and hide
+  a first line or mix streams. A stream without a slot logs every call rather than evicting another;
+  `UINT64_MAX` is the reserved owner and also logs every call. Saturation and simultaneous collisions
+  are covered by `LogMeterStreamChangeGateTest` (2026-10-04). 0.1.6951 regressed exactly this way: Streamline
   UI-tag opportunities (`hook/streamline/streamline_hook_api.cpp`, slSetTagForFrame and
   slEvaluateFeature alternate every frame) wrote 102k lines in three minutes of GTA and the
   hook log ring dropped 1412 lines; the protected-FFX ECL pass-through

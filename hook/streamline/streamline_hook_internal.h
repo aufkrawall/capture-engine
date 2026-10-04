@@ -467,6 +467,7 @@ struct StreamlineHookState {
     PFN_slReflexSetConstants original_slReflexSetConstants = nullptr;
 };
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - empty containers and SDK value initializers make no runtime API calls
 inline StreamlineHookState g_StreamlineHookState;
 
 inline std::mutex& streamline_hook_g_InitMutex = g_StreamlineHookState.initMutex;

@@ -54,8 +54,8 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
 
 ComPtr<ID3D12Resource> CreateFlowTexture(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format,
                                          D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
-    D3D12_HEAP_PROPERTIES heap{};
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                           D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.Width = width;

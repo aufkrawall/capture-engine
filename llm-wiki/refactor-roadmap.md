@@ -1,6 +1,6 @@
 # Refactor roadmap
 
-Last cross-checked: 2026-10-02
+Last cross-checked: 2026-10-04 (controller/library boundary and reviewed state/descriptor waves; baseline remains 2026-10-02)
 
 Goal (user, 2026-10-02): an orderly, readable codebase that an LLM can investigate with few tokens, with
 nothing broken or regressed, fewer lines where that costs nothing, and boundaries that let CaptureEngine
@@ -38,18 +38,18 @@ become a library other clients use for recording, overlay and 3D overrides.
 
 | # | Wave | Kind | Status |
 | --- | --- | --- | --- |
-| 0 | FG flow harness before waves 6/8/11 (section below): the real hook switching code runs in tests | test infrastructure | done 2026-10-03 (10 scenarios); follow-ups below |
+| 0 | FG flow harness before waves 6/8/11 (section below): the real hook switching code runs in tests | test infrastructure | done 2026-10-03; 14 scenarios passed 2026-10-04; follow-ups below |
 | 1 | Subsystem directory layout (repo-map.md), root-relative includes, layout helpers in `build_common.py` | mechanical | done 2026-10-02 |
 | 2 | Runtime log volume: the top families below, an ON-CHANGE gate in `log_meter.h`, shorter prefixes | behavioral (logging only) | 2a done 2026-10-02 (0.1.6946): ~25 families + hook/Vulkan prefix; remaining: service `Log()` date prefix, DisplayTiming line, PRESENT STAGE COST legend, `sl.log` verbosity |
 | 3 | `tools/log_digest.py`: a per-session digest (files, warnings/errors, transitions, top templates, gaps) so an investigation starts from ~20 KB instead of 2-16 MB | new tool | done 2026-10-02 |
 | 4 | Agent docs: AGENTS.md 25->15 KB (every rule kept, gate mechanics in build.py.md), `index.md` 33->7 KB routing table, `current.md` 89->8 KB one-liners (full text archived); next: split the >100 KB topic pages into rules + evidence | docs | 4a done 2026-10-02 |
 | 5 | Dead code: `tools/refactor/remove_unused.py` removes compiler-proven unused statics whose name occurs once in the tree (29 entities, 510 lines incl. the D3D11On12 bridge and D3D10 detours); never-compiled D3D12 COM wrappers deleted (1,316 lines). Left for review: 84 flagged entities whose names recur (other TUs, #if branches, tests) | removal | 5a done 2026-10-02 (0.1.6947) |
-| 6 | State grouping: loose `dx12_hook_g_*` / `streamline_hook_g_*` globals into named state structs per concern | mechanical | planned |
+| 6 | State grouping: loose `dx12_hook_g_*` / `streamline_hook_g_*` globals into named state structs per concern | mechanical | partial 2026-10-04: overlay coverage, PostSL, ECL and Streamline grouped; remaining state pending |
 | 7 | Size-split units named by content: DX12 `FrameProcessSession::Phase1..5/Phase6Tail` -> `PrepareFrame`, `TrackSwapchainAndSelectQueue`, `InitOverlayBackend`, `InitOverlaySyncAndFocusHold`, `HandleOuterFGTransition`, `PublishPostOverlayCapture` (files `..._stage1_prepare_frame.cpp` .. `stage5_fg_transition.cpp`); media encoder `..._2/_3` continuations and audio-pull `encode_a/b/c` renamed. Stage prefixes stay where file order is the pipeline order (source-policy tests read siblings in sorted order) | mechanical | 7a done 2026-10-03; remaining: the `Draw*` chunk chain (`DrawSc3Front`, `DrawResetElse`...) | 
-| 8 | Policy calls with many positional `bool`s to named input structs | mechanical | planned |
+| 8 | Policy calls with many positional `bool`s to named input structs | mechanical | partial 2026-10-04: focus-loss/hold policy and media frame descriptors; remaining calls pending |
 | 7b | Packed declarations (`void A();void B();` from the de-inline generator) one per line: 486 split, whitespace-proof 937/937 | mechanical | done 2026-10-03 |
 | 9 | Comment density: incident narratives (session ids, dates) out of code into the wiki; code keeps the invariant | text | planned |
-| 10 | Library boundary (below) | architectural | planned |
+| 10 | Library boundary (below) | architectural | controller-bound groundwork 2026-10-04; independent library/configuration/telemetry pending |
 | 11 | DX12 frame/overlay state machine as explicit states | behavioral, hardware-validated per step | later |
 
 ## FG flow harness (wave 0)
@@ -197,6 +197,32 @@ reference count negative) stay open, likely the game resizing before `ffxDestroy
 
 ## Library boundary (wave 10)
 
+- Current implementation (verified against sources, 2026-10-04): `include/libcaptureengine.h` is
+  controller-bound API groundwork, linked into `captureengine.exe`; there is no independent engine DLL
+  target yet. `libcaptureengine.cpp` validates one opaque handle and thread ownership, while
+  `libcaptureengine_controller.cpp` binds callbacks scoped by `ControllerApiSession` in `ControllerMain`.
+  Screenshot hotkeys use the real handle. Calls before binding fail as not initialized; custom config
+  fails as unsupported instead of being ignored. Default config means attach to the controller's
+  already-loaded settings. Statistics require the descriptor size and return unsupported without
+  writing a fictitious zero snapshot. Version comes from `GetCaptureVersion()`, not a header build number.
+- API stop and both recording hotkeys share `StopControllerRecording`: disarm the pending start,
+  clear `main_g_Recording`, publish idle, clear tray ownership, show finalization, then request child stop.
+  A pending start tick only means the controller has not observed live media; it cannot prove no file was produced.
+  A failed child acknowledgement returns an IPC error; success means acceptance, not mux completion.
+  Start success means controller intent accepted, not media live. Existing recording transition logs
+  remain authoritative. `tests/test_libcaptureengine.cpp` exercises the actual boundary with fake
+  controller callbacks; source tests protect controller stop and message-pump wiring.
+- Event polling uses `MsgWaitForMultipleObjectsEx` with `MWMO_INPUTAVAILABLE`, rejects the Win32 infinite
+  sentinel, and shares `DispatchControllerMessage` with the main loop so thread-only hotkeys/startup/quit
+  are handled. Pumped messages may call the API; nested pumps/destruction and reentrant commands are
+  rejected. Controller callbacks cannot throw through the C boundary. Full external embedding remains
+  the architectural follow-up below, not a completed feature.
+- Media DLL frame descriptors keep synchronous, borrowed cursor/texture lifetimes and QPC timestamp
+  units. The descriptor exports are `MediaEngine_SubmitFrame` / `MediaEngine_SubmitFrameD3D11`;
+  `MediaEngine_ProcessFrame` / `MediaEngine_ProcessFrameD3D11` retain their original positional C ABI.
+  Never change a dynamically resolved function's signature under the same export name. Loader rejection
+  clears all pointers through `MediaEngine_Unload`; ABI tests resolve and call the actual PE exports.
+
 - CE is several processes (controller, inject child, media, logger, sensor bridge) plus injected DLLs. A
   library keeps that topology: a client loads one engine DLL that owns the helper processes.
 - The public API must be a C ABI with opaque handles (`ce_engine_create`, recording start/stop, overlay and
@@ -204,7 +230,7 @@ reference count negative) stay open, likely the game resizing before `ffxDestroy
   with MSVC cannot share C++ types across the boundary.
 - Configuration needs a programmatic model. Today `common/config/` parses INI into `Config`; the INI loader
   becomes one producer of that model, and the shared-memory publication (`common/ipc/`) stays internal.
-- `captureengine/app/` (tray, hotkeys, pseudo overlay) becomes the first client of that API, so the
+- Eventually `captureengine/app/` (tray, hotkeys, pseudo overlay) becomes the first full client of that API, so the
   boundary is exercised by the shipping product.
 
 ## Log findings (evidence for wave 2)

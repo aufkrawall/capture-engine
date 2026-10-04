@@ -26,7 +26,7 @@ inline std::filesystem::path RegisteredServiceRuntime(std::wstring_view binary) 
     for (const auto& component : executable)
         if (component == L"." || component == L"..")
             return {};
-    const auto runtime = executable.parent_path();
+    auto runtime = executable.parent_path();
     const auto directory = runtime.parent_path();
     const std::wstring leaf = runtime.filename().wstring();
     if (directory.filename() != L"ElevationService" || leaf.size() != 40 || leaf.substr(0, 8) != L"runtime-")

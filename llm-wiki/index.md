@@ -22,11 +22,11 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `repo-map.md` | 12 | where each subsystem lives, binaries to sources, build units, high-risk areas |
-| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, library plan, log-volume evidence |
+| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-04), library plan, log-volume evidence |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
-| `regression-testing-and-logging.md` | 109 | test expectations, hook log line format, log metering conventions (`ChangeGate`), freeze detection |
+| `regression-testing-and-logging.md` | 109 | test expectations, hook log line format, log metering conventions (`ChangeGate`, collision/ownership rules verified 2026-10-04), freeze detection |
 | `debug-tools.md` | 24 | log digest, debugger paths, WoW64 dumps, DX12 DIAG lines, DRED, debug layer |
 | `debug-tools-security-audit.md` | 26 | binary/dependency security-audit tooling |
 | `known-debt.md` | 9 | accepted debt and falsified audit findings |

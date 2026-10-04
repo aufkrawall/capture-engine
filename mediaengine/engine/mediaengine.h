@@ -49,7 +49,14 @@ MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc);
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);
 
 // Process a frame from D3D12 shared handle (inject mode)
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc);
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
+                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
+                                              bool isShmem = false, int shmemSlot = 0,
+                                              const ce::cursor::CaptureState* cursorState = nullptr);
+// Descriptor entry points have distinct export names so an older DLL cannot mistake a
+// descriptor pointer for the legacy texture handle (or read nonexistent stack arguments).
+MEDIAENGINE_API bool MediaEngine_SubmitFrame(const VideoFrameSubmissionDesc* desc);
 
 // Re-emit the previously encoded video frame content as a true duplicate.
 // Returns false if no prior frame exists or the duplicate encode failed.
@@ -68,7 +75,11 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc);
+MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                                                   bool isHDR, int32_t captureLeft = 0, int32_t captureTop = 0,
+                                                   int64_t timelineElapsedUs = -1,
+                                                   const ce::cursor::CaptureState* cursorState = nullptr);
+MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();
@@ -159,24 +170,11 @@ MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed)
 }
 
 #ifdef __cplusplus
-inline bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                     int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                     uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                     bool isShmem = false, int shmemSlot = 0,
-                                     const ce::cursor::CaptureState* cursorState = nullptr) {
-    const VideoFrameSubmissionDesc desc{textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh,
-                                        sourcePid,     width,       height,     format,    isHDR,   isShmem,
-                                        shmemSlot,     cursorState};
-    return MediaEngine_ProcessFrame(&desc);
+inline bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc) {
+    return MediaEngine_SubmitFrame(desc);
 }
 
-inline bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                         bool isHDR, int32_t captureLeft = 0, int32_t captureTop = 0,
-                                         int64_t timelineElapsedUs = -1,
-                                         const ce::cursor::CaptureState* cursorState = nullptr) {
-    const D3D11FrameSubmissionDesc desc{texture,     timestamp,  width,             height,
-                                        isHDR,       captureLeft, captureTop,        timelineElapsedUs,
-                                        cursorState};
-    return MediaEngine_ProcessFrameD3D11(&desc);
+inline bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
+    return MediaEngine_SubmitFrameD3D11(desc);
 }
 #endif

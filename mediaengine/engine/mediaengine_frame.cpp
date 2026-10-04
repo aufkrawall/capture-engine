@@ -31,11 +31,11 @@ bool MediaEngine::ProcessFrame(const VideoFrameSubmissionDesc& desc) {
     if (desc.cursorState) {
         videoEnc->SetCursorCaptureState(*desc.cursorState);
     }
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+    // Preserve the encoder's signed geometry/format contract at the descriptor boundary.
     bool res = videoEnc->EncodeFrame((HANDLE)desc.textureHandle, (HANDLE)desc.fenceHandle, desc.fenceValue,
-                                     realElapsedUs, desc.sourcePid, desc.width,
-                                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-                                     desc.height, desc.format, desc.isHDR, desc.isShmem, desc.shmemSlot);
+                                     realElapsedUs, desc.sourcePid, static_cast<int>(desc.width),
+                                     static_cast<int>(desc.height), static_cast<int>(desc.format),
+                                     desc.isHDR, desc.isShmem, desc.shmemSlot);
 
     if (!res && videoEnc->WasLastFrameDeferred()) {
         return false;

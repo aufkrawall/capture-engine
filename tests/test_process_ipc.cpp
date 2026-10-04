@@ -310,10 +310,9 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_LT(injectFallback, endpointRelease);
     EXPECT_NE(helper.find("mediaAccepted || RequestChildRecordingStop"), std::string::npos);
 
-    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"record hotkey\", 5000)"),
-              std::string::npos);
-    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"audio-only hotkey\", 5000)"),
-              std::string::npos);
+    EXPECT_NE(controllerSource.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
+    EXPECT_NE(controllerSource.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
+    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(reason, 5000)"), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 
     const size_t stopCase = mediaSource.find("case ProcessCommand::StopRecording:");

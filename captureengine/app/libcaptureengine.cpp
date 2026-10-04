@@ -1,200 +1,198 @@
-#include "include/libcaptureengine.h"
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 aufkrawall
 
-#include "captureengine/app/main_internal.h"
-#include "captureengine/media/screenshot.h"
+#include "libcaptureengine_internal.h"
 
+#include <windows.h>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <new>
 
-struct ce_engine {
-    ce_engine_config_t config;
-    bool initialized = false;
-};
+#include "common/logging/logging.h"
+#include "common/logging/log_meter.h"
+#include "common/platform/build_identity.h"
+
+struct ce_engine {};
+
+namespace {
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - recursive_mutex construction is noexcept on this toolchain
+std::recursive_mutex g_ApiMutex;
+ce::api::ControllerBackend g_Backend;
+DWORD g_ControllerThread = 0;
+std::unique_ptr<ce_engine_t> g_Engine;
+bool g_InCallback = false;
+bool g_Polling = false;
+
+ce_status_t ValidateEngine(const ce_engine_t* engine) {
+    if (!engine || engine != g_Engine.get())
+        return CE_ERROR_INVALID_ARGUMENT;
+    if (g_ControllerThread == 0)
+        return CE_ERROR_NOT_INITIALIZED;
+    if (GetCurrentThreadId() != g_ControllerThread || g_InCallback)
+        return CE_ERROR_INVALID_STATE;
+    return CE_SUCCESS;
+}
+
+template <typename Callback>
+ce_status_t Invoke(const ce_engine_t* engine, Callback callback, bool polling = false) {
+    std::lock_guard<std::recursive_mutex> lock(g_ApiMutex);
+    const ce_status_t validation = ValidateEngine(engine);
+    if (validation != CE_SUCCESS)
+        return validation;
+    if (polling && g_Polling)
+        return CE_ERROR_INVALID_STATE;
+    struct CallbackScope {
+        bool& active;
+        explicit CallbackScope(bool& flag) : active(flag) {
+            active = true;
+        }
+        ~CallbackScope() {
+            active = false;
+        }
+    } scope(polling ? g_Polling : g_InCallback);
+    try {
+        return callback();
+    } catch (...) {
+        static ce::log_meter::ChangeGate gate;
+        if (gate.Observe(0))
+            LogError("[EngineAPI] Controller callback threw; reporting process failure");
+        return CE_ERROR_PROCESS_FAILURE;
+    }
+}
+
+ce_status_t SendCommand(ce_engine_t* engine, ce::api::Command command,
+                        ce_recording_intent_t intent = CE_RECORDING_INTENT_IDLE, const char* reason = nullptr) {
+    return Invoke(engine, [&] { return g_Backend.command(command, intent, reason); });
+}
+}  // namespace
+
+namespace ce::api {
+bool BindControllerBackend(const ControllerBackend& backend) {
+    std::lock_guard<std::recursive_mutex> lock(g_ApiMutex);
+    if (g_ControllerThread != 0 || g_Engine || g_InCallback || g_Polling ||
+        !backend.command || !backend.recordingIntent || !backend.poll)
+        return false;
+    g_Backend = backend;
+    g_ControllerThread = GetCurrentThreadId();
+    LogDebug("[EngineAPI] Controller backend bound to its owner thread");
+    return true;
+}
+
+void UnbindControllerBackend() {
+    std::lock_guard<std::recursive_mutex> lock(g_ApiMutex);
+    if (GetCurrentThreadId() != g_ControllerThread || g_InCallback || g_Polling)
+        return;
+    g_Backend = {};
+    g_ControllerThread = 0;
+    LogDebug("[EngineAPI] Controller backend detached");
+}
+}  // namespace ce::api
 
 extern "C" {
-
 ce_status_t ce_engine_config_init_default(ce_engine_config_t* config) {
-    if (!config) {
+    if (!config)
         return CE_ERROR_INVALID_ARGUMENT;
-    }
     std::memset(config, 0, sizeof(*config));
-    config->struct_size = sizeof(ce_engine_config_t);
+    config->struct_size = sizeof(*config);
     config->log_level = CE_LOG_LEVEL_INFO;
     config->enable_hotkeys = true;
     config->enable_system_tray = true;
-    config->start_minimized = false;
     return CE_SUCCESS;
 }
 
 ce_status_t ce_engine_create(const ce_engine_config_t* config, ce_engine_t** out_engine) {
-    if (!out_engine) {
+    if (!out_engine)
         return CE_ERROR_INVALID_ARGUMENT;
-    }
-    auto* engine = new (std::nothrow) ce_engine();
-    if (!engine) {
-        return CE_ERROR_PROCESS_FAILURE;
-    }
+    *out_engine = nullptr;
     if (config) {
-        if (config->struct_size != sizeof(ce_engine_config_t)) {
-            delete engine;
+        if (config->struct_size != sizeof(*config) || config->log_level < CE_LOG_LEVEL_NONE ||
+            config->log_level > CE_LOG_LEVEL_TRACE)
             return CE_ERROR_INVALID_ARGUMENT;
-        }
-        engine->config = *config;
-    } else {
-        ce_engine_config_init_default(&engine->config);
+        // The controller already loaded its configuration. Do not silently ignore settings
+        // or retain borrowed path strings while claiming a new runtime was initialized.
+        if (config->config_file_path || config->log_directory || config->log_level != CE_LOG_LEVEL_INFO ||
+            !config->enable_hotkeys || !config->enable_system_tray || config->start_minimized)
+            return CE_ERROR_UNSUPPORTED;
     }
-    engine->initialized = true;
-    *out_engine = engine;
+    std::lock_guard<std::recursive_mutex> lock(g_ApiMutex);
+    if (g_ControllerThread == 0)
+        return CE_ERROR_NOT_INITIALIZED;
+    if (GetCurrentThreadId() != g_ControllerThread || g_InCallback || g_Polling)
+        return CE_ERROR_INVALID_STATE;
+    if (g_Engine)
+        return CE_ERROR_ALREADY_INITIALIZED;
+    g_Engine.reset(new (std::nothrow) ce_engine);
+    if (!g_Engine)
+        return CE_ERROR_PROCESS_FAILURE;
+    *out_engine = g_Engine.get();
     return CE_SUCCESS;
 }
 
 ce_status_t ce_engine_destroy(ce_engine_t* engine) {
-    if (!engine) {
+    std::lock_guard<std::recursive_mutex> lock(g_ApiMutex);
+    if (!engine || engine != g_Engine.get())
         return CE_ERROR_INVALID_ARGUMENT;
-    }
-    delete engine;
+    if (g_InCallback || g_Polling || (g_ControllerThread != 0 && GetCurrentThreadId() != g_ControllerThread))
+        return CE_ERROR_INVALID_STATE;
+    g_Engine.reset();
     return CE_SUCCESS;
 }
 
 ce_status_t ce_engine_start_recording(ce_engine_t* engine, ce_recording_intent_t intent, const char* reason) {
-    (void)engine;
-    if (intent == CE_RECORDING_INTENT_IDLE) {
+    if (intent != CE_RECORDING_INTENT_VIDEO && intent != CE_RECORDING_INTENT_AUDIO_ONLY)
         return CE_ERROR_INVALID_ARGUMENT;
-    }
-    if (main_g_RecordingStartIntent.load(std::memory_order_acquire) != RecordingStartIntent::Idle) {
-        return CE_ERROR_INVALID_STATE;
-    }
-    if (intent == CE_RECORDING_INTENT_AUDIO_ONLY) {
-        ToggleAudioOnlyRecording();
-    } else {
-        ToggleRecording();
-    }
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::Start, intent, reason);
 }
 
 ce_status_t ce_engine_stop_recording(ce_engine_t* engine, const char* reason) {
-    (void)engine;
-    if (main_g_RecordingStartIntent.load(std::memory_order_acquire) == RecordingStartIntent::Idle) {
-        return CE_SUCCESS;
-    }
-    const char* stopReason = (reason && reason[0] != '\0') ? reason : "ce_engine_stop_recording";
-    RequestRecordingStopAndReleaseMedia(stopReason, 5000);
-    PublishRecordingStartIntent(RecordingStartIntent::Idle, stopReason);
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::Stop, CE_RECORDING_INTENT_IDLE, reason);
 }
 
 ce_status_t ce_engine_toggle_recording(ce_engine_t* engine) {
-    (void)engine;
-    ToggleRecording();
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::ToggleVideo);
 }
 
 ce_status_t ce_engine_toggle_audio_only(ce_engine_t* engine) {
-    (void)engine;
-    ToggleAudioOnlyRecording();
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::ToggleAudio);
 }
 
 ce_status_t ce_engine_toggle_overlay(ce_engine_t* engine) {
-    (void)engine;
-    ToggleOverlay();
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::Overlay);
 }
 
 ce_status_t ce_engine_toggle_benchmark(ce_engine_t* engine) {
-    (void)engine;
-    ToggleBenchmark();
-    return CE_SUCCESS;
+    return SendCommand(engine, ce::api::Command::Benchmark);
 }
 
 ce_status_t ce_engine_take_screenshot(ce_engine_t* engine) {
-    (void)engine;
-    if (main_g_PseudoOverlay) {
-        main_g_PseudoOverlay->BeginScreenshotCapture();
-    }
-    const bool screenshotSaved = TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
-    if (main_g_PseudoOverlay) {
-        main_g_PseudoOverlay->EndScreenshotCapture();
-        main_g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
-    }
-    // Show the same result in the inject overlay (hooked game).
-    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (hDisc) {
-        auto* pDisc = static_cast<DiscoveryInfo*>(MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
-        if (pDisc) {
-            if (ValidateDiscoveryInfo(pDisc)) {
-                const uint32_t injPid = pDisc->GetInjectPid();
-                if (injPid != 0) {
-                    wchar_t shmName[64];
-                    GenerateSharedMemName(shmName, 64, injPid);
-                    HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-                    if (hShm) {
-                        auto* pShm = static_cast<SharedMemoryLayout*>(
-                            MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout)));
-                        if (pShm && ValidateSharedMemory(pShm)) {
-                            const OverlayNotificationType notification = screenshotSaved
-                                                                             ? OverlayNotificationType::ScreenshotSaved
-                                                                             : OverlayNotificationType::ScreenshotFailed;
-                            pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification),
-                                                                      std::memory_order_release);
-                            pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
-                                                                        std::memory_order_release);
-                        } else if (pShm) {
-                            LogError("[Controller] Screenshot notification rejected incompatible inject shared memory ABI");
-                        }
-                        if (pShm) {
-                            UnmapViewOfFile(pShm);
-                        }
-                        CloseHandle(hShm);
-                    }
-                }
-            }
-            UnmapViewOfFile(pDisc);
-        }
-        CloseHandle(hDisc);
-    }
-    return screenshotSaved ? CE_SUCCESS : CE_ERROR_IO_FAILURE;
+    return SendCommand(engine, ce::api::Command::Screenshot);
 }
 
 ce_status_t ce_engine_is_recording(const ce_engine_t* engine, bool* out_is_recording) {
-    (void)engine;
-    if (!out_is_recording) {
+    if (!out_is_recording)
         return CE_ERROR_INVALID_ARGUMENT;
-    }
-    *out_is_recording = (main_g_RecordingStartIntent.load(std::memory_order_acquire) != RecordingStartIntent::Idle);
-    return CE_SUCCESS;
+    *out_is_recording = false;
+    return Invoke(engine, [&] {
+        *out_is_recording = g_Backend.recordingIntent() != CE_RECORDING_INTENT_IDLE;
+        return CE_SUCCESS;
+    });
 }
 
 ce_status_t ce_engine_get_recording_stats(const ce_engine_t* engine, ce_recording_stats_t* out_stats) {
-    (void)engine;
-    if (!out_stats) {
+    if (!out_stats || out_stats->struct_size != sizeof(*out_stats))
         return CE_ERROR_INVALID_ARGUMENT;
-    }
-    std::memset(out_stats, 0, sizeof(*out_stats));
-    out_stats->struct_size = sizeof(ce_recording_stats_t);
-    return CE_SUCCESS;
+    return Invoke(engine, [] {
+        // The private media process has no complete snapshot for these fields yet.
+        // Keep the caller's buffer intact instead of reporting invented zero statistics.
+        return CE_ERROR_UNSUPPORTED;
+    });
 }
 
 ce_status_t ce_engine_poll_events(ce_engine_t* engine, uint32_t timeout_ms) {
-    (void)engine;
-    MSG msg = {};
-    if (timeout_ms == 0) {
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    } else {
-        const DWORD startTick = GetTickCount();
-        while ((GetTickCount() - startTick) < timeout_ms) {
-            if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            } else {
-                Sleep(1);
-            }
-        }
-    }
-    return CE_SUCCESS;
+    if (timeout_ms == UINT32_MAX)
+        return CE_ERROR_INVALID_ARGUMENT;
+    return Invoke(engine, [&] { return g_Backend.poll(timeout_ms); }, true);
 }
 
 const char* ce_status_to_string(ce_status_t status) {
@@ -226,7 +224,6 @@ const char* ce_status_to_string(ce_status_t status) {
 }
 
 const char* ce_version_string(void) {
-    return "0.1.6968";
+    return GetCaptureVersion();
 }
-
 }  // extern "C"

@@ -368,6 +368,7 @@ return ProcessFrameFlow::kOverlayDone;
                                 }
 
                                 if (focusLossImmediateFence) {
+                                    // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above
                                     HRESULT sigHr = eclQueue->Signal(dx12_hook_g_State.fence, next);
                                     UINT64 completedValue = dx12_hook_g_State.fence->GetCompletedValue();
                                     if (SUCCEEDED(sigHr)) {
@@ -475,6 +476,7 @@ return ProcessFrameFlow::kOverlayDone;
                                 } else if (useDedicated) {
                                     // Signal immediately on dedicated queue (SL
                                     // doesn't see it).
+                                    // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above
                                     HRESULT sigHr = eclQueue->Signal(dx12_hook_g_State.fence, next);
                                     if (SUCCEEDED(sigHr)) {
                                         dx12_hook_g_State.currentFenceValue = next;

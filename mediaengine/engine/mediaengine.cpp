@@ -8,6 +8,10 @@ extern "C" {
 static std::atomic<LogCallback> g_LogCallback{nullptr};
 static void ReleaseSharedD3D11DeviceGlobals();
 
+#if defined(__GNUC__) || defined(__clang__)
+MEDIAENGINE_API void DLL_Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+#endif
+
 MEDIAENGINE_API void DLL_Log(const char* fmt, ...) {
     LogCallback callback = g_LogCallback.load(std::memory_order_acquire);
     if (!callback)
@@ -177,7 +181,17 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     ReleaseSharedD3D11DeviceGlobals();
 }
 
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc) {
+MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
+                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
+                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
+                                              bool isShmem, int shmemSlot,
+                                              const ce::cursor::CaptureState* cursorState) {
+    const VideoFrameSubmissionDesc desc{textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh,
+                                         sourcePid, width, height, format, isHDR, isShmem, shmemSlot, cursorState};
+    return MediaEngine_SubmitFrame(&desc);
+}
+
+MEDIAENGINE_API bool MediaEngine_SubmitFrame(const VideoFrameSubmissionDesc* desc) {
     if (!desc) {
         return false;
     }
@@ -228,7 +242,16 @@ MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width
     return false;
 }
 
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
+MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
+                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
+                                                   int64_t timelineElapsedUs,
+                                                   const ce::cursor::CaptureState* cursorState) {
+    const D3D11FrameSubmissionDesc desc{texture, timestamp, width, height, isHDR, captureLeft, captureTop,
+                                         timelineElapsedUs, cursorState};
+    return MediaEngine_SubmitFrameD3D11(&desc);
+}
+
+MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
     if (!desc) {
         return false;
     }
@@ -341,7 +364,7 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
                                    D3D11_SDK_VERSION, &g_SharedD3D11Device, &featureLevel, &g_SharedD3D11Context);
 
     if (FAILED(hr)) {
-        DLL_Log("[MediaEngine] Failed to create shared D3D11 device: HR=0x%x", hr);
+        DLL_Log("[MediaEngine] Failed to create shared D3D11 device: HR=0x%x", static_cast<unsigned>(hr));
         return nullptr;
     }
 

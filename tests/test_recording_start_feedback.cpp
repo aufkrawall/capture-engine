@@ -49,8 +49,9 @@ TEST(RecordingStartFeedbackSourceTest, ControllerClearsIntentOnEveryOwnedTermina
     EXPECT_NE(source.find("\"inject unavailable\""), std::string::npos);
     EXPECT_NE(source.find("\"audio-only media readiness failure\""), std::string::npos);
     EXPECT_NE(source.find("\"audio-only start command failure\""), std::string::npos);
-    EXPECT_NE(source.find("\"record stop hotkey\""), std::string::npos);
-    EXPECT_NE(source.find("\"audio-only stop hotkey\""), std::string::npos);
+    EXPECT_NE(source.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
+    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
+    EXPECT_NE(source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)"), std::string::npos);
     EXPECT_NE(source.find("\"required child exited before recording live\""), std::string::npos);
     EXPECT_NE(source.find("\"controller shutdown\""), std::string::npos);
 }
@@ -180,7 +181,10 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay)
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
     const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
-    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
+    EXPECT_NE(source.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
+    const size_t helper = source.find("bool StopControllerRecording(const char* reason)");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", helper);
     ASSERT_NE(stopLine, std::string::npos);
     const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
     EXPECT_NE(notifCall, std::string::npos);
@@ -189,7 +193,10 @@ TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
 TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
     const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
-    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"audio-only stop hotkey\")");
+    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
+    const size_t helper = source.find("bool StopControllerRecording(const char* reason)");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", helper);
     ASSERT_NE(stopLine, std::string::npos);
     const size_t notifCall = source.find("ShowRecordingFinalizingNotification()", stopLine);
     EXPECT_NE(notifCall, std::string::npos);
@@ -438,8 +445,9 @@ TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStart
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("main_g_RecordingStartRequestTick.store(GetTickCount64()"), std::string::npos);
-    EXPECT_NE(source.find("before the recording went live"), std::string::npos);
-    EXPECT_NE(source.find("Audio-only stop requested"), std::string::npos);
+    EXPECT_NE(source.find("before controller observed recording live"), std::string::npos);
+    EXPECT_NE(source.find("awaiting media finalization"), std::string::npos);
+    EXPECT_NE(source.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
 
     const size_t publish = source.find("inline bool PublishRecordingStartIntent(");
     ASSERT_NE(publish, std::string::npos);
@@ -447,9 +455,9 @@ TEST(RecordingStartFeedbackSourceTest, ControllerReportsAStopInsideTheMediaStart
     EXPECT_NE(idleClear, std::string::npos) << "every idle transition must disarm the pending-start tick";
 
     // Reported before the intent is cleared, otherwise the tick is already gone.
-    const size_t stopReport = source.find("before the recording went live");
+    const size_t stopReport = source.find("before controller observed recording live");
     const size_t stopIntent =
-        source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
+        source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, reason)", stopReport);
     ASSERT_NE(stopReport, std::string::npos);
     ASSERT_NE(stopIntent, std::string::npos);
     EXPECT_LT(stopReport, stopIntent);
