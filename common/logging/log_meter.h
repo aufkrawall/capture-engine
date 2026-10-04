@@ -137,12 +137,32 @@ private:
     };
 
     ChangeGate& SlotFor(uint64_t stream) noexcept {
-        Slot& slot = slots_[((stream * 0x9E3779B97F4A7C15ull) >> 32) % Capacity];  // raw pointers are aligned
-        if (slot.owner.load(std::memory_order_acquire) != stream &&
-            slot.owner.exchange(stream, std::memory_order_acq_rel) != stream) {
-            slot.gate.Reset();
+        const size_t idx0 = ((stream * 0x9E3779B97F4A7C15ull) >> 32) % Capacity;
+        Slot& s0 = slots_[idx0];
+        if (s0.owner.load(std::memory_order_acquire) == stream) {
+            return s0.gate;
         }
-        return slot.gate;
+        if constexpr (Capacity > 1) {
+            const size_t idx1 = (idx0 + 1) % Capacity;
+            Slot& s1 = slots_[idx1];
+            if (s1.owner.load(std::memory_order_acquire) == stream) {
+                return s1.gate;
+            }
+            uint64_t expected = UINT64_MAX;
+            if (s0.owner.compare_exchange_strong(expected, stream, std::memory_order_acq_rel)) {
+                s0.gate.Reset();
+                return s0.gate;
+            }
+            expected = UINT64_MAX;
+            if (s1.owner.compare_exchange_strong(expected, stream, std::memory_order_acq_rel)) {
+                s1.gate.Reset();
+                return s1.gate;
+            }
+        }
+        if (s0.owner.exchange(stream, std::memory_order_acq_rel) != stream) {
+            s0.gate.Reset();
+        }
+        return s0.gate;
     }
 
     Slot slots_[Capacity];

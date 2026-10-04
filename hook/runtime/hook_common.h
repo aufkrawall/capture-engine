@@ -78,6 +78,7 @@ HANDLE OpenHostDiscoveryMapping();
 // session, published config or injection whitelist) and logs into `logsDirectory`. Call before the first
 // log line.
 void IsolateHookFromCaptureEngineHost(const char* logsDirectory);
+bool IsHookIsolatedFromHost();
 // The foreground window as CE sees it: GetForegroundWindow(), or for an isolated test host the window it
 // designates (its never-activated test window must not take the desktop's focus).
 HWND HookForegroundWindow();

@@ -113,6 +113,10 @@ void IsolateHookFromCaptureEngineHost(const char* logsDirectory) {
     g_HookIsolatedFromHost.store(true, std::memory_order_release);
 }
 
+bool IsHookIsolatedFromHost() {
+    return g_HookIsolatedFromHost.load(std::memory_order_acquire);
+}
+
 static std::atomic<HWND> g_IsolatedHostForegroundWindow{nullptr};
 
 HWND HookForegroundWindow() {

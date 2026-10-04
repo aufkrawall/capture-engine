@@ -172,7 +172,8 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(const c
     // the overlay is not visible to the user; that is the only state in which CE
     // holds backbuffer GPU work. A merely-unfocused but still-visible window keeps
     // presenting S_OK and must keep showing the overlay.
-    const bool presentNotPresentable = (presentHr == DXGI_STATUS_OCCLUDED) || isIconic || hasZeroSize;
+    const bool presentNotPresentable =
+        !IsHookIsolatedFromHost() && ((presentHr == DXGI_STATUS_OCCLUDED) || isIconic || hasZeroSize);
     const bool occlusionChanged =
         dx12_hook_g_SwapchainPresentOccluded.exchange(presentNotPresentable, std::memory_order_acq_rel) != presentNotPresentable;
     if (occlusionChanged) {
