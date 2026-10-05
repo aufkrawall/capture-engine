@@ -412,10 +412,10 @@ if (processLogicalSwapchainReplacement) {
                     // ProcessFrame's overlay lock while the cancellation epoch
                     // drains an already-entered callback, then reacquire it
                     // before rebuilding/drawing on the normal route below.
-                    lock.unlock();
-                    const int previousStableFrames =
-                        FinishPostSLRouteRetirementForNormalSwapchainReturn("DX12: clean non-FG Present return");
-                    lock.lock();
+                    const int previousStableFrames = renderAdmission.RetireOutsideLock([&] {
+                        return FinishPostSLRouteRetirementForNormalSwapchainReturn(
+                            "DX12: clean non-FG Present return");
+                    });
                     HookLogImportant(
                         "DX12: Clean non-FG Present return retired stale PostSL route before normal overlay "
                         "reinit (locked=%p lastWorking=%p origGame=%p stableFrames=%d)",

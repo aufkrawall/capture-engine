@@ -459,7 +459,7 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
 
     // PERFORMANCE FIX: Use try_lock instead of blocking lock_guard
     // This prevents stalling the render thread if another thread holds the lock
-    if (!dx12_hook_g_OverlayMutex.try_lock()) {
+    if (!renderAdmission.TryAcquire(dx12_hook_g_OverlayMutex)) {
         // Another thread is processing, skip this frame
         if (activeDebugSample) {
             activeDebugSample->flags |= kPresentSampleFlagMutexBusy;
@@ -467,23 +467,20 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         HookLog("DX12: ProcessFrame - mutex busy, skipping frame");
             return ProcessFrameFlow::kReturn;
     }
-    // RAII unlock when we exit
-    std::unique_lock<std::recursive_mutex> prepareOverlayLock(dx12_hook_g_OverlayMutex, std::adopt_lock);
+    // The frame session retains admission through drawing and capture.
 
-    // Close the only transition race left by the non-blocking overlay-prepareOverlayLock
+    // Close the only transition race left by the non-blocking overlay-lock
     // acquisition: an OFF callback may have armed recovery after the first
-    // route snapshot. Re-evaluate outside the overlay prepareOverlayLock so the PostSL
-    // render->overlay prepareOverlayLock order remains intact and no stale cleanup occurs.
+    // route snapshot. Re-evaluate outside the overlay lock so the PostSL
+    // render->overlay lock order remains intact and no stale cleanup occurs.
     if (dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||
         dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
-        prepareOverlayLock.unlock();
-        if (routeInactiveDLSSPresentBeforeBackbufferAccess()) {
+        if (renderAdmission.RouteOutsideLock(routeInactiveDLSSPresentBeforeBackbufferAccess)) {
             return ProcessFrameFlow::kReturn;
         }
-        prepareOverlayLock.lock();
     }
 
-    // SAFETY: Check device state after acquiring prepareOverlayLock
+    // SAFETY: Check device state after acquiring the frame lock
     if (dx12_hook_g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
         HookLog("DX12: ProcessFrame - in resize cleanup, returning");
             return ProcessFrameFlow::kReturn;

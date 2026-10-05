@@ -202,7 +202,7 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     ASSERT_NE(directDrawSuccessGuard, std::string::npos);
     ASSERT_NE(markPrePresentDraw, std::string::npos);
     ASSERT_NE(exactPostSLReturn, std::string::npos);
-    const size_t overlayMutex = text.find("dx12_hook_g_OverlayMutex.try_lock()", recoveryDecision);
+    const size_t overlayMutex = text.find("renderAdmission.TryAcquire(dx12_hook_g_OverlayMutex)", recoveryDecision);
     ASSERT_NE(overlayMutex, std::string::npos);
     EXPECT_LT(recoveryDecision, preRoutingCoverage);
     EXPECT_LT(preRoutingCoverage, dedupDecision);
@@ -222,7 +222,8 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     ASSERT_NE(postLockRecoveryRecheck, std::string::npos);
     ASSERT_NE(postLockExplicitOffRecheck, std::string::npos);
     const size_t postLockRouteResnapshot =
-        text.find("routeInactiveDLSSPresentBeforeBackbufferAccess()", postLockExplicitOffRecheck);
+        text.find("renderAdmission.RouteOutsideLock(routeInactiveDLSSPresentBeforeBackbufferAccess)",
+                  postLockExplicitOffRecheck);
     ASSERT_NE(postLockRouteResnapshot, std::string::npos);
     EXPECT_LT(overlayMutex, postLockRecoveryRecheck);
     EXPECT_LT(postLockRecoveryRecheck, postLockExplicitOffRecheck);
@@ -241,20 +242,18 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
         "dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);",
         provenNormalBoundary);
     ASSERT_NE(publishNormalBoundary, std::string::npos);
-    const size_t unlockOverlay = text.find("lock.unlock();", publishNormalBoundary);
+    const size_t unlockOverlay = text.find("renderAdmission.RetireOutsideLock(", publishNormalBoundary);
     ASSERT_NE(unlockOverlay, std::string::npos);
     const size_t retirePostSL = text.find("FinishPostSLRouteRetirementForNormalSwapchainReturn(", unlockOverlay);
     ASSERT_NE(retirePostSL, std::string::npos);
-    const size_t relockOverlay = text.find("lock.lock();", retirePostSL);
-    ASSERT_NE(relockOverlay, std::string::npos);
-    const size_t normalQueueRouting = text.find("DecideSwapchainOverlayRouting(", relockOverlay);
+    // FrameRenderAdmissionTest verifies release/reacquire inside the actual owner.
+    const size_t normalQueueRouting = text.find("DecideSwapchainOverlayRouting(", retirePostSL);
     ASSERT_NE(normalQueueRouting, std::string::npos);
     EXPECT_LT(ownershipGuard, provenNormalBoundary);
     EXPECT_LT(provenNormalBoundary, publishNormalBoundary);
     EXPECT_LT(publishNormalBoundary, unlockOverlay);
     EXPECT_LT(unlockOverlay, retirePostSL);
-    EXPECT_LT(retirePostSL, relockOverlay);
-    EXPECT_LT(relockOverlay, normalQueueRouting)
+    EXPECT_LT(retirePostSL, normalQueueRouting)
         << "a clean normal return must invalidate the retired PostSL queue before this Present chooses a queue";
 }
 

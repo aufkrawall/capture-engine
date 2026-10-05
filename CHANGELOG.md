@@ -56,6 +56,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DX12 frame synchronization:** normal drawing and capture now retain the frame overlay lock, releasing it only around PostSL retirement and route rechecks. This prevents unowned unlocks and concurrent resource mutation after preparation.
+
 - **FG route confirmation** activation and rendering proof now commit through the PostSL lifecycle owner; cancelled proof cannot be restored by a callback already publishing confirmation, while temporary suspension preserves validated handover ownership.
 
 - **FG queue retirement** selected and pinned PostSL queues now retain GPU completion evidence across delayed callbacks and replacement fences; incomplete drains cannot release those references early.

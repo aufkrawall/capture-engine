@@ -352,3 +352,20 @@ independent hooking, patching and security assertions remain. Reproduce the boun
 `python tools/refactor/check_draw_transaction_mutations.py`; do not run it concurrently with builds
 or transaction edits. Native/FG/product/package gates still verify the restored product; controlled
 operations and WARP output do not prove vendor/hardware behavior. Last verified: 2026-10-05.
+
+## Normal frame render admission (implemented)
+
+FrameProcessSession privately owns FrameRenderAdmission from PrepareFrame through draw, capture,
+metrics and resource destructor cleanup. The prior generated split released a local adopted lock
+at the end of preparation, while normal-return retirement tried to unlock an unowned member lock.
+The owner uses the existing nonblocking try-lock admission. Route rechecks release the overlay lock
+and leave it released when the frame is delegated; otherwise they reacquire it. Retirement first
+publishes cancellation, then releases overlay admission while draining PostSL under its render lock,
+and reacquires before normal-route initialization. This preserves render -> overlay lock order.
+
+Sources: frame_render_admission.h; dx12_hook_process_session.h; stage1_prepare_frame.cpp and
+stage2_swapchain_queue.cpp (hook/d3d12). Tests in test_frame_render_admission.cpp use controlled
+threads/latches to verify retained admission, all scoped exits, contention without blocking, route
+delegation and callbacks draining outside overlay admission. No sleeps or frame allocations.
+Native unit tests, all FG flows and the product/package gate verify the integration; real games
+and hardware scheduling remain user validation. Last verified: 2026-10-05.

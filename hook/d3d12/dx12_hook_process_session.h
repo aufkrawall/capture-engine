@@ -3,6 +3,7 @@
 #include "dx12_hook_internal.h"
 
 #include "overlay_draw_transaction.h"
+#include "frame_render_admission.h"
 
 // One present transaction owns temporary state, metrics completion and the
 // borrowed/owned resources used by its preparation and draw operations.
@@ -57,7 +58,7 @@ private:
     bool exactGameSwapchainRecoverySwapchainProof = false;
     bool exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
     bool independentFSRTopmostCompositedThisPresent = false;
-    std::unique_lock<std::recursive_mutex> lock;
+    ce::dx12::FrameRenderAdmission<std::recursive_mutex> renderAdmission;
     bool allowOverlayRender;
     SharedMemoryLayout* observerModeShm;
     bool observerOnlyMode;
