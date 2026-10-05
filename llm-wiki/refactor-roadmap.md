@@ -1,10 +1,14 @@
 # Refactor roadmap
 
-Last cross-checked: 2026-10-04 (controller/library boundary and reviewed state/descriptor waves; baseline remains 2026-10-02)
+Last cross-checked: 2026-10-05 (completed core ownership; remaining-debt plan; historical baseline remains 2026-10-02)
 
 Goal (user, 2026-10-02): an orderly, readable codebase that an LLM can investigate with few tokens, with
 nothing broken or regressed, fewer lines where that costs nothing, and boundaries that let CaptureEngine
 become a library other clients use for recording, overlay and 3D overrides.
+
+Current debt execution plan: [architecture-debt-plan.md](architecture-debt-plan.md). Its D0-D12 waves
+supersede the execution order below; this page retains the earlier program and supporting evidence.
+Completed core contracts and measured locality: [refactor-contracts.md](refactor-contracts.md).
 
 ## Rules for every wave
 
@@ -13,13 +17,15 @@ become a library other clients use for recording, overlay and 3D overrides.
 - Mechanical proof: `tools/refactor/preprocess_fingerprint.py snapshot` before and after, then `compare`
   with the rename mapping. Every product TU must preprocess byte-identically, except TUs whose text was
   meant to change. Objects are LTO bitcode, so object comparison is not used.
-- Source-policy tests (about 1,450 of 4,315 tests) assert on source text. A mechanical wave applies the same
-  rename to the tests. A behavioral wave replaces the source assertion with a behavior test where the code
+- Source-policy tests (historical baseline: about 1,450 of 4,315) assert on source text. A mechanical wave
+  applies the same rename to the tests. A behavioral wave replaces the source assertion with a behavior test where the code
   becomes testable, never deletes the protection silently.
-- Present, FG-transition and overlay-route code (`hook/d3d12`, `hook/present`, `hook/streamline`,
-  `hook/ffx`) gets only mechanical changes until a behavioral step can be validated on hardware by the
-  user (GTA/Talos/W3 FG switching matrix). Unit tests alone do not cover those paths.
-- One closing gate per wave: `python build.py --incremental --run-tests --skip-updates --concise`.
+- Present, FG-transition and overlay-route behavioral changes use production transaction regressions
+  and the real-hook FG flow harness. The user authorized that testing during the completed core refactor.
+  Real-game FG switching, capture/A/V and hardware performance validation remain separate pending
+  evidence; unit/WARP flow success must not be presented as proof of those results.
+- One closing gate per completed implementation commit:
+  `python build.py --incremental --run-tests --gtest-filter="*" --skip-updates --concise`.
 
 ## Baseline (2026-10-02, before wave 1)
 
@@ -50,7 +56,7 @@ become a library other clients use for recording, overlay and 3D overrides.
 | 7b | Packed declarations (`void A();void B();` from the de-inline generator) one per line: 486 split, whitespace-proof 937/937 | mechanical | done 2026-10-03 |
 | 9 | Comment density: incident narratives (session ids, dates) out of code into the wiki; code keeps the invariant | text | planned |
 | 10 | Library boundary (below) | architectural | controller-bound groundwork 2026-10-04; independent library/configuration/telemetry pending |
-| 11 | DX12 frame/overlay state machine as explicit states | behavioral, hardware-validated per step | later |
+| 11 | DX12 frame/overlay ownership and proven phase facts | behavioral, production units + FG flow; hardware evidence separate | remaining D2-D4 in architecture-debt-plan.md |
 
 ## FG flow harness (wave 0)
 
@@ -185,6 +191,9 @@ Debug layer on (2026-10-03, run pending): it found two defects.
   UAV-only (the GTA cross-queue hang). Chunk3 logs `PostSL barrier invariant violated` if transitions ever
   reach another queue. Hardware check wanted: GTA/Talos/W3 DLSS-G (pure and post-FSR), `mode=present->rt
   ... presentingQueue=1`, no DEVICE_HUNG.
+
+Current follow-up execution and acceptance: architecture-debt-plan.md D1-D4/D7. The evidence below
+remains historical; the resize hypothesis is not an established CE root cause.
 
 Follow-ups: a fake NGX runtime (end-to-end reproduction of the NGX
 reactivation); a third-party overlay

@@ -6,6 +6,8 @@ Current run/artifact authority: build/verification/latest_summary.txt and latest
 
 This page records source-backed ownership contracts for the core refactor. It is not
 an independent engine/library specification. Source and tests outrank this page.
+Remaining architecture work: [architecture-debt-plan.md](architecture-debt-plan.md); the temporary
+refactor plan is now an identical working copy of that canonical plan.
 
 ## Baseline and investigation method
 

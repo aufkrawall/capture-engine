@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording and overlay maintenance plan:** documented the completed refactor and a staged plan for remaining lifecycle, timing and build debt, with regression and hardware validation criteria.
+
 - **Project privacy checks:** agent commits now require staged-content and commit-metadata secret checks before and after committing, plus manual review of sensitive capture and diagnostic artifacts.
 
 - **Recording and FG verification:** documented the implemented ownership contracts, measured debugging context and reproducible game/capture validation; repeated DX12 frame-lock contention diagnostics are now metered.
