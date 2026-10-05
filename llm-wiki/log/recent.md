@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-05 - Complete core ownership refactor and behavioral DX12 protection
+
+- Controller recording lifecycle, validated IPC transactions, versioned media submission outcomes,
+  source adapters and timing commitment are implemented. Final stop policy distinguishes explicit
+  rejection from unknown acknowledgement and owns media-first/fallback/release; toggles delegate directly.
+- PostSL owns route activation, confirmation epoch, callback admission, queue roles and deferred
+  retirement. Queue references span callback submission; cancellation precedes render drain and
+  retained GPU completion evidence gates ordinary release. Native frame admission now spans drawing/
+  capture instead of releasing the preparation-local lock; retirement drains outside overlay admission.
+- Production draw transaction tests detected all six historical-defect mutations. The two redundant
+  source recovery checks are retired; independent hooking, patching and security checks stay. Named
+  resource/record/submit/metrics/capture operations replace eleven generated wrappers.
+- Every local implementation commit passed native units, all then-existing FG scenarios and fresh
+  product/package gates. The final harness has 15 isolated real-hook WARP scenarios, including stale
+  epoch rejection/native return/reactivation. Real games, capture/A/V, hardware, broader shared-ABI
+  verification and fuzz remain pending under the agreed scope.
+- The repeated full implementation context grew; policy ownership improved. Exact investigation sets,
+  measurements, contracts, commit sequence and user validation are in `refactor-contracts.md`.
+  Section 11 independent DLL/events/preview/reconfiguration/plugin work remains deferred.
+
 ### 2026-10-04 - Owned controller recording session
 
 - ControllerMain scopes recording_session; controller_recording adapts processes, tray and overlay feedback.
@@ -10,7 +30,7 @@
   that no output exists; media keeps asynchronous finalization ownership.
 - Real-session regressions replace controller substring policy assertions. Native suite and all 14 FG flow
   scenarios passed the product/package gate (0.1.6975); real games and capture/A/V validation remain pending.
-- Current contracts and attribution limits: `refactor-contracts.md`. Validated IPC mapping is the next slice.
+- Current contracts and attribution limits: `refactor-contracts.md`; the subsequent validated IPC and core slices are now implemented.
 
 ### 2026-10-04 - Review of 3719efc6 through d66cf21e: controller boundary, DLL ABI and log ownership
 

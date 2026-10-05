@@ -1,7 +1,8 @@
 # Core refactor contracts
 
-Last verified: 2026-10-04 against fe805f58; native unit suite and 14 FG flow scenarios passed.
-Baseline closing product/package gate: 0.1.6974.
+Last verified: 2026-10-05; current native suite and all 15 isolated FG flow scenarios pass the
+product/package closing gate. Baseline: fe805f58 and package 0.1.6974 (14 FG scenarios).
+Current run/artifact authority: build/verification/latest_summary.txt and latest_manifest.json.
 
 This page records source-backed ownership contracts for the core refactor. It is not
 an independent engine/library specification. Source and tests outrank this page.
@@ -13,7 +14,7 @@ Repeat these investigations before/after each relevant slice using the same entr
 | Investigation | Initial implementation context | Distributed decisions |
 | --- | --- | --- |
 | Stop a pending recording, then start again | main_internal.h, main_recording.cpp, libcaptureengine_controller.cpp: 1,509 lines, approximately 16,473 tokens | requested flag, pending intent/tick, tray state, transport stop acceptance, process release |
-| Explain PostSL route retirement and stale render cancellation | dx12_hook_types.h, postsl_route/queue/render_entry/render_submit.cpp: 2,886 lines, approximately 40,428 tokens | activation/confirmation, cancellation epoch, render lock, callback/GPU drain, queue references |
+| Explain PostSL route retirement and stale render cancellation | dx12_hook_types.h, postsl_route/queue/render_entry/render_submit.cpp: 2,886 lines, approximately 40,396 tokens | activation/confirmation, cancellation epoch, render lock, callback/GPU drain, queue references |
 | Explain encode failure, repeat and timeline commitment | media_main_encoder_08_loop_encode.cpp, _07_loop_emit.cpp, mediaengine_frame.cpp: 2,015 lines, approximately 28,517 tokens | boolean/deferred side channel, candidate/cache promotion, leases, source timing and output commitment |
 
 Paths in the table use module-unique basenames; see repo-map.md. Approximate tokens
@@ -122,7 +123,7 @@ failure, missing discovery/payload, compare-exchange preservation and rejection 
 The controller's stop transport helpers are private to controller_recording.cpp. Screenshot capture
 still owns its original pseudo-overlay scope; only notification publication changed.
 
-## Media submission result (implemented; caller migration follows)
+## Media submission result (implemented)
 
 frame_submission_result.h defines the additive 40-byte, 8-byte-aligned V1 output, with fixed-width
 status, output origin, candidate disposition, first-output commitment and microsecond timeline
@@ -205,26 +206,26 @@ FirstVideoCommit logs distinguish raw QPC, source milliseconds and the 100 ns au
 entry per committed first output. Audio codecs/tracks, overload recordings and hardware sync remain
 user validation; these unit/layout checks cannot establish those outcomes.
 
-## PostSL admission and epoch ownership (first lifecycle slice)
+## PostSL admission and epoch ownership (implemented)
 
 Verified 2026-10-05: native lifecycle/source regressions and all 15 real-hook WARP flow scenarios.
 postsl_lifecycle.h privately owns callback execution admission, callback counts, lifecycle epoch,
 render serialization and epoch-specific confirmation. Mutable aliases for those fields are removed.
-SDK settings, runtime presence, general route-active/confirmed latches, visible status and queue
-references remain distinct; the next slice owns activation/evidence and resource retirement together.
+SDK settings, runtime presence and visible status remain distinct observations. The same lifecycle
+owner now also owns route activation/proof; queue/resource retirement is owned as documented below.
 
 RenderTransaction holds the existing render mutex through every PostSL phase and early return.
 Previously Chunk0's scope guard released it before Chunk1/2/3: retirement could drain the entry phase
 while recording/submission still ran. The owner now invokes the same phase chain under one scope;
 no virtual dispatch, frame allocation, source copy or new GPU wait is introduced. Normal-return
 PublishRetirement disables/unpublishes callbacks and invalidates the epoch before FinishRetirement
-acquires the render lock. Queue/COM releases and existing GPU/callback drain behavior are unchanged
-in this slice. Other transition generation resets retain their original ordering.
+acquires the render lock. The queue/resource owner below applies callback and GPU completion evidence
+at the existing release boundaries. Other transition generation resets retain their original ordering.
 
 Confirmation publishes exact swapchain proof before its release stamp. The stamp carries the entry
 epoch; invalidation immediately makes it stale, even if an old store races cancellation. Failed stale
 confirmation does not publish proof and is diagnosed with metered entry/current epoch and reason.
-Legacy general confirmation and probe behavior are retained for the activation migration. Atomics
+General confirmation and probe behavior remain distinct from proof for the current epoch. Atomics
 read through observations are independent, not a coherent multi-field snapshot. The owner's callback
 scope increments before the enable recheck and remains counted until return, including retirement.
 
@@ -416,3 +417,165 @@ during stop. test_child_recording_stop.cpp exercises actual command adapter inpu
 channels, transport failure with misleading response values, rejection and acknowledgement. Process
 wiring and acknowledgement-before-media-finalization assertions remain in test_process_ipc.cpp.
 Native, all FG and package gate required. Last verified: 2026-10-05.
+
+## Completion and glossary
+
+Sections 1-10 of the core implementation plan are implemented. The controller/session, validated
+IPC, source submission/timing, complete PostSL admission/activation/queue retirement cluster and
+covered native DX12 draw path have production owners and regression seams. Existing public ABI,
+process topology, source scheduling, caller-owned source leases, fences and GPU completion remain
+separate contracts. This is not a replacement for vendor/game or A/V/hardware validation.
+
+| Term | Meaning and authority |
+| --- | --- |
+| Requested recording | Controller ownership of an accepted command/intention; RecordingSession. Does not prove output. |
+| Live recording | Media observation, correlated with available request/timestamp/child evidence; uncertainty retained. |
+| Finalized recording | Media/mux completion and publication result; command acceptance cannot assert it. |
+| Source present | Application/source timing evidence, distinct from a generated/final physical output. |
+| Lifecycle epoch | PostSL cancellation/admission identity; a departed callback cannot confirm the replacement route. |
+| Transport generation | Source/ring resource identity; adapters bind it without changing the existing wire protocol. |
+| Scheduled output time | Controller CFR/WGC output slot; distinct from the source timestamp and inject encoded duration. |
+| Borrowed resource | Observation valid only under its existing owner/lock/lease lifetime; no release authority. |
+| Owning lease | Explicit caller/session retirement obligation (ring candidate, backbuffer or callback queue role). |
+
+Dependency direction is frontend -> recording session; transport adapter -> validated domain operation;
+source coordinator -> inject/D3D11 submission adapter; SDK adapter -> PostSL lifecycle/queue owner;
+private frame operations -> draw transaction. RecordingEffects implements process/presentation effects
+without importing tray or overlay into session policy. FrameProcessSession and PostSLRenderSession
+keep fields, locks, SDK types and stages private to implementation headers. Scoped admission permits
+existing callback reentry and explicitly releases overlay admission for render -> overlay retirement.
+There is no generic channel/frame/plugin framework or added virtual per-frame dispatch.
+
+Diagnostic boundaries: ControllerSession carries request, child, intent/outcome and reason; validated
+IPC classifies discovery/open/map/ABI/target failures; media outcome/commit diagnostics retain source
+and generation evidence; PostSL cancellation/retirement/rejected confirmation carries epoch/reason;
+DX12Draw carries failure operation/HRESULT/epoch and meters lock contention. Repeated hot-path
+failures use ChangeGate; no unconditional new frame logging. Existing actionable PDB/package privacy
+checks run in each product gate.
+
+Sources/tests: [recording session](../captureengine/app/recording_session.cpp),
+[child stop adapter](../captureengine/app/child_recording_stop.h),
+[validated IPC](../common/ipc/inject_control_channel.cpp),
+[submission adapters](../captureengine/media/frame_submission.h),
+[candidate completion](../captureengine/media/candidate_completion.h),
+[timing commitment](../mediaengine/engine/submission_transaction.h),
+[PostSL lifecycle](../hook/d3d12/postsl_lifecycle.h),
+[queue retirement](../hook/d3d12/postsl_queue_owner.h),
+[draw transaction](../hook/d3d12/overlay_draw_transaction.h),
+[frame admission](../hook/d3d12/frame_render_admission.h),
+[draw regression](../tests/test_dx12_draw_transaction.cpp),
+[real-hook flows](../tests/flow/flow_test_support.h).
+
+## Repeated locality investigations (2026-10-05)
+
+Same entry questions and initial file sets as the baseline above. Tokens mean decoded characters / 4,
+not a model tokenizer. The PostSL baseline token total is corrected by recomputing fe805f58 (32 tokens
+below the earlier transcription). New owners/adapters are included below rather than hidden by moves.
+
+| Investigation | Baseline files | Same files now | Added owners/adapters | Full implementation context now |
+| --- | --- | --- | --- | --- |
+| Pending stop/restart | 1,509 lines / 16,473 tokens | 1,058 / 10,405 | 647 / 7,350 | 1,705 / 17,755 |
+| FG handover/stale epoch | 2,886 / 40,396 | 2,816 / 39,558 | 486 / 5,326 | 3,302 / 44,884 |
+| Encode failure/leases/committed timeline | 2,015 / 28,517 | 1,952 / 28,007 | 319 / 3,362 | 2,271 / 31,369 |
+
+Added controller context: recording_session.{h,cpp}, controller_recording.{h,cpp}, child_recording_stop.h,
+and inject_control_channel.{h,cpp}. PostSL: postsl_lifecycle.h, postsl_queue_owner.h,
+postsl_submission_resources.h, dx12_hook_postsl_render.cpp and dx12_hook_postsl_session.h. Media:
+frame_submission.h, frame_submission_internal.h, frame_submission_{inject,d3d11}.cpp,
+candidate_completion.h, frame_submission_result.h, submission_timing.h, submission_transaction.h
+and common/capture/time_units.h. All paths use the module-unique basenames from repo-map.md.
+
+The full context grew; this refactor does not claim an overall source-reading reduction. The policy
+entry sets are controller session/child classification (254 lines / 2,820 tokens), PostSL owners
+(356 / 4,120), and candidate/timing/units owners (149 / 1,493). Adapter/SDK investigation still needs
+the full sets above. New contract code and behavioral tests make formerly implicit decisions explicit.
+
+- Pending stop: hotkeys/API no longer change requested/pending/output mode or choose child fallback.
+  The session owns clear-before-stop, outcome aggregation, endpoint release, repeat/reentry and next-start
+  eligibility. Presentation consumes notices. Wire publication/validation belongs to the IPC owner.
+- Handover: consumers no longer mutate owned callback counts, confirmation epoch, route flags or queue
+  role references. The lifecycle transaction admits/rejects callbacks and proof; queue retirement owns
+  callback/GPU completion evidence. SDK settings/runtime/status stay separate observations. Frame
+  retirement releases overlay admission around callback drain, then resumes the normal route.
+- Encode failure: coordinator callers no longer pair a boolean with a deferred query, manufacture frame
+  descriptors, bind generations or independently commit first audio anchors. Source adapters interpret
+  explicit outcomes; CompleteCandidate owns retry/cache transfer/release eligibility; SubmissionTiming
+  owns anchors and committed values. Source scheduling and actual lease release remain source-specific.
+
+## Automated verification and remaining validation
+
+Every completed implementation commit passed `python build.py --incremental --run-tests
+--gtest-filter="*" --skip-updates --concise` including the fresh setup package. Focused native loops and
+product syntax checks ran between edits. All 15 FG scenarios execute isolated, bounded real-hook WARP
+orchestration with fake SDK runtimes, physical-present coverage, no double draw, visible FG status and
+D3D12 debug-layer checks. The new departed-epoch/native-return/reactivation flow remains covered.
+Six deliberate draw defects failed behavioral assertions and the original production header was restored
+and passed. The IPC probe is skipped in the parent native process and executes in its isolated child;
+that parent skip is expected, not omitted IPC coverage. No agent-started test/game/runtime process remains.
+
+Required-but-unrun broader gates: shared ABI/result boundary changes normally require
+`--verify --verify-clean`; IPC input-boundary work requires fuzz coverage. The agreed execution scope excludes
+these broader Python/lint/sanitizer/fuzz gates. They are pending, as are real-game, capture/A/V and
+hardware performance checks. x86 sanitizer runtime is unavailable in the project toolchain. x86/x64
+product builds, applicable ABI/layout tests and package/PDB/privacy verification did pass. No duration,
+compatibility, risk reduction or hardware performance result is inferred from unit/WARP success.
+
+Reproducible user validation:
+
+1. Install the final setup package. In Talos and GTA exercise native <-> FSR FG, native <-> DLSS FG,
+   and FSR <-> DLSS in both directions, including OFF/ON reactivation, focus changes, resize and Steam/
+   Rockstar overlays. Record every physical output/visible overlay and FG status; expect no crash,
+   disappearing overlay, uncovered/double-drawn output or unexpected status. Preserve session logs/dumps
+   and run `python tools/log_digest.py <session-dir>` before focused analysis.
+2. Test inject and WGC recording independently with each available hardware/software video encoder,
+   AAC/ALAC/FLAC/OPUS/PCM, single and multiple audio tracks, application/system/microphone audio, mixing
+   and resampling. Include start-before-live cancellation, repeated stop and immediate restart. Expect
+   asynchronous finalization, one completion, correct recording identity and no inherited stale command.
+3. For each combination use a reproducible visual flash plus audible click source at start, middle and
+   end. Inspect decoded audio for discontinuities, distortion/pitch changes and cut-outs; compare all
+   tracks against video content, not container duration alone. Use packet PTS/duration and codec trim/
+   priming metadata plus decoded samples to verify the exact effective endpoints and synchronization.
+   Example inspection: `build/msys64/clang64/bin/ffprobe.exe -v error -show_streams -show_packets
+   -of json <recording>` (large output stays local and must not be committed).
+4. Exercise sustained encoder overload and recovery with the same source/audio matrix. Expect CFR
+   continuity with the existing repeat/drop policy, retained/released leases at the correct points,
+   no premature audio anchor and equal effective track horizons. Inspect finalization and recording
+   manifests, media diagnostics and decoded output; automated contract tests do not establish this result.
+5. Compare the same hardware/game/settings workload before/after using existing profiling, CPU/GPU
+   frame time, allocations, queue/fence waits and capture copies. Expect the preserved performance
+   requirements; no benchmark or no-regression hardware claim has been made by this implementation.
+
+## Section 11 assessment: deferred independent work
+
+| Candidate | Assessment after core refactor |
+| --- | --- |
+| Independent engine DLL | Session separation is groundwork. Runtime/config/helper ownership, capability negotiation and MSVC/clang embedding remain separate work; no DLL is implemented. |
+| Events/callbacks | A real consumer still needs live/finalized/error delivery semantics, thread/reentry/shutdown guarantees, bounded buffering and late-observation attribution. No event API is added. |
+| Preview/encoded packets | Requires independent lifetime, latency and backpressure contracts; current submission outcomes do not imply packet/GPU completion. |
+| Dynamic reconfiguration | Needs codec/source/timeline transition requirements and actual consumers; not implemented through this refactor. |
+| Generic frame/plugin hierarchy | Existing source-specific adapters remove the demonstrated duplication. No evidence currently requires a generic payload or virtual frame hierarchy. |
+
+Remaining fake NGX/foreign-overlay runtime coverage and hardware validation in refactor-roadmap.md are
+independent follow-ups. Existing hooking, patching, security and unrelated source regressions remain.
+
+## Local implementation commit sequence
+
+All commits below are local; nothing was pushed. Each completed slice has a passing product/native/
+FG/package gate. The final documentation/diagnostics cleanup follows this sequence in git history.
+
+| Commit | Slice |
+| --- | --- |
+| `7490bfc4` | docs: establish core refactor contracts and regression baseline |
+| `db18d6e3` | refactor: own controller recording lifecycle |
+| `23bbaf33` | refactor: encapsulate validated inject control transactions |
+| `a0f21b9c` | refactor: return explicit media submission outcomes |
+| `59161f40` | refactor: migrate source submission and candidate completion |
+| `e1e28166` | refactor: own media timing and first-output commitment |
+| `45793b70` | refactor: own PostSL callback admission and epoch confirmation |
+| `38ec6032` | refactor: retain PostSL callback resources through submission |
+| `0f64703c` | refactor: own PostSL queue retirement and completion evidence |
+| `60cdcded` | refactor: own PostSL route activation and rendering proof |
+| `be86f3d9` | refactor: execute DX12 draw recovery and resource transactions |
+| `2785fc94` | fix: retain normal DX12 frame render admission |
+| `86339c87` | refactor: recover named DX12 draw and capture operations |
+| `67639667` | fix: own recording stop fallback and acknowledgement outcomes |

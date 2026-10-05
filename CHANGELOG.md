@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording and FG verification:** documented the implemented ownership contracts, measured debugging context and reproducible game/capture validation; repeated DX12 frame-lock contention diagnostics are now metered.
+
 - **DX12 drawing and capture:** resource preparation, overlay recording, submission and capture publication now follow private, named transactions, with regression protection for queue selection and ordering during frame-generation handovers.
 
 - **DX12 overlay recovery regressions** production draw transactions now verify reset/acquisition/close failures, submission exits and exact backbuffer release behavior; deliberate historical-defect mutations must fail the same behavioral tests.

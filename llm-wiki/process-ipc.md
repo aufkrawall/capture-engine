@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-09-23 (tolerated late ReloadConfig/Ping replies and recording-safe media config reload)
+Last cross-checked: 2026-10-05 (owned controller lifecycle/stop outcomes and validated inject control operations; existing private-channel protocol preserved)
 
 Primary sources:
 - `common/platform/restricted_child_process.{h,cpp}`
@@ -24,7 +24,17 @@ Controller-to-inject/media commands use a private channel created for each spawn
 
 An ordinary video or audio-only stop is an authenticated media command, not an intentional broken pipe. Media clears every hook-facing recording flag and any older shared stop/start command, acknowledges acceptance before encoder/mux finalization, then finalizes and exits as a disposable child. The controller can release its endpoint immediately without blocking tray/hotkey work on trailer writing or the post-mux probe. An accepted stop publishes `Finalizing`; only media completion can replace it with saved, saved-with-video-degradation, canceled, or failed. That includes a stop that arrives BEFORE the recording ever started: the media child is spawned on the hotkey and needs seconds to go live (render->loopback probe, engine init, capture routing), and a stop inside that window used to discard the queued start and exit silently, leaving `Finalizing` on screen for its full 60 s expiry and the manifest with no finalization record for a recording that produced no file (session `20260918_235601`, r0003/r0004). `media_main_g_RecordingEverStarted` latches in `StartRecording`, and both stop routes call `CompleteAbortedRecordingStart`, which finalizes the aborted start as `recording_canceled`. The shared-memory route clears the hook-facing state (intent, capture-requested, recording-visible, screen-grab target) first, because `CompleteRecordingFinalization` suppresses its notification while a newer recording looks active. `MediaEngine_StopRecording` returns true only when the output was actually published, so a trailer/close/publication failure cannot become a false saved message. The controller asks inject to publish the shared-memory stop only when media did not accept the private command. Therefore `media channel failed during peek` remains evidence of a real channel failure, not normal stop noise, and an inject fallback cannot leave a stale `cmdStopRecording` for the next media child.
 
-The controller must not report a recording as started when a child merely accepted the command: inject's ack only proves `cmdStartRecording` was set, and the media process may still be seconds from live (measured 3.6 s inject, 6.7 s WGC). It logs the delivery, arms `main_g_RecordingStartRequestTick`, and reports `Recording is live` only when `CheckChildProcessHealth` observes media's published `isRecording`. That check runs once per second, so the reported startup time comes from media's own live stamp (`runtimeState.recordingStartTime`, `GetTickCount64`, same clock as the request tick) via `ce::recording_lifecycle::ResolveRecordingStartupTiming`; the line also carries `observed after` and `liveStamp=media|unavailable` (a missing or stale stamp falls back to the observation time). A stop while that tick is still armed is logged as a stop inside the startup window. Every idle intent transition disarms the tick.
+RecordingSession owns controller requested/pending state and observes media live independently of
+command acceptance. ReconcileControllerRecording reads health through InjectControlChannel, then
+correlates available request, child health and media live timestamp evidence. Snapshot.pendingSince
+replaces the removed main_g_RecordingStartRequestTick. ResolveRecordingStartupTiming retains media
+stamp versus observation fallback behavior; stale stamps cannot confirm a new start. Stop clears
+intent before media-first/inject-fallback commands, retains explicit rejection versus acknowledgement
+uncertainty, and releases the media endpoint for restart without claiming completed output. The
+private child_recording_stop adapter and real-session tests exercise those operations. Low-frequency
+inject intent/health/notification operations own scoped discovery/map/ABI/target validation and never
+return borrowed mappings. Independently loaded atomics do not form a transactional snapshot. Current
+source/test contracts and remaining ABI/fuzz/game validation are in [refactor-contracts.md](refactor-contracts.md).
 
 Failure feedback is not limited to finalization. Every media-side start failure (`PublishRecordingStartFailure`) publishes the same transient `RecordingFailed` shared-memory notification that both the inject overlay and the pseudo overlay render, after already clearing the start intent and `isRecording`. The controller republishes `RecordingFailed` (with a fresh 7 s expiry) when it consumes a recorded failure code, when it aborts a start for its own reasons (media readiness, inject command/channel failure, audio-only equivalents), or when a required child exits before the recording becomes live. If the media process dies while a recording is live, the controller reports the failed capture, clears the hook-facing recording state so the REC indicator cannot stay stuck, and still respawns an idle media child for the next recording; auto-record is disabled on that loss just as on a recorded integrity failure.
 

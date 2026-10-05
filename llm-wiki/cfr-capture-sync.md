@@ -3,6 +3,18 @@
 Last cross-checked: 2026-09-27 (render->loopback probe early shot stop; exact rational CFR output grid; DOOM Eternal 4K120 Vulkan compute-present validation, no-allocation common Vulkan wait chaining, latched recording-level capacity health, measured backend-neutral overload repeat pacing and inject debt recovery, overload-aware dynamic-overlay repeats, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, exact codec-decoded endpoints, and recording-epoch-safe final-output DLSS multi-frame-generation capture with bounded virtual lead, phase-normalized display cadence, texture-lease-safe retention, ordered suspended-PostSL base capture, and final/base path continuity)
 Stale-risk: low
 
+## Submission and commitment ownership (2026-10-05)
+
+Source-specific inject/D3D11 adapters return accepted/deferred/rejected, fresh/repeat/no output,
+candidate retention and committed timing through additive fixed-layout V1 result exports. Existing
+positional/descriptor exports remain compatible. Leases remain caller-owned; CompleteCandidate
+centralizes retry/cache promotion eligibility. SubmissionTiming/SubmitAndCommit own first-output/audio
+anchor admission and accepted values with explicit QPC, microsecond, 100 ns audio and frame-index units.
+Inject encoded duration and authoritative WGC scheduled timing retain different policies. Acceptance
+is not synchronous packet emission or GPU completion. Production-owner/ABI tests and native/FG gates
+pass; the capture/A/V matrix and hardware checks remain pending. Current source/test anchors and
+reproducible validation: [refactor-contracts.md](refactor-contracts.md).
+
 ## Exact rational output grid (2026-09-25)
 
 Packet PTS are exact (`n/fps`), the CFR audio target follows them sample-exactly (`GetExpectedFinalDurationUs`), and audio samples are placed by QPC. The real-time slot grid must therefore advance by exactly `qpcFrequency/fps`. It used to stride `targetIntervalTicks = qpcFrequency / fps` (integer), which is 83333 instead of 83333.33 at 10 MHz/120 fps: the grid ran fast by `fraction/interval` (4 ppm at 60/120, 6.4 at 144, 16 at 240, 28 at 360 fps). Nothing noticed, because shortfall, wake timer and grid resync all lived in the same truncated domain; video content fell behind audio by 14-100 ms per recorded hour, the audio consumer crept past the capture edge by the same amount (absorbed by the ingestion reservoir), and capture sync (whose limiter already uses a Bresenham rational grid) slipped one repeat per `interval/ppm` (about 4.3 min at 240 fps).

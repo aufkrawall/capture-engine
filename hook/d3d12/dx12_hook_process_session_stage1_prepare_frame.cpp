@@ -464,7 +464,13 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         if (activeDebugSample) {
             activeDebugSample->flags |= kPresentSampleFlagMutexBusy;
         }
-        HookLog("DX12: ProcessFrame - mutex busy, skipping frame");
+        static ce::log_meter::ChangeGate busyAdmissionGate;
+        const auto epoch = g_PostSLLifecycle.Epoch();
+        const auto verdict = busyAdmissionGate.Observe(ce::log_meter::FieldKey(epoch));
+        if (verdict) {
+            HookLog("[DX12Draw] outcome=deferred reason=frame-lock-busy epoch=%u%s", epoch,
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
             return ProcessFrameFlow::kReturn;
     }
     // The frame session retains admission through drawing and capture.

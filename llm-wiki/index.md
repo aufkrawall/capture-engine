@@ -22,8 +22,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `repo-map.md` | 12 | where each subsystem lives, binaries to sources, build units, high-risk areas |
-| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-04), library plan, log-volume evidence |
-| `refactor-contracts.md` | 7 | core refactor ownership, investigation baseline and verification limits |
+| `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-05), library plan, log-volume evidence |
+| `refactor-contracts.md` | 45 | implemented core ownership, glossary, source/test anchors, locality comparison and pending validation (2026-10-05) |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
