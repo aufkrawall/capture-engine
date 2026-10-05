@@ -58,7 +58,7 @@ if (processLogicalSwapchainReplacement) {
             preserveCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
             preserveLastWorkingPostSLQueue = g_PostSLQueues.LastDeviceHealthyQueue();
         }
-        const bool postSLConfirmedForSwapchainChange = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        const bool postSLConfirmedForSwapchainChange = g_PostSLLifecycle.RouteConfirmed();
         const int postSLStableFramesForSwapchainChange = dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_acquire);
         const bool confirmedPostSLBackendWarmupProtected =
             ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(
@@ -305,8 +305,8 @@ if (processLogicalSwapchainReplacement) {
                 const int previousCooldown = dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire);
                 EndFGTransitionCooldown();
                 dx12_hook_g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
-                dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-                dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+                g_PostSLLifecycle.SuspendRoute();
+                g_PostSLLifecycle.InvalidateRouteProof();
                 // Force sync re-init: old allocators/fence were on the old queue.
                 if (dx12_hook_g_State.syncInit) {
                     dx12_hook_g_State.syncInit = false;
@@ -345,8 +345,8 @@ if (processLogicalSwapchainReplacement) {
                 dx12_hook_g_PostSLCooldownRemaining.store(dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire),
                                                 std::memory_order_release);
                 dx12_hook_g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
-                dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-                dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+                g_PostSLLifecycle.SuspendRoute();
+                g_PostSLLifecycle.InvalidateRouteProof();
                 // Force sync re-init: old allocators/fence were on the old queue.
                 if (dx12_hook_g_State.syncInit) {
                     dx12_hook_g_State.syncInit = false;
@@ -383,8 +383,8 @@ if (processLogicalSwapchainReplacement) {
                 }
                 const bool postSLRouteArmed =
                     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
-                    dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) ||
-                    dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ||
+                    g_PostSLLifecycle.RouteActive() ||
+                    g_PostSLLifecycle.RouteConfirmed() ||
                     dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) || postSLLockedQueue != nullptr ||
                     postSLLastWorkingQueue != nullptr;
                 const bool hasDistinctPostSLQueueProof =

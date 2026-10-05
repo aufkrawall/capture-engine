@@ -490,7 +490,7 @@ static std::atomic<int> s_postSLRenderCount{0};
 int renderNum = s_postSLRenderCount.fetch_add(1, std::memory_order_relaxed) + 1;
 s_postSLRenders.fetch_add(1, std::memory_order_relaxed);
 HRESULT postDevReason = dev->GetDeviceRemovedReason();
-const bool confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycleEpoch, [&] {
+const auto confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycleEpoch, [&] {
     if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
         if (finalOutputCapture.basePresentedOutput) {
             // The overlay and any capture copy were ordered on this real suspended
@@ -542,17 +542,17 @@ if (!confirmedCurrentEpoch) {
     const auto currentEpoch = g_PostSLLifecycle.Epoch();
     const auto verdict = staleConfirmationGate.Observe(ce::log_meter::FieldKey(entryLifecycleEpoch, currentEpoch));
     if (verdict) {
-        HookLogImportant("[PostSLLifecycle] confirmation=rejected reason=retired-generation "
-                         "entryEpoch=%u epoch=%u swapchain=%p%s", entryLifecycleEpoch, currentEpoch, pSwapChain,
+        HookLogImportant("[PostSLLifecycle] confirmation=rejected reason=%s "
+                         "entryEpoch=%u epoch=%u swapchain=%p%s",
+                         entryLifecycleEpoch == currentEpoch ? "route-proof-revoked" : "retired-generation",
+                         entryLifecycleEpoch, currentEpoch, pSwapChain,
                          ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     bb->Release();
     return PostSLFlow::kReturn;
 }
-if (!dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed)) {
-    dx12_hook_g_PostSLConfirmedRendering.store(true, std::memory_order_release);
+if (confirmedCurrentEpoch.firstRouteProof) {
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     ReleaseStreamlineStartupActivationSwapchain("DX12: PostSL confirmed rendering");
     // kStreamlineStartupTransitionGraceMs from the SL FG activation arm covers the
     // remaining startup churn window. Streamline can still call Present briefly after

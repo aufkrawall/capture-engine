@@ -51,26 +51,25 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
 
             // Step 2: Activate PostSL rendering
             if (!skipOverlayDraw) {
-                if (!dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire)) {
+                if (!g_PostSLLifecycle.RouteActive()) {
                     const bool preserveSyntheticStartupState =
                         ce::dx12_overlay_policy::ShouldKeepSyntheticStartupStateUntilConfirmedRender(
                             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
-                            dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                            g_PostSLLifecycle.RouteConfirmed(),
                             HookIsPostSLOverlayConfirmedButStartupSettling());
                     const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
                         ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
                             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                                 std::memory_order_acquire),
                             HookIsPostSLOverlayActiveButUnconfirmed(),
-                            dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                            g_PostSLLifecycle.RouteConfirmed(),
                             HookIsPostSLOverlayConfirmedButStartupSettling());
-                    dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+                    g_PostSLLifecycle.ActivateRoute(preserveSyntheticStartupState);
                     if (!preserveSyntheticStartupState) {
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
                             false, std::memory_order_release);
-                        dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                     }
                     dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
                     DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
@@ -84,7 +83,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
             } else {
                 const bool preserveActivePostSL =
                     ce::dx12_overlay_policy::ShouldPreserveActivePostSLWhenPreSLDrawIsSkipped(
-                        currentSLFGRunning, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        currentSLFGRunning, g_PostSLLifecycle.RouteConfirmed(),
                         HookIsPostSLOverlayActiveButUnconfirmed());
                 if (preserveActivePostSL) {
                     static int s_preservePostSLOnSkippedPreSLDrawLog = 0;
@@ -93,13 +92,13 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                         HookLogImportant(
                             "DX12: Preserving active PostSL while pre-SL draw is skipped "
                             "(confirmed=%d unconfirmed=%d skip=%d)",
-                            dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                            g_PostSLLifecycle.RouteConfirmed() ? 1 : 0,
                             HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
                             s_preservePostSLOnSkippedPreSLDrawLog + 1);
                     }
                     s_preservePostSLOnSkippedPreSLDrawLog++;
-                } else if (dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire)) {
-                    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+                } else if (g_PostSLLifecycle.RouteActive()) {
+                    g_PostSLLifecycle.SuspendRoute();
                 }
             }
             ExecuteCommandListsPtr currentRealECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
@@ -107,7 +106,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
             const bool keepPostSLWithoutRealECL =
                 ce::dx12_overlay_policy::ShouldKeepPostSLActiveWhenRealECLUnavailable(
                     currentRealECL != nullptr, selectedQueueOrigECL != nullptr,
-                    dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                    g_PostSLLifecycle.RouteConfirmed(),
                     HookIsPostSLOverlayActiveButUnconfirmed());
             if (!keepPostSLWithoutRealECL) {
                 static bool s_noRealECLLogged = false;
@@ -115,7 +114,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                     s_noRealECLLogged = true;
                     HookLogImportant("DX12: No real D3D12 ECL available - disabling overlay during SL FG");
                 }
-                dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+                g_PostSLLifecycle.SuspendRoute();
             } else if (!currentRealECL) {
                 static std::atomic<int> s_keepPostSLWithoutRealECLLogCount{0};
                 const int logCount = s_keepPostSLWithoutRealECLLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -124,11 +123,11 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                         "DX12: Keeping PostSL active without realECL "
                         "(queue=%p origECL=%p confirmed=%d unconfirmed=%d log=%d)",
                         gameQueue, (void*)selectedQueueOrigECL,
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                        g_PostSLLifecycle.RouteConfirmed() ? 1 : 0,
                         HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, logCount + 1);
                 }
             }
-            if (dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire)) {
+            if (g_PostSLLifecycle.RouteConfirmed()) {
                 // FG "SUSPENSION" STALL DETECTION:
                 //
                 // PostSL was previously confirmed rendering, but it may have
@@ -223,9 +222,9 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
         if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr &&
             !dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
             SetPostSLCallbackInstalled(false, "DX12: pre-SL fallback");
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
             // Reset PostSL confirmed flag so pre-SL rendering resumes immediately
-            dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            g_PostSLLifecycle.InvalidateRouteProof();
             dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
             dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
             dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
@@ -257,7 +256,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
             dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire),
             dx12_hook_g_SceneTransitionCooldown.load(std::memory_order_relaxed),
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
-            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0, skipOverlayDraw ? 1 : 0,
+            g_PostSLLifecycle.RouteActive() ? 1 : 0, skipOverlayDraw ? 1 : 0,
             dx12_hook_g_PostSLStallCounter.load(std::memory_order_relaxed),
             dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_relaxed),
             ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
@@ -414,7 +413,7 @@ if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuR
             skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
             ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), dx12_hook_g_SwapchainQueue,
             dx12_hook_g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
-            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) ? 1 : 0);
+            g_PostSLLifecycle.RouteActive() ? 1 : 0);
     }
 return ProcessFrameFlow::kSkipOverlayDraw;
 }
@@ -446,8 +445,8 @@ return ProcessFrameFlow::kSkipOverlayDraw;
 // If this regresses, increase kPreSLFallbackThreshold.
 {
     bool slFGNow = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-    bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
-    bool postSLConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed);
+    bool postSLActive = g_PostSLLifecycle.RouteActive();
+    bool postSLConfirmed = g_PostSLLifecycle.RouteConfirmed();
     auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed);
     int stallCount = dx12_hook_g_PostSLStallCounter.load(std::memory_order_relaxed);
 

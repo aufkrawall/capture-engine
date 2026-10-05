@@ -127,3 +127,61 @@ TEST(PostSLLifecycleTest, AdmittedCallbackCannotEnterTheReplacementGeneration) {
     EXPECT_TRUE(next);
     EXPECT_TRUE(owner.RenderTransaction(next.Epoch(), [](uint32_t) {}));
 }
+
+TEST(PostSLLifecycleTest, SyntheticActivationDoesNotPromiseRenderingAndWarmSuspensionPreservesProvenRoute) {
+    PostSLLifecycle owner;
+    owner.ActivateSyntheticProbe();
+    EXPECT_TRUE(owner.RouteActive());
+    EXPECT_TRUE(owner.SyntheticProbeUnconfirmed());
+    EXPECT_FALSE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.ConfirmedInCurrentEpoch());
+    auto first = owner.ConfirmRender(owner.Epoch(), [] {});
+    ASSERT_TRUE(first.accepted);
+    EXPECT_TRUE(first.firstRouteProof);
+    EXPECT_FALSE(owner.SyntheticProbeUnconfirmed());
+    EXPECT_TRUE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.ConfirmRender(owner.Epoch(), [] {}).firstRouteProof);
+    owner.SuspendRoute();
+    EXPECT_FALSE(owner.RouteActive());
+    EXPECT_TRUE(owner.RouteConfirmed());
+    owner.ActivateRoute();
+    EXPECT_TRUE(owner.RouteConfirmed());
+    owner.BeginReactivation();
+    EXPECT_TRUE(owner.RouteConfirmed());  // route latch and current generation are distinct
+    EXPECT_FALSE(owner.ConfirmedInCurrentEpoch());
+    owner.RestartRoute();
+    EXPECT_FALSE(owner.RouteActive());
+    EXPECT_FALSE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.SyntheticProbeUnconfirmed());
+}
+
+TEST(PostSLLifecycleTest, ProofRevocationInsidePublicationCannotBeResurrectedWithoutAnEpochChange) {
+    PostSLLifecycle owner;
+    const auto epoch = owner.Epoch();
+    owner.ActivateSyntheticProbe();
+    const auto cancelled = owner.ConfirmRender(epoch, [&] { owner.InvalidateRouteProof(); });
+    EXPECT_FALSE(cancelled.accepted);
+    EXPECT_FALSE(cancelled.firstRouteProof);
+    EXPECT_EQ(owner.Epoch(), epoch);
+    EXPECT_FALSE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.ConfirmedInCurrentEpoch());
+    ASSERT_TRUE(owner.ConfirmRender(epoch, [] {}));
+    // Existing proof takes the same cancellation path; no already-confirmed shortcut.
+    EXPECT_FALSE(owner.ConfirmRender(epoch, [&] { owner.RestartRoute(); }));
+    EXPECT_FALSE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.ConfirmedInCurrentEpoch());
+}
+
+TEST(PostSLLifecycleTest, StaleProofCannotEraseAReplacementConfirmationInTheSameEpoch) {
+    PostSLLifecycle owner;
+    const auto epoch = owner.Epoch();
+    EXPECT_FALSE(owner.ConfirmRender(epoch, [&] {
+        owner.InvalidateRouteProof();
+        ASSERT_TRUE(owner.ConfirmRender(epoch, [] {}));
+    }));
+    EXPECT_TRUE(owner.RouteConfirmed());
+    EXPECT_TRUE(owner.ConfirmedInCurrentEpoch());
+    owner.InvalidateRouteProof();
+    EXPECT_FALSE(owner.RouteConfirmed());
+    EXPECT_FALSE(owner.ConfirmedInCurrentEpoch());
+}

@@ -18,9 +18,9 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         const bool preserveActivePostSLDuringSynclessCooldown =
             ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-                dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire), HookIsPostSLOverlayActiveButUnconfirmed());
+                g_PostSLLifecycle.RouteConfirmed(), HookIsPostSLOverlayActiveButUnconfirmed());
         if (!preserveActivePostSLDuringSynclessCooldown) {
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
         }
         dx12_hook_g_PostSLCooldownRemaining.store(dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire),
                                         std::memory_order_release);
@@ -44,7 +44,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
                     // to show ERR_GFX_STATE and exit; any GPU submit would just add a
                     // secondary crash on top of an already-fatal device removal.
                     dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
-                    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+                    g_PostSLLifecycle.SuspendRoute();
                 }
             }
             if (dx12_hook_g_DeviceRemoved.load(std::memory_order_relaxed)) {
@@ -67,7 +67,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
                             "(hr=0x%08X)",
                             (unsigned)freshHr);
                         dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
-                        dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+                        g_PostSLLifecycle.SuspendRoute();
                         allowOverlayRender = false;
                     }
                 }
@@ -139,8 +139,8 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
             return ProcessFrameFlow::kReturn;
         }
 
-        IDXGISwapChain3* sc3 = nullptr;
-        if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+        IDXGISwapChain3* stagedSwapchain = nullptr;
+        if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&stagedSwapchain))) || !stagedSwapchain) {
             HookLog("DX12: ProcessFrame - failed to get SwapChain3 for staged activation");
             return ProcessFrameFlow::kReturn;
         }
@@ -155,10 +155,10 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         if (dx12_hook_s_startupOverlayActivationStage == StartupOverlayActivationStage::kDelayRTVInitAfterBackendInit) {
             if (!dx12_hook_g_State.rtvDescHeap) {
                 HookLogImportant("DX12: Finalizing staged overlay activation step 1/2 - creating RTVs");
-                CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+                CreateRTVs(g_Device.load(), stagedSwapchain, actualBufferCount);
                 if (!dx12_hook_g_State.rtvDescHeap) {
                     HookLogImportant("DX12: Staged overlay RTV init failed, keeping sync init deferred");
-                    sc3->Release();
+                    stagedSwapchain->Release();
 
             return ProcessFrameFlow::kReturn;
                 }
@@ -168,7 +168,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
             HookLogImportant(
                 "DX12: Startup compat staged activation - RTV init complete, delaying sync init for %llums",
                 dx12_hook_kStartupOverlayPostRTVInitSettleMs);
-            sc3->Release();
+            stagedSwapchain->Release();
             return ProcessFrameFlow::kReturn;
         }
 
@@ -183,23 +183,23 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
                         "DX12: Waiting to initialize staged overlay sync after RTV init for %s (remaining=%llums)",
                         g_ProcessName, dx12_hook_kStartupOverlayPostRTVInitSettleMs - elapsedSinceRTVInit);
                 }
-                sc3->Release();
+                stagedSwapchain->Release();
             return ProcessFrameFlow::kReturn;
             }
         }
 
         if (!dx12_hook_g_State.rtvDescHeap) {
-            CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+            CreateRTVs(g_Device.load(), stagedSwapchain, actualBufferCount);
             if (!dx12_hook_g_State.rtvDescHeap) {
                 HookLogImportant("DX12: RTV initialization failed during staged sync init, keeping overlay deferred");
-                sc3->Release();
+                stagedSwapchain->Release();
             return ProcessFrameFlow::kReturn;
             }
         }
         HookLogImportant("DX12: Finalizing staged overlay activation step 2/2 - initializing sync");
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         InitOverlaySync(g_Device.load(), desc.BufferCount, gameQueue);
-        sc3->Release();
+        stagedSwapchain->Release();
 
         if (dx12_hook_g_State.syncInit) {
             ResetStartupOverlayBackendActivationStage();
@@ -457,11 +457,11 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit && dx12_hook_s_startupOverlayResourcePrimeMs != 0) {
         const ULONGLONG now = ce::hook_clock::TickCount64();
         const ULONGLONG msSinceResourcePrime = now - dx12_hook_s_startupOverlayResourcePrimeMs;
-        const bool preserveLiveStartupOverlayDuringInactiveSL =
+        const bool preserveLivePrimeOverlay =
             ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
         const bool shouldDelayAfterResourcePrime = ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(
             startupOverlayCompatibilityActive, IsActualFrameGenerationActive(), msSinceResourcePrime,
-            dx12_hook_kStartupOverlayPostResourcePrimeSettleMs, preserveLiveStartupOverlayDuringInactiveSL);
+            dx12_hook_kStartupOverlayPostResourcePrimeSettleMs, preserveLivePrimeOverlay);
         if (shouldDelayAfterResourcePrime) {
             static std::atomic<int> s_postResourcePrimeLogCount{0};
             if (s_postResourcePrimeLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
@@ -471,7 +471,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
             }
             delayOverlayRenderAfterResourcePrime = true;
         } else {
-            if (preserveLiveStartupOverlayDuringInactiveSL) {
+            if (preserveLivePrimeOverlay) {
                 HookLogImportant(
                     "DX12: Skipping startup resource-prime settle delay to keep live overlay visible for %s",
                     g_ProcessName);

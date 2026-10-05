@@ -305,22 +305,22 @@ if (dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) &&
     const bool streamlineGone = !IsStreamlineLoaded();
     if (streamlineGone) {
         dx12_hook_g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
-        dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-        dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+        g_PostSLLifecycle.SuspendRoute();
+        g_PostSLLifecycle.InvalidateRouteProof();
         SetPostSLCallbackInstalled(false, "DX12: PostSL keep-alive retired after Streamline unload");
         return;
     }
 }
 
 const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
-const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+const bool postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
 const bool startupTopLevelPresentConsumed =
     DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
 const bool wrapperProgressObserved =
     dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount.load(std::memory_order_acquire) > 0;
 const bool startupActivationPending =
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
-const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
+const bool postSLActive = g_PostSLLifecycle.RouteActive();
 const bool explicitSetOptionsActivation = HookHasExplicitStreamlineSetOptionsActivation();
 const bool activeDLSSFGRuntimeSignalObserved = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 const bool nullSwapChain = (pSwapChain == nullptr);

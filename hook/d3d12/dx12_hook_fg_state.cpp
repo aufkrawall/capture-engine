@@ -49,19 +49,19 @@ void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const cha
     AccountPresentForOverlayCoverage(inheritCoverageIfNoDraw, source ? source : "transport-present");
 }
 bool HookIsPostSLOverlayActiveButUnconfirmed() {
-    return dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire) ||
-           (dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) &&
-            !dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+    return g_PostSLLifecycle.SyntheticProbeUnconfirmed() ||
+           (g_PostSLLifecycle.RouteActive() &&
+            !g_PostSLLifecycle.RouteConfirmed());
 }
 bool HookHasPostSLSyntheticStartupActivationEntered() {
-    return dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.load(std::memory_order_acquire);
+    return g_PostSLLifecycle.SyntheticProbeUnconfirmed();
 }
 bool HookIsPostSLOverlayConfirmedRendering() {
-    return dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    return g_PostSLLifecycle.RouteConfirmed();
 }
 bool HookIsPostSLOverlayConfirmedButStartupSettling() {
     return ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsStartupSettling(
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        g_PostSLLifecycle.RouteConfirmed(),
         dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_acquire));
 
 }
@@ -69,7 +69,7 @@ bool HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() {
     const bool extendRuntimeStateStabilization =
         dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.load(std::memory_order_acquire);
     return ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLRenderingAsRuntimeStateStabilizing(
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        g_PostSLLifecycle.RouteConfirmed(),
         dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_acquire), extendRuntimeStateStabilization);
 }
 int HookGetPostSLRuntimeStateStabilizationLastFrame() {
@@ -78,7 +78,7 @@ int HookGetPostSLRuntimeStateStabilizationLastFrame() {
 }
 bool HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected() {
     return ce::dx12_overlay_policy::ShouldDeferStaleOffDuringConfirmedPostSLWarmup(
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        g_PostSLLifecycle.RouteConfirmed(),
         dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_acquire));
 }
 int HookGetPostSLStaleOffWarmupProtectionLastFrame() {

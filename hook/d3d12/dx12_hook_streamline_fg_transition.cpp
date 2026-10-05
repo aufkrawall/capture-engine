@@ -119,7 +119,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         const bool resumeConfirmedPostSLFromKeepAlive =
             ce::dx12_overlay_policy::ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(
                 dx12_hook_g_PostSLExplicitOffKeepAlive.exchange(false, std::memory_order_acq_rel),
-                dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire));
+                g_PostSLLifecycle.RouteConfirmed());
         dx12_hook_g_PostSLWarmResumePreservationPending.store(callbackAlreadyInstalled && resumeConfirmedPostSLFromKeepAlive,
                                                     std::memory_order_release);
 
@@ -131,7 +131,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             // re-arm, no lifecycle reset — the first re-entrant present after
             // the resume renders immediately.
             g_PostSLLifecycle.ResumeCallbacks();
-            dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+            g_PostSLLifecycle.ActivateRoute();
             dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
@@ -185,9 +185,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             }
         } else if (callbackAlreadyInstalled) {
             g_PostSLLifecycle.ResumeCallbacks();
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-            dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-            dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+            g_PostSLLifecycle.RestartRoute();
             dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
             dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
             dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
@@ -217,9 +215,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             int cooldownLeft = dx12_hook_g_PostSLCooldownRemaining.load(std::memory_order_acquire);
             while (cooldownLeft < 60 && !dx12_hook_g_PostSLCooldownRemaining.compare_exchange_weak(
                                             cooldownLeft, 60, std::memory_order_acq_rel, std::memory_order_acquire)) {}
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-            dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-            dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+            g_PostSLLifecycle.RestartRoute();
             dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
             dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
             dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
@@ -330,7 +326,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     dx12_hook_g_PostSLWarmResumePreservationPending.store(false, std::memory_order_release);
     const bool keepConfirmedPostSLAliveAcrossOff =
         ce::dx12_overlay_policy::ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(
-            dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
+            g_PostSLLifecycle.RouteConfirmed(), g_FGCompat.IsFSRFGApiActive(),
             HookHasRuntimeOwnedNativeFGPresentPath(), ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup());
     if (keepConfirmedPostSLAliveAcrossOff) {
         dx12_hook_g_PostSLExplicitOffKeepAlive.store(true, std::memory_order_release);
@@ -338,7 +334,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             "DX12: Streamline FG OFF — keeping confirmed PostSL armed-and-rendering until an authoritative "
             "normal swapchain/queue return (make-before-break keep-alive)");
     } else {
-        dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+        g_PostSLLifecycle.SuspendRoute();
     }
 
     const bool inStartupChurnWindow = DXGIShared::IsStreamlineStartupTransitionWindowActive();
@@ -374,13 +370,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     DXGIShared::ResetStreamlineStartupTransitionState();
     if (!keepConfirmedPostSLAliveAcrossOff) {
         SetPostSLCallbackInstalled(false, "DX12: Streamline FG OFF");
-        dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+        g_PostSLLifecycle.InvalidateRouteProof();
     } else {
         HookLogImportant(
             "DX12: Streamline FG OFF — PostSL callback stays installed for make-before-break keep-alive "
             "(confirmed rendering preserved)");
     }
-    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLLifecycle.ResetStartupEvidence();
     dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
     dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
     dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);

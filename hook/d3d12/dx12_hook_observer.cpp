@@ -28,9 +28,7 @@ return IsOverlayObserverStartupPresentOnly(GetActiveDX12OverlayConfig(shm));
 
 
 void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartupTransitionWindow) {
-dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+g_PostSLLifecycle.RestartRoute();
 g_PostSLLifecycle.SuspendCallbacks();
 dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
 dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);

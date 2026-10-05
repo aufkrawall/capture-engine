@@ -311,8 +311,8 @@ return true;
 
 void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup(IDXGISwapChain* swapchain, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context) {
 const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
-const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
-const bool postSLConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+const bool postSLActive = g_PostSLLifecycle.RouteActive();
+const bool postSLConfirmed = g_PostSLLifecycle.RouteConfirmed();
 const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 const bool startupActivationPending =
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
@@ -327,14 +327,14 @@ SetPostSLCallbackInstalled(false, "DX12: protected official FFX startup");
 const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
 g_FGCompat.SetStreamlineFGSignal(false);
 g_FGCompat.SetDLSSFGActive(false);
-dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+g_PostSLLifecycle.SuspendRoute();
+g_PostSLLifecycle.InvalidateRouteProof();
 dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
 dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
 dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
 dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+g_PostSLLifecycle.ResetStartupEvidence();
 dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
 ResetPostSLLifecycleForTransition("DX12: protected official FFX startup", true, true);
 ReleaseStreamlineStartupActivationSwapchain("DX12: protected official FFX startup");
@@ -425,16 +425,16 @@ if (capturedQueue) {
 const bool staleStreamlineSignal = DXGIShared::g_StreamlineFGRunning.exchange(false, std::memory_order_acq_rel);
 g_FGCompat.SetStreamlineFGSignal(false);
 g_FGCompat.SetDLSSFGActive(false);
-dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+g_PostSLLifecycle.SuspendRoute();
 SetPostSLCallbackInstalled(false, "DX12: FFX swapchain takeover");
 ResetPostSLLifecycleForTransition("DX12: FFX swapchain takeover", true, true);
-dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+g_PostSLLifecycle.InvalidateRouteProof();
 dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
 dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
 dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
 dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+g_PostSLLifecycle.ResetStartupEvidence();
 dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
 ReleaseStreamlineStartupActivationSwapchain("DX12: FFX swapchain takeover");
 ResetFFXPresentCallbackOverlayBackend("DX12: FFX swapchain takeover");

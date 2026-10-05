@@ -54,6 +54,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **FG route confirmation** activation and rendering proof now commit through the PostSL lifecycle owner; cancelled proof cannot be restored by a callback already publishing confirmation, while temporary suspension preserves validated handover ownership.
+
 - **FG queue retirement** selected and pinned PostSL queues now retain GPU completion evidence across delayed callbacks and replacement fences; incomplete drains cannot release those references early.
 
 - **FG callback queue lifetime** PostSL retains selected and wrapper queues through submission and rejects delayed callbacks from retired generations before acquiring resources.

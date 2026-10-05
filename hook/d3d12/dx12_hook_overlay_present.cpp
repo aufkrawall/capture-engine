@@ -9,7 +9,7 @@ void DX12_OnSwapchainResizeBegin() {
 
     // Disable post-SL overlay rendering IMMEDIATELY to prevent rendering
     // to invalidated backbuffers during the resize.
-    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLLifecycle.SuspendRoute();
     dx12_hook_g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
     dx12_hook_g_PostSLWarmResumePreservationPending.store(false, std::memory_order_release);
     ReleaseStreamlineStartupActivationSwapchain("DX12: swapchain resize");

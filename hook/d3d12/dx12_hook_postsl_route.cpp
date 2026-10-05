@@ -64,7 +64,7 @@ if (ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(
 
 const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
 const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
+const bool postSLActive = g_PostSLLifecycle.RouteActive();
 const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
     dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(), streamlineFGRunning,
     currentSwapchainQueue != nullptr);
@@ -418,7 +418,7 @@ ID3D12CommandQueue* lastWorkingQueue = nullptr;
     lastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
 }
 
-const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+const bool postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
 const bool newQueueMatchesPreviousSwapchainQueue =
     newSwapchainQueue != nullptr && newSwapchainQueue == previousSwapchainQueue;
 const bool invalidateConfirmed =
@@ -432,7 +432,7 @@ const bool clearLocked = ce::dx12_overlay_policy::ShouldClearPostSLQueueProofFor
 
 DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.store(false, std::memory_order_release);
 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(true, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+g_PostSLLifecycle.ResetStartupEvidence();
 dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
 dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
 dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
@@ -440,10 +440,10 @@ dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
 
 if (invalidateConfirmed) {
     const int previousStableFrames = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
-    dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLLifecycle.InvalidateRouteProof();
     dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
     dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
-    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLLifecycle.SuspendRoute();
     HookLogImportant(
         "DX12: Fresh authoritative Streamline handoff invalidated stale PostSL confirmation "
         "(source=%s newScQueue=%p prevScQueue=%p origGame=%p locked=%p lastWorking=%p stableFrames=%d)",
@@ -531,13 +531,12 @@ int FinishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
 return g_PostSLLifecycle.FinishRetirement([&] {
 
     const int previousStableFrames = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
-    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-    dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLLifecycle.RestartRoute();
     dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
     dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
     dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLLifecycle.ResetStartupEvidence();
     dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     ResetPostSLLifecycleForTransition(reason, true);
     g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);
@@ -607,8 +606,8 @@ ID3D12CommandQueue* lastWorkingQueue = nullptr;
     lastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
 }
 const bool routeArmed = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
-                        dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) ||
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ||
+                        g_PostSLLifecycle.RouteActive() ||
+                        g_PostSLLifecycle.RouteConfirmed() ||
                         dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) || lockedQueue != nullptr ||
                         lastWorkingQueue != nullptr;
 const bool hasDistinctQueueProof =

@@ -233,8 +233,8 @@ static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* ou
     view.startupTopLevelPresentConsumed =
         DXGIShared::g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
     view.postSLCallbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
-    view.postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
-    view.postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    view.postSLActive = g_PostSLLifecycle.RouteActive();
+    view.postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
     view.postSLSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
     view.postSLStartupActivationPending =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);

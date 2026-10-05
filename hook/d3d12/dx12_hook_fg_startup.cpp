@@ -323,7 +323,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
                                                                                                                   : 0,
                 HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
                 HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-                dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, inProgress ? 1 : 0,
+                g_PostSLLifecycle.RouteConfirmed() ? 1 : 0, inProgress ? 1 : 0,
                 GetCurrentThreadId());
         }
     };
@@ -331,7 +331,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     const bool activationPending =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
-    const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
     const bool serviceAlreadyInProgress = g_PostSLStartupActivationServiceInProgress.load(std::memory_order_acquire);
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
             true, true, activationPending, postSLStartupActivationEntered, postSLConfirmedRendering,
@@ -357,7 +357,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
     const bool activationPendingAfterClaim =
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     const bool postSLStartupActivationEnteredAfterClaim = HookHasPostSLSyntheticStartupActivationEntered();
-    const bool postSLConfirmedRenderingAfterClaim = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool postSLConfirmedRenderingAfterClaim = g_PostSLLifecycle.RouteConfirmed();
     if (!ce::dx12_overlay_policy::ShouldInvokeRetainedPostSLStartupActivationService(
             true, true, activationPendingAfterClaim, postSLStartupActivationEnteredAfterClaim,
             postSLConfirmedRenderingAfterClaim, false, allowConfirmedWarmupService)) {
@@ -382,7 +382,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0,
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
         HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, allowConfirmedWarmupService ? 1 : 0,
+        g_PostSLLifecycle.RouteConfirmed() ? 1 : 0, allowConfirmedWarmupService ? 1 : 0,
         GetCurrentThreadId());
     postSLCallback(activationSwapchain);
     HookLogImportant(
@@ -392,7 +392,7 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         source ? source : "unknown", activationSwapchain,
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
         HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, GetCurrentThreadId());
+        g_PostSLLifecycle.RouteConfirmed() ? 1 : 0, GetCurrentThreadId());
     g_PostSLStartupActivationServiceInProgress.store(false, std::memory_order_release);
     SafeReleaseStartupActivationSwapchain(activationSwapchain, "DX12_TryInvokePostSLStartupActivationCallback");
     return true;
@@ -481,7 +481,7 @@ bool DX12_ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn() {
     }
     return ce::dx12_overlay_policy::ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        g_PostSLLifecycle.RouteConfirmed(),
         DXGIShared::IsDlssToggleEagerOverlayEnabled(), HookHasExplicitStreamlineSetOptionsActivation(),
         dx12_hook_g_HadFSRFGPhase, dx12_hook_g_FGRuntimeOwnsSwapchain, dx12_hook_g_State.overlayInit,
         dx12_hook_g_State.syncInit, swapchainQueueIsOriginalGameQueue);

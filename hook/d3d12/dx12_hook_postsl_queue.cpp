@@ -124,7 +124,7 @@ dx12_hook_g_SLFGAdapter.InvalidateCachedFrame();
 
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain) {
 g_PostSLLifecycle.InvalidateGeneration();
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+g_PostSLLifecycle.ResetStartupEvidence();
 dx12_hook_g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_release);
 
 if (deferQueueReleaseUntilCallbacksDrain) {

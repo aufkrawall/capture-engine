@@ -259,7 +259,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         const bool startupActivationPendingDuringReinitCooldown =
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
         const bool postSLActiveButUnconfirmedDuringReinitCooldown = HookIsPostSLOverlayActiveButUnconfirmed();
-        const bool postSLConfirmedDuringReinitCooldown = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        const bool postSLConfirmedDuringReinitCooldown = g_PostSLLifecycle.RouteConfirmed();
         const bool postSLSettlingDuringReinitCooldown = HookIsPostSLOverlayConfirmedButStartupSettling();
         const bool preserveSyntheticStartupStateDuringReinitCooldown =
             ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
@@ -271,7 +271,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
             // synthetic startup is already half-armed and still waiting for
             // first confirmation. Otherwise the reinit cooldown path restarts
             // the same pure-DLSS startup into a second reactivation epoch.
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
         }
         if (preserveSyntheticStartupStateDuringReinitCooldown) {
             // Keep the reinit/pre-SL path cooled down, but do not re-apply
@@ -309,23 +309,22 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                             std::memory_order_acquire),
                         HookIsPostSLOverlayActiveButUnconfirmed(),
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        g_PostSLLifecycle.RouteConfirmed(),
                         HookIsPostSLOverlayConfirmedButStartupSettling());
                 const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
                     ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                             std::memory_order_acquire),
                         HookIsPostSLOverlayActiveButUnconfirmed(),
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        g_PostSLLifecycle.RouteConfirmed(),
                         HookIsPostSLOverlayConfirmedButStartupSettling());
-                dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+                g_PostSLLifecycle.ActivateRoute(preserveSyntheticStartupState);
                 dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
                 DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
                                                                                 std::memory_order_release);
                 if (!preserveSyntheticStartupState) {
                     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(
                         false, std::memory_order_release);
-                    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
                     DXGIShared::ResetStreamlineStartupTransitionState();
                     HookLogImportant(
                         "DX12: FG transition cooldown complete — reactivated PostSL (slFG=1, reinit path)");

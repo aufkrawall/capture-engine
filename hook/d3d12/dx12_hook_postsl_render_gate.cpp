@@ -6,7 +6,7 @@ if (FAILED(devReason)) {
     dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
     DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
     HookLogImportant("DX12: PostSLOverlayRender — device removed (0x%08X), disabling", (unsigned)devReason);
-    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLLifecycle.SuspendRoute();
         return PostSLFlow::kReturn;
 }
 if (DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {

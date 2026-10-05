@@ -246,7 +246,7 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
         dx12_hook_g_OverlayCoverageStreakGate.store(streakGate, std::memory_order_relaxed);
         const uint64_t startTick = ce::hook_clock::TickCount64();
         dx12_hook_g_OverlayCoverageStreakStartTickMs.store(startTick, std::memory_order_relaxed);
-        const bool startConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+        const bool startConfirmed = g_PostSLLifecycle.RouteConfirmed();
         dx12_hook_g_OverlayCoverageStreakStartConfirmed.store(startConfirmed, std::memory_order_relaxed);
         // Bracket the onset of every blank window with a timestamped marker so even a
         // single-present gap is fully attributable from the log alone.

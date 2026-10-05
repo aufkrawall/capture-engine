@@ -83,7 +83,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             g_FGCompat.IsFSRFGApiActive(),
             dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire), noCallbackFSR,
             DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
-            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
+            g_PostSLLifecycle.RouteActive(),
             dx12_hook_s_insideCEOverlayECLDepth > 0);
     if (transparentNativeFSRCallbackEcl) {
         static thread_local bool s_loggedTransparentNativeFSRCallbackEcl = false;
@@ -518,7 +518,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         const bool actualFGActive = IsActualFrameGenerationActive();
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool anyFGActive = actualFGActive || IsNvidiaSmoothMotionActiveRuntime() || streamlineFGRunning;
-        const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
+        const bool postSLActive = g_PostSLLifecycle.RouteActive();
         const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
             dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, actualFGActive, streamlineFGRunning,
             dx12_hook_g_SwapchainQueue != nullptr);
@@ -589,8 +589,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                         progressCount,
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                             std::memory_order_acquire),
-                        dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire), processFrameDormantMs,
+                        g_PostSLLifecycle.RouteActive(),
+                        g_PostSLLifecycle.RouteConfirmed(), processFrameDormantMs,
                         presentInFlight, msSincePresentReturned, dumpAlreadyRequested)) {
                     bool expectedDumpRequested = false;
                     if (dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.compare_exchange_strong(
@@ -601,8 +601,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                             "postSLActive=%d confirmed=%d startupPending=%d)",
                             progressCount, (unsigned long long)processFrameDormantMs,
                             (unsigned long long)msSincePresentReturned,
-                            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0,
-                            dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
+                            g_PostSLLifecycle.RouteActive() ? 1 : 0,
+                            g_PostSLLifecycle.RouteConfirmed() ? 1 : 0,
                             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                                 std::memory_order_relaxed)
                                 ? 1

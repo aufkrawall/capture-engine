@@ -429,7 +429,6 @@ extern std::atomic<bool> dx12_hook_g_NativeFSRInternalNoCallbackComposition;
 extern std::atomic<ULONGLONG> dx12_hook_g_LastDX12OverlayRenderTickMs;
 extern std::atomic<uint32_t> dx12_hook_g_LastDX12OverlayRenderRoute;
 struct DX12PostSLRuntimeState {
-    std::atomic<bool> active{false};
     std::atomic<int> cooldownRemaining{0};
     std::atomic<bool> explicitOffKeepAlive{false};
     std::atomic<bool> warmResumePreservationPending{false};
@@ -438,8 +437,6 @@ struct DX12PostSLRuntimeState {
     std::atomic<int> syntheticStartupWrapperProgressCount{0};
     std::atomic<bool> syntheticStartupWrapperOnlyDumpRequested{false};
     std::atomic<uint32_t> streamlineEnableCallsInFlight{0};
-    std::atomic<bool> confirmedRendering{false};
-    std::atomic<bool> syntheticStartupActivatedButUnconfirmed{false};
     std::atomic<bool> runtimeStateStabilizationLogged{false};
     std::atomic<bool> extendedRuntimeStateStabilizationForCurrentEpoch{false};
     std::atomic<int> stallCounter{0};
@@ -450,7 +447,6 @@ extern ce::dx12::PostSLLifecycle g_PostSLLifecycle;
 using PostSLQueueOwner = ce::dx12::PostSLQueueOwner<ID3D12CommandQueue, ID3D12Fence>;
 extern PostSLQueueOwner g_PostSLQueues;
 
-inline std::atomic<bool>& dx12_hook_g_PostSLOverlayActive = g_DX12PostSLRuntime.active;
 inline std::atomic<int>& dx12_hook_g_PostSLCooldownRemaining = g_DX12PostSLRuntime.cooldownRemaining;
 inline std::atomic<bool>& dx12_hook_g_PostSLExplicitOffKeepAlive = g_DX12PostSLRuntime.explicitOffKeepAlive;
 inline std::atomic<bool>& dx12_hook_g_PostSLWarmResumePreservationPending = g_DX12PostSLRuntime.warmResumePreservationPending;
@@ -459,8 +455,6 @@ inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupTakeoverLogged = g_D
 inline std::atomic<int>& dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount = g_DX12PostSLRuntime.syntheticStartupWrapperProgressCount;
 inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested = g_DX12PostSLRuntime.syntheticStartupWrapperOnlyDumpRequested;
 inline std::atomic<uint32_t>& dx12_hook_g_StreamlineEnableCallsInFlight = g_DX12PostSLRuntime.streamlineEnableCallsInFlight;
-inline std::atomic<bool>& dx12_hook_g_PostSLConfirmedRendering = g_DX12PostSLRuntime.confirmedRendering;
-inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed = g_DX12PostSLRuntime.syntheticStartupActivatedButUnconfirmed;
 inline std::atomic<bool>& dx12_hook_g_PostSLRuntimeStateStabilizationLogged = g_DX12PostSLRuntime.runtimeStateStabilizationLogged;
 inline std::atomic<bool>& dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch = g_DX12PostSLRuntime.extendedRuntimeStateStabilizationForCurrentEpoch;
 struct DX12OverlayCoverageState {

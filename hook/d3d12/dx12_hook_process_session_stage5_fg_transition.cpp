@@ -12,7 +12,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         dx12_hook_g_OuterTrackedSLFGRunning.store(outerSLFGRunning, std::memory_order_release);
         const bool preserveActivePostSLOnLateOuterOn =
             slTurnedOn && ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
-                              outerSLFGRunning, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                              outerSLFGRunning, g_PostSLLifecycle.RouteConfirmed(),
                               HookIsPostSLOverlayActiveButUnconfirmed());
         auto* transitionDevice = g_Device.load(std::memory_order_acquire);
         const HRESULT transitionDeviceHr = transitionDevice ? transitionDevice->GetDeviceRemovedReason() : S_OK;
@@ -42,7 +42,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         const bool bypassConfirmedPostSLSuspensionCooldown =
             ce::dx12_overlay_policy::ShouldBypassConfirmedPostSLSuspensionOverlayReinitCooldown(
                 slTurnedOff, dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
-                dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire), g_FGCompat.IsFSRFGApiActive(),
+                g_PostSLLifecycle.RouteConfirmed(), g_FGCompat.IsFSRFGApiActive(),
                 HookHasRuntimeOwnedNativeFGPresentPath(), dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit,
                 dx12_hook_g_SwapchainQueue != nullptr, dx12_hook_g_OriginalGameQueue != nullptr, FAILED(transitionDeviceHr));
         // DLSS-FG -> FSR-FG (no-callback) takeover: the native-FSR takeover path already warm-reinited
@@ -125,7 +125,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         // Keep the callback installed on Streamline FG activation so
         // startup synthetic presents can immediately find it.
         if (!preserveActivePostSLOnLateOuterOn && !keepConfirmedPostSLAliveAcrossOuterOff) {
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
         }
         if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(outerSLFGRunning) &&
             !keepConfirmedPostSLAliveAcrossOuterOff) {
@@ -134,7 +134,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
         if (!preserveActivePostSLOnLateOuterOn && !keepConfirmedPostSLAliveAcrossOuterOff) {
             dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
-            dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            g_PostSLLifecycle.InvalidateRouteProof();
             dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
         }
 
@@ -195,7 +195,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
             // make-before-break keep-alive is covering the proxy's
             // remaining presents until the normal route confirms.
             if (!keepConfirmedPostSLAliveAcrossOuterOff) {
-                dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+                g_PostSLLifecycle.SuspendRoute();
                 SetPostSLCallbackInstalled(false, "DX12: [outer] FG->off");
             } else {
                 HookLogImportant(
@@ -329,10 +329,10 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         dx12_hook_g_FGTransitionCooldown.fetch_sub(1, std::memory_order_acq_rel);
         const bool preserveActivePostSLDuringBlockedCooldown =
             ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
-                outerSLFGRunning, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                outerSLFGRunning, g_PostSLLifecycle.RouteConfirmed(),
                 HookIsPostSLOverlayActiveButUnconfirmed());
         if (!preserveActivePostSLDuringBlockedCooldown) {
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
         }
         dx12_hook_g_PostSLCooldownRemaining.store(dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire),
                                         std::memory_order_release);
@@ -344,21 +344,21 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                             std::memory_order_acquire),
                         HookIsPostSLOverlayActiveButUnconfirmed(),
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        g_PostSLLifecycle.RouteConfirmed(),
                         HookIsPostSLOverlayConfirmedButStartupSettling());
                 const bool keepStartupHandoffPending = ce::dx12_overlay_policy::
                     ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
                         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                             std::memory_order_acquire),
                         HookIsPostSLOverlayActiveButUnconfirmed(),
-                        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                        g_PostSLLifecycle.RouteConfirmed(),
                         HookIsPostSLOverlayConfirmedButStartupSettling());
-                dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+                g_PostSLLifecycle.ActivateRoute();
                 dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
                 DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
                                                                                 std::memory_order_release);
                 if (!preserveSyntheticStartupState) {
-                    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+                    g_PostSLLifecycle.ResetStartupEvidence();
                     DXGIShared::ResetStreamlineStartupTransitionState();
                 }
             }
@@ -374,21 +374,21 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                         std::memory_order_acquire),
                     HookIsPostSLOverlayActiveButUnconfirmed(),
-                    dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                    g_PostSLLifecycle.RouteConfirmed(),
                     HookIsPostSLOverlayConfirmedButStartupSettling());
             const bool keepStartupHandoffPending =
                 ce::dx12_overlay_policy::ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfArmed(
                     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
                         std::memory_order_acquire),
                     HookIsPostSLOverlayActiveButUnconfirmed(),
-                    dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+                    g_PostSLLifecycle.RouteConfirmed(),
                     HookIsPostSLOverlayConfirmedButStartupSettling());
             SetPostSLCallbackInstalled(true, "DX12: [outer] Registered PostSL callback");
-            dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+            g_PostSLLifecycle.ActivateRoute();
             if (!preserveSyntheticStartupState) {
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false,
                                                                                         std::memory_order_release);
-                dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+                g_PostSLLifecycle.ResetStartupEvidence();
             }
             dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(!keepStartupHandoffPending,
@@ -406,8 +406,8 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         // recovery or Streamline unload.
         if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
             SetPostSLCallbackInstalled(false, "DX12: [outer] cooldown complete");
-            dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-            dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendRoute();
+            g_PostSLLifecycle.InvalidateRouteProof();
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
         }
     }

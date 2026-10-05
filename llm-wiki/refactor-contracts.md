@@ -295,3 +295,29 @@ covering replacement/release boundaries, aliased roles, incomplete fences, delay
 replacement fences, callback-spanning retirement, runtime reactivation and repeated cleanup/unload.
 Native regressions, real-hook WARP FG flows and the product/package gate remain the automated gate;
 real vendor/game transitions and hardware performance remain user validation. Last verified: 2026-10-05.
+
+## PostSL route activation and retained proof (implemented)
+
+The lifecycle owner privately owns route activation, synthetic activation awaiting proof and the
+retained route-confirmed latch. The three public atomic aliases are removed. ActivateSyntheticProbe
+admits the route without promising output. ActivateRoute consumes the existing preserve-startup
+policy; SuspendRoute keeps proven ownership for make-before-break; RestartRoute revokes activation,
+startup evidence and proof together. Scheduling/probe progress counters remain separate policy
+observations; accepted SDK settings, runtime presence and published visible FG status remain separate.
+
+ConfirmRender now commits current-epoch proof and retained route proof through the same operation.
+It reports first route proof to the production presentation adapter, replacing its later free-standing
+confirmed/synthetic flag writes. A private cancellation revision shares the atomic route word with
+its flags. Explicit proof revocation and reactivation change that revision; confirmation captured
+before cancellation cannot restore or overwrite replacement proof, even without an epoch change.
+Current-generation proof is cleared on generation invalidation/reactivation; the retained route latch
+survives only the same temporary suspension paths as before. Borrowed independent observations remain
+observations, not a transactional multi-field snapshot. Ordinary route observations still use one
+atomic load, with statically bound operations and no frame allocation, copies or virtual dispatch.
+
+Sources: postsl_lifecycle.h; dx12_hook_postsl_render_{entry,submit}.cpp; observer, transition and
+route consumers (hook/d3d12). Deterministic production-owner tests in test_postsl_lifecycle.cpp cover
+synthetic activation without output proof, first/repeated proof, warm suspension, reactivation,
+proof cancellation during publication and replacement confirmation in the same epoch. Existing
+real-hook WARP scenarios cover route/callback generations. Native, FG and package gates are required;
+real games and hardware performance remain user validation. Last verified: 2026-10-05.

@@ -51,8 +51,8 @@ static HANDLE s_dedicatedFenceEvent = nullptr;
 static ID3D12Fence* s_dedicatedSyncFence = nullptr;
 static bool s_wasSLFGActive = false;
 static bool s_postSLFGSuspended = false;
-const bool postSLActive = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
-const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+const bool postSLActive = g_PostSLLifecycle.RouteActive();
+const bool postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
 const bool startupActivationPending =
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
 const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
@@ -95,8 +95,8 @@ if (keepAliveRenderAfterExplicitOff) {
     if (logCount < 10 || (logCount % 200) == 0) {
         HookLogImportant(
             "DX12: PostSL keep-alive render after explicit Streamline OFF #%d (confirmed=%d active=%d grace=%d)",
-            logCount + 1, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
-            dx12_hook_g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0,
+            logCount + 1, g_PostSLLifecycle.RouteConfirmed() ? 1 : 0,
+            g_PostSLLifecycle.RouteActive() ? 1 : 0,
             slGrace > 0 ? slGrace - 1 : 0);
     }
 }
@@ -140,7 +140,7 @@ bool immediatePostFSRExplicitStartupTakeover = false;
                                               startupActivationPending;
     if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
-            cachedSLFGActive, dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen,
+            cachedSLFGActive, g_PostSLLifecycle.RouteActive(), processFrameRecentlySeen,
             useTopLevelHandoffWrapperProgress, sameQueuePureDLSSColdStartSafe,
             explicitPostFSRSafeBootstrapStartupProof)) {
         if (immediatePostFSRExplicitStartupTakeover) {
@@ -303,11 +303,11 @@ bool immediatePostFSRExplicitStartupTakeover = false;
             ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
                 postSLActiveButUnconfirmed, postSLConfirmedRendering);
-        dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
+        if (enterSyntheticStartupActivation) g_PostSLLifecycle.ActivateSyntheticProbe();
+        else g_PostSLLifecycle.ActivateRoute();
         dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
         if (enterSyntheticStartupActivation) {
             syntheticStartupActivatedThisCall = true;
-            dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(true, std::memory_order_release);
             dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
             // Startup is still half-armed until the first real PostSL render confirms
@@ -352,7 +352,7 @@ if (lifecycleChanged) {
     s_wasActive = false;
     s_seenLifecycleEpoch = lifecycleEpoch;
 }
-active = dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire);
+active = g_PostSLLifecycle.RouteActive();
 if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive, lifecycleChanged)) {
     s_reactivationEpoch++;
     s_callsSinceReactivation = 0;
@@ -361,7 +361,7 @@ if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive,
     // the warmup can be confirmed-bypassed. Cleared here so a confirmed render from a
     // previous epoch can never bypass a real cold-start warmup.
     g_PostSLLifecycle.BeginReactivation();
-    const bool previouslyConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool previouslyConfirmed = g_PostSLLifecycle.RouteConfirmed();
     const int previousStableFrameCount = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
     const int previousStallCount = dx12_hook_g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
     const bool previousRuntimeStateStabilizationLogged =
@@ -494,14 +494,14 @@ if (s_callsSinceReactivation == warmupThreshold + 1 ||
         "DX12: PostSL WARMUP COMPLETE — proceeding to render submission "
         "(epoch=%d warmupFrames=%d confirmed=%d startupWindowActive=%d overlayInit=%d syncInit=%d "
         "swapchain=%p dev=%p bypassed=%d)",
-        s_reactivationEpoch, warmupThreshold, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0,
+        s_reactivationEpoch, warmupThreshold, g_PostSLLifecycle.RouteConfirmed() ? 1 : 0,
         startupWindowActive ? 1 : 0, dx12_hook_g_State.overlayInit ? 1 : 0, dx12_hook_g_State.syncInit ? 1 : 0, (void*)pSwapChain,
         (void*)(dx12_hook_g_State.syncDevice ? dx12_hook_g_State.syncDevice : g_Device.load(std::memory_order_acquire)),
         bypassReactivationWarmup ? 1 : 0);
 }
 const bool startupTransitionWindowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 const bool postSLWarmupComplete = bypassReactivationWarmup || s_callsSinceReactivation > warmupThreshold;
-if (startupTransitionWindowActive && !dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) &&
+if (startupTransitionWindowActive && !g_PostSLLifecycle.RouteConfirmed() &&
     safePostFSRBootstrapPathForPostSL) {
     static int s_bypassStartupWindowGuardLog = 0;
     if (s_bypassStartupWindowGuardLog < 10) {
@@ -512,7 +512,7 @@ if (startupTransitionWindowActive && !dx12_hook_g_PostSLConfirmedRendering.load(
     }
     s_bypassStartupWindowGuardLog++;
 }
-if (startupTransitionWindowActive && !dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire) &&
+if (startupTransitionWindowActive && !g_PostSLLifecycle.RouteConfirmed() &&
     !safePostFSRBootstrapPathForPostSL && cachedSLFGActive && postSLWarmupComplete) {
     static int s_activeRuntimeStartupWindowGuardLog = 0;
     if (s_activeRuntimeStartupWindowGuardLog < 10) {
@@ -525,7 +525,7 @@ if (startupTransitionWindowActive && !dx12_hook_g_PostSLConfirmedRendering.load(
     s_activeRuntimeStartupWindowGuardLog++;
 }
 if (ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(
-        startupTransitionWindowActive, dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        startupTransitionWindowActive, g_PostSLLifecycle.RouteConfirmed(),
         useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL, cachedSLFGActive,
         postSLWarmupComplete)) {
     s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);

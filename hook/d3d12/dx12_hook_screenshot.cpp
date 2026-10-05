@@ -34,8 +34,8 @@ void LogDX12ScreenshotQueueFailure(const char* stage, HRESULT hr, IDXGISwapChain
 // of the overlay list there, and the overlay-included copy after it.
 bool PostSLOwnsThisFramesOverlayDraw(const OverlayConfig& cfg) {
     return ce::dx12_overlay_policy::ShouldPostSLOwnScreenshotOrdering(
-        cfg.showOverlay, dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire),
-        dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire),
+        cfg.showOverlay, g_PostSLLifecycle.RouteActive(),
+        g_PostSLLifecycle.RouteConfirmed(),
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
         DXGIShared::IsPostSLFinalOutputPresentCallback(), DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn());
 }

@@ -22,7 +22,7 @@ void DX12_ServiceECLPostSLStartupActivation() {
         DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
     const bool postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
-    const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool postSLConfirmedRendering = g_PostSLLifecycle.RouteConfirmed();
     const bool overlayVisible = GetHookOverlayConfig().showOverlay;
     const bool windowActive = DXGIShared::IsStreamlineStartupTransitionWindowActive();
     const bool startupTransitionWindowJustExpired = s_startupWindowWasActive && !windowActive;
