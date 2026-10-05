@@ -10,7 +10,7 @@
 - Purged 32 obsolete one-off refactor text helpers after literal inventory; reusable tools stay in
   tools/refactor. No product behavior changed, so no new runtime tests or diagnostics were added.
 
-### 2026-10-05 - Template commit privacy procedure
+### 2026-10-05 - Template agent and commit privacy integration
 
 - Merged the secret-leak baseline from `llm-prompt-templates` at `1fcfac5` with verified
   Gitleaks 8.30.1 staged, exact-commit, message-file and metadata commands. Every agent commit now
@@ -18,7 +18,11 @@
 - `AGENTS.md` carries the compressed gate; `secret-leak-prevention.md` owns the complete procedure.
   `debug-tools.md` links it instead of retaining the older push-only guidance; the wiki index routes it.
 - No hooks, scanners, audit prompts or system tools installed. Scanner absence does not waive review;
-  scanner failures/timeouts and zero scanned commits cannot be reported as a clean automated result.
+  scanner failures/timeouts and empty history scans cannot certify a non-empty outgoing range.
+- Merged tool/version precedence, verification evidence and debugger-state boundaries; corrected stale gate coverage/timing.
+  Detailed examples stay in topic pages; build gates and compatibility constraints stay in `AGENTS.md`.
+- Commit privacy checks passed on live staged/message/commit/metadata scopes; staged scans report zero commits
+  normally, so use their scanned bytes. No runtime tests/logging added for these documentation-only changes.
 
 ### 2026-10-05 - Complete core ownership refactor and behavioral DX12 protection
 

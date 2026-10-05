@@ -30,6 +30,11 @@ Use the first reliable source available:
 5. documented project-specific known-good paths below
 6. safe system defaults/fallbacks
 
+These are candidate path sources, not permission to replace the repository's declared toolchain,
+versions or target architecture. Verify a candidate exists and is the required tool before using it;
+if a required tool is missing or declarations conflict, report it instead of silently choosing an
+unrelated system/global substitute. Keep SDK/MSVC path generation in the discovery helper.
+
 The discovery helper must not install packages, download tools, edit PATH, or mutate debugger/system state.
 
 ## Windows SDK debugger architecture matrix

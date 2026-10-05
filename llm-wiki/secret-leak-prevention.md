@@ -5,7 +5,7 @@ Copyright (c) 2026 aufkrawall
 
 # Secret Leak Prevention
 
-Last cross-checked: 2026-10-05 (template baseline at `1fcfac5`; local Gitleaks 8.30.1 command help).
+Last cross-checked: 2026-10-05 (template baseline at `1fcfac5`; live Gitleaks 8.30.1 staged, message, commit and metadata scans).
 
 Primary sources:
 - `AGENTS.md`
@@ -13,7 +13,6 @@ Primary sources:
 - `llm-wiki/debug-tools.md`
 - upstream `llm-wiki-agents.md-template/llm-wiki/secret-leak-prevention.md`
   in [llm-prompt-templates](https://github.com/aufkrawall/llm-prompt-templates/tree/1fcfac55c967f673af9902b481f0c38aacb8d00a)
-
 
 This procedure is part of the normal agent commit workflow. It applies whenever an agent is authorized to create a Git commit, independently of whether a full security audit is being performed.
 
@@ -89,7 +88,8 @@ Do not install a scanner or change Git hooks, PATH, or system settings merely to
 Inventory task-owned paths with `git status --short --untracked-files=all` and stage only explicit paths.
 Review `git diff --cached --name-status`, `git diff --cached --check`, and `git diff --cached`.
 Review relevant untracked files before staging; ignored files are not proof of safe content.
-Then scan the index, including newly staged files:
+Then scan the index, including newly staged files. This mode normally reports zero commits;
+verify that its scanned byte count covers the staged patch rather than applying a history-count check:
 
 ```powershell
 gitleaks git --pre-commit --staged --no-banner --redact --timeout 60
@@ -97,10 +97,11 @@ if ($LASTEXITCODE -ne 0) { throw "Staged secret scan failed; do not commit." }
 ```
 
 Review the planned title, body, and trailers separately, including private paths, credential-bearing
-URLs, and copied log lines. When using a prepared commit-message file, scan that exact file too:
+URLs, and copied log lines. When using a prepared commit-message file, set `$commitMessagePath`
+to that exact file and scan it too:
 
 ```powershell
-gitleaks dir <commit-message-file> --no-banner --redact --timeout 60
+gitleaks dir $commitMessagePath --no-banner --redact --timeout 60
 if ($LASTEXITCODE -ne 0) { throw "Commit-message secret scan failed; do not commit." }
 ```
 

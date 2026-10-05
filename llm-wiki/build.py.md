@@ -116,13 +116,28 @@ keyring listing, never from matching the key file.
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
-For ordinary source changes across all code areas (including capture, CFR, FG, and audio), the standard final product gate is a validated incremental compile with unit tests, omitting release archive packaging:
+Gate coverage cross-checked: 2026-10-05 against `tools/build/build_tests.py:run_tests`,
+`tools/build/build_project.py:compile_project`, `tools/build/build_flow_tests.py:run_flow_tests`
+and the successful 0.1.6990 product/package run. This documents current behavior without changing gate policy.
+
+For ordinary source changes across all code areas (including capture, CFR, FG, and audio), the standard final
+product gate is a validated incremental compile with native/FG tests, omitting portable release archives:
 
 ```powershell
 python build.py --incremental --run-tests --skip-updates --concise
 ```
 
-This compiles only changed translation units, reuses content-validated objects, verifies PE/binaries, runs unit tests, and leaves a fresh `build/packages/captureengine-setup-<version>.exe` (~20 s of the ~45–70 s total). Since 2026-10-02 the closing gate deliberately keeps packaging on so every change ends with an installable build; `--skip-package` is for intermediate product builds only and skips the setup executable and (when requested) the ~67 s portable 7z archives (`captureengine.7z`, `testapps.7z`, `ffmpeg-corresponding-source.7z`), which are produced only with `--portable-archives`. Pass `--gtest-filter=<suite-or-test>` to focus on touched units during iteration.
+This compiles changed translation units, reuses content-validated objects, verifies PE/binaries and runs the
+native suite plus matching isolated WARP FG scenarios. Unfiltered runs also execute Python tool self-tests;
+a GoogleTest filter skips those Python groups and applies to both native and FG suites. There is no lint or
+sanitizer stage. The unfiltered 0.1.6990 run took 177 s, including 41 s native tests, 34 s for all 15 FG scenarios
+and 7 s final packaging; timings depend on changed inputs and the selected tests.
+
+The gate leaves a fresh `build/packages/captureengine-setup-<version>.exe`. Since 2026-10-02 packaging stays on
+so every change ends with an installable build. `--skip-package` is for intermediate product builds only and
+skips the installer plus any requested portable archives; `captureengine.7z`, `testapps.7z` and
+`ffmpeg-corresponding-source.7z` remain opt-in via `--portable-archives`. Pass
+`--gtest-filter=<suite-or-test>` to focus on touched units during iteration; check which suites actually ran.
 
 Use the clean compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
 
@@ -148,7 +163,14 @@ No-build verification reuses `common/build_version.h`; it does not mint an ident
 
 The default development loop is `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` (about 5-7 s). Stay in it while writing code and reach for a product build or a heavier gate only when closing out the change; do not repeat a clean build after every small edit.
 
-`--verify` is the complete **static** pre-release gate — content-validated product build (same signature discipline as `--incremental`), full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and ASan/UBSan regression coverage in one run. It never launches anything: a passing run records `coverage.integration_tests=not_run`, `coverage.test_apps=compiled_not_executed` and `coverage.fuzz=not_run`, so it proves nothing about a real D3D/Vulkan present path or a parser corpus. `python build.py --verify-runtime --skip-updates --concise` is that gate plus the smoke integration matrix and the fuzz targets; it is the release-candidate gate, not a per-change one, because it launches test apps:
+`--verify` is the complete **static** pre-release gate: a content-validated product build (same signature
+discipline as `--incremental`), full native suite, isolated WARP FG flow scenarios, Python tool self-tests,
+lint with the clang-tidy ratchet, and ASan/UBSan regression coverage. It omits the optional smoke integration
+matrix and fuzz runs. `coverage.integration_tests=not_run`, `coverage.test_apps=compiled_not_executed` and
+`coverage.fuzz=not_run` describe those optional stages; the flow-test step records WARP scenarios separately.
+Passing does not prove real-game/hardware D3D/Vulkan behavior or parser-corpus coverage.
+`python build.py --verify-runtime --skip-updates --concise` adds the smoke integration matrix and fuzz targets;
+it is a release-candidate gate, not a per-change one:
 
 ```powershell
 python build.py --verify --skip-updates --concise
