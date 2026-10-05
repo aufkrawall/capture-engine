@@ -54,6 +54,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **FG handover lifecycle** PostSL render admission now covers recording and submission together; retired epochs cannot restore current rendering confirmation.
+
 - **Privacy-blackout repeat recovery:** a successful cached-black repeat no longer promotes the unencoded fresh candidate as the last successful source or counts it as fresh catch-up output. Candidate ownership regressions exercise real ring leases.
 
 - **Recording retry feedback:** an inactive inject or repeat encoder attempt now clears a previous deferred-fence result, preventing rejected attempts from being reported as still waiting for that earlier frame.

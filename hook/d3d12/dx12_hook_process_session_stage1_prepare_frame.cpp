@@ -80,17 +80,17 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
             }
             ce::dx12_dred::DumpOnDeviceRemoved(devCheck, "D3D12 device removed before ProcessFrame setup");
             if (dx12_hook_s_WrappedPresentFocusLossContext.valid) {
-                HWND foregroundWindow = nullptr;
-                DWORD foregroundPid = 0;
-                const bool processHasForeground = ResolveCurrentProcessForeground(&foregroundWindow, &foregroundPid);
+                HWND failureForegroundWindow = nullptr;
+                DWORD failureForegroundPid = 0;
+                const bool failureHasForeground = ResolveCurrentProcessForeground(&failureForegroundWindow, &failureForegroundPid);
                 const bool recentFocusTransition =
                     dx12_hook_g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
                     dx12_hook_g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
-                if (!processHasForeground || recentFocusTransition) {
+                if (!failureHasForeground || recentFocusTransition) {
                     RequestFocusLossDeviceRemovalDumpOnce("D3D12 focus-loss device removal before ProcessFrame setup",
                                                           devCheck->GetDeviceRemovedReason(),
-                                                          dx12_hook_s_WrappedPresentFocusLossContext, foregroundWindow,
-                                                          foregroundPid, nullptr, GetCurrentProcessId(), nullptr);
+                                                          dx12_hook_s_WrappedPresentFocusLossContext, failureForegroundWindow,
+                                                          failureForegroundPid, nullptr, GetCurrentProcessId(), nullptr);
                 }
             }
             dx12_hook_g_State.overlayInit = false;
@@ -375,7 +375,7 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool postSLKeepAliveArmed = explicitOffKeepAlivePending;
         const bool postSLCallbackReady =
-            dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire) &&
+            g_PostSLLifecycle.CallbacksEnabled() &&
             DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) == &PostSLOverlayRenderGated;
         const bool hasPostSLRenderQueue =
             recoveryPostSLLastWorkingQueue != nullptr || recoveryPostSLLockedQueue != nullptr;
@@ -468,22 +468,22 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
             return ProcessFrameFlow::kReturn;
     }
     // RAII unlock when we exit
-    std::unique_lock<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex, std::adopt_lock);
+    std::unique_lock<std::recursive_mutex> prepareOverlayLock(dx12_hook_g_OverlayMutex, std::adopt_lock);
 
-    // Close the only transition race left by the non-blocking overlay-lock
+    // Close the only transition race left by the non-blocking overlay-prepareOverlayLock
     // acquisition: an OFF callback may have armed recovery after the first
-    // route snapshot. Re-evaluate outside the overlay lock so the PostSL
-    // render->overlay lock order remains intact and no stale cleanup occurs.
+    // route snapshot. Re-evaluate outside the overlay prepareOverlayLock so the PostSL
+    // render->overlay prepareOverlayLock order remains intact and no stale cleanup occurs.
     if (dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||
         dx12_hook_g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire)) {
-        lock.unlock();
+        prepareOverlayLock.unlock();
         if (routeInactiveDLSSPresentBeforeBackbufferAccess()) {
             return ProcessFrameFlow::kReturn;
         }
-        lock.lock();
+        prepareOverlayLock.lock();
     }
 
-    // SAFETY: Check device state after acquiring lock
+    // SAFETY: Check device state after acquiring prepareOverlayLock
     if (dx12_hook_g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
         HookLog("DX12: ProcessFrame - in resize cleanup, returning");
             return ProcessFrameFlow::kReturn;

@@ -228,7 +228,7 @@ return true;
 
 void SetPostSLCallbackInstalled(bool installed, const char* reason) {
 if (installed) {
-    dx12_hook_g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
+    g_PostSLLifecycle.InstallCallback([&] {
     if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != &PostSLOverlayRenderGated) {
         DXGIShared::g_PostSLOverlayRenderCallback.store(&PostSLOverlayRenderGated, std::memory_order_release);
         HookLogImportant("%s — installed gated PostSL callback", reason);
@@ -239,6 +239,7 @@ if (installed) {
                                     reason ? reason : "SetPostSLCallbackInstalled", nullptr, nullptr,
                                     g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(), false);
     }
+    });
     return;
 }
 
@@ -248,8 +249,7 @@ if (installed) {
 // stronger teardown authority owns the transition now.
 dx12_hook_g_PostSLExplicitOffKeepAlive.store(false, std::memory_order_release);
 dx12_hook_g_PostSLWarmResumePreservationPending.store(false, std::memory_order_release);
-dx12_hook_g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
-
+g_PostSLLifecycle.RemoveCallback([&] {
 if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr) {
     DXGIShared::g_PostSLOverlayRenderCallback.store(nullptr, std::memory_order_release);
     HookLogImportant("%s — disabled PostSL callback", reason);
@@ -257,6 +257,7 @@ if (DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) !=
                                 reason ? reason : "SetPostSLCallbackInstalled", nullptr, nullptr,
                                 g_FGCompat.GetRuntimeMode(), g_FGCompat.IsFGActive(), false);
 }
+});
 }
 
 

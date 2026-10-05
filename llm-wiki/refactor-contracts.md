@@ -204,3 +204,35 @@ internal unit values were additionally syntax-compiled with the installed i686 c
 FirstVideoCommit logs distinguish raw QPC, source milliseconds and the 100 ns audio anchor; one
 entry per committed first output. Audio codecs/tracks, overload recordings and hardware sync remain
 user validation; these unit/layout checks cannot establish those outcomes.
+
+## PostSL admission and epoch ownership (first lifecycle slice)
+
+Verified 2026-10-05: native lifecycle/source regressions and all 15 real-hook WARP flow scenarios.
+postsl_lifecycle.h privately owns callback execution admission, callback counts, lifecycle epoch,
+render serialization and epoch-specific confirmation. Mutable aliases for those fields are removed.
+SDK settings, runtime presence, general route-active/confirmed latches, visible status and queue
+references remain distinct; the next slice owns activation/evidence and resource retirement together.
+
+RenderTransaction holds the existing render mutex through every PostSL phase and early return.
+Previously Chunk0's scope guard released it before Chunk1/2/3: retirement could drain the entry phase
+while recording/submission still ran. The owner now invokes the same phase chain under one scope;
+no virtual dispatch, frame allocation, source copy or new GPU wait is introduced. Normal-return
+PublishRetirement disables/unpublishes callbacks and invalidates the epoch before FinishRetirement
+acquires the render lock. Queue/COM releases and existing GPU/callback drain behavior are unchanged
+in this slice. Other transition generation resets retain their original ordering.
+
+Confirmation publishes exact swapchain proof before its release stamp. The stamp carries the entry
+epoch; invalidation immediately makes it stale, even if an old store races cancellation. Failed stale
+confirmation does not publish proof and is diagnosed with metered entry/current epoch and reason.
+Legacy general confirmation and probe behavior are retained for the activation migration. Atomics
+read through observations are independent, not a coherent multi-field snapshot. The owner's callback
+scope increments before the enable recheck and remains counted until return, including retirement.
+
+Tests: test_postsl_lifecycle.cpp executes production owner transactions using controlled publication,
+threads and latches, with no sleeps. It covers publication ordering, stale/cancelled proof, render
+serialization through recording/submission, early exits, callback-spanning retirement and repeated
+retirement. FlowDLSS.NativeReturnRejectsDepartedEpochConfirmationAndReactivationRemainsCovered runs
+actual WARP output through DLSS ON/OFF, native swapchain replacement and reactivation; rejected old
+confirmation cannot alter the new epoch. Every physical output is accounted/covered exactly once,
+FG publication is checked and no debug-layer errors are accepted. Test-only evidence exports live
+in flow_hook_entry.cpp, never the product DLL. Real vendor/game concurrency remains user validation.

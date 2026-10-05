@@ -88,12 +88,14 @@ FlowGame::FlowGame(const std::string& testName) {
     getOverlayCoverage_ =
         reinterpret_cast<CEFlow_GetOverlayCoverage_t>(GetProcAddress(hook_, "CEFlow_GetOverlayCoverage"));
     getPublishedFG_ = reinterpret_cast<CEFlow_GetPublishedFG_t>(GetProcAddress(hook_, "CEFlow_GetPublishedFG"));
+    getPostSLLifecycle_ = reinterpret_cast<CEFlow_GetPostSLLifecycle_t>(GetProcAddress(hook_, "CEFlow_GetPostSLLifecycle"));
+    tryConfirmPostSLEpoch_ = reinterpret_cast<CEFlow_TryConfirmPostSLEpoch_t>(GetProcAddress(hook_, "CEFlow_TryConfirmPostSLEpoch"));
     shutdown_ = reinterpret_cast<CEFlow_Shutdown_t>(GetProcAddress(hook_, "CEFlow_Shutdown"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
-        !clockMicroseconds_) {
+        !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -366,6 +368,15 @@ CEFlowPublishedFG FlowGame::PublishedFG() const {
     if (getPublishedFG_)
         getPublishedFG_(&published);
     return published;
+}
+
+CEFlowPostSLLifecycle FlowGame::PostSLLifecycle() const {
+    CEFlowPostSLLifecycle result;
+    if (getPostSLLifecycle_) getPostSLLifecycle_(&result);
+    return result;
+}
+bool FlowGame::TryConfirmPostSLEpoch(uint32_t epoch) {
+    return tryConfirmPostSLEpoch_ && tryConfirmPostSLEpoch_(epoch);
 }
 
 }  // namespace ce::flow

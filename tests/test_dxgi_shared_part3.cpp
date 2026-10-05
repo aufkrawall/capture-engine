@@ -309,7 +309,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     const size_t exactPostSLProof =
         text.find("dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain", successfulSubmitSequence);
     const size_t confirmedPostSL =
-        text.find("dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true", exactPostSLProof);
+        text.find("});\nif (!confirmedCurrentEpoch)", exactPostSLProof);
     ASSERT_NE(postSubmitHealth, std::string::npos);
     ASSERT_NE(healthySuccessfulSubmit, std::string::npos);
     ASSERT_NE(successfulSubmitSequence, std::string::npos);

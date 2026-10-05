@@ -182,9 +182,9 @@ public:
 
     // Set HDR rendering parameters (call before Render)
     // hdrMode: 0=SDR, 1=scRGB/FP16, 2=HDR10/PQ
-    virtual void SetHDRParams(int hdrMode, float paperWhiteNits) {
-        this->hdrMode = hdrMode;
-        this->paperWhiteNits = paperWhiteNits;
+    virtual void SetHDRParams(int mode, float paperWhite) {
+        this->hdrMode = mode;
+        this->paperWhiteNits = paperWhite;
     }
 
     // Render the accumulated draw commands

@@ -243,7 +243,7 @@ auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage, officialUiCov
     }
 });
 
-if (!dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire)) {
+if (!g_PostSLLifecycle.CallbacksEnabled()) {
     NoteDX12OverlayCoverageGate("postsl-execution-disabled");
     return;
 }
@@ -373,11 +373,8 @@ if (ce::dx12_overlay_policy::ShouldDeferPostSLCallbackUntilStartupTransitionWind
     return;
 }
 
-dx12_hook_g_PostSLCallbackInFlight.fetch_add(1, std::memory_order_acq_rel);
-auto inFlightGuard =
-    ce::make_scope_guard([]() { dx12_hook_g_PostSLCallbackInFlight.fetch_sub(1, std::memory_order_acq_rel); });
-
-if (!dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire)) {
+ce::dx12::PostSLLifecycle::Callback callback(g_PostSLLifecycle);
+if (!callback) {
     return;
 }
 

@@ -58,4 +58,43 @@ TEST(FlowDLSS, OffInsideTheStartupWindowIsHeldThenHonored) {
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowDLSS, NativeReturnRejectsDepartedEpochConfirmationAndReactivationRemainsCovered) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(StreamlineGameOptions())) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    const auto active = game.PostSLLifecycle();
+    ASSERT_TRUE(active.confirmedInEpoch);
+    EXPECT_EQ(active.callbacksInFlight, 0u);
+    EXPECT_EQ(game.PublishedFG().multiplier, 2);
+
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kNative)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(60)) << game.Error();
+    const auto retired = game.PostSLLifecycle();
+    EXPECT_NE(retired.epoch, active.epoch);
+    EXPECT_FALSE(retired.callbacksEnabled);
+    EXPECT_FALSE(retired.confirmedInEpoch);
+    EXPECT_EQ(retired.callbacksInFlight, 0u);
+    EXPECT_FALSE(game.TryConfirmPostSLEpoch(active.epoch));
+    EXPECT_FALSE(game.PostSLLifecycle().confirmedInEpoch);
+    EXPECT_LT(game.PublishedFG().multiplier, 2);
+
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    const auto reactivated = game.PostSLLifecycle();
+    EXPECT_TRUE(reactivated.confirmedInEpoch);
+    EXPECT_TRUE(reactivated.callbacksEnabled);
+    EXPECT_EQ(reactivated.callbacksInFlight, 0u);
+    EXPECT_FALSE(game.TryConfirmPostSLEpoch(active.epoch));
+    EXPECT_TRUE(game.PostSLLifecycle().confirmedInEpoch);
+    EXPECT_EQ(game.PublishedFG().type, 1);
+    EXPECT_EQ(game.PublishedFG().multiplier, 2);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace

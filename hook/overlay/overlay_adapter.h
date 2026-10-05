@@ -76,18 +76,18 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex);
         metrics = m;
     }
-    void SetIPCClient(IPCClient* ipc) {
+    void SetIPCClient(IPCClient* client) {
         std::lock_guard<std::mutex> lock(stateMutex);
-        this->ipc = ipc;
+        this->ipc = client;
     }
-    void SetHwnd(void* hwnd) {
+    void SetHwnd(void* window) {
         std::lock_guard<std::mutex> lock(stateMutex);
-        this->hwnd = hwnd;
+        this->hwnd = window;
         // Share a valid game window across ALL overlay adapters so an adapter that never gets SetHwnd
         // (e.g. the descriptor-free DX12 backend) resolves the game's DPI instead of falling back to
         // GetForegroundWindow() — which during startup can be a 96-DPI launcher/splash (overlay rendered
         // at 100% instead of the Windows 150% scale; session 20260624_004915).
-        RememberDpiReferenceHwnd(hwnd);
+        RememberDpiReferenceHwnd(window);
     }
     // Remember a known-valid game window for cross-adapter DPI resolution (file-static; see .cpp).
     static void RememberDpiReferenceHwnd(void* hwnd);

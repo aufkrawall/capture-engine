@@ -686,7 +686,7 @@ if (FAILED(preDevReason)) {
     bb->Release();
         return PostSLFlow::kReturn;
 }
-const uint32_t preSyncLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+const uint32_t preSyncLifecycleEpoch = g_PostSLLifecycle.Epoch();
 if (ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(entryLifecycleEpoch,
                                                                          preSyncLifecycleEpoch)) {
     static std::atomic<int> s_lifecycleAbortLogCount{0};

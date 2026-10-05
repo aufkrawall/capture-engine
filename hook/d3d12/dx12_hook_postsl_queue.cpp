@@ -4,7 +4,7 @@
 
 void WaitForInFlightPostSLCallbacks(const char* reason) {
 for (int spin = 0; spin < 200; ++spin) {
-    uint32_t inFlight = dx12_hook_g_PostSLCallbackInFlight.load(std::memory_order_acquire);
+    uint32_t inFlight = g_PostSLLifecycle.CallbacksInFlight();
     if (inFlight == 0) {
         return;
     }
@@ -15,7 +15,7 @@ for (int spin = 0; spin < 200; ++spin) {
     Sleep(1);
 }
 
-uint32_t remaining = dx12_hook_g_PostSLCallbackInFlight.load(std::memory_order_acquire);
+uint32_t remaining = g_PostSLLifecycle.CallbacksInFlight();
 if (remaining != 0) {
     HookLogImportant("%s — timed out waiting for %u in-flight PostSL callback(s)", reason, remaining);
 }
@@ -124,7 +124,7 @@ if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
     return;
 }
 
-if (dx12_hook_g_PostSLCallbackInFlight.load(std::memory_order_acquire) != 0) {
+if (g_PostSLLifecycle.CallbacksInFlight() != 0) {
     return;
 }
 
@@ -179,7 +179,7 @@ dx12_hook_g_SLFGAdapter.InvalidateCachedFrame();
 
 
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain) {
-dx12_hook_g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
+g_PostSLLifecycle.InvalidateGeneration();
 dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
 dx12_hook_g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_release);
 

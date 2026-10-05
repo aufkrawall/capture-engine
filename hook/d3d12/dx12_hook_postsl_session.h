@@ -11,6 +11,7 @@ enum class PostSLFlow {
 // Function-scope statics that span chunks stay visible across the postsl units.
 extern std::atomic<int> s_postSLRenders;
 extern std::atomic<int> s_postSLSkipFence;
+extern std::atomic<int> s_postSLSkipLock;
 extern int s_reactivationEpoch;
 extern int s_callsSinceReactivation;
 extern int s_postSLProbeFrames;

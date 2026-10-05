@@ -130,7 +130,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             // cold start. No synthetic-startup pending dance, no countdown
             // re-arm, no lifecycle reset — the first re-entrant present after
             // the resume renders immediately.
-            dx12_hook_g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
+            g_PostSLLifecycle.ResumeCallbacks();
             dx12_hook_g_PostSLOverlayActive.store(true, std::memory_order_release);
             dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
             DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
@@ -184,7 +184,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 }
             }
         } else if (callbackAlreadyInstalled) {
-            dx12_hook_g_PostSLCallbackExecutionEnabled.store(true, std::memory_order_release);
+            g_PostSLLifecycle.ResumeCallbacks();
             dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
             dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
             dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
@@ -345,13 +345,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
 
     if (inStartupChurnWindow) {
         if (!keepConfirmedPostSLAliveAcrossOff) {
-            dx12_hook_g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+            g_PostSLLifecycle.SuspendCallbacks();
         }
         HookLogImportant(
             "DX12: Streamline FG OFF during startup transition — keeping PostSL callback %s "
             "(churn suppression, epoch=%u keepAlive=%d)",
             keepConfirmedPostSLAliveAcrossOff ? "armed for keep-alive rendering" : "dormant",
-            dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire), keepConfirmedPostSLAliveAcrossOff ? 1 : 0);
+            g_PostSLLifecycle.Epoch(), keepConfirmedPostSLAliveAcrossOff ? 1 : 0);
         // Drop the AddRef'd startup-activation swapchain even on the churn
         // path: pinning it costs nothing on a quick re-ON (every startup-route
         // present re-retains it), but if the game proceeds to a full native

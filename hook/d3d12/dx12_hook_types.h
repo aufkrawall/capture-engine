@@ -1,5 +1,7 @@
 #pragma once
 
+#include "postsl_lifecycle.h"
+
 #include <windows.h>
 #include <d3d11.h>
 #include <d3d12.h>
@@ -434,11 +436,8 @@ struct DX12PostSLRuntimeState {
     std::atomic<bool> syntheticStartupTakeoverLogged{false};
     std::atomic<int> syntheticStartupWrapperProgressCount{0};
     std::atomic<bool> syntheticStartupWrapperOnlyDumpRequested{false};
-    std::atomic<uint32_t> lifecycleEpoch{0};
-    std::mutex renderMutex;
     std::atomic<uint32_t> streamlineEnableCallsInFlight{0};
     std::atomic<bool> confirmedRendering{false};
-    std::atomic<bool> confirmedRenderInCurrentReactivationEpoch{false};
     std::atomic<bool> syntheticStartupActivatedButUnconfirmed{false};
     std::atomic<bool> runtimeStateStabilizationLogged{false};
     std::atomic<bool> extendedRuntimeStateStabilizationForCurrentEpoch{false};
@@ -446,6 +445,7 @@ struct DX12PostSLRuntimeState {
     std::atomic<int> stableFrameCount{0};
 };
 extern DX12PostSLRuntimeState g_DX12PostSLRuntime;
+extern ce::dx12::PostSLLifecycle g_PostSLLifecycle;
 
 inline std::atomic<bool>& dx12_hook_g_PostSLOverlayActive = g_DX12PostSLRuntime.active;
 inline std::atomic<int>& dx12_hook_g_PostSLCooldownRemaining = g_DX12PostSLRuntime.cooldownRemaining;
@@ -455,11 +455,8 @@ inline std::atomic<IDXGISwapChain*>& dx12_hook_g_LastSuccessfulPostSLSwapchain =
 inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupTakeoverLogged = g_DX12PostSLRuntime.syntheticStartupTakeoverLogged;
 inline std::atomic<int>& dx12_hook_g_PostSLSyntheticStartupWrapperProgressCount = g_DX12PostSLRuntime.syntheticStartupWrapperProgressCount;
 inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupWrapperOnlyDumpRequested = g_DX12PostSLRuntime.syntheticStartupWrapperOnlyDumpRequested;
-inline std::atomic<uint32_t>& dx12_hook_g_PostSLLifecycleEpoch = g_DX12PostSLRuntime.lifecycleEpoch;
-inline std::mutex& dx12_hook_g_PostSLRenderMutex = g_DX12PostSLRuntime.renderMutex;
 inline std::atomic<uint32_t>& dx12_hook_g_StreamlineEnableCallsInFlight = g_DX12PostSLRuntime.streamlineEnableCallsInFlight;
 inline std::atomic<bool>& dx12_hook_g_PostSLConfirmedRendering = g_DX12PostSLRuntime.confirmedRendering;
-inline std::atomic<bool>& dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch = g_DX12PostSLRuntime.confirmedRenderInCurrentReactivationEpoch;
 inline std::atomic<bool>& dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed = g_DX12PostSLRuntime.syntheticStartupActivatedButUnconfirmed;
 inline std::atomic<bool>& dx12_hook_g_PostSLRuntimeStateStabilizationLogged = g_DX12PostSLRuntime.runtimeStateStabilizationLogged;
 inline std::atomic<bool>& dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch = g_DX12PostSLRuntime.extendedRuntimeStateStabilizationForCurrentEpoch;
@@ -583,8 +580,6 @@ extern std::atomic<DWORD> dx12_hook_g_GamePresentThreadId;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_SLWrapperQueue;
 extern ID3D12CommandQueue* dx12_hook_g_PostSLPinnedSLWrapperQueue;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_RealQueueBehindSLWrapper;
-extern std::atomic<bool> dx12_hook_g_PostSLCallbackExecutionEnabled;
-extern std::atomic<uint32_t> dx12_hook_g_PostSLCallbackInFlight;
 extern std::atomic<bool> dx12_hook_g_PostSLDeferredQueueCleanupPending;
 extern std::atomic<bool> dx12_hook_g_SafePostFSRRuntimeOwnedSwapchainBootstrapLogged;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_DeferredCommandQueueRelease;

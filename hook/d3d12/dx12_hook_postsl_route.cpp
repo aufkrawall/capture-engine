@@ -520,41 +520,40 @@ return retiringRouteLive;
 
 
 void PublishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
-SetPostSLCallbackInstalled(false, reason);
+g_PostSLLifecycle.PublishRetirement([&] { SetPostSLCallbackInstalled(false, reason); });
 // Publish cancellation before waiting for an already-entered callback. The
 // callback compares this epoch before every GPU submission point, exits,
 // and releases the render mutex without a polling delay.
-dx12_hook_g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
 }
 
 
 int FinishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
-std::lock_guard<std::mutex> renderLock(dx12_hook_g_PostSLRenderMutex);
+return g_PostSLLifecycle.FinishRetirement([&] {
 
-const int previousStableFrames = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
-dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
-dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
-dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
-dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
-dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
-DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
-dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
-ResetPostSLLifecycleForTransition(reason, true);
-SetPostSLLastWorkingQueue(nullptr);
-ReleaseStreamlineStartupActivationSwapchain(reason);
+    const int previousStableFrames = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
+    dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
+    dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
+    dx12_hook_g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ResetPostSLLifecycleForTransition(reason, true);
+    SetPostSLLastWorkingQueue(nullptr);
+    ReleaseStreamlineStartupActivationSwapchain(reason);
 
-if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
-    std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);
-    dx12_hook_g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
-    dx12_hook_g_State.overlayInit = false;
-    dx12_hook_g_State.syncInit = false;
-    dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
-    CleanupRTVs();
-}
+    if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
+        std::lock_guard<std::recursive_mutex> overlayLock(dx12_hook_g_OverlayMutex);
+        dx12_hook_g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
+        dx12_hook_g_State.overlayInit = false;
+        dx12_hook_g_State.syncInit = false;
+        dx12_hook_g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
+        CleanupRTVs();
+    }
 
-return previousStableFrames;
+    return previousStableFrames;
+});
 }
 
 

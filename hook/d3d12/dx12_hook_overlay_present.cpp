@@ -91,7 +91,7 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
             keepAliveLatched, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
             g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath(),
             ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(), IsStreamlineLoaded(),
-            dx12_hook_g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire), callbackInstalled,
+            g_PostSLLifecycle.CallbacksEnabled(), callbackInstalled,
             lastWorkingQueue != nullptr || lockedQueue != nullptr, exactLastSuccessfulSwapchain)) {
         return false;
     }

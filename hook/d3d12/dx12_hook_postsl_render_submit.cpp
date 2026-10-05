@@ -78,7 +78,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
     g_PostSLECLDiagCount.fetch_add(1, std::memory_order_relaxed);
 }
 {
-    const uint32_t preSubmitLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+    const uint32_t preSubmitLifecycleEpoch = g_PostSLLifecycle.Epoch();
     if (ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(entryLifecycleEpoch,
                                                                              preSubmitLifecycleEpoch)) {
         static std::atomic<int> s_lifecycleSubmitAbortLogCount{0};
@@ -489,52 +489,65 @@ static std::atomic<int> s_postSLRenderCount{0};
 int renderNum = s_postSLRenderCount.fetch_add(1, std::memory_order_relaxed) + 1;
 s_postSLRenders.fetch_add(1, std::memory_order_relaxed);
 HRESULT postDevReason = dev->GetDeviceRemovedReason();
-if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
-    if (finalOutputCapture.basePresentedOutput) {
-        // The overlay and any capture copy were ordered on this real suspended
-        // output. Let the later ProcessFrame route distinguish that proof from
-        // the stale global PostSL-active latch.
-        DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
-    }
-    ++dx12_hook_s_PostSLSuccessfulSubmitSequence;
-    if (!dx12_hook_g_HadSuccessfulPostSLPhase.exchange(true, std::memory_order_acq_rel)) {
-        HookLogImportant(
-            "DX12: Latched first device-healthy PostSL submit for future repeated pure-DLSS handoff prewarm "
-            "(swapchain=%p queue=%p)",
-            pSwapChain, submittedQueue);
-    }
-    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
-        dx12_hook_g_PostSLWarmResumePreservationPending.exchange(false, std::memory_order_acq_rel)) {
-        HookLogImportant(
-            "DX12: PostSL warm-resume preservation completed on first successful active submit "
-            "(sc=%p queue=%p)",
-            pSwapChain, submittedQueue);
-    }
-    IDXGISwapChain* previousSuccessfulPostSLSwapchain =
-        dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain, std::memory_order_acq_rel);
-    if (previousSuccessfulPostSLSwapchain != pSwapChain) {
-        HookLogImportant(
-            "DX12: PostSL proved exact swapchain route %p on submitted queue %p "
-            "(previousSwapchain=%p epoch=%d)",
-            pSwapChain, submittedQueue, previousSuccessfulPostSLSwapchain, s_reactivationEpoch);
-    }
+const bool confirmedCurrentEpoch = g_PostSLLifecycle.ConfirmRender(entryLifecycleEpoch, [&] {
+    if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
+        if (finalOutputCapture.basePresentedOutput) {
+            // The overlay and any capture copy were ordered on this real suspended
+            // output. Let the later ProcessFrame route distinguish that proof from
+            // the stale global PostSL-active latch.
+            DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
+        }
+        ++dx12_hook_s_PostSLSuccessfulSubmitSequence;
+        if (!dx12_hook_g_HadSuccessfulPostSLPhase.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Latched first device-healthy PostSL submit for future repeated pure-DLSS handoff prewarm "
+                "(swapchain=%p queue=%p)",
+                pSwapChain, submittedQueue);
+        }
+        if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
+            dx12_hook_g_PostSLWarmResumePreservationPending.exchange(false, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: PostSL warm-resume preservation completed on first successful active submit "
+                "(sc=%p queue=%p)",
+                pSwapChain, submittedQueue);
+        }
+        IDXGISwapChain* previousSuccessfulPostSLSwapchain =
+            dx12_hook_g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain, std::memory_order_acq_rel);
+        if (previousSuccessfulPostSLSwapchain != pSwapChain) {
+            HookLogImportant(
+                "DX12: PostSL proved exact swapchain route %p on submitted queue %p "
+                "(previousSwapchain=%p epoch=%d)",
+                pSwapChain, submittedQueue, previousSuccessfulPostSLSwapchain, s_reactivationEpoch);
+        }
 
-    // The same COM identity may be rebound from the normal Present route
-    // to a runtime proxy route. The newest successful submit is the useful
-    // ownership proof; do not let its pre-FG identity classify it as normal
-    // after Streamline is explicitly switched off. Publish this before the
-    // confirmed-render release stores below so the OFF callback cannot see
-    // confirmation without also seeing the exact swapchain proof.
-    IDXGISwapChain* expectedNormalSwapchain = pSwapChain;
-    if (dx12_hook_g_LastProvenOriginalQueueSwapchain.compare_exchange_strong(
-            expectedNormalSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire)) {
-        HookLogImportant(
-            "DX12: PostSL superseded remembered original-queue ownership for swapchain %p "
-            "with a successful runtime-route submit",
-            pSwapChain);
+        // The same COM identity may be rebound from the normal Present route
+        // to a runtime proxy route. The newest successful submit is the useful
+        // ownership proof; do not let its pre-FG identity classify it as normal
+        // after Streamline is explicitly switched off. Publish this before the
+        // confirmed-render release stores below so the OFF callback cannot see
+        // confirmation without also seeing the exact swapchain proof.
+        IDXGISwapChain* expectedNormalSwapchain = pSwapChain;
+        if (dx12_hook_g_LastProvenOriginalQueueSwapchain.compare_exchange_strong(
+                expectedNormalSwapchain, nullptr, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            HookLogImportant(
+                "DX12: PostSL superseded remembered original-queue ownership for swapchain %p "
+                "with a successful runtime-route submit",
+                pSwapChain);
+        }
     }
+});
+if (!confirmedCurrentEpoch) {
+    static ce::log_meter::ChangeGate staleConfirmationGate;
+    const auto currentEpoch = g_PostSLLifecycle.Epoch();
+    const auto verdict = staleConfirmationGate.Observe(ce::log_meter::FieldKey(entryLifecycleEpoch, currentEpoch));
+    if (verdict) {
+        HookLogImportant("[PostSLLifecycle] confirmation=rejected reason=retired-generation "
+                         "entryEpoch=%u epoch=%u swapchain=%p%s", entryLifecycleEpoch, currentEpoch, pSwapChain,
+                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    bb->Release();
+    return PostSLFlow::kReturn;
 }
-dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true, std::memory_order_release);
 if (!dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed)) {
     dx12_hook_g_PostSLConfirmedRendering.store(true, std::memory_order_release);
     DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);

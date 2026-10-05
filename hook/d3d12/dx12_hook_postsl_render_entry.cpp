@@ -5,26 +5,14 @@
 
 PostSLFlow PostSLRenderSession::Chunk0() {
 static std::atomic<int> s_postSLCalls{0};
-static std::atomic<int> s_postSLSkipLock{0};
 static std::atomic<int> s_postSLSkipOther{0};
 const bool normalRouteDrawPendingAtEntry = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
                                            dx12_hook_g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
-if (!dx12_hook_g_PostSLRenderMutex.try_lock()) {
-    DX12_NoteSkippedStreamlineFinalOutput();
-    s_postSLSkipLock.fetch_add(1, std::memory_order_relaxed);
-    NoteDX12OverlayCoverageGate("postsl-render-lock");
-    static int s_lockSkip = 0;
-    if (s_lockSkip++ < 10)
-        HookLogImportant("DX12: PostSL SKIP — another thread already rendering (tid=0x%04X)", GetCurrentThreadId());
-    return PostSLFlow::kReturn;
-}
-auto renderLockGuard = ce::make_scope_guard([]() { dx12_hook_g_PostSLRenderMutex.unlock(); });
 SharedMemoryLayout* finalOutputShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
 cachedSLFGActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
 finalOutputCapture =
     DX12_PlanStreamlineFinalOutputCapture(finalOutputShm, GetActiveDX12OverlayConfig(finalOutputShm),
                                           cachedSLFGActive);
-entryLifecycleEpoch = dx12_hook_g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 constexpr ULONGLONG kDormantProcessFrameThresholdMs = 100;
 const ULONGLONG nowMs = ce::hook_clock::TickCount64();
 const ULONGLONG lastProcessFrameTickMs = dx12_hook_g_LastProcessFrameTickMs.load(std::memory_order_acquire);
@@ -294,16 +282,16 @@ bool immediatePostFSRExplicitStartupTakeover = false;
 
         ID3D12CommandQueue* directQueue = dx12_hook_g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
         ExecuteCommandListsPtr directECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-        ID3D12CommandQueue* slWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
+        ID3D12CommandQueue* activationWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
         if (ce::dx12_overlay_policy::ShouldDelayPostSLActivationUntilSafeBootstrapPath(
-                dx12_hook_g_HadFSRFGPhase, directQueue != nullptr, directECL != nullptr, slWrapperQueue != nullptr,
+                dx12_hook_g_HadFSRFGPhase, directQueue != nullptr, directECL != nullptr, activationWrapperQueue != nullptr,
                 safePostFSRBootstrapPathForPostSL)) {
             static int s_waitForSafePathLog = 0;
             if (s_waitForSafePathLog < 10 || (s_waitForSafePathLog % 100) == 0) {
                 HookLogImportant(
                     "DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase "
                     "(realQ=%p realECL=%p slWrapper=%p safeBootstrap=%d)",
-                    directQueue, (void*)directECL, slWrapperQueue, safePostFSRBootstrapPathForPostSL ? 1 : 0);
+                    directQueue, (void*)directECL, activationWrapperQueue, safePostFSRBootstrapPathForPostSL ? 1 : 0);
             }
             s_waitForSafePathLog++;
             s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
@@ -372,16 +360,16 @@ if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive,
     // Epoch-scoped: a genuine reactivation must re-prove the first ECL is safe before
     // the warmup can be confirmed-bypassed. Cleared here so a confirmed render from a
     // previous epoch can never bypass a real cold-start warmup.
-    dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
+    g_PostSLLifecycle.BeginReactivation();
     const bool previouslyConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     const int previousStableFrameCount = dx12_hook_g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
     const int previousStallCount = dx12_hook_g_PostSLStallCounter.exchange(0, std::memory_order_acq_rel);
     const bool previousRuntimeStateStabilizationLogged =
         dx12_hook_g_PostSLRuntimeStateStabilizationLogged.exchange(false, std::memory_order_acq_rel);
-    const bool extendRuntimeStateStabilization =
+    const bool extendReactivationStabilization =
         ce::dx12_overlay_policy::ShouldExtendConfirmedPostSLRuntimeStateStabilizationAfterReactivation(
             previousStableFrameCount);
-    dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(extendRuntimeStateStabilization,
+    dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(extendReactivationStabilization,
                                                                    std::memory_order_release);
     // Clean up dedicated queue from previous epochs (no longer used — virtual
     // call through SL's COM wrapper is now the primary submission path).
@@ -401,9 +389,9 @@ if (ce::dx12_overlay_policy::ShouldTreatPostSLAsReactivated(active, s_wasActive,
             "DX12: PostSL reactivation reset confirmed-startup progress "
             "(epoch=%d confirmed=%d stableFrames=%d stallCount=%d stabilizing=%d extendStaleOff=%d)",
             s_reactivationEpoch, previouslyConfirmed ? 1 : 0, previousStableFrameCount, previousStallCount,
-            previousRuntimeStateStabilizationLogged ? 1 : 0, extendRuntimeStateStabilization ? 1 : 0);
+            previousRuntimeStateStabilizationLogged ? 1 : 0, extendReactivationStabilization ? 1 : 0);
     }
-    if (extendRuntimeStateStabilization) {
+    if (extendReactivationStabilization) {
         HookLogImportant(
             "DX12: PostSL reactivation extended runtime-state stabilization for churned startup "
             "(epoch=%d previousStableFrames=%d previousStallCount=%d proofThreshold=%d)",
@@ -460,7 +448,7 @@ const bool confirmedPureStreamlineResumeWarmupProof =
         warmupLastWorkingQueue != nullptr && warmupSwapchainQueue != nullptr &&
             warmupLastWorkingQueue == warmupSwapchainQueue);
 const bool postSLConfirmedRenderThisEpoch =
-    dx12_hook_g_PostSLConfirmedRenderInCurrentReactivationEpoch.load(std::memory_order_acquire);
+    g_PostSLLifecycle.ConfirmedInCurrentEpoch();
 const bool bypassReactivationWarmup = ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
     dx12_hook_g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
     confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof, postSLConfirmedRenderThisEpoch,

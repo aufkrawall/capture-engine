@@ -189,3 +189,13 @@ extern "C" __declspec(dllexport) int64_t CEFlow_ClockMicroseconds() {
 extern "C" __declspec(dllexport) void CEFlow_Shutdown() {
     RequestHookShutdown();
 }
+
+// Evidence-only flow API; no mapped state or mutable atomics escape the hook.
+extern "C" __declspec(dllexport) void CEFlow_GetPostSLLifecycle(CEFlowPostSLLifecycle* out) {
+    if (!out) return;
+    *out = {g_PostSLLifecycle.Epoch(), g_PostSLLifecycle.CallbacksInFlight(),
+            g_PostSLLifecycle.CallbacksEnabled(), g_PostSLLifecycle.ConfirmedInCurrentEpoch()};
+}
+extern "C" __declspec(dllexport) bool CEFlow_TryConfirmPostSLEpoch(uint32_t epoch) {
+    return g_PostSLLifecycle.ConfirmRender(epoch, [] {});
+}

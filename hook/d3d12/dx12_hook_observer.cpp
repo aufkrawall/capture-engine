@@ -31,7 +31,7 @@ void EnsurePostSLDisabledForObserverOnly(const char* reason, bool preserveStartu
 dx12_hook_g_PostSLOverlayActive.store(false, std::memory_order_release);
 dx12_hook_g_PostSLConfirmedRendering.store(false, std::memory_order_release);
 dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
-dx12_hook_g_PostSLCallbackExecutionEnabled.store(false, std::memory_order_release);
+g_PostSLLifecycle.SuspendCallbacks();
 dx12_hook_g_PostSLStallCounter.store(0, std::memory_order_release);
 dx12_hook_g_PostSLStableFrameCount.store(0, std::memory_order_release);
 dx12_hook_g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);

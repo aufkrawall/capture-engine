@@ -29,6 +29,13 @@ struct CEFlowOverlayCoverage {
     uint64_t outputOwnerViolations = 0;
 };
 
+struct CEFlowPostSLLifecycle {
+    uint32_t epoch = 0;
+    uint32_t callbacksInFlight = 0;
+    bool callbacksEnabled = false;
+    bool confirmedInEpoch = false;
+};
+
 struct CEFlowPublishedFG {
     int type = 0;        // 0 none, 1 DLSS FG, 2 FSR FG, 3 NVIDIA Smooth Motion (PerformanceMetrics::GetFGType)
     int multiplier = 0;  // below 2: frame generation shown as off
@@ -47,6 +54,8 @@ using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);
 using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
 using CEFlow_Shutdown_t = void (*)();
+using CEFlow_GetPostSLLifecycle_t = void (*)(CEFlowPostSLLifecycle* out);
+using CEFlow_TryConfirmPostSLEpoch_t = bool (*)(uint32_t epoch);
 // The hook runs on a virtual clock (hook/runtime/hook_clock.h) that only these move.
 using CEFlow_AdvanceClock_t = void (*)(int64_t microseconds);
 using CEFlow_ClockMicroseconds_t = int64_t (*)();

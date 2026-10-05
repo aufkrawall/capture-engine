@@ -17,6 +17,9 @@ UINT64 dx12_hook_s_descFreeSlotGuardValue = 0;
 
 DX12PostSLRuntimeState g_DX12PostSLRuntime;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - mutex constructor is noexcept on this toolchain
+ce::dx12::PostSLLifecycle g_PostSLLifecycle;
+
 thread_local uint64_t dx12_hook_s_PostSLSuccessfulSubmitSequence = 0;
 
 std::atomic<ULONGLONG> dx12_hook_g_LastProcessFrameTickMs{0};
@@ -208,9 +211,7 @@ ID3D12CommandQueue* dx12_hook_g_PostSLPinnedSLWrapperQueue = nullptr;
 
 std::atomic<ID3D12CommandQueue*> dx12_hook_g_RealQueueBehindSLWrapper{nullptr};
 
-std::atomic<bool> dx12_hook_g_PostSLCallbackExecutionEnabled{false};
 
-std::atomic<uint32_t> dx12_hook_g_PostSLCallbackInFlight{0};
 
 std::atomic<bool> dx12_hook_g_PostSLDeferredQueueCleanupPending{false};
 

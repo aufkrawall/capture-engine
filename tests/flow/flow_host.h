@@ -105,6 +105,8 @@ public:
     // runtimes' presenters) - independent of what CE saw.
     uint64_t PhysicalPresents() const;
     CEFlowPublishedFG PublishedFG() const;
+    CEFlowPostSLLifecycle PostSLLifecycle() const;
+    bool TryConfirmPostSLEpoch(uint32_t epoch);
     const std::string& LogDirectory() const { return logDirectory_; }
     const std::string& Error() const { return error_; }
     int FramesPresented() const { return frame_; }
@@ -147,6 +149,8 @@ private:
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;
     CEFlow_Shutdown_t shutdown_ = nullptr;
+    CEFlow_GetPostSLLifecycle_t getPostSLLifecycle_ = nullptr;
+    CEFlow_TryConfirmPostSLEpoch_t tryConfirmPostSLEpoch_ = nullptr;
     CEFlow_AdvanceClock_t advanceClock_ = nullptr;
     CEFlow_ClockMicroseconds_t clockMicroseconds_ = nullptr;
     int64_t clockOrigin_ = 0;
