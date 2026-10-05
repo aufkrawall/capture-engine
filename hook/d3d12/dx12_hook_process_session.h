@@ -2,31 +2,10 @@
 
 #include "dx12_hook_internal.h"
 
-// FrameProcessSession: the former ProcessFrame body in dx12_hook_process.cpp, split into
-// phase methods + a recursive draw-region chunk tree. Early returns and forward gotos are
-// routed via ProcessFrameFlow.
-//
-// Only two values are ever compared by name: Run() stops on kReturn, and the Draw* chain
-// treats anything that is not kContinue as "stop this sub-chain" and jumps to overlay_done.
-// The three remaining values are distinct for readability at the return site, and are
-// equivalent in handling because of where the original goto targets sat:
-//
-//   kSkipOverlayInit - the old `goto skipOverlayInit` jumped to the first statement of
-//                      InitOverlaySyncAndFocusHold, which is exactly where Run() continues after InitOverlayBackend returns.
-//   kSkipOverlayDraw - its label sat immediately before overlay_done with nothing between.
-//   kOverlayDone     - the overlay_done label itself, which is still a real goto target.
-//
-// kSkipSteamFence is gone with the Steam-ECL deferred submit it belonged to (retired in
-// c4a93a44). It was the one value whose label sat *mid-function*, so returning it skipped
-// everything between - including the backbuffer release.
-enum class ProcessFrameFlow {
-    kContinue,
-    kReturn,
-    kSkipOverlayInit,
-    kSkipOverlayDraw,
-    kOverlayDone,
-};
+#include "overlay_draw_transaction.h"
 
+// One present transaction owns temporary state, metrics completion and the
+// borrowed/owned resources used by its preparation and draw operations.
 class FrameProcessSession {
 public:
     FrameProcessSession(IDXGISwapChain* pSwapChain, bool processCapture,
@@ -37,38 +16,19 @@ public:
           frameGenerationPresentationActive(frameGenerationPresentationActive),
           diagnostics(diagnostics) {}
 
-    // The per-frame backbuffer is acquired with GetBuffer() and must not outlive the
-    // present: DrawSubmitCoreFront's own comment records that a frame generator watches
-    // the backbuffer reference count and fails when extra references are held. There is
-    // exactly one release point deep inside DrawSubmitCoreTail, and two early returns
-    // above it (device-removed, and the Steam-deferred submit) skipped it. Owning the
-    // reference here means every exit path releases it, including ones added later.
-    ~FrameProcessSession() { ReleaseBackBuffer(); }
+    ~FrameProcessSession() = default;
 
     FrameProcessSession(const FrameProcessSession&) = delete;
     FrameProcessSession& operator=(const FrameProcessSession&) = delete;
 
     void Run();
-    void LogFrameMetrics();
-
-    // Idempotent: the normal path still releases at the original point in DrawSubmitCoreTail,
-    // and the destructor is the backstop for every other exit.
-    void ReleaseBackBuffer() {
-        if (bbNeedsRelease && bb) {
-            bb->Release();
-        }
-        bb = nullptr;
-        bbNeedsRelease = false;
-    }
-
 private:
     IDXGISwapChain* pSwapChain;
     bool processCapture;
     bool applicationSourcePresent;
     bool frameGenerationPresentationActive;
     ce::dx12_process_frame_diagnostics::StageTimings* diagnostics;
-public:
-    // Entry reads the armed flag and logs metrics after Run(); keep these public.
+    // Metrics completion stays inside the frame transaction.
     bool metricsGuardArmed = false;
 
     FrameMetrics perfMetrics{};
@@ -165,8 +125,8 @@ public:
     int idx;
     ID3D12GraphicsCommandList* list;
     ID3D12CommandAllocator* alloc;
-    HRESULT allocResetHr;
-    HRESULT listResetHr;
+    HRESULT allocResetHr = E_FAIL;
+    HRESULT listResetHr = E_FAIL;
     bool preserveLiveStartupOverlayDuringInactiveSL;
     bool hasPendingStartupOverlayResources;
     bool shouldPrimeStartupOverlayResources;
@@ -174,16 +134,13 @@ public:
     LARGE_INTEGER perfQI, perfGetBuf, perfRecord, perfSubmit, perfEnd, perfFreq{};
     UINT swapchainBufferIdx;
     UINT bufferIdx;
-    // Default-initialized: the destructor reads both on every exit, including presents that
-    // never reach the GetBuffer() call that assigns them.
-    ID3D12Resource* bb = nullptr;
-    bool bbNeedsRelease = false;
+    ce::dx12::DrawBackBuffer<ID3D12Resource> backBuffer;
     bool cmdRecordOk;
     bool usedPrimaryOverlayBackend;
     bool usedDescFree;
     bool offscreenCompositeRequired;
     bool overlayDrawRecorded;
-    HRESULT closeHr;
+    HRESULT closeHr = E_FAIL;
 
 
     ProcessFrameFlow PrepareFrame();
@@ -199,6 +156,12 @@ public:
     ProcessFrameFlow DrawMain();
     ProcessFrameFlow DrawSkipAndCounters();
     bool TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR();
+    struct DrawOperations;
+    void LogFrameMetrics();
+    ce::dx12::BackBufferAcquisition<ID3D12Resource> AcquireDrawBackBuffer();
+    void RefreshDrawRenderTarget(ID3D12Resource* buffer);
+    HRESULT CloseDrawCommands();
+    void ReportDrawFailure(ce::dx12::DrawFailure failure, HRESULT result);
     ProcessFrameFlow DrawDeviceScope();
     ProcessFrameFlow DrawAllocSetup();
     ProcessFrameFlow DrawListAndAlloc();

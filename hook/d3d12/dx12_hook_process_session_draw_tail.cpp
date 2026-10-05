@@ -4,10 +4,7 @@
 #include "dx12_hook_process_session.h"
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitCoreTail() {
-                        if (FAILED(closeHr)) {
-                            HookLog("DX12: list->Close failed hr=0x%08X, forcing reinit", closeHr);
-                            dx12_hook_g_State.syncInit = false;
-                        } else {
+    ID3D12Resource* bb = backBuffer.Borrow();
                             // Choose submit queue.  The dedicated overlay queue
                             // is reserved for pure-offscreen work; the
                             // ProcessFrame overlay list always draws/copies the
@@ -522,7 +519,6 @@ return ProcessFrameFlow::kOverlayDone;
                             }
                             cmdRecordOk = true;
                             ce::hook_clock::QueryCounter(&perfSubmit);
-                        }
 
                         ce::hook_clock::QueryCounter(&perfEnd);
                         if (diagnostics && perfFreq.QuadPart > 0) {
@@ -586,10 +582,6 @@ return ProcessFrameFlow::kOverlayDone;
                                 dx12_hook_s_startupOverlayFirstDrawProbeMs = 0;
                             }
                         }
-                        // FG-SAFE: Release per-frame backbuffer reference. Idempotent, and the
-                        // session destructor repeats it for the early returns above that never
-                        // reach this point.
-                        ReleaseBackBuffer();
     return ProcessFrameFlow::kContinue;
 }
 

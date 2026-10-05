@@ -28,12 +28,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicat
     FrameProcessSession session(pSwapChain, processCapture, applicationSourcePresent,
                                frameGenerationPresentationActive, diagnostics);
     session.Run();
-    if (session.metricsGuardArmed) {
-        session.LogFrameMetrics();
-    }
 }
 
 void FrameProcessSession::Run() {
+    auto metricsCompletion = ce::make_scope_guard([&] { if (metricsGuardArmed) LogFrameMetrics(); });
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
     flow = PrepareFrame();
     if (flow == ProcessFrameFlow::kReturn) {

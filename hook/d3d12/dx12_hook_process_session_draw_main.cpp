@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
+#include "common/logging/log_meter.h"
 #include "dx12_sampler_hooks.h"
 
 ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
@@ -617,19 +618,28 @@ bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR
     return rendered;
 }
 
+struct FrameProcessSession::DrawOperations {
+    FrameProcessSession& frame;
+    ProcessFrameFlow SelectCommands() { return frame.DrawAllocSetup(); }
+    bool HasCommands() const { return frame.list && frame.alloc; }
+    ProcessFrameFlow ResetAllocator() { return frame.DrawAllocReset(); }
+    HRESULT AllocatorResetResult() const { return frame.allocResetHr; }
+    void ResetCommandList() { frame.DrawResetFront(); }
+    HRESULT CommandListResetResult() const { return frame.listResetHr; }
+    ProcessFrameFlow PrepareRecording() { return frame.DrawSubmitSetup(); }
+    bool HasSwapchain() const { return frame.sc3 != nullptr; }
+    auto AcquireBackBuffer() { return frame.AcquireDrawBackBuffer(); }
+    void RetireRenderTargets() { CleanupRTVs(); }
+    void RefreshRenderTarget(ID3D12Resource* buffer) { frame.RefreshDrawRenderTarget(buffer); }
+    ProcessFrameFlow RecordCommands() { return frame.DrawSubmitCoreFront(); }
+    HRESULT CloseCommands() { return frame.CloseDrawCommands(); }
+    ProcessFrameFlow SubmitCommands() { return frame.DrawSubmitCoreTail(); }
+    void ReportFailure(ce::dx12::DrawFailure failure, HRESULT result) { frame.ReportDrawFailure(failure, result); }
+};
+
 ProcessFrameFlow FrameProcessSession::DrawDeviceScope() {
-    ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-            {
-    flow = DrawAllocSetup();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    flow = DrawListAndAlloc();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-            }  // end device-removed-check scope
-    return ProcessFrameFlow::kContinue;
+    DrawOperations operations{*this};
+    return ce::dx12::ExecuteOverlayDraw(operations, dx12_hook_g_State, backBuffer);
 }
 
 ProcessFrameFlow FrameProcessSession::DrawAllocSetup() {
@@ -744,4 +754,23 @@ ProcessFrameFlow FrameProcessSession::DrawSubmit() {
         }
     }
     return ProcessFrameFlow::kContinue;
+}
+
+void FrameProcessSession::ReportDrawFailure(ce::dx12::DrawFailure failure, HRESULT result) {
+    static ce::log_meter::ChangeGate failureGate;
+    const auto epoch = g_PostSLLifecycle.Epoch();
+    const auto verdict = failureGate.Observe(ce::log_meter::FieldKey(static_cast<int>(failure), result, epoch));
+    if (!verdict) return;
+    const char* reason = "null-list-or-allocator";
+    switch (failure) {
+    case ce::dx12::DrawFailure::AllocatorReset: reason = "allocator-Reset"; break;
+    case ce::dx12::DrawFailure::CommandListReset: reason = "command-list-Reset"; break;
+    case ce::dx12::DrawFailure::MissingSwapchain: reason = "SwapChain3-interface"; break;
+    case ce::dx12::DrawFailure::GetBuffer: reason = "GetBuffer"; break;
+    case ce::dx12::DrawFailure::Close: reason = "command-list-Close"; break;
+    case ce::dx12::DrawFailure::MissingCommands: break;
+    }
+    HookLogImportant("[DX12Draw] outcome=rejected reason=%s hr=0x%08X epoch=%u swapchain=%p%s",
+                     reason, (unsigned)result, epoch, pSwapChain,
+                     ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
 }

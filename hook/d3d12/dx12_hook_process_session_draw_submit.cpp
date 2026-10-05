@@ -45,10 +45,10 @@ return ProcessFrameFlow::kOverlayDone;
 return ProcessFrameFlow::kOverlayDone;
                     }
 
-                    HRESULT closeHr = list->Close();
-                    if (FAILED(closeHr)) {
+                    HRESULT primeCloseResult = list->Close();
+                    if (FAILED(primeCloseResult)) {
                         HookLog("DX12: Priming command list close failed hr=0x%08X, forcing reinit",
-                                closeHr);
+                                primeCloseResult);
                         dx12_hook_g_State.syncInit = false;
 return ProcessFrameFlow::kOverlayDone;
                     }
@@ -127,7 +127,7 @@ ProcessFrameFlow FrameProcessSession::DrawSc3() {
     return ProcessFrameFlow::kContinue;
 }
 
-ProcessFrameFlow FrameProcessSession::DrawSc3Front() {
+ce::dx12::BackBufferAcquisition<ID3D12Resource> FrameProcessSession::AcquireDrawBackBuffer() {
 swapchainBufferIdx = sc3->GetCurrentBackBufferIndex();
 currentBackBufferIdx = swapchainBufferIdx;
 hasCurrentBackBufferIdx = true;
@@ -143,37 +143,29 @@ if (bufferIdx >= (UINT)dx12_hook_g_State.bufferCount) {
         bufferIdx, dx12_hook_g_State.bufferCount);
     bufferIdx = dx12_hook_g_State.bufferCount - 1;
 }
-// FG-SAFE: Acquire backbuffer per-frame via GetBuffer.
-// We do NOT cache backbuffer pointers because FSR FG
-// monitors reference counts and crashes if extra refs
-// are held persistently.
-bb = nullptr;
-bbNeedsRelease = false;
-ce::hook_clock::QueryCounter(&perfGetBuf);
-if (SUCCEEDED(sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&bb))) && bb) {
-    bbNeedsRelease = true;
-    // Recreate RTV for this buffer index (cheap CPU-side op).
-    // Ensures RTV matches current buffer even after FSR FG
-    // swapchain transitions.
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvRecreate =
-        dx12_hook_g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvRecreate.ptr += (SIZE_T)bufferIdx * dx12_hook_g_State.rtvDescriptorSize;
-    g_Device.load()->CreateRenderTargetView(bb, nullptr, rtvRecreate);
-} else {
-    // GetBuffer failure: the swapchain/backbuffer state is not usable.
-    // Force a full RTV reinit on the next ProcessFrame instead of drawing
-    // against a stale/null backbuffer. (Regression guard: this cleanup must
-    // stay in the FAILURE branch only - see DrawSubmitCoreTail.)
-    HookLog("DX12: GetBuffer(%u) failed, forcing RTV reinit", swapchainBufferIdx);
-    CleanupRTVs();
-    dx12_hook_g_State.overlayInit = false;
+    ce::hook_clock::QueryCounter(&perfGetBuf);
+    ID3D12Resource* buffer = nullptr;
+    const HRESULT result = sc3->GetBuffer(swapchainBufferIdx, IID_PPV_ARGS(&buffer));
+    return {result, buffer};
 }
+
+void FrameProcessSession::RefreshDrawRenderTarget(ID3D12Resource* buffer) {
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = dx12_hook_g_State.rtvDescHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += (SIZE_T)bufferIdx * dx12_hook_g_State.rtvDescriptorSize;
+    g_Device.load()->CreateRenderTargetView(buffer, nullptr, rtv);
+}
+
+// Temporary compatibility for the unused generated chain, removed next slice.
+ProcessFrameFlow FrameProcessSession::DrawSc3Front() {
+    const auto acquired = AcquireDrawBackBuffer();
+    backBuffer.Adopt(acquired.buffer);
+    if (SUCCEEDED(acquired.result) && backBuffer.Borrow()) RefreshDrawRenderTarget(backBuffer.Borrow());
     return ProcessFrameFlow::kContinue;
 }
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitCore() {
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-                                if (bb) {
+                                if (backBuffer.Borrow()) {
     flow = DrawSubmitCoreFront();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
@@ -187,6 +179,7 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCore() {
 }
 
 ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
+    ID3D12Resource* bb = backBuffer.Borrow();
                                     cmdRecordOk = false;
                                     static std::atomic<int> s_firstBackBufferLogCount{0};
                                     if (s_firstBackBufferLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
@@ -667,6 +660,10 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
                                     // stall.
                                     WriteOverlayGpuBreadcrumb(list, kOverlayBcBeforeClose);
 
+    return ProcessFrameFlow::kContinue;
+}
+
+HRESULT FrameProcessSession::CloseDrawCommands() {
                                     closeHr = list->Close();
                                     // Log Close result during FG
                                     if (g_FGCompat.IsFGActive() || slFGActive) {
@@ -691,5 +688,5 @@ ProcessFrameFlow FrameProcessSession::DrawSubmitCoreFront() {
                                                 usedPrimaryOverlayBackend ? 1 : 0);
                                         }
                                     }
-    return ProcessFrameFlow::kContinue;
+    return closeHr;
 }

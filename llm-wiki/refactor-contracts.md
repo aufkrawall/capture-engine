@@ -321,3 +321,34 @@ synthetic activation without output proof, first/repeated proof, warm suspension
 proof cancellation during publication and replacement confirmation in the same epoch. Existing
 real-hook WARP scenarios cover route/callback generations. Native, FG and package gates are required;
 real games and hardware performance remain user validation. Last verified: 2026-10-05.
+
+## Executable DX12 draw transaction (implemented)
+
+ExecuteOverlayDraw in hook/d3d12/overlay_draw_transaction.h is the production orchestration, using
+private FrameProcessSession::DrawOperations and the real overlay state. Controlled unit operations
+execute exactly the same reset/acquisition/recovery/record/close/submission/release branches.
+Allocator/list/close failures invalidate sync only. Failed or null GetBuffer retires RTVs and
+invalidates overlay initialization only; missing commands/interface and busy/priming skips preserve
+initialization. Successful draws enter no recovery. SDK calls retain direct static dispatch, queue
+selection and fences; the private seam adds no frame allocation, virtual adapter layer or copies.
+
+DrawBackBuffer owns only the per-present GetBuffer reference. Normal close-failure/success paths
+release at the original point after submission completion/metrics and before post-overlay capture.
+Recording/submission early returns keep the frame destructor backstop. Failed acquisition returning
+a non-null pointer is rejected and released before capture. All temporary frame state is private;
+metrics completion runs inside Run at the old post-Run observation point, before destructor cleanup.
+The normal frame lock lifetime and generated helper readability remain the next behavioral slice.
+
+Tests: tests/test_dx12_draw_transaction.cpp covers success with unchanged overlayInit/syncInit,
+controlled allocator/list/GetBuffer/close outcomes, absent interface/commands, busy/priming skips,
+submission/device-loss outcomes, early returns, capture ordering and exact release count/timing.
+tools/refactor/check_draw_transaction_mutations.py temporarily mutates only the private production
+header, requires actual behavioral assertion failures (compiler failure does not count), restores
+it in finally and verifies the original again. On 2026-10-05 all six mutations were detected:
+success entering RTV recovery, success invalidating sync, late normal release (destructor only),
+missing all release, duplicate normal release, and release before recording. Both historical
+source-text recovery assertions in test_dxgi_shared_part11.cpp were retired after this evidence;
+independent hooking, patching and security assertions remain. Reproduce the bounded check with
+`python tools/refactor/check_draw_transaction_mutations.py`; do not run it concurrently with builds
+or transaction edits. Native/FG/product/package gates still verify the restored product; controlled
+operations and WARP output do not prove vendor/hardware behavior. Last verified: 2026-10-05.
