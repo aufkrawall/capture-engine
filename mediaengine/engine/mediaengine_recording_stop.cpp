@@ -130,13 +130,11 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                         ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
                 audioOutputPublished = CleanupAudioOnlyMuxer();
             }
-            firstVideoFrameMs = 0;
-            firstVideoFrameCommitted = false;
+            submissionTiming.Reset();
             lastVideoFrameMs = 0;
             recordingStartSystemQPCMs.store(0);
             recordingStartSystemQpc100ns.store(0);
-            injectTimelineState.Reset();
-            d3d11TimelineState.Reset();
+
             audioOnly = false;
             DLL_Log(
                 "[AVSyncAuto] stop_summary: audioOnly=1 resolvedRenderLatencyMs=%.3f confidence=%s reason=%s "
@@ -147,7 +145,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             return audioOutputPublished;
         }
 
-        if (cancelUncommittedVideo && !firstVideoFrameCommitted) {
+        if (cancelUncommittedVideo && !submissionTiming.HasFirstOutput()) {
             CancelUncommittedVideoRecording();
             return false;
 
@@ -186,7 +184,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 int64_t durationUs = expectedDurationUs > 0 ? expectedDurationUs : encodedDurationUs;
                 if (IsCfrRecording()) {
                     const int64_t wallDurationUs = std::max<int64_t>(
-                        IsWgcCfrRecording() ? d3d11TimelineState.lastElapsedUs : injectTimelineState.lastElapsedUs,
+                        submissionTiming.SamplingElapsed(IsWgcCfrRecording() ? ce::media::timing::SourceClock::ScreenGrab
+                            : ce::media::timing::SourceClock::Inject).count(),
                         videoElapsedMs.load() * 1000);
 
                     DLL_Log(
@@ -638,13 +637,11 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
         }
 
         // Reset video frame tracking for next recording
-        firstVideoFrameMs = 0;
-        firstVideoFrameCommitted = false;
+        submissionTiming.Reset();
         lastVideoFrameMs = 0;
         recordingStartSystemQPCMs.store(0);
         recordingStartSystemQpc100ns.store(0);
-        injectTimelineState.Reset();
-        d3d11TimelineState.Reset();
+
 
         // Note: We don't need to update VideoEncoder audio context here anymore
         // since we're using AddAudioContext and the contexts are stored per-source

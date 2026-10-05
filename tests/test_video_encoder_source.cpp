@@ -86,7 +86,7 @@ TEST(VideoEncoderSourceTest, EveryCfrSubmissionAdvancesOneContiguousPacketTick) 
     const std::string body = source.substr(function, nextFunction - function);
     EXPECT_NE(body.find("if (useExplicitCfrTimeline)"), std::string::npos);
     EXPECT_EQ(body.find("ComputeCfrFrameIndexForElapsedUs"), std::string::npos);
-    const std::string contiguousCall = "ComputeNextCfrFrameIndex(lastAssignedVideoPts)";
+    const std::string contiguousCall = "ce::time::NextOutputFrame(ce::time::FrameIndex{lastAssignedVideoPts}).count()";
     const size_t firstCall = body.find(contiguousCall);
     const size_t secondCall = body.find(contiguousCall, firstCall + 1);
     ASSERT_NE(firstCall, std::string::npos);

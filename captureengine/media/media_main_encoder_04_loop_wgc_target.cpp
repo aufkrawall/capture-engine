@@ -1,5 +1,6 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
+#include "common/capture/time_grid.h"
 
 void MediaEncoderSession::LoopWgcTarget() {
         scheduledOutputQpc = scheduledSampleQpc;
@@ -23,7 +24,7 @@ void MediaEncoderSession::LoopWgcTarget() {
 
 }
 
-void MediaEncoderSession::inspectBufferedWgcCoverageForTarget(int64_t selectionTargetQpc, bool activeDelaySelection, uint32_t requiredReserveFrames, bool* hasFrameForTick, bool* hasReserveFrame) {
+void MediaEncoderSession::inspectBufferedWgcCoverageForTarget(int64_t targetQpc, bool activeDelaySelection, uint32_t requiredReserveFrames, bool* hasFrameForTick, bool* hasReserveFrame) {
 
 if (hasFrameForTick) {
     *hasFrameForTick = false;
@@ -36,12 +37,12 @@ if (bufferedWgcFrames.empty()) {
 }
 
 size_t idx = 0;
-if (selectionTargetQpc > 0) {
+if (targetQpc > 0) {
     while ((idx + 1) < bufferedWgcFrames.size()) {
         const QueuedFrame& current = bufferedWgcFrames[idx];
         const QueuedFrame& next = bufferedWgcFrames[idx + 1];
         const bool sameTimestamp = current.timestamp > 0 && current.timestamp == next.timestamp;
-        const bool nextAlreadyCoversTarget = next.timestamp > 0 && next.timestamp <= selectionTargetQpc;
+        const bool nextAlreadyCoversTarget = next.timestamp > 0 && next.timestamp <= targetQpc;
         if (!sameTimestamp && !nextAlreadyCoversTarget) {
             break;
         }
@@ -53,14 +54,14 @@ if (idx >= bufferedWgcFrames.size()) {
     return;
 }
 
-const QueuedFrame& candidate = bufferedWgcFrames[idx];
-const int64_t candidateSelectionTimestamp = GetFrameSelectionTimestamp(candidate);
+const QueuedFrame& coverageCandidateFrame = bufferedWgcFrames[idx];
+const int64_t coverageTimestamp = GetFrameSelectionTimestamp(coverageCandidateFrame);
 const bool canUseCandidateNow =
-    selectionTargetQpc <= 0 || candidateSelectionTimestamp <= 0 ||
+    targetQpc <= 0 || coverageTimestamp <= 0 ||
     !(activeDelaySelection ? ce::capture_policy::IsWgcFrameTooNewForActiveDelaySlot(
-                                 candidateSelectionTimestamp, selectionTargetQpc, targetIntervalTicks)
+                                 coverageTimestamp, targetQpc, targetIntervalTicks)
                            : ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
-                                 candidateSelectionTimestamp, selectionTargetQpc, targetIntervalTicks)) ||
+                                 coverageTimestamp, targetQpc, targetIntervalTicks)) ||
     !media_main_g_HasLastFrame || media_main_g_LastFrame.isInjectMode;
 if (hasFrameForTick) {
     *hasFrameForTick = canUseCandidateNow;
@@ -102,16 +103,16 @@ int64_t MediaEncoderSession::computeDelayedWgcSelectionTargetQpc() {
 return computeWgcSelectionTargetQpc(true); 
 }
 
-int64_t MediaEncoderSession::clampWgcSelectionTargetQpc(int64_t selectionTargetQpc, int64_t liveNowQpc) {
+int64_t MediaEncoderSession::clampWgcSelectionTargetQpc(int64_t targetQpc, int64_t observedNowQpc) {
 
 const bool encoderBottlenecked = media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
 const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
-    selectionTargetQpc, liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, wgcLowSourceModeActive,
+    targetQpc, observedNowQpc, targetIntervalTicks, qpcFreq.QuadPart, wgcLowSourceModeActive,
     wgcLiveRecoveryModeActive, outputShortfallTicks, encoderBottlenecked,
     ce::capture_policy::kCfrShortfallCatchupThresholdTicks, isWgcEncoderLimitedSmoothnessMode(),
     getWgcEffectiveContentDelayQpc());
-if (clampedSelectionTargetQpc > selectionTargetQpc) {
-    const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - selectionTargetQpc) *
+if (clampedSelectionTargetQpc > targetQpc) {
+    const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - targetQpc) *
                                   1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
     ++wgcSelectionTargetClampCount;
     wgcSelectionTargetClampMaxUs = std::max(wgcSelectionTargetClampMaxUs, SaturatingToUint32(clampDeltaUs));
@@ -122,13 +123,7 @@ return clampedSelectionTargetQpc;
 
 int64_t MediaEncoderSession::computeLiveTimelineElapsedUs(int64_t scheduledQpcForTick) {
 
-if (liveStartQpc.QuadPart <= 0 || qpcFreq.QuadPart <= 0) {
-    return -1;
-}
-const int64_t deltaQpc = scheduledQpcForTick - liveStartQpc.QuadPart;
-if (deltaQpc < 0) {
-    return -1;
-}
-return (deltaQpc * 1000000) / qpcFreq.QuadPart;
+return ce::time::ScheduledElapsed(ce::time::QpcTicks{liveStartQpc.QuadPart}, ce::time::QpcTicks{scheduledQpcForTick},
+                                  ce::time::QpcFrequency{qpcFreq.QuadPart}).count();
 
 }

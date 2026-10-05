@@ -4,6 +4,11 @@
 using ce::media::FrameSubmissionResultV1;
 using ce::media::SubmissionOutput;
 using ce::media::CommittedTimeline;
+using ce::media::timing::SourceClock;
+using ce::time::QpcTicks;
+using ce::time::QpcFrequency;
+using ce::time::Microseconds;
+using ce::time::Milliseconds;
 
 
 bool MediaEngine::ProcessFrame(const VideoFrameSubmissionDesc& desc) {
@@ -20,20 +25,16 @@ FrameSubmissionResultV1 MediaEngine::SubmitInjectFrame(const VideoFrameSubmissio
     auto now = std::chrono::steady_clock::now();
 
     // Calculate QPC based timestamp for debugging/Legacy Start Time
-    int64_t debugTimestamp = (qpcFreq > 0) ? (desc.timestamp * 1000) / qpcFreq : desc.timestamp;
+    int64_t debugTimestamp = ce::media::timing::DiagnosticTimestamp(QpcTicks{desc.timestamp}, QpcFrequency{qpcFreq}).count();
 
-    const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
+    const bool commitsFirstVideoFrame = !submissionTiming.HasFirstOutput();
 
     const int64_t steadyElapsedUs =
         commitsFirstVideoFrame
             ? 0
             : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
-    int64_t realElapsedUs = steadyElapsedUs;
-    if (SessionUsesVfr()) {
-        realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, desc.timestamp, steadyElapsedUs, injectTimelineState);
-    } else {
-        realElapsedUs = ResolveCfrTimelineElapsedUs(steadyElapsedUs, -1, injectTimelineState.lastElapsedUs);
-    }
+    const int64_t realElapsedUs = submissionTiming.ResolveCandidate(SourceClock::Inject, SessionUsesVfr(),
+        QpcFrequency{qpcFreq}, QpcTicks{desc.timestamp}, Microseconds{steadyElapsedUs}, Microseconds{-1}).count();
 
     // Maybe we want preview later? For now, recording only.
     videoEnc->SetAdapterLUID(desc.luidLow, desc.luidHigh);
@@ -47,29 +48,25 @@ FrameSubmissionResultV1 MediaEngine::SubmitInjectFrame(const VideoFrameSubmissio
                                      static_cast<int>(desc.height), static_cast<int>(desc.format),
                                      desc.isHDR, desc.isShmem, desc.shmemSlot);
     }, [&] { return videoEnc->WasLastFrameDeferred(); }, [&] {
+        bool committedFirstNow = false;
         if (commitsFirstVideoFrame) {
             // Commit the media/audio anchor only after the encoder accepted the
             // first frame. A failed/deferred candidate must not discard audio
             // or establish a PTS origin for pixels that were never emitted.
-            this->firstVideoFrameMs = debugTimestamp;
-            this->firstVideoFrameCommitted = true;
-            this->recordingStartTime = now;
-            const int64_t startQpc100ns =
-                (qpcFreq > 0 && desc.timestamp > 0)
-                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(desc.timestamp),
-                                                                                 static_cast<uint64_t>(qpcFreq)))
-                    : 0;
-            DLL_Log(
-                "MediaEngine: First successfully encoded inject frame at %lld ms (QPC: %lld) - syncing audio "
-                "(StartQPC: %lld)",
-                debugTimestamp, desc.timestamp, debugTimestamp);
-            SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
+            const auto audioAnchor = ce::media::timing::AudioAnchor(QpcTicks{desc.timestamp}, QpcFrequency{qpcFreq});
+            committedFirstNow = submissionTiming.CommitFirst(
+                {Milliseconds{debugTimestamp}, Milliseconds{debugTimestamp}, audioAnchor}, [&](const auto& anchor) {
+                this->recordingStartTime = now;
+                DLL_Log("[FirstVideoCommit] source=inject sourceMs=%lld sourceQpc=%lld audioAnchor100ns=%lld",
+                        anchor.source.count(), desc.timestamp, anchor.audioQpc.count());
+                SyncAudioToFirstVideoFrame(anchor.audio.count(), anchor.audioQpc.count());
+            });
         }
 
         const bool cfrRecording = IsCfrRecording();
         const int64_t committedElapsedUs = cfrRecording && videoEnc ? videoEnc->GetExpectedFinalDurationUs()
                                                                     : GetCommittedVideoElapsedUs(realElapsedUs);
-        CommitVideoElapsedUs(injectTimelineState, committedElapsedUs);
+        CommitVideoElapsedUs(SourceClock::Inject, Microseconds{committedElapsedUs});
 
         // Update audio stream index for all sources
         for (size_t i = 0; i < audioSources.size(); i++) {
@@ -87,7 +84,7 @@ FrameSubmissionResultV1 MediaEngine::SubmitInjectFrame(const VideoFrameSubmissio
 
         // PULL MODEL: CFR audio follows the authoritative output timeline.
         PullAndEncodeAudio(committedElapsedUs);
-        return ce::media::AcceptedSubmission(SubmissionOutput::FreshSource, commitsFirstVideoFrame,
+        return ce::media::AcceptedSubmission(SubmissionOutput::FreshSource, committedFirstNow,
                                              CommittedTimeline::InjectOutput, committedElapsedUs, committedElapsedUs);
     });
 
@@ -116,7 +113,7 @@ FrameSubmissionResultV1 MediaEngine::SubmitRepeat(int64_t timestampQPC, int64_t 
         const bool wgcCfrRecording = IsWgcCfrRecording();
         // CFR drain: allow scheduled repeats to close already accrued CFR debt
         // before MediaEngine_StopRecording finalizes the encoders.
-        if (!videoEnc || !firstVideoFrameCommitted)
+        if (!videoEnc || !submissionTiming.HasFirstOutput())
             return ce::media::UnacceptedSubmission(false, false);
         if (!recording && !cfrRecording)
             return ce::media::UnacceptedSubmission(false, false);
@@ -125,16 +122,10 @@ FrameSubmissionResultV1 MediaEngine::SubmitRepeat(int64_t timestampQPC, int64_t 
         const int64_t steadyElapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
 
-        int64_t realElapsedUs = steadyElapsedUs;
-        if (SessionUsesVfr()) {
-            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
-        } else if (wgcCfrRecording) {
-            realElapsedUs = ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs,
-                                                                     d3d11TimelineState.lastElapsedUs);
-        } else {
-            realElapsedUs =
-                ResolveCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs, injectTimelineState.lastElapsedUs);
-        }
+        const auto repeatClock = wgcCfrRecording ? SourceClock::ScreenGrab : SourceClock::Inject;
+        const int64_t realElapsedUs = submissionTiming.ResolveCandidate(repeatClock, SessionUsesVfr(),
+            QpcFrequency{qpcFreq}, QpcTicks{timestampQPC}, Microseconds{steadyElapsedUs},
+            Microseconds{timelineElapsedUs}).count();
 
         const bool useExplicitWgcCfrTimeline = wgcCfrRecording && timelineElapsedUs >= 0;
         if (cursorState) {
@@ -145,8 +136,7 @@ FrameSubmissionResultV1 MediaEngine::SubmitRepeat(int64_t timestampQPC, int64_t 
         }, [&] { return videoEnc->WasLastFrameDeferred(); }, [&] {
             const int64_t committedElapsedUs =
                 cfrRecording ? videoEnc->GetExpectedFinalDurationUs() : GetCommittedVideoElapsedUs(realElapsedUs);
-            CommitVideoElapsedUs(wgcCfrRecording ? d3d11TimelineState : injectTimelineState,
-                                 wgcCfrRecording ? realElapsedUs : committedElapsedUs);
+            CommitVideoElapsedUs(repeatClock, Microseconds{wgcCfrRecording ? realElapsedUs : committedElapsedUs});
             for (size_t i = 0; i < audioSources.size(); i++) {
                 auto& src = audioSources[i];
                 int idx = videoEnc->GetAudioStreamIndex(src.track);
@@ -287,7 +277,7 @@ bool MediaEngine::PrepareFrameD3D11(void* texture,  uint32_t width,  uint32_t he
             "[VideoPrewarm] D3D11 deferred encoder/mux prepare %s: dimensions=%ux%u hdr=%d elapsed=%lldus "
             "firstFrameCommitted=%d",
             prepared ? "complete" : "FAILED", width, height, isHDR ? 1 : 0, static_cast<long long>(elapsedUs),
-            firstVideoFrameCommitted ? 1 : 0);
+            submissionTiming.HasFirstOutput() ? 1 : 0);
         return prepared;
 
 }
@@ -313,9 +303,9 @@ FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmission
     void* texture = desc.texture;
 
         auto now = std::chrono::steady_clock::now();
-        int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
+        int64_t debugTimestamp = ce::media::timing::DiagnosticTimestamp(QpcTicks{timestampQPC}, QpcFrequency{qpcFreq}).count();
 
-        const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
+        const bool commitsFirstVideoFrame = !submissionTiming.HasFirstOutput();
         int64_t firstAnchorQpc = timestampQPC;
         int64_t firstAnchorMs = debugTimestamp;
         int64_t firstStartQpc100ns = 0;
@@ -365,32 +355,20 @@ FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmission
                     renderDelayMs, smoothExtraDelayMs, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
             }
 
-            firstAnchorMs = (qpcFreq > 0 && firstAnchorQpc > 0) ? (firstAnchorQpc * 1000) / qpcFreq : debugTimestamp;
-            firstStartQpc100ns = (qpcFreq > 0 && firstAnchorQpc > 0)
-                                     ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
-                                           static_cast<uint64_t>(firstAnchorQpc), static_cast<uint64_t>(qpcFreq)))
-                                     : 0;
+            firstAnchorMs = qpcFreq > 0 && firstAnchorQpc > 0
+                ? ce::media::timing::DiagnosticTimestamp(QpcTicks{firstAnchorQpc}, QpcFrequency{qpcFreq}).count()
+                : debugTimestamp;
+            firstStartQpc100ns = ce::media::timing::AudioAnchor(QpcTicks{firstAnchorQpc}, QpcFrequency{qpcFreq}).count();
             firstPreservePendingPackets = ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(
                 IsWgcCfrRecording(), wgcStartupExtraDelayQpc.load(std::memory_order_acquire));
         }
 
-        int64_t realElapsedUs = 0;
-        const int64_t steadyElapsedUs =
-            commitsFirstVideoFrame
-                ? 0
-                : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
-        if (SessionUsesVfr()) {
-            realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, d3d11TimelineState);
-        } else {
-            // CFR output cadence is already driven by the encoder thread's fixed-rate
-            // sample loop. Feeding the video encoder WGC source timestamps here causes
-            // avoidable skip/dup churn when callback cadence jitters around that output
-            // grid, so prefer the sample-clock timeline instead.  Catch-up paths can
-            // provide an explicit CFR slot time so buffered fresh frames land on the
-            // intended output grid instead of collapsing onto the current wall-clock.
-            realElapsedUs = ResolveAuthoritativeCfrTimelineElapsedUs(steadyElapsedUs, timelineElapsedUs,
-                                                                     d3d11TimelineState.lastElapsedUs);
-        }
+        const int64_t steadyElapsedUs = commitsFirstVideoFrame ? 0 :
+            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+        // WGC uses the existing authoritative scheduled CFR position; VFR uses source time.
+        const int64_t realElapsedUs = submissionTiming.ResolveCandidate(SourceClock::ScreenGrab, SessionUsesVfr(),
+            QpcFrequency{qpcFreq}, QpcTicks{timestampQPC}, Microseconds{steadyElapsedUs},
+            Microseconds{timelineElapsedUs}).count();
         const bool useExplicitWgcCfrTimeline = IsWgcCfrRecording() && timelineElapsedUs >= 0;
         if (cursorState) {
             videoEnc->SetCursorCaptureState(*cursorState);
@@ -402,19 +380,22 @@ FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmission
                 DLL_Log("MediaEngine: D3D11 frame encode failed at ts=%lld", debugTimestamp);
             return accepted;
         }, [] { return false; }, [&] {
+            bool committedFirstNow = false;
             if (commitsFirstVideoFrame) {
-                this->firstVideoFrameMs = debugTimestamp;
-                this->firstVideoFrameCommitted = true;
-                this->recordingStartTime = now;
-                videoElapsedMs.store(0);
-                DLL_Log("MediaEngine: First successfully encoded D3D11 frame at %lld ms (QPC: %lld) (StartQPC: %lld)",
-                        debugTimestamp, timestampQPC, firstAnchorMs);
-                SyncAudioToFirstVideoFrame(firstAnchorMs, firstStartQpc100ns, firstPreservePendingPackets);
+                committedFirstNow = submissionTiming.CommitFirst({Milliseconds{debugTimestamp}, Milliseconds{firstAnchorMs},
+                    ce::time::AudioHundredNanoseconds{firstStartQpc100ns}}, [&](const auto& anchor) {
+                    this->recordingStartTime = now;
+                    videoElapsedMs.store(0);
+                    DLL_Log("[FirstVideoCommit] source=screen-grab sourceMs=%lld sourceQpc=%lld "
+                            "audioAnchorMs=%lld audioAnchor100ns=%lld", anchor.source.count(), timestampQPC,
+                            anchor.audio.count(), anchor.audioQpc.count());
+                    SyncAudioToFirstVideoFrame(anchor.audio.count(), anchor.audioQpc.count(), firstPreservePendingPackets);
+                });
             }
             // Keep the WGC live timeline anchored to the scheduled CFR wall clock even
             // when the encoder has fallen behind. Audio diagnostics and buffering logic
             // need to see that shortfall rather than the shortened encoded duration.
-            CommitVideoElapsedUs(d3d11TimelineState, realElapsedUs);
+            CommitVideoElapsedUs(SourceClock::ScreenGrab, Microseconds{realElapsedUs});
 
             // Update audio stream index for all sources
             for (size_t i = 0; i < audioSources.size(); i++) {
@@ -434,7 +415,7 @@ FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmission
             // a 1-tick offset that would leave audio 8ms short by the end of recording.
             const int64_t audioTargetUs = IsWgcCfrRecording() ? videoEnc->GetExpectedFinalDurationUs() : realElapsedUs;
             PullAndEncodeAudio(audioTargetUs);
-            return ce::media::AcceptedSubmission(SubmissionOutput::FreshSource, commitsFirstVideoFrame,
+            return ce::media::AcceptedSubmission(SubmissionOutput::FreshSource, committedFirstNow,
                 CommittedTimeline::ScreenGrabScheduled, realElapsedUs, audioTargetUs);
         });
 

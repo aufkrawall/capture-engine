@@ -1,6 +1,7 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 #include "candidate_completion.h"
+#include "common/capture/time_grid.h"
 
 void MediaEncoderSession::LoopEncode() {
         if (frameToProcess) {
@@ -12,8 +13,8 @@ void MediaEncoderSession::LoopEncode() {
 
             const int64_t idealQpc =
                 (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                    ? ComputeIdealOutputQpcOnRationalGrid(encoderGridStartQpc, selectionGridTick, qpcFreq.QuadPart,
-                                                          config.video.fps)
+                    ? ce::time::SelectionSlot(ce::time::QpcTicks{encoderGridStartQpc}, ce::time::GridTick{selectionGridTick},
+                                          ce::time::QpcFrequency{qpcFreq.QuadPart}, config.video.fps).count()
                     : 0;
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;

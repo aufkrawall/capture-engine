@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Recording A/V anchor commitment:** first-output timing and source sampling now have one owner, with explicit QPC, elapsed-time, audio-timestamp and frame-grid units. Deterministic regressions preserve inject output timing, authoritative WGC scheduling and exactly-once audio anchoring.
+
 - **Recording frame retries and timing:** inject and screen-grab submission adapters now carry explicit outcomes through fresh, repeat, drain, catch-up and privacy-blackout paths, retaining deferred source leases without separate deferred queries.
 
 - **Recording frame acceptance:** added versioned submission results that distinguish fresh output, repeats, deferred retries and committed video/audio timing while preserving existing DLL entry points. Incompatible media DLLs fail clearly and clear every resolved function pointer.

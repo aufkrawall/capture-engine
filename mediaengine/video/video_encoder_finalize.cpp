@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "common/capture/time_grid.h"
 
 constexpr int kPostMuxProbeMaxPackets = 512;
 
@@ -395,12 +396,12 @@ int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t
         // wall grid; it must never punch a hole in the encoded CFR PTS prefix.
         // Late ticks are represented by fresh/held-frame choice and bounded
         // catch-up submissions, each of which still owns exactly one next PTS.
-        return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+        return ce::time::NextOutputFrame(ce::time::FrameIndex{lastAssignedVideoPts}).count();
     }
 
     // Generic CFR/inject mode also owns one explicit encoder call per output
     // slot here.
-    return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
+    return ce::time::NextOutputFrame(ce::time::FrameIndex{lastAssignedVideoPts}).count();
 }
 
 bool IsConfiguredNvencLookaheadActive(const std::string& value) {
@@ -537,7 +538,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) {
     int64_t maxRawAudioEndUs = 0;
     int64_t maxPacketDeltaUs = 0;
     uint32_t videoStreamCount = 0;
-    uint64_t videoPacketCount = 0;
+    uint64_t validatedVideoPackets = 0;
     int64_t maxVideoPtsGapUs = 0;
     uint32_t audioStreamCount = 0;
     uint32_t audioPastTargetCount = 0;
@@ -554,7 +555,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) {
 
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             ++videoStreamCount;
-            videoPacketCount += timeline.packetCount;
+            validatedVideoPackets += timeline.packetCount;
             maxVideoEndUs = std::max(maxVideoEndUs, timeline.lastEndUs);
             maxVideoPtsGapUs = std::max(maxVideoPtsGapUs, timeline.maxForwardStartGapUs);
         } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
@@ -583,7 +584,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) {
         audioStreamCount, audioPastTargetCount, maxRawAudioEndUs);
     if (!savedConfig.useVFR && savedConfig.fps > 0 && videoStreamCount > 0) {
         const int64_t expectedPackets = av_rescale_rnd(finalDurationUs, savedConfig.fps, 1000000, AV_ROUND_NEAR_INF);
-        const int64_t emittedPackets = static_cast<int64_t>(videoPacketCount);
+        const int64_t emittedPackets = static_cast<int64_t>(validatedVideoPackets);
         const int64_t missingPackets = std::max<int64_t>(0, expectedPackets - emittedPackets);
         const double maxPtsGapTicks = static_cast<double>(maxVideoPtsGapUs) * savedConfig.fps / 1000000.0;
         const bool coverageComplete = missingPackets == 0 && maxPtsGapTicks <= 1.01;

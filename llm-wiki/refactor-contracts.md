@@ -168,3 +168,39 @@ through completion, including deferred retention, accepted transfer, rejected/re
 cached-black output accepted without source adoption. Privacy gating source protections remain; only
 obsolete boolean/deferred and descriptive-comment assertions changed. Invalid result-boundary feedback
 uses ChangeGate; existing failure/recovery and lineage diagnostics preserve timing and correlation.
+
+## Timing glossary and commitment owner (implemented)
+
+| Quantity | Internal type | Authority / boundary |
+| --- | --- | --- |
+| Source or scheduled timestamp | QpcTicks | Source adapter or controller scheduler; never elapsed microseconds |
+| Ticks per second | QpcFrequency | Trusted system QPC frequency |
+| Elapsed video/audio pull value | Microseconds | Accepted submission / existing source-specific CFR policy |
+| Diagnostic source/audio timestamp | Milliseconds | QPC conversion; legacy no-frequency diagnostic fallback remains |
+| Audio sync anchor | AudioHundredNanoseconds | Existing RawQpcToHundredNanoseconds helper; invalid QPC/frequency maps to zero |
+| Encoded CFR frame | FrameIndex | Zero-based contiguous encoder PTS; -1 means no assigned frame |
+| Selection grid tick | GridTick | Legacy one-based tick: tick 1 is frame zero; distinct from FrameIndex |
+
+SubmissionTiming privately owns first-output source/audio anchors, both sampling cursors and their
+separate accepted elapsed values. Start/stop reset it as one operation. CommitFirst publishes the
+anchor before invoking the existing audio callback and admits that callback once, including reentry.
+SubmitAndCommit keeps failed/deferred candidates out of that operation; returned first commitment
+reflects the actual owner admission. Engine recordingStartTime remains the shared steady A/V epoch
+and is updated inside the admitted callback, at its original successful acceptance point.
+
+VFR sampling may advance on a rejected candidate under the original source-time policy. That is
+not an accepted video/audio commitment. Explicit WGC elapsed values remain authoritative even when
+below the sampling cursor; the scheduler owns their ordering. Stop/finalization reads the original
+sampling horizon, not a newly invented clock or shortened output duration. Inject commits encoded
+CFR duration; WGC commits its scheduled live value and pulls audio to encoded duration. No scheduler,
+frame copies, fence/lease policy, or descriptor/shared layout changed.
+
+Sources: common/capture/time_units.h and time_grid.h; mediaengine/engine/submission_timing.h,
+mediaengine_frame.cpp, mediaengine_timeline.cpp, mediaengine_recording_{start,stop}.cpp;
+video_encoder_finalize.cpp; media_main_encoder_{04_loop_wgc_target,08_loop_encode}.cpp.
+Tests: test_submission_timing.cpp (production owner + submission orchestration, controlled values),
+existing frame-grid/encoder source guards and ABI tests. The V1 result (40 bytes, alignment 8) and
+internal unit values were additionally syntax-compiled with the installed i686 cross-compiler.
+FirstVideoCommit logs distinguish raw QPC, source milliseconds and the 100 ns audio anchor; one
+entry per committed first output. Audio codecs/tracks, overload recordings and hardware sync remain
+user validation; these unit/layout checks cannot establish those outcomes.

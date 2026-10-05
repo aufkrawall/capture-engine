@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frame_submission_result.h"
+#include "submission_timing.h"
 
 class MediaEngine;
 
@@ -98,8 +99,6 @@ public:
         : recording(false),
           audioRunning(false),
           recordingStartTime(),
-          firstVideoFrameMs(0),
-          firstVideoFrameCommitted(false),
           lastVideoFrameMs(0),
           videoElapsedMs(0) {}~MediaEngine();
 
@@ -311,23 +310,20 @@ public:
     std::atomic<bool> audioStopDrainComplete{false};
     std::atomic<bool> audioFinalizingCfrStop{false};
     std::chrono::steady_clock::time_point recordingStartTime;  // CaptureEngine clock start time
-    int64_t firstVideoFrameMs;                                 // Timestamp of first video frame for A/V sync
-    bool firstVideoFrameCommitted;
+    ce::media::timing::SubmissionTiming submissionTiming;
     int64_t lastVideoFrameMs;                                  // Timestamp of last video frame for audio trimming
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
     std::atomic<int64_t> recordingStartSystemQpc100ns{0};      // Start time in 100-ns QPC units for packet stitching
     std::atomic<int64_t> wgcStartupExtraDelayQpc{0};           // WGC smoothness delay used for startup preservation
     std::atomic<bool> preservePendingStartupAudioPackets{false};
-    SourceTimelineState injectTimelineState;  // Source-frame QPC for inject-relative timing
-    SourceTimelineState d3d11TimelineState;   // Source-frame QPC for WGC-relative timing
 
     // Get current video elapsed time for audio clock compensation
     int64_t GetVideoElapsedMs() const;
     bool SessionUsesVfr() const;
     bool SessionUsesScreenGrab() const;
     int64_t GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const;
-    void CommitVideoElapsedUs(SourceTimelineState& timelineState, int64_t elapsedUs);
+    void CommitVideoElapsedUs(ce::media::timing::SourceClock source, ce::time::Microseconds elapsed);
     size_t GetBufferedTimelineSamples(const AudioSource& src) const;
     // Logs and reports sources that ran without their endpoint in this recording.
     bool AudioSourcesLostTheirDevice() const;

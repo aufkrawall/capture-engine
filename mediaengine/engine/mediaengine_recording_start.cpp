@@ -212,15 +212,12 @@ bool MediaEngine::StartRecording() {
 
             // CRITICAL: Reset video clock for new recording to prevent stale
             // timestamps
-            firstVideoFrameMs = 0;               // Reset for new recording
-            firstVideoFrameCommitted = false;
+            submissionTiming.Reset();
             videoElapsedMs.store(0);             // CRITICAL: Reset video clock for new recording
                                                  // to prevent stale timestamps
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
             recordingStartSystemQpc100ns.store(0);
             wgcStartupExtraDelayQpc.store(0, std::memory_order_release);
-            injectTimelineState.Reset();
-            d3d11TimelineState.Reset();
 
             // PULL MODEL: Reset audio encoding state for new recording.
             ResetAudioPullStateForRecording();
@@ -444,14 +441,12 @@ void MediaEngine::CancelUncommittedVideoRecording() {
         audioSyncPending.store(false, std::memory_order_release);
         audioFinalizingCfrStop.store(false, std::memory_order_release);
         preservePendingStartupAudioPackets.store(false, std::memory_order_release);
-        firstVideoFrameMs = 0;
-        firstVideoFrameCommitted = false;
+        submissionTiming.Reset();
         lastVideoFrameMs = 0;
         videoElapsedMs.store(0, std::memory_order_release);
         recordingStartSystemQPCMs.store(0, std::memory_order_release);
         recordingStartSystemQpc100ns.store(0, std::memory_order_release);
-        injectTimelineState.Reset();
-        d3d11TimelineState.Reset();
+
         timingModeFrozenForSession = false;
         activeScreenGrab = false;
 

@@ -39,14 +39,15 @@ int64_t MediaEngine::GetCommittedVideoElapsedUs(int64_t fallbackElapsedUs) const
 }
 
 
-void MediaEngine::CommitVideoElapsedUs(SourceTimelineState& timelineState,  int64_t elapsedUs) {
+void MediaEngine::CommitVideoElapsedUs(ce::media::timing::SourceClock source, ce::time::Microseconds elapsed) {
 
 
+        const int64_t elapsedUs = elapsed.count();
         if (elapsedUs < 0) {
             return;
         }
 
-        timelineState.lastElapsedUs = std::max(timelineState.lastElapsedUs, elapsedUs);
+        submissionTiming.CommitElapsed(source, elapsed);
         this->videoElapsedMs.store(elapsedUs / 1000);
         lastVideoFrameMs = elapsedUs / 1000;
 
@@ -107,7 +108,7 @@ bool MediaEngine::CanRepeatLastFrame() {
 
 
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        return videoEnc && recording && firstVideoFrameCommitted && videoEnc->CanRepeatLastFrame();
+        return videoEnc && recording && submissionTiming.HasFirstOutput() && videoEnc->CanRepeatLastFrame();
 
 }
 
