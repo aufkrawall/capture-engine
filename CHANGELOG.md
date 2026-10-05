@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Application profile maintenance:** isolated shared profile routing and matching definitions so per-application features can grow without expanding the main configuration header; existing profile behavior is preserved.
+
 - **Recording and overlay maintenance plan:** documented the completed refactor and a staged plan for remaining lifecycle, timing and build debt, with regression and hardware validation criteria.
 
 - **Project verification workflow:** agent guidance now requires declared tools and direct evidence of changed behavior or artifacts, with detailed procedures kept in the project wiki.

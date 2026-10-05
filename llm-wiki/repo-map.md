@@ -66,7 +66,7 @@ How to find code:
 
 | Dir | Owns |
 | --- | --- |
-| `config/` | config model and INI loader (`config_load_*` per section, `config_ini_reader`, text encoding), live-stream and face-camera config |
+| `config/` | config model (`application_profile.h` owns profile selectors/routing/matching) and INI loader (`config_load_*` per section, `config_ini_reader`, text encoding), live-stream and face-camera config |
 | `ipc/` | shared-memory ABI (`shared_defs.h` + `shared_defs_detail/`, ABI version in `abi_constants_and_config.h`), private IPC channels (`process_ipc*`), elevation protocol, display-timing and A/V-sync channels |
 | `capture/` | capture pipeline policy (`capture_policy/`, CFR grid, frame queue/timing, inject frame source/lease, retarget, reserved output, screen-grab privacy) |
 | `crash/` | crash handler, dump writer, first-chance records, symbol store, WER adoption |
