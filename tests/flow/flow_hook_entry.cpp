@@ -4,6 +4,7 @@
 // deterministic calls. The DLL never reaches a running CaptureEngine: no IPC, no discovery mapping, its own
 // log directory, and the host's never-activated window stands in for the foreground window.
 
+#include "common/logging/log_meter.h"
 #include "hook/d3d12/dx12_hook.h"
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "hook/overlay/custom_overlay_dx12.h"
@@ -12,6 +13,7 @@
 #include "hook/runtime/main_internal.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "tests/flow/flow_api.h"
+#include "tests/flow/runtime_output_frame_tracker.h"
 
 #include <mutex>
 
@@ -92,12 +94,11 @@ extern "C" __declspec(dllexport) void CEFlow_SetForegroundWindow(HWND window) {
 namespace {
 
 // The game frame of each frame generation runtime output against the frame CE attributed it to: one constant
-// offset per presenter.
+// offset per presenter lifetime; allocation addresses alone do not identify a lifetime.
 struct OutputFrameCheck {
     std::mutex mutex;
-    const void* presenter = nullptr;
-    bool haveOffset = false;
-    int64_t offset = 0;
+    ce::flow::RuntimeOutputFrameTracker tracker;
+    ce::log_meter::ChangeGate mismatchLog;
     uint64_t checks = 0;
     uint64_t mismatches = 0;
     uint64_t ownerViolations = 0;
@@ -105,7 +106,8 @@ struct OutputFrameCheck {
 
 }  // namespace
 
-extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* presenter, uint64_t frame) {
+extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime,
+                                                                       uint64_t frame) {
     DX12FFXOutputAttribution output;
     if (!DX12_PeekFFXOutputAttribution(&output)) {
         // Composed without passing CE's no-callback route at all - while AMD composes a frame only that route
@@ -121,10 +123,6 @@ extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* 
         return;
     }
     std::lock_guard<std::mutex> lock(g_OutputFrames.mutex);
-    if (presenter != g_OutputFrames.presenter) {
-        g_OutputFrames.presenter = presenter;
-        g_OutputFrames.haveOffset = false;
-    }
     const int64_t offset = static_cast<int64_t>(output.frame) - static_cast<int64_t>(frame);
     ++g_OutputFrames.checks;
     if (output.record.owner != ce::dx12_overlay_policy::FFXFrameOverlayOwner::kUnknown) {
@@ -138,17 +136,24 @@ extern "C" __declspec(dllexport) void CEFlow_NoteRuntimeOutputFrame(const void* 
                                                  : "without its owner's draw");
         }
     }
-    if (!g_OutputFrames.haveOffset) {
-        g_OutputFrames.haveOffset = true;
-        g_OutputFrames.offset = offset;
-    } else if (offset != g_OutputFrames.offset) {
+    const auto observation = g_OutputFrames.tracker.Observe(presenter, lifetime, offset);
+    const auto logVerdict = g_OutputFrames.mismatchLog.Observe(
+        ce::log_meter::FieldKey(lifetime, offset, g_OutputFrames.tracker.Offset()));
+    if (observation == ce::flow::RuntimeOutputFrameTracker::Observation::kFirstInLifetime) {
+        HookLogImportant("CEFlow: runtime presenter lifetime=%llu presenter=%p initialOffset=%lld",
+                         static_cast<unsigned long long>(lifetime), presenter, static_cast<long long>(offset));
+    } else if (observation == ce::flow::RuntimeOutputFrameTracker::Observation::kMismatch) {
         ++g_OutputFrames.mismatches;
-        HookLogImportant("CEFlow: runtime output of game frame %llu attributed to CE frame %llu (offset %lld, "
-                         "earlier outputs %lld; owner=%s topmostDrawn=%d)",
-                         static_cast<unsigned long long>(frame), static_cast<unsigned long long>(output.frame),
-                         static_cast<long long>(offset), static_cast<long long>(g_OutputFrames.offset),
-                         ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(output.record.owner),
-                         output.topmostDrawn ? 1 : 0);
+        if (logVerdict.log) {
+            HookLogImportant("CEFlow: runtime output of game frame %llu attributed to CE frame %llu (offset %lld, "
+                             "earlier outputs %lld; owner=%s topmostDrawn=%d lifetime=%llu mismatches=%llu)%s",
+                             static_cast<unsigned long long>(frame), static_cast<unsigned long long>(output.frame),
+                             static_cast<long long>(offset), static_cast<long long>(g_OutputFrames.tracker.Offset()),
+                             ce::dx12_overlay_policy::FFXFrameOverlayOwnerName(output.record.owner),
+                             output.topmostDrawn ? 1 : 0, static_cast<unsigned long long>(lifetime),
+                             static_cast<unsigned long long>(g_OutputFrames.mismatches),
+                             ce::log_meter::SuppressedNote(logVerdict.suppressed).c_str());
+        }
     }
 }
 

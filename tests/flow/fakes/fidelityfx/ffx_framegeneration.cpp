@@ -14,6 +14,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -36,6 +37,7 @@ using Microsoft::WRL::ComPtr;
 
 constexpr const char* kModule = "ffx_framegeneration";
 constexpr UINT kExtraRealBuffers = 1;
+std::atomic<uint64_t> g_presenterLifetime{0};
 
 struct FrameGenerationConfig {
     bool enabled = false;
@@ -99,8 +101,9 @@ public:
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
         presenter_ = std::thread([this] { PresenterLoop(); });
-        Log(kModule, "proxy swapchain %p over real %p (presentQueue=%p gameQueue=%p buffers=%u)", this, real_,
-            presentQueue_.Get(), gameQueue_.Get(), proxyBufferCount_);
+        Log(kModule, "proxy swapchain %p over real %p (presentQueue=%p gameQueue=%p buffers=%u lifetime=%llu)", this,
+            real_, presentQueue_.Get(), gameQueue_.Get(), proxyBufferCount_,
+            static_cast<unsigned long long>(presenterLifetime_));
     }
 
     ~FrameGenerationProxySwapChain() override {
@@ -377,7 +380,7 @@ private:
 
     // `scheduled`: an output of the presenter thread (a passthrough frame presents on the game thread).
     HRESULT PresentOutput(UINT syncInterval, UINT flags, uint64_t frame, bool scheduled) {
-        NoteRuntimeOutputFrame(this, frame);
+        NoteRuntimeOutputFrame(this, presenterLifetime_, frame);
         const HRESULT hr = real_->Present(syncInterval, flags);
         CountPhysicalPresent();
         if (!scheduled)
@@ -428,6 +431,7 @@ private:
     std::vector<ComPtr<ID3D12Resource>> realBuffers_;
     std::vector<ComPtr<ID3D12Resource>> proxyBuffers_;
     ComPtr<ID3D12Resource> interpolated_;
+    const uint64_t presenterLifetime_ = g_presenterLifetime.fetch_add(1, std::memory_order_relaxed) + 1;
     UINT proxyBufferCount_;
     UINT proxyIndex_ = 0;
     uint64_t framesPresented_ = 0;  // the game thread's

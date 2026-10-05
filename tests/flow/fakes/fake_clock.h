@@ -31,15 +31,15 @@ inline void AdvanceClock(int64_t microseconds) {
 }
 
 // A frame generation runtime about to present an output of the game's `frame`-th Present on `presenter`; the flow
-// entry compares it with the frame CE attributed the output to (CEFlowOverlayCoverage::outputFrameMismatches).
-inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t frame) {
-    using Note = void (*)(const void*, uint64_t);
+// entry compares it with CE's attributed frame within that presenter lifetime, even when addresses are reused.
+inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime, uint64_t frame) {
+    using Note = void (*)(const void*, uint64_t, uint64_t);
     static const Note note = [] {
         HMODULE hook = GetModuleHandleA("capture_hook_x64.dll");
         return hook ? reinterpret_cast<Note>(GetProcAddress(hook, "CEFlow_NoteRuntimeOutputFrame")) : nullptr;
     }();
     if (note)
-        note(presenter, frame);
+        note(presenter, lifetime, frame);
 }
 
 inline void CountPhysicalPresent() {

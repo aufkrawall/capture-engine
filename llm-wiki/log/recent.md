@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-05 - FG flow attribution distinguishes reused presenter addresses
+
+- The 0.1.6991 closing gate exposed a false GTA-style failure: the second FFX presenter reused its first
+  allocation address but began with frame offset 900 rather than 0; all 1200 later outputs were misclassified.
+- Fake presenters now supply lifetime IDs; the pure tracker keeps within-lifetime offset checks strict.
+  Address-reuse regression fails under the old comparison and passes after the fix; repeated mismatch logs are metered.
+- Source anchors and diagnostics: `debug-tools.md` "FG flow runtime-output attribution".
+
 ### 2026-10-05 - Remaining architecture debt plan
 
 - Refreshed temp/refactor.md and added the identical canonical architecture-debt-plan.md. Completed

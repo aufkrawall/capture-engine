@@ -17,6 +17,19 @@ log. Typical size: 20-35 KB for a 2-16 MB session. Narrow with `--pid`, `--since
 It reads both the current hook prefix and the pre-0.1.6946 one. Self-test: `--self-test` (runs in the
 Python tool self-tests).
 
+## FG flow runtime-output attribution
+
+`tests/flow/flow_hook_entry.cpp` checks a constant game-to-CE frame offset for each fake presenter
+lifetime. `tests/flow/fakes/fidelityfx/ffx_framegeneration.cpp` assigns a monotonic lifetime ID;
+`tests/flow/runtime_output_frame_tracker.h` checks it together with the presenter address.
+An allocator may reuse an FFX proxy address after a DLSS interval: in the 0.1.6991 GTA-style run,
+the second FFX proxy reused the first address with a valid offset of 900 instead of 0, causing
+1200 false mismatches. Pointer-only tracking confused two lifetimes. The deterministic address-reuse
+regression fails with the old comparison; offset changes within one lifetime still fail after the fix.
+`CEFlow: runtime presenter lifetime=` logs the initial offset once per lifetime; mismatch logs use
+`ChangeGate` with lifetime/observed/expected offsets, while total mismatch counts remain exact.
+These checks validate the WARP harness's attribution, not real-game pixels or hardware behavior.
+
 ## Tool/path resolution precedence
 
 On Windows, `tools/discover-debug-tools.ps1` is the shared non-mutating discovery helper. Its machine-local output is `debug-tool-manifest.json` (under `%LOCALAPPDATA%\LLMDebugTools` by default).
