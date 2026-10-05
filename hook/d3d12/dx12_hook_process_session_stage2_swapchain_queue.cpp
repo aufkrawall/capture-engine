@@ -56,7 +56,7 @@ if (processLogicalSwapchainReplacement) {
             preserveSwapchainQueue = dx12_hook_g_SwapchainQueue;
             preserveOriginalGameQueue = dx12_hook_g_OriginalGameQueue;
             preserveCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
-            preserveLastWorkingPostSLQueue = dx12_hook_g_PostSLLastWorkingQueue;
+            preserveLastWorkingPostSLQueue = g_PostSLQueues.LastDeviceHealthyQueue();
         }
         const bool postSLConfirmedForSwapchainChange = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
         const int postSLStableFramesForSwapchainChange = dx12_hook_g_PostSLStableFrameCount.load(std::memory_order_acquire);
@@ -262,8 +262,8 @@ if (processLogicalSwapchainReplacement) {
                     // The DLSS-G proxy renders the overlay on g_PostSLLastWorkingQueue
                     // (== scQueue), which persists across a suspend even when the live
                     // wrapper cmdQueue differs. Accept it as the confirmed PostSL queue.
-                    currentSwapchainQueue != nullptr && dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-                        currentSwapchainQueue == dx12_hook_g_PostSLLastWorkingQueue);
+                    currentSwapchainQueue != nullptr && g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
+                        currentSwapchainQueue == g_PostSLQueues.LastDeviceHealthyQueue());
             // DLSS-FG OFF over a runtime-owned (FSR-history) swapchain whose ownership latch is
             // stale: DLSS-PostSL was the actual presenter (change queue == g_PostSLLastWorkingQueue),
             // but the keep-alive could not arm (blocked by runtimeOwnedNativeFGPresentPath), so the
@@ -278,9 +278,9 @@ if (processLogicalSwapchainReplacement) {
                     g_FGCompat.IsFSRFGApiActive(),
                     dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                     ffxPresentCallbackActiveForDLSSOff, dx12_hook_g_FGRuntimeOwnsSwapchain,
-                    currentSwapchainQueue != nullptr && dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+                    currentSwapchainQueue != nullptr && g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
 
-                        currentSwapchainQueue == dx12_hook_g_PostSLLastWorkingQueue,
+                        currentSwapchainQueue == g_PostSLQueues.LastDeviceHealthyQueue(),
                     swapchainChangeDeviceRemoved);
             // The unguarded branch below ends the recovery in order with PostSL
             // retirement; a guarded change only defers the reinit, so a proven
@@ -378,8 +378,8 @@ if (processLogicalSwapchainReplacement) {
                 ID3D12CommandQueue* postSLLastWorkingQueue = nullptr;
                 {
                     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                    postSLLockedQueue = dx12_hook_g_PostSLLockedQueue;
-                    postSLLastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
+                    postSLLockedQueue = g_PostSLQueues.SelectedQueue();
+                    postSLLastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
                 }
                 const bool postSLRouteArmed =
                     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
@@ -486,11 +486,10 @@ gameQueue = nullptr;
     bool fsrFGNow = IsFSRFrameGenerationActive();
     ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
     ID3D12CommandQueue* currentPrimaryQueue = dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
-    const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
     const bool postFSRInactiveRecoveryPending =
         dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-        dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+        g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
         ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
     ID3D12CommandQueue* const interposerOutputQueue = DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
     const bool interposerPrivateChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
@@ -544,7 +543,7 @@ gameQueue = nullptr;
     } else {
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             dx12_hook_g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, dx12_hook_g_HadFSRFGPhase, dx12_hook_g_SwapchainQueue != nullptr,
-            dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, postFSRInactiveRecoveryPending,
+            dx12_hook_g_OriginalGameQueue != nullptr, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, postFSRInactiveRecoveryPending,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
             dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
@@ -595,14 +594,14 @@ gameQueue = nullptr;
             // During the explicit post-FSR inactive recovery epoch with
             // scQueue intentionally unset, reuse the last queue that already
             // proved it could render the still-live transition swapchain.
-            gameQueue = dx12_hook_g_PostSLLastWorkingQueue;
+            gameQueue = g_PostSLQueues.LastDeviceHealthyQueue();
             static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
             int logCount = s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: ProcessFrame — post-FSR inactive recovery epoch using preserved PostSL lastWorking "
                     "queue %p (cmdQ=%p origQ=%p primaryQ=%p recentTraffic=%d)",
-                    dx12_hook_g_PostSLLastWorkingQueue, currentCommandQueue, dx12_hook_g_OriginalGameQueue, currentPrimaryQueue,
+                    g_PostSLQueues.LastDeviceHealthyQueue(), currentCommandQueue, dx12_hook_g_OriginalGameQueue, currentPrimaryQueue,
                     lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
             }
         } else if (routingDecision ==
@@ -725,8 +724,8 @@ if (!gameQueue) {
             qPath = "scQueue(FSR-FG)";
         else if (fsrFGActive && gameQueue == dx12_hook_g_OriginalGameQueue)
             qPath = "origGame(FSR-FG-fallback)";
-        else if (!slFGNow && !fsrFGActive && dx12_hook_g_HadFSRFGPhase && !dx12_hook_g_SwapchainQueue && dx12_hook_g_PostSLLastWorkingQueue &&
-                 gameQueue == dx12_hook_g_PostSLLastWorkingQueue)
+        else if (!slFGNow && !fsrFGActive && dx12_hook_g_HadFSRFGPhase && !dx12_hook_g_SwapchainQueue && g_PostSLQueues.LastDeviceHealthyQueue() &&
+                 gameQueue == g_PostSLQueues.LastDeviceHealthyQueue())
             qPath = "lastWorking(post-FSR)";
         else if (!slFGNow && !fsrFGActive && dx12_hook_g_HadFSRFGPhase && !dx12_hook_g_SwapchainQueue && dx12_hook_g_OriginalGameQueue &&
                  gameQueue == dx12_hook_g_OriginalGameQueue)
@@ -749,7 +748,7 @@ if (!gameQueue) {
                 "path=%s) #%u%s",
                 gameQueue, slFGNow ? 1 : 0, fsrFGActive ? 1 : 0, dx12_hook_g_OriginalGameQueue,
                 dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), dx12_hook_g_SwapchainQueue,
-                (void*)g_CommandQueue.load(), dx12_hook_g_PostSLLastWorkingQueue, qPath, queueLogCount,
+                (void*)g_CommandQueue.load(), g_PostSLQueues.LastDeviceHealthyQueue(), qPath, queueLogCount,
                 ce::log_meter::SuppressedNote(queueVerdict.suppressed).c_str());
         }
     }

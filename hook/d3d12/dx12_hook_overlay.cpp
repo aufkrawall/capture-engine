@@ -57,13 +57,13 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         const bool postFSRInactiveRecoveryPending =
             dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-            dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+            g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
             ce::hook_clock::TickCount64() <
                 dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             dx12_hook_g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, dx12_hook_g_HadFSRFGPhase, dx12_hook_g_SwapchainQueue != nullptr,
-            dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, postFSRInactiveRecoveryPending,
+            dx12_hook_g_OriginalGameQueue != nullptr, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, postFSRInactiveRecoveryPending,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
             dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
             dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
@@ -83,14 +83,14 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-            queueForBackend = dx12_hook_g_PostSLLastWorkingQueue;
+            queueForBackend = g_PostSLQueues.LastDeviceHealthyQueue();
             static std::atomic<int> s_postFSRBackendLastWorkingRouteLogCount{0};
             int logCount = s_postFSRBackendLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: InitImGui — post-FSR inactive recovery epoch using preserved PostSL lastWorking queue %p "
                     "(cmdQ=%p origQ=%p primaryQ=%p recentTraffic=%d)",
-                    dx12_hook_g_PostSLLastWorkingQueue, currentCommandQueue, dx12_hook_g_OriginalGameQueue, currentPrimaryQueue,
+                    g_PostSLQueues.LastDeviceHealthyQueue(), currentCommandQueue, dx12_hook_g_OriginalGameQueue, currentPrimaryQueue,
                     lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
             }
         } else if (routingDecision ==
@@ -137,7 +137,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         "[Overlay] DX12: InitImGui backend queue=%p (origQ=%p, primaryQ=%p, scQueue=%p, cmdQueue=%p, "
         "lastWorkingQ=%p, slFG=%d, fgCooldown=%d)",
         queueForBackend, dx12_hook_g_OriginalGameQueue, dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), dx12_hook_g_SwapchainQueue,
-        (void*)g_CommandQueue.load(), dx12_hook_g_PostSLLastWorkingQueue,
+        (void*)g_CommandQueue.load(), g_PostSLQueues.LastDeviceHealthyQueue(),
         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0,
         dx12_hook_g_FGTransitionCooldown.load(std::memory_order_acquire));
 

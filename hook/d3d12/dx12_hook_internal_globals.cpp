@@ -20,6 +20,8 @@ DX12PostSLRuntimeState g_DX12PostSLRuntime;
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - mutex constructor is noexcept on this toolchain
 ce::dx12::PostSLLifecycle g_PostSLLifecycle;
 
+PostSLQueueOwner g_PostSLQueues(g_CommandQueueMutex);
+
 thread_local uint64_t dx12_hook_s_PostSLSuccessfulSubmitSequence = 0;
 
 std::atomic<ULONGLONG> dx12_hook_g_LastProcessFrameTickMs{0};
@@ -62,7 +64,6 @@ std::atomic<uint32_t> dx12_hook_g_OuterSLTransitionEpoch{0};
 
 std::atomic<bool> dx12_hook_g_OuterTrackedSLFGRunning{false};
 
-ID3D12CommandQueue* dx12_hook_g_PostSLLockedQueue = nullptr;
 
 std::atomic<bool> dx12_hook_g_HadFSRFGPhase{false};
 
@@ -84,9 +85,7 @@ std::atomic<int> dx12_hook_g_PostFSRProbeFrames{0};
 
 bool dx12_hook_g_PostFSRDescFreeRecreated = false;
 
-ID3D12CommandQueue* dx12_hook_g_PostSLDedicatedQueue = nullptr;
 
-ID3D12CommandQueue* dx12_hook_g_PostSLLastWorkingQueue = nullptr;
 
 std::atomic<int> dx12_hook_g_SceneTransitionCooldown{0};
 
@@ -207,19 +206,16 @@ std::atomic<DWORD> dx12_hook_g_GamePresentThreadId{0};
 
 std::atomic<ID3D12CommandQueue*> dx12_hook_g_SLWrapperQueue{nullptr};
 
-ID3D12CommandQueue* dx12_hook_g_PostSLPinnedSLWrapperQueue = nullptr;
 
 std::atomic<ID3D12CommandQueue*> dx12_hook_g_RealQueueBehindSLWrapper{nullptr};
 
 
 
-std::atomic<bool> dx12_hook_g_PostSLDeferredQueueCleanupPending{false};
 
 std::atomic<bool> dx12_hook_g_SafePostFSRRuntimeOwnedSwapchainBootstrapLogged{false};
 
 std::atomic<ID3D12CommandQueue*> dx12_hook_g_DeferredCommandQueueRelease{nullptr};
 
-std::atomic<ID3D12CommandQueue*> dx12_hook_g_DeferredPostSLLockedQueueRelease{nullptr};
 
 std::atomic<ULONGLONG> dx12_hook_g_PostSLRecentTeardownActivityUntilMs{0};
 

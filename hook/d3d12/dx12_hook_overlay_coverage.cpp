@@ -458,14 +458,3 @@ dx12_hook_g_QueueChangeHeuristicAuthoritativeBaseline.store(authoritativeBaselin
 dx12_hook_g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
 dx12_hook_g_ResetECLPatternHeuristic.store(true, std::memory_order_release);
 }
-
-
-void SetPostSLLastWorkingQueue(ID3D12CommandQueue* queue) {
-if (queue == dx12_hook_g_PostSLLastWorkingQueue)
-    return;
-if (queue)
-    queue->AddRef();
-if (dx12_hook_g_PostSLLastWorkingQueue)
-    dx12_hook_g_PostSLLastWorkingQueue->Release();
-dx12_hook_g_PostSLLastWorkingQueue = queue;
-}

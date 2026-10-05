@@ -69,14 +69,14 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(), streamlineFGRunning,
     currentSwapchainQueue != nullptr);
 const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-    dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+    g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
     ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
         recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
         pQueue == primaryQ, pQueue == dx12_hook_g_OriginalGameQueue, pQueue == currentSwapchainQueue,
-        pQueue == dx12_hook_g_PostSLLastWorkingQueue)) {
+        pQueue == g_PostSLQueues.LastDeviceHealthyQueue())) {
     if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
-            recentStreamlineTeardown, dx12_hook_g_PostSLLastWorkingQueue && pQueue == dx12_hook_g_PostSLLastWorkingQueue,
+            recentStreamlineTeardown, g_PostSLQueues.LastDeviceHealthyQueue() && pQueue == g_PostSLQueues.LastDeviceHealthyQueue(),
             streamlineFGRunning, postSLActive)) {
         MarkPostSLRecentTeardownActivity("DX12: SetCommandQueue recent PostSL teardown activity", pQueue);
     }
@@ -414,8 +414,8 @@ ID3D12CommandQueue* lockedQueue = nullptr;
 ID3D12CommandQueue* lastWorkingQueue = nullptr;
 {
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-    lockedQueue = dx12_hook_g_PostSLLockedQueue;
-    lastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
+    lockedQueue = g_PostSLQueues.SelectedQueue();
+    lastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
 }
 
 const bool postSLConfirmedRendering = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_acquire);
@@ -461,7 +461,7 @@ if (clearLastWorking) {
         "DX12: Fresh authoritative Streamline handoff cleared stale PostSL lastWorking queue %p "
         "(newScQueue=%p prevScQueue=%p origGame=%p)",
         lastWorkingQueue, newSwapchainQueue, previousSwapchainQueue, originalGameQueue);
-    SetPostSLLastWorkingQueue(nullptr);
+    g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);
 }
 
 bool overlayWasLive = false;
@@ -540,7 +540,7 @@ return g_PostSLLifecycle.FinishRetirement([&] {
     dx12_hook_g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
     dx12_hook_g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
     ResetPostSLLifecycleForTransition(reason, true);
-    SetPostSLLastWorkingQueue(nullptr);
+    g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);
     ReleaseStreamlineStartupActivationSwapchain(reason);
 
     if (dx12_hook_g_State.overlayInit || dx12_hook_g_State.syncInit) {
@@ -603,8 +603,8 @@ ID3D12CommandQueue* lockedQueue = nullptr;
 ID3D12CommandQueue* lastWorkingQueue = nullptr;
 {
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-    lockedQueue = dx12_hook_g_PostSLLockedQueue;
-    lastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
+    lockedQueue = g_PostSLQueues.SelectedQueue();
+    lastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
 }
 const bool routeArmed = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
                         dx12_hook_g_PostSLOverlayActive.load(std::memory_order_acquire) ||

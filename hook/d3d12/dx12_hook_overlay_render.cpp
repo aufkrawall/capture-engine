@@ -289,7 +289,7 @@ if (ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapcha
         HookLogImportant(
             "DX12: PostSL explicit-OFF keep-alive rejected an unproven swapchain "
             "(current=%p lastSuccessful=%p lastWorkingQueue=%p lockedQueue=%p log=%d)",
-            pSwapChain, lastSuccessfulPostSLSwapchain, dx12_hook_g_PostSLLastWorkingQueue, dx12_hook_g_PostSLLockedQueue, logCount + 1);
+            pSwapChain, lastSuccessfulPostSLSwapchain, g_PostSLQueues.LastDeviceHealthyQueue(), g_PostSLQueues.SelectedQueue(), logCount + 1);
     }
     return;
 }

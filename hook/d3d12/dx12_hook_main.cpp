@@ -218,9 +218,9 @@ static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* ou
         view.currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         view.slWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
         view.realQueueBehindWrapper = dx12_hook_g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
-        view.postSLLockedQueue = dx12_hook_g_PostSLLockedQueue;
-        view.postSLLastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
-        view.postSLDedicatedQueue = dx12_hook_g_PostSLDedicatedQueue;
+        view.postSLLockedQueue = g_PostSLQueues.SelectedQueue();
+        view.postSLLastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
+        view.postSLDedicatedQueue = g_PostSLQueues.DedicatedQueue();
         view.realECL = reinterpret_cast<void*>(dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire));
         view.runtimeOwnsSwapchain = dx12_hook_g_FGRuntimeOwnsSwapchain;
     }
@@ -479,13 +479,7 @@ void DX12Hook::Shutdown() {
         dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
     }
     ReleaseParkedCreateSwapchains("DX12: Shutdown");
-    dx12_hook_g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
-    ClearPostSLQueues("DX12: Shutdown");
-    ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");
-    SetPostSLLastWorkingQueue(nullptr);
-    if (auto* deferredLockedQueue = dx12_hook_g_DeferredPostSLLockedQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
-        deferredLockedQueue->Release();
-    }
+    g_PostSLQueues.Shutdown([](ID3D12CommandQueue* queue, const char*) { queue->Release(); });
     if (g_CommandQueue.load()) {
         g_CommandQueue.load()->Release();
         g_CommandQueue.store(nullptr);

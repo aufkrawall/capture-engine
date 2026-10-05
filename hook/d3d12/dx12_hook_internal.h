@@ -468,7 +468,6 @@ void LogOverlayCoverageSummary(const char* edge);
 // swapchain); two such draws in one present window are no double draw.
 void NoteDX12OverlayRendered(DX12OverlayRenderRoute route, bool frameAttributed = false);
 void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr);
-void SetPostSLLastWorkingQueue(ID3D12CommandQueue* queue);
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode = false);
 bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORMAT format, const char* context);
 void EnsureOverlayBreadcrumbBuffer(ID3D12Device* device);
@@ -522,8 +521,6 @@ void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain = false);
 void ClearPostSLPinnedSLWrapperQueue(const char* reason);
-void DetachPostSLQueuesLocked(ID3D12CommandQueue** lockedQueueOut, ID3D12CommandQueue** dedicatedQueueOut);
-void ReleaseDetachedPostSLQueues(const char* reason, ID3D12CommandQueue* lockedQueue, ID3D12CommandQueue* dedicatedQueue);
 void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQueue* queue);
 void InvalidateAllOverlayCachedFrames();
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain);

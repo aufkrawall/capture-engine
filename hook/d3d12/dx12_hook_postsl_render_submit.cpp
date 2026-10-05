@@ -446,6 +446,7 @@ if (dx12_hook_g_State.fence) {
     HRESULT sigHr = submitQueue->Signal(dx12_hook_g_State.fence, next);
     if (SUCCEEDED(sigHr)) {
         dx12_hook_g_State.currentFenceValue = next;
+        g_PostSLQueues.ObserveRetiringSubmission(dx12_hook_g_State.fence, next);
         if (idx >= 0 && idx < (int)dx12_hook_g_State.fenceValues.size())
             dx12_hook_g_State.fenceValues[idx] = next;
 
@@ -594,10 +595,10 @@ if (runtimeStateStabilizing && !runtimeStateStabilizingPreviousFrame) {
         stableFrameCount, runtimeStateStabilizationLastFrame, extendRuntimeStateStabilization ? 1 : 0,
         s_reactivationEpoch);
 }
-if (SUCCEEDED(postDevReason) && submittedQueue != dx12_hook_g_PostSLLastWorkingQueue &&
+if (SUCCEEDED(postDevReason) && submittedQueue != g_PostSLQueues.LastDeviceHealthyQueue() &&
     ce::dx12_overlay_policy::ShouldRememberPostSLLastWorkingQueue(isSLWrapperQ)) {
-    HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", dx12_hook_g_PostSLLastWorkingQueue, submittedQueue);
-    SetPostSLLastWorkingQueue(submittedQueue);
+    HookLogImportant("DX12: PostSL updating lastWorkingQueue %p -> %p", g_PostSLQueues.LastDeviceHealthyQueue(), submittedQueue);
+    g_PostSLQueues.RememberDeviceHealthySubmission(submittedQueue);
 }
 // First 20 submits, every 600th, every change of the submit route (queue, ECL path, thread,
 // epoch) and every device failure. bufIdx is left out of the route key: it rotates every frame.

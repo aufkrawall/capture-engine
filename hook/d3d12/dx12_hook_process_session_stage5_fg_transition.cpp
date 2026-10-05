@@ -224,7 +224,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                 HookLogImportant(
                     "DX12: [outer] FG->off — preserving exact confirmed PostSL proxy resources "
                     "(proxy=%p queue=%p; no drain/reinit/copy/wait)",
-                    lastSuccessfulPostSLSwapchain, dx12_hook_g_PostSLLastWorkingQueue);
+                    lastSuccessfulPostSLSwapchain, g_PostSLQueues.LastDeviceHealthyQueue());
             } else if (keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
                 HookLogImportant(
                     "DX12: [outer] FG->off — DLSS->FSR no-callback takeover keeps its freshly reinited overlay; "

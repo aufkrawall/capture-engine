@@ -72,7 +72,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(), streamlineFGRunning,
     currentSwapchainQueue != nullptr);
 const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
-    dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+    g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
     ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 if (ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
         postFSRNonFGRecovery, false, postSLLastWorkingQueueStillActiveDuringRecentTeardown)) {
@@ -364,7 +364,7 @@ if (ce::dx12_overlay_policy::ShouldUsePrimaryQueueForFrameClassificationDuringPo
         HookLogImportant(
             "DX12: Frame classification using primary queue %p during post-FSR non-FG recovery "
             "(origGame=%p scQ=%p lastWorking=%p offscreen=%d)",
-            primaryQueue, originalQueue, swapchainQueue, dx12_hook_g_PostSLLastWorkingQueue,
+            primaryQueue, originalQueue, swapchainQueue, g_PostSLQueues.LastDeviceHealthyQueue(),
             dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG ? 1 : 0);
     }
     return primaryQueue;

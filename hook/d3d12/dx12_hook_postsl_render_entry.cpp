@@ -439,7 +439,7 @@ ID3D12CommandQueue* warmupLastWorkingQueue = nullptr;
 {
     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
     warmupSwapchainQueue = dx12_hook_g_SwapchainQueue;
-    warmupLastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
+    warmupLastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
 }
 const bool confirmedPureStreamlineResumeWarmupProof =
     ce::dx12_overlay_policy::HasConfirmedPureStreamlinePostSLResumeProof(

@@ -622,7 +622,7 @@ TEST(DXGISharedSourceTest, WarmResumeRestoresReleasedPostSLProxyBeforeStaleFSRCl
     const size_t restoreRegionEnd = text.find("HookLogImportant(", restorePolicy);
     ASSERT_NE(restoreRegionEnd, std::string::npos);
     const size_t queueStore =
-        text.find("dx12_hook_g_SwapchainQueue = dx12_hook_g_PostSLLastWorkingQueue;", restorePolicy);
+        text.find("dx12_hook_g_SwapchainQueue = g_PostSLQueues.LastDeviceHealthyQueue();", restorePolicy);
     const size_t queueAddRef = text.find("dx12_hook_g_SwapchainQueue->AddRef();", restorePolicy);
     const size_t captureStore = text.find("dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(", restorePolicy);
     const size_t ownershipStore = text.find("dx12_hook_g_FGRuntimeOwnsSwapchain = true;", restorePolicy);

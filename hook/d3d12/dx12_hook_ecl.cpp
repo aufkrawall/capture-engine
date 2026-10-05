@@ -523,7 +523,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG, actualFGActive, streamlineFGRunning,
             dx12_hook_g_SwapchainQueue != nullptr);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-            dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+            g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
             ce::hook_clock::TickCount64() <
                 dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 
@@ -633,9 +633,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         if (ce::dx12_overlay_policy::ShouldIgnoreCommandQueueRegistrationAfterRecentStreamlineTeardown(
                 recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
                 pThis == primaryQ, pThis == dx12_hook_g_OriginalGameQueue, pThis == dx12_hook_g_SwapchainQueue,
-                pThis == dx12_hook_g_PostSLLastWorkingQueue)) {
+                pThis == g_PostSLQueues.LastDeviceHealthyQueue())) {
             if (ce::dx12_overlay_policy::ShouldRefreshRecentPostSLTeardownActivity(
-                    recentStreamlineTeardown, dx12_hook_g_PostSLLastWorkingQueue && pThis == dx12_hook_g_PostSLLastWorkingQueue,
+                    recentStreamlineTeardown, g_PostSLQueues.LastDeviceHealthyQueue() && pThis == g_PostSLQueues.LastDeviceHealthyQueue(),
                     streamlineFGRunning, postSLActive)) {
                 MarkPostSLRecentTeardownActivity("DX12: ECL recent PostSL teardown activity", pThis);
             }

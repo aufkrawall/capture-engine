@@ -250,7 +250,7 @@ The old queueReleaseGuard and slWrapperQueueReleaseGuard were local to Chunk1 an
 Chunk2/3 used the queue pointers. Moving their lifetime is a root-cause correction justified by the
 production resource-transaction tests, rather than blanket retention of swapchain backbuffers. The
 backbuffer's existing normal release point is unchanged. Global selected/pinned/last-working queue
-retirement still needs its separate owner migration; this callback lease cannot replace GPU completion.
+retirement is owned separately below; this callback lease cannot replace GPU completion.
 
 Callback admission captures its epoch before checking enabled execution. That epoch is carried to
 PostSLRenderSession; RenderTransaction rejects it if it differs from the current epoch after acquiring
@@ -264,3 +264,34 @@ releases exactly once, replacements and alias roles balance, stale admission acq
 test_postsl_lifecycle.cpp additionally covers admission delayed until after replacement. Syntax checks
 compile the real hook consumers. All FG flow scenarios and both product architectures are required
 for the closing gate; real vendor/game lifetime and hardware performance remain user validation.
+
+## PostSL queue selection and deferred retirement (implemented)
+
+PostSLQueueOwner privately owns selected, pinned-wrapper, last-device-healthy and deferred queue
+references. Identity observations are atomic borrowed values, protected for dereference by the
+existing command-queue mutex or an admitted callback lease. Several observations do not form a
+snapshot. ReplaceSelection retains before publication and returns a private retired-reference
+lifetime, preserving the original explicit release outside the queue lock. Healthy submission and
+pinning deduplicate their own reference roles; aliased roles still own separate COM references.
+
+Retirement records fence/value evidence under the existing overlay-to-command-queue lock order.
+Fence references survive replacement of overlay state. A callback outlasting the existing bounded
+drain extends the retirement target at its successful signal publication; the ordinary path performs
+only pending-state atomic checks, without COM retention or allocation. Timeout is not proof of GPU
+completion. Selected/pinned references with incomplete evidence remain owned until callbacks drain
+and every retained fence reaches its target. Selected queues entering the established deferred slot
+are released on the next cleanup pass, preserving that release point. Explicit hook shutdown drains
+all remaining owner roles idempotently; it retains the existing unload authority and bounded waits.
+
+The previous six queue globals and SetPostSLLastWorkingQueue/DetachPostSLQueuesLocked helpers are
+removed. Existing queue policy, specialized runtime/normal-route queue ownership, overlay resources,
+settings and visible FG state remain separate. No new frame copies, ordinary-frame allocation or
+virtual adapter dispatch is introduced. GPU evidence checks/retention occur during pending retirement.
+
+Sources: hook/d3d12/postsl_queue_owner.h; dx12_hook_postsl_queue.cpp, postsl_render_gate.cpp and
+postsl_render_submit.cpp (dx12_hook_ prefix); dx12_hook_main.cpp shutdown. Tests:
+tests/test_postsl_queue_owner.cpp executes the production owner with counted queue/fence adapters,
+covering replacement/release boundaries, aliased roles, incomplete fences, delayed final submission,
+replacement fences, callback-spanning retirement, runtime reactivation and repeated cleanup/unload.
+Native regressions, real-hook WARP FG flows and the product/package gate remain the automated gate;
+real vendor/game transitions and hardware performance remain user validation. Last verified: 2026-10-05.

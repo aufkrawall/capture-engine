@@ -301,7 +301,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                 postSLConfirmedRendering, postSLConfirmedButStartupSettling);
         const bool suppressSceneCooldownForStablePostSLGap =
             ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownForStablePostSLGap(
-                currentSLFGRunning, postSLConfirmedRendering, dx12_hook_g_PostSLLastWorkingQueue != nullptr,
+                currentSLFGRunning, postSLConfirmedRendering, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr,
                 DXGIShared::g_SharedState.swapchainInvalid.load(std::memory_order_acquire),
                 dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire));
 
@@ -326,7 +326,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                     HookLogImportant(
                         "DX12: Suppressing scene transition cooldown after stable PostSL gap "
                         "(gap=%.0fms lastWorkingQ=%p)",
-                        deltaMs, dx12_hook_g_PostSLLastWorkingQueue);
+                        deltaMs, g_PostSLQueues.LastDeviceHealthyQueue());
                 }
             } else {
                 int cooldown = 30;
@@ -450,7 +450,6 @@ return ProcessFrameFlow::kSkipOverlayDraw;
     bool postSLConfirmed = dx12_hook_g_PostSLConfirmedRendering.load(std::memory_order_relaxed);
     auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed);
     int stallCount = dx12_hook_g_PostSLStallCounter.load(std::memory_order_relaxed);
-    constexpr int kPreSLFallbackThreshold = 5;
 
     if (slFGNow && !postSLConfirmed) {
         // SL FG active, PostSL never confirmed yet (FG STARTUP, not suspension).

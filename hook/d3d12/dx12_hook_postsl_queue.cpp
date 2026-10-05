@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "common/logging/log_meter.h"
 
 
 void WaitForInFlightPostSLCallbacks(const char* reason) {
@@ -45,112 +46,55 @@ CloseHandle(drainEvent);
 }
 
 
+namespace {
+void ReleaseRetiredPostSLQueue(ID3D12CommandQueue* queue, const char* role, const char* reason) {
+    HookLogImportant("[PostSLLifecycle] queue=release role=%s queue=%p epoch=%u reason=%s", role, queue,
+                     g_PostSLLifecycle.Epoch(), reason);
+    queue->Release();
+}
+void RecordPostSLRetirementWork() {
+    std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
+    g_PostSLQueues.RecordRetirementWork(dx12_hook_g_State.fence, dx12_hook_g_State.currentFenceValue);
+}
+}  // namespace
+
 void ClearPostSLPinnedSLWrapperQueue(const char* reason) {
-ID3D12CommandQueue* oldPinnedWrapperQueue = nullptr;
-{
-    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-    oldPinnedWrapperQueue = dx12_hook_g_PostSLPinnedSLWrapperQueue;
-    dx12_hook_g_PostSLPinnedSLWrapperQueue = nullptr;
+    auto retired = g_PostSLQueues.DetachPinnedWrapper();
+    if (retired.Borrow()) {
+        HookLogImportant("%s — releasing PostSL pinned SL wrapper queue %p", reason, retired.Borrow());
+        retired.Release();
+    }
 }
-
-if (oldPinnedWrapperQueue) {
-    HookLogImportant("%s — releasing PostSL pinned SL wrapper queue %p", reason, oldPinnedWrapperQueue);
-    oldPinnedWrapperQueue->Release();
-}
-}
-
-
-void DetachPostSLQueuesLocked(ID3D12CommandQueue** lockedQueueOut, ID3D12CommandQueue** dedicatedQueueOut) {
-if (lockedQueueOut) {
-    *lockedQueueOut = nullptr;
-}
-if (dedicatedQueueOut) {
-    *dedicatedQueueOut = nullptr;
-}
-
-std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-if (lockedQueueOut) {
-    *lockedQueueOut = dx12_hook_g_PostSLLockedQueue;
-}
-if (dedicatedQueueOut) {
-    *dedicatedQueueOut = dx12_hook_g_PostSLDedicatedQueue;
-}
-dx12_hook_g_PostSLLockedQueue = nullptr;
-dx12_hook_g_PostSLDedicatedQueue = nullptr;
-}
-
-
-void ReleaseDetachedPostSLQueues(const char* reason, ID3D12CommandQueue* lockedQueue, ID3D12CommandQueue* dedicatedQueue) {
-if (lockedQueue) {
-    HookLogImportant("%s — releasing PostSL locked queue %p", reason, lockedQueue);
-    lockedQueue->Release();
-}
-
-if (dedicatedQueue) {
-    HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, dedicatedQueue);
-    dedicatedQueue->Release();
-}
-}
-
 
 void ClearPostSLQueues(const char* reason) {
-ID3D12CommandQueue* oldLockedQueue = nullptr;
-ID3D12CommandQueue* oldDedicatedQueue = nullptr;
-DetachPostSLQueuesLocked(&oldLockedQueue, &oldDedicatedQueue);
-ReleaseDetachedPostSLQueues(reason, oldLockedQueue, oldDedicatedQueue);
+    const bool released = g_PostSLQueues.ClearSelection([&](ID3D12CommandQueue* queue, const char* role) {
+        ReleaseRetiredPostSLQueue(queue, role, reason);
+    });
+    if (!released) {
+        static ce::log_meter::ChangeGate retirementGate;
+        const auto epoch = g_PostSLLifecycle.Epoch();
+        const auto verdict = retirementGate.Observe(ce::log_meter::FieldKey(epoch));
+        if (verdict) {
+            HookLogImportant("[PostSLLifecycle] queues=deferred epoch=%u reason=gpu-incomplete transition=%s%s",
+                epoch, reason, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
 }
-
 
 void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
-ID3D12CommandQueue* deferredLockedQueue =
-    dx12_hook_g_DeferredPostSLLockedQueueRelease.exchange(nullptr, std::memory_order_acq_rel);
-if (deferredLockedQueue) {
-    HookLogImportant("%s - releasing deferred PostSL locked queue %p", reason, deferredLockedQueue);
-    deferredLockedQueue->Release();
-}
-
-ID3D12CommandQueue* deferredCommandQueue =
-    dx12_hook_g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel);
-if (deferredCommandQueue) {
-    HookLogImportant("%s - releasing deferred stale command queue %p", reason, deferredCommandQueue);
-    deferredCommandQueue->Release();
-}
-
-if (!dx12_hook_g_PostSLDeferredQueueCleanupPending.load(std::memory_order_acquire)) {
-    return;
-}
-
-if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
-    return;
-}
-
-if (g_PostSLLifecycle.CallbacksInFlight() != 0) {
-    return;
-}
-
-if (!dx12_hook_g_PostSLDeferredQueueCleanupPending.exchange(false, std::memory_order_acq_rel)) {
-    return;
-}
-
-ID3D12CommandQueue* oldLockedQueue = nullptr;
-ID3D12CommandQueue* oldDedicatedQueue = nullptr;
-DetachPostSLQueuesLocked(&oldLockedQueue, &oldDedicatedQueue);
-
-if (oldLockedQueue) {
-    ID3D12CommandQueue* previouslyDeferred =
-        dx12_hook_g_DeferredPostSLLockedQueueRelease.exchange(oldLockedQueue, std::memory_order_acq_rel);
-    if (previouslyDeferred) {
-        HookLogImportant("%s - releasing superseded deferred PostSL locked queue %p", reason, previouslyDeferred);
-        previouslyDeferred->Release();
+    const bool runtimeActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const uint32_t callbacks = g_PostSLLifecycle.CallbacksInFlight();
+    if (g_PostSLQueues.RetirementPending() && !runtimeActive && callbacks == 0) {
+        // Refresh the final value after a callback that outlasted the bounded drain.
+        RecordPostSLRetirementWork();
     }
-    HookLogImportant("%s - deferred PostSL locked queue release %p", reason, oldLockedQueue);
-}
-if (oldDedicatedQueue) {
-    HookLogImportant("%s — releasing PostSL dedicated queue %p", reason, oldDedicatedQueue);
-    oldDedicatedQueue->Release();
-}
-
-RealignInactiveCommandQueueToSwapchainQueue(reason);
+    const bool retiredSelection = g_PostSLQueues.CleanupDeferred(runtimeActive, callbacks,
+        [&](ID3D12CommandQueue* queue, const char* role) { ReleaseRetiredPostSLQueue(queue, role, reason); });
+    if (auto* deferredCommandQueue = dx12_hook_g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
+        HookLogImportant("%s - releasing deferred stale command queue %p", reason, deferredCommandQueue);
+        deferredCommandQueue->Release();
+    }
+    if (retiredSelection) RealignInactiveCommandQueueToSwapchainQueue(reason);
 }
 
 
@@ -186,10 +130,10 @@ dx12_hook_g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_relea
 if (deferQueueReleaseUntilCallbacksDrain) {
     SetPostSLCallbackInstalled(false, reason);
     WaitForInFlightPostSLCallbacks(reason);
+    RecordPostSLRetirementWork();
     WaitForOverlayGpuIdle(reason);
-    dx12_hook_g_PostSLDeferredQueueCleanupPending.store(true, std::memory_order_release);
+    g_PostSLQueues.DeferSelectionRetirement();
 } else {
-    dx12_hook_g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
     ClearPostSLQueues(reason);
 }
 

@@ -333,7 +333,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
     const size_t exactQueueSelection =
         text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", postSLRender);
     const size_t staleLockedQueueFallback =
-        text.find("} else if (dx12_hook_g_PostSLLockedQueue) {", exactQueueSelection);
+        text.find("} else if (g_PostSLQueues.SelectedQueue()) {", exactQueueSelection);
     ASSERT_NE(postSLRender, std::string::npos);
     ASSERT_NE(exactQueueSelection, std::string::npos);
     ASSERT_NE(staleLockedQueueFallback, std::string::npos);

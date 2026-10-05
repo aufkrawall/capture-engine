@@ -14,7 +14,7 @@ void DX12_OnSwapchainResizeBegin() {
     dx12_hook_g_PostSLWarmResumePreservationPending.store(false, std::memory_order_release);
     ReleaseStreamlineStartupActivationSwapchain("DX12: swapchain resize");
     ResetPostSLLifecycleForTransition("DX12: swapchain resize", true);
-    SetPostSLLastWorkingQueue(nullptr);  // Swapchain resize — rendering setup changed
+    g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);  // Swapchain resize — rendering setup changed
     // Prevent recursion - if already in resize, return immediately
     if (wasAlreadySet) {
         HookLog(
@@ -79,8 +79,8 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapCha
     ID3D12CommandQueue* lockedQueue = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-        lastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
-        lockedQueue = dx12_hook_g_PostSLLockedQueue;
+        lastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
+        lockedQueue = g_PostSLQueues.SelectedQueue();
     }
 
     const bool callbackInstalled =

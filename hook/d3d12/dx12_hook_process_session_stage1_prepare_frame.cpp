@@ -353,8 +353,8 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
             std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
             recoverySwapchainQueue = dx12_hook_g_SwapchainQueue;
             recoveryOriginalGameQueue = dx12_hook_g_OriginalGameQueue;
-            recoveryPostSLLastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
-            recoveryPostSLLockedQueue = dx12_hook_g_PostSLLockedQueue;
+            recoveryPostSLLastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
+            recoveryPostSLLockedQueue = g_PostSLQueues.SelectedQueue();
             queueAssociatedSwapchain = dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire);
         }
 

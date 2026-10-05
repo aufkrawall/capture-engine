@@ -462,7 +462,7 @@ const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecover
     currentSwapchainQueue != nullptr);
 const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
 const bool postSLLastWorkingQueueStillActiveDuringRecentTeardown =
-    dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+    g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
     ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
 const bool suppressHeuristicFSRActivationDuringPostFSRNonFGRecovery =
     ce::dx12_overlay_policy::ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(

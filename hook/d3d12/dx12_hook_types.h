@@ -1,6 +1,7 @@
 #pragma once
 
 #include "postsl_lifecycle.h"
+#include "postsl_queue_owner.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -446,6 +447,8 @@ struct DX12PostSLRuntimeState {
 };
 extern DX12PostSLRuntimeState g_DX12PostSLRuntime;
 extern ce::dx12::PostSLLifecycle g_PostSLLifecycle;
+using PostSLQueueOwner = ce::dx12::PostSLQueueOwner<ID3D12CommandQueue, ID3D12Fence>;
+extern PostSLQueueOwner g_PostSLQueues;
 
 inline std::atomic<bool>& dx12_hook_g_PostSLOverlayActive = g_DX12PostSLRuntime.active;
 inline std::atomic<int>& dx12_hook_g_PostSLCooldownRemaining = g_DX12PostSLRuntime.cooldownRemaining;
@@ -496,7 +499,6 @@ extern std::atomic<int> dx12_hook_g_SLOffSwapchainReinitGrace;
 extern std::atomic<bool> dx12_hook_g_ResetReinitSubmitCounter;
 extern std::atomic<uint32_t> dx12_hook_g_OuterSLTransitionEpoch;
 extern std::atomic<bool> dx12_hook_g_OuterTrackedSLFGRunning;
-extern ID3D12CommandQueue* dx12_hook_g_PostSLLockedQueue;
 extern std::atomic<bool> dx12_hook_g_HadFSRFGPhase;
 extern std::atomic<bool> dx12_hook_g_HadSuccessfulPostSLPhase;
 extern std::atomic<bool> dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG;
@@ -508,8 +510,6 @@ extern std::atomic<int> dx12_hook_g_PostFSRProbeLevel;
 extern std::atomic<int> dx12_hook_g_PostFSRProbeFrames;
 inline constexpr int dx12_hook_kPostFSRProbeFramesPerLevel = 3;;
 extern bool dx12_hook_g_PostFSRDescFreeRecreated;
-extern ID3D12CommandQueue* dx12_hook_g_PostSLDedicatedQueue;
-extern ID3D12CommandQueue* dx12_hook_g_PostSLLastWorkingQueue;
 extern std::atomic<int> dx12_hook_g_SceneTransitionCooldown;
 extern ID3D12CommandQueue* dx12_hook_g_PreFGGameQueue;
 extern ID3D12CommandQueue* dx12_hook_g_OriginalGameQueue;
@@ -578,12 +578,9 @@ extern std::mutex dx12_hook_g_StreamlineStartupActivationSwapchainMutex;
 extern IDXGISwapChain* dx12_hook_g_StreamlineStartupActivationSwapchain;
 extern std::atomic<DWORD> dx12_hook_g_GamePresentThreadId;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_SLWrapperQueue;
-extern ID3D12CommandQueue* dx12_hook_g_PostSLPinnedSLWrapperQueue;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_RealQueueBehindSLWrapper;
-extern std::atomic<bool> dx12_hook_g_PostSLDeferredQueueCleanupPending;
 extern std::atomic<bool> dx12_hook_g_SafePostFSRRuntimeOwnedSwapchainBootstrapLogged;
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_DeferredCommandQueueRelease;
-extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_DeferredPostSLLockedQueueRelease;
 extern std::atomic<ULONGLONG> dx12_hook_g_PostSLRecentTeardownActivityUntilMs;
 extern ID3D12CommandQueue* dx12_hook_g_SwapchainQueue;
 extern ULONGLONG dx12_hook_g_SwapchainQueueCaptureTime;

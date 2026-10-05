@@ -30,7 +30,7 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 TEST(DX12RuntimeOwnedCaptureFlowTest, Phase3RuntimeOwnedDeferralSkipsOnlyOverlayInit) {
     const std::string phase3 = ReadSource("hook/d3d12/dx12_hook_process_session_stage3_overlay_init.cpp");
     ASSERT_FALSE(phase3.empty());
-    const size_t skip = phase3.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)");
+    const size_t skip = phase3.find("ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&initGpuSkipReason)");
     ASSERT_NE(skip, std::string::npos);
     const size_t flow = phase3.find("return ProcessFrameFlow::", skip);
     ASSERT_NE(flow, std::string::npos);

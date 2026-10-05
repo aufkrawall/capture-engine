@@ -32,7 +32,7 @@ if (cd > 0) {
         ID3D12CommandQueue* resumeQueue = nullptr;
         {
             std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-            resumeQueue = dx12_hook_g_PostSLLastWorkingQueue;
+            resumeQueue = g_PostSLQueues.LastDeviceHealthyQueue();
             if (!resumeQueue)
                 resumeQueue = g_CommandQueue.load(std::memory_order_acquire);
             if (!resumeQueue)
@@ -102,20 +102,20 @@ scQueue = nullptr;
     const bool resumeOnValidatedLastWorkingQueue = ce::dx12_overlay_policy::
         ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
             dx12_hook_g_HadFSRFGPhase, dx12_hook_g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire),
-            dx12_hook_g_PostSLLastWorkingQueue != nullptr, scQueue != nullptr, explicitSetOptionsActivation,
+            g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, scQueue != nullptr, explicitSetOptionsActivation,
             safePostFSRBootstrapPath);
     const bool lockedQueueIsSLWrapper =
-        dx12_hook_g_PostSLLockedQueue && dx12_hook_g_PostSLLockedQueue != dx12_hook_g_OriginalGameQueue && dx12_hook_g_PostSLLockedQueue != scQueue;
+        g_PostSLQueues.SelectedQueue() && g_PostSLQueues.SelectedQueue() != dx12_hook_g_OriginalGameQueue && g_PostSLQueues.SelectedQueue() != scQueue;
     ExecuteCommandListsPtr scQueueOrigECL = scQueue ? GetOriginalExecuteCommandLists(scQueue) : nullptr;
     const bool hasSwapchainQueueSubmitPath = scQueue && (scQueueOrigECL != nullptr || currentRealECL != nullptr);
     const bool hasWrapperDerivedDirectPath = directQueueBehindWrapper != nullptr && currentRealECL != nullptr;
     const bool selectDirectQueueInsteadOfLockedWrapper =
         ce::dx12_overlay_policy::ShouldSelectPostSLRealQueueBehindWrapperInsteadOfLockedQueueAfterFSR(
-            dx12_hook_g_PostSLLockedQueue != nullptr, dx12_hook_g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper,
+            g_PostSLQueues.SelectedQueue() != nullptr, dx12_hook_g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper,
             hasDirectQueueBehindWrapper);
     const bool selectSwapchainQueueInsteadOfLockedWrapper =
         ce::dx12_overlay_policy::ShouldSelectPostSLSwapchainQueueInsteadOfLockedWrapperAfterFSR(
-            dx12_hook_g_PostSLLockedQueue != nullptr, dx12_hook_g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper, scQueue != nullptr,
+            g_PostSLQueues.SelectedQueue() != nullptr, dx12_hook_g_HadFSRFGPhase, slFGNow, lockedQueueIsSLWrapper, scQueue != nullptr,
             scQueue != dx12_hook_g_OriginalGameQueue, hasSwapchainQueueSubmitPath, hasWrapperDerivedDirectPath);
 
     if (preferValidatedDirectQueueForLock && directQueueBehindWrapper) {
@@ -131,7 +131,7 @@ scQueue = nullptr;
         static int s_promoteSelectionLog = 0;
         if (s_promoteSelectionLog++ < 5) {
             HookLog("DX12: PostSL queue candidate — direct real queue %p replacing locked wrapper %p", queue,
-                    dx12_hook_g_PostSLLockedQueue);
+                    g_PostSLQueues.SelectedQueue());
         }
     } else if (selectSwapchainQueueInsteadOfLockedWrapper) {
         queue = scQueue;
@@ -139,24 +139,24 @@ scQueue = nullptr;
         if (s_swapchainSelectionLog++ < 10) {
             HookLogImportant(
                 "DX12: PostSL queue candidate — swapchain queue %p replacing locked wrapper %p after FSR", queue,
-                dx12_hook_g_PostSLLockedQueue);
+                g_PostSLQueues.SelectedQueue());
         }
     } else if (ce::dx12_overlay_policy::ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(
                    keepAliveRenderAfterExplicitOff, exactExplicitOffKeepAliveSwapchain,
-                   dx12_hook_g_PostSLLastWorkingQueue != nullptr)) {
-        queue = dx12_hook_g_PostSLLastWorkingQueue;
+                   g_PostSLQueues.LastDeviceHealthyQueue() != nullptr)) {
+        queue = g_PostSLQueues.LastDeviceHealthyQueue();
         static std::atomic<int> s_exactOffKeepAliveLastWorkingQueueLogCount{0};
         const int logCount = s_exactOffKeepAliveLastWorkingQueueLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
             HookLogImportant(
                 "DX12: PostSL exact-proxy explicit-OFF keep-alive selecting last successful direct queue %p "
                 "ahead of locked queue %p (sc=%p log=%d)",
-                queue, dx12_hook_g_PostSLLockedQueue, pSwapChain, logCount + 1);
+                queue, g_PostSLQueues.SelectedQueue(), pSwapChain, logCount + 1);
         }
-    } else if (dx12_hook_g_PostSLLockedQueue) {
-        queue = dx12_hook_g_PostSLLockedQueue;
+    } else if (g_PostSLQueues.SelectedQueue()) {
+        queue = g_PostSLQueues.SelectedQueue();
     } else if (resumeOnValidatedLastWorkingQueue) {
-        queue = dx12_hook_g_PostSLLastWorkingQueue;
+        queue = g_PostSLQueues.LastDeviceHealthyQueue();
         static int s_postFSRResumeQueueLog = 0;
         if (s_postFSRResumeQueueLog++ < 10) {
             HookLogImportant(
@@ -223,7 +223,7 @@ if (!queue) {
     return PostSLFlow::kReturn;
 }
 {
-    ID3D12CommandQueue* oldLockedQueue = nullptr;
+    PostSLQueueOwner::RetiredReference retiredSelection;
     bool shouldKeepExistingLockedQueue = false;
     {
         std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
@@ -231,7 +231,7 @@ if (!queue) {
         ExecuteCommandListsPtr currentRealECL = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
         ExecuteCommandListsPtr lockedScQueueOrigECL = scQueue ? GetOriginalExecuteCommandLists(scQueue) : nullptr;
         const bool lockedQueueIsSLWrapper =
-            dx12_hook_g_PostSLLockedQueue && dx12_hook_g_PostSLLockedQueue != dx12_hook_g_OriginalGameQueue && dx12_hook_g_PostSLLockedQueue != scQueue;
+            g_PostSLQueues.SelectedQueue() && g_PostSLQueues.SelectedQueue() != dx12_hook_g_OriginalGameQueue && g_PostSLQueues.SelectedQueue() != scQueue;
         const bool hasSwapchainQueueSubmitPath =
             scQueue && (lockedScQueueOrigECL != nullptr || currentRealECL != nullptr);
         const bool hasWrapperDerivedDirectPath = directQueueBehindWrapper != nullptr && currentRealECL != nullptr;
@@ -242,7 +242,7 @@ if (!queue) {
         shouldReplaceLockedQueue =
             shouldReplaceLockedQueue ||
             (ce::dx12_overlay_policy::ShouldSelectPostSLSwapchainQueueInsteadOfLockedWrapperAfterFSR(
-                 dx12_hook_g_PostSLLockedQueue != nullptr, dx12_hook_g_HadFSRFGPhase, cachedSLFGActive, lockedQueueIsSLWrapper,
+                 g_PostSLQueues.SelectedQueue() != nullptr, dx12_hook_g_HadFSRFGPhase, cachedSLFGActive, lockedQueueIsSLWrapper,
                  scQueue != nullptr, scQueue != dx12_hook_g_OriginalGameQueue, hasSwapchainQueueSubmitPath,
                  hasWrapperDerivedDirectPath) &&
              queue == scQueue);
@@ -250,15 +250,14 @@ if (!queue) {
             shouldReplaceLockedQueue ||
             (ce::dx12_overlay_policy::ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(
                  keepAliveRenderAfterExplicitOff, exactExplicitOffKeepAliveSwapchain,
-                 dx12_hook_g_PostSLLastWorkingQueue != nullptr) &&
-             queue == dx12_hook_g_PostSLLastWorkingQueue);
-        const bool selectedQueueMatchesLockedQueue = queue == dx12_hook_g_PostSLLockedQueue;
+                 g_PostSLQueues.LastDeviceHealthyQueue() != nullptr) &&
+             queue == g_PostSLQueues.LastDeviceHealthyQueue());
+        const bool selectedQueueMatchesLockedQueue = queue == g_PostSLQueues.SelectedQueue();
 
         if (ce::dx12_overlay_policy::ShouldMutatePostSLLockedQueue(
-                dx12_hook_g_PostSLLockedQueue != nullptr, selectedQueueMatchesLockedQueue, shouldReplaceLockedQueue)) {
-            oldLockedQueue = dx12_hook_g_PostSLLockedQueue;
-            dx12_hook_g_PostSLLockedQueue = queue;
-            queue->AddRef();  // prevent locked queue from being freed between PostSL calls
+                g_PostSLQueues.SelectedQueue() != nullptr, selectedQueueMatchesLockedQueue, shouldReplaceLockedQueue)) {
+            retiredSelection = g_PostSLQueues.ReplaceSelection(queue);
+            ID3D12CommandQueue* oldLockedQueue = retiredSelection.Borrow();
 
             if (oldLockedQueue) {
                 if (queue == directQueueBehindWrapper) {
@@ -266,7 +265,7 @@ if (!queue) {
                         "DX12: PostSL promoting locked queue %p -> real queue behind wrapper %p after post-FSR "
                         "bootstrap",
                         oldLockedQueue, directQueueBehindWrapper);
-                } else if (exactExplicitOffKeepAliveSwapchain && queue == dx12_hook_g_PostSLLastWorkingQueue) {
+                } else if (exactExplicitOffKeepAliveSwapchain && queue == g_PostSLQueues.LastDeviceHealthyQueue()) {
                     HookLogImportant(
                         "DX12: PostSL replacing stale locked queue %p -> retained exact-proxy queue %p for "
                         "explicit-OFF keep-alive",
@@ -288,15 +287,13 @@ if (!queue) {
             }
         } else if (!selectedQueueMatchesLockedQueue) {
             shouldKeepExistingLockedQueue = true;
-            queue = dx12_hook_g_PostSLLockedQueue;
+            queue = g_PostSLQueues.SelectedQueue();
             submissionResources.RetainSelection(queue);
         }
     }
 
 
-    if (oldLockedQueue) {
-        oldLockedQueue->Release();
-    }
+    retiredSelection.Release();
 
     if (shouldKeepExistingLockedQueue && queue) {
         ID3D12CommandQueue* newCmdQueue = g_CommandQueue.load(std::memory_order_acquire);
@@ -336,7 +333,7 @@ if (dx12_hook_g_State.syncDevice) {
             dx12_hook_g_State.syncDevice = nullptr;
             ClearPostSLQueues("DX12: PostSL device mismatch");
             ClearPostSLPinnedSLWrapperQueue("DX12: PostSL device mismatch");
-            SetPostSLLastWorkingQueue(nullptr);  // Cross-device — old queue invalid
+            g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);  // Cross-device — old queue invalid
         return PostSLFlow::kReturn;
         }
         queueDevice->Release();
@@ -472,7 +469,7 @@ realQ = dx12_hook_g_RealQueueBehindSLWrapper.load(std::memory_order_acquire);
 selectedQueueOrigECL = GetOriginalExecuteCommandLists(queue);
 selectedQueueOrigECLMatchesRealECL = selectedQueueOrigECL && selectedQueueOrigECL == realECL;
 isSLWrapperQ = ce::dx12_overlay_policy::ShouldTreatPostSLSelectedQueueAsWrapper(
-    queue == dx12_hook_g_OriginalGameQueue, queue == dx12_hook_g_PostSLDedicatedQueue, selectedQueueIsSwapchainQueue,
+    queue == dx12_hook_g_OriginalGameQueue, queue == g_PostSLQueues.DedicatedQueue(), selectedQueueIsSwapchainQueue,
     selectedQueueOrigECLMatchesRealECL);
 useExplicitPostFSRSwapchainTransitions =
     ce::dx12_overlay_policy::ShouldUseExplicitBackbufferTransitionsForPostFSRSwapchainQueuePath(
@@ -510,7 +507,7 @@ if (dx12_hook_g_HadFSRFGPhase) {
     std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
     liveSLWrapperQueue = dx12_hook_g_SLWrapperQueue.load(std::memory_order_acquire);
 
-    ID3D12CommandQueue* pinnedSLWrapperQueue = dx12_hook_g_PostSLPinnedSLWrapperQueue;
+    ID3D12CommandQueue* pinnedSLWrapperQueue = g_PostSLQueues.PinnedWrapperQueue();
     ID3D12CommandQueue* wrapperCandidate = pinnedSLWrapperQueue ? pinnedSLWrapperQueue : liveSLWrapperQueue;
     if (!wrapperCandidate) {
         // Fallback: try g_CommandQueue if it's not origGame or scQueue.
@@ -525,8 +522,7 @@ if (dx12_hook_g_HadFSRFGPhase) {
             dx12_hook_g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue,
             pinnedSLWrapperQueue != nullptr, wrapperCandidate != nullptr,
             preferSelectedSwapchainQueueSubmitAfterFSR)) {
-        wrapperCandidate->AddRef();
-        dx12_hook_g_PostSLPinnedSLWrapperQueue = wrapperCandidate;
+        g_PostSLQueues.PinWrapperForEpoch(wrapperCandidate);
         pinnedSLWrapperQueue = wrapperCandidate;
         usingPinnedPostFSRWrapperQueue = true;
         HookLogImportant("DX12: PostSL pinned post-FSR SL wrapper queue %p for epoch=%d (source=%s scQueue=%p)",

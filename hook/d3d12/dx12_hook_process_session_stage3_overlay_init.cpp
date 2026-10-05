@@ -104,11 +104,11 @@ ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
             const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
             ID3D12CommandQueue* currentSwapchainQueue = nullptr;
             {
-                std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+                std::lock_guard<std::recursive_mutex> queueStateLock(g_CommandQueueMutex);
                 currentSwapchainQueue = dx12_hook_g_SwapchainQueue;
             }
             const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-                dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
+                g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
                 ce::hook_clock::TickCount64() <
                     dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
             const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
@@ -120,7 +120,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
                 ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
                     recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
                     rawQueue == dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), rawQueue == dx12_hook_g_OriginalGameQueue,
-                    rawQueue == currentSwapchainQueue, rawQueue == dx12_hook_g_PostSLLastWorkingQueue);
+                    rawQueue == currentSwapchainQueue, rawQueue == g_PostSLQueues.LastDeviceHealthyQueue());
 
             if (ignoreQueueChangeDuringRecentTeardown) {
                 static std::atomic<int> s_recentTeardownQueueChangeIgnoreLogCount{0};
@@ -133,7 +133,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
                         "postFSR=%d frame=%d)",
                         rawQueue, s_initialQueue, dx12_hook_g_OriginalGameQueue,
                         dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), currentSwapchainQueue,
-                        dx12_hook_g_PostSLLastWorkingQueue, dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire),
+                        g_PostSLQueues.LastDeviceHealthyQueue(), dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire),
                         lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0,
                         s_queueFrameCount);
                 }
@@ -198,7 +198,7 @@ startupOverlayPresent = startupOverlayCompatibilityActive;
 if (startupOverlayPresent) {
     bool hasSwapchainQueue;
     {
-        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        std::lock_guard<std::recursive_mutex> queueStateLock(g_CommandQueueMutex);
         hasSwapchainQueue = (dx12_hook_g_SwapchainQueue != nullptr);
     }
     const bool preserveLiveOverlayDuringHandoff =
@@ -366,7 +366,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         ID3D12CommandQueue* currentSwapchainQueue = nullptr;
         bool swapchainQueueSubmittable = false;
         {
-            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            std::lock_guard<std::recursive_mutex> queueStateLock(g_CommandQueueMutex);
             currentSwapchainQueue = dx12_hook_g_SwapchainQueue;
             // Submittable proof for THIS swapchain's queue only; read under the lock
             // because it dereferences the queue CE's reference keeps alive. The global
@@ -379,10 +379,6 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         bool actualFGActive = IsActualFrameGenerationActive();
         bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         const bool recentStreamlineTeardown = dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
-        const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-            dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-            ce::hook_clock::TickCount64() <
-                dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
         int slOffSwapchainGrace = dx12_hook_g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
         // Retained no-callback FSR suspension: AMD keeps the FI swapchain + queue latched while the
         // app renders on origGame, so the queue-settle condition below can never be met — the policy
@@ -434,7 +430,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
             currentCommandQueue == dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
         if (ce::dx12_overlay_policy::ShouldDeferOverlayInitUntilCommandQueueSettlesAfterRecentStreamlineTeardown(
                 actualFGActive, streamlineFGRunning, recentStreamlineTeardown, currentSwapchainQueue != nullptr,
-                dx12_hook_g_OriginalGameQueue != nullptr, dx12_hook_g_PostSLLastWorkingQueue != nullptr, currentCommandQueue != nullptr,
+                dx12_hook_g_OriginalGameQueue != nullptr, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr, currentCommandQueue != nullptr,
                 currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
                 currentCommandQueue != nullptr && currentCommandQueue == dx12_hook_g_OriginalGameQueue,
                 commandQueueMatchesPrimaryGameQueue, freshStreamlineHandoffOnSubmittableQueue)) {
@@ -447,7 +443,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                     "DX12: Deferring overlay init until command queue settles after recent Streamline teardown "
                     "(scQ=%p cmdQ=%p origQ=%p primaryQ=%p lastWorkingQ=%p slOffGrace=%d)",
                     currentSwapchainQueue, currentCommandQueue, dx12_hook_g_OriginalGameQueue,
-                    dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), dx12_hook_g_PostSLLastWorkingQueue,
+                    dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), g_PostSLQueues.LastDeviceHealthyQueue(),
                     dx12_hook_g_SLOffHeuristicGrace.load(std::memory_order_acquire));
             }
         return ProcessFrameFlow::kSkipOverlayInit;
@@ -456,7 +452,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         // One-shot diagnostic: when the primary-queue escape hatch allows overlay init
         // despite a missing swapchain queue and cleared lastWorkingQueue, log it so
         // future traces can distinguish "primaryQ safe" from "lastWorkingQ preserved".
-        if (recentStreamlineTeardown && currentSwapchainQueue == nullptr && dx12_hook_g_PostSLLastWorkingQueue == nullptr &&
+        if (recentStreamlineTeardown && currentSwapchainQueue == nullptr && g_PostSLQueues.LastDeviceHealthyQueue() == nullptr &&
             commandQueueMatchesPrimaryGameQueue) {
             static std::atomic<int> s_primaryQEscapeHatchLogCount{0};
             if (s_primaryQEscapeHatchLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
@@ -522,8 +518,8 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
         return ProcessFrameFlow::kReturn;
     }
 
-    const char* skipSeparateOverlayGpuReason = nullptr;
-    if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&skipSeparateOverlayGpuReason)) {
+    const char* initGpuSkipReason = nullptr;
+    if (ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(&initGpuSkipReason)) {
         static std::atomic<int> s_runtimeOwnedSeparateWorkSkipLogCount{0};
         int logCount = s_runtimeOwnedSeparateWorkSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
@@ -537,7 +533,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 "callbackEver=%d callbackLast=%llu sameQueue=%d stableProof=%d "
                 "cooldown=%d overlayInit=%d syncInit=%d "
                 "scQueue=%p origGame=%p cmdQ=%p",
-                skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
+                initGpuSkipReason ? initGpuSkipReason : "runtime-owned swapchain",
                 ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
                 g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
                 dx12_hook_g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
@@ -614,14 +610,14 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 dx12_hook_g_State.cachedHeight, imguiBufferCount);
 
         // Validate swapchain buffers are accessible before initializing
-        IDXGISwapChain3* sc3 = nullptr;
-        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3)))) {
+        IDXGISwapChain3* validationSwapchain = nullptr;
+        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&validationSwapchain)))) {
             int validBuffers = 0;
             for (int i = 0; i < imguiBufferCount; i++) {
-                ID3D12Resource* bb = nullptr;
-                if (SUCCEEDED(sc3->GetBuffer(i, IID_PPV_ARGS(&bb)))) {
-                    if (bb) {
-                        bb->Release();
+                ID3D12Resource* validationBuffer = nullptr;
+                if (SUCCEEDED(validationSwapchain->GetBuffer(i, IID_PPV_ARGS(&validationBuffer)))) {
+                    if (validationBuffer) {
+                        validationBuffer->Release();
                         validBuffers++;
                     }
                 } else {
@@ -638,7 +634,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                     "DX12: ProcessFrame - only %d/%d buffers valid, skipping "
                     "ImGui init this frame",
                     validBuffers, imguiBufferCount);
-                sc3->Release();
+                validationSwapchain->Release();
         return ProcessFrameFlow::kReturn;
             }
 
@@ -649,7 +645,7 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 int outputColorSpace = -1;
                 bool presentationContractSupported = false;
                 const bool isActualHDR =
-                    ResolveSwapchainOutputHDRState(static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format,
+                    ResolveSwapchainOutputHDRState(static_cast<IDXGISwapChain*>(validationSwapchain), desc.BufferDesc.Format,
                                                    "DX12: Swapchain color contract", &outputColorSpace,
                                                    &presentationContractSupported);
                 UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace,
@@ -675,11 +671,11 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                         HookLog("DX12: Swapchain has %d buffers, limiting RTVs to 8", actualBufferCount);
                         actualBufferCount = 8;
                     }
-                    CreateRTVs(g_Device.load(), sc3, actualBufferCount);
+                    CreateRTVs(g_Device.load(), validationSwapchain, actualBufferCount);
                     if (!dx12_hook_g_State.rtvDescHeap) {
                         HookLogImportant(
                             "DX12: RTV initialization failed during overlay init, deferring sync init");
-                        sc3->Release();
+                        validationSwapchain->Release();
         return ProcessFrameFlow::kReturn;
                     }
                     InitOverlaySync(g_Device.load(), imguiBufferCount, gameQueue);
@@ -700,8 +696,8 @@ if (allowOverlayRender && !suspendOverlayRender && !dx12_hook_g_State.overlayIni
                 }
             }
             // SAFETY: Check sc3 is still valid before releasing
-            if (sc3) {
-                sc3->Release();
+            if (validationSwapchain) {
+                validationSwapchain->Release();
             }
         } else {
             HookLog("DX12: ProcessFrame - failed to get IDXGISwapChain3 interface");

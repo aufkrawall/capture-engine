@@ -115,7 +115,7 @@ if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
 
 transitionSwapchainQueue = nullptr;
 {
-    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    std::lock_guard<std::recursive_mutex> transitionQueueLock(g_CommandQueueMutex);
     transitionSwapchainQueue = dx12_hook_g_SwapchainQueue;
 }
 transitionRecoveringPostFSRNonFG = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
@@ -315,11 +315,11 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
             // last validated queue only for the immediate post-FSR FG-off
             // recovery window, where it is the only queue that already proved
             // safe for the live swapchain.
-            SetPostSLLastWorkingQueue(nullptr);
+            g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);
         } else {
             HookLogImportant(
                 "DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
-                dx12_hook_g_PostSLLastWorkingQueue);
+                g_PostSLQueues.LastDeviceHealthyQueue());
         }
 
         // Save the current ProcessFrame gameQueue as a pre-FG snapshot.

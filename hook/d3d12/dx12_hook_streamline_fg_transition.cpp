@@ -159,12 +159,12 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                 std::lock_guard<std::recursive_mutex> qLock(g_CommandQueueMutex);
                 if (ce::dx12_overlay_policy::ShouldRestoreSwapchainQueueFromPreservedConfirmedPostSLProxyOnWarmResume(
                         dx12_hook_g_HadFSRFGPhase, true, dx12_hook_g_SwapchainQueue != nullptr,
-                        dx12_hook_g_PostSLLastWorkingQueue != nullptr,
-                        dx12_hook_g_PostSLLastWorkingQueue != nullptr &&
-                            dx12_hook_g_PostSLLastWorkingQueue != dx12_hook_g_OriginalGameQueue,
+                        g_PostSLQueues.LastDeviceHealthyQueue() != nullptr,
+                        g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
+                            g_PostSLQueues.LastDeviceHealthyQueue() != dx12_hook_g_OriginalGameQueue,
                         dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire) != nullptr,
                         dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire))) {
-                    dx12_hook_g_SwapchainQueue = dx12_hook_g_PostSLLastWorkingQueue;
+                    dx12_hook_g_SwapchainQueue = g_PostSLQueues.LastDeviceHealthyQueue();
                     dx12_hook_g_SwapchainQueue->AddRef();
                     dx12_hook_g_SwapchainQueueCaptureTime = ce::hook_clock::TickCount64();
                     dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(
@@ -269,13 +269,13 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
                     if (ce::dx12_overlay_policy::ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandoff(
                             dx12_hook_g_HadFSRFGPhase, dx12_hook_g_SwapchainQueue != nullptr,
                             dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_SwapchainQueue != dx12_hook_g_OriginalGameQueue,
-                            streamlineStartupHandoffPending, dx12_hook_g_PostSLLastWorkingQueue != nullptr,
-                            dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_SwapchainQueue == dx12_hook_g_PostSLLastWorkingQueue)) {
+                            streamlineStartupHandoffPending, g_PostSLQueues.LastDeviceHealthyQueue() != nullptr,
+                            dx12_hook_g_SwapchainQueue != nullptr && dx12_hook_g_SwapchainQueue == g_PostSLQueues.LastDeviceHealthyQueue())) {
                         HookLogImportant(
                             "DX12: Streamline FG ON after FSR — cleared stale PostSL lastWorking queue %p because "
                             "fresh Streamline handoff moved to new scQueue %p (origGame=%p)",
-                            dx12_hook_g_PostSLLastWorkingQueue, dx12_hook_g_SwapchainQueue, dx12_hook_g_OriginalGameQueue);
-                        SetPostSLLastWorkingQueue(nullptr);
+                            g_PostSLQueues.LastDeviceHealthyQueue(), dx12_hook_g_SwapchainQueue, dx12_hook_g_OriginalGameQueue);
+                        g_PostSLQueues.RememberDeviceHealthySubmission(nullptr);
                     }
                     HookLogImportant(
                         "DX12: Streamline FG ON after FSR — preserving freshly handed-off Streamline swapchain queue "
@@ -296,7 +296,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
             resumeSwapchainQueue = dx12_hook_g_SwapchainQueue;
-            resumeLastWorkingQueue = dx12_hook_g_PostSLLastWorkingQueue;
+            resumeLastWorkingQueue = g_PostSLQueues.LastDeviceHealthyQueue();
             resumeOriginalGameQueue = dx12_hook_g_OriginalGameQueue;
             resumeCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         }
@@ -393,9 +393,9 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     ReleaseStreamlineStartupActivationSwapchain("DX12: Streamline FG OFF");
     dx12_hook_g_SLOffHeuristicGrace.store(600, std::memory_order_release);
     dx12_hook_g_ClearedStaleRuntimeOwnedStreamlineNoFGAfterLongOrigGameRun.store(false, std::memory_order_release);
-    if (dx12_hook_g_PostSLLastWorkingQueue) {
+    if (g_PostSLQueues.LastDeviceHealthyQueue()) {
         MarkPostSLRecentTeardownActivity("DX12: Streamline FG OFF seeded recent PostSL teardown activity",
-                                         dx12_hook_g_PostSLLastWorkingQueue);
+                                         g_PostSLQueues.LastDeviceHealthyQueue());
     }
     RequestFGDetectionHeuristicReset();
     g_FGCompat.SetHeuristicFSRFGActive(false);
@@ -502,7 +502,7 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — preserved warm confirmed-PostSL proxy resources "
                 "for exact-swapchain keep-alive (proxy=%p queue=%p; no reinit/copy/wait)",
-                dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_relaxed), dx12_hook_g_PostSLLastWorkingQueue);
+                dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_relaxed), g_PostSLQueues.LastDeviceHealthyQueue());
         } else if (!preserveRuntimeOwnedFSRTakeover &&
                    ce::dx12_overlay_policy::ShouldDeferOverlayReinitAfterDirectPostFSRStreamlineTeardown(
                        dx12_hook_g_HadFSRFGPhase, dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit)) {
