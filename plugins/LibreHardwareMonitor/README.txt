@@ -20,8 +20,12 @@ What you get
 
 CPU/GPU temperature, package power and GPU fan RPM appear beside the existing
 usage values; CPU/GPU core clock, GPU memory clock and GPU core voltage appear
-on their own clock rows. Every metric defaults to auto in [HardwareSensors] and
-can be set to off or to an exact sensor identifier.
+on their own clock rows. CPU clocks show the average followed by the highest
+current physical core clock in parentheses. The automatic average uses only
+P-cores on hybrid CPUs and all readable physical cores on conventional CPUs;
+bus and effective clocks are excluded. Every metric defaults to auto in
+[HardwareSensors] and can be set to off or to an exact sensor identifier.
+An exact CPU clock selector overrides the average; off hides both clock values.
 
 The bridge runs as a contained child owned by CaptureEngine's dedicated
 sensor-service process: the sensor service starts captureengine.exe again in a
@@ -34,8 +38,9 @@ retains it across equal-load samples rather than switching arbitrarily. The
 selected identifiers and periodic values are recorded in CaptureEngine's debug
 log without recording the plugin's filesystem path.
 
-An automatic selector prefers an exactly named sensor, then the lowest-numbered
-instance of that name, and only then falls back to the highest current reading.
+Except for the CPU clock summary, an automatic selector prefers an exactly
+named sensor, then the lowest-numbered instance of that name, and only then
+falls back to the highest current reading.
 Hardware that numbers its sensors ("GPU Fan 1", "GPU Fan 2") therefore resolves
 to one fixed fan instead of alternating between physical fans as their speeds
 cross.

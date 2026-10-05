@@ -345,6 +345,8 @@ Normal frame render admission and the named producer operations are documented b
 Tests: tests/test_dx12_draw_transaction.cpp covers success with unchanged overlayInit/syncInit,
 controlled allocator/list/GetBuffer/close outcomes, absent interface/commands, busy/priming skips,
 submission/device-loss outcomes, early returns, capture ordering and exact release count/timing.
+Its bounded event trace never allocates during the mock backbuffer's noexcept Release; overflow
+aborts the test rather than allowing instrumentation to throw through destructor cleanup.
 tools/refactor/check_draw_transaction_mutations.py temporarily mutates only the private production
 header, requires actual behavioral assertion failures (compiler failure does not count), restores
 it in finally and verifies the original again. On 2026-10-05 all six mutations were detected:

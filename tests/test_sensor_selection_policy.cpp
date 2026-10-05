@@ -41,7 +41,9 @@ size_t SelectFor(const std::vector<SensorCandidate>& candidates, const char* key
 }  // namespace
 
 TEST(SensorSelectionPolicyTest, MetricTableCoversTheWholeWireOrder) {
-    ASSERT_EQ(kMetricCount, 9u);
+    ASSERT_EQ(kMetricCount, 10u);
+    EXPECT_EQ(kSelectorCount, 9u);
+    EXPECT_STREQ(kMetrics[kCpuMaxCoreClockMetric].key, "cpu_max_core_clock");
     EXPECT_STREQ(kMetrics[0].key, "cpu_temperature");
     EXPECT_STREQ(kMetrics[4].key, "gpu_fan");
     EXPECT_STREQ(kMetrics[8].key, "gpu_voltage");

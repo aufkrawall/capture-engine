@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 #include "hook/d3d12/overlay_draw_transaction.h"
@@ -10,14 +13,30 @@ using ce::dx12::DrawFailure;
 using Flow = ProcessFrameFlow;
 enum Event { Select, Allocator, ListReset, Prepare, Acquire, Refresh, Record, Close, Submit,
              DeviceBefore, Dispatch, DeviceAfter, RetireTargets, Release, Capture };
+// Release runs inside the backbuffer destructor, so tracing must not allocate.
+struct EventTrace {
+    using value_type = Event;
+    using const_iterator = const Event*;
+    std::array<Event, 32> values{};
+    size_t count = 0;
+    void push_back(Event event) noexcept {
+        if (count == values.size()) std::abort();
+        values[count++] = event;
+    }
+    const_iterator begin() const noexcept { return values.data(); }
+    const_iterator end() const noexcept { return values.data() + count; }
+    bool operator==(const std::vector<Event>& other) const {
+        return std::equal(begin(), end(), other.begin(), other.end());
+    }
+};
 struct Buffer {
-    std::vector<Event>& events;
+    EventTrace& events;
     int references = 1, releases = 0;
-    void Release() { --references; ++releases; events.push_back(::Release); }
+    void Release() noexcept { --references; ++releases; events.push_back(::Release); }
 };
 struct State { bool overlayInit = true, syncInit = true; };
 struct Operations {
-    std::vector<Event> events;
+    EventTrace events;
     Buffer buffer{events};
     bool commands = true, swapchain = true, nullBuffer = false, failureReturnsBuffer = false;
     bool deviceLostBefore = false, deviceLostAfter = false, observedDeviceLost = false;

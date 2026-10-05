@@ -497,6 +497,10 @@ bool LibreHardwareMonitorSession::Sample(MetricReading* readings, std::string& f
     const std::vector<TypedSensor>& activeGpuSensors =
         activeGpu != kNoSelection ? perGpuSensors[activeGpu] : emptySensors;
 
+    const policy::CpuClockSummary cpuClocks =
+        impl_->metricRequested[policy::kCpuCoreClockMetric]
+            ? policy::SummarizeCpuClocks(FilterByType(cpuSensors, impl_->sensorTypeValues[policy::kCpuCoreClockMetric]))
+            : policy::CpuClockSummary();
     for (size_t metric = 0; metric < kMetricCount; ++metric) {
         readings[metric] = MetricReading();
         if (!impl_->metricRequested[metric])
@@ -506,17 +510,18 @@ bool LibreHardwareMonitorSession::Sample(MetricReading* readings, std::string& f
         const bool automatic = selector == "auto";
         const std::vector<TypedSensor>& scope =
             isCpuMetric ? cpuSensors : (automatic ? activeGpuSensors : allGpuSensors);
-        const std::vector<SensorCandidate> candidates = FilterByType(scope, impl_->sensorTypeValues[metric]);
-        if (automatic && metric == policy::kCpuCoreClockMetric) {
-            const policy::CpuClockSummary summary = policy::SummarizeCpuClocks(candidates);
-            if (summary.average.hasValue) {
+        if ((automatic && metric == policy::kCpuCoreClockMetric) || metric == policy::kCpuMaxCoreClockMetric) {
+            const SensorCandidate& clock =
+                metric == policy::kCpuCoreClockMetric ? cpuClocks.average : cpuClocks.maximum;
+            if (clock.hasValue) {
                 readings[metric].available = true;
-                readings[metric].value = summary.average.value;
-                readings[metric].identifier = summary.average.identifier;
+                readings[metric].value = clock.value;
+                readings[metric].identifier = clock.identifier;
             }
             impl_->previousIdentifiers[metric] = readings[metric].identifier;
             continue;
         }
+        const std::vector<SensorCandidate> candidates = FilterByType(scope, impl_->sensorTypeValues[metric]);
         const size_t selected =
             automatic ? policy::SelectAutomatic(candidates, kMetrics[metric].preferredNames,
                                                 kMetrics[metric].preferredNameCount, kMetrics[metric].rejectZero,

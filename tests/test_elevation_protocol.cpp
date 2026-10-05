@@ -261,6 +261,8 @@ TEST(ElevationProtocolTest, ServiceSamplesPreserveSequenceSelectorsAndAcquisitio
     snapshot.sequence = 7;
     snapshot.receivedTickMs = 1234;
     snapshot.cpuTemperature = {42.0f, true, "/amdcpu/0/temperature/0"};
+    snapshot.cpuCoreClock = {4800.0f, true, "/ce/cpu/clock/cores_average_8"};
+    snapshot.cpuMaxCoreClock = {5200.0f, true, "/ce/cpu/clock/maximum"};
     const SensorSample sample = MakeSensorSample(snapshot);
     EXPECT_EQ(sample.sampledTickMs, 1234);
     ce::hardware_sensors::BridgeMessage message;
@@ -269,6 +271,10 @@ TEST(ElevationProtocolTest, ServiceSamplesPreserveSequenceSelectorsAndAcquisitio
     EXPECT_FLOAT_EQ(message.snapshot.cpuTemperature.value, 42.0f);
     EXPECT_EQ(message.snapshot.cpuTemperature.identifier, snapshot.cpuTemperature.identifier);
     EXPECT_FALSE(message.snapshot.gpuTemperature.valid);
+    ASSERT_TRUE(message.snapshot.cpuMaxCoreClock.valid);
+    EXPECT_FLOAT_EQ(message.snapshot.cpuMaxCoreClock.value, 5200.0f);
+    EXPECT_EQ(message.snapshot.cpuMaxCoreClock.identifier, snapshot.cpuMaxCoreClock.identifier);
+    EXPECT_FLOAT_EQ(message.snapshot.cpuCoreClock.value, 4800.0f);
 }
 
 TEST(ElevationProtocolTest, ConsumerTraceRightsAreReadOnlyAndIncludeRealtimeAccess) {

@@ -24,9 +24,11 @@ MUTATIONS = (
      "    operations.RefreshRenderTarget(backBuffer.Borrow());"),
     ("successful reset invalidates synchronization", "    flow = operations.PrepareRecording();",
      "    state.syncInit = false;\n    flow = operations.PrepareRecording();"),
-    ("normal release delayed until destructor", "    // Preserve the original release before post-overlay capture/publication.\n"
+    ("normal release delayed until destructor",
+     "    // Preserve the original release before post-overlay capture/publication.\n"
      "    backBuffer.Release();", "    // Mutant: only the destructor retires this reference."),
-    ("release missing on every path", "    void Release() { if (Buffer* buffer = std::exchange(buffer_, nullptr)) buffer->Release(); }",
+    ("release missing on every path",
+     "    void Release() { if (Buffer* buffer = std::exchange(buffer_, nullptr)) buffer->Release(); }",
      "    void Release() {}"),
     ("normal release duplicated", "    // Preserve the original release before post-overlay capture/publication.\n"
      "    backBuffer.Release();", "    backBuffer.Borrow()->Release();\n    backBuffer.Release();"),

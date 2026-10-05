@@ -20,6 +20,7 @@ struct SystemMetrics {
     float gpuPackagePowerW;
     float gpuFanRpm;
     float cpuCoreClockMhz;
+    float cpuMaxCoreClockMhz;
     float gpuCoreClockMhz;
     float gpuMemoryClockMhz;
     float gpuCoreVoltageV;
@@ -31,6 +32,7 @@ struct SystemMetrics {
     bool gpuPackagePowerValid;
     bool gpuFanValid;
     bool cpuCoreClockValid;
+    bool cpuMaxCoreClockValid;
     bool gpuCoreClockValid;
     bool gpuMemoryClockValid;
     bool gpuCoreVoltageValid;

@@ -30,7 +30,12 @@ size_t CountOccurrences(const std::string& text, const std::string& needle) {
 
 TEST(HardwareSensorBridgeTest, ParsesCompleteAndUnavailableSamples) {
     ce::hardware_sensors::BridgeMessage message;
-    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage("CE_LHM_SAMPLE\t17\t58.25\t/cpu/0/temperature/0\t63\t/gpu-nvidia/0/temperature/0\t95.5\t/cpu/0/power/0\t241.5\t/gpu-nvidia/0/power/0\t1450\t/gpu-nvidia/0/fan/0\t4800\t/cpu/0/clock/1\t2700\t/gpu-nvidia/0/clock/0\t810\t/gpu-nvidia/0/clock/4\t0.805\t/gpu-nvidia/0/voltage/0", message));
+    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage(
+        "CE_LHM_SAMPLE\t17\t58.25\t/cpu/0/temperature/0\t63\t/gpu-nvidia/0/temperature/0\t95.5\t"
+        "/cpu/0/power/0\t241.5\t/gpu-nvidia/0/power/0\t1450\t/gpu-nvidia/0/fan/0\t4800\t/cpu/0/clock/1\t"
+        "2700\t/gpu-nvidia/0/clock/0\t810\t/gpu-nvidia/0/clock/4\t0.805\t/gpu-nvidia/0/voltage/0\t5300\t"
+        "/ce/cpu/clock/maximum",
+        message));
     ASSERT_EQ(message.kind, ce::hardware_sensors::BridgeMessageKind::Sample);
     EXPECT_EQ(message.snapshot.sequence, 17u);
     EXPECT_TRUE(message.snapshot.cpuTemperature.valid);
@@ -41,6 +46,8 @@ TEST(HardwareSensorBridgeTest, ParsesCompleteAndUnavailableSamples) {
     EXPECT_EQ(message.snapshot.gpuFan.identifier, "/gpu-nvidia/0/fan/0");
     EXPECT_TRUE(message.snapshot.cpuCoreClock.valid);
     EXPECT_FLOAT_EQ(message.snapshot.cpuCoreClock.value, 4800.0f);
+    ASSERT_TRUE(message.snapshot.cpuMaxCoreClock.valid);
+    EXPECT_FLOAT_EQ(message.snapshot.cpuMaxCoreClock.value, 5300.0f);
     EXPECT_TRUE(message.snapshot.gpuCoreClock.valid);
     EXPECT_EQ(message.snapshot.gpuCoreClock.identifier, "/gpu-nvidia/0/clock/0");
     EXPECT_TRUE(message.snapshot.gpuMemoryClock.valid);
@@ -48,7 +55,8 @@ TEST(HardwareSensorBridgeTest, ParsesCompleteAndUnavailableSamples) {
     EXPECT_TRUE(message.snapshot.gpuVoltage.valid);
     EXPECT_FLOAT_EQ(message.snapshot.gpuVoltage.value, 0.805f);
 
-    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage("CE_LHM_SAMPLE\t18\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-", message));
+    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage(
+        "CE_LHM_SAMPLE\t18\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-", message));
     EXPECT_FALSE(message.snapshot.cpuTemperature.valid);
     EXPECT_FALSE(message.snapshot.gpuTemperature.valid);
     EXPECT_FALSE(message.snapshot.cpuPackagePower.valid);
@@ -58,6 +66,24 @@ TEST(HardwareSensorBridgeTest, ParsesCompleteAndUnavailableSamples) {
     EXPECT_FALSE(message.snapshot.gpuCoreClock.valid);
     EXPECT_FALSE(message.snapshot.gpuMemoryClock.valid);
     EXPECT_FALSE(message.snapshot.gpuVoltage.valid);
+    EXPECT_FALSE(message.snapshot.cpuMaxCoreClock.valid);
+}
+
+TEST(HardwareSensorBridgeTest, BoundsTheMaximumClockAndRejectsTheOldNineMetricFormat) {
+    std::string prefix = "CE_LHM_SAMPLE\t21";
+    for (size_t index = 0; index < 9; ++index)
+        prefix += "\t-\t-";
+    ce::hardware_sensors::BridgeMessage message;
+    EXPECT_FALSE(ce::hardware_sensors::ParseBridgeMessage(prefix, message));
+    for (const char* invalid : {"0", "-1", "20001", "nan", "inf", "-"}) {
+        EXPECT_FALSE(
+            ce::hardware_sensors::ParseBridgeMessage(prefix + "\t" + invalid + "\t/ce/cpu/clock/maximum", message));
+    }
+    EXPECT_FALSE(ce::hardware_sensors::ParseBridgeMessage(prefix + "\t5000\tinvalid", message));
+    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage(prefix + "\t5000\t/ce/cpu/clock/maximum", message));
+    EXPECT_FALSE(message.snapshot.cpuCoreClock.valid);
+    EXPECT_TRUE(message.snapshot.cpuMaxCoreClock.valid);
+    EXPECT_FLOAT_EQ(message.snapshot.cpuMaxCoreClock.value, 5000.0f);
 }
 
 // Without elevation LibreHardwareMonitor cannot open its kernel driver and every
@@ -67,7 +93,11 @@ TEST(HardwareSensorBridgeTest, ParsesCompleteAndUnavailableSamples) {
 // fan, which really can be stopped.
 TEST(HardwareSensorBridgeTest, RejectsUnreadableZeroRailsButKeepsAStoppedFan) {
     ce::hardware_sensors::BridgeMessage message;
-    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage("CE_LHM_SAMPLE\t19\t-\t-\t41\t/gpu-nvidia/0/temperature/0\t-\t-\t180.25\t/gpu-nvidia/0/power/0\t0\t/gpu-nvidia/0/fan/1\t-\t-\t210\t/gpu-nvidia/0/clock/0\t810\t/gpu-nvidia/0/clock/4\t0.72\t/gpu-nvidia/0/voltage/0", message));
+    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage(
+        "CE_LHM_SAMPLE\t19\t-\t-\t41\t/gpu-nvidia/0/temperature/0\t-\t-\t180.25\t/gpu-nvidia/0/power/0\t"
+        "0\t/gpu-nvidia/0/fan/1\t-\t-\t210\t/gpu-nvidia/0/clock/0\t810\t/gpu-nvidia/0/clock/4\t0.72\t"
+        "/gpu-nvidia/0/voltage/0\t-\t-",
+        message));
     ASSERT_EQ(message.kind, ce::hardware_sensors::BridgeMessageKind::Sample);
     EXPECT_TRUE(message.snapshot.gpuFan.valid);
     EXPECT_FLOAT_EQ(message.snapshot.gpuFan.value, 0.0f);
@@ -80,11 +110,11 @@ TEST(HardwareSensorBridgeTest, RejectsUnreadableZeroRailsButKeepsAStoppedFan) {
     EXPECT_TRUE(message.snapshot.gpuVoltage.valid);
 
     for (const char* line : {
-             "CE_LHM_SAMPLE\t20\t0\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t0\t/cpu/0/power/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/power/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/amdcpu/0/clock/1\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/voltage/0",
+             "CE_LHM_SAMPLE\t20\t0\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t0\t/cpu/0/power/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/power/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/amdcpu/0/clock/1\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/voltage/0\t-\t-",
          }) {
         SCOPED_TRACE(line);
         EXPECT_FALSE(ce::hardware_sensors::ParseBridgeMessage(line, message));
@@ -92,7 +122,8 @@ TEST(HardwareSensorBridgeTest, RejectsUnreadableZeroRailsButKeepsAStoppedFan) {
     }
 
     // The same zero on the fan is a real stopped-fan reading, not a rejection.
-    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage("CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/fan/1\t-\t-\t-\t-\t-\t-\t-\t-", message));
+    ASSERT_TRUE(ce::hardware_sensors::ParseBridgeMessage(
+        "CE_LHM_SAMPLE\t20\t-\t-\t-\t-\t-\t-\t-\t-\t0\t/gpu-nvidia/0/fan/1\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-", message));
     EXPECT_TRUE(message.snapshot.gpuFan.valid);
 }
 
@@ -110,14 +141,14 @@ TEST(HardwareSensorBridgeTest, RejectsTheSupersededNarrowerSampleFormat) {
 TEST(HardwareSensorBridgeTest, RejectsMalformedOrUnboundedSamples) {
     ce::hardware_sensors::BridgeMessage message;
     for (const char* line : {
-             "CE_LHM_SAMPLE\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\tnan\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t251\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t50\t/\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t50\t/cpu/\xC3\xA4\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t50\t../unsafe\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t0\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
-             "CE_LHM_SAMPLE\t1\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t20001\t/cpu/0/clock/1\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\tnan\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t251\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t50\t/\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t50\t/cpu/\xC3\xA4\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t50\t../unsafe\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t0\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+             "CE_LHM_SAMPLE\t1\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t20001\t/cpu/0/clock/1\t-\t-\t-\t-\t-\t-\t-\t-",
              "CE_LHM_SAMPLE\t1\t50\t/cpu/0/temperature/0\t-\t-\t-\t-\t-\t-",
              "arbitrary output",
          }) {
@@ -203,11 +234,29 @@ TEST(HardwareSensorOverlayTest, FormatsTheClockRowsAndOmitsUnreadableValues) {
     ce::overlay_layout::FormatGpuClocksValue(value, sizeof(value), false, 0.0f, false, 0.0f, false, 0.0f);
     EXPECT_STREQ(value, "");
 
-    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), true, 4825.0f);
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), true, 4825.0f, false, 0.0f);
     EXPECT_STREQ(value, "4825 MHz");
 
-    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), false, 0.0f);
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), true, 4825.0f, true, 5200.0f);
+    EXPECT_STREQ(value, "4825 MHz (5200 MHz)");
+
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), false, 0.0f, true, 5200.0f);
+    EXPECT_STREQ(value, "-- (5200 MHz)");
+
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), false, 0.0f, false, 0.0f);
     EXPECT_STREQ(value, "");
+}
+
+TEST(HardwareSensorOverlayTest, ClockFormattingBoundsOutputAndHandlesUnreadableTransitions) {
+    char value[48] = {};
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), true, 20000.0f, true, 20000.0f);
+    EXPECT_STREQ(value, "20000 MHz (20000 MHz)");
+    ce::overlay_layout::FormatCpuClocksValue(value, sizeof(value), false, 0.0f, false, 0.0f);
+    EXPECT_STREQ(value, "");
+    char tiny[2] = {'x', 'x'};
+    ce::overlay_layout::FormatCpuClocksValue(tiny, sizeof(tiny), true, 5000.0f, true, 5200.0f);
+    EXPECT_EQ(tiny[1], '\0');
+    ce::overlay_layout::FormatCpuClocksValue(nullptr, 0, true, 5000.0f, true, 5200.0f);
 }
 
 // An unelevated run reads no CPU clock at all; reserving the row anyway would
@@ -384,7 +433,7 @@ TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHa
     // Selector option names are derived from the shared metric table, so the
     // launcher spells them the same way the bridge parses them.
     EXPECT_NE(implementation.find("MetricSelectorOption(metric)"), std::string::npos);
-    for (size_t metric = 0; metric < ce::hardware_sensors::policy::kMetricCount; ++metric) {
+    for (size_t metric = 0; metric < ce::hardware_sensors::policy::kSelectorCount; ++metric) {
         SCOPED_TRACE(ce::hardware_sensors::policy::kMetrics[metric].key);
         const std::wstring option = ce::hardware_sensors::MetricSelectorOption(metric);
         EXPECT_FALSE(option.empty());
@@ -392,6 +441,8 @@ TEST(HardwareSensorBridgeTest, NativeHostContainsTheChildAndRestrictsInheritedHa
         EXPECT_EQ(option.back(), L'=');
         EXPECT_EQ(option.find(L'_'), std::wstring::npos);
     }
+    EXPECT_TRUE(ce::hardware_sensors::MetricSelectorOption(
+        ce::hardware_sensors::policy::kCpuMaxCoreClockMetric).empty());
     EXPECT_NE(implementation.find("STARTF_FORCEOFFFEEDBACK"), std::string::npos);
     EXPECT_NE(service.find("OpenProcess(SYNCHRONIZE, FALSE, controllerPid)"), std::string::npos);
     EXPECT_NE(service.find("WaitForMultipleObjects"), std::string::npos);

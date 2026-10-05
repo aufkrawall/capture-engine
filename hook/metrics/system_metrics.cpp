@@ -66,6 +66,7 @@ struct HostMetricsPublication {
     float gpuPackagePowerW = 0.0f;
     float gpuFanRpm = 0.0f;
     float cpuCoreClockMhz = 0.0f;
+    float cpuMaxCoreClockMhz = 0.0f;
     float gpuCoreClockMhz = 0.0f;
     float gpuMemoryClockMhz = 0.0f;
     float gpuCoreVoltageV = 0.0f;
@@ -78,9 +79,9 @@ bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
     constexpr uint32_t kKnownValidity =
         SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID |
         SYSTEM_METRIC_CPU_TEMPERATURE_VALID | SYSTEM_METRIC_GPU_TEMPERATURE_VALID |
-        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID |
-        SYSTEM_METRIC_GPU_FAN_VALID | SYSTEM_METRIC_CPU_CORE_CLOCK_VALID | SYSTEM_METRIC_GPU_CORE_CLOCK_VALID |
-        SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID | SYSTEM_METRIC_GPU_VOLTAGE_VALID;
+        SYSTEM_METRIC_CPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_PACKAGE_POWER_VALID | SYSTEM_METRIC_GPU_FAN_VALID |
+        SYSTEM_METRIC_CPU_CORE_CLOCK_VALID | SYSTEM_METRIC_GPU_CORE_CLOCK_VALID | SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID |
+        SYSTEM_METRIC_GPU_VOLTAGE_VALID | SYSTEM_METRIC_CPU_MAX_CORE_CLOCK_VALID;
     if (!std::isfinite(publication.cpuUsage) || publication.cpuUsage < 0.0f || publication.cpuUsage > 100.0f ||
         !std::isfinite(publication.ramUsageGB) || publication.ramUsageGB < 0.0f ||
         publication.ramUsageGB > 1048576.0f || publication.maxCoreLoad > 100u ||
@@ -136,6 +137,11 @@ bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
          publication.gpuCoreClockMhz > 20000.0f)) {
         return false;
     }
+    if ((publication.validityMask & SYSTEM_METRIC_CPU_MAX_CORE_CLOCK_VALID) != 0 &&
+        (!std::isfinite(publication.cpuMaxCoreClockMhz) || publication.cpuMaxCoreClockMhz <= 0.0f ||
+         publication.cpuMaxCoreClockMhz > 20000.0f)) {
+        return false;
+    }
     if ((publication.validityMask & SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID) != 0 &&
         (!std::isfinite(publication.gpuMemoryClockMhz) || publication.gpuMemoryClockMhz <= 0.0f ||
          publication.gpuMemoryClockMhz > 20000.0f)) {
@@ -176,6 +182,7 @@ bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublic
         publication.gpuPackagePowerW = metrics.gpuPackagePowerW.load(std::memory_order_relaxed);
         publication.gpuFanRpm = metrics.gpuFanRpm.load(std::memory_order_relaxed);
         publication.cpuCoreClockMhz = metrics.cpuCoreClockMhz.load(std::memory_order_relaxed);
+        publication.cpuMaxCoreClockMhz = metrics.cpuMaxCoreClockMhz.load(std::memory_order_relaxed);
         publication.gpuCoreClockMhz = metrics.gpuCoreClockMhz.load(std::memory_order_relaxed);
         publication.gpuMemoryClockMhz = metrics.gpuMemoryClockMhz.load(std::memory_order_relaxed);
         publication.gpuCoreVoltageV = metrics.gpuCoreVoltageV.load(std::memory_order_relaxed);
@@ -403,6 +410,8 @@ bool SystemMetricsCollector::UpdateFromHost() {
     current.gpuFanRpm = current.gpuFanValid ? publication.gpuFanRpm : 0.0f;
     current.cpuCoreClockValid = (publication.validityMask & SYSTEM_METRIC_CPU_CORE_CLOCK_VALID) != 0;
     current.cpuCoreClockMhz = current.cpuCoreClockValid ? publication.cpuCoreClockMhz : 0.0f;
+    current.cpuMaxCoreClockValid = (publication.validityMask & SYSTEM_METRIC_CPU_MAX_CORE_CLOCK_VALID) != 0;
+    current.cpuMaxCoreClockMhz = current.cpuMaxCoreClockValid ? publication.cpuMaxCoreClockMhz : 0.0f;
     current.gpuCoreClockValid = (publication.validityMask & SYSTEM_METRIC_GPU_CORE_CLOCK_VALID) != 0;
     current.gpuCoreClockMhz = current.gpuCoreClockValid ? publication.gpuCoreClockMhz : 0.0f;
     current.gpuMemoryClockValid = (publication.validityMask & SYSTEM_METRIC_GPU_MEMORY_CLOCK_VALID) != 0;

@@ -349,7 +349,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         rowInputs.showCPU = cfg.showCPU;
         rowInputs.showGPUClocks = cachedSystemMetrics.gpuCoreClockValid || cachedSystemMetrics.gpuMemoryClockValid ||
                                   cachedSystemMetrics.gpuCoreVoltageValid;
-        rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid;
+        rowInputs.showCPUClocks = cachedSystemMetrics.cpuCoreClockValid || cachedSystemMetrics.cpuMaxCoreClockValid;
         rowInputs.showVRAM = cfg.showVRAM;
         rowInputs.showRAM = cfg.showRAM;
         rowInputs.showFPS = cfg.showFPS;

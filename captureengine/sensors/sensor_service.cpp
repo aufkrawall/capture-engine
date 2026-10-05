@@ -96,6 +96,7 @@ static void ResetGpuTelemetryForSource(SharedMemoryLayout* shm, uint32_t sourceP
     metrics.cpuPackagePowerW.store(0.0f, std::memory_order_relaxed);
     metrics.gpuPackagePowerW.store(0.0f, std::memory_order_relaxed);
     metrics.gpuFanRpm.store(0.0f, std::memory_order_relaxed);
+    metrics.cpuMaxCoreClockMhz.store(0.0f, std::memory_order_relaxed);
     metrics.adapterLuidLow.store(0, std::memory_order_relaxed);
     metrics.adapterLuidHigh.store(0, std::memory_order_relaxed);
     metrics.adapterSource.store(SYSTEM_METRICS_ADAPTER_UNAVAILABLE, std::memory_order_relaxed);
@@ -381,18 +382,20 @@ int SensorProcessMain(const AppConfig& config) {
                 LogInfo(
                     "[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u cpu=%.1f maxCore=%u "
                     "gpu=%.1f vramMB=%.1f vramTotalMB=%llu cpuTemp=%.1f gpuTemp=%.1f cpuW=%.1f gpuW=%.1f "
-                    "gpuFan=%.0f validity=0x%X publisherPid=%u publisherParentPid=%u publisherEligible=%d",
+                    "gpuFan=%.0f cpuClock=%.0f cpuMaxClock=%.0f validity=0x%X publisherPid=%u publisherParentPid=%u "
+                    "publisherEligible=%d",
                     it->first, sourcePid, effectiveLuid, s.updatesSinceSummary,
                     metrics.cpuUsage.load(std::memory_order_relaxed),
                     metrics.maxCoreLoad.load(std::memory_order_relaxed),
-                    metrics.gpuUsage.load(std::memory_order_relaxed),
-                    metrics.vramUsage.load(std::memory_order_relaxed),
+                    metrics.gpuUsage.load(std::memory_order_relaxed), metrics.vramUsage.load(std::memory_order_relaxed),
                     metrics.vramTotal.load(std::memory_order_relaxed) / (1024 * 1024),
                     metrics.cpuTemperatureC.load(std::memory_order_relaxed),
                     metrics.gpuTemperatureC.load(std::memory_order_relaxed),
                     metrics.cpuPackagePowerW.load(std::memory_order_relaxed),
                     metrics.gpuPackagePowerW.load(std::memory_order_relaxed),
                     metrics.gpuFanRpm.load(std::memory_order_relaxed),
+                    metrics.cpuCoreClockMhz.load(std::memory_order_relaxed),
+                    metrics.cpuMaxCoreClockMhz.load(std::memory_order_relaxed),
                     metrics.validityMask.load(std::memory_order_relaxed), luidSourcePid, luidSourceParentPid,
                     luidPublisherEligible ? 1 : 0);
                 s.updatesSinceSummary = 0;

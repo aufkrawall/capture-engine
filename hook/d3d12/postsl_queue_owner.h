@@ -31,7 +31,7 @@ public:
     private:
         Queue* value_ = nullptr;
     };
-    explicit PostSLQueueOwner(std::recursive_mutex& queueMutex) : mutex_(queueMutex) {}
+    explicit PostSLQueueOwner(std::recursive_mutex& queueMutex) noexcept : mutex_(queueMutex) {}
     // Global owner is explicitly shut down by the hook, never by loader-lock destruction.
     Queue* SelectedQueue() const { return selected_.load(std::memory_order_acquire); }
     Queue* DedicatedQueue() const { return dedicated_.load(std::memory_order_acquire); }

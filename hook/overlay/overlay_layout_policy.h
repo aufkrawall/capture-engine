@@ -105,12 +105,17 @@ inline void FormatGpuClocksValue(char* output, size_t outputSize, bool coreClock
         snprintf(output + length, outputSize - static_cast<size_t>(length), "%s%.3f V", separator, voltageV);
 }
 
-inline void FormatCpuClocksValue(char* output, size_t outputSize, bool coreClockValid, float coreClockMhz) {
+inline void FormatCpuClocksValue(char* output, size_t outputSize, bool coreClockValid, float coreClockMhz,
+                                 bool maxCoreClockValid, float maxCoreClockMhz) {
     if (!output || outputSize == 0)
         return;
     output[0] = 0;
-    if (coreClockValid)
+    if (coreClockValid && maxCoreClockValid)
+        snprintf(output, outputSize, "%.0f MHz (%.0f MHz)", coreClockMhz, maxCoreClockMhz);
+    else if (coreClockValid)
         snprintf(output, outputSize, "%.0f MHz", coreClockMhz);
+    else if (maxCoreClockValid)
+        snprintf(output, outputSize, "-- (%.0f MHz)", maxCoreClockMhz);
 }
 
 enum OverlayRow : uint32_t {

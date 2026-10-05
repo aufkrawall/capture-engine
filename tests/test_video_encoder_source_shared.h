@@ -26,7 +26,8 @@ std::string ReadVideoEncoderSource() {
     return ce::test_source::ReadLogicalSource(source);
 }
 
-std::string ReadCursorRendererSource() {
+// Individual files in the split suite use different subsets of these helpers.
+[[maybe_unused]] std::string ReadCursorRendererSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "cursor_renderer.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
@@ -37,7 +38,7 @@ std::string ReadVideoColorShaderSource() {
     return ce::test_source::ReadLogicalSource(source);
 }
 
-std::string ReadVideoMetadataSource() {
+[[maybe_unused]] std::string ReadVideoMetadataSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "video_metadata.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }

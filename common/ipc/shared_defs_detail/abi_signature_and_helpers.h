@@ -91,6 +91,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, cpuPackagePowerW));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, gpuPackagePowerW));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, gpuFanRpm));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, cpuMaxCoreClockMhz));
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedDisplayTiming));
     hash = MixSharedMemoryAbiValue(hash, sizeof(DisplayTimingSample));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DisplayTimingSample, presentStartTimeUs));

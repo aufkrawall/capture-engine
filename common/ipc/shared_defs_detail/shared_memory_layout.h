@@ -429,6 +429,7 @@ public:
         std::atomic<int32_t> adapterLuidLow{0};
         std::atomic<int32_t> adapterLuidHigh{0};
         std::atomic<uint32_t> adapterSource{0};
+        std::atomic<float> cpuMaxCoreClockMhz{0.0f};
     } systemMetrics;
 
     // Actual screen-change timestamps collected out of process. Presentation

@@ -89,12 +89,12 @@ bool ParseSensorValue(std::string_view valueField, std::string_view identifierFi
 // parser, and the tests read them from one declaration. New metrics append: an
 // older reader meeting a longer line rejects it on field count instead of
 // misreading a shifted field.
-constexpr SensorValue HardwareSensorSnapshot::*kSensorFields[] = {
-    &HardwareSensorSnapshot::cpuTemperature, &HardwareSensorSnapshot::gpuTemperature,
+constexpr SensorValue HardwareSensorSnapshot::* kSensorFields[] = {
+    &HardwareSensorSnapshot::cpuTemperature,  &HardwareSensorSnapshot::gpuTemperature,
     &HardwareSensorSnapshot::cpuPackagePower, &HardwareSensorSnapshot::gpuPackagePower,
-    &HardwareSensorSnapshot::gpuFan, &HardwareSensorSnapshot::cpuCoreClock,
-    &HardwareSensorSnapshot::gpuCoreClock, &HardwareSensorSnapshot::gpuMemoryClock,
-    &HardwareSensorSnapshot::gpuVoltage,
+    &HardwareSensorSnapshot::gpuFan,          &HardwareSensorSnapshot::cpuCoreClock,
+    &HardwareSensorSnapshot::gpuCoreClock,    &HardwareSensorSnapshot::gpuMemoryClock,
+    &HardwareSensorSnapshot::gpuVoltage,      &HardwareSensorSnapshot::cpuMaxCoreClock,
 };
 
 constexpr size_t kSensorFieldCount = std::size(kSensorFields);
@@ -363,14 +363,14 @@ struct LibreHardwareMonitorPlugin::Impl {
             &config.gpuFan,         &config.cpuCoreClock,   &config.gpuCoreClock,    &config.gpuMemoryClock,
             &config.gpuVoltage,
         };
-        static_assert(std::tuple_size_v<decltype(selectors)> == policy::kMetricCount,
+        static_assert(std::tuple_size_v<decltype(selectors)> == policy::kSelectorCount,
                       "Configured selectors and metric definitions must describe the same wire order");
         std::vector<std::wstring> arguments = {
             std::wstring(kSensorBridgeCommand),
             std::wstring(kSensorBridgeShutdownEventOption) + eventName,
             std::wstring(kSensorBridgePollIntervalOption) + std::to_wstring(config.pollIntervalMs),
         };
-        for (size_t metric = 0; metric < policy::kMetricCount; ++metric)
+        for (size_t metric = 0; metric < policy::kSelectorCount; ++metric)
             arguments.push_back(MetricSelectorOption(metric) + Utf8ToWide(*selectors[metric]));
 
         std::wstring commandLine = QuoteWindowsArgument(bridgeExecutable.wstring());
@@ -444,7 +444,7 @@ struct LibreHardwareMonitorPlugin::Impl {
     }
 
     void LogSelectedSensors(const HardwareSensorSnapshot& next) {
-        const std::array<std::pair<const char*, const SensorValue*>, 9> values = {{
+        const std::array<std::pair<const char*, const SensorValue*>, 10> values = {{
             {"cpu_temperature", &next.cpuTemperature},
             {"gpu_temperature", &next.gpuTemperature},
             {"cpu_package_power", &next.cpuPackagePower},
@@ -454,11 +454,12 @@ struct LibreHardwareMonitorPlugin::Impl {
             {"gpu_core_clock", &next.gpuCoreClock},
             {"gpu_memory_clock", &next.gpuMemoryClock},
             {"gpu_voltage", &next.gpuVoltage},
+            {"cpu_max_core_clock", &next.cpuMaxCoreClock},
         }};
-        const std::array<const SensorValue*, 9> previous = {
-            &snapshot.cpuTemperature, &snapshot.gpuTemperature, &snapshot.cpuPackagePower,
-            &snapshot.gpuPackagePower, &snapshot.gpuFan,      &snapshot.cpuCoreClock,
-            &snapshot.gpuCoreClock,   &snapshot.gpuMemoryClock, &snapshot.gpuVoltage,
+        const std::array<const SensorValue*, 10> previous = {
+            &snapshot.cpuTemperature, &snapshot.gpuTemperature,  &snapshot.cpuPackagePower, &snapshot.gpuPackagePower,
+            &snapshot.gpuFan,         &snapshot.cpuCoreClock,    &snapshot.gpuCoreClock,    &snapshot.gpuMemoryClock,
+            &snapshot.gpuVoltage,     &snapshot.cpuMaxCoreClock,
         };
         for (size_t index = 0; index < values.size(); ++index) {
             if (values[index].second->identifier == previous[index]->identifier)

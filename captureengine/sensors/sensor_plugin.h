@@ -27,6 +27,7 @@ struct HardwareSensorSnapshot {
     SensorValue gpuCoreClock;
     SensorValue gpuMemoryClock;
     SensorValue gpuVoltage;
+    SensorValue cpuMaxCoreClock;
     uint32_t sequence = 0;
     uint64_t receivedTickMs = 0;
 };
@@ -45,7 +46,7 @@ struct BridgeMessage {
 };
 
 // Parses the deliberately small, tab-delimited protocol emitted by the
-// first-party PowerShell bridge. Every field is bounded before it reaches IPC.
+// first-party native bridge. Every field is bounded before it reaches IPC.
 bool ParseBridgeMessage(std::string_view line, BridgeMessage& message);
 bool IsSnapshotFresh(const HardwareSensorSnapshot& snapshot, uint64_t nowTickMs, uint32_t pollIntervalMs);
 

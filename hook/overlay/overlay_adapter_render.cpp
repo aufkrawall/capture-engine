@@ -66,7 +66,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
         if (rowCPUClocks) {
             FormatCpuClocksValue(cachedCpuClocksText, sizeof(cachedCpuClocksText),
-                                 cachedSystemMetrics.cpuCoreClockValid, cachedSystemMetrics.cpuCoreClockMhz);
+                                 cachedSystemMetrics.cpuCoreClockValid, cachedSystemMetrics.cpuCoreClockMhz,
+                                 cachedSystemMetrics.cpuMaxCoreClockValid, cachedSystemMetrics.cpuMaxCoreClockMhz);
         }
 
         // What the rows actually say, and the validity behind it, whenever any
@@ -74,23 +75,22 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         // indistinguishable in the log from one that never moves, and the
         // overlay is the only place it was visible.
         char rowDigest[320];
-        std::snprintf(rowDigest, sizeof(rowDigest), "cpu='%s' gpu='%s' gpuClk='%s' cpuClk='%s' valid=%c%c%c%c%c%c%c%c%c",
-                      cachedCpuMetricsText, cachedGpuMetricsText, cachedGpuClocksText, cachedCpuClocksText,
-                      cachedSystemMetrics.gpuUsageValid ? 'G' : '-', cachedSystemMetrics.vramUsageValid ? 'V' : '-',
-                      cachedSystemMetrics.cpuTemperatureValid ? 'c' : '-',
-                      cachedSystemMetrics.gpuTemperatureValid ? 'g' : '-',
-                      cachedSystemMetrics.cpuPackagePowerValid ? 'p' : '-',
-                      cachedSystemMetrics.gpuPackagePowerValid ? 'P' : '-',
-                      cachedSystemMetrics.gpuFanValid ? 'f' : '-',
-                      cachedSystemMetrics.gpuCoreClockValid ? 'k' : '-',
-                      cachedSystemMetrics.cpuCoreClockValid ? 'K' : '-');
+        std::snprintf(
+            rowDigest, sizeof(rowDigest), "cpu='%s' gpu='%s' gpuClk='%s' cpuClk='%s' valid=%c%c%c%c%c%c%c%c%c%c",
+            cachedCpuMetricsText, cachedGpuMetricsText, cachedGpuClocksText, cachedCpuClocksText,
+            cachedSystemMetrics.gpuUsageValid ? 'G' : '-', cachedSystemMetrics.vramUsageValid ? 'V' : '-',
+            cachedSystemMetrics.cpuTemperatureValid ? 'c' : '-', cachedSystemMetrics.gpuTemperatureValid ? 'g' : '-',
+            cachedSystemMetrics.cpuPackagePowerValid ? 'p' : '-', cachedSystemMetrics.gpuPackagePowerValid ? 'P' : '-',
+            cachedSystemMetrics.gpuFanValid ? 'f' : '-', cachedSystemMetrics.gpuCoreClockValid ? 'k' : '-',
+            cachedSystemMetrics.cpuCoreClockValid ? 'K' : '-', cachedSystemMetrics.cpuMaxCoreClockValid ? 'M' : '-');
         // Readability (the valid= mask and any row reading "--") is logged the moment it changes; the
         // values themselves move with every sensor update and repeat the [Sensors] summary, so a change
         // of values alone is logged at most once a minute.
         char rowValidity[sizeof(lastLoggedRowValidity)];
-        std::snprintf(rowValidity, sizeof(rowValidity), "%.9s%c%c%c%c", std::strrchr(rowDigest, '=') + 1,
-                      std::strstr(cachedCpuMetricsText, "--") ? 'x' : '.', std::strstr(cachedGpuMetricsText, "--") ? 'x' : '.',
-                      std::strstr(cachedGpuClocksText, "--") ? 'x' : '.', std::strstr(cachedCpuClocksText, "--") ? 'x' : '.');
+        std::snprintf(
+            rowValidity, sizeof(rowValidity), "%.10s%c%c%c%c", std::strrchr(rowDigest, '=') + 1,
+            std::strstr(cachedCpuMetricsText, "--") ? 'x' : '.', std::strstr(cachedGpuMetricsText, "--") ? 'x' : '.',
+            std::strstr(cachedGpuClocksText, "--") ? 'x' : '.', std::strstr(cachedCpuClocksText, "--") ? 'x' : '.');
         if (std::strcmp(rowDigest, lastLoggedRowDigest) != 0) {
             std::snprintf(lastLoggedRowDigest, sizeof(lastLoggedRowDigest), "%s", rowDigest);
             ++rowDigestChanges;

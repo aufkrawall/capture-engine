@@ -12,6 +12,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **CPU clock overlay:** the CPU Clocks row now shows the highest current core clock in parentheses after the average, matching the CPU load display.
+
+- **Verification reliability:** DX12 release-order tests now record events without allocating during destructor cleanup, and small shared-helper/tool warnings no longer block the clean verification gate.
+
 - **CPU clock average:** automatic clock readings now average only P-cores on hybrid CPUs, excluding slower E-cores; conventional CPUs continue to average all readable cores.
 
 - **Application profile maintenance:** isolated shared profile routing and matching definitions so per-application features can grow without expanding the main configuration header; existing profile behavior is preserved.

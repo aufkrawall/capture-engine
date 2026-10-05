@@ -12,8 +12,9 @@
 
 namespace ce::hardware_sensors {
 
-// One selector per metric, in kMetrics order. Each is "off", "auto", or an
-// exact LibreHardwareMonitor sensor identifier.
+// Configured selectors use "off", "auto", or an exact sensor identifier in
+// kMetrics order. The host appends the maximum-clock selector derived from
+// cpu_core_clock: "off" when disabled, otherwise "auto".
 struct BridgeSelectors {
     std::string values[policy::kMetricCount];
 };

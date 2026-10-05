@@ -22,7 +22,7 @@ inline constexpr wchar_t kSensorBridgePollIntervalOption[] = L"--poll-interval-m
 // so the launcher and the bridge cannot disagree about the spelling. Inline so
 // the launcher does not have to link the bridge role.
 inline std::wstring MetricSelectorOption(size_t metricIndex) {
-    if (metricIndex >= policy::kMetricCount)
+    if (metricIndex >= policy::kSelectorCount)
         return {};
     std::wstring option = L"--";
     for (const char* character = policy::kMetrics[metricIndex].key; *character != 0; ++character)

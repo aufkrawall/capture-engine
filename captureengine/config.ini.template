@@ -489,6 +489,8 @@ gpu_temperature=auto
 cpu_package_power=auto
 gpu_package_power=auto
 gpu_fan=auto
+; Auto averages P-cores on hybrid CPUs, otherwise all readable physical cores.
+; CPU Clocks also shows the highest core clock in parentheses; off hides both.
 cpu_core_clock=auto
 gpu_core_clock=auto
 gpu_memory_clock=auto

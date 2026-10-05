@@ -94,7 +94,7 @@ bool IsValidSelector(const std::string& selector) {
 }
 
 bool ParseArguments(int argumentCount, wchar_t** arguments, BridgeArguments& parsed) {
-    for (size_t metric = 0; metric < kMetricCount; ++metric)
+    for (size_t metric = 0; metric < policy::kSelectorCount; ++metric)
         parsed.selectors.values[metric] = "auto";
 
     for (int index = 2; index < argumentCount; ++index) {
@@ -110,7 +110,7 @@ bool ParseArguments(int argumentCount, wchar_t** arguments, BridgeArguments& par
             continue;
         }
         bool matchedMetric = false;
-        for (size_t metric = 0; metric < kMetricCount && !matchedMetric; ++metric) {
+        for (size_t metric = 0; metric < policy::kSelectorCount && !matchedMetric; ++metric) {
             if (!MatchOption(argument, MetricSelectorOption(metric), value))
                 continue;
             matchedMetric = true;
@@ -121,6 +121,8 @@ bool ParseArguments(int argumentCount, wchar_t** arguments, BridgeArguments& par
         if (!matchedMetric)
             return false;
     }
+    parsed.selectors.values[policy::kCpuMaxCoreClockMetric] =
+        parsed.selectors.values[policy::kCpuCoreClockMetric] == "off" ? "off" : "auto";
     return IsValidShutdownEventName(parsed.shutdownEventName) &&
            parsed.pollIntervalMs >= kMinimumPollIntervalMs && parsed.pollIntervalMs <= kMaximumPollIntervalMs;
 }

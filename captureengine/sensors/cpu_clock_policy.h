@@ -6,6 +6,7 @@ namespace ce::hardware_sensors::policy {
 
 struct CpuClockSummary {
     SensorCandidate average;
+    SensorCandidate maximum;
     size_t coreCount = 0;
     size_t averagedCoreCount = 0;
     bool classifiedCores = false;
@@ -34,7 +35,11 @@ inline CpuClockSummary SummarizeCpuClocks(const std::vector<SensorCandidate>& ca
         if (!performance && !efficient && !conventional)
             continue;
         ++summary.coreCount;
-        if ((summary.classifiedCores && !performance) || !IsReportableReading(candidate, kMetrics[kCpuCoreClockMetric]))
+        if (!IsReportableReading(candidate, kMetrics[kCpuCoreClockMetric]))
+            continue;
+        if (!summary.maximum.hasValue || candidate.value > summary.maximum.value)
+            summary.maximum = candidate;
+        if (summary.classifiedCores && !performance)
             continue;
         total += candidate.value;
         ++summary.averagedCoreCount;
@@ -57,6 +62,9 @@ inline CpuClockSummary SummarizeCpuClocks(const std::vector<SensorCandidate>& ca
             }
         }
     }
+    // A moving fastest core must not churn the selected-identifier diagnostic.
+    if (summary.maximum.hasValue)
+        summary.maximum.identifier = "/ce/cpu/clock/maximum";
     return summary;
 }
 

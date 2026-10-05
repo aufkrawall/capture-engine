@@ -89,9 +89,9 @@ SensorSample MakeSensorSample(const ce::hardware_sensors::HardwareSensorSnapshot
         return sample;
     std::string line = "CE_LHM_SAMPLE\t" + std::to_string(snapshot.sequence);
     const ce::hardware_sensors::SensorValue* values[] = {
-        &snapshot.cpuTemperature,  &snapshot.gpuTemperature, &snapshot.cpuPackagePower,
-        &snapshot.gpuPackagePower, &snapshot.gpuFan,         &snapshot.cpuCoreClock,
-        &snapshot.gpuCoreClock,    &snapshot.gpuMemoryClock, &snapshot.gpuVoltage};
+        &snapshot.cpuTemperature, &snapshot.gpuTemperature, &snapshot.cpuPackagePower, &snapshot.gpuPackagePower,
+        &snapshot.gpuFan,         &snapshot.cpuCoreClock,   &snapshot.gpuCoreClock,    &snapshot.gpuMemoryClock,
+        &snapshot.gpuVoltage,     &snapshot.cpuMaxCoreClock};
     for (const auto* value : values) {
         if (!value->valid) {
             line += "\t-\t-";

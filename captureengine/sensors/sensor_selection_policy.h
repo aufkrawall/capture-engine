@@ -63,9 +63,13 @@ inline constexpr MetricDefinition kMetrics[] = {
     {"gpu_core_clock", "Clock", MetricScope::Gpu, true, 20000.0f, detail::kGpuCoreClockNames, 1},
     {"gpu_memory_clock", "Clock", MetricScope::Gpu, true, 20000.0f, detail::kGpuMemoryClockNames, 1},
     {"gpu_voltage", "Voltage", MetricScope::Gpu, true, 10.0f, detail::kGpuVoltageNames, 2},
+    {"cpu_max_core_clock", "Clock", MetricScope::Cpu, true, 20000.0f, detail::kCpuCoreClockNames, 3},
 };
 
 inline constexpr size_t kCpuCoreClockMetric = 5;
+// The appended maximum follows cpu_core_clock; it has no separate selector.
+inline constexpr size_t kSelectorCount = 9;
+inline constexpr size_t kCpuMaxCoreClockMetric = kSelectorCount;
 
 inline constexpr size_t kMetricCount = sizeof(kMetrics) / sizeof(kMetrics[0]);
 
