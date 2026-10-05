@@ -65,6 +65,8 @@ inline constexpr MetricDefinition kMetrics[] = {
     {"gpu_voltage", "Voltage", MetricScope::Gpu, true, 10.0f, detail::kGpuVoltageNames, 2},
 };
 
+inline constexpr size_t kCpuCoreClockMetric = 5;
+
 inline constexpr size_t kMetricCount = sizeof(kMetrics) / sizeof(kMetrics[0]);
 
 struct SensorCandidate {

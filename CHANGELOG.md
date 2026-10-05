@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **CPU clock average:** automatic clock readings now average only P-cores on hybrid CPUs, excluding slower E-cores; conventional CPUs continue to average all readable cores.
+
 - **Application profile maintenance:** isolated shared profile routing and matching definitions so per-application features can grow without expanding the main configuration header; existing profile behavior is preserved.
 
 - **Recording and overlay maintenance plan:** documented the completed refactor and a staged plan for remaining lifecycle, timing and build debt, with regression and hardware validation criteria.

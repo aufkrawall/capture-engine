@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "clr_interop.h"
+#include "cpu_clock_policy.h"
 
 namespace ce::hardware_sensors {
 namespace {
@@ -506,6 +507,16 @@ bool LibreHardwareMonitorSession::Sample(MetricReading* readings, std::string& f
         const std::vector<TypedSensor>& scope =
             isCpuMetric ? cpuSensors : (automatic ? activeGpuSensors : allGpuSensors);
         const std::vector<SensorCandidate> candidates = FilterByType(scope, impl_->sensorTypeValues[metric]);
+        if (automatic && metric == policy::kCpuCoreClockMetric) {
+            const policy::CpuClockSummary summary = policy::SummarizeCpuClocks(candidates);
+            if (summary.average.hasValue) {
+                readings[metric].available = true;
+                readings[metric].value = summary.average.value;
+                readings[metric].identifier = summary.average.identifier;
+            }
+            impl_->previousIdentifiers[metric] = readings[metric].identifier;
+            continue;
+        }
         const size_t selected =
             automatic ? policy::SelectAutomatic(candidates, kMetrics[metric].preferredNames,
                                                 kMetrics[metric].preferredNameCount, kMetrics[metric].rejectZero,
