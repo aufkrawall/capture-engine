@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-05 - Experimental background window heartbeat
+
+- Added profile/global `WindowHeartbeat.enabled` (off by default), independent of DesktopOverlay and capture.
+- The controller owns a separate joined worker. Eligible visible, non-minimized, uncloaked borderless
+  fullscreen windows outside the foreground process receive asynchronous WM_NULL at a 250 ms cadence.
+- SendMessageCallback completions bound each window to one in-flight message; tokens reject late
+  completions after HWND reuse and remain tracked across disable/re-enable. Delivery uses no input,
+  focus activation, hooks, injection or game memory access; UIPI failures remain authoritative.
+- Deterministic cadence/filter/reload/backpressure tests and a native cross-thread delivery test cover
+  the mechanism. Actual game/MPO hang prevention and anti-cheat acceptance remain unverified.
+- Source, diagnostic and validation anchors: `window-heartbeat.md`. Profile types now live in
+  `common/config/application_profile.h` to keep `config.h` below its size ceiling.
+
 ### 2026-10-05 - FG flow attribution distinguishes reused presenter addresses
 
 - The 0.1.6991 closing gate exposed a false GTA-style failure: the second FFX presenter reused its first

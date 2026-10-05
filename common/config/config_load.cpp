@@ -258,4 +258,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     LoadAudio(reader, config, path);
     ApplyStreamingSettings(reader, config);
     LoadDesktopOverlayAndHotkeys(reader, config, pseudoProcessListSet);
+    const bool heartbeatDefault = reader.GetLiteralBool("WindowHeartbeat", "enabled", false);
+    for (ApplicationProfile& profile : config.applicationProfiles) {
+        profile.windowHeartbeatEnabled = profile.target.HasProcess() &&
+            reader.GetLiteralBool(profile.section.c_str(), "WindowHeartbeat.enabled", heartbeatDefault);
+    }
 }

@@ -4,6 +4,7 @@
 #include "common/config/config_reload_policy.h"
 #include "common/config/config_text_encoding.h"
 #include "common/platform/path_utils.h"
+#include "common/platform/window_heartbeat.h"
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_workers.h"
 
@@ -98,6 +99,8 @@ int ControllerMain(HINSTANCE hInstance) {
     ControllerRecordingSessionScope recordingSession;
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
+    ce::window_heartbeat::Service windowHeartbeat;
+    windowHeartbeat.UpdateProfiles(main_g_Config.applicationProfiles);
     PrimeStartupCursor();
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
@@ -272,6 +275,7 @@ int ControllerMain(HINSTANCE hInstance) {
                 AppConfig oldConfig = main_g_Config;
                 main_g_Config = std::move(candidateConfig);
                 Log_SetLevel(main_g_Config.logLevel);
+                windowHeartbeat.UpdateProfiles(main_g_Config.applicationProfiles);
 
                 if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
                     UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
@@ -373,6 +377,8 @@ int ControllerMain(HINSTANCE hInstance) {
         MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, 0);
     }
 
+    // Stop the independent heartbeat before controller teardown.
+    windowHeartbeat.Stop();
     // Unregister hotkeys first
     StopHotkeyInputHook();
     UnregisterHotKey(NULL, HOTKEY_ID_RECORD);

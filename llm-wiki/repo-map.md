@@ -73,7 +73,7 @@ How to find code:
 | `logging/` | `Log*` service logging, `log_meter.h` (cadence gates), log privacy |
 | `overlay/` | inject-overlay and pseudo-overlay policies, recording indicator, hotkey matcher |
 | `graphics/` | mip/sharpen policy, Vulkan layer registration and target list |
-| `platform/` | paths, process identity, restricted child process, secure DLL loading, threading/RAII/ring-buffer primitives, build identity, byte-pattern scanner (hook-only) |
+| `platform/` | paths, process identity, background window heartbeat (`window_heartbeat`), restricted child process, secure DLL loading, threading/RAII/ring-buffer primitives, build identity, byte-pattern scanner (hook-only) |
 | `setup/` | startup and installer-setup argument policy |
 | (root) | `build_version.h` (generated, untracked) |
 

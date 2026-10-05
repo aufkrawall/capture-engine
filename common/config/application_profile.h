@@ -107,4 +107,5 @@ struct ApplicationProfile {
     bool captureMonitorExplicit = false;
     bool legacyInjectionSyntax = false;
     bool legacy = false;
+    bool windowHeartbeatEnabled = false;
 };

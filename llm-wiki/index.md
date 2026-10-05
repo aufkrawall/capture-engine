@@ -45,6 +45,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `elevation-and-startup.md` | 8 | elevation service broker, install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
+| `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
 | `third-party-dll-loading.md` | 14 | ReShade / OptiScaler / Special K loading by the hook |
 
 ## Overlay, frame generation, present path

@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- **Background borderless window heartbeat:** added opt-in `WindowHeartbeat.enabled` global/profile settings for a non-injected, asynchronous 250 ms wake-up aid. It preserves focus and limits stalled windows to one outstanding request; prevention of real game hangs remains unverified.
+
 - **Controller C API groundwork:** added opaque handles and recording, overlay, benchmark and screenshot controls for the existing controller. An independently embeddable library, custom API configuration and complete recording statistics are still pending.
 
 ### Improved

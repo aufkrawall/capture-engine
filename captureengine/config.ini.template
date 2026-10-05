@@ -523,6 +523,17 @@ foreground_acquire_grace_ms=2000
 ; warning automatically. The legacy process_list fallback is only needed for
 ; processes without a profile — and can be removed from new configs entirely.
 
+[WindowHeartbeat]
+; Experimental background wake-up aid, independent of capture and DesktopOverlay.
+; Sends an asynchronous WM_NULL every 250 ms to visible, non-minimized borderless
+; fullscreen windows belonging to enabled process profiles, while their process
+; is not foreground. Only one request per window can remain outstanding.
+; It does not steal focus, simulate input, inject a DLL, or access game memory.
+; It cannot force a game to stay foreground or unblock a GPU/internal thread wait.
+; This global default applies only to process-backed profiles; a profile can use
+; WindowHeartbeat.enabled=true or false to override it.
+enabled=false
+
 [FpsLimiter]
 ; Capture sync limits an injected application to a multiple of the recording frame
 ; rate while recording.
@@ -1122,6 +1133,7 @@ dx12_focus_analysis=false
 ; a profile. Bare override keys remain readable for old configs, but can
 ; accidentally affect every section with the same key (such as enabled or bitrate)
 ; and should not be used in new profiles.
+; WindowHeartbeat.enabled=true enables the independent 250 ms background heartbeat.
 ; Any [DesktopOverlay] setting can also be overridden this way. A process profile
 ; with a video route is automatically a NOT RECORDING warning target, so it does
 ; not also need to be listed in DesktopOverlay.process_list.
