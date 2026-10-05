@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Project privacy checks:** agent commits now require staged-content and commit-metadata secret checks before and after committing, plus manual review of sensitive capture and diagnostic artifacts.
+
 - **Recording and FG verification:** documented the implemented ownership contracts, measured debugging context and reproducible game/capture validation; repeated DX12 frame-lock contention diagnostics are now metered.
 
 - **DX12 drawing and capture:** resource preparation, overlay recording, submission and capture publication now follow private, named transactions, with regression protection for queue selection and ordering during frame-generation handovers.

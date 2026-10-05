@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-05 - Template commit privacy procedure
+
+- Merged the secret-leak baseline from `llm-prompt-templates` at `1fcfac5` with verified
+  Gitleaks 8.30.1 staged, exact-commit, message-file and metadata commands. Every agent commit now
+  requires both pre- and post-commit checks, with explicit manual fallback and sensitive-artifact review.
+- `AGENTS.md` carries the compressed gate; `secret-leak-prevention.md` owns the complete procedure.
+  `debug-tools.md` links it instead of retaining the older push-only guidance; the wiki index routes it.
+- No hooks, scanners, audit prompts or system tools installed. Scanner absence does not waive review;
+  scanner failures/timeouts and zero scanned commits cannot be reported as a clean automated result.
+
 ### 2026-10-05 - Complete core ownership refactor and behavioral DX12 protection
 
 - Controller recording lifecycle, validated IPC transactions, versioned media submission outcomes,

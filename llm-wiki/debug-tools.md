@@ -141,21 +141,17 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
 | `ffprobe.exe` | Media metadata/probing helper for captures | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\ffprobe.exe` |
 | `llvm-strings.exe` | Extract printable strings from COFF objects / DLLs (reliable on `.o`/`.dll` where `grep -a` mis-parses) | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\llvm-strings.exe` |
 | `llvm-objdump.exe` | Disassemble / inspect sections of the hook DLL/objects | `%USERPROFILE%\Programme\build\captureproject\build\msys64\clang64\bin\llvm-objdump.exe` |
-| `gitleaks.exe` | Secret scanning of git history/ranges | `%LOCALAPPDATA%\Microsoft\WinGet\Links\gitleaks.exe` |
+| `gitleaks.exe` | Secret scanning of git history/ranges | `%USERPROFILE%\Programme\bin\gitleaks.exe` |
 | `trufflehog.exe` | Secret scanning of git history/ranges | `%USERPROFILE%\Programme\bin\trufflehog.exe` |
 
-## Secret scanning of unpushed commits (gitleaks / trufflehog)
+## Commit secret-leak checks
 
-Both tools are installed (2026-08-11): gitleaks 8.30.1 via winget (`Gitleaks.Gitleaks`), trufflehog 3.96.0 downloaded from GitHub into `%USERPROFILE%\Programme\bin` (user PATH). Neither scans anything on its own; run them explicitly before pushing branches that contain work-in-progress commits.
-
-- gitleaks, unpushed-range scan (run inside the repo; `--redact` masks any hit):
-  `gitleaks git --log-opts="origin/main..HEAD" --no-banner --redact`
-- trufflehog, unpushed-range scan. Two Windows quirks in 3.96.0:
-  - The `file://` URI needs a SINGLE slash: `file://C:/Users/...` works; `file:///C:/...` and `file://localhost/C:/...` get mangled to `file://C:/C:/...` / drive-letter-prepended paths and fail to clone.
-  - `--since-commit` must be an explicit SHA that exists in the cloned history. A ref like `origin/main` resolves inside the fresh clone to the clone's own remote-tracking ref (= HEAD), which silently yields `chunks: 0, bytes: 0` instead of an error.
-  Example (PowerShell; derives the path from `%USERPROFILE%` instead of hardcoding a user name):
-  `trufflehog git ("file://" + ($env:USERPROFILE -replace '\\','/') + "/Programme/build/captureproject") --since-commit <sha-of-origin/main> --no-update`
-- 2026-08-11 baseline: both tools report no secrets in the 4 unpushed commits over `af8657dc..HEAD` (gitleaks: "no leaks found"; trufflehog: 65 chunks / 84845 bytes, 0 verified + 0 unverified).
+The mandatory pre-commit, post-commit, and outgoing-range procedure is maintained in
+`llm-wiki/secret-leak-prevention.md`. It includes staged content, planned messages, exact committed
+patches and metadata, scanner commands, manual fallback, artifact review, and remediation.
+Resolve scanner availability for the current task rather than relying on historical installation
+claims. Gitleaks 8.30.1 was found via `Get-Command` on 2026-10-05; TruffleHog is an optional secondary
+scanner. See that procedure for its Windows URI/base-SHA pitfalls.
 
 ## DX12 DRED GPU-fault diagnostics (device-hung / `0x887A0006`)
 
