@@ -18,19 +18,19 @@ void PostSLRenderSession::Run() {
     if (!submissionResources.RenderTransaction(g_PostSLLifecycle, entryLifecycleEpoch, [&](uint32_t epoch) {
         entryLifecycleEpoch = epoch;
         PostSLFlow flow = PostSLFlow::kContinue;
-        flow = Chunk0();
+        flow = PrepareRouteActivation();
         if (flow == PostSLFlow::kReturn) {
             return;
         }
-        flow = Chunk1();
+        flow = AcquireSubmissionResources();
         if (flow == PostSLFlow::kReturn) {
             return;
         }
-        flow = Chunk2();
+        flow = RecordOverlayDraw();
         if (flow == PostSLFlow::kReturn) {
             return;
         }
-        flow = Chunk3();
+        flow = SubmitAndConfirmOutput();
         if (flow == PostSLFlow::kReturn) {
             return;
         }

@@ -39,7 +39,7 @@ static ID3D12Resource* PostFSRProbeScratch(ID3D12Device* device) {
     return scratch;
 }
 
-PostSLFlow PostSLRenderSession::Chunk2() {
+PostSLFlow PostSLRenderSession::RecordOverlayDraw() {
 if (isPostFSRProbe) {
     // Log comprehensive diagnostics on first probe frame
     if (dx12_hook_g_PostFSRProbeFrames.load(std::memory_order_acquire) == 0 &&
@@ -406,7 +406,7 @@ if (willRender && !s_xqSyncFence) {
         HookLogImportant("DX12: PostSL FAILED to create cross-queue sync fence hr=0x%08X", fhr);
     }
 }
-// The queue the submit chain (Chunk3) will run this list on decides its backbuffer barriers.
+// The queue the submit chain (SubmitAndConfirmOutput) will run this list on decides its backbuffer barriers.
 const bool fgSelectedQueuePathPreferred =
     preferSelectedSwapchainQueueSubmitAfterFSR || preferSelectedQueueDirectSubmitAfterFSR ||
     ce::dx12_overlay_policy::ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(

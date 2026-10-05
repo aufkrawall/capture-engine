@@ -3,7 +3,7 @@
 #include "dx12_hook_postsl_session.h"
 
 
-PostSLFlow PostSLRenderSession::Chunk0() {
+PostSLFlow PostSLRenderSession::PrepareRouteActivation() {
 static std::atomic<int> s_postSLCalls{0};
 static std::atomic<int> s_postSLSkipOther{0};
 const bool normalRouteDrawPendingAtEntry = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=

@@ -260,7 +260,7 @@ TEST(FFXTopmostBatchSourceTest, AppCallbackRouteReusesWarmMarkerRendererAndPinsP
     const std::string deepCompositeBody = ownerQueue.substr(deepComposite);
     const size_t helper =
         drawMain.find("bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR()");
-    const size_t nextFunction = drawMain.find("ProcessFrameFlow FrameProcessSession::DrawDeviceScope()", helper);
+    const size_t nextFunction = drawMain.find("ProcessFrameFlow FrameProcessSession::ExecuteDrawTransaction()", helper);
     ASSERT_NE(helper, std::string::npos);
     ASSERT_NE(nextFunction, std::string::npos);
     const std::string helperBody = drawMain.substr(helper, nextFunction - helper);

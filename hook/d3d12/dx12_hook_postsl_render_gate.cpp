@@ -1,7 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_postsl_session.h"
 
-PostSLFlow PostSLRenderSession::Chunk1() {
+PostSLFlow PostSLRenderSession::AcquireSubmissionResources() {
 if (FAILED(devReason)) {
     dx12_hook_g_DeviceRemoved.store(true, std::memory_order_release);
     DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);

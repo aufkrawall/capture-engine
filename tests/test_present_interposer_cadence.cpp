@@ -234,7 +234,7 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
 
     // ...and it enters that queue's live ECL chain rather than the raw D3D12 entry.
     const std::string drawTail = ce::test_source::ReadFile(
-        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_tail.cpp");
+        fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_submission.cpp");
     ASSERT_FALSE(drawTail.empty());
     EXPECT_NE(drawTail.find("ShouldSubmitOverlayThroughHookedECLChain("), std::string::npos);
 

@@ -471,7 +471,7 @@ Font-resource text sampling was the proven trigger; vendor attribution remains u
      queue exactly like the healthy startup paths, and the overlay keeps
      drawing through the transition (no reinit, no blank).
   2. Defense in depth: `ShouldUseDedicatedQueueForOverlaySubmit(...)` reserves
-     the dedicated queue for pure-offscreen lists. `DrawSubmitCoreTail` always
+     the dedicated queue for pure-offscreen lists. `SubmitOverlayDraw` always
      passes `recordedListTouchesBackbuffer=true` (the ProcessFrame list draws
      or copies the backbuffer in every route), and `SubmitOverlayCommandList`
      gained a `listTouchesBackbuffer` parameter (only caller: startup resource

@@ -10,6 +10,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DX12 drawing and capture:** resource preparation, overlay recording, submission and capture publication now follow private, named transactions, with regression protection for queue selection and ordering during frame-generation handovers.
+
 - **DX12 overlay recovery regressions** production draw transactions now verify reset/acquisition/close failures, submission exits and exact backbuffer release behavior; deliberate historical-defect mutations must fail the same behavioral tests.
 
 - **Recording A/V anchor commitment:** first-output timing and source sampling now have one owner, with explicit QPC, elapsed-time, audio-timestamp and frame-grid units. Deterministic regressions preserve inject output timing, authoritative WGC scheduling and exactly-once audio anchoring.

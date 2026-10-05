@@ -394,7 +394,7 @@ ProcessFrameFlow FrameProcessSession::DrawMain() {
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
-    flow = DrawDeviceScope();
+    flow = ExecuteDrawTransaction();
     if (flow != ProcessFrameFlow::kContinue) {
         return flow;
     }
@@ -620,140 +620,26 @@ bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR
 
 struct FrameProcessSession::DrawOperations {
     FrameProcessSession& frame;
-    ProcessFrameFlow SelectCommands() { return frame.DrawAllocSetup(); }
+    ProcessFrameFlow SelectCommands() { return frame.SelectAllocatorSlot(); }
     bool HasCommands() const { return frame.list && frame.alloc; }
-    ProcessFrameFlow ResetAllocator() { return frame.DrawAllocReset(); }
+    ProcessFrameFlow ResetAllocator() { return frame.ResetAllocatorForDraw(); }
     HRESULT AllocatorResetResult() const { return frame.allocResetHr; }
-    void ResetCommandList() { frame.DrawResetFront(); }
+    void ResetCommandList() { frame.ResetCommandListForDraw(); }
     HRESULT CommandListResetResult() const { return frame.listResetHr; }
-    ProcessFrameFlow PrepareRecording() { return frame.DrawSubmitSetup(); }
+    ProcessFrameFlow PrepareRecording() { return frame.PrepareDrawResources(); }
     bool HasSwapchain() const { return frame.sc3 != nullptr; }
     auto AcquireBackBuffer() { return frame.AcquireDrawBackBuffer(); }
     void RetireRenderTargets() { CleanupRTVs(); }
     void RefreshRenderTarget(ID3D12Resource* buffer) { frame.RefreshDrawRenderTarget(buffer); }
-    ProcessFrameFlow RecordCommands() { return frame.DrawSubmitCoreFront(); }
+    ProcessFrameFlow RecordCommands() { return frame.RecordOverlayDraw(); }
     HRESULT CloseCommands() { return frame.CloseDrawCommands(); }
-    ProcessFrameFlow SubmitCommands() { return frame.DrawSubmitCoreTail(); }
+    ProcessFrameFlow SubmitCommands() { return frame.SubmitOverlayDraw(); }
     void ReportFailure(ce::dx12::DrawFailure failure, HRESULT result) { frame.ReportDrawFailure(failure, result); }
 };
 
-ProcessFrameFlow FrameProcessSession::DrawDeviceScope() {
+ProcessFrameFlow FrameProcessSession::ExecuteDrawTransaction() {
     DrawOperations operations{*this};
     return ce::dx12::ExecuteOverlayDraw(operations, dx12_hook_g_State, backBuffer);
-}
-
-ProcessFrameFlow FrameProcessSession::DrawAllocSetup() {
-    allocatorPoolSize = static_cast<int>(dx12_hook_g_State.allocators.size());
-    if (allocatorPoolSize <= 0) {
-return ProcessFrameFlow::kOverlayDone;
-    }
-
-    idx = dx12_hook_g_State.allocIndex % allocatorPoolSize;
-    dx12_hook_g_State.allocIndex = (idx + 1) % allocatorPoolSize;
-
-    // With 16 allocators, we never need to wait under normal conditions.
-    // However, during Alt+Tab / GPU throttle, the GPU may stall and the
-    // fence value for this allocator slot won't advance.  We must check
-    // before Reset() to avoid undefined behaviour (driver hang / crash).
-    list = dx12_hook_g_State.cmdList;
-    alloc = (idx < (int)dx12_hook_g_State.allocators.size()) ? dx12_hook_g_State.allocators[idx] : nullptr;
-    return ProcessFrameFlow::kContinue;
-}
-
-ProcessFrameFlow FrameProcessSession::DrawListAndAlloc() {
-    ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-    if (list && alloc) {
-    flow = DrawAllocReset();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    flow = DrawReset();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    } else {
-        flow = DrawNullList();
-        if (flow != ProcessFrameFlow::kContinue) {
-            return flow;
-        }
-    }
-    return ProcessFrameFlow::kContinue;
-}
-
-ProcessFrameFlow FrameProcessSession::DrawAllocReset() {
-        if (dx12_hook_g_State.fence && idx < (int)dx12_hook_g_State.fenceValues.size() && dx12_hook_g_State.fenceValues[idx] > 0) {
-            UINT64 completed = dx12_hook_g_State.fence->GetCompletedValue();
-            if (completed < dx12_hook_g_State.fenceValues[idx]) {
-                if (activeDebugSample) {
-                    activeDebugSample->flags |= kPresentSampleFlagAllocatorBusy;
-                }
-                static std::atomic<int> s_allocSkipLogs{0};
-                if (s_allocSkipLogs.fetch_add(1, std::memory_order_relaxed) < 30) {
-                    HookLog(
-                        "DX12: Allocator[%d] still in-flight (completed=%llu, needed=%llu), "
-                        "skipping overlay this frame",
-                        idx, completed, dx12_hook_g_State.fenceValues[idx]);
-                }
-return ProcessFrameFlow::kOverlayDone;
-            }
-        }
-        allocResetHr = alloc->Reset();
-    return ProcessFrameFlow::kContinue;
-}
-
-ProcessFrameFlow FrameProcessSession::DrawReset() {
-    ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-    if (SUCCEEDED(allocResetHr)) {
-    flow = DrawResetFront();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    flow = DrawSubmit();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    } else {
-        flow = DrawResetElse();
-        if (flow != ProcessFrameFlow::kContinue) {
-            return flow;
-        }
-    }
-    return ProcessFrameFlow::kContinue;
-}
-
-ProcessFrameFlow FrameProcessSession::DrawResetFront() {
-listResetHr = list->Reset(alloc, nullptr);
-// Log Reset results during FG for diagnostics
-if (g_FGCompat.IsFGActive() || slFGActive) {
-    static std::atomic<int> s_fgResetLogs{0};
-    int fgResetLog = s_fgResetLogs.fetch_add(1, std::memory_order_relaxed);
-    if (fgResetLog < 5) {
-        HookLogImportant(
-            "DX12: FG overlay alloc/list Reset (allocHr=0x%08X listHr=0x%08X idx=%d)",
-            (unsigned)allocResetHr, (unsigned)listResetHr, idx);
-    }
-}
-    return ProcessFrameFlow::kContinue;
-}
-
-ProcessFrameFlow FrameProcessSession::DrawSubmit() {
-    ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
-    if (SUCCEEDED(listResetHr)) {
-    flow = DrawSubmitSetup();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    flow = DrawSc3();
-    if (flow != ProcessFrameFlow::kContinue) {
-        return flow;
-    }
-    } else {
-        flow = DrawSubmitElse();
-        if (flow != ProcessFrameFlow::kContinue) {
-            return flow;
-        }
-    }
-    return ProcessFrameFlow::kContinue;
 }
 
 void FrameProcessSession::ReportDrawFailure(ce::dx12::DrawFailure failure, HRESULT result) {

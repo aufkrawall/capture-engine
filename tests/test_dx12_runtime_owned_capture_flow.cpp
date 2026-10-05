@@ -54,7 +54,7 @@ TEST(DX12RuntimeOwnedCaptureFlowTest, Phase4RuntimeOwnedSyncInitDeferralReachesC
 
 TEST(DX12RuntimeOwnedCaptureFlowTest, OverlayFreeCaptureIsPublishedWhenTheDrawChainDidNotRun) {
     const std::string drawMain = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
-    const std::string drawTail = ReadSource("hook/d3d12/dx12_hook_process_session_draw_tail.cpp");
+    const std::string drawTail = ReadSource("hook/d3d12/dx12_hook_process_session_draw_capture.cpp");
     ASSERT_FALSE(drawMain.empty());
     ASSERT_FALSE(drawTail.empty());
 

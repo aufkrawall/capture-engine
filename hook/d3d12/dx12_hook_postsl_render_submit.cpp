@@ -2,7 +2,7 @@
 #include "dx12_hook_postsl_session.h"
 #include "common/logging/log_meter.h"
 
-PostSLFlow PostSLRenderSession::Chunk3() {
+PostSLFlow PostSLRenderSession::SubmitAndConfirmOutput() {
 if (scQueue && scQueue != queue && dx12_hook_g_State.crossQueueFence && !cachedSLFGActive) {
     UINT64 syncVal = ++dx12_hook_g_State.crossQueueFenceValue;
     // Signal on scQueue: "record SL's GPU progress"
@@ -384,7 +384,7 @@ if (g_PostSLECLDiagCount.load(std::memory_order_relaxed) < 10) {
     }
 }
 const int submitPathCount = (usedRealECL ? 1 : 0) + (usedOrigECL ? 1 : 0) + (usedVirtualCall ? 1 : 0);
-// Chunk2 chose PRESENT<->RENDER_TARGET transitions for the queue that presents the backbuffer; on any other
+// RecordOverlayDraw chose PRESENT<->RENDER_TARGET transitions for the queue that presents the backbuffer; on any other
 // queue they race the runtime's own use of it (PostSLFGSubmitRunsOnPresentingQueue must mirror this chain).
 if (submitPathCount == 1 && cachedSLFGActive && submittedQueue != scQueue &&
     postSLBarrierMode == ce::dx12_overlay_policy::PostSLBackbufferBarrierMode::kPresentToRenderTarget) {

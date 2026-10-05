@@ -57,7 +57,7 @@ TEST(DXGISharedTest, DedicatedOverlayQueueSubmitRequiresOffscreenList) {
 // the dedicated-queue device removal).
 TEST(DXGISharedSourceTest, DedicatedOverlayQueueSubmitGuardsBackbufferLists) {
     namespace fs = std::filesystem;
-    const fs::path tailSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_tail.cpp";
+    const fs::path tailSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_process_session_draw_submission.cpp";
     const fs::path renderSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_overlay_render.cpp";
     const fs::path policySource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_overlay_dedicated_queue.cpp";
     ASSERT_TRUE(fs::exists(tailSource));

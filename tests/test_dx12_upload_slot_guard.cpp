@@ -232,7 +232,7 @@ TEST(DX12UploadSlotGuardTest, PostSLBindsUploadStorageToAllocatorAndItsExactSign
     const std::string adapter = ReadSource("hook/overlay/overlay_adapter.cpp");
     const std::string route = ReadSource("hook/d3d12/dx12_hook_postsl_render_route.cpp");
     const std::string submit = ReadSource("hook/d3d12/dx12_hook_postsl_render_submit.cpp");
-    const std::string normalRoute = ReadSource("hook/d3d12/dx12_hook_process_session_draw_submit.cpp");
+    const std::string normalRoute = ReadSource("hook/d3d12/dx12_hook_process_session_draw_record.cpp");
     ASSERT_FALSE(types.empty());
     ASSERT_FALSE(backend.empty());
     ASSERT_FALSE(adapter.empty());

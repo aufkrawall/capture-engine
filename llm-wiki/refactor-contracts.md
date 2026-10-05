@@ -337,7 +337,7 @@ release at the original point after submission completion/metrics and before pos
 Recording/submission early returns keep the frame destructor backstop. Failed acquisition returning
 a non-null pointer is rejected and released before capture. All temporary frame state is private;
 metrics completion runs inside Run at the old post-Run observation point, before destructor cleanup.
-The normal frame lock lifetime and generated helper readability remain the next behavioral slice.
+Normal frame render admission and the named producer operations are documented below.
 
 Tests: tests/test_dx12_draw_transaction.cpp covers success with unchanged overlayInit/syncInit,
 controlled allocator/list/GetBuffer/close outcomes, absent interface/commands, busy/priming skips,
@@ -369,3 +369,24 @@ threads/latches to verify retained admission, all scoped exits, contention witho
 delegation and callbacks draining outside overlay admission. No sleeps or frame allocations.
 Native unit tests, all FG flows and the product/package gate verify the integration; real games
 and hardware scheduling remain user validation. Last verified: 2026-10-05.
+
+## Readable draw producers (implemented)
+
+The generated Front/Tail/Else/pw5_c3 chain is removed (11 unused wrappers). ExecuteDrawTransaction
+uses private, statically bound operations: SelectAllocatorSlot, ResetAllocatorForDraw,
+ResetCommandListForDraw, PrepareDrawResources, AcquireDrawBackBuffer, RefreshDrawRenderTarget,
+RecordOverlayDraw, CloseDrawCommands and SubmitOverlayDraw. Producer files are draw_resources,
+draw_record and draw_submission; draw_metrics and draw_capture hold completion/publication.
+The session exposes only construction and Run. The GetBuffer lease and admission owner establish
+resource and lock lifetime; metrics completion remains private. Existing named preparation phases,
+reentry guard, independent FSR composition, runtime-owned presentation, multi-output routing,
+capture ordering, queue policy and allocator/fence discipline are preserved. PostSL producer
+operations are PrepareRouteActivation, AcquireSubmissionResources, RecordOverlayDraw and
+SubmitAndConfirmOutput; its full render transaction still owns callback queue resources.
+
+Mechanical verification compared token sequences for ten actual producer functions before/after
+the moves, normalizing method names and expanding the extracted metrics call: all matched.
+Independent queue-method, upload-slot, runtime-owned capture, foreign-overlay and route wiring
+assertions were retained with updated producer paths. Behavioral transaction/admission tests remain
+authoritative for recovery and release. Native, all FG and package gates verify the resulting
+product. Last verified: 2026-10-05. Hardware/game and A/V validation remain pending.

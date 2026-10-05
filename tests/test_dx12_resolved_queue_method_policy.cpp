@@ -126,8 +126,8 @@ TEST(Dx12ResolvedQueueMethodPolicyTest, OverlaySubmitSitesCheckTheirQueue) {
         const char* check;
     };
     const std::vector<Site> sites = {
-        {"dx12_hook_process_session_draw_tail.cpp", R"(DX12_RealD3D12ECLForQueue(eclQueue, "overlay submit"))"},
-        {"dx12_hook_process_session_draw_tail.cpp", R"("overlay completion fence")"},
+        {"dx12_hook_process_session_draw_submission.cpp", R"(DX12_RealD3D12ECLForQueue(eclQueue, "overlay submit"))"},
+        {"dx12_hook_process_session_draw_submission.cpp", R"("overlay completion fence")"},
         {"dx12_hook_overlay_render.cpp", R"(DX12_RealD3D12ECLForQueue(submitQueue, "overlay command list"))"},
         {"dx12_hook_ffx_ui_composite.cpp", R"(DX12_RealD3D12ECLForQueue(submitQueue, "ffx-ui-composite"))"},
         {"dx12_hook_postsl_render_route.cpp", R"(DX12_RealD3D12ECLForQueue(queue, "PostSL transition probe"))"},
