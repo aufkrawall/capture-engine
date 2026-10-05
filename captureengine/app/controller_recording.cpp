@@ -1,4 +1,5 @@
 #include "controller_recording.h"
+#include "child_recording_stop.h"
 
 #include "main_internal.h"
 #include "common/config/live_stream_config.h"
@@ -8,44 +9,16 @@ namespace {
 using namespace ce::controller;
 RecordingSession* g_Session = nullptr;
 
-bool RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
-                                      DWORD timeoutMs) {
-    if (!client || !client->IsConnected())
-        return false;
-
-    ProcessResponse response = ProcessResponse::Error;
-    if (!client->SendCommand(ProcessCommand::StopRecording, nullptr, &response, timeoutMs) ||
-        response == ProcessResponse::Error) {
-        LogWarn("[Controller] %s did not accept the recording stop (%s)", childName,
-                reason ? reason : "unspecified");
-        return false;
-    }
-
-    LogInfo("[Controller] %s accepted the recording stop (%s)", childName, reason ? reason : "unspecified");
-    return true;
+CommandOutcome RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+                                         DWORD timeoutMs) {
+    const auto outcome = detail::RequestChildRecordingStop(client, timeoutMs);
+    const char* result = outcome == CommandOutcome::Accepted ? "accepted" :
+                         outcome == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown";
+    LogInfo("[ControllerSession] request=%llu child=%s stop=%s reason=%s",
+            static_cast<unsigned long long>(ControllerRecordingSnapshot().request), childName, result,
+            reason ? reason : "unspecified");
+    return outcome;
 }
-
-bool RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
-    // Ask media first. It acknowledges before finalization, so controller UI work
-    // does not wait for trailer writing or the post-mux probe. Media clears the
-    // hook-facing shared state before acknowledging. The inject command is only a
-    // fallback when the private media channel cannot accept the request.
-    const bool mediaAccepted = RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
-    const bool stopAccepted =
-        mediaAccepted || RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
-    if (!stopAccepted) {
-        LogWarn("[Controller] No recording child accepted the stop (%s); process teardown is the final fallback",
-                reason ? reason : "unspecified");
-    }
-
-    // Media self-exits after finalization. Drop the controller's reference now so
-    // the next recording creates a fresh authenticated child.
-    if (main_g_MediaClient)
-        main_g_MediaClient->Disconnect();
-    CloseProcessHandle(main_g_hMediaProcess);
-    return stopAccepted;
-}
-
 
 class ControllerEffects final : public RecordingEffects {
 public:
@@ -85,16 +58,28 @@ public:
             return CommandOutcome::AcknowledgementUnknown;
         return response == ProcessResponse::Error ? CommandOutcome::Rejected : CommandOutcome::Accepted;
     }
-    CommandOutcome StopChildren(const char* reason, uint32_t timeoutMs) override {
-        const bool accepted = RequestRecordingStopAndReleaseMedia(reason, timeoutMs);
-        LogInfo("[ControllerSession] request=%llu stop=%s reason=%s",
-                static_cast<unsigned long long>(ControllerRecordingSnapshot().request),
-                accepted ? "accepted; finalization asynchronous" : "acknowledgement unknown", reason);
-        return accepted ? CommandOutcome::Accepted : CommandOutcome::AcknowledgementUnknown;
+    CommandOutcome StopMedia(const char* reason, uint32_t timeoutMs) override {
+        return RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
+    }
+    CommandOutcome StopInject(const char* reason, uint32_t timeoutMs) override {
+        return RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+    }
+    void ReleaseMedia() override {
+        // Media self-exits after asynchronous finalization. A restart needs a
+        // fresh authenticated child even while the previous child is finishing.
+        if (main_g_MediaClient)
+            main_g_MediaClient->Disconnect();
+        CloseProcessHandle(main_g_hMediaProcess);
     }
     void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason,
                 uint64_t elapsedMs, bool exact) override {
         switch (notice) {
+            case RecordingNotice::StopResult:
+                LogInfo("[ControllerSession] request=%llu stop=%s finalization=asynchronous reason=%s",
+                        static_cast<unsigned long long>(snapshot.request),
+                        snapshot.lastStop == CommandOutcome::Accepted ? "accepted" :
+                        snapshot.lastStop == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown", reason);
+                break;
             case RecordingNotice::Clear:
                 ce::ipc::InjectControlChannel(main_g_hInjectProcess)
                     .PublishNotification(OverlayNotificationType::None, 0);
@@ -160,6 +145,12 @@ void PrepareRecordingDiagnosticIdentity() {
 ce::controller::CommandOutcome StartControllerRecording(RecordingStartIntent intent, const char* reason) {
     return g_Session ? g_Session->Start(intent, ce::live_stream::IsLiveStreamTarget(main_g_Config.video.outputDir),
                                        GetTickCount64(), reason)
+                     : ce::controller::CommandOutcome::Rejected;
+}
+
+ce::controller::CommandOutcome ToggleControllerRecording(RecordingStartIntent intent, const char* reason) {
+    return g_Session ? g_Session->Toggle(intent, ce::live_stream::IsLiveStreamTarget(main_g_Config.video.outputDir),
+                                        GetTickCount64(), reason)
                      : ce::controller::CommandOutcome::Rejected;
 }
 

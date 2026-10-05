@@ -22,9 +22,10 @@ void RecordingSession::ClearIntent(const char* reason) {
 
 void RecordingSession::Fail(const char* reason, uint32_t failure, bool mediaGone, bool stopChild,
                             bool disableAutomatic) {
-    if (stopChild)
-        effects_.StopChildren(reason, 1000);
+    CommandGuard command(commandInFlight_);
     ClearIntent(reason);
+    if (stopChild)
+        StopChildEndpoints(reason, 1000);
     effects_.Notice(RecordingNotice::Failed, state_, reason);
     effects_.ClearMediaFailure(failure, mediaGone);
     if (disableAutomatic)
@@ -94,8 +95,30 @@ CommandOutcome RecordingSession::Stop(const char* reason, uint64_t now) {
     if (!active)
         return CommandOutcome::Accepted;
     effects_.Notice(RecordingNotice::Finalizing, state_, reason, pendingMs);
-    state_.lastStop = effects_.StopChildren(reason, 5000);
+    state_.lastStop = StopChildEndpoints(reason, 5000);
     return state_.lastStop;
+}
+
+CommandOutcome RecordingSession::StopChildEndpoints(const char* reason, uint32_t timeoutMs) {
+    // Media acknowledges before finalization. Only a missing acceptance uses
+    // inject fallback; neither an unknown acknowledgement nor a rejection proves
+    // that no output exists. Release the endpoint before permitting a new start.
+    const auto media = effects_.StopMedia(reason, timeoutMs);
+    auto outcome = media;
+    if (media != CommandOutcome::Accepted) {
+        const auto inject = effects_.StopInject(reason, timeoutMs);
+        if (inject == CommandOutcome::Accepted)
+            outcome = CommandOutcome::Accepted;
+        else if (media == CommandOutcome::AcknowledgementUnknown ||
+                 inject == CommandOutcome::AcknowledgementUnknown)
+            outcome = CommandOutcome::AcknowledgementUnknown;
+        else
+            outcome = CommandOutcome::Rejected;
+    }
+    effects_.ReleaseMedia();
+    state_.lastStop = outcome;
+    effects_.Notice(RecordingNotice::StopResult, state_, reason);
+    return outcome;
 }
 
 CommandOutcome RecordingSession::Toggle(RecordingStartIntent intent, bool streaming, uint64_t now,

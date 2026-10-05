@@ -295,26 +295,14 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
+    // The production owner tests prove fallback/result/release order; retain
+    // independent process wiring and media's acknowledgement-before-finalization guard.
     const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
-    const size_t helperBegin = adapter.find("RequestRecordingStopAndReleaseMedia(");
-    const size_t helperEnd = adapter.find("class ControllerEffects", helperBegin);
-    ASSERT_NE(helperBegin, std::string::npos);
-    ASSERT_NE(helperEnd, std::string::npos);
-    const std::string helper = adapter.substr(helperBegin, helperEnd - helperBegin);
-    const size_t mediaRequest = helper.find("RequestChildRecordingStop(main_g_MediaClient.get()");
-    const size_t injectFallback = helper.find("RequestChildRecordingStop(main_g_InjectClient.get()");
-    const size_t endpointRelease = helper.find("main_g_MediaClient->Disconnect()");
-    ASSERT_NE(mediaRequest, std::string::npos);
-    ASSERT_NE(injectFallback, std::string::npos);
-    ASSERT_NE(endpointRelease, std::string::npos);
-    EXPECT_LT(mediaRequest, injectFallback);
-    EXPECT_LT(injectFallback, endpointRelease);
-    EXPECT_NE(helper.find("mediaAccepted || RequestChildRecordingStop"), std::string::npos);
-
-    EXPECT_NE(controllerSource.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
-    EXPECT_NE(controllerSource.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-    // The session regression exercises the timeout/order; the adapter preserves child transport ownership.
-    EXPECT_NE(adapter.find("RequestRecordingStopAndReleaseMedia(reason, timeoutMs)"), std::string::npos);
+    EXPECT_NE(adapter.find("detail::RequestChildRecordingStop(client, timeoutMs)"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(main_g_MediaClient.get()"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(main_g_InjectClient.get()"), std::string::npos);
+    EXPECT_NE(adapter.find("main_g_MediaClient->Disconnect()"), std::string::npos);
+    EXPECT_NE(adapter.find("CloseProcessHandle(main_g_hMediaProcess)"), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 
     const size_t stopCase = mediaSource.find("case ProcessCommand::StopRecording:");

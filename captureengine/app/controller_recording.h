@@ -4,6 +4,7 @@
 
 ce::controller::RecordingSnapshot ControllerRecordingSnapshot();
 ce::controller::CommandOutcome StartControllerRecording(RecordingStartIntent intent, const char* reason);
+ce::controller::CommandOutcome ToggleControllerRecording(RecordingStartIntent intent, const char* reason);
 bool StopControllerRecording(const char* reason);
 void ReconcileControllerRecording(bool includeChildHealth);
 void PrepareRecordingDiagnosticIdentity();

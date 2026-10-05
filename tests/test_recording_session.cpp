@@ -2,6 +2,7 @@
 
 #include <string>
 #include <functional>
+#include <optional>
 #include <vector>
 
 // Exercise the product session implementation without the controller's UI/process globals.
@@ -23,6 +24,11 @@ struct Effects final : RecordingEffects {
     int lives = 0;
     int finalizing = 0;
     int stops = 0;
+    int injectStops = 0;
+    int mediaReleases = 0;
+    int stopResults = 0;
+    std::optional<CommandOutcome> injectStop;
+    std::function<void()> onStop;
     int starts = 0;
     int automaticDisabled = 0;
     uint64_t pendingMs = 0;
@@ -47,11 +53,19 @@ struct Effects final : RecordingEffects {
     bool InjectConnected() const override { return inject; }
     CommandOutcome StartInject() override { ++starts; return start; }
     CommandOutcome StartAudioMedia() override { events.emplace_back("audio"); return audio; }
-    CommandOutcome StopChildren(const char*, uint32_t) override {
-        events.emplace_back("stop"); ++stops; return stop;
+    CommandOutcome StopMedia(const char*, uint32_t) override {
+        events.emplace_back("stop"); ++stops;
+        if (onStop) onStop();
+        return stop;
     }
+    CommandOutcome StopInject(const char*, uint32_t) override {
+        events.emplace_back("inject-stop"); ++injectStops;
+        return injectStop.value_or(stop);
+    }
+    void ReleaseMedia() override { events.emplace_back("release-media"); ++mediaReleases; }
     void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char*, uint64_t elapsed,
                 bool mediaExact) override {
+        if (notice == RecordingNotice::StopResult) ++stopResults;
         if (notice == RecordingNotice::Requested)
             events.emplace_back(snapshot.requested ? "requested" : "released");
         if (notice == RecordingNotice::Failed) { ++failures; streamingFailure = snapshot.streaming; }
@@ -91,7 +105,7 @@ TEST_F(RecordingSessionTest, PendingStopClearsOwnershipBeforeChildAcceptanceAndA
     Start();
     effects.events.clear();
     EXPECT_EQ(session.Stop("stop", 250), CommandOutcome::Accepted);
-    EXPECT_EQ(effects.events, (std::vector<std::string>{"idle", "released", "stop"}));
+    EXPECT_EQ(effects.events, (std::vector<std::string>{"idle", "released", "stop", "release-media"}));
     EXPECT_EQ(effects.pendingMs, 150u);
     EXPECT_FALSE(session.Snapshot().requested);
     EXPECT_EQ(session.Snapshot().pendingSince, 0u);
@@ -234,4 +248,37 @@ TEST_F(RecordingSessionTest, MissingInjectAndAudioCommandFailuresDisarmEveryStar
     EXPECT_EQ(effects.failures, 2);
     EXPECT_FALSE(effects.streamingFailure);
     EXPECT_EQ(session.Snapshot().pendingSince, 0u);
+}
+
+TEST_F(RecordingSessionTest, StopOwnerClassifiesEveryEndpointCombinationAndReleasesExactlyOnce) {
+    for (auto media : {CommandOutcome::Accepted, CommandOutcome::Rejected, CommandOutcome::AcknowledgementUnknown}) {
+        for (auto inject : {CommandOutcome::Accepted, CommandOutcome::Rejected, CommandOutcome::AcknowledgementUnknown}) {
+            Start();
+            effects.stop = media;
+            effects.injectStop = inject;
+            effects.events.clear();
+            const int releases = effects.mediaReleases;
+            const int results = effects.stopResults;
+            effects.onStop = [&] {
+                EXPECT_FALSE(session.Snapshot().requested);
+                EXPECT_EQ(session.Snapshot().pendingIntent, RecordingStartIntent::Idle);
+                EXPECT_EQ(session.Start(RecordingStartIntent::AudioOnly, false, 200, "reentry"), CommandOutcome::Rejected);
+            };
+            const auto expected = media == CommandOutcome::Accepted || inject == CommandOutcome::Accepted
+                ? CommandOutcome::Accepted
+                : media == CommandOutcome::AcknowledgementUnknown || inject == CommandOutcome::AcknowledgementUnknown
+                    ? CommandOutcome::AcknowledgementUnknown : CommandOutcome::Rejected;
+            EXPECT_EQ(session.Stop("stop", 250), expected);
+            EXPECT_EQ(session.Snapshot().lastStop, expected);
+            std::vector<std::string> order{"idle", "released", "stop"};
+            if (media != CommandOutcome::Accepted) order.emplace_back("inject-stop");
+            order.emplace_back("release-media");
+            EXPECT_EQ(effects.events, order);
+            EXPECT_EQ(effects.mediaReleases, releases + 1);
+            EXPECT_EQ(effects.stopResults, results + 1);
+            EXPECT_EQ(session.Stop("repeat", 251), CommandOutcome::Accepted);
+            EXPECT_EQ(effects.mediaReleases, releases + 1);
+            EXPECT_EQ(effects.stopResults, results + 1);
+        }
+    }
 }

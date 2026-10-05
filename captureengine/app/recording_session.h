@@ -7,7 +7,7 @@ enum class RecordingStartIntent : uint8_t;
 namespace ce::controller {
 
 enum class CommandOutcome { Accepted, Rejected, AcknowledgementUnknown };
-enum class RecordingNotice { Clear, Requested, Finalizing, Failed, Live };
+enum class RecordingNotice { Clear, Requested, Finalizing, Failed, Live, StopResult };
 
 struct RecordingSnapshot {
     bool requested = false;
@@ -42,7 +42,9 @@ public:
     virtual bool InjectConnected() const = 0;
     virtual CommandOutcome StartInject() = 0;
     virtual CommandOutcome StartAudioMedia() = 0;
-    virtual CommandOutcome StopChildren(const char* reason, uint32_t timeoutMs) = 0;
+    virtual CommandOutcome StopMedia(const char* reason, uint32_t timeoutMs) = 0;
+    virtual CommandOutcome StopInject(const char* reason, uint32_t timeoutMs) = 0;
+    virtual void ReleaseMedia() = 0;
     virtual void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason,
                         uint64_t elapsedMs = 0, bool exact = false) = 0;
     virtual void ClearMediaFailure(uint32_t failure, bool mediaGone) = 0;
@@ -66,6 +68,7 @@ public:
 
 private:
     void ClearIntent(const char* reason);
+    CommandOutcome StopChildEndpoints(const char* reason, uint32_t timeoutMs);
     void Fail(const char* reason, uint32_t failure, bool mediaGone, bool stopChild, bool disableAutomatic);
     RecordingEffects& effects_;
     RecordingSnapshot state_;

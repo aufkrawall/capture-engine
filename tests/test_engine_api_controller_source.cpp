@@ -14,11 +14,12 @@ std::string Source(const char* name) {
 TEST(EngineApiControllerSourceTest, FrontendsUseTheOwnedRecordingSession) {
     const auto recording = Source("main_recording.cpp");
     const auto api = Source("libcaptureengine_controller.cpp");
-    EXPECT_NE(recording.find("StopControllerRecording(\"record hotkey\")"), std::string::npos);
-    EXPECT_NE(recording.find("StopControllerRecording(\"audio-only hotkey\")"), std::string::npos);
-    EXPECT_NE(recording.find("StartControllerRecording(RecordingStartIntent::Video"), std::string::npos);
+    EXPECT_NE(recording.find("ToggleControllerRecording(RecordingStartIntent::Video, \"record hotkey\")"), std::string::npos);
+    EXPECT_NE(recording.find("ToggleControllerRecording(RecordingStartIntent::AudioOnly, \"audio-only hotkey\")"), std::string::npos);
+    EXPECT_NE(recording.find("ToggleControllerRecording(RecordingStartIntent::Video"), std::string::npos);
     EXPECT_NE(api.find("StartControllerRecording("), std::string::npos);
     EXPECT_NE(api.find("StopControllerRecording("), std::string::npos);
+    EXPECT_NE(api.find("ToggleControllerRecording("), std::string::npos);
     EXPECT_NE(Source("main_entry.cpp").find("ControllerRecordingSessionScope recordingSession"), std::string::npos);
     for (const auto& source : {recording, api, Source("main_internal.h")}) {
         EXPECT_EQ(source.find("main_g_Recording"), std::string::npos);

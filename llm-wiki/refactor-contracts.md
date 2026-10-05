@@ -390,3 +390,29 @@ Independent queue-method, upload-slot, runtime-owned capture, foreign-overlay an
 assertions were retained with updated producer paths. Behavioral transaction/admission tests remain
 authoritative for recovery and release. Native, all FG and package gates verify the resulting
 product. Last verified: 2026-10-05. Hardware/game and A/V validation remain pending.
+
+## Complete stop endpoint policy (implemented)
+
+RecordingSession::StopChildEndpoints owns media-first acceptance, inject fallback and media endpoint
+release. The effects adapter supplies only specific child commands and process release. Acceptance
+from either attempted child wins; without acceptance, any unknown acknowledgement retains uncertainty;
+only explicit rejection by both attempted children produces Rejected. A missing/disconnected endpoint
+or transport failure is unknown, even if a response variable contains Ack or Error. The private
+child_recording_stop.h operation sends the actual StopRecording command and classifies transport
+and response separately. The former bool adapter lost explicit rejection and is removed.
+
+Explicit stop clears requested/pending state before child commands. Failure reconciliation now also
+clears intent under command reentry protection before stopping endpoints. StopResult is a private
+presentation observation emitted once per actual stop transaction, after release and classification;
+diagnostics include request, child, outcome and reason. Neither rejection nor uncertainty proves
+that no output exists. Media finalization remains asynchronous. Hotkeys and C facade toggles call
+ToggleControllerRecording -> RecordingSession::Toggle directly. The facade snapshot only selects
+its existing public error category. Controller shutdown disarms intent; existing process shutdown
+continues to own child exit/finalization, preserving topology.
+
+Tests: test_recording_session.cpp exercises all nine endpoint combinations, exactly-once release/
+result, media acceptance suppressing fallback, repeated stops, restart and rejected nested start
+during stop. test_child_recording_stop.cpp exercises actual command adapter inputs, absent/disconnected
+channels, transport failure with misleading response values, rejection and acknowledgement. Process
+wiring and acknowledgement-before-media-finalization assertions remain in test_process_ipc.cpp.
+Native, all FG and package gate required. Last verified: 2026-10-05.

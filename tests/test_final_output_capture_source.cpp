@@ -137,7 +137,7 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
     const std::string toggle =
         FunctionBody(recording, "void ToggleRecording()", "void ToggleAudioOnlyRecording()");
     ASSERT_FALSE(toggle.empty());
-    EXPECT_NE(toggle.find("StartControllerRecording(RecordingStartIntent::Video"), std::string::npos);
+    EXPECT_NE(toggle.find("ToggleControllerRecording(RecordingStartIntent::Video"), std::string::npos);
     const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
     EXPECT_NE(adapter.find("EnsureSensorProcessReady()"), std::string::npos);
     // Actual intent/sensor/readiness ordering is exercised by RecordingSessionTest.

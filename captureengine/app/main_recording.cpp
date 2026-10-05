@@ -14,17 +14,11 @@ void PublishRecordingFailureOverlayNotification(const char* reason, bool streami
 void CheckRecordingFailureState() { ReconcileControllerRecording(false); }
 
 void ToggleRecording() {
-    if (ControllerRecordingSnapshot().requested)
-        StopControllerRecording("record hotkey");
-    else
-        StartControllerRecording(RecordingStartIntent::Video, "record hotkey");
+    ToggleControllerRecording(RecordingStartIntent::Video, "record hotkey");
 }
 
 void ToggleAudioOnlyRecording() {
-    if (ControllerRecordingSnapshot().requested)
-        StopControllerRecording("audio-only hotkey");
-    else
-        StartControllerRecording(RecordingStartIntent::AudioOnly, "audio-only hotkey");
+    ToggleControllerRecording(RecordingStartIntent::AudioOnly, "audio-only hotkey");
 }
 
 // Toggle the injected in-game overlay on/off at runtime. The inject process owns

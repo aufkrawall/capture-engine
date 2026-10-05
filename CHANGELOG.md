@@ -58,6 +58,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Recording stop feedback:** explicit child rejection now remains distinct from an uncertain acknowledgement. The recording session owns media-first/inject-fallback ordering and endpoint release; API and hotkey toggles use that same lifecycle policy.
+
 - **DX12 frame synchronization:** normal drawing and capture now retain the frame overlay lock, releasing it only around PostSL retirement and route rechecks. This prevents unowned unlocks and concurrent resource mutation after preparation.
 
 - **FG route confirmation** activation and rendering proof now commit through the PostSL lifecycle owner; cancelled proof cannot be restored by a callback already publishing confirmation, while temporary suspension preserves validated handover ownership.

@@ -62,12 +62,16 @@ ce_status_t ControllerCommand(ce::api::Command command, ce_recording_intent_t in
             return StopControllerRecording(reason && *reason ? reason : "engine API stop") ? CE_SUCCESS
                                                                                            : CE_ERROR_IPC_FAILURE;
         case Command::ToggleVideo:
-        case Command::ToggleAudio:
-            if (ControllerRecordingSnapshot().requested || ControllerRecordingIntent() != CE_RECORDING_INTENT_IDLE)
-                return ControllerCommand(Command::Stop, CE_RECORDING_INTENT_IDLE, "engine API toggle");
-            return ControllerCommand(
-                Command::Start,
-                command == Command::ToggleAudio ? CE_RECORDING_INTENT_AUDIO_ONLY : CE_RECORDING_INTENT_VIDEO, nullptr);
+        case Command::ToggleAudio: {
+            // The snapshot selects the public error code; session policy owns
+            // whether this command starts or stops recording.
+            const bool stopping = ControllerRecordingSnapshot().requested;
+            const auto outcome = ToggleControllerRecording(
+                command == Command::ToggleAudio ? RecordingStartIntent::AudioOnly : RecordingStartIntent::Video,
+                "engine API toggle");
+            return outcome == ce::controller::CommandOutcome::Accepted ? CE_SUCCESS :
+                   stopping ? CE_ERROR_IPC_FAILURE : CE_ERROR_PROCESS_FAILURE;
+        }
         case Command::Overlay:
         case Command::Benchmark: {
             if (!main_g_InjectClient || !main_g_InjectClient->IsConnected())
