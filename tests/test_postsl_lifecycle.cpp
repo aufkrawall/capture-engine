@@ -58,11 +58,11 @@ TEST(PostSLLifecycleTest, CancellationDuringProofCannotResurrectConfirmation) {
 TEST(PostSLLifecycleTest, RenderLockCoversRecordingAndSubmissionAndReleasesOnEarlyExit) {
     PostSLLifecycle owner;
     std::vector<int> phases;
-    EXPECT_TRUE(owner.RenderTransaction([&](uint32_t epoch) {
+    EXPECT_TRUE(owner.RenderTransaction(owner.Epoch(), [&](uint32_t epoch) {
         phases.push_back(1);  // entry
         for (int phase : {2, 3}) {  // recording and submission share admission
             bool competingRender = true;
-            std::thread competing([&] { competingRender = owner.RenderTransaction([](uint32_t) {}); });
+            std::thread competing([&] { competingRender = owner.RenderTransaction(owner.Epoch(), [](uint32_t) {}); });
             competing.join();
             EXPECT_FALSE(competingRender);
             phases.push_back(phase);
@@ -71,8 +71,8 @@ TEST(PostSLLifecycleTest, RenderLockCoversRecordingAndSubmissionAndReleasesOnEar
         return;  // the same scope also owns every early return
     }));
     EXPECT_EQ(phases, (std::vector<int>{1, 2, 3}));
-    EXPECT_TRUE(owner.RenderTransaction([](uint32_t) { return; }));
-    EXPECT_TRUE(owner.RenderTransaction([](uint32_t) {}));
+    EXPECT_TRUE(owner.RenderTransaction(owner.Epoch(), [](uint32_t) { return; }));
+    EXPECT_TRUE(owner.RenderTransaction(owner.Epoch(), [](uint32_t) {}));
 }
 
 TEST(PostSLLifecycleTest, CallbackSpanningRetirementSeesCancellationBeforeRenderDrain) {
@@ -83,7 +83,7 @@ TEST(PostSLLifecycleTest, CallbackSpanningRetirementSeesCancellationBeforeRender
     std::thread callback([&] {
         PostSLLifecycle::Callback admission(owner);
         EXPECT_TRUE(admission);
-        EXPECT_TRUE(owner.RenderTransaction([&](uint32_t entryEpoch) {
+        EXPECT_TRUE(owner.RenderTransaction(owner.Epoch(), [&](uint32_t entryEpoch) {
             EXPECT_TRUE(owner.ConfirmRender(entryEpoch, [] {}));
             entered.count_down();
             cancelled.wait();
@@ -108,4 +108,22 @@ TEST(PostSLLifecycleTest, CallbackSpanningRetirementSeesCancellationBeforeRender
     EXPECT_TRUE(retired.load());
     EXPECT_EQ(owner.CallbacksInFlight(), 0u);
     EXPECT_EQ(owner.FinishRetirement([] { return 8; }), 8);
+}
+
+TEST(PostSLLifecycleTest, AdmittedCallbackCannotEnterTheReplacementGeneration) {
+    PostSLLifecycle owner;
+    owner.ResumeCallbacks();
+    PostSLLifecycle::Callback callback(owner);
+    ASSERT_TRUE(callback);
+    const auto admittedEpoch = callback.Epoch();
+    owner.PublishRetirement([] {});
+    owner.FinishRetirement([] {});
+    owner.ResumeCallbacks();
+    bool entered = false;
+    EXPECT_FALSE(owner.RenderTransaction(admittedEpoch, [&](uint32_t) { entered = true; }));
+    EXPECT_FALSE(entered);
+    EXPECT_EQ(owner.CallbacksInFlight(), 1u);
+    PostSLLifecycle::Callback next(owner);
+    EXPECT_TRUE(next);
+    EXPECT_TRUE(owner.RenderTransaction(next.Epoch(), [](uint32_t) {}));
 }

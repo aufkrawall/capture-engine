@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dx12_hook_internal.h"
+#include "postsl_submission_resources.h"
 
 // Decomposed PostSLOverlayRender session (was 2648 lines inline in dx12_hook_internal.h).
 
@@ -18,13 +19,15 @@ extern int s_postSLProbeFrames;
 
 class PostSLRenderSession {
 public:
-    explicit PostSLRenderSession(IDXGISwapChain* pSwapChain) : pSwapChain(pSwapChain) {}
+    PostSLRenderSession(IDXGISwapChain* pSwapChain, uint32_t admissionEpoch)
+        : pSwapChain(pSwapChain), entryLifecycleEpoch(admissionEpoch) {}
     void Run();
 
 private:
     IDXGISwapChain* pSwapChain;
 
     uint32_t entryLifecycleEpoch;
+    ce::dx12::PostSLSubmissionResources<ID3D12CommandQueue> submissionResources;
     bool cachedSLFGActive;
     bool processFrameRecentlySeen;
     bool safePostFSRBootstrapPathForPostSL;

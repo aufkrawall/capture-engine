@@ -299,7 +299,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     EXPECT_LT(normalIdentityLock, rememberNormalIdentity)
         << "normal queue verification and exact native identity publication must share one lock boundary";
 
-    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain, uint32_t admissionEpoch) {");
     ASSERT_NE(postSLRender, std::string::npos);
     const size_t postSubmitHealth = text.find("HRESULT postDevReason = dev->GetDeviceRemovedReason();", postSLRender);
     const size_t healthySuccessfulSubmit =
@@ -329,7 +329,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
-    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t postSLRender = text.rfind("void PostSLOverlayRender(IDXGISwapChain* pSwapChain, uint32_t admissionEpoch) {");
     const size_t exactQueueSelection =
         text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", postSLRender);
     const size_t staleLockedQueueFallback =

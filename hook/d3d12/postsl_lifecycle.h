@@ -14,15 +14,18 @@ public:
     public:
         explicit Callback(PostSLLifecycle& owner) : owner_(owner) {
             owner_.callbacksInFlight_.fetch_add(1, std::memory_order_acq_rel);
+            epoch_ = owner_.Epoch();
             admitted_ = owner_.CallbacksEnabled();
         }
         ~Callback() { owner_.callbacksInFlight_.fetch_sub(1, std::memory_order_acq_rel); }
         Callback(const Callback&) = delete;
         Callback& operator=(const Callback&) = delete;
         explicit operator bool() const { return admitted_; }
+        uint32_t Epoch() const { return epoch_; }
     private:
         PostSLLifecycle& owner_;
         bool admitted_;
+        uint32_t epoch_;
     };
 
     template<class Publish>
@@ -66,10 +69,10 @@ public:
         return true;
     }
     template<class Render>
-    bool RenderTransaction(Render&& render) {
+    bool RenderTransaction(uint32_t admissionEpoch, Render&& render) {
         std::unique_lock<std::mutex> lock(renderMutex_, std::try_to_lock);
-        if (!lock.owns_lock()) return false;
-        std::forward<Render>(render)(Epoch());
+        if (!lock.owns_lock() || admissionEpoch != Epoch()) return false;
+        std::forward<Render>(render)(admissionEpoch);
         return true;
     }
     template<class Retire>

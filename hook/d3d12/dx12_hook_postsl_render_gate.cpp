@@ -212,14 +212,9 @@ scQueue = nullptr;
 
     // AddRef the selected queue under the mutex to prevent it from being
     // freed by DX12_SetCommandQueue (which also uses this mutex) or SL's
-    // internal cleanup while we use it.  Released by scope guard below.
-    if (queue)
-        queue->AddRef();
+    // internal cleanup while we use it. Released after the entire submission.
+    submissionResources.RetainSelection(queue);
 }
-auto queueReleaseGuard = ce::make_scope_guard([&]() {
-    if (queue)
-        queue->Release();
-});
 if (!queue) {
     static int s_noQueue = 0;
     if (s_noQueue++ < 5)
@@ -293,11 +288,8 @@ if (!queue) {
             }
         } else if (!selectedQueueMatchesLockedQueue) {
             shouldKeepExistingLockedQueue = true;
-            queue->Release();  // Release per-call AddRef on the rejected queue
             queue = dx12_hook_g_PostSLLockedQueue;
-            if (queue) {
-                queue->AddRef();  // Per-call AddRef on the locked queue instead
-            }
+            submissionResources.RetainSelection(queue);
         }
     }
 
@@ -545,12 +537,7 @@ if (dx12_hook_g_HadFSRFGPhase) {
     }
 
     slWrapperQueue = pinnedSLWrapperQueue ? pinnedSLWrapperQueue : wrapperCandidate;
-    if (slWrapperQueue)
-        slWrapperQueue->AddRef();
+    submissionResources.RetainWrapper(slWrapperQueue);
 }
-auto slWrapperQueueReleaseGuard = ce::make_scope_guard([&]() {
-    if (slWrapperQueue)
-        slWrapperQueue->Release();
-});
     return PostSLFlow::kContinue;
 }

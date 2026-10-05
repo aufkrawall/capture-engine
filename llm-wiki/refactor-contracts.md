@@ -236,3 +236,31 @@ actual WARP output through DLSS ON/OFF, native swapchain replacement and reactiv
 confirmation cannot alter the new epoch. Every physical output is accounted/covered exactly once,
 FG publication is checked and no debug-layer errors are accepted. Test-only evidence exports live
 in flow_hook_entry.cpp, never the product DLL. Real vendor/game concurrency remains user validation.
+
+## PostSL callback submission resources (implemented)
+
+PostSLSubmissionResources is the private statically-bound queue-reference adapter used around the
+same production phase chain. The gate retains the selected and optional wrapper queue under the
+existing command-queue mutex. Selection replacement transfers those references; the enclosing render
+transaction releases both after submission/early return, before unlocking render admission. The
+idempotent destructor is a cleanup backstop. No extra queue references, allocation, virtual dispatch,
+GPU copy or wait is introduced. Queue selection, fences and source/capture ordering remain unchanged.
+
+The old queueReleaseGuard and slWrapperQueueReleaseGuard were local to Chunk1 and released before
+Chunk2/3 used the queue pointers. Moving their lifetime is a root-cause correction justified by the
+production resource-transaction tests, rather than blanket retention of swapchain backbuffers. The
+backbuffer's existing normal release point is unchanged. Global selected/pinned/last-working queue
+retirement still needs its separate owner migration; this callback lease cannot replace GPU completion.
+
+Callback admission captures its epoch before checking enabled execution. That epoch is carried to
+PostSLRenderSession; RenderTransaction rejects it if it differs from the current epoch after acquiring
+the mutex. A callback admitted just before retirement therefore cannot start in the new generation.
+Rejected admission diagnostics distinguish render-busy from retired-generation and meter correlation
+by admitted/current epoch. Independent settings, route latches and visible FG state remain separate.
+
+Tests: test_postsl_submission_resources.cpp runs the actual production resource/lifecycle orchestration
+with counted queue adapters: references survive all phases even after runtime retirement, early exit
+releases exactly once, replacements and alias roles balance, stale admission acquires nothing.
+test_postsl_lifecycle.cpp additionally covers admission delayed until after replacement. Syntax checks
+compile the real hook consumers. All FG flow scenarios and both product architectures are required
+for the closing gate; real vendor/game lifetime and hardware performance remain user validation.

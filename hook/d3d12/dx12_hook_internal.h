@@ -452,7 +452,7 @@ bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStream
 
 bool ClearStaleNativeFGPresentOwnershipForStreamlineComebackLocked( bool explicitSetOptionsActivation, bool authoritativeStreamlineHandoff, const char* source);
 
-void PostSLOverlayRender(IDXGISwapChain* pSwapChain);
+void PostSLOverlayRender(IDXGISwapChain* pSwapChain, uint32_t admissionEpoch);
 const char* DX12OverlayRenderRouteName(uint32_t route);
 // Logs per-present overlay coverage for the next `presents` presents ([OVERLAY HANDOFF] lines).
 void DX12_ArmOverlayHandoffTrace(const char* reason, int presents, IDXGISwapChain* pSwapChain);

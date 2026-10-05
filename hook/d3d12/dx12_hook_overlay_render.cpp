@@ -378,7 +378,7 @@ if (!callback) {
     return;
 }
 
-PostSLOverlayRender(pSwapChain);
+PostSLOverlayRender(pSwapChain, callback.Epoch());
 }
 
 
