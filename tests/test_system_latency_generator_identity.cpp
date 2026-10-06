@@ -139,6 +139,26 @@ TEST(SystemLatencyGeneratorIdentityTest, APassthroughProxyWithoutFrameGeneration
     EXPECT_GT(tracker.GetSnapshot(ApplicationPresentUs(20)).sampleCount, 0u);
 }
 
+TEST(SystemLatencyGeneratorIdentityTest, ChainSplitsTheGamesSpanFromTheInterposersHold) {
+    // A passthrough interposer presents each frame 5 ms after the game's
+    // Present; the game's frame began 3 ms before it. The log must say which
+    // side of the application Present the time sits on.
+    constexpr int64_t kInterposerHoldUs = 5'000;
+    Tracker tracker;
+    for (int frame = 0; frame < 40; ++frame) {
+        const int64_t presentUs = ApplicationPresentUs(frame);
+        FrameBeginObservation begin;
+        begin.beginUs = presentUs - kSleepLeadUs;
+        begin.kind = FrameBeginKind::LowLatencySleepReturn;
+        tracker.ObserveApplicationPresent(presentUs, begin, kGameThread);
+        const int64_t runtimeUs = presentUs + kInterposerHoldUs;
+        tracker.ObserveDisplay(runtimeUs + kPresentToDisplayUs, runtimeUs);
+    }
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_EQ(diagnostics.anchorToApplicationPresentUs, kSleepLeadUs);
+    EXPECT_EQ(diagnostics.applicationToRuntimePresentUs, kInterposerHoldUs);
+}
+
 TEST(SystemLatencyGeneratorIdentityTest, HalfTheScanoutIsAddedToBothPaths) {
     auto run = [](Tracker& tracker, int64_t refreshPeriodUs, bool markers) {
         tracker.SetDisplayScanoutPeriod(refreshPeriodUs);

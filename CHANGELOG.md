@@ -28,7 +28,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **FSR FG latency by frame identity:** "Latency est." under FSR frame generation now follows each displayed frame back to the game frame it came from using FSR's own frame IDs, instead of counting frames in AMD's queue. Counting drifts whenever FSR skips an interpolated frame, which could overstate latency by several frames.
 
-- **PC latency diagnostics:** the overlay log now reports which boundary each latency sample was measured from and how many frames waited in the flip queue ahead of the displayed one, so vsync-capped and limiter-capped runs can be told apart. A reading that moves by a quarter or more is now logged when it happens, instead of only every 15 seconds.
+- **PC latency diagnostics:** the overlay log now reports which boundary each latency sample was measured from and how many frames waited in the flip queue ahead of the displayed one, so vsync-capped and limiter-capped runs can be told apart. A reading that moves by a quarter or more is now logged when it happens, instead of only every 15 seconds, together with how much of it the game spent before handing the frame over and how much came after.
 
 - **CPU clock overlay:** the CPU Clocks row now shows the highest current core clock in parentheses after the average, matching the CPU load display.
 

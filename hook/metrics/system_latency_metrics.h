@@ -304,6 +304,8 @@ public:
         diagnostics.generatorFramesUnmatchedById = generatorFramesUnmatchedById_;
         diagnostics.generatorQueueDepthById = static_cast<int>(MedianRing(generatorQueueDepths_));
         diagnostics.scanoutToCenterUs = ScanoutToCenterUs();
+        diagnostics.anchorToApplicationPresentUs = MedianRing(measuredAnchorSpans_);
+        diagnostics.applicationToRuntimePresentUs = MedianRing(applicationToRuntimeSpans_);
         return diagnostics;
     }
 
@@ -638,7 +640,7 @@ private:
         applicationFrameTokens_.Clear(); generatorQueueDepths_.Clear(); markerToPresentSpans_.Clear();
         lastMarkerReportPresentUs_ = 0;
         frameBeginIntervals_.Clear();
-        measuredAnchorSpans_.Clear();
+        measuredAnchorSpans_.Clear(); applicationToRuntimeSpans_.Clear();
         lastMeasuredAnchorPresentUs_ = 0;
         inputRetrievals_.Clear(); inputRetrievalThreads_.Clear();
         displays_.Clear(); displayPresentStarts_.Clear(); displayIntervals_.Clear(); framesQueuedAhead_.Clear();
@@ -678,6 +680,7 @@ private:
     ValueRing<256> inputRetrievalThreads_;
     // Measured anchor-to-application-Present spans, for frames without one.
     ValueRing<32> measuredAnchorSpans_;
+    ValueRing<32> applicationToRuntimeSpans_;
     int64_t lastMeasuredAnchorPresentUs_ = 0;
     ValueRing<32> frameBeginIntervals_;
     ValueRing<256> displays_;

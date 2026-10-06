@@ -374,6 +374,10 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   before FSR in the same menu, estimate 46 ms against 29-31 ms. Talos switches Reflex off when FSR FG is enabled and
   does not restore it. At 75 fps GPU-bound gameplay the readings matched before and after the switch (estimate
   40.5/41.7 ms; Reflex on 46-48 before, 34 after).
+- The chain line's `anchorToApp=` (median of the measured frame boundary to the application Present; measured
+  anchors only) and `appToRuntime=` (application Present to the runtime Present carrying the frame) split a reading
+  at the game's Present. The time before it belongs to the game's own pipeline, which a low-latency mode shortens. The
+  time after it belongs to a generator, an interposer such as FSR's proxy, or CE's pacer (2026-10-06).
 - `[Overlay] PC latency sample` also carries `fps=` and `gpu=`: a Reflex-on reading at a few percent GPU load is a
   menu or empty scene, not comparable with gameplay. Talos `20261006_194753`: every ~6 ms Reflex-on reading came with
   the overlay showing GPU 4-10 % at 31-50 W, every Reflex-off reading (35-37 ms) with gameplay load.

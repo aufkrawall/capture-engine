@@ -15,6 +15,13 @@
   both cadences. The 14.0 ms DLSS FG samples at 20:50:58 and 20:53:13 (p2d 0.4 ms, anchor 1.5 ms, base interval
   still 16.4 ms) were the move into the menu, where the generator stops. Not changed: no wrong steady state was
   found.
+- The user reported two things. First, Reflex read "much too high" after FSR FG was switched off: in gameplay at
+  75 fps, 61 ms (20:52:32-41, both paths 61.0) against 32.8 ms before FSR at 70 fps. The marker split was a 34.7 ms
+  anchor-to-runtime-Present and 15.6 ms present-to-display, against 10.9/11.0 before. Second, FSR FG read 53-62 ms in
+  its first period (modelled anchor; Reflex off) but 79 ms 0.5 s into its second (frameBegin=simulation): Talos left
+  Reflex on, 20:52:30-20:53:18, so its markers anchored FSR frames. Whether these are real or mis-paired was not
+  decidable from the log, so `anchorToApp=`/`appToRuntime=` were added to the chain line. Hypothesis: Reflex paces
+  less effectively through AMD's leftover proxy, and the one-frame modelled anchor understates UE without Reflex.
 - Open: the measured FG base read 138.4 at 20:51:21 while the markers said 28.9 ms. It agreed again at 20:51:29.
   Not traced.
 

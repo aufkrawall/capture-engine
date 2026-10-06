@@ -183,6 +183,12 @@ struct Diagnostics {
     // time from the screen-time event until the scan reaches a pixel. Zero
     // until the sensor reported the refresh period.
     int64_t scanoutToCenterUs = 0;
+    // The estimate's anchor-to-runtime-Present span split at the application
+    // Present: the game's own part (frame boundary to its Present, measured
+    // frames only) and what happened after it (a generator's or interposer's
+    // hold, or CE's own pacing wait). Medians; 0 when not observed.
+    int64_t anchorToApplicationPresentUs = 0;
+    int64_t applicationToRuntimePresentUs = 0;
 };
 
 // Cadences measured from the streams themselves, for frame-generation readouts

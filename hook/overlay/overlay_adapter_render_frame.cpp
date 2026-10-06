@@ -190,7 +190,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
                         "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu "
-                        "idQueue=%d idMatched=%llu idUnmatched=%llu scanout=%lldus",
+                        "idQueue=%d idMatched=%llu idUnmatched=%llu scanout=%lldus anchorToApp=%lldus "
+                        "appToRuntime=%lldus",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
                         static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
                         static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
@@ -229,7 +230,11 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         latencyDiagnostics.generatorQueueDepthById,
                         static_cast<unsigned long long>(latencyDiagnostics.generatorFramesMatchedById),
                         static_cast<unsigned long long>(latencyDiagnostics.generatorFramesUnmatchedById),
-                        static_cast<long long>(latencyDiagnostics.scanoutToCenterUs));
+                        static_cast<long long>(latencyDiagnostics.scanoutToCenterUs),
+                        // Where a reading's time sits: in the game before its
+                        // Present, or after it in a generator, interposer or pacer.
+                        static_cast<long long>(latencyDiagnostics.anchorToApplicationPresentUs),
+                        static_cast<long long>(latencyDiagnostics.applicationToRuntimePresentUs));
                     // Which boundary the estimate's samples were anchored on, as running
                     // totals: a window mixing measured and modelled frames is only as
                     // measured as this split says.
