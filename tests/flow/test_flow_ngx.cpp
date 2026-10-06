@@ -111,4 +111,73 @@ TEST(FlowNGX, InFlightEvaluationCannotOverrideExplicitStreamlineOffAndCanReactiv
     ExpectNoDebugLayerErrors();
 }
 
+TEST(FlowNGX, FeatureCreationCannotOverrideAcceptedOffForAnyFGFeature) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    NGXRuntime runtime(game);
+    ASSERT_TRUE(runtime.Ready());
+    runtime.SetGeneratedFrames(2);
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_FALSE(game.DLSSFrameGenerationRunning());
+    ASSERT_FALSE(game.PublishedNGX().fgActive);
+    for (const int feature : {9, 11, 18}) {
+        void* handle = runtime.Create(feature);
+        ASSERT_NE(handle, nullptr) << "feature " << feature;
+        EXPECT_FALSE(game.PublishedNGX().fgActive) << "creation after accepted OFF, feature " << feature;
+        EXPECT_LT(game.PublishedNGX().fgMultiplier, 2) << "feature " << feature;
+        ASSERT_TRUE(runtime.Release(handle));
+    }
+    ASSERT_TRUE(runtime.Close());
+    EXPECT_EQ(runtime.Counters().creates, 3u);
+    EXPECT_EQ(runtime.Counters().evaluations, 0u);
+    EXPECT_EQ(runtime.Counters().liveFeatures, 0u);
+    EXPECT_EQ(runtime.Counters().liveParameters, 0u);
+    ASSERT_TRUE(game.RenderFrames(32)) << game.Error();
+    ExpectPublished(game, 0, 0, "OFF after feature creation");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowNGX, CreationAndEvaluationPreserveObservedFactorsAndLegacyLatch) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    NGXRuntime runtime(game);
+    ASSERT_TRUE(runtime.Ready());
+    for (const int feature : {9, 11, 18}) {
+        runtime.SetGeneratedFrames(2);
+        void* handle = runtime.Create(feature);
+        ASSERT_NE(handle, nullptr);
+        EXPECT_TRUE(game.PublishedNGX().fgActive);
+        EXPECT_EQ(game.PublishedNGX().fgMultiplier, 3) << "creation, feature " << feature;
+        runtime.SetGeneratedFrames(3);
+        ASSERT_TRUE(runtime.Evaluate(handle));
+        EXPECT_EQ(game.PublishedNGX().fgMultiplier, 4) << "evaluation, feature " << feature;
+        runtime.SetGeneratedFrames(0);
+        ASSERT_TRUE(runtime.Evaluate(handle));
+        EXPECT_EQ(game.PublishedNGX().fgMultiplier, 4) << "missing factor is not new activity evidence";
+        ASSERT_TRUE(runtime.Release(handle));
+    }
+    runtime.SetGeneratedFrames(0);
+    void* legacy = runtime.Create(9);
+    ASSERT_NE(legacy, nullptr);
+    EXPECT_EQ(game.PublishedNGX().fgMultiplier, 4) << "legacy default must preserve a latched factor";
+    ASSERT_TRUE(runtime.Release(legacy));
+    void* multiFrame = runtime.Create(18);
+    ASSERT_NE(multiFrame, nullptr);
+    EXPECT_EQ(game.PublishedNGX().fgMultiplier, 2) << "MFG creation retains its explicit default";
+    ASSERT_TRUE(runtime.Release(multiFrame));
+    ASSERT_TRUE(runtime.Close());
+    EXPECT_EQ(runtime.Counters().creates, 5u);
+    EXPECT_EQ(runtime.Counters().evaluations, 6u);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace

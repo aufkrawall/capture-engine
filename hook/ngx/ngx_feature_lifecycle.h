@@ -49,8 +49,7 @@ inline int ResolveNVNGXFrameGenerationMultiplier(int configuredMultiplier, int p
 // frames (1/2/3) while older runtimes expose the output multiplier (2/3/4).
 // Prefer the modern value when both are present: an injected/stale legacy key
 // must not mask what the active runtime actually consumes.
-inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFrames,
-                                                         int legacyMultiplier) noexcept {
+inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFrames, int legacyMultiplier) noexcept {
     if (modernGeneratedFrames >= 1 && modernGeneratedFrames <= 3) {
         return modernGeneratedFrames + 1;
     }
@@ -63,8 +62,7 @@ inline int ResolveNVNGXObservedFrameGenerationMultiplier(int modernGeneratedFram
 // EvaluateFeature is the final NGX consumption boundary. A configured CE
 // override wins there; otherwise telemetry must follow the live option object
 // instead of retaining CreateFeature's conservative 2x fallback.
-inline int ResolveNVNGXEvaluatedFrameGenerationMultiplier(int configuredMultiplier,
-                                                          int modernGeneratedFrames,
+inline int ResolveNVNGXEvaluatedFrameGenerationMultiplier(int configuredMultiplier, int modernGeneratedFrames,
                                                           int legacyMultiplier) noexcept {
     if (configuredMultiplier >= 2 && configuredMultiplier <= 4)
         return configuredMultiplier;
@@ -74,8 +72,7 @@ inline int ResolveNVNGXEvaluatedFrameGenerationMultiplier(int configuredMultipli
 // NVIDIA's public DLSS-G headers use the namespaced `DLSSG.MultiFrameCount`
 // key. Keep accepting the unscoped spelling written by older integrations and
 // CE builds, but never mistake it for the current SDK contract.
-inline bool ResolveNVNGXFrameGenerationParameter(std::string_view name, int multiplier,
-                                                 int& value) noexcept {
+inline bool ResolveNVNGXFrameGenerationParameter(std::string_view name, int multiplier, int& value) noexcept {
     if (multiplier < 2 || multiplier > 4) {
         return false;
     }
@@ -92,7 +89,7 @@ inline bool ResolveNVNGXFrameGenerationParameter(std::string_view name, int mult
 
 template <std::size_t Capacity>
 class FeatureHandleRegistry {
- public:
+public:
     RecordResult RecordCreated(void* handle, int feature) noexcept {
         if (!handle || handle == ClaimedHandle())
             return RecordResult::kInvalid;
@@ -182,8 +179,10 @@ class FeatureHandleRegistry {
         return false;
     }
 
- private:
-    static void* ClaimedHandle() noexcept { return reinterpret_cast<void*>(static_cast<uintptr_t>(1)); }
+private:
+    static void* ClaimedHandle() noexcept {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+    }
 
     struct Slot {
         std::atomic<void*> handle{nullptr};
@@ -193,13 +192,5 @@ class FeatureHandleRegistry {
 
     std::array<Slot, Capacity> slots_{};
 };
-
-// An NGX frame generation evaluation marks DLSS FG active, except while Streamline holds the game's accepted
-// explicit DLSS-G OFF: DLSS-G still evaluates the frame in flight when the OFF lands, and taking that for
-// activity republished DLSS FG 2x for the whole off phase and armed a transition cooldown whose PostSL mirror
-// later hid the overlay for 1549 presents (session 20261003_070202, dx12_fg_switch_test 07:05:34.653).
-inline bool ShouldNGXEvaluationActivateFrameGeneration(int evaluatedMultiplier, bool streamlineHoldsExplicitOff) {
-    return evaluatedMultiplier > 0 && !streamlineHoldsExplicitOff;
-}
 
 }  // namespace ce::ngx_lifecycle

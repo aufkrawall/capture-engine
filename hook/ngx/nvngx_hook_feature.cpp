@@ -1,4 +1,5 @@
 #include "nvngx_hook_internal.h"
+#include "ngx_fg_observation.h"
 #include "common/logging/log_meter.h"
 #include "hook/hooking/module_export_resolver.h"
 
@@ -18,20 +19,17 @@ static PFN_NVSDK_NGX_CreateFeatureVulkan1 oCreateFeature_VULKAN1 = nullptr;
 // FrameGenerationMultiplier key). Both getI and getUI are tried because the
 // runtime may store the value in either slot. Returns 0 when absent or
 // unreadable so the caller falls back to the default/config multiplier.
-static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
-                                      const ParameterVTableOriginals& parameterOriginals) {
+static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params, const ParameterVTableOriginals& parameterOriginals) {
     if (!params) {
         return 0;
     }
     auto readInt = [&](const char* name) -> int {
         int value = 0;
-        if (parameterOriginals.getI &&
-            parameterOriginals.getI(params, name, &value) == NVSDK_NGX_Result_Success) {
+        if (parameterOriginals.getI && parameterOriginals.getI(params, name, &value) == NVSDK_NGX_Result_Success) {
             return value;
         }
         unsigned int uvalue = 0;
-        if (parameterOriginals.getUI &&
-            parameterOriginals.getUI(params, name, &uvalue) == NVSDK_NGX_Result_Success) {
+        if (parameterOriginals.getUI && parameterOriginals.getUI(params, name, &uvalue) == NVSDK_NGX_Result_Success) {
             return static_cast<int>(uvalue);
         }
         return 0;
@@ -41,8 +39,8 @@ static int ReadNVNGXFGMultiplierParam(NVSDK_NGX_Parameter* params,
         generatedFrames = readInt(NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped);
     }
     const int legacyMultiplier = readInt(NVSDK_NGX_Parameter_FrameGenerationMultiplier);
-    const int resolved = ce::ngx_lifecycle::ResolveNVNGXObservedFrameGenerationMultiplier(
-        generatedFrames, legacyMultiplier);
+    const int resolved =
+        ce::ngx_lifecycle::ResolveNVNGXObservedFrameGenerationMultiplier(generatedFrames, legacyMultiplier);
     if (resolved > 0 && g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
         LogOncePerParam("FrameGenerationMultiplierResolution",
                         "NVNGX: observed FG factor modernGeneratedFrames=%d legacyMultiplier=%d -> %dx",
@@ -293,44 +291,9 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                 if (featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction) {
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS RR created (ID 13); awaiting EvaluateFeature evidence");
-                } else if (featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration) {
-                    // DLSS Multi-Frame Generation (MFG) - Feature ID 18
-                    // MFG generates 2x, 3x, or 4x frames per rendered frame
-                    const int mfgMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
-                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
-                        ReadNVNGXFGMultiplierParam(params, parameterOriginals));
-                    state.PublishFGState(GetCurrentProcessId(), true, mfgMultiplier);
-
-                    if (g_IPC->GetSharedMem()->GetDebugLogging())
-                        NVNGXLog(
-                            "Hooked_CreateFeature: DLSS Multi-Frame Generation "
-                            "ACTIVATED (ID 18, %dx multiplier)",
-                            mfgMultiplier);
-
-                    // Signal FG activation (MFG is a form of frame generation)
-                    g_FGCompat.SetDLSSFGMultiplier(mfgMultiplier);
-                    g_FGCompat.SetDLSSFGActive(true);
                 } else {
-                    // DLSS Frame Generation - Feature IDs 9 and 0xB (11).
-                    // Current DLSS runtimes also carry 2x/3x/4x MFG through the
-                    // FrameGenerationMultiplier parameter on these legacy IDs; do not hardcode 2x.
-                    const int resolvedMultiplier = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(
-                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
-                        ReadNVNGXFGMultiplierParam(params, parameterOriginals));
-                    // slDLSSGSetOptions is the authoritative multiplier source for FG v2+ games;
-                    // the 2x CreateFeature default must not clobber a latched Streamline multiplier.
-                    const int fgMultiplier = (resolvedMultiplier >= 3 || g_FGCompat.GetFGMultiplier() < 2)
-                                                 ? resolvedMultiplier
-                                                 : g_FGCompat.GetFGMultiplier();
-                    state.PublishFGState(GetCurrentProcessId(), true, fgMultiplier);
-                    if (g_IPC->GetSharedMem()->GetDebugLogging())
-                        NVNGXLog("Hooked_CreateFeature: DLSS FG ACTIVATED (ID 0x%X, %dx multiplier)", featureID,
-                                 fgMultiplier);
-
-                    // CRITICAL: Signal FG activation to the detection system
-                    // This enables usage-based detection instead of DLL-based detection
-                    g_FGCompat.SetDLSSFGMultiplier(fgMultiplier);
-                    g_FGCompat.SetDLSSFGActive(true);
+                    ce::ngx::ObserveFGCreation({featureID, GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
+                                                ReadNVNGXFGMultiplierParam(params, parameterOriginals)});
                 }
             } else {
                 if (g_IPC->GetSharedMem()->GetDebugLogging())
@@ -442,8 +405,7 @@ static void InstallNGXExportInlineHooks() {
          (void**)&nvngx_hook_oGetCapabilityParameters_D3D11},
         {"NVSDK_NGX_D3D11_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_D3D11,
          (void**)&nvngx_hook_oGetFeatureRequirements_D3D11},
-        {"NVSDK_NGX_D3D11_CreateFeature", (void*)&Hooked_CreateFeature_D3D11,
-         (void**)&nvngx_hook_oCreateFeature_D3D11},
+        {"NVSDK_NGX_D3D11_CreateFeature", (void*)&Hooked_CreateFeature_D3D11, (void**)&nvngx_hook_oCreateFeature_D3D11},
         {"NVSDK_NGX_D3D11_EvaluateFeature", (void*)&Hooked_EvaluateFeature_D3D11,
          (void**)&nvngx_hook_oEvaluateFeature_D3D11},
         {"NVSDK_NGX_D3D11_EvaluateFeature_C", (void*)&Hooked_EvaluateFeature_D3D11_C,
@@ -457,8 +419,7 @@ static void InstallNGXExportInlineHooks() {
          (void**)&nvngx_hook_oGetCapabilityParameters_D3D12},
         {"NVSDK_NGX_D3D12_GetFeatureRequirements", (void*)&Hooked_GetFeatureRequirements_D3D12,
          (void**)&nvngx_hook_oGetFeatureRequirements_D3D12},
-        {"NVSDK_NGX_D3D12_CreateFeature", (void*)&Hooked_CreateFeature_D3D12,
-         (void**)&nvngx_hook_oCreateFeature_D3D12},
+        {"NVSDK_NGX_D3D12_CreateFeature", (void*)&Hooked_CreateFeature_D3D12, (void**)&nvngx_hook_oCreateFeature_D3D12},
         {"NVSDK_NGX_D3D12_EvaluateFeature", (void*)&Hooked_EvaluateFeature_D3D12,
          (void**)&nvngx_hook_oEvaluateFeature_D3D12},
         {"NVSDK_NGX_D3D12_EvaluateFeature_C", (void*)&Hooked_EvaluateFeature_D3D12_C,
@@ -570,8 +531,7 @@ static void InstallNGXExportInlineHooks() {
             ++hooked;
         } else {
             ++failed;
-            HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name,
-                             targets[hookIndex]);
+            HookLogImportant("NVNGX: failed to inline-hook %s!%s at %p", moduleName, entry.name, targets[hookIndex]);
         }
     }
     for (size_t exportIndex = 0; exportIndex < kExportCount; ++exportIndex) {
@@ -595,10 +555,11 @@ static void InstallNGXExportInlineHooks() {
     if (hooked > 0)
         s_HookedModule = hNGX;
 
-    HookLogImportant("NVNGX: directly resolved and inline-hooked %d export(s) in %s at %p "
-                     "(aliases=%d absent=%d failed=%d); preset/parameter overrides now apply without trusting a "
-                     "foreign GetProcAddress chain",
-                     hooked, moduleName, (void*)hNGX, aliased, missing, failed);
+    HookLogImportant(
+        "NVNGX: directly resolved and inline-hooked %d export(s) in %s at %p "
+        "(aliases=%d absent=%d failed=%d); preset/parameter overrides now apply without trusting a "
+        "foreign GetProcAddress chain",
+        hooked, moduleName, (void*)hNGX, aliased, missing, failed);
 }
 
 void NVNGXHook::OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
@@ -648,18 +609,19 @@ void NVNGXHook::Install() {
     // forward through the core's own trampoline and re-enter the core body until
     // the stack overflows. See ce::ngx::ShouldInterceptNgxExportLookup.
     auto RegisterDynamic = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
-        IATHook::RegisterDynamicHookFiltered(name, pHook, ppOrig,
-                                             [](const char* moduleBaseName, HMODULE) {
-                                                 return ce::ngx::ShouldInterceptNgxExportLookup(moduleBaseName);
-                                             });
+        IATHook::RegisterDynamicHookFiltered(name, pHook, ppOrig, [](const char* moduleBaseName, HMODULE) {
+            return ce::ngx::ShouldInterceptNgxExportLookup(moduleBaseName);
+        });
     };
 
-    RegisterDynamic("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&nvngx_hook_oGetParameters_D3D11);
+    RegisterDynamic("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11,
+                    (LPVOID*)&nvngx_hook_oGetParameters_D3D11);
     RegisterDynamic("NVSDK_NGX_D3D11_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D11,
                     (LPVOID*)&nvngx_hook_oAllocateParameters_D3D11);
     RegisterDynamic("NVSDK_NGX_D3D11_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D11,
                     (LPVOID*)&nvngx_hook_oGetCapabilityParameters_D3D11);
-    RegisterDynamic("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12, (LPVOID*)&nvngx_hook_oGetParameters_D3D12);
+    RegisterDynamic("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12,
+                    (LPVOID*)&nvngx_hook_oGetParameters_D3D12);
     RegisterDynamic("NVSDK_NGX_D3D12_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D12,
                     (LPVOID*)&nvngx_hook_oAllocateParameters_D3D12);
     RegisterDynamic("NVSDK_NGX_D3D12_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D12,
@@ -738,17 +700,20 @@ void NVNGXHook::Install() {
         }
     };
 
-    PatchIAT("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&nvngx_hook_oGetParameters_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11,
+             (LPVOID*)&nvngx_hook_oGetParameters_D3D11);
     PatchIAT("NVSDK_NGX_D3D11_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D11,
              (LPVOID*)&nvngx_hook_oAllocateParameters_D3D11);
     PatchIAT("NVSDK_NGX_D3D11_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D11,
              (LPVOID*)&nvngx_hook_oGetCapabilityParameters_D3D11);
-    PatchIAT("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12, (LPVOID*)&nvngx_hook_oGetParameters_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_GetParameters", (LPVOID)&Hooked_GetParams_D3D12,
+             (LPVOID*)&nvngx_hook_oGetParameters_D3D12);
     PatchIAT("NVSDK_NGX_D3D12_AllocateParameters", (LPVOID)&Hooked_AllocParams_D3D12,
              (LPVOID*)&nvngx_hook_oAllocateParameters_D3D12);
     PatchIAT("NVSDK_NGX_D3D12_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_D3D12,
              (LPVOID*)&nvngx_hook_oGetCapabilityParameters_D3D12);
-    PatchIAT("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN, (LPVOID*)&nvngx_hook_oGetParameters_VULKAN);
+    PatchIAT("NVSDK_NGX_VULKAN_GetParameters", (LPVOID)&Hooked_GetParams_VULKAN,
+             (LPVOID*)&nvngx_hook_oGetParameters_VULKAN);
     PatchIAT("NVSDK_NGX_VULKAN_AllocateParameters", (LPVOID)&Hooked_AllocParams_VULKAN,
              (LPVOID*)&nvngx_hook_oAllocateParameters_VULKAN);
     PatchIAT("NVSDK_NGX_VULKAN_GetCapabilityParameters", (LPVOID)&Hooked_GetCaps_VULKAN,
@@ -759,14 +724,16 @@ void NVNGXHook::Install() {
              (LPVOID*)&nvngx_hook_oGetFeatureRequirements_D3D12);
     PatchIAT("NVSDK_NGX_VULKAN_GetFeatureRequirements", (LPVOID)&Hooked_GetFeatureRequirements_VULKAN,
              (LPVOID*)&nvngx_hook_oGetFeatureRequirements_VULKAN);
-    PatchIAT("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11, (LPVOID*)&nvngx_hook_oCreateFeature_D3D11);
+    PatchIAT("NVSDK_NGX_D3D11_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D11,
+             (LPVOID*)&nvngx_hook_oCreateFeature_D3D11);
     PatchIAT("NVSDK_NGX_D3D11_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D11,
              (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11);
     PatchIAT("NVSDK_NGX_D3D11_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D11_C,
              (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D11_C);
     PatchIAT("NVSDK_NGX_D3D11_ReleaseFeature", (LPVOID)&Hooked_ReleaseFeature_D3D11,
              (LPVOID*)&nvngx_hook_oReleaseFeature_D3D11);
-    PatchIAT("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12, (LPVOID*)&nvngx_hook_oCreateFeature_D3D12);
+    PatchIAT("NVSDK_NGX_D3D12_CreateFeature", (LPVOID)&Hooked_CreateFeature_D3D12,
+             (LPVOID*)&nvngx_hook_oCreateFeature_D3D12);
     PatchIAT("NVSDK_NGX_D3D12_EvaluateFeature", (LPVOID)&Hooked_EvaluateFeature_D3D12,
              (LPVOID*)&nvngx_hook_oEvaluateFeature_D3D12);
     PatchIAT("NVSDK_NGX_D3D12_EvaluateFeature_C", (LPVOID)&Hooked_EvaluateFeature_D3D12_C,

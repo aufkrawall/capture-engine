@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DLSS-G OFF during feature setup:** NGX feature creation now respects an accepted OFF request, preventing stale enabled status and duplicate overlay draws in the controlled handover scenario. Creation and evaluation share status publication while preserving observed 3x/4x factors and legacy defaults.
+
 - **DLSS lifecycle regression coverage:** added real-hook NGX create/evaluate/release and OFF/ON scenarios with controlled failures, resource-balance checks and tests that reject premature or stale feature status.
 
 - **Recording and overlay refactor evidence:** inventoried remaining subsystem lifecycles and recorded queue-dispatch provenance risks, with explicit regression and hardware checks before further ownership changes.

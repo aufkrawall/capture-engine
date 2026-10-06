@@ -75,23 +75,19 @@ TEST(NgxFeatureLifecycleTest, ResolvesOfficialAndCompatibilityFrameGenerationPar
 }
 
 TEST(NgxFeatureLifecycleTest, NvngxHookUsesTheOfficialNamespacedMultiFrameCountKey) {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "hook" / "ngx" / "nvngx_hook_internal.h";
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "ngx" / "nvngx_hook_internal.h";
     ASSERT_TRUE(std::filesystem::exists(source));
 
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
-    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount \"DLSSG.MultiFrameCount\""),
-              std::string::npos);
-    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped \"MultiFrameCount\""),
-              std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount \"DLSSG.MultiFrameCount\""), std::string::npos);
+    EXPECT_NE(text.find("NVSDK_NGX_DLSSG_Parameter_MultiFrameCount_Unscoped \"MultiFrameCount\""), std::string::npos);
 }
 
 TEST(NgxFeatureLifecycleTest, ParameterHooksWriteBothFrameGenerationContracts) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "ngx" / "nvngx_hook_params.cpp";
-    const fs::path factorSource =
-        fs::current_path() / "hook" / "ngx" / "nvngx_hook_params_fg_factor.cpp";
+    const fs::path factorSource = fs::current_path() / "hook" / "ngx" / "nvngx_hook_params_fg_factor.cpp";
     ASSERT_TRUE(fs::exists(source));
     ASSERT_TRUE(fs::exists(factorSource));
 
@@ -116,8 +112,6 @@ TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationF
     ASSERT_FALSE(text.empty());
     EXPECT_NE(text.find("IsFrameGenerationFeature(expectedFeature)"), std::string::npos);
     EXPECT_NE(text.find("ResolveAndApplyFGFactorForEvaluation"), std::string::npos);
-    EXPECT_NE(text.find("SetDLSSFGMultiplier(evaluatedFGMultiplier)"), std::string::npos)
-        << "successful evaluations must publish observed factors as well as configured overrides";
 }
 
 // Source invariant: both NVNGX CreateFeature FG branches (legacy IDs 9/0xB and
@@ -131,11 +125,6 @@ TEST(NgxFeatureLifecycleTest, CreateFeatureFGBranchesResolveTheMultiplierParamet
     const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
-    // Both branches route through the resolver helper.
-    EXPECT_NE(text.find("ResolveNVNGXFrameGenerationMultiplier("), std::string::npos);
-    // The legacy FG branch must publish the resolved multiplier, not a
-    // hardcoded 2x.
-    EXPECT_NE(text.find("SetDLSSFGMultiplier(fgMultiplier)"), std::string::npos);
     // The resolver helper reads the parameter through the original vtable
     // getI/getUI, covering the legacy FrameGenerationMultiplier and current
     // namespaced DLSSG.MultiFrameCount contracts.
@@ -212,15 +201,4 @@ TEST(NgxFeatureLifecycleTest, UpdatesReusedHandleAndFailsClosedAtCapacity) {
     EXPECT_EQ(registry.FindFeature(&firstStorage), 13);
     EXPECT_EQ(registry.RecordCreated(&secondStorage, 1), ce::ngx_lifecycle::RecordResult::kFull);
     EXPECT_EQ(registry.RecordCreated(nullptr, 1), ce::ngx_lifecycle::RecordResult::kInvalid);
-}
-
-// 0.1.6951 dx12_fg_switch_test (session 20261003_070202): DLSS-G evaluated the in-flight frame on its presenter
-// thread right after the game's accepted slDLSSGSetOptions(OFF); that evaluation reactivated DLSS FG in CE,
-// published 2x for the whole off phase and armed the cooldown whose PostSL mirror later hid the overlay.
-TEST(NgxFeatureLifecycleTest, FrameGenerationEvaluationDoesNotReactivateAgainstStreamlinesHeldOff) {
-    using ce::ngx_lifecycle::ShouldNGXEvaluationActivateFrameGeneration;
-    EXPECT_TRUE(ShouldNGXEvaluationActivateFrameGeneration(2, false));
-    EXPECT_TRUE(ShouldNGXEvaluationActivateFrameGeneration(4, false));
-    EXPECT_FALSE(ShouldNGXEvaluationActivateFrameGeneration(2, true));
-    EXPECT_FALSE(ShouldNGXEvaluationActivateFrameGeneration(0, false));
 }

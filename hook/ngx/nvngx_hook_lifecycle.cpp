@@ -1,8 +1,7 @@
 #include "nvngx_hook_internal.h"
+#include "ngx_fg_observation.h"
 
 #include "rr_handoff_gate.h"
-#include "common/logging/log_meter.h"
-#include "hook/streamline/streamline_hook.h"
 
 namespace {
 
@@ -89,8 +88,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     const int configuredFGMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
     int evaluatedFGMultiplier = 0;
     if (IsFrameGenerationFeature(expectedFeature)) {
-        evaluatedFGMultiplier =
-            ResolveAndApplyFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
+        evaluatedFGMultiplier = ResolveAndApplyFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
         if (configuredFGMultiplier > 0 && evaluatedFGMultiplier == configuredFGMultiplier) {
             static std::atomic<uint32_t> enforcementLogs{0};
             if (enforcementLogs.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -103,27 +101,8 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     }
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
     if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result))) {
-        const bool streamlineHoldsExplicitOff = StreamlineHook::HoldsExplicitDLSSGOff();
-        if (IsFrameGenerationFeature(expectedFeature) &&
-            ce::ngx_lifecycle::ShouldNGXEvaluationActivateFrameGeneration(evaluatedFGMultiplier,
-                                                                          streamlineHoldsExplicitOff)) {
-            g_FGCompat.SetDLSSFGMultiplier(evaluatedFGMultiplier);
-            g_FGCompat.SetDLSSFGActive(true);
-            if (g_IPC && g_IPC->GetSharedMem()) {
-                auto& state = g_IPC->GetSharedMem()->dlssState;
-                state.PublishFGState(GetCurrentProcessId(), true, evaluatedFGMultiplier);
-            }
-        }
-        if (IsFrameGenerationFeature(expectedFeature) && evaluatedFGMultiplier > 0) {
-            // Once per held-OFF episode: the first evaluation that would have reactivated DLSS FG.
-            static ce::log_meter::ChangeGate s_heldOffGate;
-            if (s_heldOffGate.Observe(streamlineHoldsExplicitOff ? 1 : 0) && streamlineHoldsExplicitOff) {
-                HookLogImportant(
-                    "NVNGX FG: %s EvaluateFeature (%dx) while Streamline holds the game's explicit DLSS-G OFF - "
-                    "an in-flight frame, not a reactivation (tid=0x%lX)",
-                    api, evaluatedFGMultiplier, GetCurrentThreadId());
-            }
-        }
+        if (IsFrameGenerationFeature(expectedFeature))
+            ce::ngx::ObserveFGEvaluation(evaluatedFGMultiplier, api);
         const auto evaluation = nvngx_hook_g_FeatureRegistry.MarkEvaluated(const_cast<void*>(handle));
         if (evaluation.found) {
             PublishEvaluatedFeature(evaluation.feature, evaluation.firstEvaluation);
@@ -131,8 +110,9 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
             static std::atomic<uint32_t> untrackedLogs{0};
             const uint32_t logIndex = untrackedLogs.fetch_add(1, std::memory_order_relaxed);
             if (logIndex < 8 && GetActiveGraphicsConfig().forceRayReconstruction) {
-                HookLogImportant("NVNGX RR: %s evaluate succeeded for untracked handle=%p; CreateFeature hook was missed",
-                                 api, handle);
+                HookLogImportant(
+                    "NVNGX RR: %s evaluate succeeded for untracked handle=%p; CreateFeature hook was missed", api,
+                    handle);
             }
         }
     } else if (expectedFeature == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction) {
@@ -215,33 +195,33 @@ void TrackNgxFeatureCreation(int featureID, NVSDK_NGX_Result result, void** hand
     }
 }
 
-NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D11(void* ctx, const void* handle,
-                                                       const NVSDK_NGX_Parameter* params, void* callback) {
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D11(void* ctx, const void* handle, const NVSDK_NGX_Parameter* params,
+                                                      void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_D3D11, ctx, handle, params, callback, "D3D11");
 }
 
 NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D11_C(void* ctx, const void* handle,
-                                                         const NVSDK_NGX_Parameter* params, void* callback) {
+                                                        const NVSDK_NGX_Parameter* params, void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_D3D11_C, ctx, handle, params, callback, "D3D11_C");
 }
 
-NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D12(void* ctx, const void* handle,
-                                                       const NVSDK_NGX_Parameter* params, void* callback) {
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D12(void* ctx, const void* handle, const NVSDK_NGX_Parameter* params,
+                                                      void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_D3D12, ctx, handle, params, callback, "D3D12");
 }
 
 NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_D3D12_C(void* ctx, const void* handle,
-                                                         const NVSDK_NGX_Parameter* params, void* callback) {
+                                                        const NVSDK_NGX_Parameter* params, void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_D3D12_C, ctx, handle, params, callback, "D3D12_C");
 }
 
-NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_VULKAN(void* ctx, const void* handle,
-                                                        const NVSDK_NGX_Parameter* params, void* callback) {
+NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_VULKAN(void* ctx, const void* handle, const NVSDK_NGX_Parameter* params,
+                                                       void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_VULKAN, ctx, handle, params, callback, "VULKAN");
 }
 
 NVSDK_NGX_Result __cdecl Hooked_EvaluateFeature_VULKAN_C(void* ctx, const void* handle,
-                                                          const NVSDK_NGX_Parameter* params, void* callback) {
+                                                         const NVSDK_NGX_Parameter* params, void* callback) {
     return ProcessEvaluateFeature(nvngx_hook_oEvaluateFeature_VULKAN_C, ctx, handle, params, callback, "VULKAN_C");
 }
 

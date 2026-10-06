@@ -1,7 +1,8 @@
 # NGX real-hook lifecycle flow coverage
 
-Last verified: 2026-10-06, clean gate 0.1.7006 and final content-validated verification 0.1.7007.
-Both gates passed native units, all 17 FG flows, Python self-tests, x64 ASan/UBSan and lint ratchets.
+Last verified: 2026-10-06. Harness foundation: clean 0.1.7006 / final verification 0.1.7007.
+Publication slice: closing 0.1.7008 passed x64/x86 products, native/Python and all 19 FG flows.
+Four focused cases and five production mutants pass; this slice did not rerun sanitizers/runtime integration.
 This is D1 coverage in [architecture-debt-plan.md](../architecture-debt-plan.md).
 
 ## Production boundary and controlled runtime
@@ -50,7 +51,7 @@ python tools/refactor/check_ngx_flow_mutations.py
 
 The focused run `20261006_170651_build_7005` passed both scenarios (5.1 seconds of flow execution).
 Its native filter selected zero unit tests: this is flow evidence, not new native-suite coverage.
-`check_ngx_flow_mutations.py` temporarily alters only the production lifecycle source, preserves its
+`check_ngx_flow_mutations.py` temporarily alters production observation/lifecycle sources, preserves their
 exact bytes/newlines, bounds each child build, and restores/retests the original in finally.
 It must observe an actual assertion failure in the expected scenario, not a compiler/loader error.
 Mutants: ignore accepted OFF at evaluation, omit release republication, and publish creation as rendering.
@@ -65,6 +66,44 @@ The 712 accepted clang-tidy warnings were unchanged; full scope now includes the
 (991 total). Setup 0.1.7007 is a verified 38,591,852-byte PE. No unit/flow/fuzz processes lingered.
 Runtime integration, x86 sanitizers (unavailable), real games, foreign overlays and A/V remain separate.
 
+
+## Private NGX publication boundary (D7 slice)
+
+`hook/ngx/ngx_fg_observation.{h,cpp}` exposes only successful creation/evaluation observations.
+The module selects creation default/config/observed versus latched factors, preserves MFG/legacy
+precedence, rejects missing evaluation factors, applies accepted Streamline-OFF precedence, and owns
+all NGX compatibility/shared publication writes. No state references, locks, SDK objects or setter
+choices escape its contract. The legacy latched factor is read once instead of twice.
+SDK invocation/feature registry, source-specific parameter enforcement and accepted Streamline settings
+stay in their existing owners; callbacks still run on the original SDK thread. No new wait, lock,
+per-present allocation/virtual dispatch, COM reference operation or frame copy was introduced.
+This is not a complete SDK generation/retirement owner or proof of concurrent settings publication.
+
+The new `FlowNGX.FeatureCreationCannotOverrideAcceptedOffForAnyFGFeature` fails before the change
+for IDs 9/11/18 and reports 32 double-drawn OFF outputs (`20261006_174843_build_7007`). After the
+boundary migration it passes. `CreationAndEvaluationPreserveObservedFactorsAndLegacyLatch` verifies
+actual 3x creation, 4x evaluation, missing-factor retention, legacy latch and MFG default publication.
+The unused evaluation predicate/mirror test and two setter-spelling assertions were removed only
+after production mutation evidence. Parameter-key and configured-enforcement wiring checks remain;
+a controlled configured-override scenario still needs an isolated per-scenario config fixture.
+
+Mutation runner now restores each target before the next case and all target bytes in finally. It
+checks observation and lifecycle sources independently; all five defects were detected and originals
+passed: ignore held OFF, omit release publication, publish SR/RR creation early, ignore an observed
+creation factor, and publish an unknown evaluation factor. Each expected flow assertion must fail.
+
+Bounded implementation locality: feature/lifecycle/feature-policy/internal/factor-enforcement sources
+were 1,833 lines / 22,360 approximate tokens at 2b106188. The same set plus the new owner/header is
+1,853 / 22,069 (UTF-8 characters / 4); private policy entry is 66 lines. These are fixed source scopes,
+not total transitive context: unchanged FGCompatibility/Streamline/config dependencies and the flow
+adapters above remain necessary. Caller choices for MFG/legacy/latch/OFF and three publication sites
+now belong to one module. No whole-project source-reading or maintainability claim follows.
+
+Closing evidence: `20261006_181906_build_7008` ran the unfiltered incremental product/package gate
+(native 45.3 s, 19 flows 37.6 s, Python tool suites). Installer 0.1.7008 is a verified
+38,591,604-byte PE; no test processes lingered. Targeted format checks cover all touched sources.
+This gate did not run sanitizers, fuzz or optional runtime/hardware integration; prior harness
+sanitizer evidence at 0.1.7007 remains historical and does not cover the new publication source.
 
 ## Separate cold-start finding and limits
 

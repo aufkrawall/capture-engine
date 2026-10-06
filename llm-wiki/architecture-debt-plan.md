@@ -13,9 +13,12 @@ This document supersedes the completed sections 1-10 of the old temporary refact
   audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
 - D1 partial: NGX core fake and two real-hook lifecycle/OFF/ON scenarios pass focused/17-flow gates;
   all three production mutants are detected. Clean 0.1.7006 and final verification 0.1.7007 passed.
-  Contracts and cold-start accounting
-  finding: [NGX flow lifecycle](frame-generation/ngx-flow-lifecycle.md). Foreign interposer, two-vtable
-  and SDK unload/retirement coverage remain required. D2-D12 pending; apply D9/D12 inside each slice.
+  Contracts and cold-start finding: [NGX flow lifecycle](frame-generation/ngx-flow-lifecycle.md). Foreign interposer, two-vtable
+  and SDK unload/retirement coverage remain required. Other phase exits remain open; apply D9/D12 inside each slice.
+- D7 publication slice verified: one private NGX creation/evaluation boundary owns multiplier selection,
+  accepted-OFF precedence and compatibility/shared publication. Four focused cases, five production
+  mutations and closing 0.1.7008 (native/Python/all 19 FG flows, x64/x86 products/package) pass.
+  Full SDK settings concurrency/generation and module/feature/context retirement remain pending.
 - The first queue ownership slice must characterize exact-vtable original resolution, coherent cache
   publication and retirement before migrating install/forward consumers.
 - Baseline no-build reuse refused the stale unit-test link manifest at 0.1.7004; no native test ran.
