@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **PC latency diagnostics:** the overlay log now reports which boundary each latency sample was measured from and how many frames waited in the flip queue ahead of the displayed one, so vsync-capped and limiter-capped runs can be told apart.
+
 - **CPU clock overlay:** the CPU Clocks row now shows the highest current core clock in parentheses after the average, matching the CPU load display.
 
 - **Verification reliability:** DX12 release-order tests now record events without allocating during destructor cleanup, and small shared-helper/tool warnings no longer block the clean verification gate.

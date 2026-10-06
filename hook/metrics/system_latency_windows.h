@@ -61,6 +61,14 @@ inline int64_t MedianRing(const ValueRing<Capacity>& values) {
 }
 
 template <size_t Capacity>
+inline int64_t MaximumRing(const ValueRing<Capacity>& values) {
+    int64_t maximum = 0;
+    for (size_t i = 0; i < values.Size(); ++i)
+        maximum = (std::max)(maximum, values.At(i));
+    return maximum;
+}
+
+template <size_t Capacity>
 inline int64_t MedianRingWithCandidate(const ValueRing<Capacity>& values, int64_t candidate) {
     std::array<int64_t, Capacity + 1> sorted{};
     const size_t first = values.Size() == Capacity ? 1 : 0;

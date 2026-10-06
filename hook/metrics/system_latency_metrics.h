@@ -129,6 +129,7 @@ public:
             else if (displayIntervalUs > kMaximumIntervalUs)
                 queueDepthMeasurable_ = false;
         }
+        ObserveFramesQueuedAheadLocked(presentStartTimeUs);
         displays_.Push(screenTimeUs);
         displayPresentStarts_.Push(presentStartTimeUs);
         ++displaysSinceQueueSeed_;
@@ -233,6 +234,8 @@ public:
         }
         diagnostics.applicationFramesInFlight = static_cast<uint32_t>(InFlightApplicationFramesLocked());
         diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
+        diagnostics.framesQueuedAhead = static_cast<int>(MedianRing(framesQueuedAhead_));
+        diagnostics.framesQueuedAheadMax = static_cast<int>(MaximumRing(framesQueuedAhead_));
         diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
         diagnostics.applicationPresentStreamFresh = IsApplicationPresentStreamFreshLocked();
         diagnostics.frameBeginIntervalUs = MedianRing(frameBeginIntervals_);
@@ -367,6 +370,19 @@ private:
         if (displayIntervalUs > 0 && markerIntervalUs <= displayIntervalUs * 13 / 10)
             return true;
         return false;
+    }
+
+    // Frames that reached the screen while this one waited between its runtime
+    // PresentStart and its own display: the depth of the queue below Present
+    // that it sat behind. A vsync-capped frame rate shows here as a full flip
+    // queue; free-running VRR and low-latency modes keep it near zero.
+    void ObserveFramesQueuedAheadLocked(int64_t presentStartTimeUs) {
+        if (presentStartTimeUs <= 0 || displays_.Empty())
+            return;
+        int64_t aheadCount = 0;
+        for (size_t i = displays_.Size(); i > 0 && displays_.At(i - 1) > presentStartTimeUs; --i)
+            ++aheadCount;
+        framesQueuedAhead_.Push(aheadCount);
     }
 
     // Application frames the game has handed to the generator that have not yet
@@ -556,7 +572,7 @@ private:
         frameBeginIntervals_.Clear();
         measuredAnchorSpans_.Clear();
         lastMeasuredAnchorPresentUs_ = 0;
-        displays_.Clear(); displayPresentStarts_.Clear(); displayIntervals_.Clear();
+        displays_.Clear(); displayPresentStarts_.Clear(); displayIntervals_.Clear(); framesQueuedAhead_.Clear();
         fallbackDisplayedInputIntervals_.Clear(); nativeDisplayedSimulationIntervals_.Clear();
         nativeEstimatedSamples_.Clear(); fallbackSamples_.Clear();
         lastFallbackPresentTimeUs_ = 0;
@@ -591,6 +607,7 @@ private:
     ValueRing<256> displays_;
     ValueRing<256> displayPresentStarts_;
     ValueRing<32> displayIntervals_;
+    ValueRing<32> framesQueuedAhead_;
     ValueRing<32> fallbackDisplayedInputIntervals_;
     ValueRing<32> nativeDisplayedSimulationIntervals_;
     SampleWindow nativeEstimatedSamples_;

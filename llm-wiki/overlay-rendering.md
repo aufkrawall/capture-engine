@@ -295,7 +295,10 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   from bleeding across FG 2x/3x/4x transitions or causing doubled/corrupted readings.
 - VSync and backbuffer queueing need no separate term: a blocking `Present` is entered before the block and reaches the
   screen after it, so the wait is inside `present-to-display`, and a block that instead delays the wrapper's return
-  moves the next frame's boundary.
+  moves the next frame's boundary. Unverified on hardware as of 2026-10-06 (the user reports no visible vsync cost), so
+  `queuedAhead=`/`queuedAheadMax=` in `[Overlay] PC latency anchors` count the displays that reached the screen
+  between a frame's runtime PresentStart and its own display: a vsync-capped rate must read about the flip-queue depth
+  minus one, free-running VRR about zero. Test: `FramesQueuedAheadExposeAFullFlipQueue`.
 
 ### Failure modes and bounds
 

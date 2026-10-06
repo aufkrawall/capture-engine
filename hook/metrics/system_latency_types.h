@@ -97,6 +97,12 @@ struct Diagnostics {
     // at the API boundary; frame begin is the input-sampling anchor paired with
     // it when a low-latency sleep was observed.
     int64_t displayIntervalUs = 0;
+    // Displays that reached the screen between a frame's runtime PresentStart
+    // and its own display, median and maximum over the recent window: the flip
+    // or render queue it waited behind. Vsync capping the frame rate is a full
+    // queue here; zero means each frame went straight to the screen.
+    int framesQueuedAhead = 0;
+    int framesQueuedAheadMax = 0;
     int64_t applicationIntervalUs = 0;
     int64_t frameBeginIntervalUs = 0;
     int64_t markerIntervalUs = 0;

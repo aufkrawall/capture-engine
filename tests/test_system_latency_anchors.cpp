@@ -174,3 +174,29 @@ TEST(SystemLatencyAnchorTest, FramesWithoutABoundaryUseTheRecentlyMeasuredSpan) 
     EXPECT_EQ(diagnostics.lastFrameBeginKind, FrameBeginKind::Modelled);
     EXPECT_EQ(diagnostics.lastAnchorToPresentUs, 10'000);
 }
+
+TEST(SystemLatencyAnchorTest, FramesQueuedAheadExposeAFullFlipQueue) {
+    // Vsync capping the frame rate shows up as frames that reach the screen
+    // while the presented one is still waiting; a frame that goes straight to
+    // the screen has none ahead of it.
+    auto feed = [](Tracker& tracker, int queueDepth) {
+        const int64_t intervalUs = 6'944;
+        for (int i = 0; i < 24; ++i) {
+            const int64_t presentUs = 4'000'000 + intervalUs * i;
+            tracker.ObservePresent(presentUs);
+            const int displayedFrame = i - queueDepth;
+            if (displayedFrame < 0)
+                continue;
+            const int64_t displayedPresentUs = 4'000'000 + intervalUs * displayedFrame;
+            tracker.ObserveDisplay(displayedPresentUs + intervalUs * queueDepth, displayedPresentUs + 200);
+        }
+    };
+    Tracker vsyncCapped;
+    feed(vsyncCapped, 3);
+    Tracker immediate;
+    feed(immediate, 1);
+
+    EXPECT_EQ(vsyncCapped.GetDiagnostics().framesQueuedAhead, 2);
+    EXPECT_EQ(vsyncCapped.GetDiagnostics().framesQueuedAheadMax, 2);
+    EXPECT_EQ(immediate.GetDiagnostics().framesQueuedAhead, 0);
+}
