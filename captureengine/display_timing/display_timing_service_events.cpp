@@ -18,6 +18,16 @@ bool DisplayTimingService::Impl::IsTrackedProcess(uint32_t processId) const {
 void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto& header = event->EventHeader;
+    // Any event moves the stream's clock; a pump that went quiet ends its burst.
+    if (!inputBursts_.empty()) {
+        inputBursts_.FlushBefore(header.TimeStamp.QuadPart,
+                                 [this](const DisplayInputRetrievalBursts::Burst& burst) { PublishInputBurst(burst); });
+    }
+    if (IsEqualGUID(header.ProviderId, kWin32kProvider)) {
+        if (header.EventDescriptor.Id == kRetrieveInputMessage)
+            HandleInputRetrieval(event);
+        return;
+    }
     if (IsEqualGUID(header.ProviderId, kRuntimeProvider)) {
         if ((header.EventDescriptor.Id == kRuntimePresentStart ||
              header.EventDescriptor.Id == kRuntimeMpoPresentStart) &&
@@ -56,6 +66,24 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
 
     if (IsEqualGUID(header.ProviderId, kFrameTypeProvider) && header.EventDescriptor.Id == kGeneratedFlip)
         HandleGeneratedFlip(event);
+}
+
+void DisplayTimingService::Impl::HandleInputRetrieval(EVENT_RECORD* event) {
+    const auto& header = event->EventHeader;
+    if (!IsTrackedProcess(header.ProcessId))
+        return;
+    inputBursts_.Observe(header.ProcessId, header.ThreadId, header.TimeStamp.QuadPart,
+                         [this](const DisplayInputRetrievalBursts::Burst& burst) { PublishInputBurst(burst); });
+}
+
+void DisplayTimingService::Impl::PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst) {
+    const int64_t timeUs = DisplayTimingQpcToUs(burst.endTimestamp, qpcFrequency_);
+    if (outputs_.PublishInputRetrieval(targets_, burst.processId, burst.threadId, timeUs) &&
+        inputLoggedPid_ != burst.processId) {
+        inputLoggedPid_ = burst.processId;
+        LogInfo("[DisplayTiming] Input-retrieval timing available: pid=%u tid=%u retrievalsInBurst=%u",
+                burst.processId, burst.threadId, burst.retrievals);
+    }
 }
 
 void DisplayTimingService::Impl::HandleNvidiaFlipRequest(EVENT_RECORD* event) {

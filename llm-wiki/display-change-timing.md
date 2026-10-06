@@ -32,6 +32,16 @@ stream is unavailable, denied, failed, or two seconds stale.
   immediate) and publish displayed frames into shared memory, so the overlay's latency estimator receives display timing
   and reports estimated latency (`Latency est. XX.X ms`) for Vulkan titles without Reflex/PCL markers. Untracked
   processes are filtered out in `HandleQueuePacket` before association.
+- **Input retrieval (2026-10-06, ABI 69).** The session also enables `Microsoft-Windows-Win32k` event 0x3f
+  `RetrieveInputMessage` (keyword `0x0400000040400000`, the event PresentMon's input-to-photon metrics use; optional,
+  `Input-retrieval events are unavailable` when refused). `DisplayInputRetrievalBursts`
+  (`display_timing_input.h`) reduces a tracked process's retrievals to one burst end per thread and pump loop
+  (`kInputRetrievalBurstGapUs` = 500 us; a quiet thread is flushed by any later event) and publishes
+  `(timeUs, threadId)` into `SharedDisplayTiming::inputSamples`. The overlay anchors a frame on the presenting
+  thread's last burst since its previous application Present (`FindInputRetrievalLocked`). Health line:
+  `input(retrievals=,bursts=)`; first delivery per process logs `Input-retrieval timing available`. Unverified on
+  hardware: whether games reading raw input in bulk (`GetRawInputBuffer`) or via XInput/GameInput produce the event at
+  all - XInput/GameInput certainly do not.
 - **NVIDIA frame generation does not use the `Intel-PresentMon` `FlipFrameType` provider.** That provider's frame-type
   enumeration only names `Intel_XEFG` (50) and `AMD_AFMF` (100); a 2026-08-30 Talos run with DLSS 4 MFG at
   `published_multiplier=4` logged `frameType(received=0 ...)` for the whole session. An earlier revision of this page

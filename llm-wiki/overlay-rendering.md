@@ -267,12 +267,15 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 ### Frame-begin anchor (`system_latency_frame_begin.h`, `system_latency_fallback.h`)
 
 - The input-to-Present span is measured, not modelled, whenever a boundary that belongs to the presented frame is
-  observable. Precedence per application frame (2026-10-06): the game's own Streamline PCL SimulationStart, paired with
-  its PresentStart by frame ID (`SimulationMarker`, fed from `Hooked_slPCLSetMarker` via `NoteMarkerFrameBegin`, also
-  under FSR FG where the PCL report itself is discarded); a low-latency sleep return (`LowLatencySleepReturn`:
-  `ReflexLimiter::EndGameSleepBoundary` for `slReflexSleep`/`NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) **only when it
-  returned on the presenting thread**; the median of recently (2 s) measured spans of neighbouring frames (`Learned`);
-  otherwise one application interval (`Modelled`).
+  observable. Precedence per application frame (2026-10-06, `ResolveMeasuredAnchorLocked`):
+  1. the game's own Streamline PCL SimulationStart, paired with its PresentStart by frame ID (`SimulationMarker`, fed
+     from `Hooked_slPCLSetMarker` via `NoteMarkerFrameBegin`, also under FSR FG where the PCL report is discarded);
+  2. a low-latency sleep return (`LowLatencySleepReturn`: `ReflexLimiter::EndGameSleepBoundary` for
+     `slReflexSleep`/`NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) **only when it returned on the presenting thread**;
+  3. the presenting thread's last Win32k input-message retrieval since its previous application Present
+     (`InputRetrieval`, see `display-change-timing.md`);
+  4. the median of recently (2 s) measured spans of neighbouring frames (`Learned`);
+  5. otherwise one application interval (`Modelled`).
 - **Why the thread check:** Unreal sleeps on the game thread and presents on the RHI thread, so the newest sleep before
   frame N's Present belongs to frame N+1 or N+2. Pairing it read whole frames too low - below even the modelled
   interval, which is itself only a floor for such a pipeline. Counted as `sleepOtherThread=` in

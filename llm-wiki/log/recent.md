@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-06 - PC latency audit: frame-matched anchors, input retrieval, flip-queue diagnostic
+
+- Audit finding: without markers the estimate modelled input-to-Present as one interval - too low for engines
+  whose game thread runs ahead (Unreal: whole frames), too high for single-threaded loops that wait. The newest
+  Reflex sleep was paired across threads (UE sleeps on the game thread, presents on RHI) and read frames too low;
+  without FG CE's own in-Present wait was added on top of the interval already containing it (~9 ms at 90 fps).
+- Fixed: PCL marker pairs (frame ID) feed the frame-begin clock, also under FSR FG; sleeps only pair on the
+  presenting thread; Win32k RetrieveInputMessage bursts (ABI 69) anchor same-thread loops; frames without a
+  boundary use the 2 s learned span. New `[Overlay] PC latency anchors` line with anchor-kind totals and
+  `queuedAhead=` (frames displayed while a frame waited after its PresentStart) for the vsync question.
+- Not done, deliberately: injecting Reflex markers adds no information (NVAPI would echo CE's own timestamps).
+  Pipelined engines without markers stay modelled; the depth is not observable from timestamps.
+- Hardware run pending (Talos: no FG, no FG + Reflex, FSR FG, DLSS FG, DLSS MFG). Read the anchors line first.
+
 ### 2026-10-05 - Experimental background window heartbeat
 
 - Added profile/global `WindowHeartbeat.enabled` (off by default), independent of DesktopOverlay and capture.

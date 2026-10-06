@@ -281,6 +281,26 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         const uint64_t earliestAvailable =
             writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
         m_nextDisplaySequence = earliestAvailable;
+        const uint64_t inputWriteSequence = timing.inputWriteSequence.load(std::memory_order_acquire);
+        m_nextInputSequence =
+            inputWriteSequence >= DISPLAY_INPUT_RING_SIZE ? inputWriteSequence - DISPLAY_INPUT_RING_SIZE + 1 : 1;
+    }
+
+    // Input retrievals first: the display samples below resolve each frame's
+    // input anchor against them. A ring this reader fell behind on only loses
+    // anchors, never counts, so skipping ahead needs no other bookkeeping.
+    const uint64_t inputWriteSequence = timing.inputWriteSequence.load(std::memory_order_acquire);
+    const uint64_t earliestInput =
+        inputWriteSequence >= DISPLAY_INPUT_RING_SIZE ? inputWriteSequence - DISPLAY_INPUT_RING_SIZE + 1 : 1;
+    if (m_nextInputSequence < earliestInput)
+        m_nextInputSequence = earliestInput;
+    while (m_nextInputSequence <= inputWriteSequence) {
+        int64_t retrievalTimeUs = 0;
+        uint32_t retrievalThreadId = 0;
+        if (!timing.ReadInputRetrieval(m_nextInputSequence, retrievalTimeUs, retrievalThreadId))
+            break;
+        m_systemLatency.ObserveInputRetrieval(retrievalTimeUs, retrievalThreadId);
+        ++m_nextInputSequence;
     }
 
     const uint64_t earliestAvailable =

@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **PC latency estimate without Reflex:** games that read mouse and keyboard input on the thread that presents now have "Latency est." measured from the moment the frame actually read its input (Windows input events), instead of assuming one full frame of work, so limiter, vsync and prerender settings move the number the way they move real latency. Games reading input on another thread, or only through XInput/GameInput, keep the previous estimate.
+
 - **PC latency diagnostics:** the overlay log now reports which boundary each latency sample was measured from and how many frames waited in the flip queue ahead of the displayed one, so vsync-capped and limiter-capped runs can be told apart.
 
 - **CPU clock overlay:** the CPU Clocks row now shows the highest current core clock in parentheses after the average, matching the CPU load display.

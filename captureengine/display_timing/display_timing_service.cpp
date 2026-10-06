@@ -20,6 +20,7 @@ void DisplayTimingService::Impl::Start() {
     QueryPerformanceFrequency(&frequency);
     qpcFrequency_ = frequency.QuadPart;
     submissions_.SetMaxCompletionAge(kMaxSubmitToCompletionUs * qpcFrequency_ / 1'000'000);
+    inputBursts_.SetMaximumGap(kInputRetrievalBurstGapUs * qpcFrequency_ / 1'000'000);
     nvidiaSchedule_.SetQpcFrequency(qpcFrequency_);
     outputs_.SetQpcFrequency(qpcFrequency_);
     RefreshDisplayPeriods();
@@ -308,6 +309,8 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     health.payloadLate = frameTypePayloadLate_;
     health.fallbackPublished = fallbackPublished_;
     health.fallbackSuppressed = fallbackSuppressed_;
+    health.inputRetrievals = inputBursts_.observed();
+    health.inputBursts = inputBursts_.emitted();
     SetNvidiaFlipSchedule(health, nvidiaSchedule_, qpcFrequency_);
     SetComposedPresentation(health, composed_);
     health.completions = completionsBySource_;

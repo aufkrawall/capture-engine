@@ -34,6 +34,11 @@ inline constexpr GUID kFrameTypeProvider = {
 inline constexpr GUID kNvidiaDisplayProvider = {
     0xae4f8626, 0x8265, 0x40d1, {0xa7, 0x0b, 0x11, 0xb6, 0x42, 0x40, 0xe8, 0xe9}};
 
+// Microsoft-Windows-Win32k: RetrieveInputMessage, emitted on the thread that
+// takes an input message out of its queue (the event PresentMon's
+// input-to-photon metrics use). The PC-latency estimate anchors on it.
+inline constexpr GUID kWin32kProvider = {0x8c416c79, 0xd49b, 0x4f01, {0xa4, 0x67, 0xe5, 0x6d, 0x3a, 0xa8, 0x23, 0x4c}};
+
 inline constexpr uint16_t kRuntimePresentStart = 0x2a;
 inline constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
 inline constexpr uint16_t kQueuePacketStart = 0xb2;
@@ -47,11 +52,14 @@ inline constexpr uint16_t kHsyncMpo = 0x17e;
 inline constexpr uint16_t kMpoPresentIds = 0x182;
 inline constexpr uint16_t kGeneratedFlip = 0x2;
 inline constexpr uint16_t kNvidiaFlipRequest = 0x1;
+inline constexpr uint16_t kRetrieveInputMessage = 0x3f;
 
 inline constexpr ULONGLONG kRuntimeKeyword = 0x8000000000000002ull;
 inline constexpr ULONGLONG kGraphicsKernelKeyword = 0x1;
 inline constexpr ULONGLONG kFrameTypeKeyword = 0x1;
 inline constexpr ULONGLONG kNvidiaDisplayKeyword = 0x1000000000000000ull;
+// RetrieveInputMessage's own keyword set (MessagePump and its companions).
+inline constexpr ULONGLONG kWin32kInputKeyword = 0x0400000040400000ull;
 
 // FlipEntryStatusAfterFlip values that defer the screen time to the matching
 // ?SyncDPC event instead of completing at the flip itself.

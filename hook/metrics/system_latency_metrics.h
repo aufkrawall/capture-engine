@@ -141,6 +141,22 @@ public:
         UpdateFallbackLocked(screenTimeUs, presentStartTimeUs);
     }
 
+    // The end of one input-message retrieval burst on threadId (Win32k ETW).
+    // Arrives in time order per publication; a frame's anchor is resolved
+    // against it when the frame's display is correlated.
+    void ObserveInputRetrieval(int64_t timeUs, uint32_t threadId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (timeUs <= 0 || threadId == 0)
+            return;
+        if (!inputRetrievals_.Empty() && timeUs < inputRetrievals_.Back() - kClockResetThresholdUs) {
+            inputRetrievals_.Clear();
+            inputRetrievalThreads_.Clear();
+        }
+        inputRetrievals_.Push(timeUs);
+        inputRetrievalThreads_.Push(threadId);
+        ++inputRetrievalsObserved_;
+    }
+
     // A consumer that knows it could not deliver every displayed transition -
     // a publication ring it fell behind on, say - must say so: the in-flight
     // count is conservation over both streams, and an uncounted retirement
@@ -253,6 +269,8 @@ public:
         diagnostics.anchorKindSamples = anchorKindSamples_;
         diagnostics.sleepAnchorsOnOtherThread = sleepAnchorsOnOtherThread_;
         diagnostics.markerAnchorsStale = markerAnchorsStale_;
+        diagnostics.inputRetrievalsObserved = inputRetrievalsObserved_;
+        diagnostics.inputRetrievalFramesOnOtherThread = inputRetrievalFramesOnOtherThread_;
         return diagnostics;
     }
 
@@ -562,7 +580,8 @@ private:
     // Definitions in system_latency_fallback.h.
     bool MatchPresentLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs, size_t& matchedIndex) const;
     void UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs);
-    bool ResolveMeasuredAnchorLocked(size_t applicationIndex, int64_t& anchorUs, FrameBeginKind& kind) const;
+    bool ResolveMeasuredAnchorLocked(size_t applicationIndex, int64_t& anchorUs, FrameBeginKind& kind);
+    bool FindInputRetrievalLocked(size_t applicationIndex, int64_t& retrievalUs);
     int64_t LearnedAnchorSpanLocked(int64_t applicationPresentUs) const;
 
     void ResetMeasurementsLocked() {
@@ -572,6 +591,7 @@ private:
         frameBeginIntervals_.Clear();
         measuredAnchorSpans_.Clear();
         lastMeasuredAnchorPresentUs_ = 0;
+        inputRetrievals_.Clear(); inputRetrievalThreads_.Clear();
         displays_.Clear(); displayPresentStarts_.Clear(); displayIntervals_.Clear(); framesQueuedAhead_.Clear();
         fallbackDisplayedInputIntervals_.Clear(); nativeDisplayedSimulationIntervals_.Clear();
         nativeEstimatedSamples_.Clear(); fallbackSamples_.Clear();
@@ -600,6 +620,8 @@ private:
     ValueRing<256> applicationAnchors_;
     ValueRing<256> applicationAnchorKinds_;
     ValueRing<256> applicationPresentThreads_;
+    ValueRing<256> inputRetrievals_;
+    ValueRing<256> inputRetrievalThreads_;
     // Measured anchor-to-application-Present spans, for frames without one.
     ValueRing<32> measuredAnchorSpans_;
     int64_t lastMeasuredAnchorPresentUs_ = 0;
@@ -660,6 +682,8 @@ private:
     std::array<uint64_t, kFrameBeginKindCount> anchorKindSamples_{};
     uint64_t sleepAnchorsOnOtherThread_ = 0;
     uint64_t markerAnchorsStale_ = 0;
+    uint64_t inputRetrievalsObserved_ = 0;
+    uint64_t inputRetrievalFramesOnOtherThread_ = 0;
 };
 
 }  // namespace ce::system_latency

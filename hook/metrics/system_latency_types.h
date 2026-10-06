@@ -157,6 +157,12 @@ struct Diagnostics {
     // SimulationStart markers rejected as an anchor because their PresentStart
     // marker predates the previous application Present (another frame's).
     uint64_t markerAnchorsStale = 0;
+    // Input-retrieval bursts received from the sensor, and frames that had
+    // none on their presenting thread but some on another thread - an engine
+    // that reads input on its game thread and presents from a render thread,
+    // where the retrieval cannot be paired with the presented frame.
+    uint64_t inputRetrievalsObserved = 0;
+    uint64_t inputRetrievalFramesOnOtherThread = 0;
 };
 
 struct NativeFrameReport {

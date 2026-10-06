@@ -32,12 +32,48 @@ inline bool Tracker::MatchPresentLocked(int64_t screenTimeUs, int64_t associated
     return false;
 }
 
-// The application frame's own input boundary, when one was observed for it.
-inline bool Tracker::ResolveMeasuredAnchorLocked(size_t applicationIndex, int64_t& anchorUs,
-                                                 FrameBeginKind& kind) const {
+// The presenting thread's last input retrieval since its previous application
+// Present: the point this frame read its input. Only the presenting thread's
+// own retrievals qualify - a game thread running ahead of a render thread has
+// retrieved input for later frames by the time this one is presented.
+inline bool Tracker::FindInputRetrievalLocked(size_t applicationIndex, int64_t& retrievalUs) {
+    const int64_t threadId = applicationPresentThreads_.At(applicationIndex);
+    const int64_t presentUs = applicationPresents_.At(applicationIndex);
+    const int64_t windowStartUs =
+        applicationIndex > 0 ? applicationPresents_.At(applicationIndex - 1) : presentUs - kMaximumIntervalUs;
+    bool otherThread = false;
+    for (size_t i = inputRetrievals_.Size(); i > 0; --i) {
+        const int64_t candidateUs = inputRetrievals_.At(i - 1);
+        if (candidateUs > presentUs)
+            continue;
+        if (candidateUs <= windowStartUs)
+            break;
+        if (threadId != 0 && inputRetrievalThreads_.At(i - 1) == threadId) {
+            retrievalUs = candidateUs;
+            return true;
+        }
+        otherThread = true;
+    }
+    if (otherThread)
+        ++inputRetrievalFramesOnOtherThread_;
+    return false;
+}
+
+// The application frame's own input boundary, when one was observed for it:
+// a frame-ID-matched marker or same-thread sleep recorded at Present time,
+// otherwise the presenting thread's input retrieval.
+inline bool Tracker::ResolveMeasuredAnchorLocked(size_t applicationIndex, int64_t& anchorUs, FrameBeginKind& kind) {
     anchorUs = applicationAnchors_.At(applicationIndex);
     kind = static_cast<FrameBeginKind>(applicationAnchorKinds_.At(applicationIndex));
-    return anchorUs > 0 && kind != FrameBeginKind::Modelled;
+    if (anchorUs > 0 && kind != FrameBeginKind::Modelled)
+        return true;
+    if (FindInputRetrievalLocked(applicationIndex, anchorUs)) {
+        kind = FrameBeginKind::InputRetrieval;
+        return true;
+    }
+    anchorUs = 0;
+    kind = FrameBeginKind::Modelled;
+    return false;
 }
 
 // A frame without a boundary of its own, in a stream whose neighbouring frames

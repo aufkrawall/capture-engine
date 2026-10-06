@@ -214,7 +214,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     const auto& anchors = latencyDiagnostics.anchorKindSamples;
                     HookLogImportant(
                         "[Overlay] PC latency anchors: marker=%llu sleep=%llu input=%llu learned=%llu "
-                        "modelled=%llu sleepOtherThread=%llu markerStale=%llu queuedAhead=%d queuedAheadMax=%d",
+                        "modelled=%llu sleepOtherThread=%llu markerStale=%llu inputBursts=%llu inputOtherThread=%llu "
+                        "queuedAhead=%d queuedAheadMax=%d",
                         static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::SimulationMarker)]),
                         static_cast<unsigned long long>(
                             anchors[static_cast<size_t>(FrameBeginKind::LowLatencySleepReturn)]),
@@ -223,6 +224,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::Modelled)]),
                         static_cast<unsigned long long>(latencyDiagnostics.sleepAnchorsOnOtherThread),
                         static_cast<unsigned long long>(latencyDiagnostics.markerAnchorsStale),
+                        static_cast<unsigned long long>(latencyDiagnostics.inputRetrievalsObserved),
+                        static_cast<unsigned long long>(latencyDiagnostics.inputRetrievalFramesOnOtherThread),
                         latencyDiagnostics.framesQueuedAhead, latencyDiagnostics.framesQueuedAheadMax);
                     if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
                         HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",

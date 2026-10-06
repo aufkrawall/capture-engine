@@ -57,6 +57,13 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
                                     {dte::kNvidiaFlipRequest});
     if (nvidiaStatus != ERROR_SUCCESS)
         LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", nvidiaStatus);
+
+    // Optional: without it the PC-latency estimate models the input-to-Present
+    // span for games with no latency markers instead of measuring it.
+    const ULONG inputStatus = dte::EnableFilteredProvider(*session, dte::kWin32kProvider, dte::kWin32kInputKeyword,
+                                                          {dte::kRetrieveInputMessage});
+    if (inputStatus != ERROR_SUCCESS)
+        LogWarn("[DisplayTiming] Input-retrieval events are unavailable: %lu", inputStatus);
     return ERROR_SUCCESS;
 }
 

@@ -10,6 +10,7 @@
 #include "display_timing_correlation.h"
 #include "display_timing_etw.h"
 #include "display_timing_health.h"
+#include "display_timing_input.h"
 #include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
 #include "display_timing_policy.h"
@@ -87,6 +88,8 @@ private:
     void HandleGeneratedFlip(EVENT_RECORD* event);
     void HandleImmediateFlip(EVENT_RECORD* event);
     void HandleImmediateMpoFlip(EVENT_RECORD* event);
+    void HandleInputRetrieval(EVENT_RECORD* event);
+    void PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst);
     void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
                           bool erase, DisplayCompletionSource source, uint32_t displaySource = 0);
     void ConsumeCorrelationPayloads();
@@ -153,6 +156,8 @@ private:
     VerticalBlankClock verticalBlanks_;
     std::vector<PendingTimestamp> pendingTimestamps_;
     DisplayTimingOutputs outputs_;
+    DisplayInputRetrievalBursts inputBursts_;
+    uint32_t inputLoggedPid_ = 0;
     DisplayRefreshPeriods refreshPeriods_;
     uint64_t lastRefreshQueryTime_ = 0;
     bool refreshPeriodsLogged_ = false;

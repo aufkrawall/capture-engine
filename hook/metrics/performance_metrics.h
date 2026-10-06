@@ -243,6 +243,7 @@ private:
     std::mutex m_presentationUpdateMutex;
     uint64_t m_displayGeneration = UINT64_MAX;
     uint64_t m_nextDisplaySequence = 1;
+    uint64_t m_nextInputSequence = 1;
     ScreenTimeCadence m_displayScreenTimeCadence;
     std::atomic<bool> m_displayStreamIsScreenTime{true};
     std::atomic<uint32_t> m_displayScreenTimePermille{0};

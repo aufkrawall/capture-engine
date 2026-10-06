@@ -75,6 +75,21 @@ public:
         }
     }
 
+    // Returns whether any overlay following the process received it.
+    bool PublishInputRetrieval(const std::vector<DisplayTimingTarget>& targets, uint32_t processId, uint32_t threadId,
+                               int64_t timeUs) {
+        bool published = false;
+        for (const auto& target : targets) {
+            if (!target.output || (target.sourcePid != processId && target.rendererPid != processId))
+                continue;
+            if (outputs_.find(target.output) == outputs_.end())
+                continue;
+            target.output->PublishInputRetrieval(timeUs, threadId);
+            published = true;
+        }
+        return published;
+    }
+
     // The busiest output is the one the overlay is reading; averaging several
     // would hide exactly the shape these statistics exist to expose. Every
     // output starts a new window.

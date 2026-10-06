@@ -26,6 +26,9 @@ inline bool ShouldStartOverlayDisplayTiming(bool showOverlay, bool showSystemLat
 // a resolution change) - from being claimed seconds later by an unrelated
 // completion whose submit sequence happens to carry the same number.
 inline constexpr int64_t kMaxSubmitToCompletionUs = 1'000'000;
+// Input-message retrievals closer together than this are one message-pump
+// loop. Well below a frame even at 1000 fps, well above the loop's own pace.
+inline constexpr int64_t kInputRetrievalBurstGapUs = 500;
 
 // A completion belongs to a submission only if it follows it and follows it by
 // no more than maxAge (in the timestamps' own units; <= 0 disables the bound).
