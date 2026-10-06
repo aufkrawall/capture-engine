@@ -121,6 +121,24 @@ TEST(SystemLatencyGeneratorIdentityTest, AnIdNoApplicationPresentCarriedFallsBac
     EXPECT_GT(tracker.GetSnapshot(ApplicationPresentUs(20)).sampleCount, 0u);
 }
 
+TEST(SystemLatencyGeneratorIdentityTest, APassthroughProxyWithoutFrameGenerationOffersNoIdentity) {
+    // Talos keeps FSR's proxy after FG is switched off; its callback then
+    // reports frame ID 0 for every output while the game's Presents carry
+    // none. That is not a failed match and must not read as one.
+    Tracker tracker;
+    tracker.SetFrameGeneration(0.0f, 1, /*fgType=*/0);
+    for (int frame = 0; frame < 20; ++frame) {
+        const int64_t presentUs = ApplicationPresentUs(frame);
+        tracker.ObserveApplicationPresent(presentUs, FrameBeginObservation{}, kGameThread);
+        const int64_t runtimeUs = presentUs + 1'000;
+        tracker.ObserveDisplay(runtimeUs + kPresentToDisplayUs, runtimeUs, GeneratorFrameToken(0));
+    }
+    const auto diagnostics = tracker.GetDiagnostics();
+    EXPECT_EQ(diagnostics.generatorFramesMatchedById, 0u);
+    EXPECT_EQ(diagnostics.generatorFramesUnmatchedById, 0u);
+    EXPECT_GT(tracker.GetSnapshot(ApplicationPresentUs(20)).sampleCount, 0u);
+}
+
 TEST(SystemLatencyGeneratorIdentityTest, HalfTheScanoutIsAddedToBothPaths) {
     auto run = [](Tracker& tracker, int64_t refreshPeriodUs, bool markers) {
         tracker.SetDisplayScanoutPeriod(refreshPeriodUs);

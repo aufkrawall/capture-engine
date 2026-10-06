@@ -95,6 +95,16 @@ TEST(SystemLatencyMetricsTest, DisplayTimingCollectionStaysActiveForLatencyWithP
 TEST(SystemLatencyMetricsTest, OverlayLabelsKeepBothEstimatedSourcesExplicit) {
     EXPECT_STREQ(ce::system_latency::SourceOverlayLabel(Source::Unavailable), "PC Latency");
     EXPECT_STREQ(ce::system_latency::SourceOverlayLabel(Source::ReflexMarkers), "PC Latency~");
+}
+
+TEST(SystemLatencyMetricsTest, LogBandSeparatesAVisibleJumpButNotJitter) {
+    using ce::system_latency::LatencyLogBand;
+    EXPECT_EQ(LatencyLogBand(0.0f), 0u);
+    EXPECT_EQ(LatencyLogBand(-3.0f), 0u);
+    EXPECT_EQ(LatencyLogBand(30.0f), LatencyLogBand(31.0f));
+    EXPECT_NE(LatencyLogBand(30.0f), LatencyLogBand(46.0f));
+    EXPECT_NE(LatencyLogBand(30.0f), LatencyLogBand(60.0f));
+    EXPECT_LT(LatencyLogBand(30.0f), LatencyLogBand(60.0f));
     EXPECT_STREQ(ce::system_latency::SourceOverlayLabel(Source::Estimated), "Latency est.");
     ce::system_latency::Snapshot idle{};
     idle.source = Source::Estimated;

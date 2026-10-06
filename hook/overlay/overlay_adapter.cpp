@@ -222,6 +222,8 @@ void OverlayAdapter::ResetStateLocked() {
     lastSystemLatencySourceLogTime = 0;
     lastNativeLatencyQueryTime = 0;
     hasObservedSystemLatencySource = false;
+    lastLoggedSystemLatencyBand = 0;
+    systemLatencyBandChangesSuppressed = 0;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 

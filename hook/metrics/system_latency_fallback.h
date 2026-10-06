@@ -40,7 +40,11 @@ inline bool Tracker::MatchPresentLocked(int64_t screenTimeUs, int64_t associated
 // leaves in a count.
 inline bool Tracker::MatchGeneratorFrameLocked(uint64_t generatorFrameToken, int64_t runtimePresentUs,
                                                size_t& matchedIndex) {
-    if (generatorFrameToken == 0)
+    // Without frame generation there is no generator frame to name: FSR's
+    // proxy swapchain stays in place after FG is switched off and its
+    // callback then reports frame ID 0 for every passthrough output. That is
+    // no identity on offer, so it neither matches nor counts as unmatched.
+    if (generatorFrameToken == 0 || fgMultiplier_.load(std::memory_order_relaxed) < 2)
         return false;
     bool haveNewest = false;
     size_t newestIndex = 0;

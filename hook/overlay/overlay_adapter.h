@@ -271,5 +271,10 @@ private:
     // sources are separate measurements and a comparison across the boundary
     // is only meaningful if the boundary is visible.
     ce::system_latency::Source lastLoggedSystemLatencySource = ce::system_latency::Source::Unavailable;
+    // The 15 s period alone missed a reading the user saw jump (Talos
+    // 20261006_203030): a move to another 25 % band logs too, at most once
+    // per two seconds so a reading on a band edge cannot flood the log.
+    uint32_t lastLoggedSystemLatencyBand = 0;
+    uint64_t systemLatencyBandChangesSuppressed = 0;
 };
 extern OverlayAdapter g_OverlayAdapter;

@@ -257,6 +257,18 @@ inline const char* SourceOverlayLabel(Source source) {
     }
 }
 
+// Logarithmic band of a published reading, 25 % wide: the overlay logs a
+// sample whenever the band changes, so a reading the user saw move is on
+// record even between the periodic samples. 0 for no reading.
+inline uint32_t LatencyLogBand(float milliseconds) {
+    if (!(milliseconds > 0.0f))
+        return 0;
+    uint32_t band = 1;
+    for (float edge = 1.0f; edge * 1.25f <= milliseconds && band < 64; edge *= 1.25f)
+        ++band;
+    return band;
+}
+
 inline const char* SnapshotOverlayLabel(const Snapshot& snapshot) {
     return SourceOverlayLabel(snapshot.source);
 }

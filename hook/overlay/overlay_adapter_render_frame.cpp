@@ -150,16 +150,29 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 // a wide min/max spread or a low association ratio is how a
                 // broken present/display correlation announces itself.
                 constexpr DWORD kSystemLatencyLogIntervalMs = 15000;
+                constexpr DWORD kSystemLatencyBandLogIntervalMs = 2000;
                 const bool latencySourceChanged = latencySource != lastLoggedSystemLatencySource;
+                const uint32_t latencyBand = ce::system_latency::LatencyLogBand(
+                    cachedSystemLatency.valid ? cachedSystemLatency.milliseconds : 0.0f);
+                const bool latencyBandChanged = latencyBand != lastLoggedSystemLatencyBand;
+                const bool latencyBandLogDue =
+                    latencyBandChanged && now - lastSystemLatencySourceLogTime >= kSystemLatencyBandLogIntervalMs;
+                if (latencyBandChanged && !latencyBandLogDue)
+                    ++systemLatencyBandChangesSuppressed;
                 const bool latencyLogDue =
-                    !hasObservedSystemLatencySource || latencySourceChanged ||
+                    !hasObservedSystemLatencySource || latencySourceChanged || latencyBandLogDue ||
                     now - lastSystemLatencySourceLogTime >= kSystemLatencyLogIntervalMs;
                 if (latencyLogDue) {
                     const auto latencyDiagnostics = metrics->GetSystemLatencyDiagnostics(currentQpcUs);
                     HookLogImportant(
-                        "[Overlay] PC latency sample: source=%s value=%.1fms median=%.1f min=%.1f max=%.1f "
+                        "[Overlay] PC latency sample: trigger=%s bandMovesSkipped=%llu "
+                        "source=%s value=%.1fms median=%.1f min=%.1f max=%.1f "
                         "samples=%u fg=%d multiplier=%d baseFps=%.1f outputFps=%.1f reportedBaseFps=%.1f "
                         "reportedOutputFps=%.1f fps=%.1f gpu=%s%.0f%%",
+                        latencySourceChanged || !hasObservedSystemLatencySource ? "source"
+                        : latencyBandLogDue                                     ? "value"
+                                                                                : "period",
+                        static_cast<unsigned long long>(systemLatencyBandChangesSuppressed),
                         ce::system_latency::SourceLogLabel(latencySource), cachedSystemLatency.milliseconds,
                         cachedSystemLatency.medianMilliseconds, cachedSystemLatency.minimumMilliseconds,
                         cachedSystemLatency.maximumMilliseconds, cachedSystemLatency.sampleCount,
@@ -249,6 +262,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     }
                     lastSystemLatencySourceLogTime = now;
                     lastLoggedSystemLatencySource = latencySource;
+                    lastLoggedSystemLatencyBand = latencyBand;
+                    systemLatencyBandChangesSuppressed = 0;
                     hasObservedSystemLatencySource = true;
                 }
             } else {

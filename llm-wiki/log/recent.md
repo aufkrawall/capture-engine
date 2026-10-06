@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-06 - Talos 20261006_203030 (0.1.7010): "Reflex 60 instead of 30" after switching
+
+- Reflex was off from 20:32:29 to 20:34:38: Talos switches it off for FSR FG and leaves it off afterwards. The ~46 ms
+  "Latency est." after FSR FG was switched off (refresh-pinned menu, GPU 7 %) is AMD's proxy swapchain, which stays in
+  place: 32 ms from present to display, against 18 ms before FSR in the same menu. The game was blocked 5.3 ms per
+  frame in the proxy Present. At 75 fps gameplay the readings match before and after the switch. No CE regression
+  was found; the 15 s cadence missed whatever the user saw.
+- Fixed: the sample is now also logged when the value changes band. `idUnmatched` no longer counts the proxy's
+  passthrough outputs while FG is off. Tests: `APassthroughProxyWithoutFrameGenerationOffersNoIdentity` (fails
+  without the fix), `LogBandSeparatesAVisibleJumpButNotJitter`.
+- First FSR FG run by frame identity: `idQueue=1 idMatched=2029 idUnmatched=6`, at 62.6 ms (median 65.1) with a
+  71.7 fps base and 142.4 fps output. That is one application frame behind the newest, not the 3-4 that counting
+  produced. `scanout=` was logged. `markerOnPresentingThread=` equalled every paired marker
+  (`markerOnOtherThread=0`): Talos brackets its Present.
+
 ### 2026-10-06 - PC latency: FSR frame identity, scanout, measured FG rates
 
 - Talos `20261006_194753` (0.1.7009) review: input retrieval now arrives (26255 retrievals); DLSS-G Base/Display

@@ -362,6 +362,18 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   (`measured` against the application's own Present, `modelled` as one output interval, or `none`), `markerInterval`,
   `markerTrusted`, `markerAssociated`, running totals for displays observed, associated, unmatched, dropped, rejected,
   `markerCadenceRejects`, `epochResets`, and source changes.
+- `[Overlay] PC latency sample` is logged on a source change, every 15 s, and (2026-10-06) whenever the published
+  value moves into another 25 % band (`LatencyLogBand`, at most every 2 s; `trigger=source|value|period`,
+  `bandMovesSkipped=`). Talos `20261006_203030` showed why: the user reported "Reflex ~60 instead of ~30 ms" and the
+  15 s samples never caught the moment.
+- After FSR FG is switched off, Talos keeps AMD's proxy swapchain (callback `generated=0 frameId=0`,
+  `mirroredCurrent=1`). Identity matching is skipped without frame generation (`fgMultiplier < 2`), so those
+  outputs no longer count as `idUnmatched` (it had grown to 10938). Talos `20261006_203030` also showed that the
+  proxy left in place adds latency at a refresh-pinned menu with Reflex off: game blocked 5.3 ms per frame in the
+  proxy Present (`[OVERLAY COST] FFX proxy Present ... runtimeAvgUs=5290`), present-to-display 32 ms against 18 ms
+  before FSR in the same menu, estimate 46 ms against 29-31 ms. Talos switches Reflex off when FSR FG is enabled and
+  does not restore it. At 75 fps GPU-bound gameplay the readings matched before and after the switch (estimate
+  40.5/41.7 ms; Reflex on 46-48 before, 34 after).
 - `[Overlay] PC latency sample` also carries `fps=` and `gpu=`: a Reflex-on reading at a few percent GPU load is a
   menu or empty scene, not comparable with gameplay. Talos `20261006_194753`: every ~6 ms Reflex-on reading came with
   the overlay showing GPU 4-10 % at 31-50 W, every Reflex-off reading (35-37 ms) with gameplay load.
