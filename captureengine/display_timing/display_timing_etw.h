@@ -137,4 +137,42 @@ inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, U
                           &parameters);
 }
 
+struct DisplayTimingProviderStatus {
+    // The DXGI runtime and graphics kernel providers; without them there is no
+    // screen-change timing at all.
+    ULONG required = ERROR_SUCCESS;
+    ULONG generatedFrames = ERROR_SUCCESS;
+    ULONG nvidiaSchedule = ERROR_SUCCESS;
+    ULONG inputRetrieval = ERROR_SUCCESS;
+};
+
+// The one provider set every display-timing session enables, whether CE opens
+// it itself or the elevation service owns it. The service once kept its own
+// copy of this list, and the Win32k input provider added to CE's copy never
+// reached it: a whole Talos session (20261006_150600) consumed the service's
+// trace and saw input(retrievals=0). Optional providers are only attempted once
+// the required ones are on.
+inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE session) {
+    DisplayTimingProviderStatus status;
+    status.required = EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
+                                             {kRuntimePresentStart, kRuntimeMpoPresentStart});
+    if (status.required == ERROR_SUCCESS) {
+        status.required = EnableFilteredProvider(session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
+                                                 {kQueuePacketStart, kQueuePacketStop, kMmioFlip, kMmioMpoFlip, kVsync,
+                                                  kVsyncMpo, kHsyncMpo, kMpoPresentIds});
+    }
+    if (status.required != ERROR_SUCCESS)
+        return status;
+    status.generatedFrames = EnableFilteredProvider(session, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
+    // Absent on non-NVIDIA adapters, where flip event timestamps already are
+    // the screen times.
+    status.nvidiaSchedule =
+        EnableFilteredProvider(session, kNvidiaDisplayProvider, kNvidiaDisplayKeyword, {kNvidiaFlipRequest});
+    // Without it the PC-latency estimate models the input-to-Present span for
+    // games with no latency markers instead of measuring it.
+    status.inputRetrieval =
+        EnableFilteredProvider(session, kWin32kProvider, kWin32kInputKeyword, {kRetrieveInputMessage});
+    return status;
+}
+
 }  // namespace display_timing_etw

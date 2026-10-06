@@ -39,21 +39,17 @@ DWORD TraceManager::Acquire() {
         }
     }
     namespace dte = display_timing_etw;
-    if (status == ERROR_SUCCESS)
-        status = dte::EnableFilteredProvider(session_, dte::kRuntimeProvider, dte::kRuntimeKeyword,
-                                             {dte::kRuntimePresentStart, dte::kRuntimeMpoPresentStart});
-    if (status == ERROR_SUCCESS)
-        status = dte::EnableFilteredProvider(
-            session_, dte::kGraphicsKernelProvider, dte::kGraphicsKernelKeyword,
-            {dte::kQueuePacketStart, dte::kQueuePacketStop, dte::kMmioFlip, dte::kMmioMpoFlip, dte::kVsync,
-             dte::kVsyncMpo, dte::kHsyncMpo, dte::kMpoPresentIds});
     if (status == ERROR_SUCCESS) {
-        const ULONG generated = dte::EnableFilteredProvider(session_, dte::kFrameTypeProvider, dte::kFrameTypeKeyword,
-                                                            {dte::kGeneratedFlip});
-        const ULONG nvidia = dte::EnableFilteredProvider(session_, dte::kNvidiaDisplayProvider,
-                                                         dte::kNvidiaDisplayKeyword, {dte::kNvidiaFlipRequest});
-        if (generated || nvidia)
-            LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu)", generated, nvidia);
+        // Shared with CE's own session so the two can never enable different sets.
+        const dte::DisplayTimingProviderStatus providers = dte::EnableDisplayTimingProviders(session_);
+        status = providers.required;
+        const bool optionalMissing =
+            providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval;
+        if (status == ERROR_SUCCESS && optionalMissing)
+            LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu input=%lu)",
+                    providers.generatedFrames, providers.nvidiaSchedule, providers.inputRetrieval);
+    }
+    if (status == ERROR_SUCCESS) {
         stop_.Reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!stop_)
             status = GetLastError();

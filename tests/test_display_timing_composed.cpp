@@ -177,10 +177,33 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
     EXPECT_NE(service.find("expiryMonitor_.Observe(expired, ownCompletions_,"), std::string::npos);
     EXPECT_NE(service.find("composed_.Begin(processId, FindCompositorProcessId(processId))"), std::string::npos);
 
-    const std::string startup = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
-                                                          "display_timing" /
-                                                          "display_timing_startup.cpp");
-    EXPECT_NE(startup.find("dte::kQueuePacketStop"), std::string::npos);
+    // The completion events must be enabled by the one provider set every
+    // session uses (see DisplayTimingSessionsShareOneProviderSet).
+    const std::string etw = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
+                                                      "display_timing" / "display_timing_etw.h");
+    const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
+    ASSERT_NE(providerSet, std::string::npos);
+    EXPECT_NE(etw.find("kQueuePacketStop", providerSet), std::string::npos);
+}
+
+TEST(DisplayTimingComposedTest, DisplayTimingSessionsShareOneProviderSet) {
+    // Regression (Talos 20261006_150600): the elevation service kept its own
+    // copy of the provider list, so the Win32k input provider added to CE's
+    // session never reached the service-owned trace CE actually consumed.
+    const auto root = std::filesystem::current_path();
+    const std::string etw =
+        ce::test_source::ReadFile(root / "captureengine" / "display_timing" / "display_timing_etw.h");
+    const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
+    ASSERT_NE(providerSet, std::string::npos);
+    EXPECT_NE(etw.find("kRetrieveInputMessage", providerSet), std::string::npos);
+
+    const std::string startup =
+        ce::test_source::ReadFile(root / "captureengine" / "display_timing" / "display_timing_startup.cpp");
+    const std::string service = ce::test_source::ReadFile(root / "elevationservice" / "service_trace.cpp");
+    for (const std::string* source : {&startup, &service}) {
+        EXPECT_NE(source->find("EnableDisplayTimingProviders("), std::string::npos);
+        EXPECT_EQ(source->find("EnableFilteredProvider("), std::string::npos);
+    }
 }
 
 }  // namespace

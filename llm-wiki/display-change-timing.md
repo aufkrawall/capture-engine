@@ -34,7 +34,9 @@ stream is unavailable, denied, failed, or two seconds stale.
   processes are filtered out in `HandleQueuePacket` before association.
 - **Input retrieval (2026-10-06, ABI 69).** The session also enables `Microsoft-Windows-Win32k` event 0x3f
   `RetrieveInputMessage` (keyword `0x0400000040400000`, the event PresentMon's input-to-photon metrics use; optional,
-  `Input-retrieval events are unavailable` when refused). `DisplayInputRetrievalBursts`
+  `Input-retrieval events are unavailable` when refused). Both CE's own session and the elevation service's
+  (`elevationservice/service_trace.cpp`) enable the set through `EnableDisplayTimingProviders`; the service's former
+  private copy missed this provider and Talos session `20261006_150600` saw `input(retrievals=0)` throughout. `DisplayInputRetrievalBursts`
   (`display_timing_input.h`) reduces a tracked process's retrievals to one burst end per thread and pump loop
   (`kInputRetrievalBurstGapUs` = 500 us; a quiet thread is flushed by any later event) and publishes
   `(timeUs, threadId)` into `SharedDisplayTiming::inputSamples`. The overlay anchors a frame on the presenting

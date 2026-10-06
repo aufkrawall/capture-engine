@@ -5,7 +5,6 @@
 
 #include "common/logging/logging.h"
 
-using display_timing_etw::EnableFilteredProvider;
 using display_timing_etw::MakeProperties;
 
 namespace ce::display_timing_startup {
@@ -29,41 +28,19 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
     if (status != ERROR_SUCCESS)
         return status;
 
-    namespace dte = display_timing_etw;
-    status = dte::EnableFilteredProvider(*session, dte::kRuntimeProvider, dte::kRuntimeKeyword,
-                                         {dte::kRuntimePresentStart, dte::kRuntimeMpoPresentStart});
-    if (status == ERROR_SUCCESS) {
-        status = dte::EnableFilteredProvider(
-            *session, dte::kGraphicsKernelProvider, dte::kGraphicsKernelKeyword,
-            {dte::kQueuePacketStart, dte::kQueuePacketStop, dte::kMmioFlip, dte::kMmioMpoFlip, dte::kVsync,
-             dte::kVsyncMpo, dte::kHsyncMpo, dte::kMpoPresentIds});
-    }
-    if (status != ERROR_SUCCESS) {
+    const display_timing_etw::DisplayTimingProviderStatus providers =
+        display_timing_etw::EnableDisplayTimingProviders(*session);
+    if (providers.required != ERROR_SUCCESS) {
         StopSession(*session, sessionName);
         *session = 0;
-        return status;
+        return providers.required;
     }
-
-    const ULONG frameTypeStatus =
-        dte::EnableFilteredProvider(*session, dte::kFrameTypeProvider, dte::kFrameTypeKeyword,
-                                    {dte::kGeneratedFlip});
-    if (frameTypeStatus != ERROR_SUCCESS)
-        LogWarn("[DisplayTiming] Generated-frame timestamp events are unavailable: %lu", frameTypeStatus);
-
-    // Optional like the frame-type provider: absent on non-NVIDIA adapters,
-    // where flip event timestamps already are the screen times.
-    const ULONG nvidiaStatus =
-        dte::EnableFilteredProvider(*session, dte::kNvidiaDisplayProvider, dte::kNvidiaDisplayKeyword,
-                                    {dte::kNvidiaFlipRequest});
-    if (nvidiaStatus != ERROR_SUCCESS)
-        LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", nvidiaStatus);
-
-    // Optional: without it the PC-latency estimate models the input-to-Present
-    // span for games with no latency markers instead of measuring it.
-    const ULONG inputStatus = dte::EnableFilteredProvider(*session, dte::kWin32kProvider, dte::kWin32kInputKeyword,
-                                                          {dte::kRetrieveInputMessage});
-    if (inputStatus != ERROR_SUCCESS)
-        LogWarn("[DisplayTiming] Input-retrieval events are unavailable: %lu", inputStatus);
+    if (providers.generatedFrames != ERROR_SUCCESS)
+        LogWarn("[DisplayTiming] Generated-frame timestamp events are unavailable: %lu", providers.generatedFrames);
+    if (providers.nvidiaSchedule != ERROR_SUCCESS)
+        LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", providers.nvidiaSchedule);
+    if (providers.inputRetrieval != ERROR_SUCCESS)
+        LogWarn("[DisplayTiming] Input-retrieval events are unavailable: %lu", providers.inputRetrieval);
     return ERROR_SUCCESS;
 }
 
