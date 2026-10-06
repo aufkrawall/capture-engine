@@ -19,7 +19,10 @@ public:
     static constexpr uint32_t kSimulationStartMarker = 0;
     static constexpr uint32_t kPresentStartMarker = 4;
 
-    bool Record(uint32_t marker, uint64_t frameId, int64_t timestampUs) noexcept {
+    // On a completed PresentStart, simulationStartOut (when given) receives the
+    // same frame's SimulationStart.
+    bool Record(uint32_t marker, uint64_t frameId, int64_t timestampUs,
+                int64_t* simulationStartOut = nullptr) noexcept {
         if (timestampUs <= 0)
             return false;
 
@@ -39,6 +42,8 @@ public:
         if (simulationStartUs <= 0 || timestampUs < simulationStartUs)
             return false;
         slot.presentStartTimeUs.store(timestampUs, std::memory_order_release);
+        if (simulationStartOut)
+            *simulationStartOut = simulationStartUs;
         return true;
     }
 

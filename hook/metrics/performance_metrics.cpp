@@ -119,11 +119,12 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
     // The boundary the game's current CPU frame started from, published by the
-    // low-latency sleep hooks. Resolving it here keeps
-    // the tracker free of process-wide state so it stays unit-testable.
-    ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
-    const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
-    m_systemLatency.ObservePresent(currentQpcUs, frameBeginUs, frameBeginKind);
+    // marker and low-latency sleep hooks. Resolving it here keeps the tracker
+    // free of process-wide state so it stays unit-testable. The presenting
+    // thread decides whether a sleep can belong to this frame.
+    const uint32_t threadId = GetCurrentThreadId();
+    m_systemLatency.ObservePresent(currentQpcUs, ce::system_latency::ObserveFrameBegin(currentQpcUs, threadId),
+                                   threadId);
     {
         std::lock_guard<std::mutex> lock(m_presentationUpdateMutex);
         UpdateSeries(m_presentation, currentQpcUs);
@@ -132,9 +133,9 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
 }
 
 void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
-    ce::system_latency::FrameBeginKind frameBeginKind = ce::system_latency::FrameBeginKind::Modelled;
-    const int64_t frameBeginUs = ce::system_latency::LatestFrameBegin(currentQpcUs, frameBeginKind);
-    m_systemLatency.ObserveApplicationPresent(currentQpcUs, frameBeginUs, frameBeginKind);
+    const uint32_t threadId = GetCurrentThreadId();
+    m_systemLatency.ObserveApplicationPresent(
+        currentQpcUs, ce::system_latency::ObserveFrameBegin(currentQpcUs, threadId), threadId);
 }
 
 void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {

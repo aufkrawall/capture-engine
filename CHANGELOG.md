@@ -76,6 +76,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **PC latency estimate in multithreaded engines:** games whose game thread runs ahead of the presenting thread (e.g. Unreal Engine titles such as Talos) now anchor the estimate on their own frame-matched simulation markers, including under FSR FG, instead of a later frame's low-latency sleep that read whole frames too low. Sleeps on another thread are no longer paired, and frames without a boundary reuse their neighbours' recently measured span.
+
+- **PC latency with the FPS limiter:** without frame generation, the time CE's limiter or flip-queue pacing waited inside the game's Present was counted twice in "Latency est." (about 9 ms too high at a 90 fps cap).
+
 - **Frame-generation regression verification:** presenter address reuse no longer causes false frame-attribution failures during FG mode switching; wrong-frame outputs within a presenter lifetime still fail coverage checks.
 
 - **Recording stop feedback:** explicit child rejection now remains distinct from an uncertain acknowledgement. The recording session owns media-first/inject-fallback ordering and endpoint release; API and hotkey toggles use that same lifecycle policy.

@@ -510,7 +510,9 @@ TEST(SystemLatencyMetricsTest, RenderAheadQueueIsMeasuredThroughThePresentAssoci
     ASSERT_TRUE(snapshot.valid);
     EXPECT_EQ(snapshot.source, Source::Estimated);
     // 49.8 ms queue + 16.7 ms modelled CPU frame + 8.3 ms average input wait.
-    EXPECT_NEAR(snapshot.milliseconds, 75.0f, 0.1f);
+    // The 0.2 ms between the hook and the runtime PresentStart is inside the
+    // modelled Present-to-Present interval and is not added again.
+    EXPECT_NEAR(snapshot.milliseconds, 74.8f, 0.1f);
 
     const auto diagnostics = tracker.GetDiagnostics();
     EXPECT_EQ(diagnostics.lastPresentToDisplayUs, 49'801);
@@ -548,7 +550,7 @@ TEST(SystemLatencyMetricsTest, MeasuredFrameBeginReplacesTheModelledFrameOfCpuWo
     const auto anchored = anchoredTracker.GetSnapshot(nowUs);
     ASSERT_TRUE(modelled.valid);
     ASSERT_TRUE(anchored.valid);
-    EXPECT_NEAR(modelled.milliseconds, 41.7f, 0.1f);
+    EXPECT_NEAR(modelled.milliseconds, 41.5f, 0.1f);
     EXPECT_NEAR(anchored.milliseconds, 29.0f, 0.1f);
 
     const auto diagnostics = anchoredTracker.GetDiagnostics();

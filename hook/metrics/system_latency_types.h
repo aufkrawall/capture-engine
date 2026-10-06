@@ -21,9 +21,9 @@ enum class Source : uint8_t {
 // diagnostic: it tells a reader how much of the published number was measured
 // rather than modelled from the frame cadence.
 //
-// Only one producer qualifies. A Present returning looks like a frame boundary
-// but is not one: the wrapper is entered more than once per displayed frame in
-// several configurations (2.3x measured on a 144 Hz Talos session), and under
+// A Present returning looks like a frame boundary but is not one: the wrapper is
+// entered more than once per displayed frame in several configurations (2.3x
+// measured on a 144 Hz Talos session), and under
 // frame generation the Present that returns belongs to the generator's pacing
 // thread rather than to the application's frame.
 enum class FrameBeginKind : uint8_t {
@@ -33,8 +33,25 @@ enum class FrameBeginKind : uint8_t {
     // it immediately before sampling input, so it is the closest observable
     // simulation start. It is not used to count application frames: some
     // integrations emit waits at output cadence.
+    //
+    // Only usable when it returned on the thread that presents: an engine whose
+    // game thread runs ahead of its render thread sleeps for frame N+1 or N+2
+    // before frame N is presented, so the newest sleep says nothing about the
+    // frame being presented (see FrameBeginObservation::sleepOnOtherThread).
     LowLatencySleepReturn,
+    // The game's own SimulationStart marker, paired with its PresentStart
+    // marker by frame ID. Unlike the sleep this is frame-identity exact, so it
+    // holds for engines whose game thread runs ahead of the presenting thread.
+    SimulationMarker,
+    // The presenting thread's last input-message retrieval before this
+    // application Present (Win32k ETW). The point the frame read its input.
+    InputRetrieval,
+    // No boundary for this frame: the median of this thread's recent measured
+    // input-to-Present spans. Only used while those measurements are fresh.
+    Learned,
 };
+
+inline constexpr size_t kFrameBeginKindCount = 5;
 
 struct Snapshot {
     float milliseconds = 0.0f;
@@ -124,6 +141,16 @@ struct Diagnostics {
     // the generator discarded (FSR FG's warm-up after switching on) or displays the
     // stream never delivered. The single-frame hold stands until the next seed.
     uint64_t queueDepthCountsRejected = 0;
+    // Accepted estimate samples by the kind of anchor that produced them,
+    // indexed by FrameBeginKind. One window mixes them, so the published value
+    // is only as measured as this distribution says.
+    std::array<uint64_t, kFrameBeginKindCount> anchorKindSamples{};
+    // Application frames whose newest low-latency sleep returned on another
+    // thread than the Present and was therefore not used as their anchor.
+    uint64_t sleepAnchorsOnOtherThread = 0;
+    // SimulationStart markers rejected as an anchor because their PresentStart
+    // marker predates the previous application Present (another frame's).
+    uint64_t markerAnchorsStale = 0;
 };
 
 struct NativeFrameReport {
@@ -198,6 +225,12 @@ inline const char* FrameBeginKindLabel(FrameBeginKind kind) {
     switch (kind) {
         case FrameBeginKind::LowLatencySleepReturn:
             return "low-latency-sleep";
+        case FrameBeginKind::SimulationMarker:
+            return "simulation-marker";
+        case FrameBeginKind::InputRetrieval:
+            return "input-retrieval";
+        case FrameBeginKind::Learned:
+            return "learned";
         default:
             return "modelled";
     }

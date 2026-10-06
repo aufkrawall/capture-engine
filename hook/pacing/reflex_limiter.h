@@ -206,7 +206,8 @@ public:
         // of CPU work either way. Recorded independently of CE's own limiter
         // activation: the game slept regardless of whether CE paces it.
         ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
-                                           ce::system_latency::FrameBeginKind::LowLatencySleepReturn);
+                                           ce::system_latency::FrameBeginKind::LowLatencySleepReturn,
+                                           GetCurrentThreadId());
         if (IsGameActivated()) {
             MarkGameSleep(sourceName);
             MarkNativePacingSignal();

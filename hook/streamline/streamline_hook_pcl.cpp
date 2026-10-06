@@ -2,6 +2,7 @@
 
 #include "hook/metrics/perf_logger.h"
 #include "hook/metrics/streamline_pcl_latency.h"
+#include "hook/metrics/system_latency_frame_begin.h"
 #include "hook/fg/fg_detection.h"
 
 #include <sl_pcl.h>
@@ -49,7 +50,13 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
 
     const sl::Result result = original(marker, frame);
     if (result == sl::Result::eOk && captureMarker) {
-        g_pclMarkerHistory.Record(markerValue, frameId, markerTimeUs);
+        int64_t simulationStartUs = 0;
+        if (g_pclMarkerHistory.Record(markerValue, frameId, markerTimeUs, &simulationStartUs) &&
+            simulationStartUs > 0) {
+            // Frame-ID-exact input anchor for the estimate path, including
+            // under FSR FG where the report itself is not consumed.
+            ce::system_latency::NoteMarkerFrameBegin(simulationStartUs, markerTimeUs);
+        }
         // The title's per-frame clock: proof for the startup-protected OFF churn (titles that never
         // poll GetState report "still active" through nothing else), and the point on the title's
         // own thread, outside every Streamline call, where a held OFF is replayed.

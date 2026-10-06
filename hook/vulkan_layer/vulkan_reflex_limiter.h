@@ -220,7 +220,8 @@ public:
             // system_latency_frame_begin.h. Recorded before taking the lock so
             // the anchor is not skewed by contention with the telemetry read.
             ce::system_latency::NoteFrameBegin(PerfLogger::GetQpcUs(),
-                                               ce::system_latency::FrameBeginKind::LowLatencySleepReturn);
+                                               ce::system_latency::FrameBeginKind::LowLatencySleepReturn,
+                                               GetCurrentThreadId());
             std::lock_guard<std::mutex> lock(mutex_);
             if (device == device_) {
                 modernSwapchain_ = swapchain;

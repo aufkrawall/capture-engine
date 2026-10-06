@@ -264,16 +264,28 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Stale-risk: measured only in unit topologies so far. Hardware run pending; the numbers to read are `appQueue=` in
   the chain line and whether the DLSS FG cross-check still agrees within a few ms.
 
-### Frame-begin anchor (`system_latency_frame_begin.h`)
+### Frame-begin anchor (`system_latency_frame_begin.h`, `system_latency_fallback.h`)
 
-- The simulation/render span is measured, not modelled, whenever a low-latency frame boundary is observable.
-  Only `LowLatencySleepReturn` (`ReflexLimiter::EndGameSleepBoundary` for Streamline `slReflexSleep` and NvAPI
-  `NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) qualifies as an observable simulation-start boundary: games call it
-  immediately before sampling input.
+- The input-to-Present span is measured, not modelled, whenever a boundary that belongs to the presented frame is
+  observable. Precedence per application frame (2026-10-06): the game's own Streamline PCL SimulationStart, paired with
+  its PresentStart by frame ID (`SimulationMarker`, fed from `Hooked_slPCLSetMarker` via `NoteMarkerFrameBegin`, also
+  under FSR FG where the PCL report itself is discarded); a low-latency sleep return (`LowLatencySleepReturn`:
+  `ReflexLimiter::EndGameSleepBoundary` for `slReflexSleep`/`NvAPI_D3D_Sleep`, plus `vkLatencySleepNV`) **only when it
+  returned on the presenting thread**; the median of recently (2 s) measured spans of neighbouring frames (`Learned`);
+  otherwise one application interval (`Modelled`).
+- **Why the thread check:** Unreal sleeps on the game thread and presents on the RHI thread, so the newest sleep before
+  frame N's Present belongs to frame N+1 or N+2. Pairing it read whole frames too low - below even the modelled
+  interval, which is itself only a floor for such a pipeline. Counted as `sleepOtherThread=` in
+  `[Overlay] PC latency anchors`. A marker whose PresentStart is not newer than the previous application Present
+  belongs to an earlier frame and is rejected (`markerStale=`). Tests: `tests/test_system_latency_anchors.cpp`.
+- **No double count without FG (2026-10-06):** the gap between the hook's Present entry and the runtime PresentStart is
+  CE's own in-call wait (limiter, flip-queue pacing). It is inside the modelled Present-to-Present interval, so it is
+  added only to a learned/measured span or a generator hold, never to the model. Before, Strange Brigade at a 90 fps
+  cap published 11.1 ms interval + 9.3 ms wait for a frame the game built in 1.8 ms (memory/log evidence
+  `20260913_124032`).
 - Present wrappers do not record a frame-begin boundary: Present is entered multiple times per displayed frame in
   several configurations (e.g. 2.3x in Talos), and under frame generation the Present that returns belongs to the
-  generator's pacing thread rather than the application's frame. When no low-latency sleep is active, CPU simulation
-  work is modelled from the measured application-frame cadence.
+  generator's pacing thread rather than the application's frame.
 - **Frame generation pacing hold.** Under frame generation, the generator holds an application frame behind the
   interpolated frames derived from it. Matching against the newest boundary at or before final-output Present would
   alias onto the next simulation frame that started while the generator was still holding the previous frame,

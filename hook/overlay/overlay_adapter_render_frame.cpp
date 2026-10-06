@@ -207,6 +207,22 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
                         static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions),
                         static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected));
+                    // Which boundary the estimate's samples were anchored on, as running
+                    // totals: a window mixing measured and modelled frames is only as
+                    // measured as this split says.
+                    using ce::system_latency::FrameBeginKind;
+                    const auto& anchors = latencyDiagnostics.anchorKindSamples;
+                    HookLogImportant(
+                        "[Overlay] PC latency anchors: marker=%llu sleep=%llu input=%llu learned=%llu "
+                        "modelled=%llu sleepOtherThread=%llu markerStale=%llu",
+                        static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::SimulationMarker)]),
+                        static_cast<unsigned long long>(
+                            anchors[static_cast<size_t>(FrameBeginKind::LowLatencySleepReturn)]),
+                        static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::InputRetrieval)]),
+                        static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::Learned)]),
+                        static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::Modelled)]),
+                        static_cast<unsigned long long>(latencyDiagnostics.sleepAnchorsOnOtherThread),
+                        static_cast<unsigned long long>(latencyDiagnostics.markerAnchorsStale));
                     if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
                         HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",
                                          ce::system_latency::SourceLogLabel(latencyDiagnostics.crossCheckSource),
