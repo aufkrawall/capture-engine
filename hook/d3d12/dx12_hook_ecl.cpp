@@ -14,33 +14,25 @@ static std::atomic<uint32_t> g_EclQueueRegistrationsThisWindow{0};
 
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
                                                  ID3D12CommandList* const* ppCommandLists) {
-    // Safety: during FG transitions, SL may call ECL on a queue that's being freed.
-    // Freed COM objects have null vtable.  Forward directly to real ECL to avoid crash.
+    // No method has an admissible receiver when the queue identity is missing.
     if (!pThis || !*reinterpret_cast<void**>(pThis)) {
-        ExecuteCommandListsPtr real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);
-        if (!real)
-            real = oExecuteCommandLists;
-        if (real)
-            {
-                ScopedHookForwardedCall forwardedCycles;
-                real(pThis, NumCommandLists, ppCommandLists);
-            }
+        static ce::log_meter::ChangeGate invalid;
+        if (invalid.Observe(ce::log_meter::FieldKey(pThis)))
+            HookLogImportant("DX12 ECL: rejected missing queue identity (queue=%p lists=%u)", pThis, NumCommandLists);
         return;
     }
     if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclPassthrough)) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (!original)
             original = DX12_RealD3D12ECLForQueue(pThis, "ECL cost-probe passthrough");
-        if (!original)
-            original = oExecuteCommandLists;
+
         if (original)
             original(pThis, NumCommandLists, ppCommandLists);
         return;
     }
     if (HookIsShuttingDown()) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
-        if (!original)
-            original = oExecuteCommandLists;
+
         if (original)
             {
                 ScopedHookForwardedCall forwardedCycles;
@@ -217,7 +209,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // third-party overlay proxy (ReShade) hooks ECL and its "original" pointer
     // loops back to us, we'd recurse infinitely. Detect and break the cycle by
     // forwarding to the deepest known native D3D12 ECL. Never call the global
-    // oExecuteCommandLists blindly here: when a third-party overlay proxy queue
+    // an unrelated queue's predecessor blindly here: when a third-party overlay proxy queue
     // was hooked first, that global is the proxy's own hook and re-entering it
     // with the wrapped real queue throws std::system_error
     // (resource_deadlock_would_occur) from ReShade's queue mutex (Talos +
@@ -412,8 +404,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     ScopedHookForwardedCall forwardedCycles;
                     real(pThis, NumCommandLists, ppCommandLists);
                 }
-            } else if (oExecuteCommandLists) {
-                oExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+
             }
         }
         return;

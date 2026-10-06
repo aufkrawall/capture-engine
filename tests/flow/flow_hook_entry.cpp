@@ -7,6 +7,7 @@
 #include "common/logging/log_meter.h"
 #include "hook/d3d12/dx12_hook.h"
 #include "hook/d3d12/dx12_hook_internal.h"
+#include "hook/d3d12/dx12_hook_ecl_forward.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/runtime/hook_clock.h"
@@ -203,4 +204,18 @@ extern "C" __declspec(dllexport) void CEFlow_GetPostSLLifecycle(CEFlowPostSLLife
 }
 extern "C" __declspec(dllexport) bool CEFlow_TryConfirmPostSLEpoch(uint32_t epoch) {
     return g_PostSLLifecycle.ConfirmRender(epoch, [] {});
+}
+
+extern "C" __declspec(dllexport) void CEFlow_TrackQueue(ID3D12CommandQueue* queue) {
+    DX12_HookQueueVTable(queue);
+}
+extern "C" __declspec(dllexport) void* CEFlow_QueueOriginal(ID3D12CommandQueue* queue) {
+    return reinterpret_cast<void*>(GetOriginalExecuteCommandLists(queue));
+}
+extern "C" __declspec(dllexport) void CEFlow_ForwardQueue(ID3D12CommandQueue* queue) {
+    ce::dx12_ecl_forward::TransparentNativeFSRCallback(queue, 0, nullptr);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_ResetQueueBindings() {
+    ce::dx12_queue_dispatch::Reset();
 }

@@ -85,6 +85,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         DXGIShared::ClassifyPresentInterposerPresentSource();
     }
 
+    bool startupTransportBypass = false;
     if (ctx.api == APIType::D3D12) {
         const char* overlayModule = nullptr;
         int startupPass = 0;
@@ -92,22 +93,12 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             GetDX12StartupPresentMode(dxgi_shared_oPresentBypass != nullptr, &overlayModule, &startupPass);
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
             const bool steamOverlayPresent = IsCurrentExternalPresentHookSteamChain();
-            const bool useBypass = steamOverlayPresent && dxgi_shared_oPresentBypass && !dxgi_shared_oPresentTrampoline;
+            startupTransportBypass = steamOverlayPresent && dxgi_shared_oPresentBypass && !dxgi_shared_oPresentTrampoline;
             HookLogImportant(
-                "DetourPresent: Startup compatibility pass #%d for third-party overlay %s "
-                "(trampoline=%p bypass=%p steam=%d useBypass=%d)",
-                startupPass, overlayModule ? overlayModule : "module", (void*)dxgi_shared_oPresentTrampoline, (void*)dxgi_shared_oPresentBypass,
-                steamOverlayPresent ? 1 : 0, useBypass ? 1 : 0);
-            if (g_IPC) {
-                g_SharedFpsLimiter.SetIPCClient(g_IPC);
-                g_SharedFpsLimiter.Apply();
-                ApplyPresentFrameLatencyOverrides(pSwapChain);
-            }
-            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-            if (useBypass) {
-                return ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
-            }
-            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+                "DetourPresent: Startup transport pass #%d for third-party overlay %s "
+                "(trampoline=%p bypass=%p steam=%d useBypass=%d); overlay admission remains active",
+                startupPass, overlayModule ? overlayModule : "module", (void*)dxgi_shared_oPresentTrampoline,
+                (void*)dxgi_shared_oPresentBypass, steamOverlayPresent ? 1 : 0, startupTransportBypass ? 1 : 0);
         }
         // The present-interposer route (including the D3D12 "no observed queue
         // means no safe way to draw here at all" bypass) was resolved for every
@@ -538,7 +529,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     }
 
     HRESULT hr;
-    if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire)) {
+    if (startupTransportBypass) {
+        hr = ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
+    } else if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire)) {
         ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
         bool runtimeOwnedNativeFGPresentPath = false;
         // Safety: if SL routing is still active while the native FSR path owns

@@ -128,9 +128,8 @@ TEST(DXGISharedSourceTest, RealECLResolutionNeverCreatesALiveRuntimeProbeQueue) 
     const std::string text = ce::test_source::ReadFile(source);
     ASSERT_FALSE(text.empty());
     EXPECT_EQ(text.find("CreateCommandQueue("), std::string::npos);
-    EXPECT_NE(text.find("dx12_hook_g_ExecuteCommandListsOriginalByVTable"), std::string::npos);
-    EXPECT_NE(text.find("dx12_hook_g_LastExecuteCommandListsOriginal"), std::string::npos);
-    EXPECT_NE(text.find("dx12_hook_g_ExecuteCommandListsCaptureGeneration"), std::string::npos);
+    EXPECT_NE(text.find("ce::dx12_queue_dispatch::Snapshot()"), std::string::npos);
+    EXPECT_NE(text.find("ce::dx12_queue_dispatch::Generation()"), std::string::npos);
     EXPECT_NE(text.find("refusing temporary queue creation during live runtime"), std::string::npos);
 }
 

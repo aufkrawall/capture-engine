@@ -93,11 +93,16 @@ FlowGame::FlowGame(const std::string& testName) {
     tryConfirmPostSLEpoch_ =
         reinterpret_cast<CEFlow_TryConfirmPostSLEpoch_t>(GetProcAddress(hook_, "CEFlow_TryConfirmPostSLEpoch"));
     shutdown_ = reinterpret_cast<CEFlow_Shutdown_t>(GetProcAddress(hook_, "CEFlow_Shutdown"));
+    trackQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackQueue"));
+    resetQueueBindings_ = reinterpret_cast<CEFlow_ResetQueueBindings_t>(GetProcAddress(hook_, "CEFlow_ResetQueueBindings"));
+    queueOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_QueueOriginal"));
+    forwardQueue_ = reinterpret_cast<CEFlow_ForwardQueue_t>(GetProcAddress(hook_, "CEFlow_ForwardQueue"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
-        !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_) {
+        !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
+        !forwardQueue_ || !resetQueueBindings_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -369,6 +374,22 @@ CEFlowPublishedFG FlowGame::PublishedFG() const {
     if (getPublishedFG_)
         getPublishedFG_(&published);
     return published;
+}
+
+void FlowGame::ResetQueueBindings() {
+    if (resetQueueBindings_)
+        resetQueueBindings_();
+}
+void FlowGame::TrackQueue(ID3D12CommandQueue* queue) {
+    if (trackQueue_)
+        trackQueue_(queue);
+}
+void* FlowGame::QueueOriginal(ID3D12CommandQueue* queue) const {
+    return queueOriginal_ ? queueOriginal_(queue) : nullptr;
+}
+void FlowGame::ForwardQueue(ID3D12CommandQueue* queue) {
+    if (forwardQueue_)
+        forwardQueue_(queue);
 }
 
 NGXPublication FlowGame::PublishedNGX() const {

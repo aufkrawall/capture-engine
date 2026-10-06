@@ -32,14 +32,11 @@ ExecuteCommandListsPtr ResolveRecursionBreakTarget(ID3D12CommandQueue* queue) {
     const ExecuteCommandListsPtr realD3D12Ecl = DX12_RealD3D12ECLForQueue(queue, "ECL recursion break");
     switch (dx12_overlay_policy::SelectEclRecursionBreakTarget(
         dx12_overlay_policy::ClassifyEclBreakTargetCandidate(queueVtableResolved, queueVtablePath),
-        ClassifyBreakTarget(perQueueOriginal), ClassifyBreakTarget(realD3D12Ecl),
-        ClassifyBreakTarget(oExecuteCommandLists))) {
+        ClassifyBreakTarget(perQueueOriginal), ClassifyBreakTarget(realD3D12Ecl))) {
         case dx12_overlay_policy::EclBreakSelection::kPerQueueOriginal:
             return perQueueOriginal;
         case dx12_overlay_policy::EclBreakSelection::kRealD3D12Ecl:
             return realD3D12Ecl;
-        case dx12_overlay_policy::EclBreakSelection::kGlobalOriginal:
-            return oExecuteCommandLists;
         case dx12_overlay_policy::EclBreakSelection::kNone:
             return nullptr;
     }
@@ -64,8 +61,7 @@ void TransparentNativeFSRCallback(ID3D12CommandQueue* queue, UINT numCommandList
         recursionDepth == 0 ? GetOriginalExecuteCommandLists(queue) : ResolveRecursionBreakTarget(queue);
     if (!target && recursionDepth == 0)
         target = DX12_RealD3D12ECLForQueue(queue, "native-FSR transparent forward");
-    if (!target && recursionDepth == 0)
-        target = oExecuteCommandLists;
+
     if (!target) {
         static std::atomic<int> s_unresolvedLogCount{0};
         const int logCount = s_unresolvedLogCount.fetch_add(1, std::memory_order_relaxed);

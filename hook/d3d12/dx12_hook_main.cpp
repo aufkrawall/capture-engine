@@ -4,7 +4,6 @@
 #include "dx12_hook_internal.h"
 
 // Global Function Pointers for detours (Visible to other modules)
-ExecuteCommandListsPtr oExecuteCommandLists = nullptr;
 
 static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out);
 
@@ -500,14 +499,7 @@ void DX12Hook::Shutdown() {
         dx12_hook_g_PreFGGameQueue->Release();
         dx12_hook_g_PreFGGameQueue = nullptr;
     }
-    {
-        std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-        dx12_hook_g_ExecuteCommandListsOriginalByVTable.clear();
-        oExecuteCommandLists = nullptr;
-        dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
-    }
-    dx12_hook_g_LastExecuteCommandListsVTable.store(nullptr, std::memory_order_release);
-    dx12_hook_g_LastExecuteCommandListsOriginal.store(nullptr, std::memory_order_release);
+    ce::dx12_queue_dispatch::Reset();
     if (g_Device.load()) {
         g_Device.load()->Release();
         g_Device.store(nullptr);

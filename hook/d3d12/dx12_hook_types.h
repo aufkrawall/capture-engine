@@ -2,6 +2,7 @@
 
 #include "postsl_lifecycle.h"
 #include "postsl_queue_owner.h"
+#include "dx12_queue_dispatch.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -20,7 +21,6 @@
 
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
-typedef void(STDMETHODCALLTYPE* ExecuteCommandListsPtr)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 
 typedef HRESULT(STDMETHODCALLTYPE* SignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 
@@ -390,11 +390,7 @@ struct Dx12FocusAnalysisSample {
 
 struct DX12ECLState {
     std::recursive_mutex hookStateMutex;
-    std::map<void**, ExecuteCommandListsPtr> originalByVTable;
     std::map<void**, SignalPtr> signalOriginalByVTable;
-    std::atomic<uint64_t> captureGeneration{0};
-    std::atomic<void**> lastVTable{nullptr};
-    std::atomic<ExecuteCommandListsPtr> lastOriginal{nullptr};
     std::atomic<ExecuteCommandListsPtr> realECL{nullptr};
     std::atomic<SignalPtr> realSignal{nullptr};
     std::atomic<ID3D12Fence*> overlayCompletionFence{nullptr};
@@ -404,11 +400,7 @@ struct DX12ECLState {
 extern DX12ECLState g_DX12ECLState;
 
 inline std::recursive_mutex& dx12_hook_g_ExecuteCommandListsHookStateMutex = g_DX12ECLState.hookStateMutex;
-inline std::map<void**, ExecuteCommandListsPtr>& dx12_hook_g_ExecuteCommandListsOriginalByVTable = g_DX12ECLState.originalByVTable;
 inline std::map<void**, SignalPtr>& dx12_hook_g_CommandQueueSignalOriginalByVTable = g_DX12ECLState.signalOriginalByVTable;
-inline std::atomic<uint64_t>& dx12_hook_g_ExecuteCommandListsCaptureGeneration = g_DX12ECLState.captureGeneration;
-inline std::atomic<void**>& dx12_hook_g_LastExecuteCommandListsVTable = g_DX12ECLState.lastVTable;
-inline std::atomic<ExecuteCommandListsPtr>& dx12_hook_g_LastExecuteCommandListsOriginal = g_DX12ECLState.lastOriginal;
 inline std::atomic<ExecuteCommandListsPtr>& dx12_hook_g_RealD3D12ECL = g_DX12ECLState.realECL;
 inline std::atomic<SignalPtr>& dx12_hook_g_RealD3D12Signal = g_DX12ECLState.realSignal;
 inline std::atomic<ID3D12Fence*>& dx12_hook_g_OverlayCompletionFence = g_DX12ECLState.overlayCompletionFence;

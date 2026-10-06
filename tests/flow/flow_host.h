@@ -114,6 +114,11 @@ public:
     CEFlowPublishedFG PublishedFG() const;
     NGXPublication PublishedNGX() const;
     void ServiceHookThread();
+    ComPtr<ID3D12CommandQueue> RetainGameQueue() const { return queue_; }
+    void TrackQueue(ID3D12CommandQueue* queue);
+    void ResetQueueBindings();
+    void* QueueOriginal(ID3D12CommandQueue* queue) const;
+    void ForwardQueue(ID3D12CommandQueue* queue);
     CEFlowPostSLLifecycle PostSLLifecycle() const;
     bool TryConfirmPostSLEpoch(uint32_t epoch);
     const std::string& LogDirectory() const {
@@ -160,6 +165,10 @@ private:
     std::string logDirectory_;
     std::string error_;
     HMODULE hook_ = nullptr;
+    CEFlow_TrackQueue_t trackQueue_ = nullptr;
+    CEFlow_ResetQueueBindings_t resetQueueBindings_ = nullptr;
+    CEFlow_QueueOriginal_t queueOriginal_ = nullptr;
+    CEFlow_ForwardQueue_t forwardQueue_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;

@@ -54,7 +54,6 @@ enum class EclBreakSelection {
     kNone,
     kPerQueueOriginal,
     kRealD3D12Ecl,
-    kGlobalOriginal,
 };
 
 // Selects which candidate to forward to. The selection is type-safe by
@@ -67,8 +66,7 @@ enum class EclBreakSelection {
 // fail-open unknown-module targets.
 inline EclBreakSelection SelectEclRecursionBreakTarget(EclBreakTargetClass queueVtable,
                                                        EclBreakTargetClass perQueueOriginal,
-                                                       EclBreakTargetClass realD3D12Ecl,
-                                                       EclBreakTargetClass globalOriginal) {
+                                                       EclBreakTargetClass realD3D12Ecl) {
     if (queueVtable == EclBreakTargetClass::kNativeD3D12) {
         // Native queue object. The per-vtable original matches the layout and
         // is preferred when it is the runtime implementation; when an FG
@@ -80,14 +78,8 @@ inline EclBreakSelection SelectEclRecursionBreakTarget(EclBreakTargetClass queue
         if (realD3D12Ecl == EclBreakTargetClass::kNativeD3D12) {
             return EclBreakSelection::kRealD3D12Ecl;
         }
-        if (globalOriginal == EclBreakTargetClass::kNativeD3D12) {
-            return EclBreakSelection::kGlobalOriginal;
-        }
         if (perQueueOriginal == EclBreakTargetClass::kOtherModule) {
             return EclBreakSelection::kPerQueueOriginal;
-        }
-        if (globalOriginal == EclBreakTargetClass::kOtherModule) {
-            return EclBreakSelection::kGlobalOriginal;
         }
         return EclBreakSelection::kNone;
     }

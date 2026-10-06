@@ -60,37 +60,35 @@ TEST(Dx12EclRecursionBreakPolicyTest, UnresolvedOrMissingPathsStayUnresolved) {
 
 TEST(Dx12EclRecursionBreakPolicyTest, SelectionPrefersNativeTargetsInOrder) {
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12,
-                                            EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12),
+                                            EclBreakTargetClass::kNativeD3D12),
               EclBreakSelection::kPerQueueOriginal);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12,
                                             EclBreakTargetClass::kForeignOverlayHook,
-                                            EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12),
+                                            EclBreakTargetClass::kNativeD3D12),
               EclBreakSelection::kRealD3D12Ecl);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12,
                                             EclBreakTargetClass::kForeignOverlayHook,
-                                            EclBreakTargetClass::kForeignOverlayHook,
-                                            EclBreakTargetClass::kNativeD3D12),
-              EclBreakSelection::kGlobalOriginal);
+                                            EclBreakTargetClass::kForeignOverlayHook),
+              EclBreakSelection::kNone);
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, SelectionFallsOpenToUnknownModuleButNeverForeignOrSelf) {
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kOtherModule,
-                                            EclBreakTargetClass::kUnresolved, EclBreakTargetClass::kUnresolved),
+                                            EclBreakTargetClass::kUnresolved),
               EclBreakSelection::kPerQueueOriginal);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12,
                                             EclBreakTargetClass::kForeignOverlayHook,
-                                            EclBreakTargetClass::kUnresolved, EclBreakTargetClass::kOtherModule),
-              EclBreakSelection::kGlobalOriginal);
+                                            EclBreakTargetClass::kUnresolved),
+              EclBreakSelection::kNone);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12,
-                                            EclBreakTargetClass::kForeignOverlayHook,
                                             EclBreakTargetClass::kForeignOverlayHook,
                                             EclBreakTargetClass::kForeignOverlayHook),
               EclBreakSelection::kNone);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kSelfHook,
-                                            EclBreakTargetClass::kForeignOverlayHook, EclBreakTargetClass::kSelfHook),
+                                            EclBreakTargetClass::kForeignOverlayHook),
               EclBreakSelection::kNone);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kUnresolved, EclBreakTargetClass::kUnresolved,
-                                            EclBreakTargetClass::kUnresolved, EclBreakTargetClass::kUnresolved),
+                                            EclBreakTargetClass::kUnresolved),
               EclBreakSelection::kNone);
 }
 
@@ -99,14 +97,14 @@ TEST(Dx12EclRecursionBreakPolicyTest, ProxyQueuesOnlyForwardThroughTheirOwnOrigi
     // original taken from the proxy's own vtable matches its layout.
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kForeignOverlayHook,
                                             EclBreakTargetClass::kForeignOverlayHook,
-                                            EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12),
+                                            EclBreakTargetClass::kNativeD3D12),
               EclBreakSelection::kPerQueueOriginal);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kForeignOverlayHook,
                                             EclBreakTargetClass::kUnresolved,
-                                            EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12),
+                                            EclBreakTargetClass::kNativeD3D12),
               EclBreakSelection::kNone);
     EXPECT_EQ(SelectEclRecursionBreakTarget(EclBreakTargetClass::kOtherModule, EclBreakTargetClass::kOtherModule,
-                                            EclBreakTargetClass::kNativeD3D12, EclBreakTargetClass::kNativeD3D12),
+                                            EclBreakTargetClass::kNativeD3D12),
               EclBreakSelection::kPerQueueOriginal);
 }
 
@@ -146,22 +144,23 @@ TEST(Dx12EclRecursionBreakPolicyTest, QueueVTableHookPublishesNativeOriginalEage
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t originalSave = source.find("dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;");
-    const size_t eagerPublish = source.find("TryPublishRealD3D12ECLCandidate(original, \"fresh queue vtable hook\");");
+    const size_t originalSave = source.find("ce::dx12_queue_dispatch::CaptureVTable(vtbl)");
+    const size_t eagerPublish = source.find("TryPublishRealD3D12ECLCandidate(capture.original, \"fresh queue vtable hook\");");
     ASSERT_NE(originalSave, std::string::npos);
     ASSERT_NE(eagerPublish, std::string::npos);
     EXPECT_LT(originalSave, eagerPublish);
 }
 
-TEST(Dx12EclRecursionBreakPolicyTest, NullVtableForwardPrefersResolvedNativeEcl) {
+TEST(Dx12EclRecursionBreakPolicyTest, MissingQueueIdentityCannotInvokeAnImplementation) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
-    ASSERT_FALSE(source.empty());
-
-    const size_t nullVtableForward = source.find("real = dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire);");
-    const size_t globalFallback = source.find("real = oExecuteCommandLists;");
-    ASSERT_NE(nullVtableForward, std::string::npos);
-    ASSERT_NE(globalFallback, std::string::npos);
-    EXPECT_LT(nullVtableForward, globalFallback);
+    const size_t guard = source.find("if (!pThis || !*reinterpret_cast<void**>(pThis))");
+    const size_t next = source.find("if (ce::fg_cost_probe::Active", guard);
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(next, std::string::npos);
+    const auto admission = source.substr(guard, next - guard);
+    EXPECT_EQ(admission.find("real(pThis"), std::string::npos);
+    EXPECT_EQ(admission.find("original(pThis"), std::string::npos);
+    EXPECT_NE(admission.find("rejected missing queue identity"), std::string::npos);
 }
 
 TEST(Dx12EclRecursionBreakPolicyTest, SignalTraceDetourForwardsPerVtableOriginalNotBlindGlobal) {

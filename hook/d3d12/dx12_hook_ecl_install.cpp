@@ -93,73 +93,22 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     std::lock_guard<std::recursive_mutex> lock(s_HookMutex);
     vtbl = *reinterpret_cast<void***>(queue);
 
-    // CRITICAL FIX: Check if we've already hooked this vtable BEFORE checking
-    // the current vtable entry.  FG engines (FSR FG, DLSS FG) may overwrite
-    // our vtable entry with their own hook.  If we detect the change and
-    // re-hook, we create a circular hook chain:
-    //   DetourECL → FG_ECL → DetourECL → FG_ECL → ... (stack overflow)
-    // because FG's saved "original" points to our detour, and our new
-    // "original" points to FG's hook.  The correct behavior is to leave
-    // FG's hook in place — our detour is still in the chain via FG's
-    // saved original pointer.
-    {
-        std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-        bool alreadyHooked =
-            dx12_hook_g_ExecuteCommandListsOriginalByVTable.find(vtbl) != dx12_hook_g_ExecuteCommandListsOriginalByVTable.end();
-        if (alreadyHooked) {
-            // Another hook (FSR FG, DLSS FG, etc.) may have replaced our
-            // vtable entry, but the chain is intact:
-            //   FG_ECL → DetourECL → realECL
-            // Do NOT re-hook — that would create infinite recursion.
-            if (vtbl[10] != (void*)DetourExecuteCommandLists) {
-                static std::atomic<int> s_chainNotifyCount{0};
-                if (s_chainNotifyCount.fetch_add(1, std::memory_order_relaxed) < 3) {
-                    HookLogImportant(
-                        "DX12: ECL vtable[%p] modified by FG engine (was our "
-                        "detour, now %p) - chain intact, NOT re-hooking",
-                        vtbl, vtbl[10]);
-                }
+    const auto capture = ce::dx12_queue_dispatch::CaptureVTable(vtbl);
+    if (capture.result == ce::dx12_queue_dispatch::CaptureResult::kKnown ||
+        capture.result == ce::dx12_queue_dispatch::CaptureResult::kFollower) {
+        if (capture.result == ce::dx12_queue_dispatch::CaptureResult::kFollower) {
+            static ce::log_meter::ChangeGate follower;
+            const auto verdict = follower.Observe(ce::log_meter::FieldKey(vtbl, vtbl[10]));
+            if (verdict) {
+                HookLogImportant("DX12 ECL: preserving follower chain vtable=%p current=%p%s", vtbl, vtbl[10],
+                                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
-            return;
         }
-    }
-
-    // Verify vtbl[10] is non-NULL before patching. SL wrapper queues with
-    // incomplete vtables may have NULL at slot 10, and writing there would
-    // corrupt adjacent memory (same pattern as DX12_HookDeviceVTable).
-    if (!vtbl[10]) {
-        HookLog("DX12: ECL vtable[10] is NULL for queue %p - skipping hook", queue);
         return;
     }
-
-    if (vtbl[10] != (void*)DetourExecuteCommandLists) {
-        HookLog("DX12: Hooking ExecuteCommandLists vtable for queue %p", queue);
-        ExecuteCommandListsPtr original = nullptr;
-        VTableHook::Status hookStatus =
-            VTableHook::Create(reinterpret_cast<void*>(&vtbl[10]), (LPVOID)DetourExecuteCommandLists, (LPVOID*)&original);
-        if (hookStatus == VTableHook::Success && original) {
-            {
-                std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-                dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = original;
-                dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
-                if (!oExecuteCommandLists)
-                    oExecuteCommandLists = original;
-            }
-            if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-                // Publish the native runtime ECL eagerly whenever a queue vtable
-                // still exposes one. The ExecuteCommandLists recursion-break path
-                // needs this to skip a foreign overlay proxy hook captured as the
-                // first global original (Talos + ReShade, session 20260813_041416).
-                TryPublishRealD3D12ECLCandidate(original, "fresh queue vtable hook");
-            }
-        }
-    } else {
-        std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-        if (dx12_hook_g_ExecuteCommandListsOriginalByVTable.find(vtbl) == dx12_hook_g_ExecuteCommandListsOriginalByVTable.end() &&
-            oExecuteCommandLists) {
-            dx12_hook_g_ExecuteCommandListsOriginalByVTable[vtbl] = oExecuteCommandLists;
-            dx12_hook_g_ExecuteCommandListsCaptureGeneration.fetch_add(1, std::memory_order_release);
-        }
+    if (capture.result == ce::dx12_queue_dispatch::CaptureResult::kCaptured &&
+        !dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
+        TryPublishRealD3D12ECLCandidate(capture.original, "fresh queue vtable hook");
     }
 
     // DX12 trace: hook CommandQueue::Signal (slot 14) to observe per-frame fence usage. The queue

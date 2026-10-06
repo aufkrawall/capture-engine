@@ -27,6 +27,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `architecture-debt-plan.md` | 42 | current architecture debt, verified evidence, D0-D12 implementation/verification sequence and independent deferred features (2026-10-05) |
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
+| `dx12-queue-dispatch.md` | 4 | private exact-vtable ECL binding, installation/publication, reset recovery, queue flow regressions and lifetime work still pending (2026-10-06) |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |

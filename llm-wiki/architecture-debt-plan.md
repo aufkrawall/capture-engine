@@ -11,16 +11,25 @@ This document supersedes the completed sections 1-10 of the old temporary refact
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
   evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
   audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
-- D1 partial: NGX core fake and two real-hook lifecycle/OFF/ON scenarios pass focused/17-flow gates;
-  all three production mutants are detected. Clean 0.1.7006 and final verification 0.1.7007 passed.
-  Contracts and cold-start finding: [NGX flow lifecycle](frame-generation/ngx-flow-lifecycle.md). Foreign interposer, two-vtable
-  and SDK unload/retirement coverage remain required. Other phase exits remain open; apply D9/D12 inside each slice.
+- D1 partial: four NGX lifecycle/OFF/ON cases and two distinct queue-vtable scenarios pass through
+  production hooks; NGX and queue mutations detect five and three defects respectively. Queue coverage
+  includes exact forwarding, duplicate capture and reset recovery; all 21 FG flow scenarios pass.
+  Contracts: [NGX lifecycle](frame-generation/ngx-flow-lifecycle.md) and
+  [queue dispatch](dx12-queue-dispatch.md). Controlled foreign interposer, wrapper/native combinations,
+  SDK unload/retirement and cold-FG startup coverage remain required. Apply D9/D12 inside each slice.
 - D7 publication slice verified: one private NGX creation/evaluation boundary owns multiplier selection,
   accepted-OFF precedence and compatibility/shared publication. Four focused cases, five production
   mutations and closing 0.1.7008 (native/Python/all 19 FG flows, x64/x86 products/package) pass.
   Full SDK settings concurrency/generation and module/feature/context retirement remain pending.
-- The first queue ownership slice must characterize exact-vtable original resolution, coherent cache
-  publication and retirement before migrating install/forward consumers.
+- D2 partial: private queue dispatch owns installation/predecessor publication, coherent thread-local
+  cache pairs and invalidation. Install, resolution, passive probes and reset now use operations/value
+  snapshots instead of writable map/cache aliases; the unrelated global ECL fallback is removed.
+  Nine native registry cases, two real-hook queue cases and three production mutations pass. Physical
+  slot recovery remains allocation-checked in VTableHook; callback/code lifetime, hook detachment,
+  native candidate lifetime and Signal ownership still require further work. D2 exit remains open.
+- Additional defect fixed: third-party startup transport passes skipped overlay admission/accounting.
+  Transport selection is preserved while rendering proceeds; the first output is covered with RTSS
+  present in the controlled WARP runs. This does not establish the real-game compatibility matrix.
 - Baseline no-build reuse refused the stale unit-test link manifest at 0.1.7004; no native test ran.
   D0 clean verification 0.1.7005 passed products, native/15 FG flows, Python, ASan/UBSan and lint ratchets.
   All four parser fuzz targets passed a bounded 10-second-per-target run; hardware/application checks remain pending.

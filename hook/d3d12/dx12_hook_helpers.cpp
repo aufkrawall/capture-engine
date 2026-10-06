@@ -381,50 +381,12 @@ HookLogImportant("DX12 TRACE: %s orig=%s | %s | trail=%s", api, originator, deta
 
 
 ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue) {
-if (!queue)
-    return oExecuteCommandLists;
-
-void** vtbl = *reinterpret_cast<void***>(queue);
-if (!vtbl)
-    return oExecuteCommandLists;
-
-void** cachedVtable = dx12_hook_g_LastExecuteCommandListsVTable.load(std::memory_order_acquire);
-if (cachedVtable == vtbl) {
-    ExecuteCommandListsPtr cachedOriginal = dx12_hook_g_LastExecuteCommandListsOriginal.load(std::memory_order_acquire);
-    if (cachedOriginal)
-        return cachedOriginal;
+    return ce::dx12_queue_dispatch::Resolve(queue);
 }
-
-ExecuteCommandListsPtr original = oExecuteCommandLists;
-{
-    std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-    auto it = dx12_hook_g_ExecuteCommandListsOriginalByVTable.find(vtbl);
-    if (it != dx12_hook_g_ExecuteCommandListsOriginalByVTable.end())
-        original = it->second;
-}
-
-if (original) {
-    dx12_hook_g_LastExecuteCommandListsOriginal.store(original, std::memory_order_release);
-    dx12_hook_g_LastExecuteCommandListsVTable.store(vtbl, std::memory_order_release);
-}
-return original;
-}
-
 
 bool HasTrackedExecuteCommandListsOriginal(ID3D12CommandQueue* queue) {
-if (!queue) {
-    return false;
+    return ce::dx12_queue_dispatch::HasBinding(queue);
 }
-
-void** vtbl = *reinterpret_cast<void***>(queue);
-if (!vtbl) {
-    return false;
-}
-
-std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-return dx12_hook_g_ExecuteCommandListsOriginalByVTable.find(vtbl) != dx12_hook_g_ExecuteCommandListsOriginalByVTable.end();
-}
-
 
 bool HookHasSafePostFSRBootstrapPathImpl() {
 if (!dx12_hook_g_HadFSRFGPhase) {

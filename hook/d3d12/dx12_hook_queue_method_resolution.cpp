@@ -206,42 +206,20 @@ bool TryPublishRealD3D12ECLCandidate(ExecuteCommandListsPtr candidate, const cha
 void ProbeRealD3D12ECL(ID3D12Device* device) {
     static std::atomic<uint64_t> s_lastUnresolvedCaptureGeneration{UINT64_MAX};
     const uint64_t captureGeneration =
-        dx12_hook_g_ExecuteCommandListsCaptureGeneration.load(std::memory_order_acquire);
+        ce::dx12_queue_dispatch::Generation();
     if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire) &&
         s_lastUnresolvedCaptureGeneration.load(std::memory_order_acquire) == captureGeneration) {
         return;
     }
 
-    size_t trackedVtableCount = 0;
-    {
-        std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-        trackedVtableCount = dx12_hook_g_ExecuteCommandListsOriginalByVTable.size();
-
-        if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {
-            TryPublishRealD3D12ECLCandidate(oExecuteCommandLists, "captured primary queue original");
-            TryPublishRealD3D12ECLCandidate(
-                dx12_hook_g_LastExecuteCommandListsOriginal.load(std::memory_order_acquire),
-                "last tracked queue original");
-            for (const auto& [vtable, original] : dx12_hook_g_ExecuteCommandListsOriginalByVTable) {
-                if (TryPublishRealD3D12ECLCandidate(original, "tracked queue original")) {
-                    break;
-                }
-                TryResolveMethodsFromVTable(vtable, "tracked queue vtable");
-            }
-        }
-
-        TryPublishRealD3D12SignalCandidate(oTraceCommandQueueSignal, "captured trace Signal original");
-        TryResolveMethodsFromVTable(dx12_hook_g_LastExecuteCommandListsVTable.load(std::memory_order_acquire),
-                                    "last tracked queue vtable");
-        if (!dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
-            for (const auto& [vtable, original] : dx12_hook_g_ExecuteCommandListsOriginalByVTable) {
-                (void)original;
-                TryResolveMethodsFromVTable(vtable, "tracked queue vtable");
-                if (dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
-                    break;
-                }
-            }
-        }
+    const auto bindings = ce::dx12_queue_dispatch::Snapshot();
+    const size_t trackedVtableCount = bindings.size();
+    for (const auto& [vtable, original] : bindings) {
+        if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire))
+            TryPublishRealD3D12ECLCandidate(original, "tracked queue original");
+        if (!dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire) ||
+            !dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire))
+            TryResolveMethodsFromVTable(vtable, "tracked queue vtable");
     }
 
     if (dx12_hook_g_RealD3D12ECL.load(std::memory_order_acquire)) {

@@ -64,6 +64,9 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal);
  */
 Status Remove(void* pVTableEntry, void* pOriginal);
 
+// Recover only this detour's saved predecessor for the exact, still-mapped slot allocation.
+bool GetOriginal(void* pVTableEntry, void* pDetour, void** ppOriginal);
+
 // Enable a hook (no-op - VTable hooks are always enabled)
 Status Enable(void* pTarget);
 

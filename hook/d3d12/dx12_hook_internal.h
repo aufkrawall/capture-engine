@@ -87,7 +87,6 @@ namespace {
 #include "hook/wrappers/wrapper_base.h"
 #include "hook/present/dxgi_shared.h"
 #include "dx12_hook_types.h"
-extern ExecuteCommandListsPtr oExecuteCommandLists;
 extern CreateCommittedResourcePtr oCreateCommittedResource;
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;

@@ -614,15 +614,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         DX12StartupPresentMode startupMode =
             GetDX12StartupPresentMode(dxgi_shared_oPresent1Bypass != nullptr, &overlayModule, &startupPass);
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
-            HookLogImportant("DetourPresent1: Startup compatibility pass #%d for third-party overlay %s", startupPass,
-                             overlayModule ? overlayModule : "module");
-            if (g_IPC) {
-                g_SharedFpsLimiter.SetIPCClient(g_IPC);
-                g_SharedFpsLimiter.Apply();
-                ApplyPresentFrameLatencyOverrides(pSwapChain);
-            }
-            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            HookLogImportant("DetourPresent1: Startup transport pass #%d for third-party overlay %s; "
+                             "overlay admission remains active", startupPass, overlayModule ? overlayModule : "module");
         }
         // The present-interposer route was resolved for every API above, before
         // this branch — same rule and same reason as DetourPresent.

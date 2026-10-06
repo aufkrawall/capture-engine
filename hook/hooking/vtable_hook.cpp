@@ -312,6 +312,23 @@ Status Remove(void* pVTableEntry, void* pOriginal) {
     return Success;
 }
 
+bool GetOriginal(void* pVTableEntry, void* pDetour, void** ppOriginal) {
+    if (!ppOriginal)
+        return false;
+    *ppOriginal = nullptr;
+    std::lock_guard<std::mutex> lock(g_VTableMutex);
+    auto* entry = static_cast<void**>(pVTableEntry);
+    MEMORY_BASIC_INFORMATION memory = {};
+    if (!QueryReadablePointerSlot(entry, &memory))
+        return false;
+    const auto found = g_HookOwnership.find(entry);
+    if (found == g_HookOwnership.end() || found->second.detour != pDetour ||
+        found->second.allocationBase != memory.AllocationBase || !found->second.original)
+        return false;
+    *ppOriginal = found->second.original;
+    return true;
+}
+
 const char* StatusToString(Status status) {
     switch (status) {
         case Success:
