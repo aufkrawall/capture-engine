@@ -1,9 +1,24 @@
 # Architecture debt: current state and implementation plan
 
-Last source audit: 2026-10-05. Core implementation baseline: `e83eabd2` / product 0.1.6989.
+Last source audit: 2026-10-05; next-wave inventory started 2026-10-06 at `3563155d`.
+Core implementation baseline: `e83eabd2` / product 0.1.6989.
 The subsequent privacy workflow commit `6b8249e8` adds commit checks, not product architecture.
 Canonical version: this wiki page. `temp/refactor.md` is an identical working copy of this revision.
 This document supersedes the completed sections 1-10 of the old temporary refactor plan.
+
+## Execution status (2026-10-06)
+
+- D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
+  evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
+  audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
+- D1-D12 pending; apply D9/D12 acceptance inside each ownership slice. The first queue slice will
+  characterize exact-vtable original resolution, coherent cache publication and retirement before
+  migrating install/forward consumers. D1 NGX and foreign interposer coverage remain required.
+- Baseline no-build reuse refused the stale unit-test link manifest at 0.1.7004; no native test ran.
+  D0 clean verification 0.1.7005 passed products, native/15 FG flows, Python, ASan/UBSan and lint ratchets.
+  All four parser fuzz targets passed a bounded 10-second-per-target run; hardware/application checks remain pending.
+- Temporary directory literally inventoried: only this working copy remains. The earlier 32-file
+  cleanup is already complete; do not repeat it or treat future diagnostic files as disposable.
 
 ## Scope and evidence
 

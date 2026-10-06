@@ -54,7 +54,7 @@
   },
   "total": 712,
   "scope": {
-    "entries": 986,
+    "entries": 988,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_metrics.cpp",
@@ -1000,8 +1000,10 @@
       "tests/test_swapchain_flag_policy.cpp",
       "tests/test_swapchain_present_ledger.cpp",
       "tests/test_swapchain_probe_lifetime.cpp",
+      "tests/test_system_latency_anchors.cpp",
       "tests/test_system_latency_fallback_recovery.cpp",
       "tests/test_system_latency_fg_measurement.cpp",
+      "tests/test_system_latency_input_retrieval.cpp",
       "tests/test_system_latency_metrics.cpp",
       "tests/test_system_latency_queue_count_rejection.cpp",
       "tests/test_third_party_load_policy.cpp",
