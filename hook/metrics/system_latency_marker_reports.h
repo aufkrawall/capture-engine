@@ -68,6 +68,7 @@ inline void Tracker::SubmitNativeReport(const NativeReport& report) {
     if (samplingIntervalUs <= 0)
         samplingIntervalUs = ResolveWorkIntervalLocked();
     markerIntervalUs_ = samplingIntervalUs;
+    lastMarkerReportPresentUs_ = ToSignedTimestamp(validFrames[validCount - 1].presentStartTimeUs);
     markerCadenceTrusted_ = !IsMarkerCadenceOutputRateLocked(samplingIntervalUs);
     if (!markerCadenceTrusted_) {
         nativeEstimatedSamples_.Clear();
@@ -179,7 +180,7 @@ inline void Tracker::SubmitNativeReport(const NativeReport& report) {
         if (estimatedInputWaitUs > 0) {
             const int64_t estimatedInputTimeUs = simulationStartUs - estimatedInputWaitUs;
             if (estimatedInputTimeUs > 0 && screenTimeUs >= estimatedInputTimeUs) {
-                const int64_t totalUs = screenTimeUs - estimatedInputTimeUs;
+                const int64_t totalUs = screenTimeUs - estimatedInputTimeUs + ScanoutToCenterUs();
                 if (IsValidTotalLatency(totalUs)) {
                     nativeEstimatedSamples_.Add(static_cast<float>(totalUs) / 1000.0f, screenTimeUs);
                     nativeSimulationToDisplayUs_ = screenTimeUs - simulationStartUs;

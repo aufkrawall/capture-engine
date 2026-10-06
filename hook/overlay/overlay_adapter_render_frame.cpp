@@ -158,12 +158,17 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     const auto latencyDiagnostics = metrics->GetSystemLatencyDiagnostics(currentQpcUs);
                     HookLogImportant(
                         "[Overlay] PC latency sample: source=%s value=%.1fms median=%.1f min=%.1f max=%.1f "
-                        "samples=%u fg=%d multiplier=%d baseFps=%.1f outputFps=%.1f",
+                        "samples=%u fg=%d multiplier=%d baseFps=%.1f outputFps=%.1f reportedBaseFps=%.1f "
+                        "reportedOutputFps=%.1f fps=%.1f gpu=%s%.0f%%",
                         ce::system_latency::SourceLogLabel(latencySource), cachedSystemLatency.milliseconds,
                         cachedSystemLatency.medianMilliseconds, cachedSystemLatency.minimumMilliseconds,
                         cachedSystemLatency.maximumMilliseconds, cachedSystemLatency.sampleCount,
                         metrics->IsFGActive() ? 1 : 0, metrics->GetFGMultiplier(), metrics->GetFGBaseFPS(),
-                        metrics->GetFGOutputFPS());
+                        metrics->GetFGOutputFPS(), metrics->GetReportedFGBaseFPS(),
+                        metrics->GetReportedFGOutputFPS(), cachedFPS,
+                        // GPU load tells a menu (a few percent) from gameplay, which
+                        // decides whether two readings are comparable at all.
+                        cachedSystemMetrics.gpuUsageValid ? "" : "?", cachedSystemMetrics.gpuUsage);
                     HookLogImportant(
                         "[Overlay] PC latency chain: frameBegin=%s anchorToPresent=%lldus presentToDisplay=%lldus "
                         "inputWait=%lldus baseInterval=%lldus applicationInterval=%lldus frameBeginInterval=%lldus "
@@ -171,7 +176,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         "appQueue=%u "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
-                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu",
+                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu "
+                        "idQueue=%d idMatched=%llu idUnmatched=%llu scanout=%lldus",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
                         static_cast<long long>(latencyDiagnostics.lastAnchorToPresentUs),
                         static_cast<long long>(latencyDiagnostics.lastPresentToDisplayUs),
@@ -206,7 +212,11 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
                         static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
                         static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions),
-                        static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected));
+                        static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected),
+                        latencyDiagnostics.generatorQueueDepthById,
+                        static_cast<unsigned long long>(latencyDiagnostics.generatorFramesMatchedById),
+                        static_cast<unsigned long long>(latencyDiagnostics.generatorFramesUnmatchedById),
+                        static_cast<long long>(latencyDiagnostics.scanoutToCenterUs));
                     // Which boundary the estimate's samples were anchored on, as running
                     // totals: a window mixing measured and modelled frames is only as
                     // measured as this split says.
@@ -215,7 +225,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                     HookLogImportant(
                         "[Overlay] PC latency anchors: marker=%llu sleep=%llu input=%llu learned=%llu "
                         "modelled=%llu sleepOtherThread=%llu markerStale=%llu inputBursts=%llu inputOtherThread=%llu "
-                        "queuedAhead=%d queuedAheadMax=%d",
+                        "queuedAhead=%d queuedAheadMax=%d markerOnPresentingThread=%llu markerOnOtherThread=%llu "
+                        "markerToPresent=%lldus",
                         static_cast<unsigned long long>(anchors[static_cast<size_t>(FrameBeginKind::SimulationMarker)]),
                         static_cast<unsigned long long>(
                             anchors[static_cast<size_t>(FrameBeginKind::LowLatencySleepReturn)]),
@@ -226,7 +237,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.markerAnchorsStale),
                         static_cast<unsigned long long>(latencyDiagnostics.inputRetrievalsObserved),
                         static_cast<unsigned long long>(latencyDiagnostics.inputRetrievalFramesOnOtherThread),
-                        latencyDiagnostics.framesQueuedAhead, latencyDiagnostics.framesQueuedAheadMax);
+                        latencyDiagnostics.framesQueuedAhead, latencyDiagnostics.framesQueuedAheadMax,
+                        static_cast<unsigned long long>(latencyDiagnostics.markerOnPresentingThread),
+                        static_cast<unsigned long long>(latencyDiagnostics.markerOnOtherThread),
+                        static_cast<long long>(latencyDiagnostics.markerToPresentUs));
                     if (latencyDiagnostics.crossCheckSource != ce::system_latency::Source::Unavailable) {
                         HookLogImportant("[Overlay] PC latency cross-check: %s=%.1fms vs published %.1fms",
                                          ce::system_latency::SourceLogLabel(latencyDiagnostics.crossCheckSource),

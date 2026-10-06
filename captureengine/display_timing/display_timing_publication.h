@@ -56,7 +56,12 @@ public:
             state.lastTimestamp = sample.timestampQpc;
             const int64_t screenTimeUs = DisplayTimingQpcToUs(sample.timestampQpc, qpcFrequency_);
             const int64_t presentStartTimeUs = DisplayTimingQpcToUs(sample.presentStartQpc, qpcFrequency_);
-            const int64_t period = sample.synchronizedFlip ? periodUs(sample.displaySource) : 0;
+            const int64_t displayPeriod = periodUs(sample.displaySource);
+            const int64_t period = sample.synchronizedFlip ? displayPeriod : 0;
+            // Every transition, synchronized or not: scanout runs at this rate
+            // either way, and the latency readout adds half of it.
+            if (displayPeriod > 0)
+                target.output->refreshPeriodUs.store(displayPeriod, std::memory_order_relaxed);
             const RefreshBoundDecision graph = state.graph.Apply(
                 screenTimeUs, sample.synchronizedFlip, period, [&](int64_t fromUs, int64_t untilUs) {
                     const int64_t blank = firstBlankQpc(sample.displaySource,

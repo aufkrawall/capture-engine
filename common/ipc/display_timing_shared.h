@@ -99,11 +99,16 @@ struct SharedDisplayTiming {
     // display samples above.
     DisplayInputRetrievalSample inputSamples[DISPLAY_INPUT_RING_SIZE]{};
     alignas(64) std::atomic<uint64_t> inputWriteSequence{0};
+    // Appended in ABI 70: the refresh period of the display the newest
+    // transition was scanned out on (0 = unknown). Under VRR the panel still
+    // scans out at this rate; only the blank between frames stretches.
+    std::atomic<int64_t> refreshPeriodUs{0};
 
     void Reset(uint32_t source, uint32_t renderer, DisplayTimingStatus newStatus) {
         publicationGeneration.fetch_add(1, std::memory_order_acq_rel);
         writeSequence.store(0, std::memory_order_relaxed);
         inputWriteSequence.store(0, std::memory_order_relaxed);
+        refreshPeriodUs.store(0, std::memory_order_relaxed);
         lastPublishQpcUs.store(0, std::memory_order_relaxed);
         sourcePid.store(source, std::memory_order_relaxed);
         rendererPid.store(renderer, std::memory_order_relaxed);

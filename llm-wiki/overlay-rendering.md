@@ -83,6 +83,15 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 ## Layout and row invariants (`overlay_layout_policy.h`, `overlay_adapter_render.cpp`)
 
 - Frame Generation rows (`Base/Display` rates and `FG Status`) appear atomically when frame generation is active (`fgActive == true`).
+- `Base/Display` under DLSS/FSR FG is **measured** (`PerformanceMetrics::RefreshMeasuredFGRates`, 2026-10-06): output
+  from the median display interval, base from the application-Present cadence or, when that stream is stale (DLSS-G),
+  the trusted Reflex marker cadence; base is capped at output. The runtime-reported figures (`g_FGCompat` frame
+  history) only stand in when neither stream is arriving, and Smooth Motion keeps its own interposer rates. Reason:
+  the frame history is fed only by `ProcessFrame` paths, which DLSS-G's PostSL route never runs, so Talos
+  `20261006_194753` showed `66.6 / 133.2` for 35 s while the screen changed 48-53 times a second, and `33.3 / 133.2`
+  with DLSS-G idle (`ON but NOT interpolating`); session `20261006_150600` had the same frozen values. Divergence is
+  logged as `[Overlay] FG rates diverged from the runtime's figures` (state change, at most every 10 s); the latency
+  sample line carries `reportedBaseFps=`/`reportedOutputFps=` beside the measured ones.
 - Inactive FG never reserves phantom empty rows in `BuildOverlayRowMask`, and `OverlayAdapter::RenderContent` advances `cursorY` only when text is actually rendered. This prevents blank gap lines from appearing in the overlay when FG is toggled off or during teardown transitions.
 
 ## HDR presentation and color invariants
@@ -264,6 +273,28 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Stale-risk: measured only in unit topologies so far. Hardware run pending; the numbers to read are `appQueue=` in
   the chain line and whether the DLSS FG cross-check still agrees within a few ms.
 
+### Frame identity through a generator (FSR FG, 2026-10-06)
+
+- Conservation infers which application frame a generator output carries; FSR 3.1 *names* it. The game calls
+  `ffxConfigure` (FG) with `frameID` on the thread that then calls the proxy Present (Talos: both on the RHI thread),
+  and AMD's present callback reports `frameID` for every output, generated frames carrying the ID of the real frame
+  they interpolate toward. `Hooked_ffxConfigure` stores it thread-locally (`NoteGeneratorFrameConfigured`),
+  `PerformanceMetrics::ObserveApplicationPresent` consumes it onto the application frame, the callback bridge stages it
+  in `present_association` (`GeneratorFrameToken` = frameID + 1), and `ConsumeDisplayTiming` passes the token of the
+  runtime Present behind each displayed transition to `ObserveDisplay`. `MatchGeneratorFrameLocked` then finds the
+  application frame by identity; only when no token matches does `MatchApplicationPresentLocked` count.
+- Why: conservation assumes every frame is displayed exactly `fgMultiplier` times. A skipped interpolation leaves the
+  count one short each time and the step-back grows (`CountingTowardTheFrameDriftsWhereIdentityDoesNot`).
+- A configure on another thread than the Present is deliberately not paired (thread-local slot): their order would be
+  a guess. Such a game shows `idUnmatched=` growing and stays on conservation.
+- Talos `20261006_194753`, second FSR period (`pacing_trace` 19:51:59-19:52:19): 1309 frame IDs, each exactly one
+  real and one generated callback, 2613 displays - AMD's side conserved. The game spent 6.0 ms of each 13.7 ms frame
+  blocked inside the proxy Present (`[OVERLAY COST] FFX proxy Present ... runtimeAvgUs=6029`), output pinned at the
+  145 Hz panel: a full queue, so the 3-4 frame `appQueue` there may be real. `idQueue=` settles it on the next run.
+- Diagnostics: `idQueue=` (median newer application frames already presented when an output of an older one went
+  out), `idMatched=`, `idUnmatched=` in `[Overlay] PC latency chain`. Tests:
+  `tests/test_system_latency_generator_identity.cpp`.
+
 ### Frame-begin anchor (`system_latency_frame_begin.h`, `system_latency_fallback.h`)
 
 - The input-to-Present span is measured, not modelled, whenever a boundary that belongs to the presented frame is
@@ -311,7 +342,12 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - The 32-sample window publishes a symmetrically trimmed mean, discarding an eighth from each tail once at least 16
   samples are held. A single 250 ms telemetry poll can contribute an entire window, so one frame paired against the
   wrong Present - a full frame interval out - must not be able to move the published number.
-- Neither value includes USB/peripheral latency or the physical display's scanout/pixel-response delay. Native queries run at most four times per second, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path. Streamline logs one `PCL marker latency report available` transition; failed marker forwards are rate-limited.
+- Both values add half the display's scanout (2026-10-06, `Tracker::ScanoutToCenterUs`): the screen-time event marks
+  where scanout starts (VRR/vsync) or where a tearing flip lands in it, and a pixel at a uniformly random height is
+  reached half a scanout period later on average. The period is the display mode's refresh (VRR scans out at that
+  rate and only stretches the blank), published by the sensor in `SharedDisplayTiming::refreshPeriodUs` (ABI 70);
+  `scanout=` in the chain line. USB/peripheral latency and pixel response are still excluded - neither is
+  measurable from the PC. Native queries run at most four times per second, and fixed-capacity rings plus a Present-side try-lock keep telemetry work off the rendering critical path. Streamline logs one `PCL marker latency report available` transition; failed marker forwards are rate-limited.
 - The native-report poll is gated on having either a graphics device **or** a registered supplemental provider. The
   Streamline PCL provider serves reports without a device, so gating on the device alone silently discarded the game's
   own markers whenever it was unresolved.
@@ -326,6 +362,16 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   (`measured` against the application's own Present, `modelled` as one output interval, or `none`), `markerInterval`,
   `markerTrusted`, `markerAssociated`, running totals for displays observed, associated, unmatched, dropped, rejected,
   `markerCadenceRejects`, `epochResets`, and source changes.
+- `[Overlay] PC latency sample` also carries `fps=` and `gpu=`: a Reflex-on reading at a few percent GPU load is a
+  menu or empty scene, not comparable with gameplay. Talos `20261006_194753`: every ~6 ms Reflex-on reading came with
+  the overlay showing GPU 4-10 % at 31-50 W, every Reflex-off reading (35-37 ms) with gameplay load.
+- `[Overlay] PC latency anchors` adds `markerOnPresentingThread=`/`markerOnOtherThread=` and `markerToPresent=`
+  (median span from the PresentStart marker to the application Present it was paired with). The Reflex contract
+  brackets the Present call, which only the presenting thread can do; a marker from elsewhere (an engine setting it
+  where the render thread queues the present) would let "newest pair before Present" name a later frame and read low.
+  Open as of 2026-10-06: Talos's Reflex-on 5.6-6.7 ms at 138 fps decomposes into 1.4-2.6 ms simulation-to-present and
+  0.4 ms present-to-display, plausible only for a light scene; these counters decide whether its markers bracket the
+  Present.
 - `[Overlay] PC latency cross-check` prints the source that was **not** published whenever it also holds a fresh
   window. Both estimate the same quantity, so a large disagreement means one of the two correlations is wrong.
 - Open question / stale-risk: the two sources are not interchangeable across a configuration change if the marker path

@@ -117,10 +117,33 @@ public:
     // Frame Generation metrics (for displaying base vs output FPS)
     // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
     void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
+    // Base and output rates under DLSS or FSR frame generation: measured from
+    // the display stream and the application (or Reflex marker) cadence while
+    // those arrive, the runtime-reported figures only when they do not. The
+    // reported ones come from a frame history that routes which never classify
+    // the game's frames stop feeding - DLSS-G's post-Streamline overlay route:
+    // Talos session 20261006_194753 showed "67 / 133 FPS" for 35 s while the
+    // screen changed 48-53 times a second, and "33 / 133" with DLSS-G idle.
     float GetFGOutputFPS() const {
-        return m_fgOutputFPS.load(std::memory_order_relaxed);
+        const float measured = m_measuredFgOutputFPS.load(std::memory_order_relaxed);
+        return UsesMeasuredFGRates() && measured > 0.0f ? measured : m_fgOutputFPS.load(std::memory_order_relaxed);
     }
     float GetFGBaseFPS() const {
+        if (UsesMeasuredFGRates()) {
+            const float measuredBase = m_measuredFgBaseFPS.load(std::memory_order_relaxed);
+            if (measuredBase > 0.0f)
+                return measuredBase;
+            const float measuredOutput = m_measuredFgOutputFPS.load(std::memory_order_relaxed);
+            const int multiplier = m_fgMultiplier.load(std::memory_order_relaxed);
+            if (measuredOutput > 0.0f && multiplier >= 2)
+                return measuredOutput / static_cast<float>(multiplier);
+        }
+        return m_fgBaseFPS.load(std::memory_order_relaxed);
+    }
+    float GetReportedFGOutputFPS() const {
+        return m_fgOutputFPS.load(std::memory_order_relaxed);
+    }
+    float GetReportedFGBaseFPS() const {
         return m_fgBaseFPS.load(std::memory_order_relaxed);
     }
     int GetFGMultiplier() const {
@@ -230,6 +253,12 @@ private:
     void UpdateSeries(MetricSeries& series, int64_t currentQpcUs);
     void ApplyRecordingTransition(MetricSeries& series);
     void RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs);
+    // Smooth Motion keeps its own measured interposer rates.
+    bool UsesMeasuredFGRates() const {
+        const int type = m_fgType.load(std::memory_order_relaxed);
+        return (type == 1 || type == 2) && m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
+    }
+    void RefreshMeasuredFGRates(int64_t currentQpcUs);
     // Rate-limited cadence-health aggregation line; early-outs to one timestamp
     // comparison on the per-present path.
     void MaybeLogPacingHealth(int64_t currentQpcUs);
@@ -252,6 +281,10 @@ private:
     std::atomic<float> m_fgBaseFPS{0.0f};
     std::atomic<int> m_fgMultiplier{1};
     std::atomic<int> m_fgType{0};
+    std::atomic<float> m_measuredFgOutputFPS{0.0f};
+    std::atomic<float> m_measuredFgBaseFPS{0.0f};
+    bool m_fgRatesDiverged = false;
+    int64_t m_fgRatesLoggedUs = 0;
     std::atomic<uint64_t> m_callbackAppDraws{0};
     std::atomic<uint64_t> m_callbackGeneratedDraws{0};
     std::atomic<uint64_t> m_callbackGeneratedSkips{0};

@@ -111,7 +111,9 @@ public:
         RecordApplicationPresentLocked(presentTimeUs, frameBegin, threadId);
     }
 
-    void ObserveDisplay(int64_t screenTimeUs, int64_t presentStartTimeUs = 0) {
+    // generatorFrameToken names the application frame the runtime Present behind
+    // this transition carried, when a frame generator reported it (0 otherwise).
+    void ObserveDisplay(int64_t screenTimeUs, int64_t presentStartTimeUs = 0, uint64_t generatorFrameToken = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (screenTimeUs <= 0)
             return;
@@ -138,7 +140,31 @@ public:
         if (presentStartTimeUs > 0)
             ++displaysWithAssociation_;
         UpdateObservedProductionStateLocked(screenTimeUs);
-        UpdateFallbackLocked(screenTimeUs, presentStartTimeUs);
+        UpdateFallbackLocked(screenTimeUs, presentStartTimeUs, generatorFrameToken);
+    }
+
+    // The display's refresh period as the sensor queried it. The screen-time
+    // event marks where scanout starts (or, tearing, where the flip lands in
+    // it); a pixel at a uniformly random height is reached half a scanout
+    // later on average, so both paths add that half to reach input-to-pixel.
+    void SetDisplayScanoutPeriod(int64_t periodUs) {
+        scanoutPeriodUs_.store(periodUs > 0 && periodUs <= kMaximumSamplingIntervalUs ? periodUs : 0,
+                               std::memory_order_relaxed);
+    }
+
+    MeasuredRates GetMeasuredRates(int64_t currentQpcUs) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        MeasuredRates rates;
+        if (currentQpcUs <= 0 || displays_.Empty() || currentQpcUs - displays_.Back() > kMaximumIntervalUs)
+            return rates;
+        rates.outputIntervalUs = MedianRing(displayIntervals_);
+        if (IsApplicationPresentStreamFreshLocked()) {
+            rates.sourceIntervalUs = MedianRing(applicationPresentIntervals_);
+        } else if (markerCadenceTrusted_ && markerIntervalUs_ > 0 &&
+                   currentQpcUs - lastMarkerReportPresentUs_ <= kSampleFreshnessUs) {
+            rates.sourceIntervalUs = markerIntervalUs_;
+        }
+        return rates;
     }
 
     // The end of one input-message retrieval burst on threadId (Win32k ETW).
@@ -271,6 +297,13 @@ public:
         diagnostics.markerAnchorsStale = markerAnchorsStale_;
         diagnostics.inputRetrievalsObserved = inputRetrievalsObserved_;
         diagnostics.inputRetrievalFramesOnOtherThread = inputRetrievalFramesOnOtherThread_;
+        diagnostics.markerOnPresentingThread = markerOnPresentingThread_;
+        diagnostics.markerOnOtherThread = markerOnOtherThread_;
+        diagnostics.markerToPresentUs = MedianRing(markerToPresentSpans_);
+        diagnostics.generatorFramesMatchedById = generatorFramesMatchedById_;
+        diagnostics.generatorFramesUnmatchedById = generatorFramesUnmatchedById_;
+        diagnostics.generatorQueueDepthById = static_cast<int>(MedianRing(generatorQueueDepths_));
+        diagnostics.scanoutToCenterUs = ScanoutToCenterUs();
         return diagnostics;
     }
 
@@ -292,6 +325,10 @@ private:
     // A generator holding more than this many application frames is reporting a
     // drifted count, not a pipeline.
     static constexpr size_t kMaximumQueueDepth = 8;
+
+    int64_t ScanoutToCenterUs() const {
+        return scanoutPeriodUs_.load(std::memory_order_relaxed) / 2;
+    }
 
     static int64_t ToSignedTimestamp(uint64_t timestampUs) {
         if (timestampUs == 0 || timestampUs > static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
@@ -533,6 +570,14 @@ private:
         }
         if (frameBeginKind == FrameBeginKind::Modelled && frameBegin.sleepOnOtherThread)
             ++sleepAnchorsOnOtherThread_;
+        if (frameBeginKind == FrameBeginKind::SimulationMarker) {
+            if (frameBegin.markerThread == MarkerThread::Presenting)
+                ++markerOnPresentingThread_;
+            else if (frameBegin.markerThread == MarkerThread::Other)
+                ++markerOnOtherThread_;
+            if (presentTimeUs >= frameBegin.markerPresentUs)
+                markerToPresentSpans_.Push(presentTimeUs - frameBegin.markerPresentUs);
+        }
         const int64_t frameBeginUs = frameBeginKind == FrameBeginKind::Modelled ? 0 : frameBegin.beginUs;
 
         int64_t anchorUs = 0;
@@ -556,6 +601,7 @@ private:
         applicationAnchors_.Push(anchorUs);
         applicationAnchorKinds_.Push(static_cast<int64_t>(anchorKind));
         applicationPresentThreads_.Push(threadId);
+        applicationFrameTokens_.Push(static_cast<int64_t>(frameBegin.generatorFrameToken));
     }
 
     void ResetSampleEpochLocked(int64_t displayWatermarkUs) {
@@ -579,7 +625,8 @@ private:
 
     // Definitions in system_latency_fallback.h.
     bool MatchPresentLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs, size_t& matchedIndex) const;
-    void UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs);
+    void UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs, uint64_t generatorFrameToken);
+    bool MatchGeneratorFrameLocked(uint64_t generatorFrameToken, int64_t runtimePresentUs, size_t& matchedIndex);
     bool ResolveMeasuredAnchorLocked(size_t applicationIndex, int64_t& anchorUs, FrameBeginKind& kind);
     bool FindInputRetrievalLocked(size_t applicationIndex, int64_t& retrievalUs);
     int64_t LearnedAnchorSpanLocked(int64_t applicationPresentUs) const;
@@ -588,6 +635,8 @@ private:
         presents_.Clear(); presentIntervals_.Clear();
         applicationPresents_.Clear(); applicationPresentIntervals_.Clear();
         applicationAnchors_.Clear(); applicationAnchorKinds_.Clear(); applicationPresentThreads_.Clear();
+        applicationFrameTokens_.Clear(); generatorQueueDepths_.Clear(); markerToPresentSpans_.Clear();
+        lastMarkerReportPresentUs_ = 0;
         frameBeginIntervals_.Clear();
         measuredAnchorSpans_.Clear();
         lastMeasuredAnchorPresentUs_ = 0;
@@ -620,6 +669,11 @@ private:
     ValueRing<256> applicationAnchors_;
     ValueRing<256> applicationAnchorKinds_;
     ValueRing<256> applicationPresentThreads_;
+    ValueRing<256> applicationFrameTokens_;
+    ValueRing<32> generatorQueueDepths_;
+    ValueRing<32> markerToPresentSpans_;
+    int64_t lastMarkerReportPresentUs_ = 0;
+    std::atomic<int64_t> scanoutPeriodUs_{0};
     ValueRing<256> inputRetrievals_;
     ValueRing<256> inputRetrievalThreads_;
     // Measured anchor-to-application-Present spans, for frames without one.
@@ -684,6 +738,10 @@ private:
     uint64_t markerAnchorsStale_ = 0;
     uint64_t inputRetrievalsObserved_ = 0;
     uint64_t inputRetrievalFramesOnOtherThread_ = 0;
+    uint64_t markerOnPresentingThread_ = 0;
+    uint64_t markerOnOtherThread_ = 0;
+    uint64_t generatorFramesMatchedById_ = 0;
+    uint64_t generatorFramesUnmatchedById_ = 0;
 };
 
 }  // namespace ce::system_latency

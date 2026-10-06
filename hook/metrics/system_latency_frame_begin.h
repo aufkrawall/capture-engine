@@ -46,6 +46,17 @@
 
 namespace ce::system_latency {
 
+// Where the game emitted the PresentStart marker of the pair an observation
+// used, relative to the thread that presents. The Reflex contract brackets the
+// Present call itself, which only the presenting thread can do; a marker from
+// another thread was set before the Present was even queued, so "newest pair
+// before this Present" may name a later frame.
+enum class MarkerThread : uint8_t {
+    Unknown = 0,
+    Presenting = 1,
+    Other = 2,
+};
+
 // What the clock knows about the frame a Present at notAfterUs belongs to.
 struct FrameBeginObservation {
     int64_t beginUs = 0;
@@ -56,6 +67,11 @@ struct FrameBeginObservation {
     int64_t markerPresentUs = 0;
     // A usable sleep existed but returned on another thread than the caller's.
     bool sleepOnOtherThread = false;
+    MarkerThread markerThread = MarkerThread::Unknown;
+    // The frame generator's own ID for this frame (see
+    // present_association::GeneratorFrameToken), when the presenting thread
+    // configured one since its previous Present; 0 otherwise.
+    uint64_t generatorFrameToken = 0;
 };
 
 class FrameBeginClock {
@@ -79,10 +95,10 @@ public:
 
     // A completed SimulationStart/PresentStart pair of one frame ID. Called
     // from the marker hook once the frame's PresentStart is known.
-    void NoteMarkerFrame(int64_t simulationStartUs, int64_t presentMarkerUs) {
+    void NoteMarkerFrame(int64_t simulationStartUs, int64_t presentMarkerUs, uint32_t markerThreadId = 0) {
         if (simulationStartUs <= 0 || presentMarkerUs < simulationStartUs)
             return;
-        WriteMarker(simulationStartUs, presentMarkerUs);
+        WriteMarker(simulationStartUs, presentMarkerUs, markerThreadId);
     }
 
     // The boundary for a Present entered at notAfterUs on presentingThreadId
@@ -97,11 +113,16 @@ public:
 
         int64_t simulationStartUs = 0;
         int64_t presentMarkerUs = 0;
-        if (ReadMarker(simulationStartUs, presentMarkerUs) && presentMarkerUs <= notAfterUs &&
+        uint32_t markerThreadId = 0;
+        if (ReadMarker(simulationStartUs, presentMarkerUs, markerThreadId) && presentMarkerUs <= notAfterUs &&
             notAfterUs - presentMarkerUs <= kMaximumAgeUs && presentMarkerUs - simulationStartUs <= kMaximumAgeUs) {
             observation.beginUs = simulationStartUs;
             observation.kind = FrameBeginKind::SimulationMarker;
             observation.markerPresentUs = presentMarkerUs;
+            if (presentingThreadId != 0 && markerThreadId != 0) {
+                observation.markerThread =
+                    markerThreadId == presentingThreadId ? MarkerThread::Presenting : MarkerThread::Other;
+            }
         }
 
         const int64_t beginUs = beginUs_.load(std::memory_order_acquire);
@@ -134,18 +155,19 @@ public:
         beginUs_.store(0, std::memory_order_relaxed);
         threadId_.store(0, std::memory_order_relaxed);
         kind_.store(static_cast<uint8_t>(FrameBeginKind::Modelled), std::memory_order_release);
-        WriteMarker(0, 0);
+        WriteMarker(0, 0, 0);
     }
 
 private:
     static constexpr int64_t kMaximumAgeUs = 250'000;
 
-    bool ReadMarker(int64_t& simulationStartUs, int64_t& presentMarkerUs) const {
+    bool ReadMarker(int64_t& simulationStartUs, int64_t& presentMarkerUs, uint32_t& markerThreadId) const {
         const uint64_t before = markerVersion_.load(std::memory_order_acquire);
         if ((before & 1u) != 0)
             return false;
         simulationStartUs = markerSimulationStartUs_.load(std::memory_order_relaxed);
         presentMarkerUs = markerPresentUs_.load(std::memory_order_relaxed);
+        markerThreadId = markerThreadId_.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         return markerVersion_.load(std::memory_order_relaxed) == before && simulationStartUs > 0 &&
                presentMarkerUs >= simulationStartUs;
@@ -154,7 +176,7 @@ private:
     // Seqlock: odd while writing, so a reader never pairs one frame's
     // simulation start with another frame's present marker. A second writer
     // racing the first drops its pair; the next frame supplies a fresh one.
-    void WriteMarker(int64_t simulationStartUs, int64_t presentMarkerUs) {
+    void WriteMarker(int64_t simulationStartUs, int64_t presentMarkerUs, uint32_t markerThreadId) {
         uint64_t version = markerVersion_.load(std::memory_order_relaxed);
         if ((version & 1u) != 0 ||
             !markerVersion_.compare_exchange_strong(version, version + 1, std::memory_order_relaxed)) {
@@ -163,6 +185,7 @@ private:
         std::atomic_thread_fence(std::memory_order_release);
         markerSimulationStartUs_.store(simulationStartUs, std::memory_order_relaxed);
         markerPresentUs_.store(presentMarkerUs, std::memory_order_relaxed);
+        markerThreadId_.store(markerThreadId, std::memory_order_relaxed);
         markerVersion_.store(version + 2, std::memory_order_release);
     }
 
@@ -172,14 +195,35 @@ private:
     std::atomic<uint64_t> markerVersion_{0};
     std::atomic<int64_t> markerSimulationStartUs_{0};
     std::atomic<int64_t> markerPresentUs_{0};
+    std::atomic<uint32_t> markerThreadId_{0};
 };
 
 inline void NoteFrameBegin(int64_t beginUs, FrameBeginKind kind, uint32_t threadId = 0) {
     FrameBeginClock::Get().Note(beginUs, kind, threadId);
 }
 
-inline void NoteMarkerFrameBegin(int64_t simulationStartUs, int64_t presentMarkerUs) {
-    FrameBeginClock::Get().NoteMarkerFrame(simulationStartUs, presentMarkerUs);
+inline void NoteMarkerFrameBegin(int64_t simulationStartUs, int64_t presentMarkerUs, uint32_t markerThreadId = 0) {
+    FrameBeginClock::Get().NoteMarkerFrame(simulationStartUs, presentMarkerUs, markerThreadId);
+}
+
+namespace detail {
+inline thread_local uint64_t t_configuredGeneratorFrameToken = 0;
+}  // namespace detail
+
+// A frame generator was configured for the frame this thread is building (FSR
+// 3.1: ffxConfigure with the frame's frameID). The application Present that
+// follows on the same thread is that frame; consuming the token there names it
+// with the ID the generator's present callback reports for every output derived
+// from it. Thread-local on purpose: a configure on another thread cannot be
+// paired with this thread's Present without guessing their order.
+inline void NoteGeneratorFrameConfigured(uint64_t generatorFrameToken) {
+    detail::t_configuredGeneratorFrameToken = generatorFrameToken;
+}
+
+inline uint64_t ConsumeGeneratorFrameConfigured() {
+    const uint64_t token = detail::t_configuredGeneratorFrameToken;
+    detail::t_configuredGeneratorFrameToken = 0;
+    return token;
 }
 
 inline int64_t LatestFrameBegin(int64_t notAfterUs, FrameBeginKind& kind) {

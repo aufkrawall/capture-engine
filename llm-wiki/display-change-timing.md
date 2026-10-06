@@ -43,7 +43,13 @@ stream is unavailable, denied, failed, or two seconds stale.
   thread's last burst since its previous application Present (`FindInputRetrievalLocked`). Health line:
   `input(retrievals=,bursts=)`; first delivery per process logs `Input-retrieval timing available`. Unverified on
   hardware: whether games reading raw input in bulk (`GetRawInputBuffer`) or via XInput/GameInput produce the event at
-  all - XInput/GameInput certainly do not.
+  all - XInput/GameInput certainly do not. Verified delivery: Talos `20261006_194753` (0.1.7009) reached
+  `input(retrievals=26255 bursts=9604)`; Talos reads input on its game thread and presents on the RHI thread, so the
+  anchor never applies there (`input=0 inputOtherThread=1065`).
+- **Refresh period for the scanout term (2026-10-06, ABI 70).** `DisplayTimingOutputs::Publish` stores the display
+  mode's period for the transition's display source (`QueryDisplayRefreshPeriods`) into
+  `SharedDisplayTiming::refreshPeriodUs` on every publication, synchronized flip or not; `Reset` clears it. The
+  overlay adds half of it to both PC-latency paths (see `overlay-rendering.md`).
 - **NVIDIA frame generation does not use the `Intel-PresentMon` `FlipFrameType` provider.** That provider's frame-type
   enumeration only names `Intel_XEFG` (50) and `AMD_AFMF` (100); a 2026-08-30 Talos run with DLSS 4 MFG at
   `published_multiplier=4` logged `frameType(received=0 ...)` for the whole session. An earlier revision of this page

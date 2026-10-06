@@ -24,6 +24,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **PC latency estimate without Reflex:** games that read mouse and keyboard input on the thread that presents now have "Latency est." measured from the moment the frame actually read its input (Windows input events), instead of assuming one full frame of work, so limiter, vsync and prerender settings move the number the way they move real latency. Games reading input on another thread, or only through XInput/GameInput, keep the previous estimate.
 
+- **PC latency closer to input-to-pixel:** both latency readings now include the time the display takes to scan a frame out to the average pixel (half a refresh period, about 3.5 ms at 144 Hz), measured from the display's refresh rate.
+
+- **FSR FG latency by frame identity:** "Latency est." under FSR frame generation now follows each displayed frame back to the game frame it came from using FSR's own frame IDs, instead of counting frames in AMD's queue. Counting drifts whenever FSR skips an interpolated frame, which could overstate latency by several frames.
+
 - **PC latency diagnostics:** the overlay log now reports which boundary each latency sample was measured from and how many frames waited in the flip queue ahead of the displayed one, so vsync-capped and limiter-capped runs can be told apart.
 
 - **CPU clock overlay:** the CPU Clocks row now shows the highest current core clock in parentheses after the average, matching the CPU load display.
@@ -89,6 +93,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **Frame generation Base/Display rates:** the overlay's Base/Display row under DLSS frame generation no longer freezes at the last rate seen before FG started (e.g. "67 / 133 FPS" while the screen ran at 52 fps). Both rates are now measured from the displayed frames and the game's own frame cadence, and show equal values while DLSS FG is enabled but not generating frames, as in menus.
 
 - **Input-based latency estimate with the elevation service:** when CaptureEngine used the elevated service's display trace, the Windows input events behind the new "Latency est." anchor were never enabled, so no game received them. The service and CaptureEngine now enable one shared provider set.
 

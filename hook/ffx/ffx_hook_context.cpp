@@ -4,6 +4,8 @@
 #include "common/logging/log_meter.h"
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/metrics/performance_metrics.h"
+#include "hook/metrics/system_latency_frame_begin.h"
+#include "hook/present/present_callback_association.h"
 
 
 void* GetOrCreatePresentCallbackBridgeKey(ffxContext ffx_hook_context) {
@@ -391,6 +393,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
     bool alreadyBridgedPresentCallbackProvided = false;
     if (recognizedFGConfigure) {
         localConfig = *reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(ffx_hook_desc);
+        // Names the frame this thread presents next, so PC latency can follow it
+        // through the generator by identity instead of counting toward it.
+        ce::system_latency::NoteGeneratorFrameConfigured(
+            localConfig.frameGenerationEnabled ? ce::present_association::GeneratorFrameToken(localConfig.frameID)
+                                               : 0);
         static std::atomic<uint64_t> s_configContractLogCount{0};
         const uint64_t configLogCount = s_configContractLogCount.fetch_add(1, std::memory_order_relaxed);
         if (configLogCount < 20 || (configLogCount % 300) == 0) {

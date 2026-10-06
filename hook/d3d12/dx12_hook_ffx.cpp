@@ -487,7 +487,11 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         // The runtime presents this frame from this thread moments later. Staging
         // it here is what lets the health line measure screen time from the
         // callback rather than only from Present.
-        ce::present_association::NoteCallbackEnd(exitUs, desc && desc->isGeneratedFrame);
+        // The frame ID is what lets the PC-latency correlator name the game
+        // frame behind each displayed output instead of counting toward it.
+        ce::present_association::NoteCallbackEnd(
+            exitUs, desc && desc->isGeneratedFrame,
+            desc ? ce::present_association::GeneratorFrameToken(desc->frameID) : 0);
     });
 
     static thread_local int s_ffxPresentCallbackDepth = 0;

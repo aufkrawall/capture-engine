@@ -55,7 +55,7 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
             simulationStartUs > 0) {
             // Frame-ID-exact input anchor for the estimate path, including
             // under FSR FG where the report itself is not consumed.
-            ce::system_latency::NoteMarkerFrameBegin(simulationStartUs, markerTimeUs);
+            ce::system_latency::NoteMarkerFrameBegin(simulationStartUs, markerTimeUs, GetCurrentThreadId());
         }
         // The title's per-frame clock: proof for the startup-protected OFF churn (titles that never
         // poll GetState report "still active" through nothing else), and the point on the title's

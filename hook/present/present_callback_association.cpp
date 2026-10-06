@@ -18,6 +18,7 @@ struct Slot {
     int64_t presentEntryUs = 0;
     int64_t callbackEndUs = 0;
     bool generated = false;
+    uint64_t generatorFrameToken = 0;
 };
 
 std::array<Slot, kCapacity> slots;
@@ -28,6 +29,7 @@ std::atomic<uint64_t> generation{0};
 // second presenter thread cannot steal another's pending association.
 thread_local int64_t stagedCallbackEndUs = 0;
 thread_local bool stagedGenerated = false;
+thread_local uint64_t stagedGeneratorFrameToken = 0;
 thread_local uint64_t stagedGeneration = 0;
 
 // The committed callback's verdict for the Present now running on this thread.
@@ -37,9 +39,10 @@ thread_local uint64_t verdictGeneration = 0;
 
 }  // namespace
 
-void NoteCallbackEnd(int64_t callbackEndUs, bool generated) {
+void NoteCallbackEnd(int64_t callbackEndUs, bool generated, uint64_t generatorFrameToken) {
     stagedCallbackEndUs = callbackEndUs;
     stagedGenerated = generated;
+    stagedGeneratorFrameToken = generatorFrameToken;
     stagedGeneration = generation.load(std::memory_order_acquire);
     // A new callback means the previous frame's Present is over, whether or
     // not anything consumed its verdict.
@@ -63,6 +66,7 @@ void NotePresentEntry(int64_t presentEntryUs) {
     slot.presentEntryUs = presentEntryUs;
     slot.callbackEndUs = stagedCallbackEndUs;
     slot.generated = stagedGenerated;
+    slot.generatorFrameToken = stagedGeneratorFrameToken;
     slot.sequence.store(sequence + 2, std::memory_order_release);
     stagedCallbackEndUs = 0;
     verdictPending = true;
@@ -98,7 +102,8 @@ bool Find(int64_t presentStartUs, Association& out) {
         const uint64_t before = slot.sequence.load(std::memory_order_acquire);
         if (before == 0 || (before & 1u) != 0)
             continue;
-        const Association candidate{slot.presentEntryUs, slot.callbackEndUs, slot.generated};
+        const Association candidate{slot.presentEntryUs, slot.callbackEndUs, slot.generated,
+                                    slot.generatorFrameToken};
         std::atomic_thread_fence(std::memory_order_acquire);
         if (slot.sequence.load(std::memory_order_acquire) != before || candidate.presentEntryUs <= 0)
             continue;
@@ -124,6 +129,7 @@ void Reset() {
         slot.presentEntryUs = 0;
         slot.callbackEndUs = 0;
         slot.generated = false;
+        slot.generatorFrameToken = 0;
         slot.sequence.store(sequence + 2, std::memory_order_release);
     }
 }

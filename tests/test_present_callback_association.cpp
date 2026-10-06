@@ -37,6 +37,24 @@ TEST_F(PresentCallbackAssociationTest, ResolvesTheProducingCallbackForAHostPrese
     EXPECT_FALSE(found.generated);
 }
 
+TEST_F(PresentCallbackAssociationTest, CarriesTheGeneratorsFrameIdentityToTheDisplay) {
+    // A generated frame names the real frame it interpolates toward; frame ID
+    // zero is a valid FidelityFX ID and must survive as a non-zero token.
+    NoteCallbackEnd(1'000'000, true, GeneratorFrameToken(0));
+    NotePresentEntry(1'003'000);
+    NoteCallbackEnd(1'011'000, false, GeneratorFrameToken(0));
+    NotePresentEntry(1'014'000);
+    Frame(1'021'000, 1'024'000, true);
+    Association found;
+    ASSERT_TRUE(Find(1'003'000, found));
+    EXPECT_EQ(found.generatorFrameToken, GeneratorFrameToken(0));
+    EXPECT_NE(found.generatorFrameToken, 0u);
+    ASSERT_TRUE(Find(1'014'000, found));
+    EXPECT_EQ(found.generatorFrameToken, GeneratorFrameToken(0));
+    ASSERT_TRUE(Find(1'024'000, found));
+    EXPECT_EQ(found.generatorFrameToken, 0u);
+}
+
 TEST_F(PresentCallbackAssociationTest, NeverBindsBeyondToleranceOrToTheNeighbouringPresent) {
     Frame(1'000'000, 1'003'000, true);
     Frame(1'011'000, 1'014'000, false);

@@ -114,7 +114,36 @@ void PerformanceMetrics::SetFGMetrics(float outputFPS, float baseFPS, int multip
     m_fgBaseFPS.store(baseFPS, std::memory_order_relaxed);
     m_fgMultiplier.store(multiplier, std::memory_order_relaxed);
     m_fgType.store(fgType, std::memory_order_relaxed);
-    m_systemLatency.SetFrameGeneration(baseFPS, multiplier, fgType);
+    // The tracker falls back to this cadence only where it measures none of its
+    // own, and a measured one is never worse than the reported figure.
+    m_systemLatency.SetFrameGeneration(GetFGBaseFPS(), multiplier, fgType);
+}
+
+void PerformanceMetrics::RefreshMeasuredFGRates(int64_t currentQpcUs) {
+    const auto rates = m_systemLatency.GetMeasuredRates(currentQpcUs);
+    const float outputFps = rates.outputIntervalUs > 0 ? 1'000'000.0f / static_cast<float>(rates.outputIntervalUs) : 0.0f;
+    float baseFps = rates.sourceIntervalUs > 0 ? 1'000'000.0f / static_cast<float>(rates.sourceIntervalUs) : 0.0f;
+    // The application cannot be faster than what reaches the screen from it;
+    // a faster source cadence means frames were dropped before display.
+    if (outputFps > 0.0f && baseFps > outputFps)
+        baseFps = outputFps;
+    m_measuredFgOutputFPS.store(outputFps, std::memory_order_relaxed);
+    m_measuredFgBaseFPS.store(baseFps, std::memory_order_relaxed);
+
+    // Say when the runtime-reported figures stop describing the screen, and
+    // when they agree again; at most every ten seconds.
+    const float reportedOutput = m_fgOutputFPS.load(std::memory_order_relaxed);
+    const bool diverged = UsesMeasuredFGRates() && outputFps > 0.0f && reportedOutput > 0.0f &&
+                          std::fabs(outputFps - reportedOutput) > reportedOutput * 0.15f;
+    if (diverged != m_fgRatesDiverged && currentQpcUs - m_fgRatesLoggedUs >= 10'000'000) {
+        m_fgRatesDiverged = diverged;
+        m_fgRatesLoggedUs = currentQpcUs;
+        HookLogImportant("[Overlay] FG rates %s: measured base=%.1f output=%.1f, runtime-reported base=%.1f "
+                         "output=%.1f (type=%d multiplier=%d)",
+                         diverged ? "diverged from the runtime's figures" : "agree with the runtime's figures again",
+                         baseFps, outputFps, m_fgBaseFPS.load(std::memory_order_relaxed), reportedOutput,
+                         m_fgType.load(std::memory_order_relaxed), m_fgMultiplier.load(std::memory_order_relaxed));
+    }
 }
 
 void PerformanceMetrics::Update(int64_t currentQpcUs) {
@@ -134,8 +163,9 @@ void PerformanceMetrics::Update(int64_t currentQpcUs) {
 
 void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
     const uint32_t threadId = GetCurrentThreadId();
-    m_systemLatency.ObserveApplicationPresent(
-        currentQpcUs, ce::system_latency::ObserveFrameBegin(currentQpcUs, threadId), threadId);
+    auto frameBegin = ce::system_latency::ObserveFrameBegin(currentQpcUs, threadId);
+    frameBegin.generatorFrameToken = ce::system_latency::ConsumeGeneratorFrameConfigured();
+    m_systemLatency.ObserveApplicationPresent(currentQpcUs, frameBegin, threadId);
 }
 
 void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {
@@ -286,6 +316,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
             inputWriteSequence >= DISPLAY_INPUT_RING_SIZE ? inputWriteSequence - DISPLAY_INPUT_RING_SIZE + 1 : 1;
     }
 
+    m_systemLatency.SetDisplayScanoutPeriod(timing.refreshPeriodUs.load(std::memory_order_relaxed));
+
     // Input retrievals first: the display samples below resolve each frame's
     // input anchor against them. A ring this reader fell behind on only loses
     // anchors, never counts, so skipping ahead needs no other bookkeeping.
@@ -328,7 +360,13 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // belong to the generation whose cursor/history we are consuming.
         if (timing.publicationGeneration.load(std::memory_order_acquire) != generationBefore)
             return;
-        m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs);
+        // The generator callback that produced this transition's runtime
+        // Present, when one ran: its frame ID names the game frame on screen.
+        ce::present_association::Association association;
+        const bool associated =
+            presentStartTimeUs > 0 && ce::present_association::Find(presentStartTimeUs, association);
+        m_systemLatency.ObserveDisplay(screenTimeUs, presentStartTimeUs,
+                                       associated ? association.generatorFrameToken : 0);
         ce::pacing_trace::Record(ce::pacing_trace::Kind::DisplayPair, m_nextDisplaySequence, nullptr,
             presentStartTimeUs, generationBefore, graphTimeUs, screenTimeResolved ? 1u : 0u, screenTimeUs);
         const uint64_t fsrTag = m_fsrPacingTag.load(std::memory_order_acquire);
@@ -344,9 +382,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
             // that produced it separates the runtime's own hold from the wait
             // for the frame to be finished, which the Present-anchored series
             // cannot. Unknown associations are dropped, never estimated.
-            ce::present_association::Association association;
-            if (ce::present_association::Find(presentStartTimeUs, association) &&
-                screenTimeUs >= association.callbackEndUs) {
+            if (associated && screenTimeUs >= association.callbackEndUs) {
                 ce::pacing_health::Observe(ce::pacing_health::Channel::kCallbackToDisplay,
                                            screenTimeUs - association.callbackEndUs, screenTimeUs, fsrTag);
             }
@@ -366,6 +402,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
     m_displayScreenTimePermille.store(m_displayScreenTimeCadence.permille(), std::memory_order_relaxed);
 
     RefreshEffectiveSource(timing, currentQpcUs);
+    RefreshMeasuredFGRates(currentQpcUs);
 }
 
 void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timing, int64_t currentQpcUs) {

@@ -163,6 +163,34 @@ struct Diagnostics {
     // where the retrieval cannot be paired with the presented frame.
     uint64_t inputRetrievalsObserved = 0;
     uint64_t inputRetrievalFramesOnOtherThread = 0;
+    // Marker-anchored application frames by where the game emitted the
+    // PresentStart marker (see MarkerThread), and the median span from that
+    // marker to the application Present it was paired with. A marker on the
+    // presenting thread a few microseconds before Present brackets the call as
+    // the Reflex contract says; anything else may pair a later frame's markers.
+    uint64_t markerOnPresentingThread = 0;
+    uint64_t markerOnOtherThread = 0;
+    int64_t markerToPresentUs = 0;
+    // Generator outputs whose application frame was found by the generator's
+    // own frame ID (FSR FG), outputs that carried an ID no observed application
+    // Present had, and the median number of newer application frames already
+    // presented when an output carrying an older one went out: the generator's
+    // queue, measured by identity rather than by counting.
+    uint64_t generatorFramesMatchedById = 0;
+    uint64_t generatorFramesUnmatchedById = 0;
+    int generatorQueueDepthById = 0;
+    // Half the display's scanout period, added to every sample: the average
+    // time from the screen-time event until the scan reaches a pixel. Zero
+    // until the sensor reported the refresh period.
+    int64_t scanoutToCenterUs = 0;
+};
+
+// Cadences measured from the streams themselves, for frame-generation readouts
+// that would otherwise repeat a runtime-reported figure. Zero when the stream
+// behind one is not currently arriving.
+struct MeasuredRates {
+    int64_t outputIntervalUs = 0;
+    int64_t sourceIntervalUs = 0;
 };
 
 struct NativeFrameReport {

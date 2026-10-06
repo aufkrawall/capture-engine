@@ -274,6 +274,11 @@ TEST(DisplayTimingOutputsTest, LeavesUnsynchronizedFlipsAsReported) {
         ASSERT_TRUE(timing.Read(sequence, screenTimeUs, presentStartUs, resolved, graphTimeUs));
         EXPECT_EQ(graphTimeUs, screenTimeUs);
     }
+    // The scanout term needs the display's period whether or not the flip
+    // was synchronized: tearing scans out at the same rate.
+    EXPECT_EQ(timing.refreshPeriodUs.load(), kPeriod);
+    timing.Reset(42, 0, DisplayTimingStatus::Active);
+    EXPECT_EQ(timing.refreshPeriodUs.load(), 0);
 }
 
 TEST(SharedDisplayTimingTest, GraphTimeDefaultsToTheScreenTime) {

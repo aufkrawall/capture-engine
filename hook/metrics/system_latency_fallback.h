@@ -32,6 +32,39 @@ inline bool Tracker::MatchPresentLocked(int64_t screenTimeUs, int64_t associated
     return false;
 }
 
+// The application frame a generator output came from, by the generator's own
+// frame ID: the runtime's present callback names it for every output, and the
+// application Present was named by the configure call before it. Exact where
+// counting toward it (MatchApplicationPresentLocked) can only infer the queue,
+// and immune to the drift that a frame displayed fewer times than expected
+// leaves in a count.
+inline bool Tracker::MatchGeneratorFrameLocked(uint64_t generatorFrameToken, int64_t runtimePresentUs,
+                                               size_t& matchedIndex) {
+    if (generatorFrameToken == 0)
+        return false;
+    bool haveNewest = false;
+    size_t newestIndex = 0;
+    for (size_t i = applicationPresents_.Size(); i > 0; --i) {
+        const int64_t presentUs = applicationPresents_.At(i - 1);
+        if (presentUs > runtimePresentUs)
+            continue;
+        if (runtimePresentUs - presentUs > kMaximumIntervalUs)
+            break;
+        if (!haveNewest) {
+            haveNewest = true;
+            newestIndex = i - 1;
+        }
+        if (static_cast<uint64_t>(applicationFrameTokens_.At(i - 1)) == generatorFrameToken) {
+            matchedIndex = i - 1;
+            generatorQueueDepths_.Push(static_cast<int64_t>(newestIndex - matchedIndex));
+            ++generatorFramesMatchedById_;
+            return true;
+        }
+    }
+    ++generatorFramesUnmatchedById_;
+    return false;
+}
+
 // The presenting thread's last input retrieval since its previous application
 // Present: the point this frame read its input. Only the presenting thread's
 // own retrievals qualify - a game thread running ahead of a render thread has
@@ -89,7 +122,8 @@ inline int64_t Tracker::LearnedAnchorSpanLocked(int64_t applicationPresentUs) co
     return MedianRing(measuredAnchorSpans_);
 }
 
-inline void Tracker::UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs) {
+inline void Tracker::UpdateFallbackLocked(int64_t screenTimeUs, int64_t associatedPresentStartUs,
+                                          uint64_t generatorFrameToken) {
     // The runtime PresentStart the sensor paired with this transition is
     // the authoritative present time. Fall back to the hook's own Present
     // observations only when no association exists, which is the
@@ -111,7 +145,15 @@ inline void Tracker::UpdateFallbackLocked(int64_t screenTimeUs, int64_t associat
 
     size_t applicationIndex = 0;
     bool holdApplied = false;
-    const bool haveApplicationFrame = MatchApplicationPresentLocked(runtimePresentUs, applicationIndex, holdApplied);
+    bool haveApplicationFrame = false;
+    if (MatchGeneratorFrameLocked(generatorFrameToken, runtimePresentUs, applicationIndex)) {
+        // The generator presented this output itself, after the application
+        // handed it the frame: everything between is its measured hold.
+        haveApplicationFrame = true;
+        holdApplied = true;
+    } else {
+        haveApplicationFrame = MatchApplicationPresentLocked(runtimePresentUs, applicationIndex, holdApplied);
+    }
     int64_t anchorUs = 0;
     FrameBeginKind anchorKind = FrameBeginKind::Modelled;
     const bool anchorUsable = haveApplicationFrame &&
@@ -211,7 +253,7 @@ inline void Tracker::UpdateFallbackLocked(int64_t screenTimeUs, int64_t associat
     const int64_t displayedInputIntervalUs =
         (std::max)(baseIntervalUs, MedianRing(fallbackDisplayedInputIntervals_));
     const int64_t estimatedInputWaitUs = displayedInputIntervalUs - baseIntervalUs / 2;
-    const int64_t totalUs = presentToDisplayUs + anchorToPresentUs + estimatedInputWaitUs;
+    const int64_t totalUs = presentToDisplayUs + anchorToPresentUs + estimatedInputWaitUs + ScanoutToCenterUs();
     if (!IsValidTotalLatency(totalUs)) {
         ++samplesRejected_;
         ++samplesRejectedTotalLatency_;

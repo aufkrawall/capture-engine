@@ -27,7 +27,17 @@ struct Association {
     int64_t presentEntryUs = 0;
     int64_t callbackEndUs = 0;
     bool generated = false;
+    // The runtime's own identity for the application frame this output came
+    // from (FidelityFX frameID + 1; 0 when the callback carried none). A
+    // generated frame carries the ID of the real frame it interpolates toward.
+    uint64_t generatorFrameToken = 0;
 };
+
+// FidelityFX frame IDs may start at zero, so the token reserves zero for
+// "unknown".
+inline uint64_t GeneratorFrameToken(uint64_t frameId) {
+    return frameId + 1;
+}
 
 // Far below one output interval at any supported rate, and well above the few
 // hundred microseconds measured between CE's Present entry and the host's
@@ -35,7 +45,7 @@ struct Association {
 inline constexpr int64_t kAssociationToleranceUs = 1500;
 
 // Called from the frame-generation present callback, on the presenter thread.
-void NoteCallbackEnd(int64_t callbackEndUs, bool generated);
+void NoteCallbackEnd(int64_t callbackEndUs, bool generated, uint64_t generatorFrameToken = 0);
 
 // Called when that thread's runtime Present enters CE's detour. Commits the
 // staged callback end; a Present with no staged callback commits nothing, so a
