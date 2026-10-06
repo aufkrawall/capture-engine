@@ -20,6 +20,7 @@ FLOW_FAKE_MODULES = (
     ("sl.reflex.dll", ("streamline/sl_reflex.cpp", "streamline/sl_version.rc")),
     ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
     ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
+    ("nvngx.dll", ("ngx/nvngx.cpp",)),
 )
 FLOW_TEST_TIMEOUT_SECONDS = 180
 FLOW_TEST_PARALLEL_PROCESSES = 4

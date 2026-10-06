@@ -11,9 +11,13 @@ This document supersedes the completed sections 1-10 of the old temporary refact
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
   evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
   audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
-- D1-D12 pending; apply D9/D12 acceptance inside each ownership slice. The first queue slice will
-  characterize exact-vtable original resolution, coherent cache publication and retirement before
-  migrating install/forward consumers. D1 NGX and foreign interposer coverage remain required.
+- D1 partial: NGX core fake and two real-hook lifecycle/OFF/ON scenarios pass focused/17-flow gates;
+  all three production mutants are detected. Clean 0.1.7006 and final verification 0.1.7007 passed.
+  Contracts and cold-start accounting
+  finding: [NGX flow lifecycle](frame-generation/ngx-flow-lifecycle.md). Foreign interposer, two-vtable
+  and SDK unload/retirement coverage remain required. D2-D12 pending; apply D9/D12 inside each slice.
+- The first queue ownership slice must characterize exact-vtable original resolution, coherent cache
+  publication and retirement before migrating install/forward consumers.
 - Baseline no-build reuse refused the stale unit-test link manifest at 0.1.7004; no native test ran.
   D0 clean verification 0.1.7005 passed products, native/15 FG flows, Python, ASan/UBSan and lint ratchets.
   All four parser fuzz targets passed a bounded 10-second-per-target run; hardware/application checks remain pending.

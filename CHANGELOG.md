@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DLSS lifecycle regression coverage:** added real-hook NGX create/evaluate/release and OFF/ON scenarios with controlled failures, resource-balance checks and tests that reject premature or stale feature status.
+
 - **Recording and overlay refactor evidence:** inventoried remaining subsystem lifecycles and recorded queue-dispatch provenance risks, with explicit regression and hardware checks before further ownership changes.
 
 - **PC latency estimate without Reflex:** games that read mouse and keyboard input on the thread that presents now have "Latency est." measured from the moment the frame actually read its input (Windows input events), instead of assuming one full frame of work, so limiter, vsync and prerender settings move the number the way they move real latency. Games reading input on another thread, or only through XInput/GameInput, keep the previous estimate.

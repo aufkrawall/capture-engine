@@ -68,6 +68,13 @@ struct D3D12DebugMessages {
 };
 D3D12DebugMessages D3D12DebugMessagesSoFar();
 
+struct NGXPublication {
+    bool srActive = false;
+    bool rrActive = false;
+    bool fgActive = false;
+    int fgMultiplier = 0;
+};
+
 class FlowGame {
 public:
     // Loads build/flow_tests/capture_hook_x64.dll next to the executable, logging into logs/<testName>
@@ -105,11 +112,19 @@ public:
     // runtimes' presenters) - independent of what CE saw.
     uint64_t PhysicalPresents() const;
     CEFlowPublishedFG PublishedFG() const;
+    NGXPublication PublishedNGX() const;
+    void ServiceHookThread();
     CEFlowPostSLLifecycle PostSLLifecycle() const;
     bool TryConfirmPostSLEpoch(uint32_t epoch);
-    const std::string& LogDirectory() const { return logDirectory_; }
-    const std::string& Error() const { return error_; }
-    int FramesPresented() const { return frame_; }
+    const std::string& LogDirectory() const {
+        return logDirectory_;
+    }
+    const std::string& Error() const {
+        return error_;
+    }
+    int FramesPresented() const {
+        return frame_;
+    }
 
     // The game runs at 144 FPS on CE's virtual clock (hook/runtime/hook_clock.h): frame k starts at k * 6944 us
     // however fast WARP renders it. The production hook thread passes every 100 ms, so every 14th frame.

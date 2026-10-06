@@ -54,8 +54,8 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12
 
 ComPtr<ID3D12Resource> CreateFlowTexture(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format,
                                          D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
-    D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-                           D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
+    D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0,
+                               0};
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.Width = width;
@@ -88,8 +88,10 @@ FlowGame::FlowGame(const std::string& testName) {
     getOverlayCoverage_ =
         reinterpret_cast<CEFlow_GetOverlayCoverage_t>(GetProcAddress(hook_, "CEFlow_GetOverlayCoverage"));
     getPublishedFG_ = reinterpret_cast<CEFlow_GetPublishedFG_t>(GetProcAddress(hook_, "CEFlow_GetPublishedFG"));
-    getPostSLLifecycle_ = reinterpret_cast<CEFlow_GetPostSLLifecycle_t>(GetProcAddress(hook_, "CEFlow_GetPostSLLifecycle"));
-    tryConfirmPostSLEpoch_ = reinterpret_cast<CEFlow_TryConfirmPostSLEpoch_t>(GetProcAddress(hook_, "CEFlow_TryConfirmPostSLEpoch"));
+    getPostSLLifecycle_ =
+        reinterpret_cast<CEFlow_GetPostSLLifecycle_t>(GetProcAddress(hook_, "CEFlow_GetPostSLLifecycle"));
+    tryConfirmPostSLEpoch_ =
+        reinterpret_cast<CEFlow_TryConfirmPostSLEpoch_t>(GetProcAddress(hook_, "CEFlow_TryConfirmPostSLEpoch"));
     shutdown_ = reinterpret_cast<CEFlow_Shutdown_t>(GetProcAddress(hook_, "CEFlow_Shutdown"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
@@ -158,9 +160,9 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     RegisterClassA(&windowClass);
     // Visible (CE skips invisible-window swapchains) but off the desktop and never activated: a test must not
     // take the user's focus. CE is told this window is the foreground one.
-    window_ = CreateWindowExA(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, windowClass.lpszClassName, "CE flow test",
-                              WS_POPUP, -8000, -8000, static_cast<int>(width_), static_cast<int>(height_), nullptr,
-                              nullptr, windowClass.hInstance, nullptr);
+    window_ = CreateWindowExA(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, windowClass.lpszClassName, "CE flow test", WS_POPUP,
+                              -8000, -8000, static_cast<int>(width_), static_cast<int>(height_), nullptr, nullptr,
+                              windowClass.hInstance, nullptr);
     if (!window_)
         return Fail("CreateWindowEx", HRESULT_FROM_WIN32(GetLastError()));
     ShowWindow(window_, SW_SHOWNOACTIVATE);
@@ -219,8 +221,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_));
     if (FAILED(hr))
         return Fail("CreateCommandAllocator", hr);
-    hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr,
-                                    IID_PPV_ARGS(&list_));
+    hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_));
     if (FAILED(hr))
         return Fail("CreateCommandList", hr);
     list_->Close();
@@ -370,9 +371,23 @@ CEFlowPublishedFG FlowGame::PublishedFG() const {
     return published;
 }
 
+NGXPublication FlowGame::PublishedNGX() const {
+    if (!hostMemory_)
+        return {};
+    const auto fg = hostMemory_->dlssState.ReadFGStateForProcess(GetCurrentProcessId(), 0);
+    return {hostMemory_->dlssState.srActive.load(std::memory_order_acquire),
+            hostMemory_->dlssState.rrActive.load(std::memory_order_acquire), fg.active, fg.multiplier};
+}
+
+void FlowGame::ServiceHookThread() {
+    if (pumpHookThread_)
+        pumpHookThread_();
+}
+
 CEFlowPostSLLifecycle FlowGame::PostSLLifecycle() const {
     CEFlowPostSLLifecycle result;
-    if (getPostSLLifecycle_) getPostSLLifecycle_(&result);
+    if (getPostSLLifecycle_)
+        getPostSLLifecycle_(&result);
     return result;
 }
 bool FlowGame::TryConfirmPostSLEpoch(uint32_t epoch) {

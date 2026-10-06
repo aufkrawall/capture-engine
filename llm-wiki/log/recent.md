@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-06 - D1 NGX real-hook lifecycle and handover coverage
+
+- Added a minimal nvngx.dll core fake and RAII flow adapter using actual intercepted D3D12 exports
+  and parameter slots; production hook logic publishes all observations. Controlled failures, feature
+  address reuse and independent teardown balance checks protect creation/evaluation/release evidence.
+- Two FlowNGX scenarios pass. Immediate assertions use PID-owned shared FG publication; visible
+  overlay metrics are checked after outputs, since their cache need not update inside the SDK call.
+- Initial cold-FG variant exposed 22 physical outputs outside the ledger (2432 vs 2410), no debug-layer
+  errors. The handover case proves an established native route via one completed output; cold startup
+  remains a separate unfixed D1/D3 investigation, documented in frame-generation/ngx-flow-lifecycle.md.
+- All three production lifecycle mutants failed the expected scenario; exact source bytes restored and
+  both scenarios passed again. Clean 0.1.7006 and final verification 0.1.7007 passed native, all 17 flows,
+  Python, x64 ASan/UBSan and lint ratchets; targeted formatting corrections cleared all format advisories.
+  The 712 accepted warnings are unchanged. Installer: 38,591,852-byte PE; no test processes lingered.
+  Real-game/foreign-overlay/A/V/performance evidence and cold-start accounting remain pending.
+
 ### 2026-10-06 - Architecture D0 inventory and queue provenance characterization
 
 - Inventoried all first-party subsystem paths at 3563155d; inventory is separate from reading every
