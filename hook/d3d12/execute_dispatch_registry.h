@@ -52,7 +52,9 @@ public:
         bool succeeded = false;
         try {
             succeeded = patch(&captured);
-        } catch (...) {}
+        } catch (...) {
+            succeeded = false;  // Run the same binding rollback as a rejected patch.
+        }
         // Reset/replacement can reenter the cold operation. The stack output remains valid even if its
         // record was retired; never republish that transaction or read an erased map node afterward.
         entry = originals_.find(vtable);

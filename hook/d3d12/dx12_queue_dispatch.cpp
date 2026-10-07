@@ -6,7 +6,9 @@
 
 namespace ce::dx12_queue_dispatch {
 namespace {
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - process-lifetime synchronization must initialize before hooks are callable.
 ce::dx12::ExecuteDispatchRegistry<ExecuteCommandListsPtr> registry;
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - process-lifetime synchronization must initialize before hooks are callable.
 ce::dx12::ExecuteDispatchRegistry<SignalPtr> signalRegistry;
 ExecuteCommandListsPtr ReadSlot(void** vtable) {
     return reinterpret_cast<ExecuteCommandListsPtr>(std::atomic_ref<void*>(vtable[10]).load(std::memory_order_acquire));
@@ -18,7 +20,7 @@ Capture CaptureVTable(void** vtable) {
         return {CaptureResult::kFailed};
     const auto result =
         registry.Install(vtable, ReadSlot(vtable), &DetourExecuteCommandLists, [&](ExecuteCommandListsPtr* original) {
-            return VTableHook::Create(&vtable[10], reinterpret_cast<void*>(&DetourExecuteCommandLists),
+            return VTableHook::Create(static_cast<void*>(&vtable[10]), reinterpret_cast<void*>(&DetourExecuteCommandLists),
                                       reinterpret_cast<void**>(original)) == VTableHook::Success;
         });
     using Result = decltype(registry)::InstallResult;
@@ -45,7 +47,7 @@ ExecuteCommandListsPtr Resolve(ID3D12CommandQueue* queue) {
         vtable, &DetourExecuteCommandLists,
         [&] {
             void* original = nullptr;
-            VTableHook::GetOriginal(&vtable[10], reinterpret_cast<void*>(&DetourExecuteCommandLists), &original);
+            VTableHook::GetOriginal(static_cast<void*>(&vtable[10]), reinterpret_cast<void*>(&DetourExecuteCommandLists), &original);
             return reinterpret_cast<ExecuteCommandListsPtr>(original);
         },
         [&] { return ReadSlot(vtable); });
@@ -65,7 +67,7 @@ SignalCapture CaptureSignalVTable(void** vtable) {
         return {CaptureResult::kFailed};
     const auto current = reinterpret_cast<SignalPtr>(std::atomic_ref<void*>(vtable[14]).load(std::memory_order_acquire));
     const auto result = signalRegistry.Install(vtable, current, &DetourTraceCommandQueueSignal, [&](SignalPtr* original) {
-        return VTableHook::Create(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
+        return VTableHook::Create(static_cast<void*>(&vtable[14]), reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
                                   reinterpret_cast<void**>(original)) == VTableHook::Success;
     });
     using Result = decltype(signalRegistry)::InstallResult;
@@ -92,7 +94,7 @@ SignalPtr ResolveSignal(ID3D12CommandQueue* queue) {
             vtable, &DetourTraceCommandQueueSignal,
             [&] {
                 void* original = nullptr;
-                VTableHook::GetOriginal(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
+                VTableHook::GetOriginal(static_cast<void*>(&vtable[14]), reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
                                         &original);
                 return reinterpret_cast<SignalPtr>(original);
             },

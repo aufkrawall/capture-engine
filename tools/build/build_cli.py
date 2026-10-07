@@ -1,4 +1,12 @@
 
+def should_reuse_product_objects(incremental: bool, resume: bool, verify: bool,
+                                verify_clean: bool, force_rebuild: bool = False) -> bool:
+    """Explicit clean verification always wins over identity-preserving resume."""
+    if verify_clean or force_rebuild:
+        return False
+    return incremental or resume or verify
+
+
 def parse_flag_value(flag_name: str):
     for i, arg in enumerate(sys.argv):
         if arg == flag_name and i + 1 < len(sys.argv):
@@ -268,10 +276,8 @@ def main():
             "inside the verification gate)"
         )
         sys.exit(2)
-    incremental_flag = (
-        "--incremental" in sys.argv
-        or resume_flag
-        or (verify_flag and not verify_clean_flag and "--force-rebuild" not in sys.argv)
+    incremental_flag = should_reuse_product_objects(
+        "--incremental" in sys.argv, resume_flag, verify_flag, verify_clean_flag, force_rebuild
     )
     force_flag = not incremental_flag  # Force rebuild by default
 

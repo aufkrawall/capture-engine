@@ -16,6 +16,15 @@ from testapp import run_tests as integration_runner
 
 
 class BuildFlagPolicyTest(unittest.TestCase):
+    def test_clean_verification_wins_over_resume_and_incremental(self) -> None:
+        for incremental in (False, True):
+            for resume in (False, True):
+                with self.subTest(incremental=incremental, resume=resume):
+                    self.assertFalse(build.should_reuse_product_objects(incremental, resume, True, True))
+        self.assertTrue(build.should_reuse_product_objects(False, True, False, False))
+        self.assertTrue(build.should_reuse_product_objects(False, False, True, False))
+        self.assertFalse(build.should_reuse_product_objects(True, False, True, False, True))
+
     def test_long_hook_link_uses_a_clang_response_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             response_file = str(Path(temporary) / "hook_x64_link.rsp")
@@ -746,7 +755,11 @@ class BuildFlagPolicyTest(unittest.TestCase):
         # not a full rebuild on every change; only --verify-clean or --force-rebuild
         # selects the authoritative clean product build.
         self.assertIn(
-            '(verify_flag and not verify_clean_flag and "--force-rebuild" not in sys.argv)',
+            'incremental_flag = should_reuse_product_objects(',
+            source,
+        )
+        self.assertIn(
+            '"--incremental" in sys.argv, resume_flag, verify_flag, verify_clean_flag, force_rebuild',
             source,
         )
         self.assertIn("Verification build reuses content-validated objects", source)

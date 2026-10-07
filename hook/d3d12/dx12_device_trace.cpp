@@ -32,7 +32,7 @@ public:
         if (!vtable)
             return;
         const auto captured = registry_.Install(vtable, ReadSlot(vtable), detour_, [&](Target* original) {
-            return VTableHook::Create(&vtable[slot_], reinterpret_cast<void*>(detour_),
+            return VTableHook::Create(static_cast<void*>(&vtable[slot_]), reinterpret_cast<void*>(detour_),
                                       reinterpret_cast<void**>(original)) == VTableHook::Success;
         });
         using Result = typename ce::dx12::ExecuteDispatchRegistry<Target>::InstallResult;
@@ -58,7 +58,7 @@ public:
                 vtable, detour_,
                 [&] {
                     void* original = nullptr;
-                    VTableHook::GetOriginal(&vtable[slot_], reinterpret_cast<void*>(detour_), &original);
+                    VTableHook::GetOriginal(static_cast<void*>(&vtable[slot_]), reinterpret_cast<void*>(detour_), &original);
                     return reinterpret_cast<Target>(original);
                 },
                 [&] { return ReadSlot(vtable); });
@@ -92,8 +92,11 @@ private:
     ce::log_meter::ChangeGate missing_;
 };
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - process-lifetime synchronization must initialize before hooks are callable.
 TraceMethod<CreateQueue> queue{8, &DetourTraceCreateCommandQueue, "CreateCommandQueue"};
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - process-lifetime synchronization must initialize before hooks are callable.
 TraceMethod<CreateHeap> heap{14, &DetourTraceCreateDescriptorHeap, "CreateDescriptorHeap"};
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - process-lifetime synchronization must initialize before hooks are callable.
 TraceMethod<CreateResource> resource{27, &DetourCreateCommittedResource, "CreateCommittedResource"};
 HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
                                                         const D3D12_HEAP_PROPERTIES* pHeapProperties,

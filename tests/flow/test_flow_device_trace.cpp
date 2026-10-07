@@ -24,8 +24,8 @@ TEST(FlowDeviceTrace, NativeBootstrapAndDebugDeviceCreationKeepTheirOwnEntries) 
     ASSERT_EQ(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap)), S_OK);
     EXPECT_EQ(heap->GetDesc().NumDescriptors, heapDesc.NumDescriptors);
 
-    D3D12_HEAP_PROPERTIES properties{};
-    properties.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_HEAP_PROPERTIES properties{D3D12_HEAP_TYPE_UPLOAD, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                                    D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
     D3D12_RESOURCE_DESC bufferDesc{};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bufferDesc.Width = 1024;

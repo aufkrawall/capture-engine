@@ -133,7 +133,7 @@ bool InstallSwapchainPresentVTableHooks(IDXGISwapChain* swapchain) {
         return true;
     }
     DWORD oldProtect = 0;
-    if (!VirtualProtect(vtable, 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!VirtualProtect(static_cast<void*>(vtable), 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLogImportant("DXGIShared: Cannot claim Present vtable %p (VirtualProtect error=%lu)", vtable,
                          GetLastError());
         return false;
@@ -145,7 +145,7 @@ bool InstallSwapchainPresentVTableHooks(IDXGISwapChain* swapchain) {
         ClaimPresentSlot(vtable, 22, &DetourVTablePresent1, present1Predecessor, dxgi_shared_oPresent1, "Present1");
     }
     DWORD ignoredProtect = 0;
-    VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &ignoredProtect);
+    VirtualProtect(static_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &ignoredProtect);
     return claimed;
 }
 

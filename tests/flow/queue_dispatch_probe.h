@@ -103,14 +103,19 @@ public:
         return calls_.load();
     }
     void* CurrentECL() {
-        return (*reinterpret_cast<void***>(this))[10];
+        // NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign) - the compiler initializes this constructed COM object's vptr; the analyzer does not model it.
+        void** vtable = *reinterpret_cast<void***>(this);
+        return vtable ? vtable[10] : nullptr;
     }
     void* CurrentSignal() {
-        return (*reinterpret_cast<void***>(this))[14];
+        // NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign) - the compiler initializes this constructed COM object's vptr; the analyzer does not model it.
+        void** vtable = *reinterpret_cast<void***>(this);
+        return vtable ? vtable[14] : nullptr;
     }
     HRESULT InvokeSignal(UINT64 value) {
         using Method = HRESULT(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
-        return reinterpret_cast<Method>(CurrentSignal())(this, nullptr, value);
+        const auto method = reinterpret_cast<Method>(CurrentSignal());
+        return method ? method(this, nullptr, value) : E_FAIL;
     }
     uint32_t SignalCalls() const {
         return signalCalls_.load();

@@ -269,10 +269,14 @@ inline const char* SourceOverlayLabel(Source source) {
 inline uint32_t LatencyLogBand(float milliseconds) {
     if (!(milliseconds > 0.0f))
         return 0;
-    uint32_t band = 1;
-    for (float edge = 1.0f; edge * 1.25f <= milliseconds && band < 64; edge *= 1.25f)
-        ++band;
-    return band;
+    float edge = 1.0f;
+    for (uint32_t band = 1; band < 64; ++band) {
+        const float next = edge * 1.25f;
+        if (next > milliseconds)
+            return band;
+        edge = next;
+    }
+    return 64;
 }
 
 inline const char* SnapshotOverlayLabel(const Snapshot& snapshot) {

@@ -87,6 +87,7 @@ bool LooksCallableAsCom(const void* candidate) {
     return ce::module_pin::IsReadableCode(vtable[0], 1);
 }
 
+__attribute__((format(printf, 3, 4)))
 void LogOnce(std::atomic<uint32_t>& counter, uint32_t budget, const char* format, ...) {
     if (counter.fetch_add(1, std::memory_order_relaxed) >= budget) {
         return;

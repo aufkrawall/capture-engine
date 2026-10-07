@@ -24,6 +24,7 @@ public:
         installed_ = Replace(next_, &Detour);
         EXPECT_TRUE(installed_);
     }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - only GoogleTest failure reporting allocates; reporting allocation failure is fatal to this isolated test.
     ~SignalInterposer() {
         EXPECT_EQ(active_.load(), 0u);
         if (installed_ && !Detach()) {
@@ -60,13 +61,13 @@ public:
 private:
     bool Replace(Method expected, Method replacement) {
         DWORD previous = 0;
-        if (!VirtualProtect(slot_, sizeof(void*), PAGE_READWRITE, &previous))
+        if (!VirtualProtect(static_cast<void*>(slot_), sizeof(void*), PAGE_READWRITE, &previous))
             return false;
         void* before =
             InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot_),
                                               reinterpret_cast<void*>(replacement), reinterpret_cast<void*>(expected));
         DWORD unused = 0;
-        const bool protectedAgain = VirtualProtect(slot_, sizeof(void*), previous, &unused) != FALSE;
+        const bool protectedAgain = VirtualProtect(static_cast<void*>(slot_), sizeof(void*), previous, &unused) != FALSE;
         EXPECT_TRUE(protectedAgain);
         return before == reinterpret_cast<void*>(expected);
     }

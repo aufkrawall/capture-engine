@@ -180,6 +180,10 @@ python build.py --verify --skip-updates --concise
 
 Timing reference (2026-08-06, warm caches, 529 translation units): plain `--verify --skip-package` completed in 89 s (only the build-version identity TU recompiled; product relinks for the new identity; sanitizer child incremental and concurrent; lint warm). `--verify --verify-clean` completed in 347 s with every object recompiled (the sanitizer stage still reused its exact-input manifest from the preceding run). Cold or changed sanitizer/analyzer inputs still run rather than inheriting those timings. Without `--skip-package`, archive creation adds ~67 s.
 
+Resume preserves the failed version; explicit `--verify-clean` still forces every product object
+to recompile. Before 2026-10-07, resume silently overrode clean mode. The precedence regression
+is in tools/tests/test_build_flags.py; do not report cached resume as strict clean evidence.
+
 ### Ratchets: what each one actually measures
 
 `tools/clang_tidy_baseline.json` records accepted counts per check over the translation units they were measured
