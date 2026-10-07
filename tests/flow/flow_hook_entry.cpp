@@ -8,6 +8,7 @@
 #include "hook/d3d12/dx12_hook.h"
 #include "hook/d3d12/dx12_hook_internal.h"
 #include "hook/d3d12/dx12_hook_ecl_forward.h"
+#include "hook/d3d12/dx12_device_trace.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/runtime/hook_clock.h"
@@ -218,6 +219,10 @@ extern "C" __declspec(dllexport) void CEFlow_ForwardQueue(ID3D12CommandQueue* qu
 
 extern "C" __declspec(dllexport) void CEFlow_ResetQueueBindings() {
     ce::dx12_queue_dispatch::Reset();
+}
+
+extern "C" __declspec(dllexport) void CEFlow_ResetDeviceTrace() {
+    ce::dx12_device_trace::Reset();
 }
 
 extern "C" __declspec(dllexport) void CEFlow_TrackSignalQueue(ID3D12CommandQueue* queue) {

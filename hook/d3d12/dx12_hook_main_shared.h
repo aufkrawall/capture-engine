@@ -30,9 +30,6 @@ inline const GUID SKID_D3D12SwapChainBufferBitmap = {
 
 // File-scope variables defined in the first part (extern for the rest).
 
-extern CreateCommittedResourcePtr oCreateCommittedResource;
-extern CreateCommandQueuePtr oTraceCreateCommandQueue;
-extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
 extern std::atomic<int> g_PostSLECLDiagCount;
 extern std::atomic<ID3D12Device*> g_Device;
 extern std::atomic<ID3D12CommandQueue*> g_CommandQueue;

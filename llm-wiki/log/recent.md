@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-07 - Device trace ownership restores traced native/debug bootstrap
+
+- Private dx12_device_trace owns installation, dispatch, reset recovery and tracing detours for
+  queue/descriptor-heap/resource creation; first-global targets, aliases and prototypes are gone.
+- Native/debug-device creation and typed outputs pass before/after registry reset. The Signal case
+  now enables the production trace switch and uses the real queue installer, with physical coverage.
+- The persistent bootstrap case reproduced the pre-fix access violation. Logs confirm separate
+  native/SDK-layer vtable bindings for all three methods; no dispatch lookup chooses a foreign original.
+- Both device mutations detect wrong-first-device borrowing and lost reset recovery, then restore
+  exact source bytes and pass. The shared bounded runner accepts explicit commands without global mutation.
+- Closing 20261007_091020_build_7016 passes x64/x86 products, native/Python and all 24 FG cases.
+  Installer: 38,728,376-byte PE. No touched-source compiler warnings or lingering test processes.
+  Sanitizers/runtime/fuzz were not rerun; provider/callback lifetime and full D2/D10 remain open.
+
 ### 2026-10-07 - Queue Signal ownership; separate device trace bootstrap defect
 
 - Signal now uses the private queue registry transaction for pre-patch publication, exact-vtable

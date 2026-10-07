@@ -30,6 +30,7 @@ TEST(FlowQueueSignal, MissingReceiverCannotBorrowSavedSignalEntry) {
 }
 
 TEST(FlowQueueSignal, InstalledImplementationsKeepReturnValuesAndRecoverAfterReset) {
+    ASSERT_TRUE(SetEnvironmentVariableA("CE_DX12_TRACE", "1"));
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
@@ -41,9 +42,9 @@ TEST(FlowQueueSignal, InstalledImplementationsKeepReturnValuesAndRecoverAfterRes
         void* firstOriginal = first->CurrentSignal();
         void* secondOriginal = second->CurrentSignal();
         ASSERT_NE(firstOriginal, secondOriginal);
-        game.TrackSignalQueue(first.Get());
-        game.TrackSignalQueue(second.Get());
-        game.TrackSignalQueue(first.Get());
+        game.TrackQueue(first.Get());
+        game.TrackQueue(second.Get());
+        game.TrackQueue(first.Get());
         for (UINT64 value = 1; value <= 16; ++value) {
             ASSERT_EQ(game.SignalOriginal(first.Get()), firstOriginal);
             ASSERT_EQ(game.SignalOriginal(second.Get()), secondOriginal);

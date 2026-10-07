@@ -21,22 +21,6 @@
 
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
-
-
-typedef HRESULT(STDMETHODCALLTYPE* CreateCommittedResourcePtr)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*,
-                                                               D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*,
-                                                               D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID,
-                                                               void**);
-
-typedef HRESULT(STDMETHODCALLTYPE* CreateCommandQueuePtr)(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID,
-                                                          void**);
-
-typedef HRESULT(STDMETHODCALLTYPE* CreateDescriptorHeapPtr)(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID,
-                                                            void**);
-
-
-extern CreateCommandQueuePtr oTraceCreateCommandQueue;
-
 typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateSwapChain)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
                                                         IDXGISwapChain**);
 

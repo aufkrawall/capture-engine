@@ -95,6 +95,7 @@ FlowGame::FlowGame(const std::string& testName) {
     shutdown_ = reinterpret_cast<CEFlow_Shutdown_t>(GetProcAddress(hook_, "CEFlow_Shutdown"));
     trackQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackQueue"));
     resetQueueBindings_ = reinterpret_cast<CEFlow_ResetQueueBindings_t>(GetProcAddress(hook_, "CEFlow_ResetQueueBindings"));
+    resetDeviceTrace_ = reinterpret_cast<CEFlow_ResetDeviceTrace_t>(GetProcAddress(hook_, "CEFlow_ResetDeviceTrace"));
     queueOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_QueueOriginal"));
     forwardQueue_ = reinterpret_cast<CEFlow_ForwardQueue_t>(GetProcAddress(hook_, "CEFlow_ForwardQueue"));
     trackSignalQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackSignalQueue"));
@@ -105,7 +106,8 @@ FlowGame::FlowGame(const std::string& testName) {
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
-        !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_) {
+        !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
+        !resetDeviceTrace_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -382,6 +384,10 @@ CEFlowPublishedFG FlowGame::PublishedFG() const {
 void FlowGame::ResetQueueBindings() {
     if (resetQueueBindings_)
         resetQueueBindings_();
+}
+void FlowGame::ResetDeviceTrace() {
+    if (resetDeviceTrace_)
+        resetDeviceTrace_();
 }
 void FlowGame::TrackQueue(ID3D12CommandQueue* queue) {
     if (trackQueue_)

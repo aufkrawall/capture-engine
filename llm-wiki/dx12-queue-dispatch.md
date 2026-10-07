@@ -5,8 +5,8 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-07 (nine native registry cases, four real-hook queue cases,
-four deliberate production mutations; closing product gate recorded in log/recent.md).
+Last cross-checked: 2026-10-07 (nine native registry cases, four real-hook queue cases and device
+bootstrap/reset coverage; four queue and two device mutations; closing gate in log/recent.md).
 
 ## Sources and contract
 
@@ -71,15 +71,31 @@ broader wrapper/native chains and device loss still need deterministic scenarios
 the first native output remains a separate open accounting finding in the NGX lifecycle page.
 WARP and incidental RTSS presence do not establish all real games, SDKs, overlay orders or performance.
 
-## Newly reproduced device trace debt
+## Device trace ownership and reproduced crash
 
-Enabling CE_DX12_TRACE=1 before loading the flow hook crashes during device bootstrap, before queue
+Before the fix, enabling CE_DX12_TRACE=1 before loading the flow hook crashed during bootstrap, before queue
 Signal assertions. Digest-first investigation and an x64 CDB dump with Microsoft symbols and matching
 CE PDBs show D3D12Core!CDevice::TranslateNodeMask -> CreateCommandQueue1 -> CreateCommandQueue ->
 CE DetourTraceCreateCommandQueue -> HookSwapchainVTableViaTempSwapchain. The faulting read addresses
-baadf00d3f800000. Device trace installation captures D3D12Core's first global original, then intercepts
-the debug-layer device without replacing it; the native method receives an incompatible device object.
-CreateDescriptorHeap and CreateCommittedResource use the same first-global pattern and need the same
-ownership audit. This is a device tracing defect, separate from queue Signal; the end-to-end trace switch
-scenario remains unverified until fixed. Reproduce with CE_DX12_TRACE=1 and the installed-Signal flow
-case before constructing FlowGame. Dumps/symbol copies remain ignored local evidence, never commits.
+baadf00d3f800000. Device trace installation captured D3D12Core's first global original, then intercepted
+the debug-layer device without replacing it; the native method received an incompatible device object.
+CreateDescriptorHeap and CreateCommittedResource used the same first-global pattern.
+Dumps/symbol copies remain ignored local evidence, never commits.
+
+Fixed 2026-10-07: [dx12_device_trace.h](../hook/d3d12/dx12_device_trace.h) exposes only device capture,
+three typed creation commands and reset. The [private implementation](../hook/d3d12/dx12_device_trace.cpp)
+owns each method's exact-vtable predecessor through the shared installation transaction. All tracing
+detours are private to that module; globals/aliases/prototypes were removed. Callers retain the receiver
+and invoke commands; they cannot choose an original or reconstruct fallback policy. Reset invalidates
+cached evidence; physical slots recover only their allocation-checked saved predecessor.
+
+[test_flow_device_trace.cpp](../tests/flow/test_flow_device_trace.cpp) reproduced the pre-fix access
+violation before bootstrap completed. It now verifies native/debug-device creation, actual queue/heap/
+resource descriptors, all three methods after reset, physical-output coverage and debug-layer errors.
+The Signal flow case now enables the production trace switch and uses the normal queue installer.
+Logs show distinct native and SDK-layer vtables with separate original targets for all three methods.
+[check_device_trace_mutations.py](../tools/refactor/check_device_trace_mutations.py) detects the
+historical first-device borrowing as the expected access violation and missing reset recovery as an
+assertion failure; compiler/loader errors cannot satisfy either check. Exact source restoration passes.
+This boundary does not own provider code/module lifetime or callback drain; D2/D10 retirement and
+foreign-interposer work remain required.

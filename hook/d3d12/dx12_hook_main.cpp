@@ -1,9 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_main_shared.h"
-
-#include "dx12_hook_internal.h"
-
-// Global Function Pointers for detours (Visible to other modules)
+#include "dx12_device_trace.h"
 
 static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out);
 
@@ -19,11 +16,6 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 static void FindAndWrapPreExistingSwapchains();
 void TryInstallPresentHooksViaGuardedTempSwapchain(const char* reason);
 
-CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
-
-CreateCommandQueuePtr oTraceCreateCommandQueue = nullptr;
-
-CreateDescriptorHeapPtr oTraceCreateDescriptorHeap = nullptr;
 
 
 std::atomic<int> g_PostSLECLDiagCount{0};
@@ -499,6 +491,7 @@ void DX12Hook::Shutdown() {
         dx12_hook_g_PreFGGameQueue = nullptr;
     }
     ce::dx12_queue_dispatch::Reset();
+    ce::dx12_device_trace::Reset();
     if (g_Device.load()) {
         g_Device.load()->Release();
         g_Device.store(nullptr);

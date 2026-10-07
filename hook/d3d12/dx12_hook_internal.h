@@ -87,9 +87,6 @@ namespace {
 #include "hook/wrappers/wrapper_base.h"
 #include "hook/present/dxgi_shared.h"
 #include "dx12_hook_types.h"
-extern CreateCommittedResourcePtr oCreateCommittedResource;
-extern CreateCommandQueuePtr oTraceCreateCommandQueue;
-extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
 #elif defined(_MSC_VER)
@@ -107,15 +104,6 @@ extern DX12Hook* g_dx12HookInstance;
 #ifndef DXGI_STATUS_OCCLUDED
 #define DXGI_STATUS_OCCLUDED ((HRESULT)0x087A0001L)
 #endif
-
-// Function pointers for global factory vtable hooks
-
-
-HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID, void**);
 
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 
@@ -426,15 +414,6 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
 
 
 __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
-
-
-
-
-HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device, const D3D12_HEAP_PROPERTIES* pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE* pOptimizedClearValue, REFIID riidResource, void** ppvResource);
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device* device, const D3D12_COMMAND_QUEUE_DESC* pDesc, REFIID riid, void** ppQueue);
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* pDesc, REFIID riid, void** ppHeap);
 
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value);
 

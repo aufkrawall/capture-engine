@@ -8,7 +8,7 @@
 
 namespace ce::dx12 {
 
-// Owns the saved ECL binding from before the slot is patched. Readers never choose a global predecessor.
+// Owns a saved vtable method binding from before the slot is patched. Readers never choose a global predecessor.
 // Patch must publish *original before making detour callable, as VTableHook::Create does.
 template <typename Target>
 class ExecuteDispatchRegistry {

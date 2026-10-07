@@ -6,7 +6,7 @@ The subsequent privacy workflow commit `6b8249e8` adds commit checks, not produc
 Canonical version: this wiki page. `temp/refactor.md` is an identical working copy of this revision.
 This document supersedes the completed sections 1-10 of the old temporary refactor plan.
 
-## Execution status (2026-10-06)
+## Execution status (2026-10-07)
 
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
   evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
@@ -29,10 +29,14 @@ This document supersedes the completed sections 1-10 of the old temporary refact
   native candidate lifetime still require further work. Signal uses the same private transaction and
   exact-slot recovery; its writable map/lock/global-original aliases are removed. D2 exit remains open.
   Final closing 0.1.7015 passes native/Python/all 23 FG flows, x64/x86 products and the setup package.
-- Newly reproduced D0/D10 defect: CE_DX12_TRACE=1 crashes WARP/debug-layer device bootstrap through
-  the first-global CreateCommandQueue trace original. CDB with Microsoft/matching CE symbols confirms
-  a native method receiving the wrong device implementation; descriptor/resource trace methods share
-  the pattern. Next slice must own device trace predecessors and restore end-to-end trace coverage.
+- D0/D10 device tracing slice: fixed the first-global creation-target crash under CE_DX12_TRACE=1.
+  One private module owns exact-vtable installation, dispatch, reset recovery and tracing detours for
+  queue/descriptor-heap/resource creation. Removed global targets, aliases and exposed detour prototypes.
+  Native/debug-device creation, typed output checks and reset recovery pass through real hooks; the
+  Signal case now runs with the production trace switch and queue installer. Both deliberate device
+  mutations fail the expected crash/assertion; restored production passes. Provider lifetime, hook
+  detachment and the rest of D10 remain pending; this does not close D2/D10.
+  Closing 0.1.7016 passes native/Python/all 24 FG flows, x64/x86 products and the setup package.
 - D9/D12 acceptance slice: removed unused factory detours and duplicate wrapper IDs from the touched
   queue installer, and moved Vulkan/ledger source protection to the actual wired factory hooks. The
   pacing fixture now installs the existing ClockSource; its deadline regression deterministically

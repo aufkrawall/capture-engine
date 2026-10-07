@@ -5,6 +5,10 @@ Last source inventory: 2026-10-06 at `3563155d`. This is D0 evidence for
 Product code, tests and build scripts remain authoritative. The initial inventory covers tracked
 first-party C/C++ headers/units and Python/PowerShell tools; vendor/generated sources are excluded.
 
+Follow-up 2026-10-07: the counts remain the original inventory snapshot. Queue/device tracing now
+uses private exact-vtable owners and NGX creation honors accepted OFF; resolved findings below link
+to current contracts rather than implying the original hazards are still present.
+
 ## Inventory and audit limits
 
 Counts group files by their first two path components (root-level sources by their module).
@@ -74,7 +78,7 @@ These are bounded source traces, not evidence that the full surrounding owner ha
 | Stop pending recording, then start | RecordingSession intent; child/ack differ from finalized output | Command thread clears before effects; child readiness/health still external |
 | Retire PostSL/stale callback | PostSLLifecycle epoch; queue roles and GPU fences | Cancel before render/callback drain; backend, swapchain evidence and native return external |
 | Encode failure/retry/repeat | Submission outcome; candidate lease/cache; committed QPC/audio units | Source admission, scheduling and worker teardown external |
-| Replace/reset queue/device | Exact vtable/original; selected queue's device | Mutable ECL registry/probe; split cache atomics cannot publish an identity/target pair |
+| Replace/reset queue/device | Private exact-vtable ECL/Signal/device trace owners; coherent cache pairs | Callback/provider retirement, physical hook detachment and native candidate lifetime remain open |
 | Replace controller child | Process, endpoint/command and health identity | Raw handles in ShutdownChildProcesses; full readiness/replacement trace pending |
 | Finalize recording | Committed video endpoint; samples/100 ns/packet domains | StopRecording owns muxMutex but shares audio/reset/codec/output state; no outcome owner |
 
@@ -114,11 +118,11 @@ Writable references match `^\s*inline\s+(?!const\b)[^\n;]*&\s*\w+\s*=`; externs 
 
 ## Findings and required evidence
 
-- ECL lookup seeds an untracked vtable with oExecuteCommandLists (the first global original), and
-  publishes lastOriginal and lastVTable independently. Different implementations or interleaved
-  readers/writers can select a method without exact queue provenance. This is source evidence of
-  a hazard, not a reproduced hardware crash. D1 two-vtable/coexistence tests and D2 ownership must
-  cover the actual production transaction, with deliberate wrong-target/cache/retirement mutations.
+- The baseline ECL lookup seeded an untracked vtable with oExecuteCommandLists (the first global original)
+  and published lastOriginal/lastVTable independently. Distinct implementations or interleaved readers
+  could select a target without exact queue provenance. Resolved by the private dispatch owner and
+  real two-vtable cases/mutations; see [queue dispatch](dx12-queue-dispatch.md). Foreign coexistence and
+  provider/callback lifetime still need their full D1/D2 evidence.
 - VTableHook already retains per-slot original/detour/allocation identity and can recover its own
   original when Create observes the same detour. Reuse that interception evidence rather than
   inventing a second unproven global fallback. Publication into the queue registry must synchronize
@@ -126,12 +130,13 @@ Writable references match `^\s*inline\s+(?!const\b)[^\n;]*&\s*\w+\s*=`; externs 
 - A concrete cache interleaving needs no object destruction: reader A accepts lastVTable=A, writer B
   publishes lastOriginal=B, then reader A loads B's method before checking anything else. D2 must
   protect the identity/target association, not just make each pointer atomic. Queue-hook publication
-  also patches the slot before inserting its saved original under the registry mutex; admission
-  during that gap needs characterization. No additional hot-path lookup/lock is an acceptable cure.
-- NGX creation currently publishes FG active for features 9/11/18 without the explicit Streamline-OFF
-  check used by evaluation. D1 should characterize creation arriving after accepted OFF; D7 must
-  coordinate accepted settings with creation/evaluation publication. This is an unverified source
-  observation, not a claim about real runtime call ordering.
+  also patched the slot before inserting its original. The shared private installation transaction now
+  reserves before patching, supplies the predecessor during publication reentry and invalidates a
+  coherent thread-local cache pair. Native publication/reset/reentry cases and mutations cover it.
+- Baseline NGX creation published FG active for features 9/11/18 without evaluation's Streamline-OFF
+  guard. The real-hook fake reproduced stale 3x publication and duplicate draws after accepted OFF.
+  Fixed by private creation/evaluation publication; cases and mutations are in
+  [NGX lifecycle](frame-generation/ngx-flow-lifecycle.md). SDK concurrency and retirement remain open.
 - `--no-build --run-tests` at 0.1.7004 refused a stale/missing unit-test link manifest before tests
   ran. This is a refused reuse, not a failing native test baseline. Clean verification 0.1.7005
   (`20261006_163427_build_7005`) passed x64/x86 products, native units, all 15 FG scenarios, Python

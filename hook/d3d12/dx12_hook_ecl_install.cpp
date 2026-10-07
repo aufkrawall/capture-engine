@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_ecl_shared.h"
+#include "dx12_device_trace.h"
 
 
 __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
@@ -183,100 +184,8 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
     // DX12 trace: hook device creation calls to inspect queue/resource architecture (own command
     // queue? what resources/heaps?). CreateCommandQueue=8, CreateDescriptorHeap=14,
     // CreateCommittedResource=27. Only installed when tracing is enabled (Dx12TraceEnabled).
-    if (Dx12TraceEnabled()) {
-        if (vtbl[8] && vtbl[8] != (void*)DetourTraceCreateCommandQueue) {
-            CreateCommandQueuePtr o = nullptr;
-            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[8]), (LPVOID)DetourTraceCreateCommandQueue, (LPVOID*)&o) ==
-                    VTableHook::Success &&
-                o && !oTraceCreateCommandQueue) {
-                oTraceCreateCommandQueue = o;
-            }
-            HookLogImportant("DX12 TRACE: hooked CreateCommandQueue for device %p", (void*)device);
-        }
-        if (vtbl[14] && vtbl[14] != (void*)DetourTraceCreateDescriptorHeap) {
-            CreateDescriptorHeapPtr o = nullptr;
-            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[14]), (LPVOID)DetourTraceCreateDescriptorHeap, (LPVOID*)&o) ==
-                    VTableHook::Success &&
-                o && !oTraceCreateDescriptorHeap) {
-                oTraceCreateDescriptorHeap = o;
-            }
-            HookLogImportant("DX12 TRACE: hooked CreateDescriptorHeap for device %p", (void*)device);
-        }
-        if (vtbl[27] && vtbl[27] != (void*)DetourCreateCommittedResource) {
-            CreateCommittedResourcePtr o = nullptr;
-            if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[27]), (LPVOID)DetourCreateCommittedResource, (LPVOID*)&o) ==
-                    VTableHook::Success &&
-                o && !oCreateCommittedResource) {
-                oCreateCommittedResource = o;
-            }
-            HookLogImportant("DX12 TRACE: hooked CreateCommittedResource for device %p", (void*)device);
-        }
-    }
-}
-
-HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
-                                                        const D3D12_HEAP_PROPERTIES* pHeapProperties,
-                                                        D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc,
-                                                        D3D12_RESOURCE_STATES InitialResourceState,
-                                                        const D3D12_CLEAR_VALUE* pOptimizedClearValue,
-                                                        REFIID riidResource, void** ppvResource) {
-    HRESULT hr = oCreateCommittedResource
-                     ? oCreateCommittedResource(device, pHeapProperties, HeapFlags, pDesc, InitialResourceState,
-                                                pOptimizedClearValue, riidResource, ppvResource)
-                     : E_FAIL;
-    if (Dx12TraceEnabled()) {
-        static std::atomic<int> s_n{0};
-        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
-        if (sn < 300 || (sn % 200) == 0) {
-            char d[256];
-            _snprintf_s(d, sizeof(d), _TRUNCATE,
-                        "heapType=%d dim=%d w=%llu h=%u fmt=%d resFlags=0x%X state=0x%X -> res=%p hr=0x%08X seq=%d",
-                        pHeapProperties ? (int)pHeapProperties->Type : -1, pDesc ? (int)pDesc->Dimension : -1,
-                        pDesc ? (unsigned long long)pDesc->Width : 0ull, pDesc ? pDesc->Height : 0,
-                        pDesc ? (int)pDesc->Format : -1, pDesc ? (unsigned)pDesc->Flags : 0u,
-                        (unsigned)InitialResourceState, (SUCCEEDED(hr) && ppvResource) ? *ppvResource : nullptr,
-                        (unsigned)hr, sn);
-            Dx12TraceLog("CreateCommittedResource", d);
-        }
-    }
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device* device, const D3D12_COMMAND_QUEUE_DESC* pDesc,
-                                                        REFIID riid, void** ppQueue) {
-    HRESULT hr = oTraceCreateCommandQueue ? oTraceCreateCommandQueue(device, pDesc, riid, ppQueue) : E_FAIL;
-    if (Dx12TraceEnabled()) {
-        static std::atomic<int> s_n{0};
-        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
-        if (sn < 200) {
-            char d[256];
-            _snprintf_s(d, sizeof(d), _TRUNCATE,
-                        "type=%d prio=%d flags=0x%X node=%u dev=%p -> queue=%p hr=0x%08X seq=%d",
-                        pDesc ? (int)pDesc->Type : -1, pDesc ? (int)pDesc->Priority : 0,
-                        pDesc ? (unsigned)pDesc->Flags : 0u, pDesc ? pDesc->NodeMask : 0u, (void*)device,
-                        (SUCCEEDED(hr) && ppQueue) ? *ppQueue : nullptr, (unsigned)hr, sn);
-            Dx12TraceLog("CreateCommandQueue", d);
-        }
-    }
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* pDesc,
-                                                          REFIID riid, void** ppHeap) {
-    HRESULT hr = oTraceCreateDescriptorHeap ? oTraceCreateDescriptorHeap(device, pDesc, riid, ppHeap) : E_FAIL;
-    if (Dx12TraceEnabled()) {
-        static std::atomic<int> s_n{0};
-        const int sn = s_n.fetch_add(1, std::memory_order_relaxed);
-        if (sn < 200) {
-            char d[256];
-            _snprintf_s(d, sizeof(d), _TRUNCATE, "type=%d num=%u flags=0x%X node=%u -> heap=%p hr=0x%08X seq=%d",
-                        pDesc ? (int)pDesc->Type : -1, pDesc ? pDesc->NumDescriptors : 0u,
-                        pDesc ? (unsigned)pDesc->Flags : 0u, pDesc ? pDesc->NodeMask : 0u,
-                        (SUCCEEDED(hr) && ppHeap) ? *ppHeap : nullptr, (unsigned)hr, sn);
-            Dx12TraceLog("CreateDescriptorHeap", d);
-        }
-    }
-    return hr;
+    if (Dx12TraceEnabled())
+        ce::dx12_device_trace::HookDevice(device);
 }
 
 SignalPtr GetOriginalCommandQueueSignal(ID3D12CommandQueue* queue) {

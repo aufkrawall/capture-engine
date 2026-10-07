@@ -117,6 +117,7 @@ public:
     ComPtr<ID3D12CommandQueue> RetainGameQueue() const { return queue_; }
     void TrackQueue(ID3D12CommandQueue* queue);
     void ResetQueueBindings();
+    void ResetDeviceTrace();
     void* QueueOriginal(ID3D12CommandQueue* queue) const;
     void ForwardQueue(ID3D12CommandQueue* queue);
     void TrackSignalQueue(ID3D12CommandQueue* queue);
@@ -170,6 +171,7 @@ private:
     HMODULE hook_ = nullptr;
     CEFlow_TrackQueue_t trackQueue_ = nullptr;
     CEFlow_ResetQueueBindings_t resetQueueBindings_ = nullptr;
+    CEFlow_ResetDeviceTrace_t resetDeviceTrace_ = nullptr;
     CEFlow_QueueOriginal_t queueOriginal_ = nullptr;
     CEFlow_ForwardQueue_t forwardQueue_ = nullptr;
     CEFlow_TrackQueue_t trackSignalQueue_ = nullptr;

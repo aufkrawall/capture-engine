@@ -43,9 +43,10 @@ MUTATIONS = (
 )
 
 
-def run_tests(log_path: Path) -> int:
+def run_tests(log_path: Path, command: list[str] | None = None) -> int:
     with log_path.open("w", encoding="utf-8") as output:
-        process = subprocess.Popen(COMMAND, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(COMMAND if command is None else command, cwd=ROOT,
+                                   stdout=output, stderr=subprocess.STDOUT)
         try:
             return process.wait(timeout=180)
         except BaseException:

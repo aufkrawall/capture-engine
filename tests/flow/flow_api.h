@@ -57,6 +57,7 @@ using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
 using CEFlow_Shutdown_t = void (*)();
 using CEFlow_TrackQueue_t = void (*)(ID3D12CommandQueue*);
 using CEFlow_ResetQueueBindings_t = void (*)();
+using CEFlow_ResetDeviceTrace_t = void (*)();
 using CEFlow_QueueOriginal_t = void* (*)(ID3D12CommandQueue*);
 using CEFlow_ForwardQueue_t = void (*)(ID3D12CommandQueue*);
 using CEFlow_ForwardSignal_t = HRESULT (*)(ID3D12CommandQueue*, UINT64);
