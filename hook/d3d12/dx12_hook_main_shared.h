@@ -33,7 +33,6 @@ inline const GUID SKID_D3D12SwapChainBufferBitmap = {
 extern CreateCommittedResourcePtr oCreateCommittedResource;
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
-extern CommandQueueSignalPtr oTraceCommandQueueSignal;
 extern std::atomic<int> g_PostSLECLDiagCount;
 extern std::atomic<ID3D12Device*> g_Device;
 extern std::atomic<ID3D12CommandQueue*> g_CommandQueue;

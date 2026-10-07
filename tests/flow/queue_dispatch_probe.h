@@ -105,8 +105,26 @@ public:
     void* CurrentECL() {
         return (*reinterpret_cast<void***>(this))[10];
     }
+    void* CurrentSignal() {
+        return (*reinterpret_cast<void***>(this))[14];
+    }
+    HRESULT InvokeSignal(UINT64 value) {
+        using Method = HRESULT(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
+        return reinterpret_cast<Method>(CurrentSignal())(this, nullptr, value);
+    }
+    uint32_t SignalCalls() const {
+        return signalCalls_.load();
+    }
+    UINT64 LastSignalValue() const {
+        return lastSignalValue_.load();
+    }
 
 protected:
+    HRESULT RecordSignal(ID3D12Fence* fence, UINT64 value, HRESULT result) {
+        ++signalCalls_;
+        lastSignalValue_.store(value);
+        return fence ? native_->Signal(fence, value) : result;
+    }
     virtual ~QueueDispatchProbe() {
         --g_queueProbeObjects;
     }
@@ -122,6 +140,8 @@ private:
     std::atomic<ULONG> references_{1};
     std::atomic<uint32_t> calls_{0};
     std::atomic<uint32_t> lastImplementation_{0};
+    std::atomic<uint32_t> signalCalls_{0};
+    std::atomic<UINT64> lastSignalValue_{0};
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> native_;
 };
 
@@ -131,6 +151,9 @@ public:
     void STDMETHODCALLTYPE ExecuteCommandLists(UINT count, ID3D12CommandList* const* lists) override {
         Submit(count, lists, 1);
     }
+    HRESULT STDMETHODCALLTYPE Signal(ID3D12Fence* fence, UINT64 value) override {
+        return RecordSignal(fence, value, S_OK);
+    }
 };
 
 class SecondQueueDispatchProbe final : public QueueDispatchProbe {
@@ -138,6 +161,9 @@ public:
     using QueueDispatchProbe::QueueDispatchProbe;
     void STDMETHODCALLTYPE ExecuteCommandLists(UINT count, ID3D12CommandList* const* lists) override {
         Submit(count, lists, 2);
+    }
+    HRESULT STDMETHODCALLTYPE Signal(ID3D12Fence* fence, UINT64 value) override {
+        return RecordSignal(fence, value, S_FALSE);
     }
 };
 

@@ -83,8 +83,6 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // needed This ensures freeze watchdog works even with DLSS/FSR FG
 
     void* unwrapped = nullptr;
-    static const GUID IID_CWrapD3D12CommandQueue = {
-        0xd4e5f678, 0x90ab, 0xcdef, {0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56}};
     if (SUCCEEDED(queue->QueryInterface(IID_CWrapD3D12CommandQueue, &unwrapped))) {
         ((IUnknown*)unwrapped)->Release();
         return;
@@ -114,21 +112,24 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     // DX12 trace: hook CommandQueue::Signal (slot 14) to observe per-frame fence usage. The queue
     // vtable is shared by all queues from the device, so this also catches any co-resident module's
     // own queue. Only installed when tracing is enabled (Dx12TraceEnabled).
-    if (Dx12TraceEnabled() && vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
-        CommandQueueSignalPtr origSignal = nullptr;
-        if (VTableHook::Create(reinterpret_cast<void*>(&vtbl[14]), (LPVOID)DetourTraceCommandQueueSignal, (LPVOID*)&origSignal) ==
-            VTableHook::Success && origSignal) {
-            {
-                std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-                dx12_hook_g_CommandQueueSignalOriginalByVTable[vtbl] = origSignal;
-                if (!oTraceCommandQueueSignal)
-                    oTraceCommandQueueSignal = origSignal;
-            }
-            if (!dx12_hook_g_RealD3D12Signal.load(std::memory_order_acquire)) {
-                TryPublishRealD3D12SignalCandidate(origSignal, "fresh queue vtable hook");
-            }
-        }
+    if (Dx12TraceEnabled())
+        DX12_HookQueueSignalVTable(queue);
+}
+
+void DX12_HookQueueSignalVTable(ID3D12CommandQueue* queue) {
+    void** vtbl = queue ? *reinterpret_cast<void***>(queue) : nullptr;
+    const auto capture = ce::dx12_queue_dispatch::CaptureSignalVTable(vtbl);
+    if (capture.result == ce::dx12_queue_dispatch::CaptureResult::kCaptured) {
+        TryPublishRealD3D12SignalCandidate(capture.original, "fresh queue vtable hook");
         HookLogImportant("DX12 TRACE: hooked CommandQueue::Signal for queue %p (vtbl=%p)", (void*)queue, (void*)vtbl);
+    } else if (capture.result == ce::dx12_queue_dispatch::CaptureResult::kFollower ||
+               capture.result == ce::dx12_queue_dispatch::CaptureResult::kFailed) {
+        static ce::log_meter::ChangeGate installation;
+        const auto verdict = installation.Observe(ce::log_meter::FieldKey(vtbl, capture.result));
+        if (verdict) {
+            HookLogImportant("DX12 Signal: capture=%d queue=%p vtable=%p%s", static_cast<int>(capture.result), queue, vtbl,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
     }
 }
 
@@ -138,8 +139,6 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
 
     // Don't hook wrapped devices
     void* unwrapped = nullptr;
-    static const GUID IID_CWrapD3D12Device = {
-        0xc3d4e5f6, 0x7890, 0xabcd, {0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34}};
     if (SUCCEEDED(device->QueryInterface(IID_CWrapD3D12Device, &unwrapped))) {
         ((IUnknown*)unwrapped)->Release();
         return;  // Already wrapped, skip vtable hook
@@ -215,106 +214,6 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
     }
 }
 
-static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pThis, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
-                                                IDXGISwapChain** ppSwapChain) {
-    if (HookIsShuttingDown())
-        return dx12_hook_oCreateSwapChain ? dx12_hook_oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain)
-                                          : DXGI_ERROR_INVALID_CALL;
-    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DX12 ECL CreateSwapChain"))
-        return dx12_hook_oCreateSwapChain ? dx12_hook_oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain)
-                                          : DXGI_ERROR_INVALID_CALL;
-    // Hook vtable only for game's original queue — skip FG runtime queues
-    if (pDevice) {
-        ID3D12CommandQueue* q = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {
-            if (q == dx12_hook_g_OriginalGameQueue || !dx12_hook_g_OriginalGameQueue) {
-                DX12_HookQueueVTable(q);
-            }
-            q->Release();
-        }
-    }
-
-    HRESULT hr = dx12_hook_oCreateSwapChain(pThis, pDevice, pDesc, ppSwapChain);
-    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
-        DX12_NoteOverlayVisibilitySwapchainCreated(*ppSwapChain);
-    }
-    if (Dx12TraceEnabled()) {
-        char d[224];
-        _snprintf_s(d, sizeof(d), _TRUNCATE,
-                    "dev=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X windowed=%d -> sc=%p hr=0x%08X",
-                    (void*)pDevice, pDesc ? pDesc->BufferDesc.Width : 0, pDesc ? pDesc->BufferDesc.Height : 0,
-                    pDesc ? (int)pDesc->BufferDesc.Format : -1, pDesc ? pDesc->BufferCount : 0,
-                    pDesc ? (int)pDesc->SwapEffect : -1, pDesc ? (unsigned)pDesc->Flags : 0u,
-                    pDesc ? (int)pDesc->Windowed : -1, (SUCCEEDED(hr) && ppSwapChain) ? (void*)*ppSwapChain : nullptr,
-                    (unsigned)hr);
-        Dx12TraceLog("CreateSwapChain", d);
-    }
-    if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
-        IDXGISwapChain3* sc3 = nullptr;
-        if (SUCCEEDED((*ppSwapChain)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-            sc3->Release();
-        }
-    }
-    return hr;
-}
-
-static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUnknown* pDevice, HWND hWnd,
-                                                       const DXGI_SWAP_CHAIN_DESC1* pDesc,
-                                                       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
-                                                       IDXGISwapChain1** ppSC) {
-    if (HookIsShuttingDown()) {
-        return dx12_hook_oCreateSwapChainForHwnd
-                   ? dx12_hook_oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
-                   : DXGI_ERROR_INVALID_CALL;
-    }
-    if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DX12 ECL CreateSwapChainForHwnd")) {
-        return dx12_hook_oCreateSwapChainForHwnd
-                   ? dx12_hook_oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC)
-                   : DXGI_ERROR_INVALID_CALL;
-    }
-    // Hook vtable only for game's original queue — skip FG runtime queues
-    if (pDevice) {
-        ID3D12CommandQueue* q = nullptr;
-        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&q)))) {
-            if (q == dx12_hook_g_OriginalGameQueue || !dx12_hook_g_OriginalGameQueue) {
-                DX12_HookQueueVTable(q);
-            } else {
-                HookLog("DX12: DetourCreateSwapChainForHwnd — skipping vtable hook for non-origGame queue %p", q);
-            }
-            q->Release();
-        }
-    }
-
-    HRESULT hr = dx12_hook_oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
-    if (SUCCEEDED(hr) && ppSC && *ppSC) {
-        DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);
-    }
-    if (Dx12TraceEnabled()) {
-        char d[224];
-
-        _snprintf_s(
-            d, sizeof(d), _TRUNCATE, "dev=%p hwnd=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X -> sc=%p hr=0x%08X",
-            (void*)pDevice, (void*)hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0,
-            pDesc ? (int)pDesc->Format : -1, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1,
-            pDesc ? (unsigned)pDesc->Flags : 0u, (SUCCEEDED(hr) && ppSC) ? (void*)*ppSC : nullptr, (unsigned)hr);
-        Dx12TraceLog("CreateSwapChainForHwnd", d);
-    }
-
-    if (SUCCEEDED(hr) && ppSC && *ppSC) {
-        IDXGISwapChain3* sc3 = nullptr;
-        if (SUCCEEDED((*ppSC)->QueryInterface(IID_PPV_ARGS(&sc3)))) {
-            sc3->Release();
-        }
-        // NOTE: Do NOT call DX12_SetSwapchainQueue here.  This factory vtable
-        // hook fires for ALL callers (including Streamline/Social Club internal
-        // swapchain operations).  Capturing queues from non-game swapchains
-        // corrupts g_SwapchainQueue and causes ERR_GFX_STATE.  The inline and
-        // global hooks already capture the queue for legitimate game/FG calls.
-    }
-
-    return hr;
-}
-
 HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
                                                         const D3D12_HEAP_PROPERTIES* pHeapProperties,
                                                         D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc,
@@ -380,28 +279,12 @@ HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, 
     return hr;
 }
 
+SignalPtr GetOriginalCommandQueueSignal(ID3D12CommandQueue* queue) {
+    return ce::dx12_queue_dispatch::ResolveSignal(queue);
+}
+
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
-    // Resolve the type-safe next Signal for this queue object. The global
-    // oTraceCommandQueueSignal must not be called blindly: when a third-party
-    // overlay proxy queue was hooked first, that global is the proxy's own
-    // thunk, and re-entering it with the wrapped real queue dereferences a
-    // garbage vtable slot (Talos + ReShade, session 20260813_050515).
-    SignalPtr original = nullptr;
-    void** vtbl = queue ? *reinterpret_cast<void***>(queue) : nullptr;
-    if (vtbl) {
-        std::lock_guard<std::recursive_mutex> stateLock(dx12_hook_g_ExecuteCommandListsHookStateMutex);
-        const auto it = dx12_hook_g_CommandQueueSignalOriginalByVTable.find(vtbl);
-        if (it != dx12_hook_g_CommandQueueSignalOriginalByVTable.end()) {
-            original = it->second;
-        } else if (vtbl[14] && vtbl[14] != (void*)DetourTraceCommandQueueSignal) {
-            original = reinterpret_cast<SignalPtr>(vtbl[14]);
-        }
-    }
-    if (!original) {
-        original = DX12_RealD3D12SignalForQueue(queue, "trace Signal forward");
-        if (!original)
-            original = oTraceCommandQueueSignal;
-    }
+    const SignalPtr original = GetOriginalCommandQueueSignal(queue);
     HRESULT hr = original ? original(queue, fence, value) : E_FAIL;
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_n{0};

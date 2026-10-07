@@ -11,9 +11,9 @@ This document supersedes the completed sections 1-10 of the old temporary refact
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
   evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
   audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
-- D1 partial: four NGX lifecycle/OFF/ON cases and two distinct queue-vtable scenarios pass through
-  production hooks; NGX and queue mutations detect five and three defects respectively. Queue coverage
-  includes exact forwarding, duplicate capture and reset recovery; all 21 FG flow scenarios pass.
+- D1 partial: four NGX lifecycle/OFF/ON cases and four distinct queue-vtable scenarios pass through
+  production hooks; NGX and queue mutations detect five and four defects respectively. Queue coverage
+  includes exact ECL/Signal forwarding, duplicate capture and reset recovery; four queue cases pass.
   Contracts: [NGX lifecycle](frame-generation/ngx-flow-lifecycle.md) and
   [queue dispatch](dx12-queue-dispatch.md). Controlled foreign interposer, wrapper/native combinations,
   SDK unload/retirement and cold-FG startup coverage remain required. Apply D9/D12 inside each slice.
@@ -24,9 +24,19 @@ This document supersedes the completed sections 1-10 of the old temporary refact
 - D2 partial: private queue dispatch owns installation/predecessor publication, coherent thread-local
   cache pairs and invalidation. Install, resolution, passive probes and reset now use operations/value
   snapshots instead of writable map/cache aliases; the unrelated global ECL fallback is removed.
-  Nine native registry cases, two real-hook queue cases and three production mutations pass. Physical
+  Nine native registry cases, four real-hook queue cases and four production mutations pass. Physical
   slot recovery remains allocation-checked in VTableHook; callback/code lifetime, hook detachment,
-  native candidate lifetime and Signal ownership still require further work. D2 exit remains open.
+  native candidate lifetime still require further work. Signal uses the same private transaction and
+  exact-slot recovery; its writable map/lock/global-original aliases are removed. D2 exit remains open.
+  Final closing 0.1.7015 passes native/Python/all 23 FG flows, x64/x86 products and the setup package.
+- Newly reproduced D0/D10 defect: CE_DX12_TRACE=1 crashes WARP/debug-layer device bootstrap through
+  the first-global CreateCommandQueue trace original. CDB with Microsoft/matching CE symbols confirms
+  a native method receiving the wrong device implementation; descriptor/resource trace methods share
+  the pattern. Next slice must own device trace predecessors and restore end-to-end trace coverage.
+- D9/D12 acceptance slice: removed unused factory detours and duplicate wrapper IDs from the touched
+  queue installer, and moved Vulkan/ledger source protection to the actual wired factory hooks. The
+  pacing fixture now installs the existing ClockSource; its deadline regression deterministically
+  rejects missing clock wiring instead of letting host load saturate a supposedly virtual budget.
 - Additional defect fixed: third-party startup transport passes skipped overlay admission/accounting.
   Transport selection is preserved while rendering proceeds; the first output is covered with RTSS
   present in the controlled WARP runs. This does not establish the real-game compatibility matrix.

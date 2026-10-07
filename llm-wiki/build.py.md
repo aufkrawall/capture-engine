@@ -148,7 +148,7 @@ python build.py --skip-updates --concise
 If a product build fails after starting, correct the failure and resume the immediately preceding failed top-level identity without recompiling proven-unchanged units:
 
 ```powershell
-python build.py --resume --skip-updates --concise
+python build.py --resume --run-tests --skip-updates --concise
 ```
 
 `--resume` refuses a successful/no-build/non-top-level predecessor, a header/manifest identity mismatch, any `build.py` content change since the failed attempt, `--no-build`, `--force-rebuild`, or a run without `--skip-updates`. A refused or cache-suspect resume falls back to the applicable normal incremental or clean gate. It restores verification mode from the failed manifest, including when the predecessor was itself a plain resumed verification run whose argument list no longer contains `--verify`; tests, lint, and sanitizer coverage therefore cannot silently collapse into a build-only success. A clean attempt followed by a successful guarded resume constitutes one complete clean build transaction: every object was either compiled by the clean attempt or revalidated/recompiled after the fix, and all final link/package/verification stages completed on the resumed run.
@@ -492,6 +492,10 @@ python build.py --production --skip-updates --concise
 ```
 
 ## Open Questions / Stale-Risk
+
+Ordinary failed-build resume restores the build identity, not all prior flags. Repeat --run-tests
+when resuming a tested product gate; build_cli.py reads it from the current invocation. Verification
+mode is explicitly restored. Confirmed 2026-10-07: plain resume packaged 0.1.7014 without unit/FG/Python tests.
 - Stale risk is medium because the CLI is manual and easy to change without a single declarative schema.
 - The trust boundary is intentionally not absolute: MSYS2's precompiled compiler/build tools and the current custom FFmpeg source are still external inputs. Reconfirm their release/signature policies when changing toolchain or FFmpeg revisions; run Intel hardware validation for oneVPL/QSV before treating that path as runtime-validated.
 - Re-check this page after any `sys.argv` parsing, debug-info/PDB emission change, integration defaults, sanitizer flow, or FFmpeg bootstrap change.

@@ -25,7 +25,6 @@ CreateCommandQueuePtr oTraceCreateCommandQueue = nullptr;
 
 CreateDescriptorHeapPtr oTraceCreateDescriptorHeap = nullptr;
 
-CommandQueueSignalPtr oTraceCommandQueueSignal = nullptr;
 
 std::atomic<int> g_PostSLECLDiagCount{0};
 

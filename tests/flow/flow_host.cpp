@@ -97,12 +97,15 @@ FlowGame::FlowGame(const std::string& testName) {
     resetQueueBindings_ = reinterpret_cast<CEFlow_ResetQueueBindings_t>(GetProcAddress(hook_, "CEFlow_ResetQueueBindings"));
     queueOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_QueueOriginal"));
     forwardQueue_ = reinterpret_cast<CEFlow_ForwardQueue_t>(GetProcAddress(hook_, "CEFlow_ForwardQueue"));
+    trackSignalQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackSignalQueue"));
+    signalOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_SignalOriginal"));
+    forwardSignal_ = reinterpret_cast<CEFlow_ForwardSignal_t>(GetProcAddress(hook_, "CEFlow_ForwardSignal"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
-        !forwardQueue_ || !resetQueueBindings_) {
+        !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -398,6 +401,17 @@ NGXPublication FlowGame::PublishedNGX() const {
     const auto fg = hostMemory_->dlssState.ReadFGStateForProcess(GetCurrentProcessId(), 0);
     return {hostMemory_->dlssState.srActive.load(std::memory_order_acquire),
             hostMemory_->dlssState.rrActive.load(std::memory_order_acquire), fg.active, fg.multiplier};
+}
+
+void FlowGame::TrackSignalQueue(ID3D12CommandQueue* queue) {
+    if (trackSignalQueue_)
+        trackSignalQueue_(queue);
+}
+void* FlowGame::SignalOriginal(ID3D12CommandQueue* queue) const {
+    return signalOriginal_ ? signalOriginal_(queue) : nullptr;
+}
+HRESULT FlowGame::ForwardSignal(ID3D12CommandQueue* queue, UINT64 value) {
+    return forwardSignal_ ? forwardSignal_(queue, value) : E_FAIL;
 }
 
 void FlowGame::ServiceHookThread() {

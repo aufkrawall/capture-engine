@@ -12,6 +12,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **FPS limiter regression reliability:** deadline and GPU-headroom tests now use an explicit virtual clock, preventing host load from saturating the test's pacing budget; a deadline regression detects missing clock wiring.
+
+- **DirectX 12 fence tracing:** queue Signal interception now retains the exact queue implementation's predecessor through reset, preserves return values and fence values, and rejects missing receivers without borrowing another queue's entry point.
+
 - **DirectX 12 queue forwarding:** command queues with different implementations now retain their own intercepted entry points, including after binding reset; an unknown queue no longer inherits another queue's predecessor.
 
 - **DirectX 12 overlay startup with other overlays:** startup compatibility forwarding now keeps overlay rendering and output accounting active. The controlled queue scenarios cover the first native output with RTSS loaded.

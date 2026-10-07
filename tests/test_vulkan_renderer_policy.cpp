@@ -492,8 +492,6 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
         ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp");
     const std::string deep =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
-    const std::string ecl =
-        ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d12" / "dx12_hook_ecl_install.cpp");
     const std::string dx11 =
         ce::test_source::ReadFile(fs::current_path() / "hook" / "d3d11" / "dx11_hook_detours.cpp");
     const std::string wrappers =
@@ -504,7 +502,6 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
     ASSERT_FALSE(hookThread.empty());
     ASSERT_FALSE(create.empty());
     ASSERT_FALSE(deep.empty());
-    ASSERT_FALSE(ecl.empty());
     ASSERT_FALSE(dx11.empty());
     ASSERT_FALSE(wrappers.empty());
     ASSERT_FALSE(install.empty());
@@ -517,7 +514,9 @@ TEST(VulkanRendererPolicySourceTest, VulkanOwnershipSuppressesEarlyAndResidualD3
     EXPECT_LT(earlyPolicy, earlyInstall);
     EXPECT_NE(create.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
     EXPECT_NE(deep.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
-    EXPECT_NE(ecl.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
+    EXPECT_NE(create.find("ShouldBypassSwapchainCreateForVulkan(\"DetourCreateSwapChainGlobal\")"), std::string::npos);
+    EXPECT_NE(create.find("ShouldBypassSwapchainCreateForVulkan(\"DetourCreateSwapChainForHwndGlobal\")"),
+              std::string::npos);
     EXPECT_NE(dx11.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
     EXPECT_NE(wrappers.find("ShouldBypassSwapchainCreateForVulkan"), std::string::npos);
     EXPECT_NE(install.find("if (!s_vulkanActive && !g_DX8Hook"), std::string::npos);

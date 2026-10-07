@@ -7,6 +7,7 @@
 namespace ce::dx12_queue_dispatch {
 namespace {
 ce::dx12::ExecuteDispatchRegistry<ExecuteCommandListsPtr> registry;
+ce::dx12::ExecuteDispatchRegistry<SignalPtr> signalRegistry;
 ExecuteCommandListsPtr ReadSlot(void** vtable) {
     return reinterpret_cast<ExecuteCommandListsPtr>(std::atomic_ref<void*>(vtable[10]).load(std::memory_order_acquire));
 }
@@ -59,6 +60,53 @@ ExecuteCommandListsPtr Resolve(ID3D12CommandQueue* queue) {
     return target;
 }
 
+SignalCapture CaptureSignalVTable(void** vtable) {
+    if (!vtable)
+        return {CaptureResult::kFailed};
+    const auto current = reinterpret_cast<SignalPtr>(std::atomic_ref<void*>(vtable[14]).load(std::memory_order_acquire));
+    const auto result = signalRegistry.Install(vtable, current, &DetourTraceCommandQueueSignal, [&](SignalPtr* original) {
+        return VTableHook::Create(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
+                                  reinterpret_cast<void**>(original)) == VTableHook::Success;
+    });
+    using Result = decltype(signalRegistry)::InstallResult;
+    switch (result.result) {
+        case Result::kCaptured:
+            return {CaptureResult::kCaptured, result.original};
+        case Result::kKnown:
+            return {CaptureResult::kKnown, result.original};
+        case Result::kFollower:
+            return {CaptureResult::kFollower, result.original};
+        case Result::kRetired:
+            return {CaptureResult::kRetired, result.original};
+        case Result::kFailed:
+            return {CaptureResult::kFailed};
+    }
+    return {CaptureResult::kFailed};
+}
+
+SignalPtr ResolveSignal(ID3D12CommandQueue* queue) {
+    void** vtable = queue ? *reinterpret_cast<void***>(queue) : nullptr;
+    SignalPtr target = nullptr;
+    if (vtable) {
+        const auto live = reinterpret_cast<SignalPtr>(std::atomic_ref<void*>(vtable[14]).load(std::memory_order_acquire));
+        target = signalRegistry.Resolve(vtable, live, &DetourTraceCommandQueueSignal);
+        if (!target) {
+            void* original = nullptr;
+            if (VTableHook::GetOriginal(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal), &original))
+                target = reinterpret_cast<SignalPtr>(original);
+        }
+    }
+    if (!target) {
+        static ce::log_meter::ChangeGate missing;
+        const auto verdict = missing.Observe(ce::log_meter::FieldKey(queue, vtable));
+        if (verdict) {
+            HookLogImportant("DX12 Signal: no exact predecessor for queue=%p vtable=%p%s", queue, vtable,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+    return target;
+}
+
 bool HasBinding(ID3D12CommandQueue* queue) {
     return queue && registry.HasBinding(*reinterpret_cast<void***>(queue));
 }
@@ -74,6 +122,7 @@ uint64_t Generation() {
 }
 void Reset() {
     registry.Reset();
+    signalRegistry.Reset();
 }
 
 }  // namespace ce::dx12_queue_dispatch

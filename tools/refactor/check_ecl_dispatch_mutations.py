@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check ECL binding defect sensitivity through production transactions and real hooks.
+"""Check queue ECL/Signal binding defects through production transactions and real hooks.
 
 Temporarily changes ECL registry/dispatch sources, restores their exact bytes in finally,
 and requires flow assertion failures rather than compiler/loader errors. Do not run
@@ -14,8 +14,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = [sys.executable, "build.py", "--incremental", "--tests-only", "--flow-tests",
-           "--run-tests", "--gtest-filter=ExecuteDispatchRegistryTest.*:FlowQueueDispatch.*", "--skip-updates", "--concise"]
+           "--run-tests", "--gtest-filter=ExecuteDispatchRegistryTest.*:FlowQueue*", "--skip-updates", "--concise"]
 MUTATIONS = (
+    ("missing Signal receiver inherits a saved queue predecessor", "hook/d3d12/dx12_queue_dispatch.cpp",
+     "    SignalPtr target = nullptr;",
+     "    if (!vtable) {\n"
+     "        const auto bindings = signalRegistry.Snapshot();\n"
+     "        if (!bindings.empty()) return bindings.front().original;\n"
+     "    }\n    SignalPtr target = nullptr;",
+     "flow", "FlowQueueSignal.MissingReceiverCannotBorrowSavedSignalEntry"),
     ("untracked queue inherits first global predecessor", "hook/d3d12/dx12_queue_dispatch.cpp",
      "    auto target = registry.Resolve(",
      "    if (!registry.HasBinding(vtable)) {\n"
@@ -62,7 +69,6 @@ def assertion_failure_recorded(log_path: Path, kind: str, expected_test: str) ->
         return False
     output = log_path.read_text(encoding="utf-8", errors="replace")
     return f"[  FAILED  ] {expected_test}" in output
-
 
 
 def main() -> int:

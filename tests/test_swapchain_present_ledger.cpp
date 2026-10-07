@@ -119,7 +119,6 @@ TEST(SwapchainPresentLedgerTest, PresentDetoursMergeAccountingIntoOnePhysicalPre
     const std::string present1 = ReadSource("hook/present/dxgi_shared_present1.cpp");
     const std::string coverage = ReadSource("hook/d3d12/dx12_hook_overlay_coverage.cpp");
     const std::string create = ReadSource("hook/d3d12/dx12_hook_swapchain_create.cpp");
-    const std::string eclInstall = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(present1.empty());
     ASSERT_FALSE(coverage.empty());
@@ -144,8 +143,8 @@ TEST(SwapchainPresentLedgerTest, PresentDetoursMergeAccountingIntoOnePhysicalPre
     EXPECT_NE(coverage.find("noPresentGapMs="), std::string::npos);
 
     EXPECT_NE(create.find("DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);"), std::string::npos);
-    EXPECT_NE(eclInstall.find("DX12_NoteOverlayVisibilitySwapchainCreated(*ppSwapChain);"), std::string::npos);
-    EXPECT_NE(eclInstall.find("DX12_NoteOverlayVisibilitySwapchainCreated(*ppSC);"), std::string::npos);
+    EXPECT_NE(create.find("CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain"), std::string::npos);
+    EXPECT_NE(create.find("CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC"), std::string::npos);
 }
 
 }  // namespace

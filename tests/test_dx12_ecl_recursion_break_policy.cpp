@@ -171,20 +171,11 @@ TEST(Dx12EclRecursionBreakPolicyTest, SignalTraceDetourForwardsPerVtableOriginal
         source.find("HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queue,");
     ASSERT_NE(detourBegin, std::string::npos);
 
-    const size_t perVtableLookup =
-        source.find("dx12_hook_g_CommandQueueSignalOriginalByVTable.find(vtbl)", detourBegin);
-    // The resolved native Signal only for a queue of its own implementation (resolved_queue_method.h).
-    const size_t nativeFallback =
-        source.find("DX12_RealD3D12SignalForQueue(queue, \"trace Signal forward\")", detourBegin);
-    const size_t globalFallback = source.find("original = oTraceCommandQueueSignal;", detourBegin);
+    const size_t perVtableLookup = source.find("GetOriginalCommandQueueSignal(queue)", detourBegin);
     const size_t forward = source.find("original(queue, fence, value)", detourBegin);
     ASSERT_NE(perVtableLookup, std::string::npos);
-    ASSERT_NE(nativeFallback, std::string::npos);
-    ASSERT_NE(globalFallback, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
-    EXPECT_LT(perVtableLookup, nativeFallback);
-    EXPECT_LT(nativeFallback, globalFallback);
-    EXPECT_LT(globalFallback, forward);
+    EXPECT_LT(perVtableLookup, forward);
 
     const size_t detourEnd = source.find("Dx12TraceLog(\"Signal\"", detourBegin);
     ASSERT_NE(detourEnd, std::string::npos);
@@ -196,8 +187,8 @@ TEST(Dx12EclRecursionBreakPolicyTest, SignalVTableHookStoresPerVtableOriginalAnd
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl_install.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t originalSave = source.find("dx12_hook_g_CommandQueueSignalOriginalByVTable[vtbl] = origSignal;");
-    const size_t eagerPublish = source.find("TryPublishRealD3D12SignalCandidate(origSignal, \"fresh queue vtable hook\");");
+    const size_t originalSave = source.find("ce::dx12_queue_dispatch::CaptureSignalVTable(vtbl)");
+    const size_t eagerPublish = source.find("TryPublishRealD3D12SignalCandidate(capture.original, \"fresh queue vtable hook\");");
     ASSERT_NE(originalSave, std::string::npos);
     ASSERT_NE(eagerPublish, std::string::npos);
     EXPECT_LT(originalSave, eagerPublish);

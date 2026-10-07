@@ -90,7 +90,6 @@ namespace {
 extern CreateCommittedResourcePtr oCreateCommittedResource;
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 extern CreateDescriptorHeapPtr oTraceCreateDescriptorHeap;
-extern CommandQueueSignalPtr oTraceCommandQueueSignal;
 #if defined(__clang__) || defined(__GNUC__)
 #define CE_RETURN_ADDRESS() __builtin_extract_return_addr(__builtin_return_address(0))
 #elif defined(_MSC_VER)
@@ -614,6 +613,8 @@ bool IsDLSSFrameGenerationActive();
 bool IsNvidiaSmoothMotionActiveRuntime();
 
 ExecuteCommandListsPtr GetOriginalExecuteCommandLists(ID3D12CommandQueue* queue);
+SignalPtr GetOriginalCommandQueueSignal(ID3D12CommandQueue* queue);
+void DX12_HookQueueSignalVTable(ID3D12CommandQueue* queue);
 
 bool ShouldUseDedicatedOverlayQueue(const char** disabledByOverlayModule = nullptr);
 bool WaitForGameQueueBeforeDedicatedOverlaySubmission(ID3D12CommandQueue* gameQueue, const char* phase);

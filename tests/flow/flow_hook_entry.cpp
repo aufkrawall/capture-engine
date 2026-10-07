@@ -219,3 +219,13 @@ extern "C" __declspec(dllexport) void CEFlow_ForwardQueue(ID3D12CommandQueue* qu
 extern "C" __declspec(dllexport) void CEFlow_ResetQueueBindings() {
     ce::dx12_queue_dispatch::Reset();
 }
+
+extern "C" __declspec(dllexport) void CEFlow_TrackSignalQueue(ID3D12CommandQueue* queue) {
+    DX12_HookQueueSignalVTable(queue);
+}
+extern "C" __declspec(dllexport) void* CEFlow_SignalOriginal(ID3D12CommandQueue* queue) {
+    return reinterpret_cast<void*>(GetOriginalCommandQueueSignal(queue));
+}
+extern "C" __declspec(dllexport) HRESULT CEFlow_ForwardSignal(ID3D12CommandQueue* queue, UINT64 value) {
+    return DetourTraceCommandQueueSignal(queue, nullptr, value);
+}

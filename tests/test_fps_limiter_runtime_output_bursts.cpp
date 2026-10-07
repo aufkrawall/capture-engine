@@ -8,6 +8,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include "hook/fg/fg_detection.h"
 #include "hook/pacing/fps_limiter_policy.h"
@@ -17,9 +18,9 @@
 #include "hook/pacing/reflex_limiter.h"
 
 // Load dependencies globally, then compile the real inline limiter in an
-// isolated namespace. Its unqualified clock/wait calls resolve to these fakes;
-// production FpsLimiter and other suites keep the Windows clock. No real waits
-// or scheduler-dependent assertions are needed to exercise bursts or deadlines.
+// isolated namespace. Frequency and platform helpers resolve to these fakes;
+// the explicit ClockSource controls its cadence reads and waits. Production
+// FpsLimiter and other suites keep the Windows clock. No real waits are needed.
 namespace fps_limiter_burst_test {
 
 inline int64_t g_nowUs = 1'000'000;
@@ -61,10 +62,16 @@ inline constexpr auto timeEndPeriod = [](UINT) -> MMRESULT {
 class FpsLimiterRuntimeOutputBurstTest : public ::testing::Test {
 protected:
     std::unique_ptr<SharedMemoryLayout> shm;
+    std::vector<int64_t> waitedDeadlines;
     FpsLimiter limiter;
 
     void SetUp() override {
         g_nowUs = 1'000'000;
+        limiter.SetClockSourceForTesting({&waitedDeadlines, [](void*) { return g_nowUs; },
+                                         [](void* context, int64_t targetTick) {
+                                             static_cast<std::vector<int64_t>*>(context)->push_back(targetTick);
+                                             g_nowUs = std::max(g_nowUs, targetTick);
+                                         }});
         shm = std::make_unique<SharedMemoryLayout>();
         limiter.SetSharedMemory(shm.get());
         shm->runtimeState.captureRequested = false;
@@ -111,6 +118,20 @@ protected:
 
 TEST_F(FpsLimiterRuntimeOutputBurstTest, GeneralCapPacesEveryProvenOutputInABurst) {
     ExpectEveryOutputPaced(120);
+}
+
+TEST_F(FpsLimiterRuntimeOutputBurstTest, OutputWaitsReachSuccessiveVirtualDeadlines) {
+    constexpr auto site = ce::fps_limiter_policy::PresentSite::kRuntimeOutputPresent;
+    limiter.Apply(true, site);
+    limiter.Apply(true, site);
+    ASSERT_FALSE(waitedDeadlines.empty());
+    const auto before = waitedDeadlines.size();
+    const int64_t previous = waitedDeadlines.back();
+    g_nowUs += 100;
+    limiter.Apply(true, site);
+    ASSERT_EQ(waitedDeadlines.size(), before + 1);
+    EXPECT_GE(waitedDeadlines.back() - previous, 1'000'000 / 120);
+    EXPECT_LE(waitedDeadlines.back() - previous, (1'000'000 + 119) / 120);
 }
 
 TEST_F(FpsLimiterRuntimeOutputBurstTest, LowerGeneralCapPacesEveryOutputWhileRecording) {

@@ -119,6 +119,9 @@ public:
     void ResetQueueBindings();
     void* QueueOriginal(ID3D12CommandQueue* queue) const;
     void ForwardQueue(ID3D12CommandQueue* queue);
+    void TrackSignalQueue(ID3D12CommandQueue* queue);
+    void* SignalOriginal(ID3D12CommandQueue* queue) const;
+    HRESULT ForwardSignal(ID3D12CommandQueue* queue, UINT64 value);
     CEFlowPostSLLifecycle PostSLLifecycle() const;
     bool TryConfirmPostSLEpoch(uint32_t epoch);
     const std::string& LogDirectory() const {
@@ -169,6 +172,9 @@ private:
     CEFlow_ResetQueueBindings_t resetQueueBindings_ = nullptr;
     CEFlow_QueueOriginal_t queueOriginal_ = nullptr;
     CEFlow_ForwardQueue_t forwardQueue_ = nullptr;
+    CEFlow_TrackQueue_t trackSignalQueue_ = nullptr;
+    CEFlow_QueueOriginal_t signalOriginal_ = nullptr;
+    CEFlow_ForwardSignal_t forwardSignal_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;

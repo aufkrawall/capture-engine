@@ -22,7 +22,6 @@
 // Type definitions moved out of dx12_hook_internal.h so every unit stays <= 800 lines.
 
 
-typedef HRESULT(STDMETHODCALLTYPE* SignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 
 typedef HRESULT(STDMETHODCALLTYPE* CreateCommittedResourcePtr)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*,
                                                                D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*,
@@ -35,7 +34,6 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateCommandQueuePtr)(ID3D12Device*, const D
 typedef HRESULT(STDMETHODCALLTYPE* CreateDescriptorHeapPtr)(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID,
                                                             void**);
 
-typedef HRESULT(STDMETHODCALLTYPE* CommandQueueSignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 
 extern CreateCommandQueuePtr oTraceCreateCommandQueue;
 
@@ -389,8 +387,6 @@ struct Dx12FocusAnalysisSample {
 // ---- shared globals (definitions in dx12_hook_internal_globals.cpp) ----
 
 struct DX12ECLState {
-    std::recursive_mutex hookStateMutex;
-    std::map<void**, SignalPtr> signalOriginalByVTable;
     std::atomic<ExecuteCommandListsPtr> realECL{nullptr};
     std::atomic<SignalPtr> realSignal{nullptr};
     std::atomic<ID3D12Fence*> overlayCompletionFence{nullptr};
@@ -399,8 +395,6 @@ struct DX12ECLState {
 };
 extern DX12ECLState g_DX12ECLState;
 
-inline std::recursive_mutex& dx12_hook_g_ExecuteCommandListsHookStateMutex = g_DX12ECLState.hookStateMutex;
-inline std::map<void**, SignalPtr>& dx12_hook_g_CommandQueueSignalOriginalByVTable = g_DX12ECLState.signalOriginalByVTable;
 inline std::atomic<ExecuteCommandListsPtr>& dx12_hook_g_RealD3D12ECL = g_DX12ECLState.realECL;
 inline std::atomic<SignalPtr>& dx12_hook_g_RealD3D12Signal = g_DX12ECLState.realSignal;
 inline std::atomic<ID3D12Fence*>& dx12_hook_g_OverlayCompletionFence = g_DX12ECLState.overlayCompletionFence;
