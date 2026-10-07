@@ -701,7 +701,7 @@ MediaEncoderSession::updateInjectOverloadRepeatPacer(bool freshCandidateAvailabl
         runtime.pacer, recordingOutputLive && !activeScreenGrab && !config.video.useVFR,
         sourceHealthy, capacityPressure, freshCandidateAvailable, repeatAvailable,
         runtime.freshServiceMs, runtime.repeatServiceMs, frameIntervalMs,
-        runtime.freshServiceSamples, runtime.repeatServiceSamples);
+        runtime.freshServiceSamples, runtime.repeatServiceSamples, cfrMuxFreshFractionCap());
     injectProactiveOverloadRepeatThisTick = decision.repeat;
 
     if (decision.entered || decision.exited) {

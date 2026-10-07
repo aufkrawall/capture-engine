@@ -127,6 +127,8 @@ public:
         int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
+        uint64_t retainedTrimOwedSilenceSamples = 0;    // CFR: dropped span still owed as silence at its position
+        uint64_t retainedTrimSilenceSamples = 0;        // CFR: owed silence emitted so far
         uint64_t latencyTrimSamples = 0;                // Oldest samples trimmed to keep latency bounded
         uint64_t tier2TrimSamples = 0;                  // Latency trims specifically caused by tier2 drift correction
         uint64_t bootstrapTrimSamples = 0;              // Oldest startup samples trimmed before the track goes live
@@ -429,6 +431,7 @@ public:
     int mixLogCounter = 0;
     int64_t GetLastVideoEncodeTimeUs() const;
     int64_t GetLastFrameFenceWaitUs() const;
+    ce::media::MuxFlowSnapshotV1 GetMuxFlowSnapshot() const;
     bool WasLastFrameDeferred() const;
     bool CanRepeatLastFrame();
     void ResetRepeatFrameCache();

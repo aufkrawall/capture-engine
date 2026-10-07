@@ -28,6 +28,7 @@ MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTexture
 MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
 MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs = nullptr;
 MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred = nullptr;
+MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
 MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
 MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration = nullptr;
 MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
@@ -92,6 +93,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &=
         GetFunc(module, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs, resolve);
     success &= GetFunc(module, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred, resolve);
+    success &= GetFunc(module, "MediaEngine_GetMuxFlowSnapshotV1", &MediaEngine_GetMuxFlowSnapshotV1, resolve);
     success &= GetFunc(module, "MediaEngine_QueryInjectFrameCopyCompletion",
                        &MediaEngine_QueryInjectFrameCopyCompletion, resolve);
     success &= GetFunc(module, "MediaEngine_SetInjectTransportGeneration",
@@ -177,6 +179,7 @@ void MediaEngine_Unload() {
     MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
     MediaEngine_GetLastFrameFenceWaitUs = nullptr;
     MediaEngine_WasLastFrameDeferred = nullptr;
+    MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
     MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
     MediaEngine_SetInjectTransportGeneration = nullptr;
     MediaEngine_Shutdown = nullptr;

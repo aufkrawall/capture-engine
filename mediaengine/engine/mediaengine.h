@@ -13,6 +13,7 @@
 #include "video_frame_submission_desc.h"
 #include "d3d11_frame_submission_desc.h"
 #include "frame_submission_result.h"
+#include "mux_flow_snapshot.h"
 
 extern "C" {
 
@@ -122,6 +123,10 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs();
 
 // Get the fence wait duration of the last frame (in microseconds)
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
+
+// Cumulative mux-writer counters of the current recording (snapshot->valid = 0 without
+// one). Returns false only for invalid storage: snapshot->size must equal sizeof.
+MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(ce::media::MuxFlowSnapshotV1* snapshot);
 
 // Returns true when the most recent inject-frame encode was deferred because the
 // shared fence was not ready yet. False means either success or a non-deferrable

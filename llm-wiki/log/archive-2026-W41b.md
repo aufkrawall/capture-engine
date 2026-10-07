@@ -1,5 +1,21 @@
 # llm-wiki Log Archive: 2026-W41b
 
+### 2026-10-06 - NGX publication boundary preserves accepted OFF during creation
+
+- The D1 fake reproduced all FG feature IDs 9/11/18 republishing 3x after accepted Streamline OFF;
+  the next 32 outputs were drawn twice. Digest-first inspection confirmed creation reactivated the
+  compatibility flag; accepted settings/runtime/publication had disagreed. No real-game claim.
+- Private ngx_fg_observation operations now own creation/evaluation gating, defaults, one latched-factor
+  read and all NGX compatibility/shared publication. Callers supply successful observations; SDK calls
+  still execute. No locks, waits, copies or COM reference operations were added.
+- Four real-hook cases and five deliberate production mutants pass, including 3x/4x factors, legacy
+  latch, MFG default and missing-factor preservation. Removed the unused predicate/its mirror test and
+  two setter-spelling assertions; parameter-key/config-enforcement wiring protection remains.
+- Closing 0.1.7008 passed x64/x86 products, native/Python and all 19 FG scenarios; package is a
+  38,591,604-byte PE. No unit/flow/fuzz processes lingered. Sanitizers/runtime were not rerun for this
+  bounded source slice. D1 foreign/queue/cold-start and D7 settings concurrency/generation, lifetime
+  and retirement coverage remain open.
+
 ### 2026-10-06 - D1 NGX real-hook lifecycle and handover coverage
 
 - Added a minimal nvngx.dll core fake and RAII flow adapter using actual intercepted D3D12 exports

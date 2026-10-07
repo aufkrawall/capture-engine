@@ -348,6 +348,8 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
                 currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
 
                 muxEnqueuedBytesTotal += clonedBytes;
+                muxEnqueuedPayloadBytes.fetch_add(static_cast<uint64_t>(std::max(clonePkt->size, 0)),
+                                                  std::memory_order_relaxed);
                 const uint64_t nowMs = GetTickCount64();
                 pressureQueuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
                 pressureQueuedPackets = SaturatingToUint32(packetQueue.size());
@@ -387,6 +389,7 @@ void VideoEncoder::ResetMuxQueuePressure() {
     std::lock_guard<std::mutex> lock(queueMutex);
     muxQueuePressure.Reset();
     muxEnqueuedBytesTotal = 0;
+    muxEnqueuedPayloadBytes.store(0, std::memory_order_relaxed);
     muxPressureWindowStartMs = GetTickCount64();
     muxPressureWindowEnqueuedBytes = 0;
     muxPressureWindowWrittenBytes = 0;
@@ -396,6 +399,17 @@ void VideoEncoder::ResetMuxQueuePressure() {
     muxWriterMaxWriteUs.store(0, std::memory_order_relaxed);
     lastSlowMuxWriteLogMs = 0;
     suppressedSlowMuxWrites = 0;
+}
+
+ce::media::MuxFlowSnapshotV1 VideoEncoder::GetMuxFlowSnapshot() const {
+    ce::media::MuxFlowSnapshotV1 snapshot;
+    snapshot.valid = 1;
+    snapshot.enqueuedBytes = muxEnqueuedPayloadBytes.load(std::memory_order_relaxed);
+    snapshot.writtenBytes = muxWriterBytesWritten.load(std::memory_order_relaxed);
+    snapshot.writerBusyUs = muxWriterBusyUs.load(std::memory_order_relaxed);
+    snapshot.queuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
+    snapshot.queueLimitBytes = ActiveQueueLimitBytes();
+    return snapshot;
 }
 
 VideoEncoder::MuxPressureWindow VideoEncoder::TakeMuxPressureWindowLocked(uint64_t nowMs) {

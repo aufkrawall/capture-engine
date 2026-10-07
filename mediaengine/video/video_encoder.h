@@ -21,6 +21,7 @@
 #include "common/capture/cursor_capture_state.h"
 #include "common/capture/reserved_capture_output.h"
 #include "common/ipc/shared_defs.h"
+#include "mediaengine/engine/mux_flow_snapshot.h"
 #include "mediaengine/mux/mux_invariants.h"
 #include "mediaengine/mux/mux_queue_pressure.h"
 #include "video_format_policy.h"
@@ -111,6 +112,7 @@ public:
     int64_t GetEncodedDurationUs() const;      // Get exact duration of encoded video in microseconds
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
+    ce::media::MuxFlowSnapshotV1 GetMuxFlowSnapshot() const;  // Lock-free mux writer counters
     bool CanRepeatLastFrame() const;
     // Drop all cached visual content used by RepeatLastFrame. Capture-source
     // transitions must call this before accepting frames from the new source,
@@ -395,6 +397,7 @@ private:
     uint64_t muxPressureWindowEnqueuedBytes = 0;
     uint64_t muxPressureWindowWrittenBytes = 0;
     uint64_t muxPressureWindowBusyUs = 0;
+    std::atomic<uint64_t> muxEnqueuedPayloadBytes{0};  // GetMuxFlowSnapshot's lock-free view
     // Written by the mux writer thread only.
     std::atomic<uint64_t> muxWriterBytesWritten{0};
     std::atomic<uint64_t> muxWriterBusyUs{0};

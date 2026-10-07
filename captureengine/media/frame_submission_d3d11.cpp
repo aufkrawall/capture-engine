@@ -32,4 +32,9 @@ FrameSubmissionResultV1 Repeat(int64_t scheduledQpc, int64_t timelineElapsedUs,
     });
 }
 
+AcceptedOutputCounts GetAcceptedOutputCounts() {
+    return {detail::AcceptedFreshOutputs().load(std::memory_order_relaxed),
+            detail::AcceptedTotalOutputs().load(std::memory_order_relaxed)};
+}
+
 }  // namespace ce::media::submission

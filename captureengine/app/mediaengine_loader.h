@@ -9,6 +9,7 @@
 #include "mediaengine/engine/d3d11_frame_submission_desc.h"
 #include "mediaengine/engine/video_frame_submission_desc.h"
 #include "mediaengine/engine/frame_submission_result.h"
+#include "mediaengine/engine/mux_flow_snapshot.h"
 
 // Forward declaration
 struct SharedMemoryLayout;
@@ -42,6 +43,7 @@ typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32
 typedef int64_t (*MediaEngine_GetLastFrameEncodeTimeUs_t)();
 typedef int64_t (*MediaEngine_GetLastFrameFenceWaitUs_t)();
 typedef bool (*MediaEngine_WasLastFrameDeferred_t)();
+typedef bool (*MediaEngine_GetMuxFlowSnapshotV1_t)(ce::media::MuxFlowSnapshotV1*);
 typedef int32_t (*MediaEngine_QueryInjectFrameCopyCompletion_t)(uint64_t fenceHandle, uint64_t fenceValue,
                                                                  uint32_t sourcePid, uint32_t transportGeneration);
 typedef void (*MediaEngine_SetInjectTransportGeneration_t)(uint32_t transportGeneration);
@@ -113,6 +115,7 @@ extern MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCapture
 extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs;
 extern MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs;
 extern MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred;
+extern MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1;
 extern MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion;
 extern MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration;
 extern MediaEngine_Shutdown_t MediaEngine_Shutdown;

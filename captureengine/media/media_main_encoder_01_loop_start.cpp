@@ -206,6 +206,7 @@ void MediaEncoderSession::LoopPressure() {
             outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
             dropWgcVisualTimelineDebtToLiveWindow(media_main_g_Recording.load(std::memory_order_acquire) ? "live" : "drain");
         }
+        updateCfrMuxByteBudget();
 }
 
 void MediaEncoderSession::LoopCatchup() {

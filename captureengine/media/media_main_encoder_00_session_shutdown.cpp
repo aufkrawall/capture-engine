@@ -716,6 +716,7 @@ void MediaEncoderSession::Shutdown() {
             static_cast<unsigned long long>(phaseLockSummary.acquisitions),
             static_cast<unsigned long long>(phaseLockSummary.rephases),
             static_cast<unsigned long long>(phaseLockSummary.releases), captureSyncMultiplier);
+        logCfrMuxByteBudgetSummary();
         LogInfo(
             "[RECORDING HEALTH] status=%s cause=%s flags=0x%X currentDebtMs=%u peakDebtMs=%u "
             "capacityDebtMs=%u cfr=%d settingsChanged=0 ptsGrid=immutable audioTimeline=unchanged",

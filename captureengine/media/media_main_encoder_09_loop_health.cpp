@@ -185,7 +185,7 @@ void MediaEncoderSession::LoopHealth() {
                 (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
                 smoothedEncodeMs >= frameIntervalMs;
             const bool recordingMuxPressure =
-                (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0;
+                (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0 || cfrMuxByteBudget.active;
             const uint32_t recordingDebtMs = SaturatingToUint32(
                 static_cast<uint64_t>(std::max(0.0, std::ceil(shortfallDurationMs))));
             const uint64_t recordingHealthNow = GetTickCount64();

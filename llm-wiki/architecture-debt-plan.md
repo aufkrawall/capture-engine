@@ -36,6 +36,16 @@ parallel instances and a plugin framework remain separate features.
 
 ## Execution status (2026-10-07)
 
+- Requested recording-recovery branch integration verified: 21956184/087452a3 add a versioned
+  48-byte mux-flow snapshot, byte-capacity-aware CFR fresh/repeat admission and overflow timeline
+  accounting. Source merges cleanly; changelog/journal conflicts preserve both ownership and media work.
+  Focused budget/audio/loader/configuration tests pass. Strict-clean 20261007_194219_build_7023
+  passes products/native/Python/ASan/all 32 FG checks; test rounding fixes close resumed verification
+  20261007_200539_build_7023 and the 38,787,412-byte setup. Direct built-DLL checks prove 48-byte/8-aligned
+  snapshot storage, invalid-argument rejection and unavailable counters without an engine. Baseline
+  stays 706 across 1009 TUs; 28 formatting advisories remain. The closed-loop
+  incident model does not prove arbitrary storage stalls or uninterrupted audio after data already lost;
+  real overloaded-output and codec/multitrack A/V validation remain D5/D6 evidence requirements.
 - D8/D13 configuration slice verified: one settings scope owns the snapshot, startup file identity,
   debounce/coherent replacement and deadlines; the mutable main_g_Config is removed. Frontend effects
   consume published changes. Eight transaction cases and two actual headless/native INI scope cases

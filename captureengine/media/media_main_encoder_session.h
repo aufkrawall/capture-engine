@@ -57,6 +57,9 @@ private:
     uint32_t wgcFreshServiceSamples;
     uint32_t wgcRepeatServiceSamples;
     ce::capture_policy::WgcOverloadRepeatPacerState wgcOverloadRepeatPacer{};
+    ce::capture_policy::CfrMuxByteBudgetState cfrMuxByteBudget{};
+    uint64_t cfrMuxByteBudgetActiveSinceMs = 0;
+    uint64_t cfrMuxByteBudgetLastProgressLogMs = 0;
     double frameIntervalMs;
     uint64_t encoderWakeLateAccumUs;
     uint64_t encoderWakeLateSamples;
@@ -714,6 +717,9 @@ private:
     ce::capture_policy::CfrOverloadRepeatPacerDecision updateInjectOverloadRepeatPacer(bool freshCandidateAvailable);
     void observeInjectFreshService(double wallServiceMs, double pureServiceMs);
     void observeInjectRepeatService(double wallServiceMs, double pureServiceMs);
+    void updateCfrMuxByteBudget();
+    double cfrMuxFreshFractionCap() const;
+    void logCfrMuxByteBudgetSummary();
     void RefreshInjectFinalOutputDisplayTiming(size_t firstNewBufferedFrame);
     void ObserveEncodedInjectLineage(const QueuedFrame& frame, const char* context);
     void CommitWarmupSync();

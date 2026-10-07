@@ -326,6 +326,15 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
     return 0;
 }
 
+MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(ce::media::MuxFlowSnapshotV1* snapshot) {
+    if (!snapshot || snapshot->size != sizeof(ce::media::MuxFlowSnapshotV1)) {
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    *snapshot = mediaengine_g_Engine ? mediaengine_g_Engine->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
+    return true;
+}
+
 MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {

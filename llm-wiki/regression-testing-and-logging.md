@@ -188,7 +188,9 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   busy share inside `av_interleaved_write_frame` (>=90% = output target stalling) and the
   slowest write; a single write >=250 ms logs `Mux write blocked` at most every 5 s. Added
   after `logs/20260927_040737` r0005 reached 421/512 MB during a network-share stall with
-  only `QUEUE STATS` INFO lines to show it.
+  only `QUEUE STATS` INFO lines to show it. The CFR byte budget that acts on this pressure logs
+  `[CFR MUX BUDGET] entered|pacing|exited` (fill, writer/capacity/enqueue MB/s, writer busy,
+  observed fresh share, fresh cap; progress every 5 s) and `[CFR MUX BUDGET SUMMARY]` at stop.
 - Do NOT throttle the audio-sync smoking-gun lines: `[AppDiag] place`/`consume`
   stay at their 1 s cadence (they pin the app-track-silence/backlog failure
   class; ~2 lines/s per app source is the accepted cost), as do

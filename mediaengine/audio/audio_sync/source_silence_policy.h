@@ -141,6 +141,43 @@ inline int64_t ClampTimelineGapSamplesToCapacity(int64_t gapSamples, int64_t rin
     return std::min<int64_t>(gapSamples, ringCapacitySamples);
 }
 
+// CFR ring overflow keeps the timeline. When the CFR video timeline falls further behind
+// live than a source ring retains, WriteRetainNew drops the OLDEST samples: exactly the
+// ones the reader is about to export at the current cursor. Reading on as if the ring
+// were contiguous would move every later sample earlier on the timeline (audio running
+// ahead of the video by the dropped amount). Instead the dropped span is owed as silence
+// at its own timeline position, so audio that survives keeps its place. Returns the
+// owed samples to emit within this pull and reduces the debt.
+inline size_t TakeOwedTimelineSilence(uint64_t& owedSamples, size_t neededSamples) {
+    const size_t taken = static_cast<size_t>(std::min<uint64_t>(owedSamples, neededSamples));
+    owedSamples -= taken;
+    return taken;
+}
+
+// Appends interleaved silence, ramping linearly from the buffer's last frame to zero over
+// the first fadeOutSamples frames so the cut into the owed span does not click. Buffer is any
+// random-access float sequence (the pull path's post-resample deque, a vector in tests).
+template <typename Buffer>
+inline void AppendTimelineSilence(Buffer& buffer, size_t samples, int channels, size_t fadeOutSamples) {
+    if (samples == 0 || channels <= 0) {
+        return;
+    }
+    const size_t frameFloats = static_cast<size_t>(channels);
+    const size_t start = buffer.size();
+    std::vector<float> anchor(frameFloats, 0.0f);
+    if (start >= frameFloats) {
+        std::copy(buffer.end() - static_cast<std::ptrdiff_t>(frameFloats), buffer.end(), anchor.begin());
+    }
+    buffer.resize(start + samples * frameFloats, 0.0f);
+    const size_t ramp = std::min(fadeOutSamples, samples);
+    for (size_t frame = 0; frame < ramp; ++frame) {
+        const float gain = static_cast<float>(ramp - frame) / static_cast<float>(ramp + 1);
+        for (size_t ch = 0; ch < frameFloats; ++ch) {
+            buffer[start + frame * frameFloats + ch] = anchor[ch] * gain;
+        }
+    }
+}
+
 // A started source that pads expected timeline silence (its process stopped producing, or
 // its loopback muted) has no buffer to measure source-clock drift against, so the drift
 // update is skipped and whatever correction was armed before the silence stays in the

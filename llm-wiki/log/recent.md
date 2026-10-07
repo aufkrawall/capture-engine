@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-07 - Recording recovery branch integrated with owned configuration/helpers
+
+- Integrated 21956184/087452a3 into main; only changelog/journal conflicts required resolution, preserving
+  both histories. Closed-loop budget/audio/loader/configuration tests pass; test rounding uses llround.
+- Strict-clean 20261007_194219_build_7023 passes products/native/Python/ASan/all 32 FG checks; after test
+  rounding corrections, resumed verify 20261007_200539_build_7023 passes and packages the integrated setup:
+  38,787,412-byte PE; 706 accepted warnings, 1009 TUs. Twenty-eight formatting advisories remain.
+- Direct built-DLL export check: 48-byte/8-aligned snapshot, null/wrong-size rejection, valid=0 and zero
+  counters without an engine. Hardware overloaded-output and full codec/multitrack A/V runs remain pending.
+
 ### 2026-10-07 - Runtime configuration replaces mutable host settings
 
 - Native settings scope and production transaction own snapshot, startup identity, coherent reload and
@@ -13,6 +23,21 @@
 - Strict-clean 20261007_190950_build_7022 passes products/native/Python/ASan/all 32 FG scenarios.
   Explicit test optional guards close resumed verify 20261007_192804_build_7022 and setup packaging:
   38,775,318-byte PE; 706 accepted warnings, 1007 TUs. Eight formatting advisories remain.
+
+### 2026-10-07 - Slow output target froze CFR video for 15 minutes; mux byte budget
+
+- `logs/20261007_120811` r0005 (0.1.7018, AV1 4K120 VBR 125/200 Mbps, DXGI dup, SMB share): CPU 100%
+  15:59:40-16:12:30, writer 7-9 MB/s vs encoder 16-23 MB/s, 512 MB queue full in ~40 s, WriteFrame
+  blocked the encoder. Debt peaked 150.4 s, `FreshMiss` ~99%, recovery ~0.2 s/s, 55.6 s frozen stop
+  tail, ~128.7 s audio per source lost to 30 s ring retain-trims; overlay "recovering" correct.
+- Time pacer could not help (`fresh=23.07ms repeat=22.33ms`, 5% floor alternating with blocking).
+  Fix: `cfr_mux_byte_budget.h` + `MediaEngine_GetMuxFlowSnapshotV1` cap the fresh-slot share at
+  measured writer capacity (see `cfr-capture-sync.md` "Mux writer byte budget"). Closed-loop test
+  replays the r0005 rates: unpaced blocks, paced never does (~38% fresh). Branch-local gate 0.1.7022 was recorded as passed
+  (native, Python, 32 FG flows, setup 38,765,676 bytes). Hardware run pending.
+- Follow-up commit: CFR ring-overflow retain-trims are owed as silence at their timeline position
+  instead of shifting later audio earlier (`retainSilence=` in `[STOP AUDIO DETAIL]`). Slow all-hold
+  repayment of large debt at 4K (repeat encode ~5-9 ms) remains inherent; prevention is the lever.
 
 ### 2026-10-07 - Runtime helper ownership begins library extraction
 
@@ -200,19 +225,3 @@
   during third-party overlay (RTSS) presence.
 - Closing gate 20261006_193912_build_7009 passed native units (48.7 s), Python self-tests, all 21 FG
   scenarios (41.5 s), x64/x86 products and installer (38,617,156-byte PE). No test processes lingered.
-
-### 2026-10-06 - NGX publication boundary preserves accepted OFF during creation
-
-- The D1 fake reproduced all FG feature IDs 9/11/18 republishing 3x after accepted Streamline OFF;
-  the next 32 outputs were drawn twice. Digest-first inspection confirmed creation reactivated the
-  compatibility flag; accepted settings/runtime/publication had disagreed. No real-game claim.
-- Private ngx_fg_observation operations now own creation/evaluation gating, defaults, one latched-factor
-  read and all NGX compatibility/shared publication. Callers supply successful observations; SDK calls
-  still execute. No locks, waits, copies or COM reference operations were added.
-- Four real-hook cases and five deliberate production mutants pass, including 3x/4x factors, legacy
-  latch, MFG default and missing-factor preservation. Removed the unused predicate/its mirror test and
-  two setter-spelling assertions; parameter-key/config-enforcement wiring protection remains.
-- Closing 0.1.7008 passed x64/x86 products, native/Python and all 19 FG scenarios; package is a
-  38,591,604-byte PE. No unit/flow/fuzz processes lingered. Sanitizers/runtime were not rerun for this
-  bounded source slice. D1 foreign/queue/cold-start and D7 settings concurrency/generation, lifetime
-  and retirement coverage remain open.

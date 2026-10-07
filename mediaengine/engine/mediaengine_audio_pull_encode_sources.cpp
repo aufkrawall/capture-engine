@@ -111,6 +111,10 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                     src.latencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimSamples += retainedSamples;
                     src.pendingLatencyTrimEvents++;
+                    if (isCfrRecording && src.bootstrapComplete) {
+                        // Keep the surviving audio at its timeline position (see TakeOwedTimelineSilence).
+                        src.retainedTrimOwedSilenceSamples += retainedSamples;
+                    }
                     if (isCfrRecording) {
                         const uint64_t nowTick = GetTickCount64();
                         if (nowTick - src.lastRetainedTrimWarnTick >= 1000) {
@@ -119,10 +123,10 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                             DLL_Log(
                                 "[PullAudio] WARNING: CFR audio headroom exhausted - trimmed %zu oldest samples "
                                 "for src=%d to retain newest audio (buffered=%zu target=%lld cap=%zu "
-                                "pipelineLag=%lldms). This may cause audible discontinuities; encoder/capture "
-                                "throughput is behind real time.",
+                                "pipelineLag=%lldms owedSilence=%llu). The dropped span becomes silence at its "
+                                "own timeline position; encoder/capture throughput is behind real time.",
                                 retainedSamples, (int)srcIdx, rbAvailable, targetBufferedSamples, rbCapacity,
-                                videoPipelineLagMs);
+                                videoPipelineLagMs, (unsigned long long)src.retainedTrimOwedSilenceSamples);
                             src.lastRetainedTrimWarnTick = nowTick;
                         }
                     }
@@ -630,6 +634,31 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                 if (src.syncResampler && src.syncResampler->IsReady()) {
                     const size_t MAX_CHUNK_FLOATS = (size_t)(SAMPLE_RATE * CHANNELS / 10);
                     while (src.postResampleBuffer.size() < totalFloats) {
+                        if (src.retainedTrimOwedSilenceSamples > 0) {
+                            const size_t owed = ce::audio::TakeOwedTimelineSilence(
+                                src.retainedTrimOwedSilenceSamples,
+                                (totalFloats - src.postResampleBuffer.size()) / CHANNELS);
+                            if (owed == 0) {
+                                break;
+                            }
+                            ce::audio::AppendTimelineSilence(src.postResampleBuffer, owed, CHANNELS,
+                                                             static_cast<size_t>(kRuntimeDropFadeSamples));
+                            src.syncSamplesOutput += static_cast<int64_t>(owed);
+                            src.retainedTrimSilenceSamples += owed;
+                            if (src.retainedTrimOwedSilenceSamples == 0) {
+                                // Real audio resumes at its own position: fade it in.
+                                src.packetBoundaryFadeInSamplesRemaining = std::max(1, SAMPLE_RATE / 750);
+                                const uint64_t resumeTick = GetTickCount64();
+                                if (resumeTick - src.lastRetainedTrimWarnTick >= 1000) {
+                                    src.lastRetainedTrimWarnTick = resumeTick;
+                                    DLL_Log("[PullAudio] CFR ring overflow span kept on the timeline: src=%d "
+                                            "silenceTotal=%llu samples; surviving audio resumes at its own "
+                                            "position (A/V sync preserved)",
+                                            (int)srcIdx, (unsigned long long)src.retainedTrimSilenceSamples);
+                                }
+                            }
+                            continue;
+                        }
                         size_t rbFloats = src.ringBuffer->GetAvailable();
                         if (rbFloats == 0) {
                             if (!expectedTimelineSilence) {

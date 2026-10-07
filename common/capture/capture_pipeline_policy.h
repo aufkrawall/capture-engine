@@ -10,6 +10,7 @@
 #include "common/capture/capture_policy/constants.h"
 #include "common/capture/capture_policy/cfr_scheduling.h"
 #include "common/capture/capture_policy/cfr_overload_recovery.h"
+#include "common/capture/capture_policy/cfr_mux_byte_budget.h"
 #include "common/capture/capture_policy/cfr_startup.h"
 #include "common/capture/capture_policy/encoder_priority_and_routing.h"
 #include "common/capture/capture_policy/recording_health.h"

@@ -458,11 +458,13 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 DLL_Log(
                     "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(latTotal=%.1f/min "
                     "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
-                    "retain=%llu cat=%llu catEvents=%u liveUncat=%llu post=%llu overlap=%llu ovf=%llu)",
+                    "retain=%llu retainSilence=%llu cat=%llu catEvents=%u liveUncat=%llu post=%llu "
+                    "overlap=%llu ovf=%llu)",
                     i, ratePpm, src.currentRateDelta, src.targetRateSaturated ? 1 : 0, latencyTrimPerMinute,
                     bootstrapTrimPerMinute, coverageTrimPerMinute, tier2TrimPerMinute, retainedTrimPerMinute,
                     (unsigned long long)src.bootstrapTrimSamples, (unsigned long long)src.tier2TrimSamples,
                     (unsigned long long)src.retainedNewestTrimSamples,
+                    (unsigned long long)src.retainedTrimSilenceSamples,
                     (unsigned long long)src.catastrophicResyncSamples, src.catastrophicResyncEvents,
                     (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
@@ -545,6 +547,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.packetBoundaryFadeInSamplesRemaining = 0;
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
+            src.retainedTrimOwedSilenceSamples = 0;
+            src.retainedTrimSilenceSamples = 0;
             src.latencyTrimSamples = 0;
             src.tier2TrimSamples = 0;
             src.bootstrapTrimSamples = 0;

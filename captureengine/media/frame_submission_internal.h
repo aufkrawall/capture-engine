@@ -1,10 +1,22 @@
 #pragma once
 
+#include <atomic>
+
 #include "frame_submission.h"
 #include "common/logging/logging.h"
 #include "common/logging/log_meter.h"
 
 namespace ce::media::submission::detail {
+
+inline std::atomic<uint64_t>& AcceptedFreshOutputs() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
+inline std::atomic<uint64_t>& AcceptedTotalOutputs() {
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
 
 template <typename Submit>
 FrameSubmissionResultV1 Invoke(const char* source, bool candidate, Submit&& submit) {
@@ -20,6 +32,11 @@ FrameSubmissionResultV1 Invoke(const char* source, bool candidate, Submit&& subm
         result = FrameSubmissionResultV1{};
         if (!candidate)
             result.source = SourceDisposition::NoCandidate;
+    }
+    if (result.Accepted()) {
+        AcceptedTotalOutputs().fetch_add(1, std::memory_order_relaxed);
+        if (result.output == SubmissionOutput::FreshSource)
+            AcceptedFreshOutputs().fetch_add(1, std::memory_order_relaxed);
     }
     return result;
 }

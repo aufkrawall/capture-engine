@@ -24,4 +24,12 @@ FrameSubmissionResultV1 Black(const BlackFrameSource& frame, int64_t mediaTimest
 FrameSubmissionResultV1 Repeat(int64_t scheduledQpc, int64_t timelineElapsedUs,
                                 const ce::cursor::CaptureState* cursor);
 
+// Accepted video outputs since process start, counted at the one place every adapter's
+// result passes. The mux byte budget measures the fresh share of the bytes it paces.
+struct AcceptedOutputCounts {
+    uint64_t fresh = 0;
+    uint64_t total = 0;
+};
+AcceptedOutputCounts GetAcceptedOutputCounts();
+
 }  // namespace ce::media::submission

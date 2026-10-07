@@ -112,6 +112,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Recording restart and helper shutdown:** helper ownership now retains earlier media processes while they finish a recording, so shutdown waits for those finalizers too. Child startup, recovery and retirement use one private owner with generation checks; failed teardown retains ownership for retry, and console shutdown uses an atomic stop flag.
 
+- **Recording to a slow disk or network share froze the video:** when the output target could not keep up (e.g. an SMB share slowed down by background CPU load), the full mux queue blocked the encoder. CFR timeline debt then grew to minutes, the video stayed frozen in "Recording recovering..." until the end, and buffered audio was dropped out of sync. CE now measures the writer's real throughput and caps fresh frames using the measured writer capacity and spreads cached repeats across CFR slots to reduce sustained queue pressure, without changing encoder settings or the audio timeline. `[CFR MUX BUDGET]` lines log entry, progress and exit.
+
+- **Audio running ahead of the video after a long capture stall:** when CFR video fell further behind than the 30 s audio buffer could hold, the oldest buffered audio was discarded and every later sound moved earlier in the file, up to minutes ahead of the picture. The discarded span now becomes silence at its own position, so all audio that survives stays in sync with the video.
+
 - **DirectX overlay coexistence:** fixed Present and Present1 forwarding that could skip an overlay already installed in the swapchain vtable. Vtable interception now retains its own next links independently of inline hooks, with regressions for both methods and nested status probes.
 
 - **Frame generation Base/Display rates:** the overlay's Base/Display row under DLSS frame generation no longer freezes at the last rate seen before FG started (e.g. "67 / 133 FPS" while the screen ran at 52 fps). Both rates are now measured from the displayed frames and the game's own frame cadence, and show equal values while DLSS FG is enabled but not generating frames, as in menus.

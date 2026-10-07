@@ -568,7 +568,8 @@ if (scheduledWgcTelemetryTick) {
     const auto overloadPacerDecision = ce::capture_policy::UpdateWgcOverloadRepeatPacer(
         wgcOverloadRepeatPacer, true, wgcSourceHealthyForPacing, wgcPacingCapacityPressure,
         wgcFreshAvailableAtTickStart, wgcRepeatAvailableForPacer, smoothedWgcFreshServiceMs,
-        smoothedWgcRepeatServiceMs, frameIntervalMs, wgcFreshServiceSamples, wgcRepeatServiceSamples);
+        smoothedWgcRepeatServiceMs, frameIntervalMs, wgcFreshServiceSamples, wgcRepeatServiceSamples,
+        cfrMuxFreshFractionCap());
     wgcProactiveOverloadRepeatThisTick = overloadPacerDecision.repeat;
 
     static uint64_t s_lastWgcOverloadPacerLogTick = 0;

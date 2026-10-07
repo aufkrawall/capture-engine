@@ -443,10 +443,81 @@ struct WgcOverloadRepeatPacerDecision {
     const char* reason = "inactive";
 };
 
+// Spends one slot of an active pacer: fresh when the accumulated credit covers it.
+inline WgcOverloadRepeatPacerDecision SpendWgcOverloadRepeatPacerCredit(WgcOverloadRepeatPacerState& state,
+                                                                        WgcOverloadRepeatPacerDecision decision,
+                                                                        bool freshCandidateAvailable) {
+    if (!freshCandidateAvailable) {
+        // A natural source hold already paid for a cheap slot. Preserve at most
+        // one fresh-frame credit so the next covered slot is not needlessly held.
+        state.freshCredit = std::min(1.0, state.freshCredit + decision.freshFraction);
+        state.consecutiveProactiveRepeats = 0;
+        return decision;
+    }
+
+    state.freshCredit += decision.freshFraction;
+    if (state.freshCredit + 1e-12 >= 1.0) {
+        state.freshCredit -= 1.0;
+        state.consecutiveProactiveRepeats = 0;
+        ++state.freshGrants;
+        return decision;
+    }
+
+    decision.repeat = true;
+    ++state.proactiveRepeats;
+    ++state.consecutiveProactiveRepeats;
+    state.maxConsecutiveProactiveRepeats =
+        std::max(state.maxConsecutiveProactiveRepeats, state.consecutiveProactiveRepeats);
+    return decision;
+}
+
+// The writer-throughput budget (cfr_mux_byte_budget.h) is the binding limit: bytes,
+// not service time, are scarce, and a cached repeat costs almost none of them, so
+// neither source health nor measured service time can veto pacing. A measured
+// service-time limit still applies when it is tighter.
+inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacerForByteBudget(
+    WgcOverloadRepeatPacerState& state, WgcOverloadRepeatPacerDecision decision, double byteFreshFractionCap,
+    bool sourceHealthy, bool freshCandidateAvailable, double freshServiceMs, double repeatServiceMs,
+    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples) {
+    double freshFraction = std::clamp(byteFreshFractionCap, kWgcOverloadRepeatPacerDegradedFreshFraction, 1.0);
+    decision.reason = "mux_byte_budget";
+    const bool serviceMeasured = sourceHealthy && freshServiceSamples >= kWgcOverloadRepeatPacerMinSamples &&
+                                 repeatServiceSamples >= kWgcOverloadRepeatPacerMinSamples &&
+                                 std::isfinite(freshServiceMs) && std::isfinite(repeatServiceMs) &&
+                                 repeatServiceMs > 0.0 && repeatServiceMs < frameIntervalMs &&
+                                 freshServiceMs - repeatServiceMs >=
+                                     frameIntervalMs * kWgcOverloadRepeatPacerMinAdvantageRatio;
+    if (serviceMeasured && freshServiceMs > decision.serviceBudgetMs) {
+        const double budgetMs = std::max(
+            decision.serviceBudgetMs,
+            repeatServiceMs + (frameIntervalMs - repeatServiceMs) * kWgcOverloadRepeatPacerMarginalHeadroomUseRatio);
+        const double serviceFraction =
+            std::clamp((budgetMs - repeatServiceMs) / (freshServiceMs - repeatServiceMs), 0.0, 1.0);
+        if (serviceFraction < freshFraction) {
+            freshFraction = serviceFraction;
+            decision.reason = "mux_byte_budget_and_service";
+        }
+    }
+    if (!state.active) {
+        state.active = true;
+        state.freshCredit = 1.0 - freshFraction;
+        ++state.episodes;
+        decision.entered = true;
+    }
+    state.recoveryConfirmTicks = 0;
+    state.repeatProbeTicks = 0;
+    state.freshFraction = freshFraction;
+    state.minimumFreshFraction = std::min(state.minimumFreshFraction, freshFraction);
+    decision.active = true;
+    decision.freshFraction = freshFraction;
+    return SpendWgcOverloadRepeatPacerCredit(state, decision, freshCandidateAvailable);
+}
+
 inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
     WgcOverloadRepeatPacerState& state, bool liveCfr, bool sourceHealthy, bool capacityPressure,
     bool freshCandidateAvailable, bool repeatAvailable, double freshServiceMs, double repeatServiceMs,
-    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples) {
+    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples,
+    double byteFreshFractionCap = 1.0) {
     WgcOverloadRepeatPacerDecision decision{};
     decision.serviceBudgetMs =
         std::isfinite(frameIntervalMs) && frameIntervalMs > 0.0
@@ -465,6 +536,11 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
     if (!liveCfr) {
         deactivate("not_live_cfr", true);
         return decision;
+    }
+    if (std::isfinite(byteFreshFractionCap) && byteFreshFractionCap < 1.0 && repeatAvailable) {
+        return UpdateWgcOverloadRepeatPacerForByteBudget(
+            state, decision, byteFreshFractionCap, sourceHealthy, freshCandidateAvailable, freshServiceMs,
+            repeatServiceMs, frameIntervalMs, freshServiceSamples, repeatServiceSamples);
     }
     if (!sourceHealthy) {
         deactivate("source_not_healthy", true);
@@ -550,29 +626,7 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
     if (repeatServiceMs < frameIntervalMs) {
         decision.reason = freshNeedsPacing ? "pacing" : "recovery_hysteresis";
     }
-
-    if (!freshCandidateAvailable) {
-        // A natural source hold already paid for a cheap slot. Preserve at most
-        // one fresh-frame credit so the next covered slot is not needlessly held.
-        state.freshCredit = std::min(1.0, state.freshCredit + freshFraction);
-        state.consecutiveProactiveRepeats = 0;
-        return decision;
-    }
-
-    state.freshCredit += freshFraction;
-    if (state.freshCredit + 1e-12 >= 1.0) {
-        state.freshCredit -= 1.0;
-        state.consecutiveProactiveRepeats = 0;
-        ++state.freshGrants;
-        return decision;
-    }
-
-    decision.repeat = true;
-    ++state.proactiveRepeats;
-    ++state.consecutiveProactiveRepeats;
-    state.maxConsecutiveProactiveRepeats =
-        std::max(state.maxConsecutiveProactiveRepeats, state.consecutiveProactiveRepeats);
-    return decision;
+    return SpendWgcOverloadRepeatPacerCredit(state, decision, freshCandidateAvailable);
 }
 
 inline void UpdateWgcServiceTimeEma(double wallServiceMs, double pureServiceMs, double smoothingAlpha,
@@ -594,10 +648,12 @@ using CfrOverloadRepeatPacerDecision = WgcOverloadRepeatPacerDecision;
 inline CfrOverloadRepeatPacerDecision UpdateCfrOverloadRepeatPacer(
     CfrOverloadRepeatPacerState& state, bool liveCfr, bool sourceHealthy, bool capacityPressure,
     bool freshCandidateAvailable, bool repeatAvailable, double freshServiceMs, double repeatServiceMs,
-    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples) {
+    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples,
+    double byteFreshFractionCap = 1.0) {
     return UpdateWgcOverloadRepeatPacer(
         state, liveCfr, sourceHealthy, capacityPressure, freshCandidateAvailable, repeatAvailable,
-        freshServiceMs, repeatServiceMs, frameIntervalMs, freshServiceSamples, repeatServiceSamples);
+        freshServiceMs, repeatServiceMs, frameIntervalMs, freshServiceSamples, repeatServiceSamples,
+        byteFreshFractionCap);
 }
 
 inline void UpdateCfrServiceTimeEma(double wallServiceMs, double pureServiceMs, double smoothingAlpha,

@@ -249,6 +249,8 @@ bool MediaEngine::StartRecording() {
                 src.packetBoundaryFadeInSamplesRemaining = 0;
                 src.overflowDropSamples = 0;
                 src.retainedNewestTrimSamples = 0;
+                src.retainedTrimOwedSilenceSamples = 0;
+                src.retainedTrimSilenceSamples = 0;
                 src.latencyTrimSamples = 0;
                 src.tier2TrimSamples = 0;
                 src.bootstrapTrimSamples = 0;

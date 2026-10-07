@@ -64,6 +64,11 @@ int64_t MediaEngine::GetLastVideoEncodeTimeUs() const {
 }
 
 
+ce::media::MuxFlowSnapshotV1 MediaEngine::GetMuxFlowSnapshot() const {
+    return videoEnc ? videoEnc->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
+}
+
+
 int64_t MediaEngine::GetLastFrameFenceWaitUs() const {
 
 

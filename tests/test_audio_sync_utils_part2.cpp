@@ -1,5 +1,11 @@
 #include "test_audio_sync_utils_shared.h"
 
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include "source_fragment_reader.h"
+
 TEST(AudioSyncUtilsTest, TimelineGapClampHandlesDegenerateInputs) {
     EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(0, 48000), 0);
     EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(-100, 48000), 0);
@@ -488,4 +494,55 @@ TEST(AudioSyncUtilsTest, ExpectedSilenceClearsAStaleRateCompensation) {
     EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(true, true, 480, true));
     // A real underrun is handled (and counted) by the underrun path, not this one.
     EXPECT_FALSE(ce::audio::ShouldClearRateCompensationForExpectedSilence(false, false, 480, true));
+}
+
+TEST(AudioSyncUtilsTest, CfrRingOverflowSpanIsOwedAsSilenceAtItsTimelinePosition) {
+    // r0005 (20261007_120811): 150 s of CFR debt against a 30 s ring dropped ~128.7 s of the
+    // oldest audio per source. Reading on as if contiguous moved every later sample earlier
+    // on the timeline. The dropped span is now owed, emitted in pull-sized pieces.
+    uint64_t owed = 48000 * 2;  // two seconds dropped at the ring head
+    EXPECT_EQ(ce::audio::TakeOwedTimelineSilence(owed, 1024), 1024u);
+    EXPECT_EQ(owed, 96000u - 1024u);
+    EXPECT_EQ(ce::audio::TakeOwedTimelineSilence(owed, 200000), 96000u - 1024u);
+    EXPECT_EQ(owed, 0u);
+    EXPECT_EQ(ce::audio::TakeOwedTimelineSilence(owed, 1024), 0u);
+
+    // A survivor pulled after the owed span lands exactly where the reader would have
+    // been had nothing been dropped: real 10 + owed 5 + survivor at index 15.
+    std::vector<float> track;
+    std::vector<float> real(10 * 2, 0.5f);
+    track.insert(track.end(), real.begin(), real.end());
+    uint64_t dropped = 5;
+    const size_t silence = ce::audio::TakeOwedTimelineSilence(dropped, 64);
+    ce::audio::AppendTimelineSilence(track, silence, 2, 3);
+    track.push_back(0.25f);
+    track.push_back(0.25f);
+    ASSERT_EQ(track.size(), 16u * 2u);
+    EXPECT_FLOAT_EQ(track[15 * 2], 0.25f);
+    // The cut ramps from the last real frame instead of stepping to zero.
+    EXPECT_FLOAT_EQ(track[10 * 2], 0.5f * 3.0f / 4.0f);
+    EXPECT_FLOAT_EQ(track[11 * 2 + 1], 0.5f * 2.0f / 4.0f);
+    EXPECT_FLOAT_EQ(track[12 * 2], 0.5f * 1.0f / 4.0f);
+    EXPECT_FLOAT_EQ(track[13 * 2], 0.0f);
+    EXPECT_FLOAT_EQ(track[14 * 2 + 1], 0.0f);
+
+    std::vector<float> empty;
+    ce::audio::AppendTimelineSilence(empty, 4, 2, 8);
+    EXPECT_EQ(empty, std::vector<float>(8, 0.0f));
+    ce::audio::AppendTimelineSilence(empty, 0, 2, 8);
+    EXPECT_EQ(empty.size(), 8u);
+}
+
+TEST(AudioSyncUtilsTest, CfrPullEmitsOwedOverflowSilenceBeforeReadingTheRing) {
+    const std::string source = ce::test_source::ReadFile(std::filesystem::current_path() / "mediaengine" /
+                                                         "engine" / "mediaengine_audio_pull_encode_sources.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t owe = source.find("src.retainedTrimOwedSilenceSamples += retainedSamples;");
+    const size_t emit = source.find("ce::audio::TakeOwedTimelineSilence(", owe);
+    const size_t ringRead = source.find("src.ringBuffer->Read(rbData.data(), chunkFloats)", emit);
+    ASSERT_NE(owe, std::string::npos);
+    ASSERT_NE(emit, std::string::npos);
+    ASSERT_NE(ringRead, std::string::npos);
+    EXPECT_NE(source.find("isCfrRecording && src.bootstrapComplete", owe - 200), std::string::npos);
+    EXPECT_NE(source.find("src.syncSamplesOutput += static_cast<int64_t>(owed);", emit), std::string::npos);
 }
