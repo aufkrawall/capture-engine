@@ -1,10 +1,12 @@
 #include "main_internal.h"
 #include "libcaptureengine_controller.h"
 
-#include "common/ipc/inject_control_channel.h"
+#include "host_children.h"
+
+using ce::runtime::HostChild;
 
 void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming) {
-    ce::ipc::InjectControlChannel(main_g_hInjectProcess).PublishNotification(
+    ce::runtime::PublishHostNotification(
         streaming ? OverlayNotificationType::StreamingFailed : OverlayNotificationType::RecordingFailed,
         GetTickCount64() + 7000ULL);
     LogError("[ControllerSession] Recording failure (%s, streaming=%d request=%llu)", reason, streaming ? 1 : 0,
@@ -25,14 +27,14 @@ void ToggleAudioOnlyRecording() {
 // the shared-memory overlay config, so the controller only forwards the intent;
 // this keeps the overlay-config seqlock single-writer.
 void ToggleOverlay() {
-    if (!main_g_InjectClient || !main_g_InjectClient->IsConnected()) {
+    if (!ce::runtime::HostChildReady(HostChild::Inject)) {
         LogWarn("[Controller] Overlay toggle hotkey pressed, but no inject process is connected");
         return;
     }
 
     MainThreadBlockTimer _blk("overlay toggle IPC");
     ProcessResponse response = ProcessResponse::Error;
-    if (!main_g_InjectClient->SendCommand(ProcessCommand::ToggleOverlay, nullptr, &response) ||
+    if (!ce::runtime::SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response) ||
         response == ProcessResponse::Error) {
         LogError("[Controller] Inject process did not accept the overlay toggle");
         return;
@@ -41,14 +43,14 @@ void ToggleOverlay() {
 }
 
 void ToggleBenchmark() {
-    if (!main_g_InjectClient || !main_g_InjectClient->IsConnected()) {
+    if (!ce::runtime::HostChildReady(HostChild::Inject)) {
         LogWarn("[Controller] Benchmark hotkey pressed, but no inject process is connected");
         return;
     }
 
     MainThreadBlockTimer _blk("benchmark toggle IPC");
     ProcessResponse response = ProcessResponse::Error;
-    if (!main_g_InjectClient->SendCommand(ProcessCommand::ToggleBenchmark, nullptr, &response) ||
+    if (!ce::runtime::SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response) ||
         response == ProcessResponse::Error) {
         LogError("[Controller] Inject process did not accept the benchmark toggle");
         return;
@@ -60,174 +62,18 @@ void ToggleBenchmark() {
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
     ShutdownControllerRecording();
-
-    // Signal Logger and Sensor processes to exit via named event
-    wchar_t shutdownEventName[64];
-    GenerateShutdownEventName(shutdownEventName, 64, GetCurrentProcessId());
-    HANDLE hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, shutdownEventName);
-    if (hShutdownEvent) {
-        SetEvent(hShutdownEvent);
-        CloseHandle(hShutdownEvent);
+    if (ce::runtime::ShutdownHostChildren()) {
+        // Includes old media children still finalizing after an immediate restart.
+        ce::av_sync::ReleaseSessionLatencyChannel();
+    } else {
+        LogError("[Controller] Child shutdown incomplete; retaining session latency ownership");
     }
-
-    // Send shutdown commands
-    SendCommandToAll(ProcessCommand::Shutdown);
-
-    // Wait for processes to exit
-    HANDLE handles[5];  // Increased size for Logger and Sensor
-    const char* handleNames[5] = {};
-    int handleCount = 0;
-
-    if (main_g_hMediaProcess) {
-        handles[handleCount] = main_g_hMediaProcess;
-        handleNames[handleCount++] = "Media";
-    }
-    if (main_g_hInjectProcess) {
-        handles[handleCount] = main_g_hInjectProcess;
-        handleNames[handleCount++] = "Inject";
-    }
-    if (main_g_hLoggerProcess) {
-        handles[handleCount] = main_g_hLoggerProcess;
-        handleNames[handleCount++] = "Logger";
-    }
-    if (main_g_hSensorProcess) {
-        handles[handleCount] = main_g_hSensorProcess;
-        handleNames[handleCount++] = "Sensor";
-    }
-
-    if (handleCount > 0) {
-        // Use MsgWaitForMultipleObjects to keep processing messages (for tray
-        // animation)
-        DWORD startTime = GetTickCount();
-        // INCREASED TIMEOUT: Media process needs more time to flush video/audio
-        // data especially for high-resolution recordings (4K 120fps)
-        DWORD timeout = 10000;  // 10 seconds (was 5)
-        bool allExited = false;
-
-        while (!allExited && (GetTickCount() - startTime) < timeout) {
-            DWORD remaining = timeout - (GetTickCount() - startTime);
-            DWORD waitTime = (remaining < 100) ? remaining : 100;
-
-            // bWaitAll MUST be FALSE to process messages while waiting
-            DWORD result = MsgWaitForMultipleObjects(handleCount, handles, FALSE, waitTime, QS_ALLINPUT);
-
-            if (result == WAIT_OBJECT_0 + handleCount) {
-                // Messages available - process them to keep tray animation running
-                MSG msg;
-                while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                    TranslateMessage(&msg);
-                    DispatchMessage(&msg);
-                }
-            } else if (result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + handleCount) {
-                // At least one process exited, re-evaluate all processes
-                bool foundActive = false;
-                for (int i = 0; i < handleCount; i++) {
-                    DWORD exitCode;
-                    if (GetExitCodeProcess(handles[i], &exitCode) && exitCode == STILL_ACTIVE) {
-                        foundActive = true;
-                        break;
-                    }
-                }
-                if (!foundActive)
-                    allExited = true;
-            } else {
-                // Timeout or other error
-            }
-        }
-
-        if (!allExited) {
-            // Log which specific processes didn't exit cleanly for debugging
-            LogInfo(
-                "[Controller] Some processes didn't exit cleanly within timeout, "
-                "terminating...");
-            for (int i = 0; i < handleCount; i++) {
-                DWORD exitCode;
-                if (GetExitCodeProcess(handles[i], &exitCode) && exitCode == STILL_ACTIVE) {
-                    LogInfo(
-                        "[Controller] %s process did not exit cleanly, forcing "
-                        "termination",
-                        handleNames[i]);
-                }
-            }
-            if (main_g_hMediaProcess)
-                TerminateProcess(main_g_hMediaProcess, 1);
-            if (main_g_hInjectProcess)
-                TerminateProcess(main_g_hInjectProcess, 1);
-            if (main_g_hLoggerProcess)
-                TerminateProcess(main_g_hLoggerProcess, 1);
-            if (main_g_hSensorProcess)
-                TerminateProcess(main_g_hSensorProcess, 1);
-            // TerminateProcess is asynchronous. Do not release ownership while
-            // a child still maps product files or owns an out-of-process worker.
-            for (int i = 0; i < handleCount; ++i) {
-                if (WaitForSingleObject(handles[i], INFINITE) != WAIT_OBJECT_0)
-                    LogError("[Controller] Cannot confirm %s process exit (error=%lu)", handleNames[i], GetLastError());
-            }
-        } else {
-            LogInfo("[Controller] All child processes exited cleanly");
-        }
-    }
-
-    // Cleanup handles
-    if (main_g_hMediaProcess)
-        CloseHandle(main_g_hMediaProcess);
-    if (main_g_hInjectProcess)
-        CloseHandle(main_g_hInjectProcess);
-    if (main_g_hLoggerProcess)
-        CloseHandle(main_g_hLoggerProcess);
-    if (main_g_hSensorProcess)
-        CloseHandle(main_g_hSensorProcess);
-
-    main_g_hMediaProcess = NULL;
-    main_g_hInjectProcess = NULL;
-    main_g_hLoggerProcess = NULL;
-    main_g_hSensorProcess = NULL;
-
-    // Every child that could have inherited it is gone; the session A/V latency channel has no
-    // further readers.
-    ce::av_sync::ReleaseSessionLatencyChannel();
 }
 
-// Monitor authenticated children and replace a process only after its broken
-// channel has caused the old instance to exit. Media and limiter are recovered
-// only while the controller still owns a handle for an expected live instance;
-// their normal deferred/off states deliberately keep a null handle.
 void CheckChildProcessHealth() {
-    static DWORD lastCheck = 0;
-    if (GetTickCount() - lastCheck < 1000)
-        return;  // Check once per second
-    lastCheck = GetTickCount();
-
-    ReconcileControllerRecording(true);
-
-    auto recoverProcess = [](ProcessMode mode, HANDLE& process, ProcessIPCClient* client, const char* name,
-                             bool expected, bool& recoveryFailureReported) {
-        if (!expected)
-            return;
-        if (process && IsProcessRunning(process) && (!client || client->IsConnected())) {
-            recoveryFailureReported = false;
-            return;
-        }
-
-        if (EnsureChildProcessConnected(mode, process, client, 2000, name)) {
-            LogInfo("[Controller] Recovered %s after process exit or authenticated-channel failure", name);
-            recoveryFailureReported = false;
-            return;
-        }
-        if (!recoveryFailureReported) {
-            LogError("[Controller] Could not yet recover %s after process exit or IPC failure", name);
-            recoveryFailureReported = true;
-        }
-    };
-
-    static bool injectRecoveryFailure = false;
-    static bool mediaRecoveryFailure = false;
-    static bool sensorRecoveryFailure = false;
-    recoverProcess(ProcessMode::Inject, main_g_hInjectProcess, main_g_InjectClient.get(), "inject", true, injectRecoveryFailure);
-    recoverProcess(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), "media", main_g_hMediaProcess != nullptr,
-                   mediaRecoveryFailure);
-    recoverProcess(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, "sensor",
-                   ShouldStartSensorProcess(main_g_Config), sensorRecoveryFailure);
+    ce::runtime::ServiceHostChildren(
+        {ShouldStartLoggerProcess(main_g_Config), ShouldStartSensorProcess(main_g_Config)},
+        []() { ReconcileControllerRecording(true); });
 }
 
 bool CompleteControllerStartup() {
@@ -239,9 +85,9 @@ bool CompleteControllerStartup() {
     LogInfo("[Controller] Spawning child processes...");
 
     const int64_t injectSpawnStartUs = Log_GetQpcUs();
-    main_g_hInjectProcess = SpawnChildProcess(ProcessMode::Inject, main_g_ConfigPath.c_str(), main_g_InjectClient.get());
+    const bool injectReady = ce::runtime::EnsureHostChild(HostChild::Inject);
     const int64_t injectSpawnUs = Log_GetQpcUs() - injectSpawnStartUs;
-    if (!main_g_hInjectProcess) {
+    if (!injectReady) {
         LogError("[Controller] Failed to spawn inject process");
         return false;
     }
@@ -250,9 +96,9 @@ bool CompleteControllerStartup() {
     if (ShouldStartMediaProcessAtStartup()) {
         PrepareRecordingDiagnosticIdentity();
         const int64_t mediaSpawnStartUs = Log_GetQpcUs();
-        main_g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, main_g_ConfigPath.c_str(), main_g_MediaClient.get());
+        const bool mediaReady = ce::runtime::EnsureHostChild(HostChild::Media);
         mediaSpawnUs = Log_GetQpcUs() - mediaSpawnStartUs;
-        if (!main_g_hMediaProcess) {
+        if (!mediaReady) {
             LogError("[Controller] Failed to spawn media process");
             return false;
         }
@@ -262,14 +108,14 @@ bool CompleteControllerStartup() {
 
     const int64_t auxSpawnStartUs = Log_GetQpcUs();
     if (ShouldStartLoggerProcess(main_g_Config)) {
-        main_g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, main_g_ConfigPath.c_str());
-        if (!main_g_hLoggerProcess) {
+        const bool loggerReady = ce::runtime::EnsureHostChild(HostChild::Logger);
+        if (!loggerReady) {
             LogError("[Controller] Failed to spawn logger process");
         }
     }
     if (ShouldStartSensorProcess(main_g_Config)) {
-        main_g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, main_g_ConfigPath.c_str());
-        if (!main_g_hSensorProcess) {
+        const bool sensorReady = ce::runtime::EnsureHostChild(HostChild::Sensors);
+        if (!sensorReady) {
             LogError("[Controller] Failed to spawn sensor process");
         }
     }

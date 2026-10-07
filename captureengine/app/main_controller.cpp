@@ -160,17 +160,14 @@ void LaunchGameSuspended(const std::string& path) {
 
 // Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.
 bool ConnectToChildProcesses(DWORD) {
-    return (!main_g_hInjectProcess || main_g_InjectClient->IsConnected()) && (!main_g_hMediaProcess || main_g_MediaClient->IsConnected());
+    using namespace ce::runtime;
+    return (!HostChildPresent(HostChild::Inject) || HostChildReady(HostChild::Inject)) &&
+           (!HostChildPresent(HostChild::Media) || HostChildReady(HostChild::Media));
 }
 
 // Send command to all child processes
-void SendCommandToAll(ProcessCommand cmd) {
-    if (main_g_InjectClient && main_g_InjectClient->IsConnected()) {
-        main_g_InjectClient->SendCommand(cmd);
-    }
-    if (main_g_MediaClient && main_g_MediaClient->IsConnected()) {
-        main_g_MediaClient->SendCommand(cmd);
-    }
+void SendCommandToAll(ProcessCommand command) {
+    ce::runtime::SendHostCommandToAll(command);
 }
 
 namespace {

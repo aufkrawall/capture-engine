@@ -399,6 +399,8 @@ TESTS_ONLY_SENSOR_SOURCES = (
     "startup_control.cpp", "startup_autostart.cpp", "elevation_setup.cpp", "elevation_runtime.cpp", "elevation_removal.cpp",
 )
 
+TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp",)
+
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
@@ -564,6 +566,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         sorted(STRICT_FP_SCREENSHOT_SOURCES)
         + list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
         + list(TESTS_ONLY_SENSOR_SOURCES)
+        + list(TESTS_ONLY_RUNTIME_SOURCES)
     ):
         extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
         obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")

@@ -112,7 +112,7 @@ TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
     ASSERT_FALSE(mainInternal.empty());
     ASSERT_FALSE(mainEntry.empty());
     EXPECT_NE(mainInternal.find("HardwareSensorServiceConfigEquals"), std::string::npos);
-    EXPECT_NE(mainInternal.find("sensorConfigChanged"), std::string::npos);
+    EXPECT_NE(mainInternal.find("ReconfigureHostServices("), std::string::npos);
     // A selector left out of the comparison would stay latched until the next
     // application launch.
     for (const char* member : {

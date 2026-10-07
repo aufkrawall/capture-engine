@@ -72,6 +72,7 @@
 
 #include "tray.h"
 #include "controller_recording.h"
+#include "host_children.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -122,7 +123,7 @@ int ControllerMain(HINSTANCE hInstance);
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
 // Controller state
-inline bool main_g_Running = true;
+inline std::atomic<bool> main_g_Running{true};
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 inline AppConfig main_g_Config;
@@ -142,18 +143,6 @@ inline DWORD main_g_AutoRecordStartTime = 0;
 inline std::string main_g_DeferredLaunchPath;
 
 // Child process handles
-inline HANDLE main_g_hInjectProcess = NULL;
-
-inline HANDLE main_g_hMediaProcess = NULL;
-
-inline HANDLE main_g_hLoggerProcess = NULL;
-
-inline HANDLE main_g_hSensorProcess = NULL;
-
-// IPC clients for child processes
-inline std::unique_ptr<ProcessIPCClient> main_g_InjectClient;
-
-inline std::unique_ptr<ProcessIPCClient> main_g_MediaClient;
 
 inline TrayIcon* main_g_Tray = nullptr;
 
@@ -377,152 +366,17 @@ inline bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig
     return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
 }
 
-inline void CloseProcessHandle(HANDLE& processHandle) {
-    if (processHandle) {
-        CloseHandle(processHandle);
-        processHandle = NULL;
-    }
-}
-
-inline bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
-                                 const char* processName) {
-    if (processHandle && IsProcessRunning(processHandle) && client && !client->IsConnected()) {
-        const DWORD disconnectWaitMs = std::min<DWORD>(timeoutMs, 2000);
-        const ULONGLONG deadline = GetTickCount64() + disconnectWaitMs;
-        while (IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
-            const ULONGLONG now = GetTickCount64();
-            if (now >= deadline)
-                break;
-            const ULONGLONG remaining64 = deadline - now;
-            const DWORD remaining = static_cast<DWORD>(std::min<ULONGLONG>(remaining64, MAXDWORD));
-            const DWORD wait =
-                MsgWaitForMultipleObjectsEx(1, &processHandle, remaining, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-            if (wait == WAIT_OBJECT_0)
-                break;
-            if (wait == WAIT_OBJECT_0 + 1)
-                PumpStartupMessages();
-            else
-                break;
-        }
-        if (IsProcessRunning(processHandle)) {
-            LogWarn("[Controller] %s has not exited after its IPC channel broke; deferring respawn", processName);
-            return false;
-        }
-    }
-    if (!processHandle || !IsProcessRunning(processHandle)) {
-        if (client) {
-            client->Disconnect();
-        }
-        if (processHandle) {
-            CloseHandle(processHandle);
-            processHandle = NULL;
-        }
-
-        const int64_t spawnStartUs = Log_GetQpcUs();
-        processHandle = SpawnChildProcess(mode, main_g_ConfigPath.c_str(), client);
-        const int64_t spawnUs = Log_GetQpcUs() - spawnStartUs;
-        if (!processHandle) {
-            LogError("[Controller] Failed to spawn %s process on demand", processName);
-            return false;
-        }
-        LogInfo("[Controller] Spawned %s process on demand in %.3f ms", processName, QpcDeltaToMs(spawnUs));
-    }
-
-    if (!client || client->IsConnected()) {
-        return true;
-    }
-
-    LogError("[Controller] %s process is running without its inherited authenticated IPC channel", processName);
-    return false;
-}
-
 inline bool EnsureMediaProcessReady(DWORD timeoutMs) {
-    return EnsureChildProcessConnected(ProcessMode::Media, main_g_hMediaProcess, main_g_MediaClient.get(), timeoutMs, "media");
+    return ce::runtime::EnsureHostChild(ce::runtime::HostChild::Media, timeoutMs);
 }
 
 inline bool EnsureSensorProcessReady() {
-    return EnsureChildProcessConnected(ProcessMode::Sensors, main_g_hSensorProcess, nullptr, 0, "sensor");
-}
-
-inline bool ShutdownIpcChildProcess(HANDLE& processHandle, ProcessIPCClient* client, const char* processName,
-                             DWORD timeoutMs) {
-    if (!processHandle) {
-        if (client) {
-            client->Disconnect();
-        }
-        return true;
-    }
-
-    if (client && client->IsConnected()) {
-        ProcessResponse response = ProcessResponse::Ack;
-        if (!client->SendCommand(ProcessCommand::Shutdown, nullptr, &response, timeoutMs)) {
-            LogWarn("[Controller] Failed to send shutdown command to %s process", processName);
-        }
-        client->Disconnect();
-    }
-
-    DWORD waitResult = WaitForSingleObject(processHandle, timeoutMs);
-    if (waitResult != WAIT_OBJECT_0) {
-        LogWarn("[Controller] Timed out waiting for %s process to exit", processName);
-    }
-    CloseProcessHandle(processHandle);
-    return waitResult == WAIT_OBJECT_0;
+    return ce::runtime::EnsureHostChild(ce::runtime::HostChild::Sensors);
 }
 
 inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {
-    const bool wantLogger = ShouldStartLoggerProcess(config);
-    const bool wantSensor = ShouldStartSensorProcess(config);
-    const bool loggerRunning = IsProcessRunning(main_g_hLoggerProcess);
-    const bool sensorRunning = IsProcessRunning(main_g_hSensorProcess);
-    const bool sensorConfigChanged = previousConfig && sensorRunning && wantSensor &&
-                                     !HardwareSensorServiceConfigEquals(*previousConfig, config);
-
-    if (loggerRunning == wantLogger && sensorRunning == wantSensor && !sensorConfigChanged) {
-        if (!loggerRunning) {
-            CloseProcessHandle(main_g_hLoggerProcess);
-        }
-        if (!sensorRunning) {
-            CloseProcessHandle(main_g_hSensorProcess);
-        }
-        return;
-    }
-
-    LogInfo("[Controller] Reloading logger/sensor services (logger=%d sensor=%d)", wantLogger ? 1 : 0,
-            wantSensor ? 1 : 0);
-
-    wchar_t shutdownEventName[64];
-    GenerateShutdownEventName(shutdownEventName, 64, GetCurrentProcessId());
-    HANDLE hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, shutdownEventName);
-    if (hShutdownEvent) {
-        SetEvent(hShutdownEvent);
-    }
-
-    if (main_g_hLoggerProcess) {
-        WaitForSingleObject(main_g_hLoggerProcess, 5000);
-        CloseProcessHandle(main_g_hLoggerProcess);
-    }
-    if (main_g_hSensorProcess) {
-        WaitForSingleObject(main_g_hSensorProcess, 5000);
-        CloseProcessHandle(main_g_hSensorProcess);
-    }
-
-    if (hShutdownEvent) {
-        ResetEvent(hShutdownEvent);
-        CloseHandle(hShutdownEvent);
-    }
-
-    if (wantLogger) {
-        main_g_hLoggerProcess = SpawnChildProcess(ProcessMode::Logger, main_g_ConfigPath.c_str());
-        if (!main_g_hLoggerProcess) {
-            LogError("[Controller] Failed to restart logger process");
-        }
-    }
-    if (wantSensor) {
-        main_g_hSensorProcess = SpawnChildProcess(ProcessMode::Sensors, main_g_ConfigPath.c_str());
-        if (!main_g_hSensorProcess) {
-            LogError("[Controller] Failed to restart sensor process");
-        }
-    }
+    ce::runtime::ReconfigureHostServices({ShouldStartLoggerProcess(config), ShouldStartSensorProcess(config),
+        previousConfig && !HardwareSensorServiceConfigEquals(*previousConfig, config)});
 }
 
 // Remove old session directories from logs/, keeping the most recent maxKeep.

@@ -36,6 +36,20 @@ parallel instances and a plugin framework remain separate features.
 
 ## Execution status (2026-10-07)
 
+- D8/D13 child ownership slice verified: one headless-constructible host child owner replaces six
+  writable process/client globals. The production lifecycle retains old media finalizers across
+  immediate restart, cancels reentrant readiness by generation and owns shutdown collection.
+  Ten lifecycle cases, three native empty-scope cases and focused recording/API/IPC checks pass.
+  Capability/bootstrap/path inputs are in [library-delivery.md](library-delivery.md). All five mutations detect the expected defects;
+  Strict-clean product compilation and native/Python/ASan/32 FG checks pass at 20261007_171441_build_7021.
+  That run stopped at test-vptr analyzer false positives; after comment-only annotations, final resumed
+  verification 20261007_180216_build_7021 passes all gates/package. Accepted warnings tighten 712->706.
+  Installer 0.1.7021 is 38,760,346 bytes. Full engine initialization and library delivery remain open.
+  Next resume: finish D8 bootstrap/configuration and D13 lifecycle/API/path contracts before publishing
+  a runtime library. Auxiliary shutdown-event failures/setup versus sensor recovery and D5 old/new
+  media observation attribution need focused traces. Independent packaging, external-client proof and
+  frontend conversion are still required; full D0-D13 phase exits remain as specified below.
+  C++ formatting still reports advisory issues (16 files in the final gate); retain targeted D12 cleanup.
 - D1/D2 Present vtable forwarding slice: foreign layers installed before CE's physical claim now
   receive Present and Present1 instead of being skipped by the inline trampoline. One private owner
   retains separate typed predecessors and scopes forwarding to the method/receiver; inline reentry
@@ -130,7 +144,7 @@ the older layout/logging/library program; its numbered waves are historical, not
 
 | Area | Implemented boundary | Remaining boundary |
 | --- | --- | --- |
-| Controller recording | Command-thread `RecordingSession`; start/stop/toggle/reconciliation; effects separated from policy | Child supervision, configuration and application effects outside recording |
+| Controller recording | Command-thread `RecordingSession`; start/stop/toggle/reconciliation; private active/retired child owner | Runtime bootstrap/configuration, service/setup recovery and application effects outside recording |
 | Inject control IPC | Scoped validated intent, notification and health operations; classified failures | Inventory remaining direct control mappings; transport leases remain specialized |
 | Media submission | Separate inject/D3D11 adapters; accepted/deferred/rejected outcomes; candidate completion | Source selection, scheduling, session teardown and worker coordination |
 | Media ABI/timing | Additive result exports; strict loader cleanup; explicit units and committed anchors | Broader ABI verification, audio reset/drain and mux finalization ownership |

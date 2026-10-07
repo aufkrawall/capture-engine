@@ -116,12 +116,9 @@ int ControllerMain(HINSTANCE hInstance) {
     };
     trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
     trayCallbacks.onUninstallPawnIo = []() {
-        if (main_g_hSensorProcess) {
-            LogInfo("[PawnIO] Stopping sensor process before driver uninstallation");
-            TerminateProcess(main_g_hSensorProcess, 0);
-            WaitForSingleObject(main_g_hSensorProcess, 1000);
-            CloseHandle(main_g_hSensorProcess);
-            main_g_hSensorProcess = NULL;
+        if (!ce::runtime::StopHostSensorsForSetup()) {
+            LogError("[PawnIO] Cannot uninstall driver before the sensor process has exited");
+            return;
         }
         ce::pawnio::UninstallDriverAsync();
     };
@@ -148,8 +145,12 @@ int ControllerMain(HINSTANCE hInstance) {
     }
 
     // Create IPC clients
-    main_g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
-    main_g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
+    ce::runtime::HostChildrenSession children(main_g_ConfigPath.c_str(), PumpStartupMessages,
+                                             []() { return main_g_Running.load(); });
+    if (!children.IsReady()) {
+        LogError("[Controller] Failed to acquire runtime child ownership");
+        main_g_Running = false;
+    }
 
     main_g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
     main_g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;

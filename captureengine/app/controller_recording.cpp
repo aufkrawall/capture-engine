@@ -9,9 +9,9 @@ namespace {
 using namespace ce::controller;
 RecordingSession* g_Session = nullptr;
 
-CommandOutcome RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+CommandOutcome RequestChildRecordingStop(ce::runtime::HostChild child, const char* childName, const char* reason,
                                          DWORD timeoutMs) {
-    const auto outcome = detail::RequestChildRecordingStop(client, timeoutMs);
+    const auto outcome = ce::runtime::StopHostChildRecording(child, timeoutMs);
     const char* result = outcome == CommandOutcome::Accepted ? "accepted" :
                          outcome == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown";
     LogInfo("[ControllerSession] request=%llu child=%s stop=%s reason=%s",
@@ -24,8 +24,7 @@ class ControllerEffects final : public RecordingEffects {
 public:
     void PrepareIdentity() override { PrepareRecordingDiagnosticIdentity(); }
     bool PublishIntent(RecordingStartIntent intent, const char* reason) override {
-        const bool published = static_cast<bool>(ce::ipc::InjectControlChannel(main_g_hInjectProcess)
-            .PublishRecordingIntent(intent));
+        const bool published = static_cast<bool>(ce::runtime::PublishHostRecordingIntent(intent));
         if (main_g_PseudoOverlay)
             main_g_PseudoOverlay->SetRecordingStartIntent(intent);
         LogInfo("[ControllerSession] request=%llu intent=%u published=%d reason=%s",
@@ -38,12 +37,12 @@ public:
         if (!EnsureSensorProcessReady())
             LogWarn("[Controller] Display-timing sensor unavailable; inject recording will use virtual final-output timing");
     }
-    bool InjectConnected() const override { return main_g_InjectClient && main_g_InjectClient->IsConnected(); }
+    bool InjectConnected() const override { return ce::runtime::HostChildReady(ce::runtime::HostChild::Inject); }
     CommandOutcome StartInject() override {
         if (!InjectConnected())
             return CommandOutcome::Rejected;
         ProcessResponse response = ProcessResponse::Error;
-        if (!main_g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &response, 5000))
+        if (!ce::runtime::SendHostChildCommand(ce::runtime::HostChild::Inject, ProcessCommand::StartRecording, nullptr, &response, 5000))
             return CommandOutcome::AcknowledgementUnknown;
         if (response == ProcessResponse::Error)
             return CommandOutcome::Rejected;
@@ -51,25 +50,23 @@ public:
         return CommandOutcome::Accepted;
     }
     CommandOutcome StartAudioMedia() override {
-        if (!main_g_MediaClient || !main_g_MediaClient->IsConnected())
+        if (!ce::runtime::HostChildReady(ce::runtime::HostChild::Media))
             return CommandOutcome::Rejected;
         ProcessResponse response = ProcessResponse::Error;
-        if (!main_g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &response, 5000))
+        if (!ce::runtime::SendHostChildCommand(ce::runtime::HostChild::Media, ProcessCommand::StartRecording, "audio_only", &response, 5000))
             return CommandOutcome::AcknowledgementUnknown;
         return response == ProcessResponse::Error ? CommandOutcome::Rejected : CommandOutcome::Accepted;
     }
     CommandOutcome StopMedia(const char* reason, uint32_t timeoutMs) override {
-        return RequestChildRecordingStop(main_g_MediaClient.get(), "Media", reason, timeoutMs);
+        return RequestChildRecordingStop(ce::runtime::HostChild::Media, "Media", reason, timeoutMs);
     }
     CommandOutcome StopInject(const char* reason, uint32_t timeoutMs) override {
-        return RequestChildRecordingStop(main_g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+        return RequestChildRecordingStop(ce::runtime::HostChild::Inject, "Inject fallback", reason, timeoutMs);
     }
     void ReleaseMedia() override {
         // Media self-exits after asynchronous finalization. A restart needs a
         // fresh authenticated child even while the previous child is finishing.
-        if (main_g_MediaClient)
-            main_g_MediaClient->Disconnect();
-        CloseProcessHandle(main_g_hMediaProcess);
+        ce::runtime::RetireHostMedia();
     }
     void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason,
                 uint64_t elapsedMs, bool exact) override {
@@ -81,8 +78,7 @@ public:
                         snapshot.lastStop == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown", reason);
                 break;
             case RecordingNotice::Clear:
-                ce::ipc::InjectControlChannel(main_g_hInjectProcess)
-                    .PublishNotification(OverlayNotificationType::None, 0);
+                ce::runtime::PublishHostNotification(OverlayNotificationType::None, 0);
                 break;
             case RecordingNotice::Requested:
                 if (main_g_Tray)
@@ -95,8 +91,7 @@ public:
                 if (elapsedMs)
                     LogWarn("[Controller] Stop requested %llu ms after start, before controller observed recording live; awaiting media finalization",
                             static_cast<unsigned long long>(elapsedMs));
-                ce::ipc::InjectControlChannel(main_g_hInjectProcess)
-                    .PublishNotification(OverlayNotificationType::RecordingFinalizing, GetTickCount64() + 60000ULL);
+                ce::runtime::PublishHostNotification(OverlayNotificationType::RecordingFinalizing, GetTickCount64() + 60000ULL);
                 if (main_g_PseudoOverlay)
                     main_g_PseudoOverlay->ShowRecordingFinalizingNotification();
                 break;
@@ -109,11 +104,7 @@ public:
         }
     }
     void ClearMediaFailure(uint32_t failure, bool mediaGone) override {
-        const ce::ipc::InjectControlChannel channel(main_g_hInjectProcess);
-        if (failure)
-            channel.ConsumeRecordingFailure(failure);
-        if (mediaGone)
-            channel.ClearDeadMediaState();
+        ce::runtime::ClearHostMediaFailure(failure, mediaGone);
     }
     void DisableAutomaticRecording() override {
         if (main_g_AutoRecordEnabled) {
@@ -134,7 +125,7 @@ ce::controller::RecordingSnapshot ControllerRecordingSnapshot() {
 }
 
 void PrepareRecordingDiagnosticIdentity() {
-    if (!g_Session || (main_g_hMediaProcess && IsProcessRunning(main_g_hMediaProcess) && !g_RecordingId.empty()))
+    if (!g_Session || (ce::runtime::HostChildRunning(ce::runtime::HostChild::Media) && !g_RecordingId.empty()))
         return;
     char recordingId[24]{};
     snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(g_Session->NextDiagnosticSerial()));
@@ -165,15 +156,13 @@ void ReconcileControllerRecording(bool includeChildHealth) {
     observation.request = g_Session->Snapshot().request;
     observation.now = GetTickCount64();
     ce::ipc::RecordingHealthObservation health;
-    ce::ipc::InjectControlChannel(main_g_hInjectProcess).ReadRecordingHealth(health);
+    ce::runtime::ReadHostRecordingHealth(health);
     observation.failure = health.failure;
     if (includeChildHealth) {
         observation.live = health.live;
         observation.liveSince = health.liveSince;
-        observation.mediaAvailable = main_g_hMediaProcess && IsProcessRunning(main_g_hMediaProcess) &&
-                                     main_g_MediaClient && main_g_MediaClient->IsConnected();
-        observation.injectAvailable = main_g_hInjectProcess && IsProcessRunning(main_g_hInjectProcess) &&
-                                      main_g_InjectClient && main_g_InjectClient->IsConnected();
+        observation.mediaAvailable = ce::runtime::HostChildReady(ce::runtime::HostChild::Media);
+        observation.injectAvailable = ce::runtime::HostChildReady(ce::runtime::HostChild::Inject);
     }
     g_Session->Observe(observation);
 }

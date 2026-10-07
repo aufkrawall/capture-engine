@@ -28,7 +28,8 @@ def log_tests_only_uncompiled_product_sources() -> None:
     """Warn once per run when modified product sources are outside the tests-only compile set."""
     product_obj_dir = os.path.join(OBJ_DIR, "x64")
     uncovered = []
-    covered_captureengine = set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
+    covered_captureengine = (set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
+                            | set(TESTS_ONLY_SENSOR_SOURCES) | set(TESTS_ONLY_RUNTIME_SOURCES))
     test_linked = set(hook_test_linked_sources())
     candidates = [src for src in hook_dll_sources() if src not in test_linked] + module_sources("captureengine")
     for src in candidates:

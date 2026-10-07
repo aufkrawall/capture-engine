@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-10-07 - Runtime helper ownership begins library extraction
+
+- One host child scope owns active/retired processes and authenticated IPC clients. Removed four
+  writable process handles and two client globals from app consumers; headless scope construction
+  needs no ControllerMain/tray. Full engine bootstrap, DLL packaging and client conversion remain open.
+- Old media finalizers were forgotten on restart and excluded from shutdown. Retirement now retains
+  their handles while a fresh recording starts; shutdown collects all active/retired identities.
+- Generation checks cancel message-pump reentry and obsolete successful spawns; recursive readiness
+  is refused. Shutdown waits only on remaining live peers; failed termination does not count as exit.
+- Ten lifecycle regressions, three native empty/headless-scope cases and the focused controller/
+  recording/IPC set pass. Five deliberate ownership/cancellation mutations fail, then restoration passes.
+- Native test compilation/coverage wiring changed; strict-clean 20261007_171441_build_7021 passes product,
+  native/Python/ASan and all 32 FG checks. Its final lint stopped at compiler-vptr analyzer false positives.
+  Comment-only annotations then close resumed verify 20261007_180216_build_7021, including setup packaging.
+  Installer 0.1.7021: 38,760,346-byte PE; 706 accepted warnings (712 previously), 1005 TUs in full lint.
+  Resume had silently overridden clean mode; fixed precedence with a Python regression before retry.
+  Blocking latency-band/pointer-conversion lint findings were corrected without baseline increases.
+  Full-scope lint also caught shutdown allocation/exception paths; retry retains active ownership.
+  Hook/probe casts and explicit patch rollback were corrected. Scoped annotations document intentional
+  fatal lock initialization and GoogleTest reporting-allocation failures in isolated test destructors.
+  Formatting retains 16 advisory files; hardware/A/V and complete library delivery remain unverified.
+  No helper recording/hardware claim follows from these controlled lifecycle and native-empty tests.
+- Initial capabilities/embedding effects/path inventory: library-delivery.md. MainThread cancellation
+  is atomic; auxiliary reconfiguration retains its stop event until old services exit. Setup/sensor
+  recovery, full config/runtime ownership and old/new media observation attribution remain pending.
+
 ### 2026-10-07 - Present vtable ownership preserves foreign links and caller provenance
 
 - Reproduced a skipped predecessor: a foreign layer installed before CE received zero of three
@@ -192,31 +218,3 @@
   Python, x64 ASan/UBSan and lint ratchets; targeted formatting corrections cleared all format advisories.
   The 712 accepted warnings are unchanged. Installer: 38,591,852-byte PE; no test processes lingered.
   Real-game/foreign-overlay/A/V/performance evidence and cold-start accounting remain pending.
-
-### 2026-10-06 - Architecture D0 inventory and queue provenance characterization
-
-- Inventoried all first-party subsystem paths at 3563155d; inventory is separate from reading every
-  lifecycle. Six bounded operation questions, source anchors, coupling expressions and pending audit
-  areas are in architecture-inventory.md; architecture-debt-plan.md and temp/refactor.md track progress.
-- Confirmed two ECL provenance hazards: unknown vtable inherits the first global original; separate
-  cache atomics can publish an identity/target mismatch. No current hardware crash is attributed to it.
-- No-build baseline refused stale test-link evidence; clean verification 0.1.7005 then passed native,
-  15 FG flows, Python, x64 ASan/UBSan, x64/x86 products and lint ratchets (712 accepted warnings).
-  Installer: 38,592,800-byte PE; full lint scope refreshed to 988 TUs with unchanged counts.
-- Four parser fuzz targets passed a bounded 10-second-per-target run (IPC: 2,683,158 units); no
-  unit/flow/fuzz processes lingered. Current game/A/V/hardware validation remains pending.
-- D1 NGX/foreign/two-vtable coverage and D2 must characterize actual production transactions.
-
-### 2026-10-06 - PC latency audit: frame-matched anchors, input retrieval, flip-queue diagnostic
-
-- Audit finding: without markers the estimate modelled input-to-Present as one interval - too low for engines
-  whose game thread runs ahead (Unreal: whole frames), too high for single-threaded loops that wait. The newest
-  Reflex sleep was paired across threads (UE sleeps on the game thread, presents on RHI) and read frames too low;
-  without FG CE's own in-Present wait was added on top of the interval already containing it (~9 ms at 90 fps).
-- Fixed: PCL marker pairs (frame ID) feed the frame-begin clock, also under FSR FG; sleeps only pair on the
-  presenting thread; Win32k RetrieveInputMessage bursts (ABI 69) anchor same-thread loops; frames without a
-  boundary use the 2 s learned span. New `[Overlay] PC latency anchors` line with anchor-kind totals and
-  `queuedAhead=` (frames displayed while a frame waited after its PresentStart) for the vsync question.
-- Not done, deliberately: injecting Reflex markers adds no information (NVAPI would echo CE's own timestamps).
-  Pipelined engines without markers stay modelled; the depth is not observable from timestamps.
-- Hardware run pending (Talos: no FG, no FG + Reflex, FSR FG, DLSS FG, DLSS MFG). Read the anchors line first.

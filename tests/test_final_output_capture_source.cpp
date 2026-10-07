@@ -148,6 +148,8 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
         << "a config reload must not stop display timing during an active recording";
     EXPECT_NE(sensor.find("GetRecordingStartIntent() == RecordingStartIntent::Video"), std::string::npos)
         << "the collector must arm from intent before inject capture becomes live";
-    EXPECT_NE(recording.find("recoverProcess(ProcessMode::Sensors"), std::string::npos)
+    EXPECT_NE(recording.find("ServiceHostChildren("), std::string::npos)
         << "the exact-timing child must recover during a live recording";
+    const auto owner = ReadSource("captureengine/app/host_children.cpp");
+    EXPECT_NE(owner.find("wanted.sensors"), std::string::npos);
 }

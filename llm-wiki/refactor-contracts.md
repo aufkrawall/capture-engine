@@ -30,7 +30,9 @@ Completion requires fewer caller decisions, not simply smaller files or headers.
   pending acknowledgement does not prove no file exists. Media finalization is asynchronous.
 - Explicit stop clears requested ownership, pending start and presentation before child stop.
   Media gets the first request; inject is fallback. Media self-exits after finalization and the
-  controller releases its active endpoint/handle so the next start gets a fresh child.
+  controller clears its active endpoint so the next start gets a fresh child. The host child owner
+  retains the old process handle until confirmed exit and includes retired finalizers in shutdown
+  (child ownership rechecked 2026-10-07; host_children.cpp and child_process_lifecycle.h).
 - Video needs inject and media; audio-only also supports direct media acceptance. Sensor readiness
   failure is nonfatal for video. A media integrity failure disables automatic recording.
 - Existing CapturePipelinePhase/lifecycle helpers remain the media authority. Do not add another

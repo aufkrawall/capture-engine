@@ -108,6 +108,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Clean verification after a failed build:** `--verify-clean` now takes precedence over resume and incremental flags, so a requested clean verification recompiles product objects while keeping the failed build identity. A regression covers all resume/incremental combinations; hook and test-harness diagnostics keep strict checks passing without raising warning baselines.
 
+- **Recording restart and helper shutdown:** helper ownership now retains earlier media processes while they finish a recording, so shutdown waits for those finalizers too. Child startup, recovery and retirement use one private owner with generation checks; failed teardown retains ownership for retry, and console shutdown uses an atomic stop flag.
+
 - **DirectX overlay coexistence:** fixed Present and Present1 forwarding that could skip an overlay already installed in the swapchain vtable. Vtable interception now retains its own next links independently of inline hooks, with regressions for both methods and nested status probes.
 
 - **Frame generation Base/Display rates:** the overlay's Base/Display row under DLSS frame generation no longer freezes at the last rate seen before FG started (e.g. "67 / 133 FPS" while the screen ran at 52 fps). Both rates are now measured from the displayed frames and the game's own frame cadence, and show equal values while DLSS FG is enabled but not generating frames, as in menus.
