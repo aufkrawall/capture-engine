@@ -6,7 +6,7 @@ Goal (user, 2026-10-02): an orderly, readable codebase that an LLM can investiga
 nothing broken or regressed, fewer lines where that costs nothing, and boundaries that let CaptureEngine
 become a library other clients use for recording, overlay and 3D overrides.
 
-Current debt execution plan: [architecture-debt-plan.md](architecture-debt-plan.md). Its D0-D12 waves
+Current debt execution plan: [architecture-debt-plan.md](architecture-debt-plan.md). Its D0-D13 waves
 supersede the execution order below; this page retains the earlier program and supporting evidence.
 Completed core contracts and measured locality: [refactor-contracts.md](refactor-contracts.md).
 
@@ -55,7 +55,7 @@ Completed core contracts and measured locality: [refactor-contracts.md](refactor
 | 8 | Policy calls with many positional `bool`s to named input structs | mechanical | partial 2026-10-04: focus-loss/hold policy and media frame descriptors; remaining calls pending |
 | 7b | Packed declarations (`void A();void B();` from the de-inline generator) one per line: 486 split, whitespace-proof 937/937 | mechanical | done 2026-10-03 |
 | 9 | Comment density: incident narratives (session ids, dates) out of code into the wiki; code keeps the invariant | text | planned |
-| 10 | Library boundary (below) | architectural | controller-bound groundwork 2026-10-04; independent library/configuration/telemetry pending |
+| 10 | Library boundary (below) | architectural | controller-bound groundwork; independent library/first-client delivery now required by D13 |
 | 11 | DX12 frame/overlay ownership and proven phase facts | behavioral, production units + FG flow; hardware evidence separate | remaining D2-D4 in architecture-debt-plan.md |
 
 ## FG flow harness (wave 0)
@@ -206,6 +206,10 @@ reference count negative) stay open, likely the game resizing before `ffxDestroy
 
 ## Library boundary (wave 10)
 
+Direction updated 2026-10-07: independent engine/runtime packaging and the shipping app as its first
+client are now part of the active refactor. [architecture-debt-plan.md](architecture-debt-plan.md),
+D13, is the current delivery/acceptance authority. Implement in verified slices; no one-shot rewrite.
+
 - Current implementation (verified against sources, 2026-10-05): `include/libcaptureengine.h` is
   controller-bound API groundwork, linked into `captureengine.exe`; there is no independent engine DLL
   target yet. `libcaptureengine.cpp` validates one opaque handle and thread ownership, while
@@ -235,12 +239,12 @@ reference count negative) stay open, likely the game resizing before `ffxDestroy
 
 - CE is several processes (controller, inject child, media, logger, sensor bridge) plus injected DLLs. A
   library keeps that topology: a client loads one engine DLL that owns the helper processes.
-- The public API must be a C ABI with opaque handles (`ce_engine_create`, recording start/stop, overlay and
-  override settings, screenshot, event callback). CE builds with MSYS2 clang64 and libc++; a client built
+- The public API must be a C ABI with opaque handles for runtime lifecycle, recording, overlay/override settings,
+  screenshots and required outcomes. Preserve v1 attach/detach semantics through versioned additions. CE builds with MSYS2 clang64 and libc++; a client built
   with MSVC cannot share C++ types across the boundary.
 - Configuration needs a programmatic model. Today `common/config/` parses INI into `Config`; the INI loader
   becomes one producer of that model, and the shared-memory publication (`common/ipc/`) stays internal.
-- Eventually `captureengine/app/` (tray, hotkeys, pseudo overlay) becomes the first full client of that API, so the
+- As D13 capability slices land, `captureengine/app/` (tray, hotkeys, pseudo overlay) becomes the first full client of that API, so the
   boundary is exercised by the shipping product.
 
 ## Log findings (evidence for wave 2)

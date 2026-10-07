@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Reusable engine library plan:** made independent runtime/library delivery and CaptureEngine as its first client part of the active refactor, with explicit API, lifecycle, packaging and standalone-client acceptance gates. This records planned work; the current API remains controller-bound.
+
 - **DXGI status probes:** Present/Present1 calls with `DXGI_PRESENT_TEST` now forward without drawing, pacing, frame accounting or FG status updates, including through CE wrappers. Foreign-hook tests cover repair and removal with callbacks still executing.
 
 - **DirectX 12 forwarding after hook reset:** retained per-slot predecessors now take priority over a foreign hook's live entry, preventing a foreign-to-CE recursion loop after dispatch reset. Controlled coexistence tests cover both installation orders and callbacks still executing during removal.

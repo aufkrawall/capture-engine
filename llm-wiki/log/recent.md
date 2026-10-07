@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-07 - Reusable library and first-client delivery join the active refactor
+
+- User requested integrating library extraction with ownership work. D13 now requires independent
+  runtime/configuration/helper ownership, versioned C ABI, a packaged standalone client and the
+  shipping application consuming the same API. No runtime/library implementation is claimed.
+- Preserve current controller-bound v1 attach/detach semantics and existing process/DLL topology.
+  D0/D8/D5-D6/D9 feed library milestones; no wait for every graphics audit and no one-shot rewrite.
+- Updated canonical/temp plan and historical roadmap/contracts; rich events, preview/packets,
+  arbitrary parallel instances and plugins remain separate feature work.
+
 ### 2026-10-07 - Present coexistence exposes and fixes status-probe frame accounting
 
 - Three real-hook cases exercise a foreign layer above the underlying DXGI Present chain, repair,

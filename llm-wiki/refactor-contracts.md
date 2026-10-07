@@ -95,8 +95,11 @@ fresh setup packages. Real-game, capture/A/V matrix and hardware performance che
 the user. WARP/fake SDK runtimes exercise real hook orchestration but cannot certify vendor/game
 compatibility. Do not claim performance improvement from an interface change.
 
-Independent engine DLL/configuration/telemetry, events, preview/packet output, dynamic
-reconfiguration and plugin/frame hierarchies remain deferred independent feature work.
+Direction updated 2026-10-07: independent library/runtime ownership, programmatic configuration
+for existing capabilities and the shipping app as first client are required by architecture-debt-plan.md
+D13. The current controller-bound facade remains groundwork, not independent embedding. Rich events,
+new telemetry/preview/packet output, arbitrary parallel instances, new dynamic reconfiguration and
+plugin/frame hierarchies remain separate feature work.
 
 ## Recording owner (implemented)
 
@@ -549,11 +552,11 @@ Reproducible user validation:
    frame time, allocations, queue/fence waits and capture copies. Expect the preserved performance
    requirements; no benchmark or no-regression hardware claim has been made by this implementation.
 
-## Section 11 assessment: deferred independent work
+## Section 11 assessment: library delivery and remaining features
 
 | Candidate | Assessment after core refactor |
 | --- | --- |
-| Independent engine DLL | Session separation is groundwork. Runtime/config/helper ownership, capability negotiation and MSVC/clang embedding remain separate work; no DLL is implemented. |
+| Independent engine DLL | Session separation remains groundwork; no DLL is implemented. D13 now requires owned runtime/config/helpers, versioned ABI, standalone consumption and shipping first-client conversion within the active refactor. |
 | Events/callbacks | A real consumer still needs live/finalized/error delivery semantics, thread/reentry/shutdown guarantees, bounded buffering and late-observation attribution. No event API is added. |
 | Preview/encoded packets | Requires independent lifetime, latency and backpressure contracts; current submission outcomes do not imply packet/GPU completion. |
 | Dynamic reconfiguration | Needs codec/source/timeline transition requirements and actual consumers; not implemented through this refactor. |

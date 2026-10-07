@@ -24,7 +24,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `repo-map.md` | 12 | where each subsystem lives, binaries to sources, build units, high-risk areas |
 | `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-05), library plan, log-volume evidence |
 | `refactor-contracts.md` | 45 | implemented core ownership, glossary, source/test anchors, locality comparison and pending validation (2026-10-05) |
-| `architecture-debt-plan.md` | 42 | current architecture debt, verified evidence, D0-D12 implementation/verification sequence and independent deferred features (2026-10-05) |
+| `architecture-debt-plan.md` | 42 | current architecture debt, verified evidence, D0-D13 implementation/verification and library delivery sequence and independent deferred features (2026-10-05) |
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
 | `dx12-queue-dispatch.md` | 7 | private ECL/Signal and device trace dispatch, publication/reset recovery, real-hook regressions and pending provider/callback lifetime work (2026-10-07) |

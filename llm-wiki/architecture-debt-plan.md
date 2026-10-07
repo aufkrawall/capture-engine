@@ -6,6 +6,34 @@ The subsequent privacy workflow commit `6b8249e8` adds commit checks, not produc
 Canonical version: this wiki page. `temp/refactor.md` is an identical working copy of this revision.
 This document supersedes the completed sections 1-10 of the old temporary refactor plan.
 
+## Library delivery target (2026-10-07)
+
+The refactor now delivers a reusable engine library (working name `libcengine`) and makes the
+shipping CaptureEngine application its first full client. Library extraction is part of this plan,
+not a separate future rewrite. This expands scope; completed ownership work remains useful.
+Implement it through verified vertical slices rather than one replacement of the working engine.
+
+The library owns engine initialization/shutdown, validated configuration, target control, recording,
+overlay/override commands and helper-process supervision. The frontend owns tray/hotkey/CLI interaction
+and presentation, using commands and observed outcomes instead of engine globals. Preserve every
+existing feature; a smaller frontend does not mean removing existing UI or runtime capabilities.
+Injected hooks, media, sensor/logging workers, Vulkan layers and privilege boundaries retain their
+necessary process/DLL topology. One public library can depend on a packaged runtime; it is not one
+physical DLL containing every component. No extra capture copies or hot-path abstraction tax.
+
+Reuse the existing public C ABI and private C++ owners. The current facade only attaches to a bound
+controller: create does not initialize a runtime, and destroy does not stop it. Preserve those v1
+contracts; independently owned runtime creation/destruction needs an explicit versioned contract.
+Do not export STL, FFmpeg/SDK objects, mutable Config, shared mappings or locks to clients.
+Start with honest explicit concurrency limits and reject competing ownership; opaque handles alone
+do not make process-global mappings, injected configuration or device state independently instanced.
+
+D13 defines the deliverable and acceptance tests. D0 inventories client/runtime dependencies; D8
+extracts runtime/configuration/child ownership; D5-D6 keep media and finalization library-owned; D9
+keeps the client API small. Library milestones begin as those boundaries become usable, not after
+all graphics debt is closed. Events beyond required status/notices, preview/packet output, arbitrary
+parallel instances and a plugin framework remain separate features.
+
 ## Execution status (2026-10-07)
 
 - D1 Present coexistence slice: a controlled foreign layer above the real DXGI Present chain covers
@@ -187,7 +215,9 @@ Start with D0 and the needed D1 harness coverage. D2 precedes routing/resource c
 queue provenance. D3 and D4 build on each other in small slices. D5 precedes D6. D7 consumes the SDK
 coverage from D1 and the admission/provenance contracts from D2-D3. D8 can proceed after D0 independently
 of graphics waves. D9 and D12 are acceptance work inside every wave. D10 starts with an audit, then
-prioritizes demonstrated ownership gaps. D11 is independent after build characterization in D0.
+prioritizes demonstrated ownership gaps. D11 is independent after build characterization in D0. Start D13 capability/API inventory now;
+advance D8/runtime extraction alongside the verified ownership slices and consume each supported
+library milestone from the shipping app. D13 is a delivery sequence, not a giant final rewrite.
 
 Each wave below is a sequence of independently verified local commits, never one giant change.
 Separate mechanical moves from changed policy. Choose the first complete invariant with the smallest
@@ -201,7 +231,8 @@ No commit is complete while migrated aliases, temporary forwarding cycles or dup
 
 ## D0 - Establish the next-wave evidence and close validation gaps
 
-1. Inventory every module via repo-map.md: controller, inject, media, common contracts, each graphics
+1. Inventory library/client capability and process/thread ownership as specified by D13, then every
+   module via repo-map.md: controller, inject, media, common contracts, each graphics
    backend, SDK interception, overrides, service, installer and build/test tooling. Mark areas not read.
 2. For stop/restart, FG handover, encode failure, resize/device loss, child replacement and finalization,
    trace actual readers/writers, lock acquisition, callbacks, resets, release and unload paths.
@@ -423,8 +454,10 @@ Anchors: [main_internal.h](../captureengine/app/main_internal.h),
    configuration operations; retain atomic/layout/generation barriers in the existing IPC contract.
 4. Migrate remaining low-frequency control mapping sequences to specific validated IPC operations.
    Keep frame/ring snapshots and leases separate; no universal channel framework or mapped-pointer API.
-5. Narrow controller effects contracts used by frontends/C facade; remove direct mutation and cycles.
-   Preserve unsupported results for API capabilities that do not exist yet.
+5. Extract runtime bootstrap/service/shutdown from UI effects for D13; make headless ownership possible.
+   Narrow frontend/C facade effects contracts and remove direct mutation/cycles. Define programmatic
+   settings producers without exposing mutable Config/IPC. Preserve unsupported results until an API
+   capability has a real implementation; migrate existing features through completed operations.
 
 Tests: readiness cancellation, replacement/old health, partial startup, command failure, reconnect,
 invalid configuration/layout/target, publication ordering, reentrant shutdown and exactly-once notices.
@@ -432,7 +465,8 @@ Use isolated Windows mappings and production validation. Parser/untrusted-bounda
 fuzz harnesses and committed safe corpus; new shared ABI/layout changes require clean verification.
 Commits: child lifecycle; settings publication; remaining validated control operations/frontend cleanup.
 Exit: frontends invoke domain commands and consume observations without child/IPC bookkeeping.
-Reject: treating the controller-bound C facade as an independently embeddable engine DLL.
+Reject: calling the current controller-bound facade independently embeddable. D13 must prove actual
+runtime creation and ownership without ControllerMain or tray initialization.
 
 ## D9 - Shrink interfaces as ownership becomes real
 
@@ -521,6 +555,58 @@ Exit: no duplicate migrated policy/adapter, no falsely completed validation clai
 documentation. Log and test budgets must be measured, not justified by introducing unconditional noise.
 Reject: deleting source tests wholesale, packing files to satisfy line limits or trusting an old unused list.
 
+## D13 - Ship the engine library and consume it from CaptureEngine
+
+Anchors: [libcaptureengine.h](../include/libcaptureengine.h),
+[libcaptureengine.cpp](../captureengine/app/libcaptureengine.cpp),
+[main_controller.cpp](../captureengine/app/main_controller.cpp),
+[main_entry.cpp](../captureengine/app/main_entry.cpp), D5-D6/D8-D9 and the declared build targets.
+
+1. Before extraction, inventory every supported frontend action and runtime dependency. Record the
+   API operation/outcome, owning process/thread, settings producer, startup/shutdown obligations,
+   singleton/IPC conflicts, resource paths and verification. Include recording/audio-only/streaming,
+   injection/discovery, overlay/overrides, screenshots, benchmark/status and current compatibility modes.
+   Pure presentation stays in the client; an unsupported stub is not migration of a working feature.
+2. Specify the versioned runtime lifecycle and C ABI before publishing it: opaque ownership, descriptor
+   sizes, strings/buffers, errors, threading/reentry, command acceptance versus live/finalized state,
+   status/notice delivery and shutdown completion. Preserve current facade/media exports and layouts.
+   Initially document/enforce one active owner where required; test competing clients explicitly.
+   New runtime operations must not silently change legacy attach/detach semantics.
+3. Extract EngineRuntime bootstrap, command ownership, configuration publication, target/child service
+   and shutdown from controller/UI effects. Own needed message pumping and COM/thread affinity without
+   borrowing the client's tray HWND or requiring its executable entry point. No tray/hotkey dependency
+   in headless startup. Keep cancellation, asynchronous media finalization and callback/GPU drain rules.
+4. Build the independent x64/x86 library/runtime package with the pinned toolchain and explicit source
+   ownership. Package public headers, import artifacts and required existing helpers/DLLs/licenses.
+   Resolve runtime resources from the package/module or explicit paths, not an unrelated client's
+   executable/CWD. Use existing secure loaders and privilege boundaries; heavy startup stays out of
+   DllMain. Build-target/shared-ABI changes require clean and verify-clean gates.
+5. Migrate the shipping frontend in capability slices. Its recording, overlay, settings, screenshot,
+   benchmark and target commands use the same supported API as external clients; engine lifecycle and
+   policy stay private. Tray/hotkeys/CLI/desktop presentation adapt outcomes, including finalizing/error.
+   Preserve legacy launch/worker roles through internal runtime hosts or explicit compatibility paths.
+   Remove the old controller-bound backend/global routes once each client action has migrated.
+6. Add a separately built headless client using only public headers and shipped library artifacts.
+   It must create/configure a runtime without ControllerMain, use migrated recording/overlay operations,
+   stop/finalize, shut down and recreate. Verify a deployment outside the repo with another executable
+   name/CWD. Compare frontend and headless behavior through production orchestration, not mock APIs.
+   C compilation/link/export tests protect the ABI; cross-compiler consumption requires a declared,
+   discovered compiler and recorded evidence, never shared C++ runtime types or a substituted toolchain.
+7. Test partial startup, missing/incompatible helpers, invalid configuration/ABI, competing ownership,
+   stale target/child, reentry, repeated stop, active-recording shutdown and retained callbacks. Prove
+   bounded process cleanup and no notices into a destroyed client. Re-run existing native/FG/media
+   gates and the real hardware/A/V matrix for changed paths; a smoke client does not replace them.
+
+Milestones: capability/ABI inventory -> owned headless runtime -> packaged library/standalone client
+-> first migrated shipping feature -> all supported engine actions consumed through the API.
+D8/bootstrap and selected D5-D6 contracts are dependencies; existing stable graphics owners can remain
+private implementation. Full D2-D7 migration is not a prerequisite to the first library milestone.
+Exit: the installed app is a client of the same independently usable runtime/API; a second client
+uses it without controller initialization, private includes, copied policy or engine-global access.
+All current features/package behavior remain available and lifecycle/ABI/integration evidence passes.
+Reject: renaming the executable, exporting its globals, wrapping ControllerMain, creating an empty
+facade, shipping unimplemented operations or flattening helper/injected components into the client.
+
 ## Verification matrix and commands
 
 | Boundary | Required evidence before accepting the slice |
@@ -531,6 +617,7 @@ Reject: deleting source tests wholesale, packing files to satisfy line limits or
 | Audio/finalization | Reset/ack/commit, sample/packet units, first-output failure, drain races, common effective endpoint and codec/multi-track invariants |
 | SDK/FG | Settings/runtime/status distinction, stale epochs, context/device replacement, callback across retirement and deferred GPU release |
 | DX12/queue | Proven dispatch identity, reentry, success without recovery, controlled resource/list/submit failures, exact release and capture ordering |
+| Library/client | Independent headless startup, configuration, supported operations, finalize/shutdown/recreate, ownership conflicts, public-header-only consumption and deployment outside the repo |
 | Test seam | Actual production orchestration executes; deliberate historical defects are detected |
 | ABI/build | Legacy and new exports/layouts, rejected loader pointer cleanup, applicable x86/x64, clean shared-ABI/machinery verification |
 | Flow harness | Every physical output covered exactly once, correct owner/status, no debug-layer corruption/errors and confirmed process cleanup |
@@ -585,13 +672,12 @@ API, FG settings, codec/track configuration and application scenario. Start diag
 Do not reinterpret the older GTA ResizeBuffers/FFX-reference hypothesis as a proven CE root cause.
 Collect a current bounded reproduction, ownership evidence and relevant dump before deciding its fix.
 
-## Independent features remain separate
+## Additional features remain separate
 
-An independent engine DLL, event subscriptions, preview/packet output, dynamic reconfiguration and
-generic plugin/frame hierarchies are not prerequisites for removing the debt above. They need their
-own user-facing requirements, API/ABI/threading/versioning design and integration tests. Keep the
-controller-bound C facade honest about unsupported capabilities. Revisit feature proposals after
-the relevant ownership contracts stabilize; do not expand this plan into a simultaneous engine rewrite.
+The independent library/runtime and first-client conversion are required D13 deliverables. Rich event
+subscriptions beyond needed outcomes/notices, preview/packet output, arbitrary parallel instances,
+new dynamic-reconfiguration capabilities and generic plugin/frame hierarchies remain independent
+feature work. Extraction makes existing features reusable; it does not promise new capabilities.
 
 ## Completion and delivery
 
@@ -599,6 +685,9 @@ Architecture debt in an audited boundary is closed when one owner maintains its 
 use commands/observations, mutation/lifetime aliases are removed, production failures are behaviorally
 protected, documentation agrees with code, and applicable gates have passed. A smaller file or a new
 class is insufficient. Any residual debt has a concrete owner, reason, source anchor and follow-up.
+
+Overall completion also requires the D13 packaged library, independent client and shipping frontend
+consumption; ownership cleanup alone no longer completes the requested delivery.
 
 For every wave deliver local commit sequence, fresh installer, focused/native/flow and applicable
 additional verification, mutation evidence, ownership/locality comparison, updated contracts and pending
