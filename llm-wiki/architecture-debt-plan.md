@@ -8,6 +8,13 @@ This document supersedes the completed sections 1-10 of the old temporary refact
 
 ## Execution status (2026-10-07)
 
+- D1 Present coexistence slice: a controlled foreign layer above the real DXGI Present chain covers
+  repair, nested status probes and removal with an admitted callback. Native/wrapper Present and
+  Present1 probes exposed false output accounting (16 ledger entries for 10 actual presents); their
+  entry boundaries now forward before frame side effects. Three cases and four deliberate guard
+  mutations pass. Opposite installation order, actual nested physical outputs, CE removal with
+  active Present callbacks and external provider unload remain pending; D1 is still partial.
+  Closing 0.1.7018 passes native/Python/all 30 FG flows, x64/x86 products and the setup package.
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
   evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
   audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.

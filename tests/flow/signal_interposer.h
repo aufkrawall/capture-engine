@@ -2,44 +2,18 @@
 
 #include "tests/flow/flow_host.h"
 #include "tests/flow/queue_dispatch_probe.h"
+#include "tests/flow/call_barrier.h"
 
-#include <condition_variable>
-#include <mutex>
 #include <thread>
 
 namespace ce::flow {
-
-class SignalBarrier {
-public:
-    void Enter() {
-        std::unique_lock lock(mutex_);
-        entered_ = true;
-        changed_.notify_all();
-        changed_.wait(lock, [&] { return released_; });
-    }
-    void WaitUntilEntered() {
-        std::unique_lock lock(mutex_);
-        changed_.wait(lock, [&] { return entered_; });
-    }
-    void Release() {
-        std::lock_guard lock(mutex_);
-        released_ = true;
-        changed_.notify_all();
-    }
-
-private:
-    std::mutex mutex_;
-    std::condition_variable changed_;
-    bool entered_ = false;
-    bool released_ = false;
-};
 
 // Independent foreign code joins the physical chain. It never chooses a CE target or mocks CE policy.
 class SignalInterposer {
 public:
     using Method = HRESULT(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 
-    SignalInterposer(FlowGame& game, QueueDispatchProbe& probe, SignalBarrier* barrier = nullptr)
+    SignalInterposer(FlowGame& game, QueueDispatchProbe& probe, CallBarrier* barrier = nullptr)
         : game_(game),
           probe_(probe),
           slot_(&(*reinterpret_cast<void***>(&probe))[14]),
@@ -114,7 +88,7 @@ private:
     QueueDispatchProbe& probe_;
     void** const slot_;
     const Method next_;
-    SignalBarrier* const barrier_;
+    CallBarrier* const barrier_;
     std::atomic<uint32_t> calls_{0};
     std::atomic<uint32_t> active_{0};
     bool installed_ = false;
@@ -123,9 +97,12 @@ private:
 // Release and join on every exit, including a fatal assertion in the test body.
 class BlockedSignalCall {
 public:
-    BlockedSignalCall(QueueDispatchProbe& probe, SignalBarrier& barrier)
+    BlockedSignalCall(QueueDispatchProbe& probe, CallBarrier& barrier)
         : barrier_(barrier),
-          thread_([&] { result_ = probe.InvokeSignal(91); }) {}
+          thread_([this, &probe] {
+              result_ = probe.InvokeSignal(91);
+              barrier_.Complete();
+          }) {}
     ~BlockedSignalCall() {
         Finish();
     }
@@ -137,7 +114,7 @@ public:
     }
 
 private:
-    SignalBarrier& barrier_;
+    CallBarrier& barrier_;
     HRESULT result_ = E_FAIL;
     std::thread thread_;
 };

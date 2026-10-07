@@ -115,6 +115,9 @@ public:
     NGXPublication PublishedNGX() const;
     void ServiceHookThread();
     ComPtr<ID3D12CommandQueue> RetainGameQueue() const { return queue_; }
+    ComPtr<IDXGISwapChain3> RetainGameSwapchain() const { return swapchain_; }
+    ComPtr<IDXGISwapChain> RetainUnderlyingGameSwapchain() const;
+    void RepairPresentHooks();
     void TrackQueue(ID3D12CommandQueue* queue);
     void ResetQueueBindings();
     void ResetDeviceTrace();
@@ -179,6 +182,8 @@ private:
     CEFlow_QueueOriginal_t signalOriginal_ = nullptr;
     CEFlow_ForwardSignal_t forwardSignal_ = nullptr;
     CEFlow_RemoveSignalQueue_t removeSignalQueue_ = nullptr;
+    CEFlow_RepairPresentHooks_t repairPresentHooks_ = nullptr;
+    CEFlow_RetainRealSwapchain_t retainRealSwapchain_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;

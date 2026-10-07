@@ -14,6 +14,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/main_internal.h"
 #include "hook/wrappers/wrapper_hooks.h"
+#include "hook/wrappers/dxgi_swapchain_wrap.h"
 #include "tests/flow/flow_api.h"
 #include "tests/flow/runtime_output_frame_tracker.h"
 
@@ -240,4 +241,24 @@ extern "C" __declspec(dllexport) bool CEFlow_RemoveSignalQueue(ID3D12CommandQueu
     const auto original = GetOriginalCommandQueueSignal(queue);
     return vtable && original &&
            VTableHook::Remove(&vtable[14], reinterpret_cast<void*>(original)) == VTableHook::Success;
+}
+
+extern "C" __declspec(dllexport) void CEFlow_RepairPresentHooks() {
+    DXGIShared::RepairVTableHooksIfNeeded();
+}
+
+extern "C" __declspec(dllexport) IDXGISwapChain* CEFlow_RetainRealSwapchain(IDXGISwapChain* swapchain) {
+    if (!swapchain)
+        return nullptr;
+    void* wrapper = nullptr;
+    if (SUCCEEDED(swapchain->QueryInterface(IID_CWrapDXGISwapChain, &wrapper))) {
+        auto* typed = static_cast<CWrapDXGISwapChain*>(wrapper);
+        IDXGISwapChain* real = typed->GetReal();
+        if (real)
+            real->AddRef();
+        typed->Release();
+        return real;
+    }
+    swapchain->AddRef();
+    return swapchain;
 }

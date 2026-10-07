@@ -11,6 +11,15 @@
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    if (Flags & DXGI_PRESENT_TEST) {
+        static ce::log_meter::ChangeGate probes;
+        const auto verdict = probes.Observe(ce::log_meter::FieldKey(pSwapChain, Flags));
+        if (verdict) {
+            HookLog("DXGI Present1: forwarding status probe without frame processing (sc=%p flags=0x%X)%s",
+                    pSwapChain, Flags, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour1, pSwapChain, SyncInterval, Flags);
     ce::present_association::NotePresentEntry(PerfLogger::GetQpcUs());
     // Read before ProcessFrame consumes it; see PresentCallContext.

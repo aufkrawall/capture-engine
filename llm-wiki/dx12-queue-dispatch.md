@@ -94,7 +94,29 @@ Physical restoration also does not prove callback drain: the admitted-call case 
 CE's own image is process-pinned by main_dllmain.cpp; UnloadThread is a pass-through shutdown, not
 image unloading. Provider images/allocated thunks and their data require separate scoped retirement.
 module_pin.h explicitly reserves permanent pins for named system runtimes and permits real SDK unload.
-These executable-backed fixtures do not establish unload safety or replace the pending Present tests.
+These executable-backed fixtures do not establish unload safety or replace the full Present matrix.
+
+## Present coexistence and status-query boundary
+
+[present_interposer.h](../tests/flow/present_interposer.h) replaces the real underlying DXGI Present
+slot with independent foreign code and forwards through its captured entry. The three cases in
+[test_flow_present_interposer.cpp](../tests/flow/test_flow_present_interposer.cpp) cover repair while
+the foreign layer remains, nested DXGI_PRESENT_TEST probes, admitted probe completion after physical
+removal, and native/wrapper Present/Present1 query behavior. Repair logs confirm the actual foreign
+native slot was observed. Retained COM references and scoped release/join bound fixture lifetime.
+
+The baseline counted 16 ledger outputs for 10 real presents; a lone admitted test probe added another
+false output. [Microsoft's DXGI contract](https://learn.microsoft.com/windows/win32/direct3ddxgi/dxgi-present)
+defines these calls as status queries without an output. Native and wrapper entry boundaries now
+forward before frame processing, metrics, pacing, output accounting or FG observation, preserving
+the original arguments and HRESULT. Change-gated probe diagnostics avoid idle-loop noise.
+[check_present_probe_mutations.py](../tools/refactor/check_present_probe_mutations.py) removes each
+of the four guards; every mutant fails the actual query case, then exact restoration passes.
+
+[call_barrier.h](../tests/flow/call_barrier.h) is shared by Signal and Present fixtures. Completion
+wakes admission waiters even if the callback was never reached, and release/join remains scoped.
+The opposite Present installation order, actual nested physical outputs, CE removal while a Present
+callback is active, allocated thunks and external provider unload remain open; no full D1 exit claim.
 
 ## Device trace ownership and reproduced crash
 

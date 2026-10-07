@@ -5,6 +5,7 @@
 #include "hook/pacing/pacing_trace_boundary.h"
 #include "present_heartbeat.h"
 #include "present_callback_association.h"
+#include "common/logging/log_meter.h"
 
 #include "hook/wrappers/vulkan_dxgi_fifo_present.h"
 
@@ -384,6 +385,15 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    if (Flags & DXGI_PRESENT_TEST) {
+        static ce::log_meter::ChangeGate probes;
+        const auto verdict = probes.Observe(ce::log_meter::FieldKey(pSwapChain, Flags));
+        if (verdict) {
+            HookLog("DXGI Present: forwarding status probe without frame processing (sc=%p flags=0x%X)%s",
+                    pSwapChain, Flags, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
     using ce::present_stage_cost::EnterStage;
     using CostStage = ce::present_stage_cost::Stage;
     // Declared first so it closes last: the trace span and every scope guard's teardown below

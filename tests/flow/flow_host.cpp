@@ -102,13 +102,15 @@ FlowGame::FlowGame(const std::string& testName) {
     signalOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_SignalOriginal"));
     forwardSignal_ = reinterpret_cast<CEFlow_ForwardSignal_t>(GetProcAddress(hook_, "CEFlow_ForwardSignal"));
     removeSignalQueue_ = reinterpret_cast<CEFlow_RemoveSignalQueue_t>(GetProcAddress(hook_, "CEFlow_RemoveSignalQueue"));
+    repairPresentHooks_ = reinterpret_cast<CEFlow_RepairPresentHooks_t>(GetProcAddress(hook_, "CEFlow_RepairPresentHooks"));
+    retainRealSwapchain_ = reinterpret_cast<CEFlow_RetainRealSwapchain_t>(GetProcAddress(hook_, "CEFlow_RetainRealSwapchain"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
-        !resetDeviceTrace_ || !removeSignalQueue_) {
+        !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -422,6 +424,16 @@ HRESULT FlowGame::ForwardSignal(ID3D12CommandQueue* queue, UINT64 value) {
 }
 bool FlowGame::RemoveSignalQueue(ID3D12CommandQueue* queue) {
     return removeSignalQueue_ && removeSignalQueue_(queue);
+}
+void FlowGame::RepairPresentHooks() {
+    if (repairPresentHooks_)
+        repairPresentHooks_();
+}
+ComPtr<IDXGISwapChain> FlowGame::RetainUnderlyingGameSwapchain() const {
+    ComPtr<IDXGISwapChain> real;
+    if (retainRealSwapchain_)
+        real.Attach(retainRealSwapchain_(swapchain_.Get()));
+    return real;
 }
 
 void FlowGame::ServiceHookThread() {

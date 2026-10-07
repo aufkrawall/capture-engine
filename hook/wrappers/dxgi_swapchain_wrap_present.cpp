@@ -161,7 +161,7 @@ void CWrapDXGISwapChain::DrawOverlay() {
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
-    if (HookIsShuttingDown()) {
+    if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown()) {
         IDXGISwapChain* real = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_ResourceLock);
@@ -590,9 +590,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    // CRITICAL: Check for global shutdown - if app is closing, don't touch
-    // anything
-    if (HookIsShuttingDown()) {
+    // Status probes and shutdown forward through a retained real swapchain without frame side effects.
+    if ((PresentFlags & DXGI_PRESENT_TEST) || HookIsShuttingDown()) {
         IDXGISwapChain1* real = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_ResourceLock);

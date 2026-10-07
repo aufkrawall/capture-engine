@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DXGI status probes:** Present/Present1 calls with `DXGI_PRESENT_TEST` now forward without drawing, pacing, frame accounting or FG status updates, including through CE wrappers. Foreign-hook tests cover repair and removal with callbacks still executing.
+
 - **DirectX 12 forwarding after hook reset:** retained per-slot predecessors now take priority over a foreign hook's live entry, preventing a foreign-to-CE recursion loop after dispatch reset. Controlled coexistence tests cover both installation orders and callbacks still executing during removal.
 
 - **DirectX 12 tracing with debug-layer devices:** fixed a startup crash caused by calling the first device implementation's creation methods on a different device. Queue, descriptor-heap and resource tracing now retain exact per-device-vtable predecessors, including after dispatch reset.

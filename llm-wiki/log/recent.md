@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-07 - Present coexistence exposes and fixes status-probe frame accounting
+
+- Three real-hook cases exercise a foreign layer above the underlying DXGI Present chain, repair,
+  nested status probes, admitted probe completion after removal, and native/wrapper Present/Present1.
+- The baseline counted 16 outputs for 10 actual presents, and an admitted probe added a false output.
+  DXGI_PRESENT_TEST now forwards before drawing, pacing, metrics, accounting and FG observation;
+  original arguments/HRESULT remain intact. Change-gated diagnostics avoid idle-loop noise.
+- All four deliberate native/wrapper guard mutations fail the query regression; exact restoration passes.
+  A shared completion-aware barrier releases/joins both Present and Signal fixture calls on every exit.
+- Closing 20261007_104720_build_7018 passes native/Python/all 30 FG cases and x64/x86 products/package.
+  Installer: 38,731,270-byte PE. Sanitizers/runtime/fuzz were not rerun for this bounded slice.
+- D1 remains partial: opposite Present installation order, actual nested outputs, CE removal during
+  active Present callbacks and external provider unload are still required. Goal pause requested after commit.
+
 ### 2026-10-07 - Retained interception evidence prevents foreign-follower recursion after reset
 
 - Three real Signal interposer cases cover installation above/below CE, preserved foreign followers,

@@ -71,12 +71,12 @@ TEST(FlowSignalInterposer, AdmittedCallbackFinishesAcrossRemovalAndReset) {
         Microsoft::WRL::ComPtr<FirstQueueDispatchProbe> probe;
         probe.Attach(new FirstQueueDispatchProbe(game.RetainGameQueue().Get()));
         void* original = probe->CurrentSignal();
-        SignalBarrier barrier;
+        CallBarrier barrier;
         SignalInterposer foreign(game, *probe.Get(), &barrier);
         ASSERT_TRUE(foreign.Installed());
         game.TrackSignalQueue(probe.Get());
         BlockedSignalCall call(*probe.Get(), barrier);
-        barrier.WaitUntilEntered();
+        ASSERT_TRUE(barrier.WaitUntilEntered());
         EXPECT_EQ(foreign.ActiveCalls(), 1u);
         EXPECT_EQ(probe->SignalCalls(), 0u);
         EXPECT_TRUE(game.RemoveSignalQueue(probe.Get()));
