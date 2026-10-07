@@ -54,12 +54,14 @@ public:
         void** vtable = VTable(device);
         Target target = nullptr;
         if (vtable) {
-            target = registry_.Resolve(vtable, ReadSlot(vtable), detour_);
-            if (!target) {
-                void* original = nullptr;
-                if (VTableHook::GetOriginal(&vtable[slot_], reinterpret_cast<void*>(detour_), &original))
-                    target = reinterpret_cast<Target>(original);
-            }
+            target = registry_.ResolveInterception(
+                vtable, detour_,
+                [&] {
+                    void* original = nullptr;
+                    VTableHook::GetOriginal(&vtable[slot_], reinterpret_cast<void*>(detour_), &original);
+                    return reinterpret_cast<Target>(original);
+                },
+                [&] { return ReadSlot(vtable); });
         }
         if (target)
             return target(device, std::forward<Args>(args)...);

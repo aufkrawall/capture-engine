@@ -21,6 +21,49 @@ TEST(ExecuteDispatchRegistryTest, UntrackedReceiversUseTheirOwnLiveSlotsWithoutC
     EXPECT_EQ(registry.Resolve(nullptr, First, Detour), nullptr);
 }
 
+TEST(ExecuteDispatchRegistryTest, InterceptionRecoveryPrecedesForeignLiveEntryAfterReset) {
+    Registry registry;
+    void* table[19]{};
+    registry.Install(table, First, Detour, [&](Target* original) {
+        *original = First;
+        return true;
+    });
+    registry.Reset();
+    int liveReads = 0;
+    EXPECT_EQ(registry.ResolveInterception(
+                  table, Detour, [&] { return First; },
+                  [&] {
+                      ++liveReads;
+                      return Follower;
+                  }),
+              First);
+    EXPECT_EQ(liveReads, 0) << "the foreign slot can still forward to CE";
+}
+
+TEST(ExecuteDispatchRegistryTest, OwnedBindingsDoNotConsultColdRecoveryOrLiveSlots) {
+    Registry registry;
+    void* table[19]{};
+    registry.Install(table, First, Detour, [&](Target* original) {
+        *original = First;
+        return true;
+    });
+    int coldReads = 0;
+    for (int call = 0; call < 8; ++call) {
+        EXPECT_EQ(registry.ResolveInterception(
+                      table, Detour,
+                      [&] {
+                          ++coldReads;
+                          return Second;
+                      },
+                      [&] {
+                          ++coldReads;
+                          return Follower;
+                      }),
+                  First);
+    }
+    EXPECT_EQ(coldReads, 0);
+}
+
 TEST(ExecuteDispatchRegistryTest, SavedOriginalIsVisibleDuringPublicationReentry) {
     Registry registry;
     void* table[19]{};

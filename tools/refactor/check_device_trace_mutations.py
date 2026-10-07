@@ -23,9 +23,8 @@ MUTATIONS = (
         ("    const size_t slot_;", "    Target borrowedFirst_ = nullptr;\n    const size_t slot_;"),
     ), True),
     ("physical trace slots lose exact predecessors after reset", (
-        ("                if (VTableHook::GetOriginal(&vtable[slot_], reinterpret_cast<void*>(detour_), &original))",
-         "                if (false && VTableHook::GetOriginal(&vtable[slot_], "
-         "reinterpret_cast<void*>(detour_), &original))"),
+        ("VTableHook::GetOriginal(&vtable[slot_], reinterpret_cast<void*>(detour_), &original);",
+         "(void)original;"),
     ), False),
 )
 

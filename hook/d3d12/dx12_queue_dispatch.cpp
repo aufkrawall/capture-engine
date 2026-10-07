@@ -41,20 +41,20 @@ ExecuteCommandListsPtr Resolve(ID3D12CommandQueue* queue) {
     void** vtable = queue ? *reinterpret_cast<void***>(queue) : nullptr;
     if (!vtable)
         return nullptr;
-    auto target = registry.Resolve(vtable, ReadSlot(vtable), &DetourExecuteCommandLists);
+    auto target = registry.ResolveInterception(
+        vtable, &DetourExecuteCommandLists,
+        [&] {
+            void* original = nullptr;
+            VTableHook::GetOriginal(&vtable[10], reinterpret_cast<void*>(&DetourExecuteCommandLists), &original);
+            return reinterpret_cast<ExecuteCommandListsPtr>(original);
+        },
+        [&] { return ReadSlot(vtable); });
     if (!target) {
-        // Overlay teardown may retire registry evidence while a physical CE slot is still in a forwarding chain.
-        // Recover only the predecessor recorded for that exact slot/allocation by the patch primitive.
-        void* original = nullptr;
-        if (VTableHook::GetOriginal(&vtable[10], reinterpret_cast<void*>(&DetourExecuteCommandLists), &original))
-            target = reinterpret_cast<ExecuteCommandListsPtr>(original);
-        else {
-            static ce::log_meter::ChangeGate missing;
-            const auto verdict = missing.Observe(ce::log_meter::FieldKey(vtable));
-            if (verdict) {
-                HookLogImportant("DX12 ECL: no exact predecessor for intercepted queue=%p vtable=%p%s", queue, vtable,
-                                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
-            }
+        static ce::log_meter::ChangeGate missing;
+        const auto verdict = missing.Observe(ce::log_meter::FieldKey(vtable));
+        if (verdict) {
+            HookLogImportant("DX12 ECL: no exact predecessor for intercepted queue=%p vtable=%p%s", queue, vtable,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }
     return target;
@@ -88,13 +88,17 @@ SignalPtr ResolveSignal(ID3D12CommandQueue* queue) {
     void** vtable = queue ? *reinterpret_cast<void***>(queue) : nullptr;
     SignalPtr target = nullptr;
     if (vtable) {
-        const auto live = reinterpret_cast<SignalPtr>(std::atomic_ref<void*>(vtable[14]).load(std::memory_order_acquire));
-        target = signalRegistry.Resolve(vtable, live, &DetourTraceCommandQueueSignal);
-        if (!target) {
-            void* original = nullptr;
-            if (VTableHook::GetOriginal(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal), &original))
-                target = reinterpret_cast<SignalPtr>(original);
-        }
+        target = signalRegistry.ResolveInterception(
+            vtable, &DetourTraceCommandQueueSignal,
+            [&] {
+                void* original = nullptr;
+                VTableHook::GetOriginal(&vtable[14], reinterpret_cast<void*>(&DetourTraceCommandQueueSignal),
+                                        &original);
+                return reinterpret_cast<SignalPtr>(original);
+            },
+            [&] {
+                return reinterpret_cast<SignalPtr>(std::atomic_ref<void*>(vtable[14]).load(std::memory_order_acquire));
+            });
     }
     if (!target) {
         static ce::log_meter::ChangeGate missing;

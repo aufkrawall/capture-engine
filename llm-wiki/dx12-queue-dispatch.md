@@ -5,8 +5,8 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-07 (nine native registry cases, four real-hook queue cases and device
-bootstrap/reset coverage; four queue and two device mutations; closing gate in log/recent.md).
+Last cross-checked: 2026-10-07 (eleven native registry cases, four queue and three foreign Signal cases,
+device bootstrap/reset coverage; six dispatch and two device mutations; closing gate in log/recent.md).
 
 ## Sources and contract
 
@@ -33,9 +33,11 @@ reentry to observe the predecessor as soon as the patch primitive writes it. Fai
 back the binding. A reentrant reset or replacement cannot resurrect retired evidence or use an erased
 iterator. Other threads block on the cold operation; steady cache hits do not take this mutex.
 
-Reset retires registry evidence; it does not detach physical hooks. A still-intercepted CE slot can
-recover its exact predecessor from the patch primitive. Missing exact evidence produces a metered
-diagnostic. A null queue identity is rejected without invoking any native method with that receiver.
+Reset retires registry evidence; it does not detach physical hooks. ResolveInterception owns lookup
+priority: the private saved/cache pair, exact retained patch evidence, then an untracked live slot.
+A foreign live entry can still forward to CE; it cannot replace CE's retained predecessor after reset.
+Established bindings do not call cold recovery/live readers. Missing evidence produces a metered
+diagnostic. A null queue identity is rejected without invoking a native method with that receiver.
 
 ## Regressions and decisive evidence
 
@@ -49,7 +51,8 @@ diagnostic. A null queue identity is rejected without invoking any native method
   are checked. The pre-fix untracked queue resolved the native queue's entry rather than its own entry.
 - [check_ecl_dispatch_mutations.py](../tools/refactor/check_ecl_dispatch_mutations.py) reintroduces
   cross-queue fallback, stale reset cache, resurrection after retirement and Signal's missing-receiver
-  fallback. All four fail the expected assertions; the script restores exact source bytes and verifies
+  fallback, reversed recovery priority and discarded follower evidence. All six fail the expected
+  assertions; the script restores exact source bytes and verifies
   the restored implementation.
 - [test_flow_queue_signal.cpp](../tests/flow/test_flow_queue_signal.cpp) installs real Signal hooks on
   two distinct COM implementations and invokes their physical slots. It checks exact originals,
@@ -70,6 +73,28 @@ invalidation alone does not prove safe unload. Controlled foreign interposer ins
 broader wrapper/native chains and device loss still need deterministic scenarios. Cold FG before
 the first native output remains a separate open accounting finding in the NGX lifecycle page.
 WARP and incidental RTSS presence do not establish all real games, SDKs, overlay orders or performance.
+
+## Foreign Signal chains and retirement evidence
+
+[signal_interposer.h](../tests/flow/signal_interposer.h) supplies independent foreign code installed
+through real physical slot replacement; it forwards through the entry it actually captured. It does
+not select CE targets or model CE decisions. [test_flow_signal_interposer.cpp](../tests/flow/test_flow_signal_interposer.cpp)
+covers both installation orders, preservation when CE removal encounters a foreign follower, reset
+recovery and a barrier-controlled admitted callback across removal. Callback release/join is scoped,
+including fatal-assertion exits; no sleeps or timing assumptions. COM/output/debug-layer checks remain.
+
+The pre-fix follower/reset case raised 0xC00000FD. Digest-first investigation and an x64 dump with
+Microsoft symbols and matching CE PDBs showed repeated SignalInterposer::Detour / CE Signal frames.
+Registry reset left the physical foreign -> CE chain intact, but the resolver selected the foreign
+live entry before consulting retained exact-slot evidence. Shared resolution priority fixes the
+root cause for all three consumers; the regression asserts target identity before unsafe invocation.
+
+Remove returning Success can mean a foreign follower was preserved with CE still in its chain.
+Physical restoration also does not prove callback drain: the admitted-call case finishes afterward.
+CE's own image is process-pinned by main_dllmain.cpp; UnloadThread is a pass-through shutdown, not
+image unloading. Provider images/allocated thunks and their data require separate scoped retirement.
+module_pin.h explicitly reserves permanent pins for named system runtimes and permits real SDK unload.
+These executable-backed fixtures do not establish unload safety or replace the pending Present tests.
 
 ## Device trace ownership and reproduced crash
 

@@ -234,3 +234,10 @@ extern "C" __declspec(dllexport) void* CEFlow_SignalOriginal(ID3D12CommandQueue*
 extern "C" __declspec(dllexport) HRESULT CEFlow_ForwardSignal(ID3D12CommandQueue* queue, UINT64 value) {
     return DetourTraceCommandQueueSignal(queue, nullptr, value);
 }
+
+extern "C" __declspec(dllexport) bool CEFlow_RemoveSignalQueue(ID3D12CommandQueue* queue) {
+    void** vtable = queue ? *reinterpret_cast<void***>(queue) : nullptr;
+    const auto original = GetOriginalCommandQueueSignal(queue);
+    return vtable && original &&
+           VTableHook::Remove(&vtable[14], reinterpret_cast<void*>(original)) == VTableHook::Success;
+}

@@ -90,6 +90,22 @@ public:
         return original;
     }
 
+    // A live foreign entry can still forward to CE after registry reset. Retained patch evidence is
+    // CE's predecessor in that chain; using the foreign top entry would form foreign -> CE -> foreign.
+    // Resolve the saved/cache pair first, then exact interception evidence, then an untracked live slot.
+    // Cold fact readers are never called for an established binding, preserving the common-path cost.
+    template <typename Recover, typename ReadLive>
+    Target ResolveInterception(void** vtable, Target detour, Recover&& recover, ReadLive&& readLive) const {
+        if (!vtable)
+            return nullptr;
+        if (const Target saved = Resolve(vtable, nullptr, detour))
+            return saved;
+        if (const Target retained = recover(); retained && retained != detour)
+            return retained;
+        const Target live = readLive();
+        return live != detour ? live : nullptr;
+    }
+
     bool HasBinding(void** vtable) const {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         const auto found = originals_.find(vtable);

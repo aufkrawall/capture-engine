@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DirectX 12 forwarding after hook reset:** retained per-slot predecessors now take priority over a foreign hook's live entry, preventing a foreign-to-CE recursion loop after dispatch reset. Controlled coexistence tests cover both installation orders and callbacks still executing during removal.
+
 - **DirectX 12 tracing with debug-layer devices:** fixed a startup crash caused by calling the first device implementation's creation methods on a different device. Queue, descriptor-heap and resource tracing now retain exact per-device-vtable predecessors, including after dispatch reset.
 
 - **FPS limiter regression reliability:** deadline and GPU-headroom tests now use an explicit virtual clock, preventing host load from saturating the test's pacing budget; a deadline regression detects missing clock wiring.

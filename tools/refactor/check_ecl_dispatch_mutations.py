@@ -14,8 +14,17 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = [sys.executable, "build.py", "--incremental", "--tests-only", "--flow-tests",
-           "--run-tests", "--gtest-filter=ExecuteDispatchRegistryTest.*:FlowQueue*", "--skip-updates", "--concise"]
+           "--run-tests", "--gtest-filter=ExecuteDispatchRegistryTest.*:FlowQueue*:FlowSignalInterposer.*",
+           "--skip-updates", "--concise"]
 MUTATIONS = (
+    ("foreign live entry outranks retained interception evidence", "hook/d3d12/execute_dispatch_registry.h",
+     "        if (const Target retained = recover(); retained && retained != detour)\n            return retained;",
+     "        (void)recover;",
+     "unit", "ExecuteDispatchRegistryTest.InterceptionRecoveryPrecedesForeignLiveEntryAfterReset"),
+    ("removal discards predecessor evidence while a foreign follower still calls CE", "hook/hooking/vtable_hook.cpp",
+     "if (ce::vtable_hook_policy::ShouldPreserveForeignFollower(",
+     "if (false && ce::vtable_hook_policy::ShouldPreserveForeignFollower(",
+     "flow", "FlowSignalInterposer.ForeignFollowerSurvivesCERemovalAndBindingReset"),
     ("missing Signal receiver inherits a saved queue predecessor", "hook/d3d12/dx12_queue_dispatch.cpp",
      "    SignalPtr target = nullptr;",
      "    if (!vtable) {\n"
@@ -24,11 +33,11 @@ MUTATIONS = (
      "    }\n    SignalPtr target = nullptr;",
      "flow", "FlowQueueSignal.MissingReceiverCannotBorrowSavedSignalEntry"),
     ("untracked queue inherits first global predecessor", "hook/d3d12/dx12_queue_dispatch.cpp",
-     "    auto target = registry.Resolve(",
+     "    auto target = registry.ResolveInterception(",
      "    if (!registry.HasBinding(vtable)) {\n"
      "        const auto bindings = registry.Snapshot();\n"
      "        if (!bindings.empty()) return bindings.front().original;\n"
-     "    }\n    auto target = registry.Resolve(",
+     "    }\n    auto target = registry.ResolveInterception(",
      "flow", "FlowQueueDispatch.UntrackedImplementationUsesItsOwnEntry"),
     ("cached target survives reset and identity reuse", "hook/d3d12/execute_dispatch_registry.h",
      "cache.generation == generation", "true",

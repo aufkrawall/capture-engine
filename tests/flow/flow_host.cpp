@@ -101,13 +101,14 @@ FlowGame::FlowGame(const std::string& testName) {
     trackSignalQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackSignalQueue"));
     signalOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_SignalOriginal"));
     forwardSignal_ = reinterpret_cast<CEFlow_ForwardSignal_t>(GetProcAddress(hook_, "CEFlow_ForwardSignal"));
+    removeSignalQueue_ = reinterpret_cast<CEFlow_RemoveSignalQueue_t>(GetProcAddress(hook_, "CEFlow_RemoveSignalQueue"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
-        !resetDeviceTrace_) {
+        !resetDeviceTrace_ || !removeSignalQueue_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -418,6 +419,9 @@ void* FlowGame::SignalOriginal(ID3D12CommandQueue* queue) const {
 }
 HRESULT FlowGame::ForwardSignal(ID3D12CommandQueue* queue, UINT64 value) {
     return forwardSignal_ ? forwardSignal_(queue, value) : E_FAIL;
+}
+bool FlowGame::RemoveSignalQueue(ID3D12CommandQueue* queue) {
+    return removeSignalQueue_ && removeSignalQueue_(queue);
 }
 
 void FlowGame::ServiceHookThread() {

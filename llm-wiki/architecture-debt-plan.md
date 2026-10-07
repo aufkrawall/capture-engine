@@ -29,6 +29,14 @@ This document supersedes the completed sections 1-10 of the old temporary refact
   native candidate lifetime still require further work. Signal uses the same private transaction and
   exact-slot recovery; its writable map/lock/global-original aliases are removed. D2 exit remains open.
   Final closing 0.1.7015 passes native/Python/all 23 FG flows, x64/x86 products and the setup package.
+- D1/D2 follower-retirement slice: real Signal interposers cover CE above/below a foreign provider,
+  removal/reset with a retained follower and an admitted callback across removal. The follower case
+  reproduced a stack overflow after reset; ResolveInterception now owns saved-binding -> exact retained
+  interception -> untracked live-slot priority for ECL, Signal and device tracing. Established bindings
+  consult no cold readers. Eleven native registry cases and six dispatch mutations pass; physical
+  restoration/Remove success do not prove callback drain or provider-code retirement. Foreign Present
+  interposers, provider unload, scoped code holds and remaining D2 retirement still need implementation.
+  Closing 0.1.7017 passes native/Python/all 27 FG flows, x64/x86 products and the setup package.
 - D0/D10 device tracing slice: fixed the first-global creation-target crash under CE_DX12_TRACE=1.
   One private module owns exact-vtable installation, dispatch, reset recovery and tracing detours for
   queue/descriptor-heap/resource creation. Removed global targets, aliases and exposed detour prototypes.

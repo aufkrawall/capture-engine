@@ -123,6 +123,7 @@ public:
     void TrackSignalQueue(ID3D12CommandQueue* queue);
     void* SignalOriginal(ID3D12CommandQueue* queue) const;
     HRESULT ForwardSignal(ID3D12CommandQueue* queue, UINT64 value);
+    bool RemoveSignalQueue(ID3D12CommandQueue* queue);
     CEFlowPostSLLifecycle PostSLLifecycle() const;
     bool TryConfirmPostSLEpoch(uint32_t epoch);
     const std::string& LogDirectory() const {
@@ -177,6 +178,7 @@ private:
     CEFlow_TrackQueue_t trackSignalQueue_ = nullptr;
     CEFlow_QueueOriginal_t signalOriginal_ = nullptr;
     CEFlow_ForwardSignal_t forwardSignal_ = nullptr;
+    CEFlow_RemoveSignalQueue_t removeSignalQueue_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;
