@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 
 // Validity of foreign Present handlers CE forwards into.
 //
@@ -78,7 +79,7 @@ namespace DXGIShared {
 // clean DXGI bypass).
 PFN_Present RefreshExternalOverlayPresentHookFromLiveEntry() {
     const PFN_Present liveEntry = dxgi_shared_s_originalVtable8Present;
-    if (!liveEntry || liveEntry == DetourPresent) {
+    if (!liveEntry || IsPresentDetourAddress(reinterpret_cast<void*>(liveEntry))) {
         return nullptr;
     }
     const auto* entryCode = reinterpret_cast<const uint8_t*>(liveEntry);
@@ -95,7 +96,7 @@ PFN_Present RefreshExternalOverlayPresentHookFromLiveEntry() {
         return nullptr;
     }
     // CE's own relay lives in a CE trampoline pool; re-adopting it would make CE call itself.
-    if (InlineHook::IsInTrampolinePool(entryTarget) || entryTarget == reinterpret_cast<void*>(DetourPresent)) {
+    if (InlineHook::IsInTrampolinePool(entryTarget) || IsPresentDetourAddress(entryTarget)) {
         return nullptr;
     }
     if (!IsCallableForeignPresentHandler(entryTarget)) {
@@ -154,7 +155,7 @@ PFN_Present GetCallableExternalOverlayPresentHook() {
         }
     }
 
-    if (handler && handler != DetourPresent && IsCallableForeignPresentHandler(reinterpret_cast<void*>(handler))) {
+    if (handler && !IsPresentDetourAddress(reinterpret_cast<void*>(handler)) && IsCallableForeignPresentHandler(reinterpret_cast<void*>(handler))) {
         return handler;
     }
 

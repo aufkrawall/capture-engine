@@ -1,11 +1,13 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
+#include "hook/present/dxgi_shared_detail/present_vtable_call.h"
 #include "hook/hooking/vtable_hook_policy.h"
 #include "backbuffer_reference_trace.h"
 
 // Swapchain Present/Present1/ResizeBuffers vtable-slot ownership: claim repair, detach for a
 // runtime handoff, and full teardown. Split out of dxgi_shared_hooks_present.cpp (which owns
 // the entry/body inline-hook install decision) to keep both units inside the file-size ceiling;
-// the two share nothing but the DXGIShared state they operate on.
+// vtable forwarding retains its own predecessors independently of inline/body hooks.
 //
 // The single rule every function here obeys: CE only ever writes back a slot it can prove it
 // still owns, with an interlocked compare against its own detour, and preserves any foreign
@@ -14,6 +16,59 @@
 // VirtualProtect runs (build 0.1.5914, crash 20260811_192706).
 
 namespace {
+std::atomic<PFN_Present> presentPredecessor{nullptr};
+std::atomic<PFN_Present1> present1Predecessor{nullptr};
+
+using DXGIShared::detail::ScopedVTableCall;
+
+HRESULT STDMETHODCALLTYPE DetourVTablePresent(IDXGISwapChain* swapchain, UINT interval, UINT flags) {
+    ScopedVTableCall<PFN_Present> call(swapchain, presentPredecessor.load(std::memory_order_acquire),
+                                       CE_CAPTURE_RETURN_ADDRESS());
+    return DXGIShared::DetourPresent(swapchain, interval, flags);
+}
+
+HRESULT STDMETHODCALLTYPE DetourVTablePresent1(IDXGISwapChain* swapchain, UINT interval, UINT flags,
+                                               const DXGI_PRESENT_PARAMETERS* parameters) {
+    ScopedVTableCall<PFN_Present1> call(swapchain, present1Predecessor.load(std::memory_order_acquire),
+                                        CE_CAPTURE_RETURN_ADDRESS());
+    return DXGIShared::DetourPresent1(swapchain, interval, flags, parameters);
+}
+
+// The shared install mutex serializes CE claims. The page is writable here;
+// publish the exact next link before the CAS makes its adapter callable.
+template <typename Target>
+bool ClaimPresentSlot(void** vtable, size_t index, Target detour, std::atomic<Target>& predecessor,
+                      Target& sharedOriginal, const char* method) {
+    void** entry = &vtable[index];
+    void* current = *reinterpret_cast<void* volatile*>(entry);
+    if (!current || current == reinterpret_cast<void*>(detour)) {
+        HookLogImportant("DXGIShared: Refusing ambiguous %s vtable claim entry=%p current=%p", method, entry, current);
+        return false;
+    }
+    const Target previous = predecessor.load(std::memory_order_acquire);
+    const Target previousShared = sharedOriginal;
+    // SDK route observation still consumes the shared original entry. Preserve
+    // that publication contract; it cannot overwrite this owner's retained link.
+    sharedOriginal = reinterpret_cast<Target>(current);
+    predecessor.store(reinterpret_cast<Target>(current), std::memory_order_release);
+    void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry),
+                                                       reinterpret_cast<void*>(detour), current);
+    if (replaced != current) {
+        predecessor.store(previous, std::memory_order_release);
+        sharedOriginal = previousShared;
+        HookLogImportant("DXGIShared: Preserving concurrent foreign %s replacement entry=%p expected=%p observed=%p",
+                         method, entry, current, replaced);
+        return false;
+    }
+    if (*reinterpret_cast<void* volatile*>(entry) != reinterpret_cast<void*>(detour)) {
+        HookLogImportant("DXGIShared: Foreign %s hook followed CE at entry=%p; retaining predecessor=%p", method, entry,
+                         current);
+    }
+    HookLog("DXGIShared: Hooked %s at vtable[%zu] (original=%p, detour=%p)", method, index, current,
+            reinterpret_cast<void*>(detour));
+    return true;
+}
+
 enum class VTableDetachResult {
     Detached,
     ForeignPreserved,
@@ -59,9 +114,66 @@ VTableDetachResult DetachOwnedVTableSlot(void** entry, void* detour, void* prede
 bool IsDetached(VTableDetachResult result) {
     return result == VTableDetachResult::Detached;
 }
-}
+}  // namespace
 
 namespace DXGIShared {
+bool InstallSwapchainPresentVTableHooks(IDXGISwapChain* swapchain) {
+    if (!swapchain)
+        return false;
+    std::lock_guard<std::mutex> installLock(g_SharedMutex);
+    void** vtable = *reinterpret_cast<void***>(swapchain);
+    if (!vtable)
+        return false;
+    if (dxgi_shared_s_hookedVTable) {
+        if (vtable != dxgi_shared_s_hookedVTable) {
+            HookLogImportant("DXGIShared: Preserving established Present vtable chain old=%p new=%p; "
+                             "using inline/wrapper interception for the distinct vtable",
+                             dxgi_shared_s_hookedVTable, vtable);
+        }
+        return true;
+    }
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(vtable, 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        HookLogImportant("DXGIShared: Cannot claim Present vtable %p (VirtualProtect error=%lu)", vtable,
+                         GetLastError());
+        return false;
+    }
+    const bool claimed =
+        ClaimPresentSlot(vtable, 8, &DetourVTablePresent, presentPredecessor, dxgi_shared_oPresent, "Present");
+    if (claimed) {
+        dxgi_shared_s_hookedVTable = vtable;
+        ClaimPresentSlot(vtable, 22, &DetourVTablePresent1, present1Predecessor, dxgi_shared_oPresent1, "Present1");
+    }
+    DWORD ignoredProtect = 0;
+    VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &ignoredProtect);
+    return claimed;
+}
+
+bool TryForwardPresentVTableCall(IDXGISwapChain* swapchain, UINT interval, UINT flags, HRESULT& result) {
+    return ScopedVTableCall<PFN_Present>::TryForward(swapchain, result, interval, flags);
+}
+
+const void* ResolvePresentDetourCaller(IDXGISwapChain* swapchain, const void* inlineCaller) {
+    return ScopedVTableCall<PFN_Present>::Caller(swapchain, inlineCaller);
+}
+
+const void* ResolvePresent1DetourCaller(IDXGISwapChain* swapchain, const void* inlineCaller) {
+    return ScopedVTableCall<PFN_Present1>::Caller(swapchain, inlineCaller);
+}
+
+bool IsPresentDetourAddress(const void* entry) {
+    return entry == reinterpret_cast<void*>(&DetourPresent) || entry == reinterpret_cast<void*>(&DetourVTablePresent);
+}
+
+bool IsPresent1DetourAddress(const void* entry) {
+    return entry == reinterpret_cast<void*>(&DetourPresent1) || entry == reinterpret_cast<void*>(&DetourVTablePresent1);
+}
+
+bool TryForwardPresent1VTableCall(IDXGISwapChain* swapchain, UINT interval, UINT flags,
+                                  const DXGI_PRESENT_PARAMETERS* parameters, HRESULT& result) {
+    return ScopedVTableCall<PFN_Present1>::TryForward(swapchain, result, interval, flags, parameters);
+}
+
 void RemovePresentHooks() {
     InlineHook::RemoveAll();
     dxgi_shared_oSetColorSpace1Trampoline.store(nullptr, std::memory_order_release);
@@ -75,11 +187,10 @@ void RemovePresentHooks() {
         return;
     if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 23 * sizeof(void*)))
         return;
-    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent,
-                          "Present");
-    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1,
-                          "Present1");
-
+    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourVTablePresent,
+                          (void*)presentPredecessor.load(std::memory_order_acquire), "Present");
+    DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourVTablePresent1,
+                          (void*)present1Predecessor.load(std::memory_order_acquire), "Present1");
 }
 }
 
@@ -97,10 +208,12 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
         return;
     }
 
-    const VTableDetachResult presentResult = DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent, "Present");
-    const VTableDetachResult present1Result = DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1, "Present1");
+    const VTableDetachResult presentResult =
+        DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourVTablePresent,
+                              (void*)presentPredecessor.load(std::memory_order_acquire), "Present");
+    const VTableDetachResult present1Result =
+        DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourVTablePresent1,
+                              (void*)present1Predecessor.load(std::memory_order_acquire), "Present1");
     const bool restoredPresent = IsDetached(presentResult);
     const bool restoredPresent1 = IsDetached(present1Result);
     const bool resizeChainRetained =
@@ -113,8 +226,10 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
             "DXGIShared: Released swapchain Present vtable hooks for runtime handoff "
             "(present=%d present1=%d vtable=%p restored8=%p restored22=%p reason=%s)",
             restoredPresent ? 1 : 0, restoredPresent1 ? 1 : 0, dxgi_shared_s_hookedVTable,
-            restoredPresent ? (void*)dxgi_shared_oPresent : dxgi_shared_s_hookedVTable[8],
-            restoredPresent1 ? (void*)dxgi_shared_oPresent1 : dxgi_shared_s_hookedVTable[22], reason ? reason : "unknown");
+            restoredPresent ? (void*)presentPredecessor.load(std::memory_order_acquire) : dxgi_shared_s_hookedVTable[8],
+            restoredPresent1 ? (void*)present1Predecessor.load(std::memory_order_acquire)
+                             : dxgi_shared_s_hookedVTable[22],
+            reason ? reason : "unknown");
         if (restoredPresent && restoredPresent1 && !resizeChainRetained && !resize1ChainRetained) {
             dxgi_shared_s_hookedVTable = nullptr;
             dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
@@ -200,10 +315,10 @@ void RepairVTableHooksIfNeeded() {
         return true;
     };
 
-    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourPresent,
-                                   (void*)dxgi_shared_oPresent, "Present");
-    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1,
-                                   (void*)dxgi_shared_oPresent1, "Present1");
+    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourVTablePresent,
+                                   (void*)presentPredecessor.load(std::memory_order_acquire), "Present");
+    repaired |= repairRestoredSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourVTablePresent1,
+                                   (void*)present1Predecessor.load(std::memory_order_acquire), "Present1");
 
     static std::atomic<uint32_t> s_intactLogCount{0};
     if (repaired) {
@@ -234,16 +349,18 @@ void RemoveSwapchainVTableHooks() {
         HookLogImportant("DXGIShared: Cannot detach unreadable swapchain vtable %p", dxgi_shared_s_hookedVTable);
         return;
     }
-    const bool presentDetached = IsDetached(DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[8], (void*)DetourPresent, (void*)dxgi_shared_oPresent, "Present"));
-    const bool present1Detached = IsDetached(DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[22], (void*)DetourPresent1, (void*)dxgi_shared_oPresent1, "Present1"));
-    const bool resizeDetached = IsDetached(DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[13], (void*)DetourResizeBuffers, (void*)dxgi_shared_oResizeBuffers,
-        "ResizeBuffers"));
-    const bool resize1Detached = IsDetached(DetachOwnedVTableSlot(
-        &dxgi_shared_s_hookedVTable[39], (void*)DetourResizeBuffers1, (void*)dxgi_shared_oResizeBuffers1,
-        "ResizeBuffers1"));
+    const bool presentDetached =
+        IsDetached(DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[8], (void*)DetourVTablePresent,
+                                         (void*)presentPredecessor.load(std::memory_order_acquire), "Present"));
+    const bool present1Detached =
+        IsDetached(DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[22], (void*)DetourVTablePresent1,
+                                         (void*)present1Predecessor.load(std::memory_order_acquire), "Present1"));
+    const bool resizeDetached =
+        IsDetached(DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[13], (void*)DetourResizeBuffers,
+                                         (void*)dxgi_shared_oResizeBuffers, "ResizeBuffers"));
+    const bool resize1Detached =
+        IsDetached(DetachOwnedVTableSlot(&dxgi_shared_s_hookedVTable[39], (void*)DetourResizeBuffers1,
+                                         (void*)dxgi_shared_oResizeBuffers1, "ResizeBuffers1"));
 
     if (presentDetached && present1Detached && resizeDetached && resize1Detached) {
         dxgi_shared_s_hookedVTable = nullptr;

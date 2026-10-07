@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 
@@ -77,7 +78,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                                            "DXGIShared::DetourPresent1 pre-routing");
     }
 
-    const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const void* detourCallerAddress = ResolvePresent1DetourCaller(pSwapChain, CE_CAPTURE_RETURN_ADDRESS());
     char detourCallerModulePath[MAX_PATH] = {};
     // Same rule as DetourPresent: below a foreign chain the immediate caller is always a
     // foreign overlay module, so it cannot classify the swapchain. See

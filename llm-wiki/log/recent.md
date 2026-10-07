@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-07 - Present vtable ownership preserves foreign links and caller provenance
+
+- Reproduced a skipped predecessor: a foreign layer installed before CE received zero of three
+  presents. Private typed bindings and scoped forwarding preserve Present/Present1 next links;
+  inline reentry cannot restart the same link. Original receiver/arguments/HRESULT remain exact.
+- Original caller provenance must cross the adapter: hiding the SDK caller caused uncovered DLSS/
+  NGX startup outputs. The scope now retains it only for its own receiver/method/view. Legacy shared
+  original publication remains for SDK observation; broader D3 aliases are not closed by this slice.
+- Self-target checks recognize both CE views. Temporary handoffs restore the exact displaced entry,
+  preserving foreign followers. Source guards still protect ownership/publication and Steam ordering.
+- Two additional real-hook cases keep inline hooks active and cover both physical vtable orders,
+  nested probes, handoff/removal and subsequent native output. Six native scope/identity cases and
+  six deliberate mutations pass; restored production passes 539 focused native cases/all 32 FG flows.
+- Closing 20261007_141239_build_7020 passes native/Python/all 32 FG flows and x64/x86 products/package.
+  Setup: 38,737,206-byte PE. No new compiler warnings; no sanitizer/fuzz/hardware checks in this slice.
+- Query-forwarder flip-queue pacing and source-including duplicate test symbols are documented debt.
+  CE callback drain, actual nested outputs, remaining inline/DLL orders and provider unload stay open.
+
 ### 2026-10-07 - Reusable library and first-client delivery join the active refactor
 
 - User requested integrating library extraction with ownership work. D13 now requires independent

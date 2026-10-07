@@ -36,11 +36,21 @@ parallel instances and a plugin framework remain separate features.
 
 ## Execution status (2026-10-07)
 
+- D1/D2 Present vtable forwarding slice: foreign layers installed before CE's physical claim now
+  receive Present and Present1 instead of being skipped by the inline trampoline. One private owner
+  retains separate typed predecessors and scopes forwarding to the method/receiver; inline reentry
+  cannot reuse the active vtable link. Two real-hook cases keep inline hooks active, exercise nested
+  probes and handoff/removal, with exact physical coverage and no debug-layer errors. Six native
+  argument/result/reentry/receiver/caller/identity cases and the read-only repair/detach cases pass.
+  All six forwarding/scope/caller/identity mutations fail; restored production passes 539 focused
+  native cases and all 32 FG flows. Closing 0.1.7020 passes native/Python/all 32 FG flows, x64/x86 products and setup packaging.
+  Original SDK caller provenance and legacy shared-original publication are preserved; D3 aliases remain. This tests physical vtable
+  installation order, not foreign inline hooks installed before CE DLL loading. Full D1/D2 stay open.
 - D1 Present coexistence slice: a controlled foreign layer above the real DXGI Present chain covers
   repair, nested status probes and removal with an admitted callback. Native/wrapper Present and
   Present1 probes exposed false output accounting (16 ledger entries for 10 actual presents); their
   entry boundaries now forward before frame side effects. Three cases and four deliberate guard
-  mutations pass. Opposite installation order, actual nested physical outputs, CE removal with
+  mutations pass. Remaining inline/DLL installation orders, actual nested physical outputs, CE removal with
   active Present callbacks and external provider unload remain pending; D1 is still partial.
   Closing 0.1.7018 passes native/Python/all 30 FG flows, x64/x86 products and the setup package.
 - D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
@@ -69,8 +79,8 @@ parallel instances and a plugin framework remain separate features.
   reproduced a stack overflow after reset; ResolveInterception now owns saved-binding -> exact retained
   interception -> untracked live-slot priority for ECL, Signal and device tracing. Established bindings
   consult no cold readers. Eleven native registry cases and six dispatch mutations pass; physical
-  restoration/Remove success do not prove callback drain or provider-code retirement. Foreign Present
-  interposers, provider unload, scoped code holds and remaining D2 retirement still need implementation.
+  restoration/Remove success do not prove callback drain or provider-code retirement. Remaining Present
+  orders, provider unload, scoped code holds and D2 retirement still need implementation.
   Closing 0.1.7017 passes native/Python/all 27 FG flows, x64/x86 products and the setup package.
 - D0/D10 device tracing slice: fixed the first-global creation-target crash under CE_DX12_TRACE=1.
   One private module owns exact-vtable installation, dispatch, reset recovery and tracing detours for
@@ -92,6 +102,12 @@ parallel instances and a plugin framework remain separate features.
   All four parser fuzz targets passed a bounded 10-second-per-target run; hardware/application checks remain pending.
 - Temporary directory literally inventoried: only this working copy remains. The earlier 32-file
   cleanup is already complete; do not repeat it or treat future diagnostic files as disposable.
+
+- Additional pending findings from this slice: status-query entry guards skip frame processing,
+  but CallOriginalPresent/Present1 still invoke flip-queue pacing when backbuffer override/provenance
+  enables it. A waitable-query regression and correction remain required. Native test linking also
+  reports duplicate FontAtlas/VulkanBackend definitions from source-including test units; the build
+  currently accepts these. Investigate their test seams/link ownership separately from this slice.
 
 ## Scope and evidence
 

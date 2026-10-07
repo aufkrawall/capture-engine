@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 
 #include "hook/present/dxgi_shared_detail/steam_null_callback.h"
 
@@ -636,13 +637,13 @@ bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapChain, UIN
     const bool steamCallbackIsInvalidLowAddress =
         steamCallbackReadable && steamCallbackBefore != nullptr && steamCallbackAddress < 0x10000;
     ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
-        externalPresent != nullptr && externalPresent != DetourPresent && presentBypass != nullptr && isSteamOverlay &&
+        externalPresent != nullptr && !IsPresentDetourAddress(reinterpret_cast<void*>(externalPresent)) && presentBypass != nullptr && isSteamOverlay &&
             isD3D12SwapChain,
         "guarded external Present", reason, reinterpret_cast<void*>(externalPresent),
         reinterpret_cast<void*>(presentBypass), streamlineStackActive, streamlinePluginLookupGuardReady);
     const bool steamNullCallbackRecoveryReady = steamNullCallbackGuard.IsInstalled();
     const bool basePolicyAllowsGuardedSteamInvoke = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-        externalPresent != nullptr && externalPresent != DetourPresent, presentBypass != nullptr, isSteamOverlay,
+        externalPresent != nullptr && !IsPresentDetourAddress(reinterpret_cast<void*>(externalPresent)), presentBypass != nullptr, isSteamOverlay,
         isD3D12SwapChain, IsInWrapperPresent(), IsWrappedSwapChainObject(pSwapChain),
         dxgi_shared_s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive, synchronousPresentThreadAllowed,
         streamlinePluginLookupGuardReady, steamNullCallbackRecoveryReady);

@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/metrics/hook_cpu_cost.h"
@@ -578,7 +579,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     EnterStage(CostStage::kContext);
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
-    const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
+    const void* detourCallerAddress = ResolvePresentDetourCaller(pSwapChain, CE_CAPTURE_RETURN_ADDRESS());
     const DWORD currentThreadId = GetCurrentThreadId();
     const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
 

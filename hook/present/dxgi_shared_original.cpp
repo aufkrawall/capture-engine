@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "hook/metrics/hook_cpu_cost.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 #include "present_stage_cost.h"
@@ -16,6 +17,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // game's own, not CE's, and are excluded from the hook's cost.
     ScopedHookForwardedCall forwardedCycles;
     if (HookIsShuttingDown()) {
+        HRESULT vtableResult = E_FAIL;
+        if (TryForwardPresentVTableCall(pSwapChain, SyncInterval, Flags, vtableResult))
+            return vtableResult;
+
         // A deep body hook means this call already came DOWN the foreign chain, so the only
         // remaining work is the real body. Checked before the entry forward below, which
         // would re-run Steam/RTSS and re-enter this same hook forever.
@@ -25,7 +30,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // CE owns no entry bytes in the left-to-foreign-chain mode; the live entry IS the
         // foreign chain, exactly as it would be without CE.
         if (IsPresentEntryLeftToForeignChain() && dxgi_shared_s_originalVtable8Present &&
-            dxgi_shared_s_originalVtable8Present != DetourPresent) {
+            !IsPresentDetourAddress(reinterpret_cast<void*>(dxgi_shared_s_originalVtable8Present))) {
             return dxgi_shared_s_originalVtable8Present(pSwapChain, SyncInterval, Flags);
         }
         // The trampoline can re-enter Steam's chain when CE prepended over its
@@ -39,7 +44,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
         if (dxgi_shared_oPresentTrampoline)
             return dxgi_shared_oPresentTrampoline(pSwapChain, SyncInterval, Flags);
-        if (dxgi_shared_oPresent && dxgi_shared_oPresent != DetourPresent)
+        if (dxgi_shared_oPresent && !IsPresentDetourAddress(reinterpret_cast<void*>(dxgi_shared_oPresent)))
             return dxgi_shared_oPresent(pSwapChain, SyncInterval, Flags);
         return DXGI_ERROR_INVALID_CALL;
     }
@@ -50,6 +55,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // was GPU- or vblank-bound - and which skipped the presentation-ownership
     // rule the shared implementation enforces.
     WaitBackbufferFrameLatency(pSwapChain);
+
+    HRESULT vtableResult = E_FAIL;
+    if (TryForwardPresentVTableCall(pSwapChain, SyncInterval, Flags, vtableResult))
+        return vtableResult;
 
     // Multi-overlay foreign chain, CE intercepting BELOW it: control reached DetourPresent
     // through the deep body hook, so Steam and RTSS have already drawn above us and the frame
@@ -74,7 +83,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (IsPresentEntryLeftToForeignChain()) {
         const PFN_Present liveEntry =
             dxgi_shared_s_originalVtable8Present ? dxgi_shared_s_originalVtable8Present : dxgi_shared_oPresent;
-        if (liveEntry && liveEntry != DetourPresent) {
+        if (liveEntry && !IsPresentDetourAddress(reinterpret_cast<void*>(liveEntry))) {
             static std::atomic<int> s_foreignChainEntryForwardCount{0};
             const int forwardNum = s_foreignChainEntryForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (forwardNum <= 5 || (forwardNum % 5000) == 0) {
@@ -308,15 +317,15 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         // outside VirtualProtect regions, and `lock cmpxchg` faults
                         // there even when used only as a read.
                         savedVtable8 = *reinterpret_cast<void* volatile*>(&dxgi_shared_s_hookedVTable[8]);
-                        if (savedVtable8 == (void*)DetourPresent && presentOriginal &&
-                            presentOriginal != (PFN_Present)DetourPresent) {
+                        if (IsPresentDetourAddress(savedVtable8) && presentOriginal &&
+                            !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal))) {
                             DWORD oldProtect = 0;
                             if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                                 void* replaced = InterlockedCompareExchangePointer(
                                     reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]),
-                                    (void*)presentOriginal, (void*)DetourPresent);
+                                    (void*)presentOriginal, savedVtable8);
                                 VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-                                if (replaced == (void*)DetourPresent) {
+                                if (replaced == savedVtable8) {
                                     needVtableRestore = true;
                                     vtableRestored = true;
                                     static std::atomic<int> s_vtableRestoreLogCount{0};
@@ -397,7 +406,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // handler fires through the natural hook chain with the correct
                     // return address, so it chains to the original dxgi!Present
                     // after rendering Steam overlay.
-                    if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
+                    if (presentOriginal && !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal))) {
                         // No speculative writes into Steam's callback slots: pre-filling a slot
                         // Steam has not initialized makes it skip its own install and chain to a
                         // raw Present, dropping every overlay below Steam. The VEH below recovers
@@ -480,7 +489,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                         if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                             void* replaced = InterlockedCompareExchangePointer(
                                 reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]),
-                                (void*)DetourPresent, (void*)presentOriginal);
+                                savedVtable8, (void*)presentOriginal);
                             if (replaced == (void*)presentOriginal) {
                                 VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
                                 static std::atomic<int> s_vtableRehookLogCount{0};
@@ -572,7 +581,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // SL-originated Steam bypass paths are handled before this fallback by
     // TryInvokeGuardedExternalSteamOverlayPresent. This branch preserves normal
     // vtable-chain behavior for ordinary Present calls.
-    if (slLoaded && presentOriginal && presentOriginal != DetourPresent) {
+    if (slLoaded && presentOriginal && !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal))) {
         static std::atomic<int> s_copFastPathCount{0};
         int fastPathNum = s_copFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {
@@ -592,7 +601,6 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         //      under the NULL-callback VEH recovery which patches the faulting
         //      slot and retries. Without it Steam crashes the render thread with
         //      RIP=0 (RoboCop: Rogue City session 20260809_140551).
-        const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
         const bool steamOverlay = IsCurrentExternalPresentHookSteamChain();
         if (steamOverlay && presentBypass) {
             const auto runtimeMode = g_FGCompat.GetRuntimeMode();
@@ -651,7 +659,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         void** vtable = *(void***)pSwapChain;
         if (vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 9 * sizeof(void*)) && vtable[8]) {
             auto currentPresent = reinterpret_cast<PFN_Present>(vtable[8]);
-            if (currentPresent != DetourPresent) {
+            if (!IsPresentDetourAddress(reinterpret_cast<void*>(currentPresent))) {
                 static int s_copLogCount3 = 0;
                 if (s_copLogCount3++ < 5) {
                     HookLog("CallOriginalPresent: vtable[8] path=%p (slLoaded=%d, oPresent=%p)", currentPresent,
@@ -668,7 +676,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // (e.g. Steam's gameoverlayrenderer64). This is safe only when the startup
     // compat pass has been blocked (see ShouldAllowDX12StartupPresentPassForState)
     // so that DetourPresent's full routing logic handles re-entrancy.
-    if (presentOriginal && presentOriginal != DetourPresent) {
+    if (presentOriginal && !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal))) {
         static int s_copLogCount4 = 0;
         if (s_copLogCount4++ < 5) {
             const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
@@ -684,7 +692,6 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // which crashes because vtable[8] = DetourPresent. Use the bypass
         // trampoline instead to skip all in-memory hooks.
         if (!slLoaded && presentBypass) {
-            const char* overlayModule = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
             if (IsCurrentExternalPresentHookSteamChain()) {
                 static int s_steamNonSLBypassCount = 0;
                 if (s_steamNonSLBypassCount++ < 10) {

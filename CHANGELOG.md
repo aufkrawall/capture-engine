@@ -14,7 +14,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Reusable engine library plan:** made independent runtime/library delivery and CaptureEngine as its first client part of the active refactor, with explicit API, lifecycle, packaging and standalone-client acceptance gates. This records planned work; the current API remains controller-bound.
 
-- **DXGI status probes:** Present/Present1 calls with `DXGI_PRESENT_TEST` now forward without drawing, pacing, frame accounting or FG status updates, including through CE wrappers. Foreign-hook tests cover repair and removal with callbacks still executing.
+- **DXGI status probes:** Present/Present1 calls with `DXGI_PRESENT_TEST` now forward without drawing, frame accounting or FG status updates, including through CE wrappers. Foreign-hook tests cover repair and removal with callbacks still executing.
 
 - **DirectX 12 forwarding after hook reset:** retained per-slot predecessors now take priority over a foreign hook's live entry, preventing a foreign-to-CE recursion loop after dispatch reset. Controlled coexistence tests cover both installation orders and callbacks still executing during removal.
 
@@ -105,6 +105,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **DirectX overlay coexistence:** fixed Present and Present1 forwarding that could skip an overlay already installed in the swapchain vtable. Vtable interception now retains its own next links independently of inline hooks, with regressions for both methods and nested status probes.
 
 - **Frame generation Base/Display rates:** the overlay's Base/Display row under DLSS frame generation no longer freezes at the last rate seen before FG started (e.g. "67 / 133 FPS" while the screen ran at 52 fps). Both rates are now measured from the displayed frames and the game's own frame cadence, and show equal values while DLSS FG is enabled but not generating frames, as in menus.
 

@@ -104,13 +104,18 @@ FlowGame::FlowGame(const std::string& testName) {
     removeSignalQueue_ = reinterpret_cast<CEFlow_RemoveSignalQueue_t>(GetProcAddress(hook_, "CEFlow_RemoveSignalQueue"));
     repairPresentHooks_ = reinterpret_cast<CEFlow_RepairPresentHooks_t>(GetProcAddress(hook_, "CEFlow_RepairPresentHooks"));
     retainRealSwapchain_ = reinterpret_cast<CEFlow_RetainRealSwapchain_t>(GetProcAddress(hook_, "CEFlow_RetainRealSwapchain"));
+    releasePresentVTableHooks_ = reinterpret_cast<CEFlow_ReleasePresentVTableHooks_t>(
+        GetProcAddress(hook_, "CEFlow_ReleasePresentVTableHooks"));
+    installPresentVTableHooks_ = reinterpret_cast<CEFlow_InstallPresentVTableHooks_t>(
+        GetProcAddress(hook_, "CEFlow_InstallPresentVTableHooks"));
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
     if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
-        !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_) {
+        !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_ ||
+        !releasePresentVTableHooks_ || !installPresentVTableHooks_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -306,7 +311,7 @@ bool FlowGame::UseSwapchain(SwapchainKind kind) {
     return CreateSwapchain(kind);
 }
 
-bool FlowGame::RenderFrame() {
+bool FlowGame::RenderFrame(PresentMethod method) {
     if (!error_.empty() || !swapchain_)
         return false;
     // Frame k starts at clockOrigin_ + k intervals; a presenter's generated frames took part of the last one.
@@ -342,7 +347,8 @@ bool FlowGame::RenderFrame() {
     queue_->ExecuteCommandLists(1, lists);
     if (kind_ == SwapchainKind::kStreamline)
         MarkStreamlinePresent(true);
-    hr = swapchain_->Present(0, 0);
+    DXGI_PRESENT_PARAMETERS parameters{};
+    hr = method == PresentMethod::kPresent1 ? swapchain_->Present1(0, 0, &parameters) : swapchain_->Present(0, 0);
     if (kind_ == SwapchainKind::kNative)
         CEFlowGame_CountPhysicalPresent();
     if (kind_ == SwapchainKind::kStreamline)
@@ -358,9 +364,9 @@ bool FlowGame::RenderFrame() {
     return true;
 }
 
-bool FlowGame::RenderFrames(int count) {
+bool FlowGame::RenderFrames(int count, PresentMethod method) {
     for (int i = 0; i < count; ++i) {
-        if (!RenderFrame())
+        if (!RenderFrame(method))
             return false;
     }
     return true;
@@ -428,6 +434,13 @@ bool FlowGame::RemoveSignalQueue(ID3D12CommandQueue* queue) {
 void FlowGame::RepairPresentHooks() {
     if (repairPresentHooks_)
         repairPresentHooks_();
+}
+void FlowGame::ReleasePresentVTableHooks() {
+    if (releasePresentVTableHooks_)
+        releasePresentVTableHooks_();
+}
+bool FlowGame::InstallPresentVTableHooks(IDXGISwapChain* swapchain) {
+    return installPresentVTableHooks_ && installPresentVTableHooks_(swapchain);
 }
 ComPtr<IDXGISwapChain> FlowGame::RetainUnderlyingGameSwapchain() const {
     ComPtr<IDXGISwapChain> real;

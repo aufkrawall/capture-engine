@@ -65,6 +65,8 @@ using CEFlow_ForwardSignal_t = HRESULT (*)(ID3D12CommandQueue*, UINT64);
 using CEFlow_RemoveSignalQueue_t = bool (*)(ID3D12CommandQueue*);
 using CEFlow_RepairPresentHooks_t = void (*)();
 using CEFlow_RetainRealSwapchain_t = IDXGISwapChain* (*)(IDXGISwapChain*);
+using CEFlow_ReleasePresentVTableHooks_t = void (*)();
+using CEFlow_InstallPresentVTableHooks_t = bool (*)(IDXGISwapChain*);
 using CEFlow_GetPostSLLifecycle_t = void (*)(CEFlowPostSLLifecycle* out);
 using CEFlow_TryConfirmPostSLEpoch_t = bool (*)(uint32_t epoch);
 // The hook runs on a virtual clock (hook/runtime/hook_clock.h) that only these move.

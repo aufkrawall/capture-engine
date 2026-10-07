@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "hook/runtime/hook_clock.h"
 #include "dxgi_color_space_hook_policy.h"
 #include "resize_reconcile_hook_policy.h"
@@ -271,39 +272,6 @@ bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain, const char* sou
                      source ? source : "unknown", colorSpaceAddress, colorSpaceTrampoline);
     return true;
 }
-
-// Claims one swapchain vtable slot for CE while preserving whatever injector
-// already owned it. The shared install mutex serializes competing CE installs;
-// the CAS preserves a foreign injector that wins after our observation.
-template <typename FunctionPointer>
-bool ClaimSwapchainVTableSlot(void** vtable, size_t index, void* detour, FunctionPointer* predecessor,
-                              const char* method) {
-    void** entry = &vtable[index];
-    void* current = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), nullptr, nullptr);
-    if (!current || current == detour) {
-        HookLogImportant("DXGIShared: Refusing ambiguous %s vtable claim entry=%p current=%p", method, entry, current);
-        return false;
-    }
-
-    // Publish the predecessor before making the detour callable.
-    FunctionPointer previousPredecessor = *predecessor;
-    *predecessor = reinterpret_cast<FunctionPointer>(current);
-    void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), detour, current);
-    if (replaced != current) {
-        *predecessor = previousPredecessor;
-        HookLogImportant(
-            "DXGIShared: Preserving concurrent foreign %s vtable replacement entry=%p expected=%p observed=%p", method,
-            entry, current, replaced);
-        return false;
-    }
-
-    if (*entry != detour) {
-        HookLogImportant("DXGIShared: Foreign %s hook followed CE at entry=%p current=%p; retaining CE predecessor=%p",
-                         method, entry, *entry, current);
-    }
-    HookLog("DXGIShared: Hooked %s at vtable[%zu] (original=%p, detour=%p)", method, index, current, detour);
-    return true;
-}
 }
 
 namespace {
@@ -484,57 +452,7 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
         return true;
     }
 
-    std::lock_guard<std::mutex> installLock(g_SharedMutex);
-
-    if (dxgi_shared_s_hookedVTable) {
-        void** newVTable = *(void***)pSwapChain;
-        if (newVTable == dxgi_shared_s_hookedVTable) {
-            HookLog("DXGIShared::InstallHooks: Hooks already installed on vtable %p", dxgi_shared_s_hookedVTable);
-            return true;
-        }
-        // The detours use one predecessor set. Replacing that set while the old
-        // vtable can still call CE would route in-flight calls through the wrong
-        // implementation. Inline/wrapper interception remains available for a
-        // distinct proxy vtable, so preserve the established chain.
-        HookLogImportant(
-            "DXGIShared::InstallHooks: Preserving established vtable chain old=%p new=%p; "
-            "using inline/wrapper interception for the distinct vtable",
-            dxgi_shared_s_hookedVTable, newVTable);
-        return true;
-    }
-
-    void** vtable = *(void***)pSwapChain;
-    if (!vtable) {
-        HookLog("DXGIShared::InstallHooks: Invalid vtable");
-        return false;
-    }
-
-    DWORD oldProtect;
-    if (!VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        HookLog("DXGIShared::InstallHooks: VirtualProtect failed");
-        return false;
-    }
-
-    const auto claimSlot = [&]<typename FunctionPointer>(size_t index, void* detour, FunctionPointer* predecessor,
-                                                         const char* method) {
-        return ClaimSwapchainVTableSlot(vtable, index, detour, predecessor, method);
-    };
-
-    if (!claimSlot(8, (void*)DetourPresent, &dxgi_shared_oPresent, "Present")) {
-        VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &oldProtect);
-        return false;
-    }
-    dxgi_shared_s_hookedVTable = vtable;
-
-    claimSlot(22, (void*)DetourPresent1, &dxgi_shared_oPresent1, "Present1");
-
-    // ResizeBuffers/ResizeBuffers1 are claimed unconditionally above: `presentOnly`
-    // describes who owns Present, and the resize flag reconciliation is required
-    // for every application-facing chain regardless of that answer.
-
-    VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &oldProtect);
-    HookLog("DXGIShared::InstallHooks: All vtable hooks installed successfully");
-    return true;
+    return InstallSwapchainPresentVTableHooks(pSwapChain);
 }
 }
 

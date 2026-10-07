@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "present_hook_target_memo.h"
 
 namespace DXGIShared {
@@ -195,8 +196,8 @@ void RefreshLivePresentHooksForSwapchainIfNeeded(IDXGISwapChain* pSwapChain, con
     void** vtable = *(void***)pSwapChain;
     const bool hasReadableVtable = vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*));
     const bool trackedVtableMatchesCurrent = hasReadableVtable && dxgi_shared_s_hookedVTable == vtable;
-    const bool presentHookInstalled = hasReadableVtable && vtable[8] == (void*)DetourPresent;
-    const bool present1HookInstalled = hasReadableVtable && vtable[22] == (void*)DetourPresent1;
+    const bool presentHookInstalled = hasReadableVtable && IsPresentDetourAddress(vtable[8]);
+    const bool present1HookInstalled = hasReadableVtable && IsPresent1DetourAddress(vtable[22]);
     const bool presentEntryLeftToForeignChain =
         dxgi_shared_s_presentEntryLeftToForeignChain.load(std::memory_order_acquire);
 
@@ -284,6 +285,11 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
         return false;  // Another thread is already handling init
     }
 
+    void* ownedEntry = *reinterpret_cast<void* volatile*>(&dxgi_shared_s_hookedVTable[8]);
+    if (!IsPresentDetourAddress(ownedEntry)) {
+        dxgi_shared_s_steamDX12InitAttempted.store(false, std::memory_order_release);
+        return false;
+    }
     DWORD oldProtect = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         HookLogImportant(
@@ -296,9 +302,9 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
     // entry after the initial check and must never be overwritten here.
     void* savedVtable8 = InterlockedCompareExchangePointer(
         reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), (void*)presentOriginal,
-        (void*)DetourPresent);
+        ownedEntry);
     VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
-    if (savedVtable8 != (void*)DetourPresent) {
+    if (savedVtable8 != ownedEntry) {
         HookLogImportant(
             "AttemptSteamDX12OverlayInit: Preserving concurrent foreign vtable[8]=%p; Steam init handoff skipped",
             savedVtable8);
@@ -335,7 +341,7 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
     if (VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
         void* replaced = InterlockedCompareExchangePointer(
-            reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), (void*)DetourPresent,
+            reinterpret_cast<PVOID volatile*>(&dxgi_shared_s_hookedVTable[8]), ownedEntry,
             (void*)presentOriginal);
         VirtualProtect(reinterpret_cast<void*>(&dxgi_shared_s_hookedVTable[8]), sizeof(void*), oldProtect, &oldProtect);
         if (replaced != (void*)presentOriginal) {

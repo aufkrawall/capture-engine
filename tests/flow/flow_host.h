@@ -104,8 +104,9 @@ public:
 
     // Renders (clears the back buffer), submits and presents one frame, then waits for the GPU so every
     // frame finishes before the next starts. Pumps the hook thread every `kFramesPerHookThreadPass` frames.
-    bool RenderFrame();
-    bool RenderFrames(int count);
+    enum class PresentMethod { kPresent, kPresent1 };
+    bool RenderFrame(PresentMethod method = PresentMethod::kPresent);
+    bool RenderFrames(int count, PresentMethod method = PresentMethod::kPresent);
 
     CEFlowOverlayCoverage Coverage() const;
     // Presents on real swapchains, counted where they happen (the game's native swapchain, the fake
@@ -118,6 +119,8 @@ public:
     ComPtr<IDXGISwapChain3> RetainGameSwapchain() const { return swapchain_; }
     ComPtr<IDXGISwapChain> RetainUnderlyingGameSwapchain() const;
     void RepairPresentHooks();
+    void ReleasePresentVTableHooks();
+    bool InstallPresentVTableHooks(IDXGISwapChain* swapchain);
     void TrackQueue(ID3D12CommandQueue* queue);
     void ResetQueueBindings();
     void ResetDeviceTrace();
@@ -184,6 +187,8 @@ private:
     CEFlow_RemoveSignalQueue_t removeSignalQueue_ = nullptr;
     CEFlow_RepairPresentHooks_t repairPresentHooks_ = nullptr;
     CEFlow_RetainRealSwapchain_t retainRealSwapchain_ = nullptr;
+    CEFlow_ReleasePresentVTableHooks_t releasePresentVTableHooks_ = nullptr;
+    CEFlow_InstallPresentVTableHooks_t installPresentVTableHooks_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;

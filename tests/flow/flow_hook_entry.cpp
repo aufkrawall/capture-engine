@@ -247,6 +247,13 @@ extern "C" __declspec(dllexport) void CEFlow_RepairPresentHooks() {
     DXGIShared::RepairVTableHooksIfNeeded();
 }
 
+extern "C" __declspec(dllexport) void CEFlow_ReleasePresentVTableHooks() {
+    DXGIShared::ReleaseSwapchainPresentVTableHooksForRuntimeHandoff("flow vtable release");
+}
+extern "C" __declspec(dllexport) bool CEFlow_InstallPresentVTableHooks(IDXGISwapChain* swapchain) {
+    return DXGIShared::InstallHooks(swapchain, true);
+}
+
 extern "C" __declspec(dllexport) IDXGISwapChain* CEFlow_RetainRealSwapchain(IDXGISwapChain* swapchain) {
     if (!swapchain)
         return nullptr;

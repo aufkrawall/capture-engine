@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_vtable_dispatch.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 
 // Split out of dxgi_shared_original.cpp to keep both units under the source-size
@@ -12,13 +13,16 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         return DXGI_ERROR_INVALID_CALL;
     }
     if (HookIsShuttingDown()) {
+        HRESULT vtableResult = E_FAIL;
+        if (TryForwardPresent1VTableCall(pSwapChain, SyncInterval, Flags, pParams, vtableResult))
+            return vtableResult;
+
         // Same rule as Present: a deep body hook means the foreign chain already ran above
         // this call, so the entry forward below must not re-enter it.
         if (dxgi_shared_oPresent1DeepBody) {
             return dxgi_shared_oPresent1DeepBody(pSwapChain, SyncInterval, Flags, pParams);
         }
-        if (IsPresentEntryLeftToForeignChain() && dxgi_shared_oPresent1 &&
-            dxgi_shared_oPresent1 != DetourPresent1) {
+        if (IsPresentEntryLeftToForeignChain() && dxgi_shared_oPresent1 && !IsPresent1DetourAddress(reinterpret_cast<void*>(dxgi_shared_oPresent1))) {
             return dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pParams);
         }
         // Same Steam external-chain hazard as Present - use the clean Present1
@@ -30,12 +34,16 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         }
         if (dxgi_shared_oPresent1Trampoline)
             return dxgi_shared_oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pParams);
-        if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1)
+        if (dxgi_shared_oPresent1 && !IsPresent1DetourAddress(reinterpret_cast<void*>(dxgi_shared_oPresent1)))
             return dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pParams);
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
     WaitBackbufferFrameLatency(pSwapChain);
+
+    HRESULT vtableResult = E_FAIL;
+    if (TryForwardPresent1VTableCall(pSwapChain, SyncInterval, Flags, pParams, vtableResult))
+        return vtableResult;
 
     // Multi-overlay foreign chain with CE below it: the deep trampoline is the remaining real
     // body. Re-entering the live Present1 entry would re-run the foreign chain and recurse.
@@ -52,7 +60,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
     // Multi-overlay foreign chain without a deep body hook: same rule as Present — CE owns no
     // entry bytes, so run the live Present1 entry and let the foreign chain compose itself.
     if (IsPresentEntryLeftToForeignChain()) {
-        if (dxgi_shared_oPresent1 && dxgi_shared_oPresent1 != DetourPresent1) {
+        if (dxgi_shared_oPresent1 && !IsPresent1DetourAddress(reinterpret_cast<void*>(dxgi_shared_oPresent1))) {
             static std::atomic<int> s_foreignChainPresent1ForwardCount{0};
             const int forwardNum = s_foreignChainPresent1ForwardCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (forwardNum <= 5 || (forwardNum % 5000) == 0) {
@@ -138,7 +146,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             // Steam does NOT hook Present1 with an E9 JMP, so calling
             // present1Original directly on an already-initialized Steam is safe.
             if (!dxgi_shared_s_steamInitCrashed && dxgi_shared_s_steamDX12InitAttempted.load(std::memory_order_acquire) && present1Original &&
-                present1Original != DetourPresent1 && IsReadableMemory(pSwapChain, sizeof(void*))) {
+                !IsPresent1DetourAddress(reinterpret_cast<void*>(present1Original)) && IsReadableMemory(pSwapChain, sizeof(void*))) {
                 static std::atomic<int> s_steamNonSLPresent1ViaE9JmpCount{0};
                 if (s_steamNonSLPresent1ViaE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                     HookLogImportant(
@@ -172,7 +180,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
 
     // CRITICAL: SL worker thread guard — same as CallOriginalPresent.
     // When SL is loaded, call oPresent1 directly (same reason as Present).
-    if (slLoaded && present1Original && present1Original != DetourPresent1) {
+    if (slLoaded && present1Original && !IsPresent1DetourAddress(reinterpret_cast<void*>(present1Original))) {
         return present1Original(pSwapChain, SyncInterval, Flags, pParams);
     }
 
@@ -181,21 +189,21 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
         void** vtable = *(void***)pSwapChain;
         if (vtable && IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) && vtable[22]) {
             auto currentPresent1 = reinterpret_cast<PFN_Present1>(vtable[22]);
-            if (currentPresent1 != DetourPresent1) {
+            if (!IsPresent1DetourAddress(reinterpret_cast<void*>(currentPresent1))) {
                 return currentPresent1(pSwapChain, SyncInterval, Flags, pParams);
             }
         }
     }
 
     // Vtable-hook path fallback: use saved original only if it is not detoured.
-    if (present1Original && present1Original != DetourPresent1) {
+    if (present1Original && !IsPresent1DetourAddress(reinterpret_cast<void*>(present1Original))) {
         return present1Original(pSwapChain, SyncInterval, Flags, pParams);
     }
 
     // Last resort: fall back to Present.
     return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
 }
-}
+}  // namespace DXGIShared
 
 namespace DXGIShared {
 void DisableSLPresentRouting() {

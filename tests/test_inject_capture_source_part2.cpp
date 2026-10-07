@@ -43,10 +43,10 @@ TEST(InjectLifecycleSourceTest, RenamedThirdPartyProxyIdentityUsesStableProjectM
 
 TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTableOwners) {
     const std::string install = ReadSource("hook/present/dxgi_shared_hooks.cpp");
+    const std::string vtableHooks = ReadSource("hook/present/dxgi_shared_hooks_present_vtable.cpp");
     // Both halves of the present-hook unit: the install/entry-ownership decision and the
     // vtable-slot ownership functions it was split from (repair, handoff detach, teardown).
-    const std::string presentHooks = ReadSource("hook/present/dxgi_shared_hooks_present.cpp") +
-                                     ReadSource("hook/present/dxgi_shared_hooks_present_vtable.cpp");
+    const std::string presentHooks = ReadSource("hook/present/dxgi_shared_hooks_present.cpp") + vtableHooks;
     const std::string original = ReadSource("hook/present/dxgi_shared_original.cpp");
     const std::string steamRouting = ReadSource("hook/present/dxgi_shared_steam_routing.cpp");
     const std::string dx11Present = ReadSource("hook/d3d11/dx11_hook_present.cpp");
@@ -56,7 +56,14 @@ TEST(InjectLifecycleSourceTest, DXGICoexistenceNeverBlindlyOverwritesForeignVTab
     ASSERT_FALSE(steamRouting.empty());
     ASSERT_FALSE(dx11Present.empty());
 
-    EXPECT_NE(install.find("InterlockedCompareExchangePointer"), std::string::npos);
+    EXPECT_NE(install.find("InstallSwapchainPresentVTableHooks(pSwapChain)"), std::string::npos);
+    const size_t claim = vtableHooks.find("bool ClaimPresentSlot(");
+    ASSERT_NE(claim, std::string::npos);
+    const size_t publication = vtableHooks.find("predecessor.store(", claim);
+    const size_t patch = vtableHooks.find("InterlockedCompareExchangePointer", claim);
+    ASSERT_NE(publication, std::string::npos);
+    ASSERT_NE(patch, std::string::npos);
+    EXPECT_LT(publication, patch);
     EXPECT_NE(presentHooks.find("Preserving foreign %s vtable replacement"), std::string::npos);
     EXPECT_EQ(presentHooks.find("dxgi_shared_s_hookedVTable[8] ="), std::string::npos);
     EXPECT_EQ(original.find("dxgi_shared_s_hookedVTable[8] ="), std::string::npos);

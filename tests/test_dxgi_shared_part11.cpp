@@ -40,7 +40,7 @@ TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamT
     const size_t naturalGuard = original.find("refusing Steam Present transport on runtime worker");
     const size_t inlineTrampoline = original.find("if (presentTrampoline)");
     const size_t forcedBypassRoute = original.find("if (forceSteamDX12Bypass)");
-    const size_t slFastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
+    const size_t slFastPath = original.find("if (slLoaded && presentOriginal && !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal)))");
     ASSERT_NE(naturalGuard, std::string::npos);
     ASSERT_NE(inlineTrampoline, std::string::npos);
     ASSERT_NE(forcedBypassRoute, std::string::npos);
@@ -245,7 +245,7 @@ TEST(DXGISharedSourceTest, SlFastPathSteamTransportIsGuardedLikeEveryOtherSteamT
     const std::string original = ce::test_source::ReadFile(originalSource);
     ASSERT_FALSE(original.empty());
 
-    const size_t fastPath = original.find("if (slLoaded && presentOriginal && presentOriginal != DetourPresent)");
+    const size_t fastPath = original.find("if (slLoaded && presentOriginal && !IsPresentDetourAddress(reinterpret_cast<void*>(presentOriginal)))");
     // The Steam classification must be owner-based (thunk-resolved / load-order),
     // not the priority-ordered loaded-module name (RTSS+Steam coexistence).
     const size_t steamOverlayCheck = original.find("IsCurrentExternalPresentHookSteamChain()", fastPath);

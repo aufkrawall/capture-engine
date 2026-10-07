@@ -4,6 +4,51 @@
 namespace {
 using namespace ce::flow;
 
+class ScopedPresentVTableClaim {
+public:
+    explicit ScopedPresentVTableClaim(FlowGame& game) : game_(game) {}
+    ~ScopedPresentVTableClaim() {
+        game_.ReleasePresentVTableHooks();
+    }
+
+private:
+    FlowGame& game_;
+};
+
+template <typename ForeignLayer>
+void CheckForeignPredecessor(FlowGame::PresentMethod method) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame(method)) << game.Error();
+    auto real = game.RetainUnderlyingGameSwapchain();
+    ASSERT_NE(real.Get(), nullptr);
+    game.ReleasePresentVTableHooks();
+    {
+        ForeignLayer foreign(real.Get(), true);
+        ASSERT_TRUE(foreign.Installed());
+        ScopedPresentVTableClaim claim(game);
+        ASSERT_TRUE(game.InstallPresentVTableHooks(real.Get()));
+        ASSERT_NE(foreign.CurrentEntry(), foreign.Entry()) << "CE must be the new physical vtable layer";
+        ASSERT_TRUE(game.RenderFrames(3, method)) << game.Error();
+        EXPECT_EQ(foreign.Calls(), 3u) << "CE must invoke the foreign predecessor it actually captured";
+        game.ReleasePresentVTableHooks();
+        EXPECT_EQ(foreign.CurrentEntry(), foreign.Entry());
+        ASSERT_TRUE(game.RenderFrames(3, method)) << game.Error();
+        EXPECT_EQ(foreign.Calls(), 6u);
+    }
+    ASSERT_TRUE(game.RenderFrame(method)) << game.Error();
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowPresentInterposer, ForeignLayerInstalledBeforeCEVTableClaimRemainsInTheChain) {
+    CheckForeignPredecessor<PresentInterposer>(FlowGame::PresentMethod::kPresent);
+}
+
+TEST(FlowPresentInterposer, ForeignPresent1InstalledBeforeCEVTableClaimRemainsInTheChain) {
+    CheckForeignPredecessor<Present1Interposer>(FlowGame::PresentMethod::kPresent1);
+}
+
 TEST(FlowPresentInterposer, ForeignLayerAboveCEKeepsCoverageAcrossRepairAndRemoval) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();

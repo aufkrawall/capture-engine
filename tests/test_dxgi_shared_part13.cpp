@@ -1,6 +1,7 @@
 #include "test_dxgi_shared_shared.h"
 
 #include "hook/present/dxgi_shared_internal.h"
+#include "hook/present/present_vtable_dispatch.h"
 
 namespace {
 
@@ -82,20 +83,23 @@ TEST(DXGISharedVTableRepairTest, RepairReclaimsRestoredSlotsOnReadOnlyClassVftab
     // vftable in dxgi.dll.
     vtable[8] = (void*)DummyPresent;
     vtable[22] = (void*)DummyPresent1;
-    ASSERT_TRUE(MakePageReadOnly(static_cast<void*>(vtable)));
-
-    DXGIShared::dxgi_shared_s_hookedVTable = vtable;
-    DXGIShared::dxgi_shared_oPresent = &DummyPresent;
-    DXGIShared::dxgi_shared_oPresent1 = &DummyPresent1;
     ScopedVTableStateGuard stateGuard;
+    auto* receiver = reinterpret_cast<IDXGISwapChain*>(&vtable);
+    ASSERT_TRUE(DXGIShared::InstallSwapchainPresentVTableHooks(receiver));
+    void* presentEntry = vtable[8];
+    void* present1Entry = vtable[22];
+    // Another owner restores the captured predecessors before CE repairs them.
+    vtable[8] = (void*)DummyPresent;
+    vtable[22] = (void*)DummyPresent1;
+    ASSERT_TRUE(MakePageReadOnly(static_cast<void*>(vtable)));
 
     // Pre-fix this crashed with an access violation: the first slot
     // observation used InterlockedCompareExchangePointer, i.e. `lock
     // cmpxchg`, which requires write access on the read-only vtable page.
     EXPECT_NO_FATAL_FAILURE(DXGIShared::RepairVTableHooksIfNeeded());
 
-    EXPECT_EQ(vtable[8], (void*)DXGIShared::DetourPresent);
-    EXPECT_EQ(vtable[22], (void*)DXGIShared::DetourPresent1);
+    EXPECT_EQ(vtable[8], presentEntry);
+    EXPECT_EQ(vtable[22], present1Entry);
     AssertPageStillReadOnly(static_cast<const void*>(vtable));
 
     ReleaseVTablePage(static_cast<void*>(vtable));
@@ -105,18 +109,17 @@ TEST(DXGISharedVTableRepairTest, DetachRestoresOwnedSlotsOnReadOnlyClassVftable)
     void** vtable = AllocateWritableVTablePage();
     ASSERT_NE(vtable, nullptr);
 
-    vtable[8] = (void*)DXGIShared::DetourPresent;
-    vtable[22] = (void*)DXGIShared::DetourPresent1;
+    vtable[8] = (void*)DummyPresent;
+    vtable[22] = (void*)DummyPresent1;
+    ScopedVTableStateGuard stateGuard;
+    auto* receiver = reinterpret_cast<IDXGISwapChain*>(&vtable);
+    ASSERT_TRUE(DXGIShared::InstallSwapchainPresentVTableHooks(receiver));
     vtable[13] = (void*)DXGIShared::DetourResizeBuffers;
     vtable[39] = (void*)DXGIShared::DetourResizeBuffers1;
     ASSERT_TRUE(MakePageReadOnly(static_cast<void*>(vtable)));
 
-    DXGIShared::dxgi_shared_s_hookedVTable = vtable;
-    DXGIShared::dxgi_shared_oPresent = &DummyPresent;
-    DXGIShared::dxgi_shared_oPresent1 = &DummyPresent1;
     DXGIShared::dxgi_shared_oResizeBuffers = &DummyResizeBuffers;
     DXGIShared::dxgi_shared_oResizeBuffers1 = &DummyResizeBuffers1;
-    ScopedVTableStateGuard stateGuard;
 
     // Same read-only class-vftable constraint: DetachOwnedVTableSlot must not
     // run a locked operation on the page before VirtualProtect.

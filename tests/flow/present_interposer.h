@@ -5,36 +5,40 @@
 
 #include <atomic>
 #include <thread>
+#include <type_traits>
 
 namespace ce::flow {
 
 // Independent foreign code forwards through the physical entry it captured, without CE policy.
-class PresentInterposer {
+template <bool IsPresent1>
+class BasicPresentInterposer {
 public:
-    using Method = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+    using Present = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+    using Present1 = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+    using Method = std::conditional_t<IsPresent1, Present1, Present>;
 
-    explicit PresentInterposer(IDXGISwapChain* swapchain, bool nestedTest = false, CallBarrier* barrier = nullptr)
+    explicit BasicPresentInterposer(IDXGISwapChain* swapchain, bool nestedTest = false, CallBarrier* barrier = nullptr)
         : swapchain_(swapchain),
-          slot_(&(*reinterpret_cast<void***>(swapchain))[8]),
+          slot_(&(*reinterpret_cast<void***>(swapchain))[IsPresent1 ? 22 : 8]),
           next_(reinterpret_cast<Method>(*slot_)),
           nestedTest_(nestedTest),
           barrier_(barrier) {
-        PresentInterposer* empty = nullptr;
+        BasicPresentInterposer* empty = nullptr;
         claimed_ = current_.compare_exchange_strong(empty, this);
         EXPECT_TRUE(claimed_);
         if (claimed_)
-            installed_ = Replace(next_, &Detour);
+            installed_ = Replace(next_, DetourEntry());
         EXPECT_TRUE(installed_);
     }
-    ~PresentInterposer() {
+    ~BasicPresentInterposer() {
         EXPECT_EQ(active_.load(), 0u);
         if (installed_)
             EXPECT_TRUE(Detach());
         if (claimed_)
             current_.store(nullptr, std::memory_order_release);
     }
-    PresentInterposer(const PresentInterposer&) = delete;
-    PresentInterposer& operator=(const PresentInterposer&) = delete;
+    BasicPresentInterposer(const BasicPresentInterposer&) = delete;
+    BasicPresentInterposer& operator=(const BasicPresentInterposer&) = delete;
 
     bool Installed() const {
         return installed_;
@@ -42,7 +46,7 @@ public:
     bool Detach() {
         if (!installed_)
             return true;
-        if (!Replace(&Detour, next_))
+        if (!Replace(DetourEntry(), next_))
             return false;
         installed_ = false;
         return true;
@@ -51,7 +55,7 @@ public:
         return *slot_;
     }
     void* Entry() const {
-        return reinterpret_cast<void*>(&Detour);
+        return reinterpret_cast<void*>(DetourEntry());
     }
     uint32_t Calls() const {
         return calls_.load();
@@ -60,7 +64,8 @@ public:
         return active_.load();
     }
     HRESULT TestPresent() {
-        return swapchain_->Present(0, DXGI_PRESENT_TEST);
+        DXGI_PRESENT_PARAMETERS parameters{};
+        return Invoke(reinterpret_cast<Method>(*slot_), swapchain_.Get(), 0, DXGI_PRESENT_TEST, &parameters);
     }
 
 private:
@@ -75,7 +80,28 @@ private:
         EXPECT_TRUE(VirtualProtect(slot_, sizeof(void*), previous, &unused));
         return before == reinterpret_cast<void*>(expected);
     }
+    static Method DetourEntry() {
+        if constexpr (IsPresent1)
+            return &Detour1;
+        else
+            return &Detour;
+    }
+    static HRESULT Invoke(Method target, IDXGISwapChain* swapchain, UINT interval, UINT flags,
+                          const DXGI_PRESENT_PARAMETERS* parameters) {
+        if constexpr (IsPresent1)
+            return target(swapchain, interval, flags, parameters);
+        else
+            return target(swapchain, interval, flags);
+    }
     static HRESULT STDMETHODCALLTYPE Detour(IDXGISwapChain* swapchain, UINT interval, UINT flags) {
+        return Intercept(swapchain, interval, flags, nullptr);
+    }
+    static HRESULT STDMETHODCALLTYPE Detour1(IDXGISwapChain* swapchain, UINT interval, UINT flags,
+                                             const DXGI_PRESENT_PARAMETERS* parameters) {
+        return Intercept(swapchain, interval, flags, parameters);
+    }
+    static HRESULT Intercept(IDXGISwapChain* swapchain, UINT interval, UINT flags,
+                             const DXGI_PRESENT_PARAMETERS* parameters) {
         auto* owner = current_.load(std::memory_order_acquire);
         if (!owner)
             return E_FAIL;
@@ -84,15 +110,15 @@ private:
         if (owner->barrier_)
             owner->barrier_->Enter();
         if (owner->nestedTest_ && !(flags & DXGI_PRESENT_TEST)) {
-            const HRESULT probe = owner->next_(swapchain, interval, flags | DXGI_PRESENT_TEST);
+            const HRESULT probe = Invoke(owner->next_, swapchain, interval, flags | DXGI_PRESENT_TEST, parameters);
             EXPECT_TRUE(SUCCEEDED(probe));
         }
-        const HRESULT result = owner->next_(swapchain, interval, flags);
+        const HRESULT result = Invoke(owner->next_, swapchain, interval, flags, parameters);
         --owner->active_;
         return result;
     }
 
-    inline static std::atomic<PresentInterposer*> current_{nullptr};
+    inline static std::atomic<BasicPresentInterposer*> current_{nullptr};
     ComPtr<IDXGISwapChain> swapchain_;
     void** const slot_;
     const Method next_;
@@ -103,6 +129,9 @@ private:
     bool claimed_ = false;
     bool installed_ = false;
 };
+
+using PresentInterposer = BasicPresentInterposer<false>;
+using Present1Interposer = BasicPresentInterposer<true>;
 
 class BlockedPresentCall {
 public:
