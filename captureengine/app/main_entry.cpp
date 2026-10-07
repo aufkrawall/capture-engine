@@ -1,31 +1,12 @@
 #include "main_internal.h"
 
 #include "libcaptureengine_controller.h"
-#include "common/config/config_reload_policy.h"
-#include "common/config/config_text_encoding.h"
 #include "common/platform/path_utils.h"
 #include "common/platform/window_heartbeat.h"
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_workers.h"
 
 #include <algorithm>
-
-namespace {
-// Hot-reload debounce state for config.ini (see config_reload_policy.h).
-ce::config_reload::State g_ConfigReloadState;
-
-ce::config_reload::FileIdentity ReadConfigFileIdentity(const std::string& path) {
-    WIN32_FILE_ATTRIBUTE_DATA fileInfo = {};
-    ce::config_reload::FileIdentity identity;
-    identity.exists = GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fileInfo) != FALSE;
-    if (identity.exists) {
-        identity.lastWriteTime = (static_cast<uint64_t>(fileInfo.ftLastWriteTime.dwHighDateTime) << 32) |
-                                 fileInfo.ftLastWriteTime.dwLowDateTime;
-        identity.size = (static_cast<uint64_t>(fileInfo.nFileSizeHigh) << 32) | fileInfo.nFileSizeLow;
-    }
-    return identity;
-}
-}  // namespace
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
@@ -77,7 +58,7 @@ void DispatchControllerMessage(const MSG& msg) {
             // Offered once startup is complete so the prompt cannot
             // delay child spawning, and on its own thread so it cannot
             // swallow hotkeys from this loop.
-            ce::pawnio::OfferInstallationAsync(main_g_Config.hardwareSensors);
+            ce::pawnio::OfferInstallationAsync(RuntimeConfiguration().hardwareSensors);
         }
         return;
     }
@@ -100,7 +81,7 @@ int ControllerMain(HINSTANCE hInstance) {
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
     ce::window_heartbeat::Service windowHeartbeat;
-    windowHeartbeat.UpdateProfiles(main_g_Config.applicationProfiles);
+    windowHeartbeat.UpdateProfiles(RuntimeConfiguration().applicationProfiles);
     PrimeStartupCursor();
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
@@ -183,7 +164,6 @@ int ControllerMain(HINSTANCE hInstance) {
     };
     static LoopWindow loopWindow{Log_GetQpcUs()};
     static uint64_t iterCount = 0;
-    static DWORD lastConfigCheck = 0;
 
     while (main_g_Running) {
         ce::startup::Pump();
@@ -222,110 +202,59 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const int64_t postHealthUs = Log_GetQpcUs();
 
-        // Config hot-reload
-        DWORD configNow = GetTickCount();
-        if (configNow - lastConfigCheck >= ce::config_reload::CheckIntervalMs(g_ConfigReloadState)) {
-            // Reload on ANY identity change (mtime OR size), not only a newer
-            // mtime: an editor/restore/sync can replace the file with an older
-            // timestamp. The change must be stable across two checks first, so a
-            // save in progress is never read half-written (config_reload_policy.h).
-            const ce::config_reload::FileIdentity identity = ReadConfigFileIdentity(main_g_ConfigPath);
-            ce::config_reload::Decision reloadDecision = ce::config_reload::Observe(g_ConfigReloadState, identity);
-            if (reloadDecision == ce::config_reload::Decision::kWait) {
-                LogDebug("[Controller] Config change seen (exists=%d size=%llu); applying once it is stable",
-                         identity.exists ? 1 : 0, static_cast<unsigned long long>(identity.size));
+        // The runtime owns read coherence, replacement and retry scheduling.
+        if (auto previous = ce::runtime::PollRuntimeConfiguration()) {
+            LogInfo("[Controller] Applying published configuration to frontend/services");
+            const AppConfig& oldConfig = *previous;
+            Log_SetLevel(RuntimeConfiguration().logLevel);
+            windowHeartbeat.UpdateProfiles(RuntimeConfiguration().applicationProfiles);
+
+            if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, RuntimeConfiguration().hotkeyStartStop)) {
+                UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
+                main_g_HotkeyOwnership.record =
+                    RegisterConfiguredHotkey(HOTKEY_ID_RECORD, RuntimeConfiguration().hotkeyStartStop, "recording");
             }
-            // Load into a candidate and publish it only after a coherent read: the file was
-            // readable before the load, no read failed during it, and it did not change while
-            // it ran (config_reload_policy.h, IsCoherentLoad). Otherwise nothing is published
-            // and the identity is not committed, so the next stable checks retry.
-            AppConfig candidateConfig;
-            if (reloadDecision == ce::config_reload::Decision::kReload) {
-                ce::config_reload::LoadEvidence evidence;
-                evidence.identityBeforeLoad = identity;
-                evidence.fileReadBeforeLoad = ce::config_text::PrimeConfigDocument(main_g_ConfigPath);
-                const uint64_t readFailuresBefore = ce::config_text::ConfigReadFailureCount();
-                if (evidence.fileReadBeforeLoad) {
-                    candidateConfig = main_g_Config;
-                    LoadConfig(main_g_ConfigPath, candidateConfig);
-                }
-                evidence.readFailuresDuringLoad = ce::config_text::ConfigReadFailureCount() - readFailuresBefore;
-                evidence.identityAfterLoad = ReadConfigFileIdentity(main_g_ConfigPath);
-                if (ce::config_reload::IsCoherentLoad(evidence)) {
-                    ce::config_reload::CommitReload(g_ConfigReloadState, identity);
-                } else {
-                    ce::config_reload::DeferReload(g_ConfigReloadState);
-                    reloadDecision = ce::config_reload::Decision::kWait;
-                    static uint32_t s_deferredReloadLogs = 0;
-                    const uint32_t deferredReloadLogIndex = ++s_deferredReloadLogs;
-                    if (deferredReloadLogIndex <= 8 || (deferredReloadLogIndex % 64) == 0) {
-                        LogWarn(
-                            "[Controller] Config reload deferred: readable=%d readFailures=%llu changedDuringLoad=%d "
-                            "(size %llu -> %llu); keeping the current configuration and retrying",
-                            evidence.fileReadBeforeLoad ? 1 : 0,
-                            static_cast<unsigned long long>(evidence.readFailuresDuringLoad),
-                            evidence.identityBeforeLoad != evidence.identityAfterLoad ? 1 : 0,
-                            static_cast<unsigned long long>(evidence.identityBeforeLoad.size),
-                            static_cast<unsigned long long>(evidence.identityAfterLoad.size));
-                    }
-                }
+
+            if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, RuntimeConfiguration().hotkeyScreenshot)) {
+                UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
+                main_g_HotkeyOwnership.screenshot =
+                    RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, RuntimeConfiguration().hotkeyScreenshot,
+                                             "screenshot");
             }
-            if (reloadDecision == ce::config_reload::Decision::kReload) {
-                LogInfo("[Controller] Config change detected, reloading...");
 
-                AppConfig oldConfig = main_g_Config;
-                main_g_Config = std::move(candidateConfig);
-                Log_SetLevel(main_g_Config.logLevel);
-                windowHeartbeat.UpdateProfiles(main_g_Config.applicationProfiles);
-
-                if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, main_g_Config.hotkeyStartStop)) {
-                    UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-                    main_g_HotkeyOwnership.record =
-                        RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
-                }
-
-                if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, main_g_Config.hotkeyScreenshot)) {
-                    UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-                    main_g_HotkeyOwnership.screenshot =
-                        RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot,
-                                                 "screenshot");
-                }
-
-                if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, main_g_Config.hotkeyAudioOnly)) {
-                    UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-                    main_g_HotkeyOwnership.audioOnly =
-                        RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly,
-                                                 "audio-only");
-                }
-
-                if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, main_g_Config.hotkeyToggleOverlay)) {
-                    UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
-                    main_g_HotkeyOwnership.toggleOverlay =
-                        RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay,
-                                                 "overlay toggle");
-                }
-
-                if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, main_g_Config.hotkeyBenchmark)) {
-                    UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
-                    main_g_HotkeyOwnership.benchmark =
-                        RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark,
-                                                 "benchmark");
-                }
-
-                // The keyboard-hook path recognizes the same hotkeys, so it
-                // has to follow every reload, including one that only
-                // disabled a hotkey.
-                PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
-
-                {
-                    MainThreadBlockTimer _blk("config-reload service sync");
-                    SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig);
-                    SendCommandToAll(ProcessCommand::ReloadConfig);
-                }
-
-                SyncPseudoOverlayConfiguration("config reload");
+            if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, RuntimeConfiguration().hotkeyAudioOnly)) {
+                UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
+                main_g_HotkeyOwnership.audioOnly =
+                    RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, RuntimeConfiguration().hotkeyAudioOnly,
+                                             "audio-only");
             }
-            lastConfigCheck = GetTickCount();
+
+            if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, RuntimeConfiguration().hotkeyToggleOverlay)) {
+                UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
+                main_g_HotkeyOwnership.toggleOverlay =
+                    RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, RuntimeConfiguration().hotkeyToggleOverlay,
+                                             "overlay toggle");
+            }
+
+            if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, RuntimeConfiguration().hotkeyBenchmark)) {
+                UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
+                main_g_HotkeyOwnership.benchmark =
+                    RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, RuntimeConfiguration().hotkeyBenchmark,
+                                             "benchmark");
+            }
+
+            // The keyboard-hook path recognizes the same hotkeys, so it
+            // has to follow every reload, including one that only
+            // disabled a hotkey.
+            PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership);
+
+            {
+                MainThreadBlockTimer _blk("config-reload service sync");
+                SyncLoggerAndSensorProcesses(RuntimeConfiguration(), &oldConfig);
+                SendCommandToAll(ProcessCommand::ReloadConfig);
+            }
+
+            SyncPseudoOverlayConfiguration("config reload");
         }
 
         // Auto-record logic
@@ -343,7 +272,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
         const int64_t preWaitUs = Log_GetQpcUs();
 
-        const DWORD waitMs = GetControllerLoopWaitMs(lastConfigCheck, ce::config_reload::CheckIntervalMs(g_ConfigReloadState));
+        const DWORD waitMs = GetControllerLoopWaitMs();
 
         {
             const int64_t msgUs = postMsgUs - iterNowUs;
@@ -476,7 +405,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
     // guarantee the logs/ tree stays absent and no debug machinery runs.
-    LoadConfig(main_g_ConfigPath, main_g_Config);
+    ce::runtime::RuntimeConfigurationSession configuration(main_g_ConfigPath);
+    if (!configuration.IsReady()) {
+        OutputDebugStringA("[CaptureEngine] Cannot acquire runtime configuration ownership\n");
+        return 1;
+    }
 
     std::string logsRootDir = baseDir + "\\logs";
     // Session symbol archives are hard links into one shared store below the
@@ -492,7 +425,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
                  st.wSecond);
         g_SessionDirName = ts;
-        if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+        if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
             CleanupOldSessionDirs(logsRootDir);
         }
     } else {
@@ -507,7 +440,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         earlyLogsDir = logsRootDir;
     }
 
-    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+    if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         CreateDirectoryA(logsRootDir.c_str(), NULL);
         CreateDirectoryA(earlyLogsDir.c_str(), NULL);
         // Without a session directory name yet, `earlyLogsDir` IS the logs root — a fallback
@@ -572,8 +505,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
-            if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
-                Log_Init(earlyLogsDir + "\\launcher.log", main_g_Config.logLevel);
+            if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
+                Log_Init(earlyLogsDir + "\\launcher.log", RuntimeConfiguration().logLevel);
                 LogInfo("[Launcher] Deferred launch path: %s", main_g_DeferredLaunchPath.c_str());
             }
 
@@ -586,17 +519,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     std::string logsDir = earlyLogsDir;
     const std::string processLogName = GetProcessLogFileName(mode, g_RecordingId, GetCurrentProcessId());
     std::string logPath = logsDir + "\\" + processLogName;
-    main_g_Config.logFilePath = logPath;
-    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+    ce::runtime::SetRuntimeProcessLogPath(logPath);
+    if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         CreateDirectoryA(logsDir.c_str(), NULL);
         if (mode == ProcessMode::Controller)
-            WriteSessionManifest(logsDir, main_g_Config, mode);
+            WriteSessionManifest(logsDir, RuntimeConfiguration(), mode);
         else if (mode == ProcessMode::Media)
-            WriteRecordingManifest(logsDir, main_g_Config, processLogName);
+            WriteRecordingManifest(logsDir, RuntimeConfiguration(), processLogName);
     }
 
-    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
-        Log_Init(logPath, main_g_Config.logLevel);
+    if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
+        Log_Init(logPath, RuntimeConfiguration().logLevel);
         LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
         if (!baseDirExact) {
             LogWarn(
@@ -666,8 +599,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Keep crash dumps under logs/. Config can only add a relative subfolder.
     std::string crashDir = logsDir;
-    if (!main_g_Config.crashDumpDir.empty()) {
-        std::filesystem::path configured = std::filesystem::path(main_g_Config.crashDumpDir).lexically_normal();
+    if (!RuntimeConfiguration().crashDumpDir.empty()) {
+        std::filesystem::path configured = std::filesystem::path(RuntimeConfiguration().crashDumpDir).lexically_normal();
         bool hasParentTraversal = false;
         for (const auto& part : configured) {
             if (part == std::filesystem::path("..")) {
@@ -679,7 +612,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             crashDir = (std::filesystem::path(logsDir) / configured).string();
         }
     }
-    if (IsAnyLoggingEnabled(main_g_Config.logLevel)) {
+    if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         SetCrashDumpDirectory(crashDir);
         if (mode == ProcessMode::Controller) {
             // After this session linked its own symbols and old sessions were
@@ -695,16 +628,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             result = ControllerMain(hInstance);
             break;
         case ProcessMode::Inject:
-            result = InjectProcessMain(main_g_Config);
+            result = InjectProcessMain(RuntimeConfiguration());
             break;
         case ProcessMode::Media:
-            result = MediaProcessMain(main_g_Config);
+            result = MediaProcessMain(RuntimeConfiguration());
             break;
         case ProcessMode::Logger:
-            result = LoggerProcessMain(main_g_Config);
+            result = LoggerProcessMain(RuntimeConfiguration());
             break;
         case ProcessMode::Sensors:
-            result = SensorProcessMain(main_g_Config);
+            result = SensorProcessMain(RuntimeConfiguration());
             break;
     }
 

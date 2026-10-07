@@ -399,7 +399,7 @@ TESTS_ONLY_SENSOR_SOURCES = (
     "startup_control.cpp", "startup_autostart.cpp", "elevation_setup.cpp", "elevation_runtime.cpp", "elevation_removal.cpp",
 )
 
-TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp",)
+TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp", "runtime_configuration.cpp")
 
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):

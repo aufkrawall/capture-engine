@@ -36,6 +36,16 @@ parallel instances and a plugin framework remain separate features.
 
 ## Execution status (2026-10-07)
 
+- D8/D13 configuration slice verified: one settings scope owns the snapshot, startup file identity,
+  debounce/coherent replacement and deadlines; the mutable main_g_Config is removed. Frontend effects
+  consume published changes. Eight transaction cases and two actual headless/native INI scope cases
+  pass, with existing reload/sensor/hotkey checks (38 focused tests). Six mutations detect missed startup
+  edits, unvalidated publication, premature commit, file replacement, recursive reload and ignored timing.
+  Product syntax covers eight TUs. Strict-clean 20261007_190950_build_7022 compiled all products and
+  passed native/Python/ASan/all 32 FG checks; explicit test optional guards then close resumed verify
+  20261007_192804_build_7022 and package (38,775,318-byte PE). Accepted warnings stay 706; full scope is
+  1007 TUs. Eight formatting advisories remain. Initial INI/default fallback stays compatible; transactional startup
+  validation, path resolution and programmatic settings remain D8/D13 work before a public library API.
 - D8/D13 child ownership slice verified: one headless-constructible host child owner replaces six
   writable process/client globals. The production lifecycle retains old media finalizers across
   immediate restart, cancels reentrant readiness by generation and owns shutdown collection.

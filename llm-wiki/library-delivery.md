@@ -12,7 +12,7 @@ There is no independently built engine library/runtime yet.
 | Overlay and benchmark toggles | `main_recording.cpp` and C facade send authenticated inject commands; inject owns overlay settings publication | One engine operation for each command; UI/hotkeys only request it |
 | Screenshot | C facade wraps `TakeScreenshot`; hides/restores desktop overlay and publishes inject notification | Engine owns capture and notification result; frontend presents outcomes |
 | Injection/target discovery and launch | `main_controller.cpp`, inject process; CLI `--launch` is deferred until startup readiness | Target/launch intent belongs in engine API; preserve launcher and compatibility behavior |
-| Configuration | `main_entry.cpp` loads INI and coherently reloads it; `main_g_Config` is still broad mutable state | Engine owns validated settings/publication; UI preferences and config-file opening remain frontend effects |
+| Configuration | `runtime_configuration.{h,cpp}` and `configuration_state.h` own settings, startup identity and coherent reload; mutable `main_g_Config` removed | Complete runtime/bootstrap and programmatic settings contracts; frontend adapts published changes |
 | Child start/health/retirement | `host_children.{h,cpp}` and `child_process_lifecycle.h` now own all four roles and active/retired identities | Reuse this non-UI boundary from owned runtime; public API exposes operations/observations, never handles/clients |
 | Tray/hotkeys/desktop presentation | `ControllerMain` in `main_entry.cpp`, startup portion in `main_recording.cpp`, `tray.cpp`, `hotkey_input_hook.cpp` | Frontend owns tray/input registration and adapts engine outcomes; preserve desktop overlay features |
 | Sensors/logger/display timing | Existing worker roles plus service-policy/config helpers | Runtime supervises helpers; sensor readiness remains nonfatal and capability-specific |
@@ -66,6 +66,23 @@ Tests: [lifecycle](../tests/test_child_process_lifecycle.cpp),
 Mutation evidence and final gate results belong in log/recent.md. Controlled lifecycle effects do not
 prove real helper finalization or the full hardware/A/V matrix.
 
+## Owned configuration prerequisite
+
+RuntimeConfigurationSession loads the resolved executable INI path without ControllerMain/tray.
+ConfigurationState owns the published AppConfig, observed startup identity and reload timing. Seeding
+from startup avoids losing an edit before the first poll. Replacement requires stable identity, a
+readable complete document, no failed reads during parsing and unchanged identity afterward; candidate
+failure preserves the snapshot and retries. Reentrant polling cannot publish twice. Unsigned tick
+arithmetic preserves wrap behavior; frontend code consumes old/new settings without owning the gate.
+The private application view is const and scope-bound; process log destination remains a named host
+operation. Existing INI/default startup behavior is preserved, including missing-file template creation.
+This is not a versioned programmatic settings API or fully transactional startup validation. File paths
+still need explicit library/package resolution; read-failure accounting remains process-wide.
+
+Anchors: [settings transaction](../captureengine/app/configuration_state.h),
+[native owner](../captureengine/app/runtime_configuration.cpp),
+[production/native tests](../tests/test_runtime_configuration.cpp).
+
 ## Remaining extraction order
 
 1. Finish startup/configuration/child replacement traces, including auxiliary shared-event and setup
@@ -83,7 +100,7 @@ prove real helper finalization or the full hardware/A/V matrix.
    x64/x86 public headers/import artifacts/helpers. Then migrate frontend capability slices onto it
    and prove standalone public-header-only consumption, failure cleanup and shutdown/recreate.
 
-Open risks: full engine scope still uses main_internal.h/config globals; setup can race sensor
+Open risks: full engine scope still uses main_internal.h and frontend bootstrap; setup can race sensor
 recovery; IPC active/retired media observation attribution needs D5 traces; process-global discovery
 and injected settings require explicit ownership conflict handling. No parallel-instance, provider
 unload, cross-compiler ABI, real-game or end-to-end recording claim follows from this slice.

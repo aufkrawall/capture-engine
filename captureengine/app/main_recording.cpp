@@ -72,7 +72,7 @@ void ShutdownChildProcesses() {
 
 void CheckChildProcessHealth() {
     ce::runtime::ServiceHostChildren(
-        {ShouldStartLoggerProcess(main_g_Config), ShouldStartSensorProcess(main_g_Config)},
+        {ShouldStartLoggerProcess(RuntimeConfiguration()), ShouldStartSensorProcess(RuntimeConfiguration())},
         []() { ReconcileControllerRecording(true); });
 }
 
@@ -107,13 +107,13 @@ bool CompleteControllerStartup() {
     }
 
     const int64_t auxSpawnStartUs = Log_GetQpcUs();
-    if (ShouldStartLoggerProcess(main_g_Config)) {
+    if (ShouldStartLoggerProcess(RuntimeConfiguration())) {
         const bool loggerReady = ce::runtime::EnsureHostChild(HostChild::Logger);
         if (!loggerReady) {
             LogError("[Controller] Failed to spawn logger process");
         }
     }
-    if (ShouldStartSensorProcess(main_g_Config)) {
+    if (ShouldStartSensorProcess(RuntimeConfiguration())) {
         const bool sensorReady = ce::runtime::EnsureHostChild(HostChild::Sensors);
         if (!sensorReady) {
             LogError("[Controller] Failed to spawn sensor process");
@@ -141,22 +141,22 @@ bool CompleteControllerStartup() {
     const int64_t hotkeyStartUs = Log_GetQpcUs();
 
     main_g_HotkeyOwnership.record =
-        RegisterConfiguredHotkey(HOTKEY_ID_RECORD, main_g_Config.hotkeyStartStop, "recording");
+        RegisterConfiguredHotkey(HOTKEY_ID_RECORD, RuntimeConfiguration().hotkeyStartStop, "recording");
     main_g_HotkeyOwnership.screenshot =
-        RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, main_g_Config.hotkeyScreenshot, "screenshot");
+        RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, RuntimeConfiguration().hotkeyScreenshot, "screenshot");
     main_g_HotkeyOwnership.audioOnly =
-        RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, main_g_Config.hotkeyAudioOnly, "audio-only");
+        RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, RuntimeConfiguration().hotkeyAudioOnly, "audio-only");
     main_g_HotkeyOwnership.toggleOverlay =
-        RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, main_g_Config.hotkeyToggleOverlay, "overlay toggle");
+        RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, RuntimeConfiguration().hotkeyToggleOverlay, "overlay toggle");
     main_g_HotkeyOwnership.benchmark =
-        RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, main_g_Config.hotkeyBenchmark, "benchmark");
+        RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, RuntimeConfiguration().hotkeyBenchmark, "benchmark");
 
     // RegisterHotKey stops being delivered to anyone while a foreground
     // application registers its raw-input keyboard with RIDEV_NOHOTKEYS, so the
     // same hotkeys are also recognized on a low-level keyboard hook. This runs
     // on the controller thread, which is the thread RegisterHotKey posts to and
     // therefore the thread the hook has to post to as well.
-    PublishHotkeyBindings(main_g_Config, main_g_HotkeyOwnership);
+    PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership);
     StartHotkeyInputHook(GetCurrentThreadId());
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 

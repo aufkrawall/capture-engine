@@ -134,13 +134,13 @@ void PrepareRecordingDiagnosticIdentity() {
 }
 
 ce::controller::CommandOutcome StartControllerRecording(RecordingStartIntent intent, const char* reason) {
-    return g_Session ? g_Session->Start(intent, ce::live_stream::IsLiveStreamTarget(main_g_Config.video.outputDir),
+    return g_Session ? g_Session->Start(intent, ce::live_stream::IsLiveStreamTarget(RuntimeConfiguration().video.outputDir),
                                        GetTickCount64(), reason)
                      : ce::controller::CommandOutcome::Rejected;
 }
 
 ce::controller::CommandOutcome ToggleControllerRecording(RecordingStartIntent intent, const char* reason) {
-    return g_Session ? g_Session->Toggle(intent, ce::live_stream::IsLiveStreamTarget(main_g_Config.video.outputDir),
+    return g_Session ? g_Session->Toggle(intent, ce::live_stream::IsLiveStreamTarget(RuntimeConfiguration().video.outputDir),
                                         GetTickCount64(), reason)
                      : ce::controller::CommandOutcome::Rejected;
 }

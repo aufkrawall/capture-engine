@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-07 - Runtime configuration replaces mutable host settings
+
+- Native settings scope and production transaction own snapshot, startup identity, coherent reload and
+  deadlines. Removed main_g_Config; frontend consumes old/new snapshots and retains hotkey/service effects.
+- Startup edits before the first poll previously became falsely applied. Eight transaction cases and
+  two native/headless INI cases pass with existing policy/sensor/hotkey guards (38 cases); eight product
+  TUs pass syntax checks. Controlled native time advances without sleeps or timestamp-resolution assumptions.
+- Six production mutants fail their expected assertions; exact source restored and tests pass. Private
+  getter scope and one-owner conflicts are protected. Public runtime API and initial transactional
+  validation remain pending; executable defaults/loading behavior and parser code are preserved.
+- Strict-clean 20261007_190950_build_7022 passes products/native/Python/ASan/all 32 FG scenarios.
+  Explicit test optional guards close resumed verify 20261007_192804_build_7022 and setup packaging:
+  38,775,318-byte PE; 706 accepted warnings, 1007 TUs. Eight formatting advisories remain.
+
 ### 2026-10-07 - Runtime helper ownership begins library extraction
 
 - One host child scope owns active/retired processes and authenticated IPC clients. Removed four
@@ -202,19 +216,3 @@
   38,591,604-byte PE. No unit/flow/fuzz processes lingered. Sanitizers/runtime were not rerun for this
   bounded source slice. D1 foreign/queue/cold-start and D7 settings concurrency/generation, lifetime
   and retirement coverage remain open.
-
-### 2026-10-06 - D1 NGX real-hook lifecycle and handover coverage
-
-- Added a minimal nvngx.dll core fake and RAII flow adapter using actual intercepted D3D12 exports
-  and parameter slots; production hook logic publishes all observations. Controlled failures, feature
-  address reuse and independent teardown balance checks protect creation/evaluation/release evidence.
-- Two FlowNGX scenarios pass. Immediate assertions use PID-owned shared FG publication; visible
-  overlay metrics are checked after outputs, since their cache need not update inside the SDK call.
-- Initial cold-FG variant exposed 22 physical outputs outside the ledger (2432 vs 2410), no debug-layer
-  errors. The handover case proves an established native route via one completed output; cold startup
-  remains a separate unfixed D1/D3 investigation, documented in frame-generation/ngx-flow-lifecycle.md.
-- All three production lifecycle mutants failed the expected scenario; exact source bytes restored and
-  both scenarios passed again. Clean 0.1.7006 and final verification 0.1.7007 passed native, all 17 flows,
-  Python, x64 ASan/UBSan and lint ratchets; targeted formatting corrections cleared all format advisories.
-  The 712 accepted warnings are unchanged. Installer: 38,591,852-byte PE; no test processes lingered.
-  Real-game/foreign-overlay/A/V/performance evidence and cold-start accounting remain pending.

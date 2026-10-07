@@ -156,28 +156,30 @@ TEST(ConfigReloadPolicyTest, MissingFileIsNeverAppliedAndAnOlderTimestampStillCo
     EXPECT_FALSE(state.pendingValid);
 }
 
-TEST(ConfigReloadPolicyTest, ControllerReloadsThroughTheDebounce) {
-    const std::string source =
-        ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/app/main_entry.cpp");
+TEST(ConfigReloadPolicyTest, ControllerConsumesOnlyRuntimePublishedSettings) {
+    const auto root = std::filesystem::current_path();
+    const auto source = ce::test_source::ReadLogicalSource(root / "captureengine/app/main_entry.cpp");
+    const auto owner = ce::test_source::ReadLogicalSource(root / "captureengine/app/configuration_state.h");
+    const auto native = ce::test_source::ReadLogicalSource(root / "captureengine/app/runtime_configuration.cpp");
     ASSERT_FALSE(source.empty());
-    const size_t observe = source.find("ce::config_reload::Observe(g_ConfigReloadState, identity)");
-    const size_t load = source.find("LoadConfig(main_g_ConfigPath, candidateConfig);", observe);
-    ASSERT_NE(observe, std::string::npos);
+    ASSERT_FALSE(owner.empty());
+    ASSERT_FALSE(native.empty());
+    EXPECT_NE(source.find("PollRuntimeConfiguration()"), std::string::npos);
+    EXPECT_EQ(source.find("LoadConfig("), std::string::npos);
+    EXPECT_EQ(source.find("CommitReload("), std::string::npos);
+    EXPECT_NE(native.find("PrimeConfigDocument(path_)"), std::string::npos);
+    EXPECT_NE(native.find("ConfigReadFailureCount() - failures"), std::string::npos);
+    const auto load = owner.find("files.Load(candidate, identity)");
+    const auto coherent = owner.find("IsCoherentLoad(evidence)", load);
+    const auto adopt = owner.find("current_ = std::move(candidate)", coherent);
+    const auto commit = owner.find("CommitReload(state_, identity)", adopt);
     ASSERT_NE(load, std::string::npos);
-    EXPECT_NE(source.find("if (reloadDecision == ce::config_reload::Decision::kReload)", observe), std::string::npos);
-    // The identity is committed only after the coherent-load check, and the live config is
-    // replaced from the candidate only on that path.
-    const size_t coherent = source.find("ce::config_reload::IsCoherentLoad(evidence)", load);
-    const size_t commit = source.find("ce::config_reload::CommitReload(g_ConfigReloadState, identity);", coherent);
-    const size_t defer = source.find("ce::config_reload::DeferReload(g_ConfigReloadState);", coherent);
-    const size_t adopt = source.find("main_g_Config = std::move(candidateConfig);", coherent);
     ASSERT_NE(coherent, std::string::npos);
-    EXPECT_NE(commit, std::string::npos);
-    EXPECT_NE(defer, std::string::npos);
-    EXPECT_NE(adopt, std::string::npos);
-    // No in-place load inside the reload block (the startup load further down is fine).
-    const size_t inPlace = source.find("LoadConfig(main_g_ConfigPath, main_g_Config);", observe);
-    EXPECT_TRUE(inPlace == std::string::npos || inPlace > adopt);
+    ASSERT_NE(adopt, std::string::npos);
+    ASSERT_NE(commit, std::string::npos);
+    EXPECT_LT(coherent, adopt);
+    EXPECT_LT(adopt, commit);
+    EXPECT_NE(owner.find("DeferReload(state_)", coherent), std::string::npos);
 }
 
 // Audit 4, item 3: the identity counted as applied before the load ran, so a read

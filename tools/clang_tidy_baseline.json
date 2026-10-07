@@ -54,7 +54,7 @@
   },
   "total": 706,
   "scope": {
-    "entries": 1005,
+    "entries": 1007,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -69,6 +69,7 @@
       "captureengine/app/main_vulkan.cpp",
       "captureengine/app/mediaengine_loader.cpp",
       "captureengine/app/recording_session.cpp",
+      "captureengine/app/runtime_configuration.cpp",
       "captureengine/app/status_overlay_sync.cpp",
       "captureengine/app/tray.cpp",
       "captureengine/app/windows_gpu_scheduling.cpp",
@@ -980,6 +981,7 @@
       "tests/test_resize_reference_probe.cpp",
       "tests/test_ring_buffer.cpp",
       "tests/test_rr_force_source.cpp",
+      "tests/test_runtime_configuration.cpp",
       "tests/test_runtime_output_frame_tracker.cpp",
       "tests/test_sampler_override_utils.cpp",
       "tests/test_screen_grab_privacy.cpp",

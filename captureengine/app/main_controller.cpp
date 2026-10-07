@@ -120,7 +120,7 @@ void LaunchGameSuspended(const std::string& path) {
                 pi.dwProcessId);
 
             static std::shared_ptr<InjectionManager> s_launcherInjector;
-            s_launcherInjector = std::make_shared<InjectionManager>(main_g_Config);
+            s_launcherInjector = std::make_shared<InjectionManager>(RuntimeConfiguration());
             auto& injector = s_launcherInjector;
 
             {
@@ -284,19 +284,19 @@ std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfi
 }  // namespace
 
 void SyncPseudoOverlayConfiguration(const char* reason) {
-    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(main_g_Config);
+    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(RuntimeConfiguration());
     const bool anyProfileEnabled =
         std::any_of(profiles.begin(), profiles.end(), [](const PseudoOverlayApplicationConfig& profile) {
             return profile.settings.enabled;
         });
 
-    if (!main_g_PseudoOverlay && !main_g_Config.pseudoOverlay.enabled && !anyProfileEnabled)
+    if (!main_g_PseudoOverlay && !RuntimeConfiguration().pseudoOverlay.enabled && !anyProfileEnabled)
         return;
 
     if (!main_g_PseudoOverlay) {
         LogInfo("[Controller] Initializing pseudo-overlay (%s)...", reason ? reason : "configuration");
         auto overlay = std::make_unique<PseudoOverlay>();
-        overlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
+        overlay->UpdateConfig(RuntimeConfiguration().pseudoOverlay, profiles);
         overlay->SetRecordingStartIntent(ControllerRecordingSnapshot().pendingIntent);
         HMODULE hMod = GetModuleHandle(NULL);
         if (!overlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
@@ -308,5 +308,5 @@ void SyncPseudoOverlayConfiguration(const char* reason) {
         return;
     }
 
-    main_g_PseudoOverlay->UpdateConfig(main_g_Config.pseudoOverlay, profiles);
+    main_g_PseudoOverlay->UpdateConfig(RuntimeConfiguration().pseudoOverlay, profiles);
 }

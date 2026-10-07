@@ -73,6 +73,9 @@
 #include "tray.h"
 #include "controller_recording.h"
 #include "host_children.h"
+#include "runtime_configuration.h"
+
+using ce::runtime::RuntimeConfiguration;
 
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -124,9 +127,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 // Controller state
 inline std::atomic<bool> main_g_Running{true};
-
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
-inline AppConfig main_g_Config;
 
 inline std::string main_g_ConfigPath;
 
@@ -334,18 +334,11 @@ inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& 
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
-inline DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck, DWORD configCheckIntervalMs = 1000) {
-    DWORD waitMs = 2000;
-    DWORD now = GetTickCount();
-
-    DWORD configElapsed = now - lastConfigCheck;
-    if (configElapsed >= configCheckIntervalMs) {
+inline DWORD GetControllerLoopWaitMs() {
+    DWORD waitMs = std::min<DWORD>(2000, ce::runtime::RuntimeConfigurationWaitMs());
+    if (waitMs == 0)
         return 0;
-    }
-    DWORD configWaitMs = configCheckIntervalMs - configElapsed;
-    if (configWaitMs < waitMs) {
-        waitMs = configWaitMs;
-    }
+    DWORD now = GetTickCount();
 
     if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
         DWORD elapsed = now - main_g_AutoRecordStartTime;

@@ -124,7 +124,7 @@ TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
         SCOPED_TRACE(member);
         EXPECT_NE(mainInternal.find(member), std::string::npos);
     }
-    EXPECT_NE(mainEntry.find("SyncLoggerAndSensorProcesses(main_g_Config, &oldConfig)"), std::string::npos);
+    EXPECT_NE(mainEntry.find("SyncLoggerAndSensorProcesses(RuntimeConfiguration(), &oldConfig)"), std::string::npos);
 
     const std::string sensorService =
         ReadTextFile((std::filesystem::current_path() / "captureengine" / "sensors" / "sensor_service.cpp").string());

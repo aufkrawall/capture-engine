@@ -22,7 +22,7 @@ ce_status_t TakeControllerScreenshot() {
         } scope{main_g_PseudoOverlay.get(), screenshotSaved};
         if (scope.overlay)
             scope.overlay->BeginScreenshotCapture();
-        screenshotSaved = TakeScreenshot(main_g_Config.screenshotDir, main_g_Config.screenshotColorSpace);
+        screenshotSaved = TakeScreenshot(RuntimeConfiguration().screenshotDir, RuntimeConfiguration().screenshotColorSpace);
     }
     // Show the same result in the inject overlay (hooked game).
     ce::runtime::PublishHostNotification(
