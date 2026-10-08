@@ -34,8 +34,20 @@ keeps the client API small. Library milestones begin as those boundaries become 
 all graphics debt is closed. Events beyond required status/notices, preview/packet output, arbitrary
 parallel instances and a plugin framework remain separate features.
 
-## Execution status (2026-10-07)
+## Execution status (2026-10-08)
 
+- D8/D13 runtime package path slice verified: executable/module defaults and explicit INI paths
+  have one owner; helpers accept a copied runtime executable and WinMain honors --config. Active-code-
+  page paths no longer pass through UTF-8 decoding. Eleven path/option cases plus an actual renamed
+  helper in a different directory protect launch/configuration handoff; delegated game options are
+  excluded. A fifth registered fuzz harness has six safe UTF-16 argument seeds. Focused IPC/config/
+  owner tests and five product TUs pass. All five fuzz targets pass a bounded 10-second-per-target
+  run (runtime options: 579,654 units). Strict-clean 20261007_205639_build_7024 compiled all products
+  and passed native/Python/ASan/all 32 FG checks; an unnecessary string copy then blocked lint.
+  After fixing it, resumed verify 20261008_081425_build_7024 passes all gates and produces the
+  38,814,820-byte setup PE. Accepted warnings stay 706 across 1011 TUs; four formatting advisories
+  remain. Full library bootstrap, resource resolution, public runtime descriptors and independent
+  client delivery stay open; hardware/game and full codec/multitrack A/V validation are not claimed.
 - Requested recording-recovery branch integration verified: 21956184/087452a3 add a versioned
   48-byte mux-flow snapshot, byte-capacity-aware CFR fresh/repeat admission and overflow timeline
   accounting. Source merges cleanly; changelog/journal conflicts preserve both ownership and media work.
@@ -55,7 +67,7 @@ parallel instances and a plugin framework remain separate features.
   passed native/Python/ASan/all 32 FG checks; explicit test optional guards then close resumed verify
   20261007_192804_build_7022 and package (38,775,318-byte PE). Accepted warnings stay 706; full scope is
   1007 TUs. Eight formatting advisories remain. Initial INI/default fallback stays compatible; transactional startup
-  validation, path resolution and programmatic settings remain D8/D13 work before a public library API.
+  validation, complete resource resolution and programmatic settings remain D8/D13 work before a public library API.
 - D8/D13 child ownership slice verified: one headless-constructible host child owner replaces six
   writable process/client globals. The production lifecycle retains old media finalizers across
   immediate restart, cancels reentrant readiness by generation and owns shutdown collection.

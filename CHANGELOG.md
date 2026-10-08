@@ -106,6 +106,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Worker configuration paths:** helper processes now honor the selected `--config` INI, including paths containing spaces and active-code-page characters. Launch paths are owned explicitly so a host can select the packaged worker instead of accidentally relaunching its own executable; delegated game launch options keep their own `--config` arguments.
+
 - **Config edits during startup:** changes made after startup loading but before the first reload check are now applied instead of being mistaken for the already loaded version. One runtime settings owner retains the previous settings on an unreadable or changing file, schedules retries and publishes complete replacements before frontend/helper updates.
 
 - **Clean verification after a failed build:** `--verify-clean` now takes precedence over resume and incremental flags, so a requested clean verification recompiles product objects while keeping the failed build identity. A regression covers all resume/incremental combinations; hook and test-harness diagnostics keep strict checks passing without raising warning baselines.

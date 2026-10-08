@@ -1,6 +1,6 @@
 # Engine library delivery: current contracts and next boundaries
 
-Last source check: 2026-10-07. Required delivery is D13 in
+Last source check: 2026-10-08. Required delivery is D13 in
 [architecture-debt-plan.md](architecture-debt-plan.md); this page records evidence and design inputs.
 There is no independently built engine library/runtime yet.
 
@@ -76,12 +76,14 @@ failure preserves the snapshot and retries. Reentrant polling cannot publish twi
 arithmetic preserves wrap behavior; frontend code consumes old/new settings without owning the gate.
 The private application view is const and scope-bound; process log destination remains a named host
 operation. Existing INI/default startup behavior is preserved, including missing-file template creation.
-This is not a versioned programmatic settings API or fully transactional startup validation. File paths
-still need explicit library/package resolution; read-failure accounting remains process-wide.
+This is not a versioned programmatic settings API or fully transactional startup validation. Package
+paths now have a private owner; public runtime descriptors and process-wide read accounting remain open.
 
 Anchors: [settings transaction](../captureengine/app/configuration_state.h),
 [native owner](../captureengine/app/runtime_configuration.cpp),
-[production/native tests](../tests/test_runtime_configuration.cpp).
+[production/native tests](../tests/test_runtime_configuration.cpp),
+[package paths](../common/platform/runtime_package_paths.h),
+[path/helper handoff tests](../tests/test_runtime_package_paths.cpp).
 
 ## Remaining extraction order
 
@@ -93,9 +95,10 @@ Anchors: [settings transaction](../captureengine/app/configuration_state.h),
 3. Resolve process-wide effects before embedding: WinMain currently installs crash handling, log
    directories/cleanup, process power policy, console handling and startup/elevation behavior. A DLL
    must not silently impose those policies on an unrelated client process.
-4. Own paths/resources. WinMain and SpawnChildProcess currently derive assets/workers from the
-   executable. DLL/module or explicitly configured runtime-package paths must work with a different
-   client executable and CWD. Preserve secure loaders, Unicode/code-page handling and worker roles.
+4. RuntimePackagePaths now owns executable-anchored defaults/module helper selection and explicit INI
+   overrides; the child owner copies an explicit worker executable. A renamed helper outside the client
+   directory loads the requested INI in the native probe. Complete resource/loader/module lifetime,
+   public descriptors and outside-repo library deployment still require D13 work.
 5. Specify and build the independent runtime/C ABI with explicit module/source ownership; package
    x64/x86 public headers/import artifacts/helpers. Then migrate frontend capability slices onto it
    and prove standalone public-header-only consumption, failure cleanup and shutdown/recreate.

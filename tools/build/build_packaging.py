@@ -561,6 +561,7 @@ FUZZ_TARGET_CORPUS = {
     "fuzz_config_parser.cpp": "config",
     "fuzz_hardware_sensor_protocol.cpp": "hardware_sensor_protocol",
     "fuzz_ipc_deserialize.cpp": "ipc",
+    "fuzz_runtime_config_argument.cpp": "runtime_config_argument",
 }
 
 # libFuzzer instrumentation must be requested manually: the clang driver rejects

@@ -205,7 +205,7 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
     EXPECT_EQ(source.substr(pathResolution, processDispatch - pathResolution).find("PrimeStartupCursor();"),
               std::string::npos);
 
-    const size_t controllerMain = source.find("int ControllerMain(HINSTANCE hInstance)");
+    const size_t controllerMain = source.find("int ControllerMain(HINSTANCE hInstance,");
     const size_t trayCreation = source.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
     const size_t vulkanRegistration = source.find("VulkanLayerResidency vulkanReg", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);
@@ -244,7 +244,7 @@ TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpaw
     const std::string owner = ReadSource("captureengine/app/host_children.cpp");
     const std::string lifecycle = ReadSource("captureengine/app/child_process_lifecycle.h");
     EXPECT_NE(source.find("ServiceHostChildren("), std::string::npos);
-    EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role))"), std::string::npos);
+    EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),"), std::string::npos);
     EXPECT_NE(lifecycle.find("slot.generation != ticket"), std::string::npos);
     EXPECT_NE(lifecycle.find("effects_.Running(slot.process)"), std::string::npos);
     EXPECT_EQ(source.find("main_g_hInjectProcess"), std::string::npos);

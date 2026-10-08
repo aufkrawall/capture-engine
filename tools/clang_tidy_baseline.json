@@ -54,7 +54,7 @@
   },
   "total": 706,
   "scope": {
-    "entries": 1009,
+    "entries": 1011,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -205,6 +205,7 @@
       "common/platform/path_utils.cpp",
       "common/platform/process_identity.cpp",
       "common/platform/restricted_child_process.cpp",
+      "common/platform/runtime_package_paths.cpp",
       "common/platform/scanner.cpp",
       "common/platform/secure_dll_loading.cpp",
       "common/platform/window_heartbeat.cpp",
@@ -985,6 +986,7 @@
       "tests/test_rr_force_source.cpp",
       "tests/test_runtime_configuration.cpp",
       "tests/test_runtime_output_frame_tracker.cpp",
+      "tests/test_runtime_package_paths.cpp",
       "tests/test_sampler_override_utils.cpp",
       "tests/test_screen_grab_privacy.cpp",
       "tests/test_screenshot_encoding.cpp",

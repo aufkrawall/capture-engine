@@ -7,6 +7,8 @@
 #include "av_sync_latency_channel.h"
 #include "common/logging/logging.h"
 #include "common/platform/restricted_child_process.h"
+#include "common/platform/ansi_path.h"
+#include "common/platform/runtime_package_paths.h"
 
 #include <cstring>
 #include <filesystem>
@@ -264,18 +266,18 @@ bool ProcessIPCClient::SendCommand(ProcessCommand command, const char* payload, 
     }
 }
 
-HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient) {
+HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient,
+                         const wchar_t* executable) {
     if (IsIpcMode(mode) && !ipcClient) {
         LogError("[Spawn] Missing IPC client for %s child", ModeName(mode));
         return nullptr;
     }
 
-    std::wstring executablePath(32768, L'\0');
-    const DWORD executableLength =
-        GetModuleFileNameW(nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
-    if (executableLength == 0 || executableLength >= executablePath.size())
+    std::wstring executablePath = executable && *executable ? executable : ce::ansi_path::ModulePathW(nullptr);
+    if (executablePath.empty() || !std::filesystem::path(executablePath).is_absolute()) {
+        LogError("[Spawn] Runtime helper path is unavailable or not absolute");
         return nullptr;
-    executablePath.resize(executableLength);
+    }
 
     HANDLE childEndpoint = INVALID_HANDLE_VALUE;
     std::wstring ipcArguments;
@@ -307,7 +309,7 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
 
     std::wstring commandLine = QuoteCommandLineArgument(executablePath) + L" --mode=" + ModeNameWide(mode);
     if (configPath && *configPath) {
-        const std::wstring wideConfig = Utf8ToWide(configPath);
+        const std::wstring wideConfig = ce::runtime::ActiveCodePagePathToWide(configPath);
         if (wideConfig.empty()) {
             if (childEndpoint != INVALID_HANDLE_VALUE)
                 CloseHandle(childEndpoint);

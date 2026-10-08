@@ -22,7 +22,8 @@ struct AuxiliaryServices {
 // No child handle/client escapes this boundary.
 class HostChildrenSession {
 public:
-    HostChildrenSession(const char* configPath, void (*pumpMessages)(), bool (*acceptingWork)());
+    HostChildrenSession(const char* configPath, void (*pumpMessages)(), bool (*acceptingWork)(),
+                        const wchar_t* executable = nullptr);
     ~HostChildrenSession();
     HostChildrenSession(const HostChildrenSession&) = delete;
     HostChildrenSession& operator=(const HostChildrenSession&) = delete;

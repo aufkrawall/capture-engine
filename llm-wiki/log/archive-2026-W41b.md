@@ -1,5 +1,21 @@
 # llm-wiki Log Archive: 2026-W41b
 
+### 2026-10-06 - DX12 queue dispatch ownership and startup transport separation
+
+- Extracted exact-vtable ECL original binding, atomic publication and cache invalidation behind
+  dx12_queue_dispatch and execute_dispatch_registry.h. Unknown queues resolve their own live ECL slot,
+  never another queue's predecessor.
+- Two-implementation queue flow scenario (test_flow_queue_dispatch.cpp) and native registry tests
+  (test_execute_dispatch_registry.cpp) verify distinct COM queue entry resolution, reset recovery, and
+  rejection of missing queue identities.
+- Detected three production mutations (cross-queue fallback, stale reset cache, resurrection after
+  retirement) with tools/refactor/check_ecl_dispatch_mutations.py.
+- Separated startup transport bypass from overlay rendering in DXGI shared present
+  (dxgi_shared_present_core.cpp, dxgi_shared_present1.cpp), restoring output accounting and coverage
+  during third-party overlay (RTSS) presence.
+- Closing gate 20261006_193912_build_7009 passed native units (48.7 s), Python self-tests, all 21 FG
+  scenarios (41.5 s), x64/x86 products and installer (38,617,156-byte PE). No test processes lingered.
+
 ### 2026-10-06 - NGX publication boundary preserves accepted OFF during creation
 
 - The D1 fake reproduced all FG feature IDs 9/11/18 republishing 3x after accepted Streamline OFF;

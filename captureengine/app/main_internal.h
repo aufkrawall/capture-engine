@@ -74,6 +74,7 @@
 #include "controller_recording.h"
 #include "host_children.h"
 #include "runtime_configuration.h"
+#include "common/platform/runtime_package_paths.h"
 
 using ce::runtime::RuntimeConfiguration;
 
@@ -121,7 +122,7 @@ bool CompleteControllerStartup();
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType);
 
-int ControllerMain(HINSTANCE hInstance);
+int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 

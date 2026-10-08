@@ -14,8 +14,9 @@ constexpr std::array<const char*, 4> kNames{"inject", "media", "logger", "sensor
 
 class NativeHostChildren : public ChildProcessEffects {
 public:
-    NativeHostChildren(const char* configPath, void (*pump)(), bool (*accept)())
+    NativeHostChildren(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable)
         : configPath_(configPath ? configPath : ""),
+          executable_(executable ? executable : L""),
           pump_(pump),
           accept_(accept),
           lifecycle_(*this) {}
@@ -160,7 +161,8 @@ private:
     }
 
     ChildToken Spawn(ChildRole role) override {
-        return reinterpret_cast<ChildToken>(SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role)));
+        return reinterpret_cast<ChildToken>(SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),
+                                                              executable_.empty() ? nullptr : executable_.c_str()));
     }
     bool Running(ChildToken process) const override {
         // An observation error is not evidence of exit.
@@ -220,6 +222,7 @@ private:
     }
 
     std::string configPath_;
+    std::wstring executable_;
     void (*pump_)();
     bool (*accept_)();
     ProcessIPCClient inject_{ProcessMode::Inject};
@@ -247,12 +250,13 @@ public:
     using detail::NativeHostChildren::NativeHostChildren;
 };
 
-HostChildrenSession::HostChildrenSession(const char* configPath, void (*pump)(), bool (*accept)()) {
+HostChildrenSession::HostChildrenSession(const char* configPath, void (*pump)(), bool (*accept)(),
+                                         const wchar_t* executable) {
     if (activeChildren) {
         LogError("[HostChildren] refusing a second host child owner");
         return;
     }
-    impl_ = std::make_unique<Impl>(configPath, pump, accept);
+    impl_ = std::make_unique<Impl>(configPath, pump, accept, executable);
     activeChildren = impl_.get();
 }
 HostChildrenSession::~HostChildrenSession() {

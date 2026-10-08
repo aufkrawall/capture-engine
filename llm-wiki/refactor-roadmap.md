@@ -10,6 +10,14 @@ Current debt execution plan: [architecture-debt-plan.md](architecture-debt-plan.
 supersede the execution order below; this page retains the earlier program and supporting evidence.
 Completed core contracts and measured locality: [refactor-contracts.md](refactor-contracts.md).
 
+## Git integration constraint (2026-10-07)
+
+GitHub's main rule rejects merge commits (GH013). Integrate feature branches with linear history;
+review and secret-scan the staged/resulting commits. An unpublished merge can be replaced locally
+with a backed-up linear integration after proving the exact source tree and unfinished work unchanged.
+Do not force-push or modify repository rules. The recording-recovery integration is 644219f2; the
+prior merge remains under codex/main-before-linear-recording-integration-20261007 as a local backup.
+
 ## Rules for every wave
 
 - A wave is either **mechanical** (moves, renames, re-spelling, regrouping) or **behavioral**, never both in

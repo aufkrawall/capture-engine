@@ -181,5 +181,8 @@ std::string ParseRecordingId(LPSTR commandLine);
 // when absent or malformed; see common/ipc/av_sync_latency_channel.h.
 void* ParseInheritedLatencyChannelHandle();
 
-HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr);
+// configPath is active-code-page text used by the INI loader. A supplied executable
+// is a resolved runtime helper, permitting hosts other than captureengine.exe.
+HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr,
+                         const wchar_t* executable = nullptr);
 bool WaitForChildExit(HANDLE process, DWORD timeoutMs);

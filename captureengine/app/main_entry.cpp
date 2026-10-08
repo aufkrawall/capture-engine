@@ -76,7 +76,7 @@ void DispatchControllerMessage(const MSG& msg) {
 }
 
 // Controller main function
-int ControllerMain(HINSTANCE hInstance) {
+int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths) {
     ControllerRecordingSessionScope recordingSession;
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
@@ -127,7 +127,7 @@ int ControllerMain(HINSTANCE hInstance) {
 
     // Create IPC clients
     ce::runtime::HostChildrenSession children(main_g_ConfigPath.c_str(), PumpStartupMessages,
-                                             []() { return main_g_Running.load(); });
+                                             []() { return main_g_Running.load(); }, paths.Executable().c_str());
     if (!children.IsReady()) {
         LogError("[Controller] Failed to acquire runtime child ownership");
         main_g_Running = false;
@@ -394,13 +394,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // APIs; an installation folder the code page cannot express would reach them
     // '?'-mangled (config silently at defaults, no logs), so it is resolved from
     // the Unicode module path into an exact ANSI or 8.3 form.
-    wchar_t exePathW[MAX_PATH] = {};
-    GetModuleFileNameW(NULL, exePathW, MAX_PATH);
-    const std::wstring exePathWide = exePathW;
-    bool baseDirExact = true;
-    std::string baseDir =
-        ce::path::AnsiCompatiblePath(exePathWide.substr(0, exePathWide.find_last_of(L"\\/")), &baseDirExact);
-    main_g_ConfigPath = baseDir + "\\config.ini";
+    ce::runtime::PackagePathError pathError = ce::runtime::PackagePathError::None;
+    const auto paths = ce::runtime::RuntimePackagePaths::FromModule(
+        nullptr, ce::runtime::ReadProcessConfigurationArgument(), pathError);
+    if (!paths) {
+        OutputDebugStringA("[CaptureEngine] Invalid runtime executable/configuration paths\n");
+        return 1;
+    }
+    const bool runtimePathsExact = paths->EncodingExact();
+    const std::string& baseDir = paths->Directory();
+    main_g_ConfigPath = paths->Configuration();
 
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
@@ -531,9 +534,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         Log_Init(logPath, RuntimeConfiguration().logLevel);
         LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
-        if (!baseDirExact) {
+        if (!runtimePathsExact) {
             LogWarn(
-                "[Controller] The installation folder cannot be expressed in the Windows code page and has no 8.3 "
+                "[Controller] A runtime or configuration path cannot be expressed in the Windows code page and has no 8.3 "
                 "short name; config.ini and logs may not be found. Install CaptureEngine to a folder with Latin "
                 "characters or enable 8.3 names on that volume");
         }
@@ -625,7 +628,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int result = 0;
     switch (mode) {
         case ProcessMode::Controller:
-            result = ControllerMain(hInstance);
+            result = ControllerMain(hInstance, *paths);
             break;
         case ProcessMode::Inject:
             result = InjectProcessMain(RuntimeConfiguration());
