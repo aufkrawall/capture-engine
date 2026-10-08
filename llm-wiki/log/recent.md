@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-08 - Keyboard hook no longer imports controller internals
+
+- Hook startup accepts an immutable host thread/private-message route. Publication precedes thread
+  creation; reset follows join. Callback matching and failed-delivery key pass-through stay unchanged.
+  Invalid/system-message routes and active retargeting are rejected with startup diagnostics.
+- Three native queue interface cases verify message identity/payload, host-selected routing and invalid
+  targets without installing a global input hook. Existing matching/ownership/wiring/input tests and
+  three product TUs pass. M3's move-time forbidden edges shrink 12 -> 11; DR-19 orders detachment first.
+- Closing gate 20261008_133330_build_7031 passes native/Python/all 32 FG checks and packages the
+  38,817,040-byte setup PE. Nonthrowing constructor fixes the new static-initialization warning;
+  focused 20261008_133841_build_7031 and lint 20261008_133850_build_7031 pass (706 warnings/1014 TUs).
+  Three existing-file formatting advisories remain. Real keyboard-hook/app smoke is pending hardware
+  validation; no new live-hook regression installs hooks on the user's desktop. Runtime composition,
+  remaining controller dependencies, module moves and public API implementation remain M3-M4 work.
+
 ### 2026-10-08 - v2 C/C++ ABI baseline verified
 
 - C11/C++20 assert 56 public field offsets/widths and 8 type sizes/alignments; the C object is linked
@@ -205,22 +220,3 @@
 - Closing 20261007_091020_build_7016 passes x64/x86 products, native/Python and all 24 FG cases.
   Installer: 38,728,376-byte PE. No touched-source compiler warnings or lingering test processes.
   Sanitizers/runtime/fuzz were not rerun; provider/callback lifetime and full D2/D10 remain open.
-
-### 2026-10-07 - Queue Signal ownership; separate device trace bootstrap defect
-
-- Signal now uses the private queue registry transaction for pre-patch publication, exact-vtable
-  dispatch and cache/reset recovery. Removed its writable map/lock and first-global-original aliases.
-- Two production-hook cases check distinct Signal implementations through actual installed slots,
-  duplicate install, S_OK/S_FALSE and value preservation, missing receivers, reset recovery, subsequent
-  native rendering, COM balance and physical coverage. The original missing receiver resolved to a
-  saved non-null predecessor; its regression failed before the unsafe invocation.
-- All four deliberate ECL/Signal mutations fail expected assertions; restored production passes.
-- Removed unused factory detours/duplicate wrapper IDs and their four compiler warnings. Vulkan and
-  ledger source assertions now protect the actual factory paths. A failing pacing fixture still read
-  the real cadence clock; explicit ClockSource wiring and a deadline regression reject that defect.
-- Enabling CE_DX12_TRACE exposed a separate first-global device trace mismatch before queue assertions.
-  Digest/CDB dump inspection with Microsoft and matching CE symbols locates the native
-  CDevice::TranslateNodeMask fault below DetourTraceCreateCommandQueue and temp-swapchain bootstrap.
-  Device creation trace ownership is the next fix; the end-to-end trace-switch case remains open.
-- Final closing 20261007_083619_build_7015 passed x64/x86 products, native units, Python self-tests and
-  all 23 FG scenarios. Installer: 38,660,922-byte PE. Sanitizers/runtime/fuzz were not rerun for this slice.

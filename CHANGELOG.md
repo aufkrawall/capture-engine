@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Reusable hotkey delivery:** the keyboard hook now receives an explicit host thread/message route instead of importing controller state. Invalid routes and attempts to retarget an active hook are rejected; recording, screenshot and overlay key delivery keep their existing behavior.
+
 - **C client ABI verification:** the unshipped engine API now has C11/C++ layout and ownership-type checks, including nondefault packing. Descriptor initialization receives caller size and version so later compatible additions cannot overwrite older client storage.
 
 - **Embedding API design:** added an unshipped v2 C header and C++ ownership wrapper for runtime lifecycle, asynchronous controls, events and settings. This defines the integration contract; an independent runtime library is still being implemented.

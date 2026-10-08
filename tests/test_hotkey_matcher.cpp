@@ -317,7 +317,8 @@ TEST(HotkeyDeliveryWiringTest, ControllerRunsBothDeliveryPathsAndTheHookNeverBlo
     EXPECT_NE(controllerSource.find("RegisterConfiguredHotkey(HOTKEY_ID_RECORD"), std::string::npos);
     EXPECT_NE(controllerSource.find("PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership)"),
               std::string::npos);
-    EXPECT_NE(controllerSource.find("StartHotkeyInputHook(GetCurrentThreadId())"), std::string::npos);
+    EXPECT_NE(controllerSource.find("StartHotkeyInputHook({GetCurrentThreadId(), main_kMsgHotkeyFromInputHook})"),
+              std::string::npos);
     EXPECT_NE(controllerSource.find("StopHotkeyInputHook();"), std::string::npos);
     // Startup and config reload both republish, or a rebound hotkey would keep
     // working on one path only.
@@ -326,7 +327,7 @@ TEST(HotkeyDeliveryWiringTest, ControllerRunsBothDeliveryPathsAndTheHookNeverBlo
     // A matched key is consumed. That is what stops the same press from also
     // arriving as WM_HOTKEY and acting twice.
     EXPECT_NE(hookSource.find("WH_KEYBOARD_LL"), std::string::npos);
-    EXPECT_NE(hookSource.find("main_kMsgHotkeyFromInputHook"), std::string::npos);
+    EXPECT_NE(hookSource.find("g_HotkeyHook.deliveryTarget.Post(match.id, vkey)"), std::string::npos);
     EXPECT_NE(hookSource.find("return 1;"), std::string::npos);
 
     // The hook must never wait on the binding table: a low-level keyboard hook

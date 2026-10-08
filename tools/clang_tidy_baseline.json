@@ -54,7 +54,7 @@
   },
   "total": 706,
   "scope": {
-    "entries": 1013,
+    "entries": 1014,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -892,6 +892,7 @@
       "tests/test_hook_thread_stage_cost.cpp",
       "tests/test_host_children.cpp",
       "tests/test_host_metrics_policy.cpp",
+      "tests/test_hotkey_delivery_target.cpp",
       "tests/test_hotkey_matcher.cpp",
       "tests/test_iat_hook.cpp",
       "tests/test_iat_patch_serialization.cpp",

@@ -84,6 +84,12 @@ that extent, and validates the requested version. Rejected: assuming native size
 version from buffer size, or requiring an uninitialized first field to carry the size. Other output
 structs already require a seeded struct_size; monitor arrays carry item_size.
 
+**DR-19 Detach existing controller dependencies before M3's mechanical moves.**
+Evidence (2026-10-08): Q13's 12 new edges are existing couplings, including a keyboard hook that
+imports main_internal.h solely for its delivery message. Extract such inputs/effects through small
+component contracts in separate behavioral commits, then perform the fingerprint-proven moves.
+Rejected: adding broad migration waivers or mixing policy changes into the mechanical move commit.
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
@@ -100,7 +106,7 @@ structs already require a seeded struct_size; monitor arrays carry item_size.
 | Q10 | **Self-exclusion:** how do the injector and screen-grab privacy recognize CE's own processes and windows? `screen_grab_privacy.cpp:141` matches `captureengine.exe` by name | A third-party client process hosts the runtime (and maybe the desktop overlay): CE could inject into it, or record its overlay windows | Read the injection exclusion policy (`injection_policy.h`, `injection_path_policy.h`) and privacy rules; replace names with PID-based identity published by the runtime | M7 (blocker for third parties) |
 | Q11 | `log_level=none` today creates no `logs/` tree at all | The library must keep that guarantee for `data_dir` | Test: create with log_level none → no directory | M3 |
 | Q12 | Redistribution obligations for third parties (LGPL FFmpeg corresponding source, licenses) | The SDK package must carry them | `build_corresponding_source.py`, license staging | M8 |
-| Q13 | M3's initial mechanical moves turn 12 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` and `hotkey_input_hook.cpp` still include `main_internal.h`, and `child_recording_stop.h` remains in the app | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves | M3 commit 1 |
+| Q13 | M3's initial mechanical moves now turn 11 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`, and `child_recording_stop.h` remains in the app | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves | M3 commit 1 |
 
 ## Evidence log for this plan
 

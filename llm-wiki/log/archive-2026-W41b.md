@@ -1,5 +1,24 @@
 # llm-wiki Log Archive: 2026-W41b
 
+### 2026-10-07 - Queue Signal ownership; separate device trace bootstrap defect
+
+- Signal now uses the private queue registry transaction for pre-patch publication, exact-vtable
+  dispatch and cache/reset recovery. Removed its writable map/lock and first-global-original aliases.
+- Two production-hook cases check distinct Signal implementations through actual installed slots,
+  duplicate install, S_OK/S_FALSE and value preservation, missing receivers, reset recovery, subsequent
+  native rendering, COM balance and physical coverage. The original missing receiver resolved to a
+  saved non-null predecessor; its regression failed before the unsafe invocation.
+- All four deliberate ECL/Signal mutations fail expected assertions; restored production passes.
+- Removed unused factory detours/duplicate wrapper IDs and their four compiler warnings. Vulkan and
+  ledger source assertions now protect the actual factory paths. A failing pacing fixture still read
+  the real cadence clock; explicit ClockSource wiring and a deadline regression reject that defect.
+- Enabling CE_DX12_TRACE exposed a separate first-global device trace mismatch before queue assertions.
+  Digest/CDB dump inspection with Microsoft and matching CE symbols locates the native
+  CDevice::TranslateNodeMask fault below DetourTraceCreateCommandQueue and temp-swapchain bootstrap.
+  Device creation trace ownership is the next fix; the end-to-end trace-switch case remains open.
+- Final closing 20261007_083619_build_7015 passed x64/x86 products, native units, Python self-tests and
+  all 23 FG scenarios. Installer: 38,660,922-byte PE. Sanitizers/runtime/fuzz were not rerun for this slice.
+
 ### 2026-10-06 - Talos 20261006_204930 (0.1.7011): latency "changes weirdly" across mode switches
 
 - First run with value-band sample logging. In steady states the marker reading and the estimate cross-check agree

@@ -157,7 +157,7 @@ bool CompleteControllerStartup() {
     // on the controller thread, which is the thread RegisterHotKey posts to and
     // therefore the thread the hook has to post to as well.
     PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership);
-    StartHotkeyInputHook(GetCurrentThreadId());
+    StartHotkeyInputHook({GetCurrentThreadId(), main_kMsgHotkeyFromInputHook});
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
     SyncPseudoOverlayConfiguration("startup");

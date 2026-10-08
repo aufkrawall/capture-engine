@@ -5,6 +5,7 @@
 #include "common/config/config.h"
 
 #include "common/overlay/hotkey_matcher.h"
+#include "common/overlay/hotkey_delivery_target.h"
 
 // Delivery of the configured global hotkeys for foreground applications that
 // suppress application hotkeys.
@@ -35,13 +36,14 @@ bool RegisterConfiguredHotkey(int hotkeyId, const AppConfig::HotkeyConfig& hotke
 // every config reload.
 void PublishHotkeyBindings(const AppConfig& config, const HotkeyOwnership& ownership);
 
-// Starts the hook thread and routes matches to targetThreadId as
-// main_kMsgHotkeyFromInputHook (wParam = hotkey id, lParam = virtual key).
+// Starts the hook thread and routes matches to the host's delivery target
+// (wParam = hotkey id, lParam = virtual key). The queue must already exist.
 // Also registers the crash pre-dump callback that removes the hook before a
 // crash dump suspends this process. Returns false when the hook cannot be
 // installed; RegisterHotKey then remains the only delivery path, exactly as
 // before this hook existed.
-bool StartHotkeyInputHook(DWORD targetThreadId);
+// Host-thread only. An active hook cannot be retargeted; stop it first.
+bool StartHotkeyInputHook(HotkeyDeliveryTarget target);
 
 // Stops the hook thread and uninstalls the hook. Idempotent.
 void StopHotkeyInputHook();

@@ -49,8 +49,8 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | --- | --- | --- | --- |
 | M0 Adopt plan, move docs into the wiki | complete | `a50d1600` | Canonical plan; old D8/D9/D13 superseded; historical evidence archived; links and changelog validated. |
 | M1 Module boundary checker | complete | `4f584251` | 19 exact exceptions; 3645 edges; 23 boundary/gate fixtures (31 with lint tests). Lint and unfiltered close enforce rules; native/Python/ASan/32 FG checks and setup 0.1.7026 pass. Internal reach: DX12 74 (2 outside), media 29 (0 outside); runtime/frontend absent. |
-| M2 Public header v2 + ABI tests (unshipped) | complete | `cd5370aa` + ABI tests commit | 30 C declarations; 56 field offset/width checks and 8 size/alignment checks compile in C11/C++20. C object linked/executed; wrapper types compile; two ABI defects detected. Clean transaction and resumed verification pass with setup 0.1.7029. No runtime/export or MSVC-consumption claim. |
-| M3 Runtime core inside the exe | not started | | |
+| M2 Public header v2 + ABI tests (unshipped) | complete | `2f1d8acb` | 30 C declarations; 56 field offset/width checks and 8 size/alignment checks compile in C11/C++20. C object linked/executed; wrapper types compile; two ABI defects detected. Clean transaction and resumed verification pass with setup 0.1.7029. No runtime/export or MSVC-consumption claim. |
+| M3 Runtime core inside the exe | in progress | hotkey routing slice | DR-19 detaches coupling before moves: keyboard hook now receives its queue/message route; three native interface cases and existing hotkey checks pass. Move-time forbidden edges 12 -> 11; runtime composition, startup/thread and other owners remain. |
 | M4 C ABI implemented; frontend on the API; v1 removed | not started | | |
 | M5 Settings API | not started | | |
 | M6 Complete events (finalized output, screenshot paths, helpers) | not started | | |

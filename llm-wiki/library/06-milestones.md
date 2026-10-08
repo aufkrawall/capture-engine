@@ -65,6 +65,8 @@ Goal: `ControllerMain` loses its engine responsibilities to `runtime/core/Runtim
 inside `captureengine.exe`. No public API yet. Behavior identical.
 
 Commits (follow 05 "Migration order" rows 1-6):
+0. Detach the existing controller include dependencies identified by Q13 before moving those units
+   (DR-19), in separate behavioral commits. Keep the boundary checker enforced throughout.
 1. `refactor: move controller sources to runtime module` - mechanical: create `runtime/` and move
    `recording_session.*`, `controller_recording.*`, `host_children.*`, `child_process_lifecycle.h`,
    `runtime_configuration.*`, `configuration_state.h`, `main_vulkan_residency.h`,

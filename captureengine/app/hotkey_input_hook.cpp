@@ -12,8 +12,6 @@
 
 #include "common/logging/logging.h"
 
-#include "main_internal.h"
-
 namespace {
 
 namespace policy = ce::keyboard_hook;
@@ -40,7 +38,8 @@ struct HotkeyHookState {
     std::atomic<bool> crashReleased{false};
     HANDLE crashReleasedEvent = nullptr;
 
-    std::atomic<DWORD> targetThreadId{0};
+    // Published before the hook thread starts, immutable until after it joins.
+    HotkeyDeliveryTarget deliveryTarget;
     std::atomic<DWORD> hookThreadId{0};
     std::atomic<bool> installed{false};
     std::thread thread;
@@ -134,9 +133,7 @@ bool HandleKeyEvent(WPARAM message, const KBDLLHOOKSTRUCT& event, bool pastTimeo
     if (match.id == 0)
         return match.swallow;
 
-    const DWORD targetThreadId = g_HotkeyHook.targetThreadId.load(std::memory_order_acquire);
-    if (targetThreadId == 0 || !PostThreadMessage(targetThreadId, main_kMsgHotkeyFromInputHook,
-                                                  static_cast<WPARAM>(match.id), static_cast<LPARAM>(vkey))) {
+    if (!g_HotkeyHook.deliveryTarget.Post(match.id, vkey)) {
         // The press could not be acted on, so it must not be eaten either.
         g_HotkeyHook.matcher.ClearSwallow(vkey);
         g_HotkeyHook.lastDeliveryError.store(GetLastError(), std::memory_order_relaxed);
@@ -312,12 +309,17 @@ void PublishHotkeyBindings(const AppConfig& config, const HotkeyOwnership& owner
     }
 }
 
-bool StartHotkeyInputHook(DWORD targetThreadId) {
-    if (g_HotkeyHook.thread.joinable())
-        return g_HotkeyHook.installed.load(std::memory_order_acquire);
-    if (targetThreadId == 0) {
-        LogError("[Hotkey] Refusing to start the keyboard hook without a delivery thread");
+bool StartHotkeyInputHook(HotkeyDeliveryTarget target) {
+    if (!target.IsValid()) {
+        LogError("[Hotkey] Refusing to start the keyboard hook without a valid delivery target");
         return false;
+    }
+    if (g_HotkeyHook.thread.joinable()) {
+        if (g_HotkeyHook.deliveryTarget != target) {
+            LogError("[Hotkey] Refusing to retarget the active keyboard hook; stop it first");
+            return false;
+        }
+        return g_HotkeyHook.installed.load(std::memory_order_acquire);
     }
 
     HANDLE readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -329,7 +331,7 @@ bool StartHotkeyInputHook(DWORD targetThreadId) {
         g_HotkeyHook.crashReleasedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_HotkeyHook.crashReleased.store(false, std::memory_order_release);
 
-    g_HotkeyHook.targetThreadId.store(targetThreadId, std::memory_order_release);
+    g_HotkeyHook.deliveryTarget = target;
     g_HotkeyHook.thread = std::thread(HotkeyHookThreadMain, readyEvent);
     WaitForSingleObject(readyEvent, INFINITE);
     CloseHandle(readyEvent);
@@ -361,7 +363,7 @@ void StopHotkeyInputHook() {
         PostThreadMessage(hookThreadId, WM_QUIT, 0, 0);
     g_HotkeyHook.thread.join();
     g_HotkeyHook.hookThreadId.store(0, std::memory_order_release);
-    g_HotkeyHook.targetThreadId.store(0, std::memory_order_release);
+    g_HotkeyHook.deliveryTarget = {};
     ReportHotkeyInputHookDiagnostics();
 }
 
