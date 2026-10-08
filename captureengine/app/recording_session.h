@@ -1,12 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include "common/ipc/command_outcome.h"
 
 enum class RecordingStartIntent : uint8_t;
 
 namespace ce::controller {
 
-enum class CommandOutcome { Accepted, Rejected, AcknowledgementUnknown };
+using CommandOutcome = ce::ipc::CommandOutcome;
 enum class RecordingNotice { Clear, Requested, Finalizing, Failed, Live, StopResult };
 
 struct RecordingSnapshot {

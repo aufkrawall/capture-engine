@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-08 - Child stop outcomes no longer depend on recording state
+
+- common/ipc owns the local accepted/rejected/acknowledgement-unknown type and stop-command adapter.
+  RecordingSession retains a compatibility alias internally; host children no longer import its model.
+  No wire/shared-memory or public C layout changes. Existing transport/session/child/IPC tests and
+  three syntax-checked product TUs pass; the M3 move mapping now has 8 forbidden edges (was 11).
+- The first closing gate's privacy inventory still listed the unstaged deleted header. Staging its
+  intended deletion and new IPC headers fixes the inventory without changing privacy checks.
+  Resumed closing gate 20261008_140222_build_7032 passes native/Python/privacy/all 32 FG and packages
+  the 38,815,644-byte setup PE. No new tests/logging: this preserves classified outcomes and existing
+  coverage/diagnostics; real helper finalization/A/V and full runtime composition remain later work.
+
 ### 2026-10-08 - Keyboard hook no longer imports controller internals
 
 - Hook startup accepts an immutable host thread/private-message route. Publication precedes thread
@@ -206,17 +218,3 @@
   Installer: 38,729,166-byte PE. No touched-source compiler warnings; sanitizers/runtime/fuzz not rerun.
 - Remove success/physical restoration do not prove callback drain or provider code retirement.
   SDK unload, allocated thunks, Present interposers and full D2/D10 remain open; CE itself stays pinned.
-
-### 2026-10-07 - Device trace ownership restores traced native/debug bootstrap
-
-- Private dx12_device_trace owns installation, dispatch, reset recovery and tracing detours for
-  queue/descriptor-heap/resource creation; first-global targets, aliases and prototypes are gone.
-- Native/debug-device creation and typed outputs pass before/after registry reset. The Signal case
-  now enables the production trace switch and uses the real queue installer, with physical coverage.
-- The persistent bootstrap case reproduced the pre-fix access violation. Logs confirm separate
-  native/SDK-layer vtable bindings for all three methods; no dispatch lookup chooses a foreign original.
-- Both device mutations detect wrong-first-device borrowing and lost reset recovery, then restore
-  exact source bytes and pass. The shared bounded runner accepts explicit commands without global mutation.
-- Closing 20261007_091020_build_7016 passes x64/x86 products, native/Python and all 24 FG cases.
-  Installer: 38,728,376-byte PE. No touched-source compiler warnings or lingering test processes.
-  Sanitizers/runtime/fuzz were not rerun; provider/callback lifetime and full D2/D10 remain open.

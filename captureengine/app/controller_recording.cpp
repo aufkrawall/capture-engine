@@ -1,5 +1,4 @@
 #include "controller_recording.h"
-#include "child_recording_stop.h"
 
 #include "main_internal.h"
 #include "common/config/live_stream_config.h"

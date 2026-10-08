@@ -1,6 +1,6 @@
 #include "host_children.h"
 #include "child_process_lifecycle.h"
-#include "child_recording_stop.h"
+#include "common/ipc/recording_stop_command.h"
 #include "common/logging/logging.h"
 
 #include <string>
@@ -49,8 +49,8 @@ public:
     void RetireMedia() {
         lifecycle_.Retire(ChildRole::Media);
     }
-    ce::controller::CommandOutcome StopRecording(ChildRole role, uint32_t timeout) {
-        return ce::controller::detail::RequestChildRecordingStop(Client(role), timeout);
+    ce::ipc::CommandOutcome StopRecording(ChildRole role, uint32_t timeout) {
+        return ce::ipc::RequestChildRecordingStop(Client(role), timeout);
     }
 
     void Reconfigure(AuxiliaryServices wanted) {
@@ -304,9 +304,9 @@ void RetireHostMedia() {
     if (activeChildren)
         activeChildren->RetireMedia();
 }
-ce::controller::CommandOutcome StopHostChildRecording(HostChild child, uint32_t timeout) {
+ce::ipc::CommandOutcome StopHostChildRecording(HostChild child, uint32_t timeout) {
     return activeChildren ? activeChildren->StopRecording(Role(child), timeout)
-                          : ce::controller::CommandOutcome::AcknowledgementUnknown;
+                          : ce::ipc::CommandOutcome::AcknowledgementUnknown;
 }
 void ServiceHostChildren(AuxiliaryServices services, void (*beforeRecovery)()) {
     if (activeChildren)

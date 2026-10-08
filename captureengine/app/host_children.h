@@ -2,12 +2,9 @@
 
 #include "common/ipc/process_ipc.h"
 #include "common/ipc/inject_control_channel.h"
+#include "common/ipc/command_outcome.h"
 
 #include <memory>
-
-namespace ce::controller {
-enum class CommandOutcome;
-}
 
 namespace ce::runtime {
 enum class HostChild { Inject, Media, Logger, Sensors };
@@ -42,7 +39,7 @@ bool SendHostChildCommand(HostChild child, ProcessCommand command, const char* p
                           ProcessResponse* response = nullptr, uint32_t timeoutMs = 1000);
 void SendHostCommandToAll(ProcessCommand command);
 void RetireHostMedia();
-ce::controller::CommandOutcome StopHostChildRecording(HostChild child, uint32_t timeoutMs);
+ce::ipc::CommandOutcome StopHostChildRecording(HostChild child, uint32_t timeoutMs);
 void ServiceHostChildren(AuxiliaryServices services, void (*beforeRecovery)() = nullptr);
 void ReconfigureHostServices(AuxiliaryServices services);
 bool StopHostSensorsForSetup();

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "captureengine/app/child_recording_stop.h"
+#include "common/ipc/recording_stop_command.h"
 
 namespace {
 struct Child {
@@ -19,8 +19,8 @@ struct Child {
         return transportAccepted;
     }
 };
-using ce::controller::CommandOutcome;
-using ce::controller::detail::RequestChildRecordingStop;
+using ce::ipc::CommandOutcome;
+using ce::ipc::RequestChildRecordingStop;
 }
 
 TEST(ChildRecordingStopTest, MissingOrDisconnectedEndpointRetainsAcknowledgementUncertainty) {

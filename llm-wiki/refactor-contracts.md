@@ -408,7 +408,7 @@ release. The effects adapter supplies only specific child commands and process r
 from either attempted child wins; without acceptance, any unknown acknowledgement retains uncertainty;
 only explicit rejection by both attempted children produces Rejected. A missing/disconnected endpoint
 or transport failure is unknown, even if a response variable contains Ack or Error. The private
-child_recording_stop.h operation sends the actual StopRecording command and classifies transport
+common/ipc/recording_stop_command.h operation sends the actual StopRecording command and classifies transport
 and response separately. The former bool adapter lost explicit rejection and is removed.
 
 Explicit stop clears requested/pending state before child commands. Failure reconciliation now also
@@ -463,7 +463,7 @@ failures use ChangeGate; no unconditional new frame logging. Existing actionable
 checks run in each product gate.
 
 Sources/tests: [recording session](../captureengine/app/recording_session.cpp),
-[child stop adapter](../captureengine/app/child_recording_stop.h),
+[child stop adapter](../common/ipc/recording_stop_command.h),
 [validated IPC](../common/ipc/inject_control_channel.cpp),
 [submission adapters](../captureengine/media/frame_submission.h),
 [candidate completion](../captureengine/media/candidate_completion.h),
@@ -487,7 +487,7 @@ below the earlier transcription). New owners/adapters are included below rather 
 | FG handover/stale epoch | 2,886 / 40,396 | 2,816 / 39,558 | 486 / 5,326 | 3,302 / 44,884 |
 | Encode failure/leases/committed timeline | 2,015 / 28,517 | 1,952 / 28,007 | 319 / 3,362 | 2,271 / 31,369 |
 
-Added controller context: recording_session.{h,cpp}, controller_recording.{h,cpp}, child_recording_stop.h,
+Added controller context: recording_session.{h,cpp}, controller_recording.{h,cpp}, common/ipc/recording_stop_command.h,
 and inject_control_channel.{h,cpp}. PostSL: postsl_lifecycle.h, postsl_queue_owner.h,
 postsl_submission_resources.h, dx12_hook_postsl_render.cpp and dx12_hook_postsl_session.h. Media:
 frame_submission.h, frame_submission_internal.h, frame_submission_{inject,d3d11}.cpp,
