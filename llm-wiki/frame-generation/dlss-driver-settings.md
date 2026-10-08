@@ -136,6 +136,35 @@ Measured against NVIDIA Profile Inspector's `nspector/Native/NVAPI/NvApiDriverSe
   newer. On anything older the keys are simply never read and nothing changes - the same outcome Profile Inspector
   produces.
 
+## Consumers mapped before CE arrived (startup sweep)
+
+The `GetProcAddress` import patch on a consumer is only installed from the loader notification, which CE registers
+~200 ms after injection, and the process-wide `PatchIATAllModulesFiltered` sweep skips Streamline modules by design.
+A title that runs `slInit` first therefore hands CE a `sl.common` nobody ever patched.
+
+Evidence, Witcher 3 Remastered (native Streamline 2.14.1 in the game folder, `dll_injection=always`, session
+`20261008_211749`): `sl.common` appears only through the hook thread's module scan ("Installed hooks for sl.common.dll"),
+never as `Loader: runtime module loaded` or `IAT: Patched ... in module <its base>`; the sl.* plugins that loaded
+later did get both. `NGX DRS: wrapping NvAPI_DRS_GetSetting` fired once, for `nvngx_dlssg.dll` (`streamlinePlugin=0`),
+which answered only the preset and forced mode (`dynamic`). The count / target / VSync keys travel through
+`sl.common`, were never answered, and the game kept the fixed factor from its options menu. The log also said
+"dynamic MFG ... reported SUPPORTED", so a runtime that supports it is no evidence that the request arrived.
+The "Streamline override redirect refused" lines in that session are benign here: game and override are both 2.14.1.
+
+Fix: `ce::ngx_drs::ForEachLoadedDlssDrsConsumer` (pins each module, same predicate as the notification path) and
+`PatchLoadedDlssDrsConsumers` (`hook/runtime/main_overlay_detect.cpp`). It runs when the overrides are armed from
+config / shared memory and again right after `InitializeGetProcAddressHook` in `InstallHookThreadHooks`; the loader
+notification arms without sweeping because it holds the loader lock. nvapi64.dll is mapped later than that
+(`nvapi64=0` at config time, first load ~1.2 s after injection), so the patched import is in place before
+`sl.common` calls `GetProcAddress(nvapi_QueryInterface)`. A consumer that already cached that pointer before CE
+arrived cannot be recovered without patching `nvapi64.dll` code, which stays forbidden.
+
+Diagnostics: `NGX DRS: GetProcAddress import patch on <module> installed ... via=startup sweep (<source>)` is logged
+once per module and outcome (the old shared 4-line budget was spent on `nvngx_dlssg.dll` alone), then
+`NGX DRS: startup sweep ... visited N`, then `NGX DRS: nvapi_QueryInterface resolved by DLSS driver-settings consumer
+<path> - routed through CE`, then `NGX DRS: wrapping NvAPI_DRS_GetSetting for ...sl.common.dll (streamlinePlugin=1`
+and the `answered` lines for `0x10562D0F` / `0x10CF4125`. Hardware run pending.
+
 ## Validated on hardware
 
 Session `20260919_230915` (Talos Principle 2, sl 2.14.1 + nvngx_dlssg 310.9.1, driver 616.92, 144 Hz):

@@ -124,6 +124,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Dynamic frame generation factor ignored in The Witcher 3 Remastered (DirectX 12):** `dlss_fg_mode`, `dlss_fg_fixed_count`, `dlss_fg_dynamic_max`, `dlss_fg_target_fps` and the driver VSync answer never reached the game's own Streamline core, so the game always ran the fixed factor from its options menu. The game starts Streamline before CE finishes attaching; that core was mapped before CE could patch its driver-settings lookup. CE now patches already-loaded Streamline and frame-generation modules at startup too, and logs each routed module (`NGX DRS: GetProcAddress import patch on ... via=startup sweep`, `NGX DRS: nvapi_QueryInterface resolved by DLSS driver-settings consumer ...`).
+
 - **False post-process failures on HDR games with display gamma on (DirectX 12):** HDR10 and scRGB frames, where gamma is deliberately left alone, were logged as `pass-failed` and counted as uncorrected frames. They are now treated as not requested, so the frame ledger and the per-route failure counts only show real failures.
 
 - **Device removal after a DirectX 12 swapchain switch with display gamma or sharpen on:** the post-process pass cached its render-target view by the back buffer's address, so when a replaced swapchain's new buffer landed on the address of the destroyed one, the pass recorded against a view of a released resource and the graphics device was removed (intermittent when switching DLSS frame generation off to native and back on). The view is now written for every frame.

@@ -2,12 +2,17 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "hook/ngx/ngx_drs_override.h"
 #include "hook/pacing/reflex_defs.h"
 #include "hook/hooking/iat_hook.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -373,6 +378,130 @@ TEST_F(NgxDrsOverrideTest, OnlyTheTwoVSyncValuesTheRuntimeActsOnAreClaimed) {
         accepted.vsyncMode = value;
         EXPECT_EQ(Normalize(accepted).vsyncMode, value);
     }
+}
+
+// A copy of a harmless system DLL mapped from a private directory under a chosen file name. It
+// stands in for a Streamline core the title loaded before CE's loader notification existed
+// (Witcher 3 Remastered, 20261008_211749): already in the process, never offered to a hook.
+class MappedModuleCopy {
+public:
+    explicit MappedModuleCopy(const char* fileName) {
+        namespace fs = std::filesystem;
+        dir_ = fs::temp_directory_path() /
+               ("ce_drs_sweep_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64()) +
+                "_" + fileName);
+        std::error_code error;
+        fs::create_directories(dir_, error);
+        char systemDir[MAX_PATH] = {};
+        GetSystemDirectoryA(systemDir, MAX_PATH);
+        path_ = dir_ / fileName;
+        fs::copy_file(fs::path(systemDir) / "msimg32.dll", path_, fs::copy_options::overwrite_existing, error);
+        if (!error)
+            module_ = LoadLibraryW(path_.c_str());
+    }
+
+    ~MappedModuleCopy() {
+        if (module_)
+            FreeLibrary(module_);
+        std::error_code error;
+        std::filesystem::remove_all(dir_, error);
+    }
+
+    MappedModuleCopy(const MappedModuleCopy&) = delete;
+    MappedModuleCopy& operator=(const MappedModuleCopy&) = delete;
+
+    HMODULE module() const { return module_; }
+
+    // Drops the test's own reference and reports whether the image is gone, which is only true
+    // when whoever else touched the module released every reference it took.
+    bool UnloadAndReportGone() {
+        if (!module_)
+            return true;
+        FreeLibrary(module_);
+        module_ = nullptr;
+        return GetModuleHandleW(path_.c_str()) == nullptr;
+    }
+
+private:
+    std::filesystem::path dir_;
+    std::filesystem::path path_;
+    HMODULE module_ = nullptr;
+};
+
+void CollectVisitedModule(void* module, const char* /*modulePath*/, void* context) {
+    static_cast<std::vector<void*>*>(context)->push_back(module);
+}
+
+TEST(NgxDrsStartupSweepTest, VisitsAStreamlineCoreThatWasMappedBeforeAnyHookCouldSeeIt) {
+    MappedModuleCopy core("sl.common.dll");
+    MappedModuleCopy bystander("not_a_streamline_module.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+    ASSERT_NE(bystander.module(), nullptr) << "GetLastError=" << GetLastError();
+
+    std::vector<void*> visited;
+    const uint32_t count = ce::ngx_drs::ForEachLoadedDlssDrsConsumer(&CollectVisitedModule, &visited);
+
+    EXPECT_EQ(count, visited.size());
+    EXPECT_NE(std::find(visited.begin(), visited.end(), static_cast<void*>(core.module())), visited.end());
+    // Only consumers are offered the GetProcAddress import patch; every other module in the
+    // process keeps the narrower sweep it already had.
+    EXPECT_EQ(std::find(visited.begin(), visited.end(), static_cast<void*>(bystander.module())), visited.end());
+}
+
+TEST(NgxDrsStartupSweepTest, MatchesTheLoaderNotificationsPredicateForEveryNamedConsumer) {
+    MappedModuleCopy dlssg("nvngx_dlssg.dll");
+    MappedModuleCopy interposer("sl.interposer.dll");
+    ASSERT_NE(dlssg.module(), nullptr) << "GetLastError=" << GetLastError();
+    ASSERT_NE(interposer.module(), nullptr) << "GetLastError=" << GetLastError();
+
+    std::vector<void*> visited;
+    ce::ngx_drs::ForEachLoadedDlssDrsConsumer(&CollectVisitedModule, &visited);
+
+    EXPECT_NE(std::find(visited.begin(), visited.end(), static_cast<void*>(dlssg.module())), visited.end());
+    EXPECT_NE(std::find(visited.begin(), visited.end(), static_cast<void*>(interposer.module())), visited.end());
+}
+
+TEST(NgxDrsStartupSweepTest, DoesNotLeakAReferenceOnTheModulesItVisits) {
+    MappedModuleCopy core("sl.common.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+
+    std::vector<void*> visited;
+    ce::ngx_drs::ForEachLoadedDlssDrsConsumer(&CollectVisitedModule, &visited);
+    ASSERT_FALSE(visited.empty());
+
+    // A pin that is never released would keep a Streamline core the title unloads (DLSS-G off)
+    // mapped for the rest of the process.
+    EXPECT_TRUE(core.UnloadAndReportGone());
+}
+
+TEST(NgxDrsStartupSweepTest, WithoutAVisitorThereIsNothingToDo) {
+    EXPECT_EQ(ce::ngx_drs::ForEachLoadedDlssDrsConsumer(nullptr, nullptr), 0u);
+}
+
+// The sweep is only worth anything if the two startup paths that can reach already-mapped
+// modules actually call it, and the loader notification (which runs under the loader lock and
+// must not pin modules) does not.
+TEST(NgxDrsStartupSweepTest, IsWiredIntoTheHookThreadAndKeptOutOfTheLoaderNotification) {
+    namespace fs = std::filesystem;
+    const std::string hookThread =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
+    const std::string overlayDetect =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp");
+    ASSERT_FALSE(hookThread.empty());
+    ASSERT_FALSE(overlayDetect.empty());
+
+    // After the process-wide GetProcAddress router exists, which skips Streamline modules.
+    const size_t router = hookThread.find("IATHook::InitializeGetProcAddressHook();");
+    const size_t sweep = hookThread.find("PatchLoadedDlssDrsConsumers(\"hook thread router\");");
+    ASSERT_NE(router, std::string::npos);
+    ASSERT_NE(sweep, std::string::npos);
+    EXPECT_LT(router, sweep);
+
+    // Arming from a config source sweeps by default; the loader notification opts out.
+    EXPECT_NE(overlayDetect.find("if (sweepLoadedModules) {\n    PatchLoadedDlssDrsConsumers(source);"),
+              std::string::npos);
+    EXPECT_EQ(overlayDetect.find("ArmNgxDrsOverridesIfConfigured(baseName);"), std::string::npos);
+    EXPECT_NE(overlayDetect.find("ArmNgxDrsOverridesIfConfigured(baseName, false);"), std::string::npos);
 }
 
 }  // namespace

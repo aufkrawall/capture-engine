@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
+#include "common/platform/module_enumeration.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/overlay/overlay_compat.h"
 
@@ -161,6 +163,32 @@ bool IsArmed() {
 
 bool IsDlssDrsConsumerModuleLoaded(const char* modulePath, void* module) {
     return IsDlssDrsConsumerModule(modulePath, ExportsStreamlinePluginEntry(static_cast<HMODULE>(module)));
+}
+
+uint32_t ForEachLoadedDlssDrsConsumer(DlssDrsConsumerVisitor visitor, void* context) {
+    if (!visitor)
+        return 0;
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules))
+        return 0;
+
+    uint32_t visited = 0;
+    for (HMODULE module : modules) {
+        // Pinned for the visit: the export probe reads the image, and a title tearing the
+        // Streamline stack down on another thread must not leave it reading freed pages.
+        HMODULE retained = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module),
+                                &retained)) {
+            continue;
+        }
+        char path[MAX_PATH] = {};
+        if (GetModuleFileNameA(retained, path, MAX_PATH) && IsDlssDrsConsumerModuleLoaded(path, retained)) {
+            visitor(retained, path, context);
+            ++visited;
+        }
+        FreeLibrary(retained);
+    }
+    return visited;
 }
 
 void* MaybeWrapQueryInterface(uint32_t functionId, void* resolved, const void* callerAddress) {

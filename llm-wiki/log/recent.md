@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-08 - Dynamic MFG never reached Witcher 3 Remastered's own Streamline core
+
+- Session 20261008_211749 (0.1.7049, `dlss_fg_mode=dynamic`, native SL 2.14.1): only `nvngx_dlssg.dll` was wrapped, so the preset and forced
+  mode were answered but the count/target/VSync keys (read through `sl.common`) never were. `sl.common` was mapped before CE's loader
+  notification and the Streamline-skipping IAT sweep, so its `GetProcAddress` import was never patched. Added a pinned startup sweep over
+  already-loaded DRS consumers plus per-module logging (`frame-generation/dlss-driver-settings.md` "Consumers mapped before CE arrived").
+  Hardware run pending; look for `via=startup sweep` and `wrapping NvAPI_DRS_GetSetting ... sl.common.dll (streamlinePlugin=1`.
+
 ### 2026-10-08 - Overlay fonts oversaturated for one HDR10 frame (Witcher 3)
 
 - Session 20261008_184332: the game flipped `R8G8B8A8` -> `R10G10B10A2` + HDR10 -> `R8G8B8A8` (3 presents, the middle one 288 ms).

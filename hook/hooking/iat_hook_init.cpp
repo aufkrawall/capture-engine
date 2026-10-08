@@ -595,6 +595,19 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                     const bool allowDlssDrsResolution = ShouldAllowNgxFrameGenerationPresetDynamicHook(
                         ce::ngx_drs::IsArmed(),
                         ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(callerPath, callerMod), lpProcName);
+                    if (allowDlssDrsResolution) {
+                        // The "Intercepting nvapi_QueryInterface" line below names the target module, not
+                        // the caller; this is the one place that proves a Streamline core was routed
+                        // through CE (its absence in 20261008_211749 was the diagnosis).
+                        static std::atomic<uint32_t> s_drsConsumerResolutionLogs{0};
+                        const uint32_t resolutionLog =
+                            s_drsConsumerResolutionLogs.fetch_add(1, std::memory_order_relaxed);
+                        if (resolutionLog < 8) {
+                            HookLogImportant("NGX DRS: %s resolved by DLSS driver-settings consumer %s - routed "
+                                             "through CE",
+                                             lpProcName, callerPath);
+                        }
+                    }
                     if (!allowDlssDrsResolution &&
                         ShouldBypassDynamicHookForCaller(
                             callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureHookModule,

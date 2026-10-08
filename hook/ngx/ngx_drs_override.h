@@ -39,4 +39,16 @@ void* MaybeWrapQueryInterface(uint32_t functionId, void* resolved, const void* c
 // resolution. `module` may be null, in which case only the name is consulted.
 bool IsDlssDrsConsumerModuleLoaded(const char* modulePath, void* module);
 
+// Called once per DLSS driver-settings consumer that is already mapped into the
+// process. `module` is pinned for the duration of the call.
+using DlssDrsConsumerVisitor = void (*)(void* module, const char* modulePath, void* context);
+
+// The loader notification only sees modules that load after CE registered it, so a
+// title that runs `slInit` while CE is still arriving (Witcher 3 Remastered: sl.common
+// is mapped ~200 ms before the notification exists) hands CE a Streamline core whose
+// GetProcAddress import was never patched. The generic IAT sweep skips Streamline
+// modules on purpose, so this is the only startup path that reaches them. Returns the
+// number of consumers visited.
+uint32_t ForEachLoadedDlssDrsConsumer(DlssDrsConsumerVisitor visitor, void* context);
+
 }  // namespace ce::ngx_drs

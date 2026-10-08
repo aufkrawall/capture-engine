@@ -688,6 +688,11 @@ void InstallHookThreadHooks() {
   RemixHook::RegisterDynamicHooks();
   RemixHook::Install();
   IATHook::InitializeGetProcAddressHook();
+  // The sweep above skips Streamline modules by design, and the loader
+  // notification only sees later loads. A title that ran slInit before CE
+  // arrived (Witcher 3 Remastered, 20261008_211749) still needs its sl.common
+  // routed through CE before it resolves NvAPI_DRS_GetSetting.
+  PatchLoadedDlssDrsConsumers("hook thread router");
 
   // When the profile configures runtime override paths (dlss_sr_dll_path,
   // dlss_fg_dll_path, dlss_rr_dll_path, streamline_dll_path), load the override

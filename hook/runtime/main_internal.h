@@ -442,7 +442,17 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath);
 
 void ArmManualReflexQueryHookIfConfigured(const char *source);
 
-void ArmNgxDrsOverridesIfConfigured(const char *source);
+// `sweepLoadedModules` is false from the loader notification, which runs under the
+// loader lock and must not pin modules; the hook thread's calls sweep.
+void ArmNgxDrsOverridesIfConfigured(const char *source, bool sweepLoadedModules = true);
+
+// Patches kernel32!GetProcAddress in one DLSS driver-settings consumer so its
+// first nvapi_QueryInterface resolution reaches CE. Idempotent per module.
+bool PatchDlssDrsConsumerImport(HMODULE module, const char *name, const char *via);
+
+// The same patch for consumers that were already mapped when CE arrived, which
+// neither the loader notification nor the Streamline-skipping IAT sweep offered it.
+void PatchLoadedDlssDrsConsumers(const char *source);
 
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 

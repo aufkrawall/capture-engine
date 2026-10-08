@@ -1,5 +1,9 @@
 #include "main_internal.h"
+#include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
+
+#include <algorithm>
+#include <mutex>
 
 static PVOID g_DllNotificationCookie = nullptr;
 static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
@@ -302,7 +306,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     if (_stricmp(baseName, "nvapi64.dll") == 0 || _stricmp(baseName, "nvapi.dll") == 0) {
       HookLog("NotifyHookModuleLoaded: %s detected — initializing Reflex limiter", baseName);
       g_ReflexLimiter.Init();
-      ArmNgxDrsOverridesIfConfigured(baseName);
+      ArmNgxDrsOverridesIfConfigured(baseName, false);
     }
     // The DLSS frame generation runtimes read their driver settings through
     // nvapi_QueryInterface, which they resolve with GetProcAddress after their
@@ -311,21 +315,11 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     // recognizes a Streamline plugin the driver downloaded over the air, whose
     // file name is content-addressed and says nothing.
     if (ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(moduleNameOrPath, module)) {
-      ArmNgxDrsOverridesIfConfigured(baseName);
+      // Under the loader lock: arm, but leave the module sweep (which pins and
+      // releases modules) to the hook thread.
+      ArmNgxDrsOverridesIfConfigured(baseName, false);
       if (ce::ngx_drs::IsArmed()) {
-        void *originalGetProcAddress = nullptr;
-        const bool patched =
-            IATHook::PatchIAT(module, "kernel32.dll", "GetProcAddress",
-                              reinterpret_cast<void *>(&IATHook::DetourGetProcAddress),
-                              &originalGetProcAddress);
-        static std::atomic<uint32_t> dlssDrsPatchLogs{0};
-        const uint32_t logIndex = dlssDrsPatchLogs.fetch_add(1, std::memory_order_relaxed);
-        if (logIndex < 4 || (logIndex % 500) == 0 || !patched) {
-          HookLogImportant(
-              "NGX DRS: GetProcAddress import patch on %s %s (module=%p orig=%p)",
-              baseName, patched ? "installed" : "FAILED", (void *)module,
-              originalGetProcAddress);
-        }
+        PatchDlssDrsConsumerImport(module, baseName, "module load");
       }
     }
     if (ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleNameOrPath)) {
@@ -393,7 +387,69 @@ void ArmManualReflexQueryHookIfConfigured(const char *source) {
   }
 }
 
-void ArmNgxDrsOverridesIfConfigured(const char *source) {
+bool PatchDlssDrsConsumerImport(HMODULE module, const char *name, const char *via) {
+  void *originalGetProcAddress = nullptr;
+  const bool patched =
+      IATHook::PatchIAT(module, "kernel32.dll", "GetProcAddress",
+                        reinterpret_cast<void *>(&IATHook::DetourGetProcAddress),
+                        &originalGetProcAddress);
+
+  // One line per consumer module and outcome. A shared counter let nvngx_dlssg, which
+  // the loader redirect rediscovers repeatedly, spend the whole budget and hide the
+  // sl.* modules this patch exists for (20261008_211749). Bases are 64 KiB aligned,
+  // so bit 0 carries the outcome.
+  static std::mutex s_seenMutex;
+  static uintptr_t s_seen[64];
+  static size_t s_seenCount = 0;
+  bool logIt = false;
+  {
+    const uintptr_t key = reinterpret_cast<uintptr_t>(module) | (patched ? 1u : 0u);
+    std::lock_guard<std::mutex> guard(s_seenMutex);
+    logIt = std::find(s_seen, s_seen + s_seenCount, key) == s_seen + s_seenCount;
+    if (logIt && s_seenCount < _countof(s_seen)) {
+      s_seen[s_seenCount++] = key;
+    } else if (logIt) {
+      logIt = !patched;
+    }
+  }
+  if (logIt) {
+    HookLogImportant("NGX DRS: GetProcAddress import patch on %s %s (module=%p orig=%p via=%s)", name,
+                     patched ? "installed" : "FAILED", static_cast<void *>(module), originalGetProcAddress,
+                     via);
+  }
+  return patched;
+}
+
+void PatchLoadedDlssDrsConsumers(const char *source) {
+  if (!ce::ngx_drs::IsArmed())
+    return;
+
+  struct Sweep {
+    const char *source;
+    uint32_t patched;
+  } sweep{source, 0};
+  const uint32_t found = ce::ngx_drs::ForEachLoadedDlssDrsConsumer(
+      [](void *module, const char *path, void *context) {
+        auto *state = static_cast<Sweep *>(context);
+        char via[96];
+        snprintf(via, sizeof(via), "startup sweep (%s)", state->source ? state->source : "?");
+        if (PatchDlssDrsConsumerImport(static_cast<HMODULE>(module),
+                                       ce::overlay_compat::detail::ExtractBaseName(path), via)) {
+          ++state->patched;
+        }
+      },
+      &sweep);
+
+  static ce::log_meter::ChangeGate s_sweepGate;
+  if (const auto verdict = s_sweepGate.Observe((static_cast<uint64_t>(found) << 32) | sweep.patched)) {
+    HookLogImportant("NGX DRS: startup sweep from %s visited %u already-loaded consumer module(s), "
+                     "%u GetProcAddress import(s) patched (repeats suppressed=%llu)",
+                     source ? source : "?", found, sweep.patched,
+                     static_cast<unsigned long long>(verdict.suppressed));
+  }
+}
+
+void ArmNgxDrsOverridesIfConfigured(const char *source, bool sweepLoadedModules) {
   // GetActiveGraphicsConfig() publishes the resolved values to the override unit.
   GetActiveGraphicsConfig();
   if (!ce::ngx_drs::IsArmed())
@@ -417,5 +473,11 @@ void ArmNgxDrsOverridesIfConfigured(const char *source) {
         static_cast<unsigned>(overrides.fixedCountMultiplier),
         static_cast<unsigned>(overrides.dynamicMaxMultiplier),
         static_cast<unsigned>(overrides.dynamicTargetFps));
+  }
+
+  // Modules mapped before CE's loader notification existed were never offered the
+  // import patch; see ForEachLoadedDlssDrsConsumer.
+  if (sweepLoadedModules) {
+    PatchLoadedDlssDrsConsumers(source);
   }
 }
