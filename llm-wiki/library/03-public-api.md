@@ -103,6 +103,9 @@ typedef int32_t ce_status_t;
 typedef struct ce_runtime ce_runtime_t;
 typedef uint64_t ce_request_t;          /* 0 = none */
 
+/* Pin the Windows x64 ABI regardless of the client's surrounding packing. */
+#pragma pack(push, 8)
+
 /* ---- Utilities (no runtime required) ------------------------------------------------ */
 CE_API uint32_t    ce_api_version(void);
 CE_API const char* ce_version_string(void);              /* product build, static UTF-8 */
@@ -301,6 +304,8 @@ CE_API ce_status_t ce_enumerate_monitors(ce_monitor_info_t* items, uint32_t item
 /* Writes one line into the runtime's log, tagged with client_name. */
 CE_API ce_status_t ce_runtime_log(ce_runtime_t* rt, int32_t level, const char* message);
 
+#pragma pack(pop)
+
 #ifdef __cplusplus
 }
 #endif
@@ -308,6 +313,8 @@ CE_API ce_status_t ce_runtime_log(ce_runtime_t* rt, int32_t level, const char* m
 ```
 
 Notes on the draft:
+- Public layouts use Windows x64 packing/alignment with an 8-byte maximum; the header saves and
+  restores the client's surrounding packing. M2 tests both ordinary and nondefault ambient packing.
 - `ce_status_info_t` and `ce_setup_status_t` are caller-allocated, so the client sets `struct_size`
   and the runtime fills only the fields it knows (min of both sizes).
 - `ce_event_t` is runtime-allocated. The client checks `struct_size` before reading appended fields.
@@ -391,6 +398,9 @@ FAILED/STOPPED ──destroy──► (handle invalid)
 - All strings are UTF-8 in both directions. Paths are converted to UTF-16 inside, and the runtime
   never uses ANSI APIs for client-supplied paths. Existing ANSI/8.3 handling stays inside the
   runtime/helpers.
+- Input strings are copied before an accepting call returns. Request output pointers may be NULL;
+  accepted commands still receive an id and exactly one completion. Failed output-handle/event calls
+  clear the corresponding output pointer; failed admissions set a supplied request id to zero.
 - Pointers inside events are valid until `ce_runtime_release_event`. Pointers inside diagnostics
   are valid until `ce_settings_discard` or a successful commit.
 - Handles are validated against a live registry, so a stale handle returns `CE_E_INVALID_ARGUMENT`
@@ -409,6 +419,13 @@ Purpose: RAII and type safety for C++ clients, **the frontend included** (dogfoo
 only the C ABI. It has no exceptions across the boundary, and STL types appear only in client-side
 code.
 
+Wrapper operations return `Status` and output objects so timeout, missing settings and other errors
+remain distinguishable. Events/edits keep runtime ownership alive; explicit destroy rejects outstanding
+wrapper objects. Cleanup is bounded, never force-terminates helpers, and may leave a C runtime retained
+after timeout: call shutdown explicitly and retain the wrapper to inspect errors and retry. Client-side
+string/vector allocation may throw; no C++ exception crosses the DLL boundary. String views containing
+embedded NULs are rejected rather than truncated. Empty event `raw()` returns NULL.
+
 ```cpp
 namespace cengine {
 class Status { /* wraps ce_status_t; ok(), code(), message() via ce_status_string */ };
@@ -416,14 +433,14 @@ class Status { /* wraps ce_status_t; ok(), code(), message() via ce_status_strin
 class Event {  // move-only; releases on destruction
 public:
     int type() const; uint64_t sequence() const; ce_request_t request() const; Status status() const;
-    const ce_event_t& raw() const;
+    const ce_event_t* raw() const;
 };
 
 class SettingsEdit {  // move-only; discards on destruction unless committed
 public:
-    SettingsEdit& set(std::string_view section, std::string_view key, std::optional<std::string_view> value);
+    Status set(std::string_view section, std::string_view key, std::optional<std::string_view> value);
     Status commit(ce_request_t* request = nullptr);
-    std::vector<Diagnostic> diagnostics() const;
+    Status diagnostics(std::vector<Diagnostic>& out) const;
 };
 
 class Runtime {  // move-only
@@ -439,11 +456,11 @@ public:
     Status toggleBenchmark(ce_request_t* = nullptr);
     Status takeScreenshot(ce_request_t* = nullptr);
     Status launch(std::string_view commandLine, ce_request_t* = nullptr);
-    std::optional<Event> nextEvent(std::chrono::milliseconds timeout);
+    Status nextEvent(std::chrono::milliseconds timeout, Event& out);
     HANDLE eventHandle() const;
-    SettingsEdit editSettings();
-    std::optional<std::string> setting(std::string_view section, std::string_view key) const;
-    void log(LogLevel, std::string_view message);
+    Status editSettings(SettingsEdit& out);
+    Status setting(std::string_view section, std::string_view key, std::string& out) const;
+    Status log(LogLevel, std::string_view message);
 };
 }  // namespace cengine
 ```

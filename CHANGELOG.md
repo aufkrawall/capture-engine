@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Embedding API design:** added an unshipped v2 C header and C++ ownership wrapper for runtime lifecycle, asynchronous controls, events and settings. This defines the integration contract; an independent runtime library is still being implemented.
+
 - **Enforced library dependency rules:** lint and unfiltered verification now reject module boundary regressions, including during advisory lint, and retain dependency/depth counts in verification reports.
 
 - **Library development checks:** added a module dependency checker that rejects new private-header and UI dependencies, tracks existing exceptions, and reports internal-header reach while the standalone engine is extracted.

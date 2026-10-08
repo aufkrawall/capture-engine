@@ -1,5 +1,30 @@
 # llm-wiki Log Archive: 2026-W41b
 
+### 2026-10-06 - Talos 20261006_204930 (0.1.7011): latency "changes weirdly" across mode switches
+
+- First run with value-band sample logging. In steady states the marker reading and the estimate cross-check agree
+  within 2 ms (DLSS FG 2x 52.8/54.3, no-FG Reflex 22.7/22.7, menu 9.4-10.8 in every mode). Readings that differed
+  between visits to the same mode came from different states:
+  - **DLSS FG 2x/3x/4x in gameplay:** 53/59/69 ms at bases of 60/46/35 fps.
+  - **DLSS MFG 4x in the menu:** sometimes interpolating with the base cut to 34.6 fps (markers 28.9 ms; 69.7 ms),
+    sometimes idle at 138 fps (9.4 ms).
+  - **After FSR FG off:** Reflex was off and AMD's proxy was still in place, reading 43-46 ms.
+  - **Reflex re-enabled with the proxy queue still full:** 61 ms, with the game blocked 4.6 ms per frame in the
+    proxy Present. Both paths read 61.0. The proxy block fell to 0.66 ms by 20:52:38, and the reading to 22.7.
+- Transients last 1-3 s after each switch (71.7, 77.2, 135.8 with one sample) while the 64-frame marker report mixes
+  both cadences. The 14.0 ms DLSS FG samples at 20:50:58 and 20:53:13 (p2d 0.4 ms, anchor 1.5 ms, base interval
+  still 16.4 ms) were the move into the menu, where the generator stops. Not changed: no wrong steady state was
+  found.
+- The user reported two things. First, Reflex read "much too high" after FSR FG was switched off: in gameplay at
+  75 fps, 61 ms (20:52:32-41, both paths 61.0) against 32.8 ms before FSR at 70 fps. The marker split was a 34.7 ms
+  anchor-to-runtime-Present and 15.6 ms present-to-display, against 10.9/11.0 before. Second, FSR FG read 53-62 ms in
+  its first period (modelled anchor; Reflex off) but 79 ms 0.5 s into its second (frameBegin=simulation): Talos left
+  Reflex on, 20:52:30-20:53:18, so its markers anchored FSR frames. Whether these are real or mis-paired was not
+  decidable from the log, so `anchorToApp=`/`appToRuntime=` were added to the chain line. Hypothesis: Reflex paces
+  less effectively through AMD's leftover proxy, and the one-frame modelled anchor understates UE without Reflex.
+- Open: the measured FG base read 138.4 at 20:51:21 while the markers said 28.9 ms. It agreed again at 20:51:29.
+  Not traced.
+
 ### 2026-10-06 - Talos 20261006_203030 (0.1.7010): "Reflex 60 instead of 30" after switching
 
 - Reflex was off from 20:32:29 to 20:34:38: Talos switches it off for FSR FG and leaves it off afterwards. The ~46 ms
