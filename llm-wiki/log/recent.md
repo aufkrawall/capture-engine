@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-08 - v2 C/C++ ABI baseline verified
+
+- C11/C++20 assert 56 public field offsets/widths and 8 type sizes/alignments; the C object is linked
+  and executed, with __cplusplus rejected. C uses ambient pack 1 and restores it; C++ uses default
+  packing and verifies move-only wrapper types. Copied-header field drift and removed guards fail.
+- DR-18 fixes initializer extent/version: the old pointer-only draft could not safely initialize an
+  older client's descriptor after a minor extension. All 30 prototypes match the canonical contract.
+  C test flags retain target/debug/CFG/privacy/sanitizers; public/runtime/frontend analyzer scope is covered.
+- Interrupted 7028 produced no terminal manifest; stopped processes were confirmed, resume refused.
+  Strict-clean 20261008_123915_build_7029 compiled products and passed native/Python/ASan/32 FG;
+  assertion macro warnings were fixed, then resumed verify 20261008_125944_build_7029 passed/package:
+  38,814,944-byte setup PE; 706 accepted warnings across 1013 TUs. Final new-header formatting and
+  20261008_130659_build_7029 focused ABI tests pass. No runtime functions, exports or DLL are added;
+  live API/ownership tests, external SDK/MSVC use and hardware/A/V evidence remain later milestones.
+
 ### 2026-10-08 - Unshipped v2 API and client ownership wrapper
 
 - Full draft covers lifecycle, commands/events/status, settings and setup/utilities; fixed-width C

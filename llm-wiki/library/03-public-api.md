@@ -127,7 +127,8 @@ typedef struct ce_runtime_desc {
     uint32_t    reserved;      /* 0 */
 } ce_runtime_desc_t;
 
-CE_API ce_status_t ce_runtime_desc_init(ce_runtime_desc_t* desc);
+/* Caller extent/version make initialization safe across additive minor fields. */
+CE_API ce_status_t ce_runtime_desc_init(ce_runtime_desc_t* desc, uint32_t struct_size, uint32_t api_version);
 /* Validates package and settings, claims session ownership, starts the engine thread.
  * Returns before helpers are ready; READY/FAILED arrive as CE_EVENT_RUNTIME_STATE. */
 CE_API ce_status_t ce_runtime_create(const ce_runtime_desc_t* desc, ce_runtime_t** out_runtime);
@@ -313,6 +314,8 @@ CE_API ce_status_t ce_runtime_log(ce_runtime_t* rt, int32_t level, const char* m
 ```
 
 Notes on the draft:
+- Descriptor initialization receives sizeof(desc) and the client's CE_API_VERSION; it validates
+  the version and initializes only the provided extent (DR-18), rather than using the DLL's sizeof.
 - Public layouts use Windows x64 packing/alignment with an 8-byte maximum; the header saves and
   restores the client's surrounding packing. M2 tests both ordinary and nondefault ambient packing.
 - `ce_status_info_t` and `ce_setup_status_t` are caller-allocated, so the client sets `struct_size`
@@ -321,6 +324,26 @@ Notes on the draft:
 - Monitors use `item_size` because an array can't carry a per-item `struct_size` cleanly.
 - Header sections marked (M6)/(M9) are added to the shipped header only when that milestone lands.
   M2 commits the full draft as `cengine_draft.h` for ABI tests; the shipped header grows by milestone.
+
+## x64 layout baseline
+
+Compiled as C11 and C++20 in [cengine_abi_layout.h](../../tests/cengine_abi_layout.h): every
+field offset/width, aggregate size/alignment and event-union member is asserted. C uses incoming
+packing 1 and verifies it is restored; C++ verifies ordinary packing and wrapper move-only types.
+
+| Type | Size | Alignment |
+| --- | ---: | ---: |
+| ce_runtime_desc_t | 40 | 8 |
+| ce_status_info_t | 40 | 8 |
+| ce_event_t | 112 | 8 |
+| ce_settings_diagnostic_t | 32 | 8 |
+| ce_setup_status_t | 16 | 4 |
+| ce_monitor_info_t | 404 | 4 |
+
+The C probe is compiled with `-x c -std=c11`, linked and executed in the native suite. This
+establishes layouts with the declared Clang toolchain, not MSVC consumption or implemented runtime
+behavior; those remain M4/M8 requirements. Copied-header field drift and removed packing guards fail
+these assertions. No public runtime functions or exports are implemented by the ABI tests.
 
 ## Semantics in detail
 
@@ -489,7 +512,8 @@ v2. There is no compatibility shim.
 #include <stdio.h>
 
 int main(void) {
-    ce_runtime_desc_t desc; ce_runtime_desc_init(&desc);
+    ce_runtime_desc_t desc;
+    if (ce_runtime_desc_init(&desc, sizeof(desc), CE_API_VERSION) != CE_OK) return 1;
     desc.client_name = "headless-sample";
     ce_runtime_t* rt = NULL;
     ce_status_t s = ce_runtime_create(&desc, &rt);

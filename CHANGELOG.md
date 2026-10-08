@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **C client ABI verification:** the unshipped engine API now has C11/C++ layout and ownership-type checks, including nondefault packing. Descriptor initialization receives caller size and version so later compatible additions cannot overwrite older client storage.
+
 - **Embedding API design:** added an unshipped v2 C header and C++ ownership wrapper for runtime lifecycle, asynchronous controls, events and settings. This defines the integration contract; an independent runtime library is still being implemented.
 
 - **Enforced library dependency rules:** lint and unfiltered verification now reject module boundary regressions, including during advisory lint, and retain dependency/depth counts in verification reports.

@@ -76,6 +76,14 @@ an observer/subscriber framework, which is indirection without a second producer
 ownership is kept. Termination policy belongs to the frontend (the app may still do what it does
 today).
 
+**DR-18 Descriptor initialization takes the caller's extent and compiled API version.**
+Evidence (2026-10-08, M2): the draft promised additive minor descriptor fields, but its initializer
+took only a pointer; an older client's allocation size/version cannot be recovered from uninitialized
+storage. The unshipped initializer now takes `struct_size` and `api_version`, never writes beyond
+that extent, and validates the requested version. Rejected: assuming native sizeof, inferring a
+version from buffer size, or requiring an uninitialized first field to carry the size. Other output
+structs already require a seeded struct_size; monitor arrays carry item_size.
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |

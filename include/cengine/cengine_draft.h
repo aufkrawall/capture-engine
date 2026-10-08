@@ -68,7 +68,8 @@ typedef struct ce_runtime_desc {
     uint32_t reserved;       /* 0 */
 } ce_runtime_desc_t;
 
-CE_API ce_status_t ce_runtime_desc_init(ce_runtime_desc_t* desc);
+/* Caller extent/version make initialization safe across additive minor fields. */
+CE_API ce_status_t ce_runtime_desc_init(ce_runtime_desc_t* desc, uint32_t struct_size, uint32_t api_version);
 /* Validates package and settings, claims session ownership, starts the engine thread.
  * Returns before helpers are ready; READY/FAILED arrive as CE_EVENT_RUNTIME_STATE. */
 CE_API ce_status_t ce_runtime_create(const ce_runtime_desc_t* desc, ce_runtime_t** out_runtime);

@@ -222,7 +222,7 @@ public:
         }
         auto owner = std::make_shared<detail::RuntimeOwner>();
         ce_runtime_desc_t desc{};
-        const Status initialized(ce_runtime_desc_init(&desc));
+        const Status initialized(ce_runtime_desc_init(&desc, sizeof(desc), CE_API_VERSION));
         if (!initialized)
             return initialized;
         desc.package_dir = options.packageDir ? options.packageDir->c_str() : nullptr;

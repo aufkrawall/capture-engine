@@ -402,11 +402,19 @@ TESTS_ONLY_SENSOR_SOURCES = (
 TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp", "runtime_configuration.cpp")
 
 
+def c11_test_flags(cflags):
+    # Reuse the declared compiler/target/debug/hardening policy; explicitly
+    # select C because clang++ otherwise treats .c files as C++.
+    return [flag for flag in cflags if not flag.startswith(("-std=", "-stdlib="))
+            and flag not in {"-frtti", "-fno-rtti"}] + ["-x", "c", "-std=c11"]
+
+
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
     strict_fp_flags = get_strict_fp_flags(clang_exe)
     log(f"Compiling Tests (parallel, {get_parallel_job_count(env, 1_000_000)} threads, non-LTO)...")
-    src_files = glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
+    src_files = sorted(glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
+                       + glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.c")))
     if not src_files:
         log("No test files found.")
         return
@@ -559,7 +567,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         src_obj_pairs.append((src, obj))
         test_objs.append(obj)
 
-    compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
+    compile_tasks.extend((c11_test_flags(test_cflags) if src.endswith(".c") else test_cflags, src, obj)
+                         for src, obj in src_obj_pairs)
 
     captureengine_test_objs = []
     for name in (

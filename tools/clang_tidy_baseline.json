@@ -54,7 +54,7 @@
   },
   "total": 706,
   "scope": {
-    "entries": 1011,
+    "entries": 1013,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -747,6 +747,8 @@
       "tests/test_capture_pipeline_policy_part5.cpp",
       "tests/test_capture_retarget_policy.cpp",
       "tests/test_capture_swapchain_binding.cpp",
+      "tests/test_cengine_abi.cpp",
+      "tests/test_cengine_abi_c.c",
       "tests/test_cfr_mux_byte_budget.cpp",
       "tests/test_cfr_rational_grid.cpp",
       "tests/test_child_process_lifecycle.cpp",

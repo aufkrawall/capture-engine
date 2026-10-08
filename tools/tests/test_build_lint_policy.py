@@ -85,6 +85,9 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
             r"C:\Users\dev\Programme\build\captureproject\common\capture_policy\constants.h",
             r"C:/Users/dev/Programme/build/captureproject/hook/pacing/fps_limiter.h",
             r"C:\proj\captureproject\testapp\dx12_fg_switch_runtime.inl",
+            r"C:\proj\captureproject\include\cengine\cengine.hpp",
+            r"C:/proj/captureproject/runtime/core/core.h",
+            r"C:/proj/captureproject/frontend/app/client.h",
         ]
         for path in analyzed:
             self.assertTrue(include_re.search(path), path)

@@ -42,6 +42,6 @@ CheckOptions:
 # absolute path (...\Programme\build\captureproject\...), which silently
 # suppressed clang-tidy for every project header: 456 of 1616 findings, at
 # 195 header locations, were invisible until this was narrowed.
-HeaderFilterRegex: '[\\/](common|hook|captureengine|mediaengine|testapp|tests)[\\/]'
+HeaderFilterRegex: '[\\/](common|hook|captureengine|mediaengine|testapp|tests|runtime|frontend|include[\\/]cengine)[\\/]'
 ExcludeHeaderFilterRegex: '[\\/](external|installed|ffmpeg_build)[\\/]|[\\/]build[\\/](msys64|obj|tmp|fg_sdk_include|verification)[\\/]'
 FormatStyle: file:tools/config/.clang-format

@@ -10,6 +10,21 @@ from pathlib import Path
 import build
 
 
+class C11TestFlagsTest(unittest.TestCase):
+    def test_c_translation_units_use_c11_and_preserve_target_debug_and_sanitizers(self) -> None:
+        flags = ["-std=c++20", "-O0", "-g", "-stdlib=libc++", "-fno-rtti", "-fsanitize=address,undefined",
+                 "--target=x86_64-w64-windows-gnu", "-mguard=cf", "-Iproject", "-ffile-prefix-map=project=."]
+        actual = build.c11_test_flags(flags)
+        self.assertEqual(actual[-3:], ["-x", "c", "-std=c11"])
+        self.assertNotIn("-std=c++20", actual)
+        self.assertNotIn("-stdlib=libc++", actual)
+        self.assertNotIn("-fno-rtti", actual)
+        for flag in ("-g", "-fsanitize=address,undefined", "--target=x86_64-w64-windows-gnu", "-mguard=cf",
+                     "-ffile-prefix-map=project=."):
+            self.assertIn(flag, actual)
+        self.assertEqual(flags[0], "-std=c++20")  # The C++ task's original list is unchanged.
+
+
 class ResolveMsys2GTestLinkInputsTest(unittest.TestCase):
     def test_prefers_import_libraries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
