@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-08 - Gamma build crashed Witcher 3 on DLSS FG off
+
+- Session 20261008_172629 (0.1.7034): CreateRTVs got DEVICE_REMOVED 3 ms after the first FG-off frame; the game's
+  own int3 message says GPU crash. Earlier gamma builds (7032, same FG-off sequence x3) survived; the new element
+  was the early post-process call that bypassed `skipOverlayDraw`. Reverted to the gated placement + regression
+  test. Unproven by GPU capture; the 154811 AV dump (7032) is a game-side fault on another thread, unrelated.
+
 ### 2026-10-08 - Generic display gamma correction
 
 - `Graphics.display_gamma`/`gamma_source` implemented in the CAS/RCAS post-process stage (D3D11, native D3D12,

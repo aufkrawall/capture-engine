@@ -448,3 +448,12 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
 - Cost: ~0.18 ms per 4K frame (gamma alone, `GammaGpuTiming` disabled test). Tests: `test_gamma_*.cpp`,
   `test_config_gamma.cpp`, `tools/tests/test_sharpen_shader_generation.py`; the flow harness runs `srgb`.
 - Open: no hardware run yet (gradients, banding, FG switches in Talos/GTA); D3D9/OpenGL/DDraw not covered.
+- **Do not run the normal-route pass ahead of the overlay routing.** An early call at the top of
+  `FrameProcessSession::Run()` (to decouple gamma from overlay init) ignored `skipOverlayDraw`; the first
+  DLSS FG off in Witcher 3 (build 0.1.7034, session `20261008_172629`) then hit a real GPU fault (CreateRTVs
+  `DXGI_ERROR_DEVICE_REMOVED`, game: "Gpu Crash for unknown reasons", no TDR event). `draw_main.cpp` documents
+  that pre-SL submissions on the game queue during DLSS-G transitions hang the device. The pass is back behind
+  `!skipOverlayDraw` in `DrawOverlayFrame`; source-scan test
+  `Dx12PostProcessOnTheNormalRouteIsGatedByTheOverlayRouting`. Cause inferred from timing and the documented
+  hazard, not proven by a GPU capture; hardware re-test of FG off in Witcher 3 pending.
+  Consequence: gamma (like sharpen) is not applied on frames the routing suppresses (transitions, hidden-overlay init).

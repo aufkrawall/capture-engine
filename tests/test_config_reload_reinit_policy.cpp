@@ -49,6 +49,22 @@ TEST(ConfigReloadReinitPolicyTest, Dx12GammaOffDoesNotWaitOrReenterTeardown) {
     EXPECT_NE(source.find("ScopedCEOverlayECLSubmission submission(\"post-process\")"), std::string::npos);
 }
 
+// The post-process pass submits CE work on the game's queue. During DLSS-G transitions (FG off settling,
+// warmup, keep-alive) the routing sets skipOverlayDraw precisely because such pre-SL submissions on the game
+// queue hang the device. A call placed ahead of that routing (session 20261008_172629: GPU crash on the first
+// DLSS FG off) must not exist; the normal route runs the pass only behind the same gate as the overlay draw.
+TEST(ConfigReloadReinitPolicyTest, Dx12PostProcessOnTheNormalRouteIsGatedByTheOverlayRouting) {
+    const std::string session = ReadSource("hook/d3d12/dx12_hook_process_session.cpp");
+    ASSERT_FALSE(session.empty());
+    EXPECT_EQ(session.find("SharpenDX12PresentedFrame"), std::string::npos);
+    const std::string draw = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
+    const size_t call = draw.find("SharpenDX12PresentedFrame(");
+    ASSERT_NE(call, std::string::npos);
+    const size_t gate = draw.rfind("if (!skipOverlayDraw", call);
+    ASSERT_NE(gate, std::string::npos);
+    EXPECT_LT(call - gate, 160u);
+}
+
 // The Vulkan layer had the same shape and got it right; keep it that way so the
 // two sharpen backends cannot drift apart on this.
 TEST(ConfigReloadReinitPolicyTest, VulkanSharpenOffPathReleasesThroughTheUnlockedBody) {
