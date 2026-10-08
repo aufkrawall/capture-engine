@@ -299,8 +299,10 @@ void RestoreRetargetedPointers() {
     std::lock_guard<std::mutex> lock(g_RetargetedMutex);
     for (const RetargetedSlot& entry : g_RetargetedSlots) {
         MEMORY_BASIC_INFORMATION region = {};
-        if (VirtualQuery(entry.slot, &region, sizeof(region)) != sizeof(region) || !IsWritableCommittedRegion(region))
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(entry.slot), &region, sizeof(region)) != sizeof(region) ||
+            !IsWritableCommittedRegion(region)) {
             continue;
+        }
         InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry.slot), entry.from, entry.to);
     }
     g_RetargetedSlots.clear();

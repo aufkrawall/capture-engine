@@ -10,7 +10,7 @@
 #include "hook/ngx/nvngx_parameter_abi.h"
 
 namespace {
-std::string MakeTestPath(const char* filename) {
+[[maybe_unused]] std::string MakeTestPath(const char* filename) {
     // Include the process id so concurrently running unit-test binaries
     // (for example the product suite and the isolated sanitizer suite) never
     // clobber each other's config files.
@@ -23,7 +23,7 @@ std::string MakeTestPath(const char* filename) {
     return buffer;
 }
 
-std::string DefaultTemplatePath() {
+[[maybe_unused]] std::string DefaultTemplatePath() {
     char modulePath[MAX_PATH] = {};
     const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
     EXPECT_GT(length, 0u);
@@ -42,7 +42,7 @@ std::string DefaultTemplatePath() {
     return path + "\\captureengine\\config.ini.template";
 }
 
-void WriteTextFile(const std::string& path, const std::string& content) {
+[[maybe_unused]] void WriteTextFile(const std::string& path, const std::string& content) {
     // Share read/write/delete rather than demanding exclusivity. These files are
     // written into the build tree, where a real-time scanner routinely holds a
     // transient handle on a file it has just seen created; an exclusive open
@@ -60,7 +60,7 @@ void WriteTextFile(const std::string& path, const std::string& content) {
     ASSERT_EQ(written, content.size());
 }
 
-std::string ReadTextFile(const std::string& path) {
+[[maybe_unused]] std::string ReadTextFile(const std::string& path) {
     HANDLE file = CreateFileA(path.c_str(), GENERIC_READ,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);

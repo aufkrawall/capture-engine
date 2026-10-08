@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false
 """Keep shader regeneration on the paths consumed by the product build."""
 
 from pathlib import Path
@@ -13,6 +14,7 @@ class SharpenShaderGenerationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location("ce_sharpen_codegen", cls.root / "compile_sharpen_shaders.py")
+        assert spec is not None and spec.loader is not None
         cls.generator = importlib.util.module_from_spec(spec)
         sys.path.insert(0, str(cls.root))
         try:
@@ -30,8 +32,11 @@ class SharpenShaderGenerationTests(unittest.TestCase):
             root = Path(directory)
             parts = root / "sharpen_shader_bytecode"
             header = root / "sharpen_shader_bytecode.h"
-            with patch.object(self.generator, "DXBC_PART_DIR", parts), patch.object(self.generator, "DXBC_HEADER", header), \
-                    patch.object(self.generator, "compile_shader", return_value=b"DXBCfixture"):
+            with (
+                patch.object(self.generator, "DXBC_PART_DIR", parts),
+                patch.object(self.generator, "DXBC_HEADER", header),
+                patch.object(self.generator, "compile_shader", return_value=b"DXBCfixture"),
+            ):
                 emitted = self.generator.build_dxbc()
             text = header.read_text(encoding="utf-8")
             self.assertEqual(len(emitted), len(self.generator.DXBC_SHADERS))

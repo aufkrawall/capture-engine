@@ -176,11 +176,11 @@ TEST(WindowHeartbeatTest, SameThreadAndStaleIdentityCannotEnterSynchronousWindow
     heartbeat::Window window;
     window.handle = hwnd;
     window.threadId = GetWindowThreadProcessId(hwnd, &window.processId);
-    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr), ERROR_RETRY);
+    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr, GetCurrentProcessId() + 1), ERROR_RETRY);
     ++window.threadId;
-    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr), ERROR_RETRY);
+    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr, GetCurrentProcessId() + 1), ERROR_RETRY);
     DestroyWindow(hwnd);
-    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr), ERROR_RETRY);
+    EXPECT_EQ(heartbeat::SendAsyncNull(window, 1, nullptr, GetCurrentProcessId() + 1), ERROR_RETRY);
 }
 
 TEST(WindowHeartbeatTest, WorkerCannotActivateWindowsSimulateInputOrAccessGameMemory) {
@@ -231,7 +231,7 @@ TEST(WindowHeartbeatTest, NativeNullDeliveryWakesAMessageWaitAndCompletesWithout
     if (readyResult == WAIT_OBJECT_0 && window.handle) {
         callbackEvent = completion;
         completedToken = 0;
-        EXPECT_EQ(heartbeat::SendAsyncNull(window, 77, Received), ERROR_SUCCESS);
+        EXPECT_EQ(heartbeat::SendAsyncNull(window, 77, Received, GetCurrentProcessId() + 1), ERROR_SUCCESS);
         const uint64_t deadline = GetTickCount64() + 5000;
         while (WaitForSingleObject(completion, 0) != WAIT_OBJECT_0 && GetTickCount64() < deadline) {
             MSG message = {};

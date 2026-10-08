@@ -64,8 +64,7 @@ protected:
     }
 
     ComPtr<ID3D12Resource> Buffer(UINT64 size, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_STATES state) {
-        D3D12_HEAP_PROPERTIES properties = {};
-        properties.Type = heap;
+        D3D12_HEAP_PROPERTIES properties = {heap, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
         D3D12_RESOURCE_DESC desc = {};
         desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         desc.Width = size;
@@ -119,8 +118,8 @@ protected:
         desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
         desc.SampleDesc.Count = 1;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        D3D12_HEAP_PROPERTIES properties = {};
-        properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_HEAP_PROPERTIES properties = {D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                                            D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
         ComPtr<ID3D12Resource> frame;
         EXPECT_EQ(device_->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc,
                                                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&frame)), S_OK);
@@ -206,6 +205,7 @@ TEST_F(GammaD3D12Test, NativeShaderMatchesReferenceWithoutD3D11Interop) {
 
 TEST_F(GammaD3D12Test, BacklogAndResizeRetainDescriptorsWithoutDroppingCorrection) {
     std::vector<ComPtr<ID3D12Resource>> frames;
+    frames.reserve(12);
     for (uint32_t index = 0; index < 12; ++index)
         frames.push_back(Frame(256 + index, 0.1f));
     ASSERT_TRUE(Drain());

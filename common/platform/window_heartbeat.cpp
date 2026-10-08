@@ -170,12 +170,12 @@ void Pump::Complete(HWND window, ULONG_PTR token) {
         pending_.erase(it);
 }
 
-DWORD SendAsyncNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback) {
+DWORD SendAsyncNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback, DWORD foregroundPid) {
     DWORD pid = 0;
     const DWORD tid = GetWindowThreadProcessId(window.handle, &pid);
-    const DWORD foregroundPid = ForegroundPid();
+    const DWORD effectiveForegroundPid = foregroundPid != 0 ? foregroundPid : ForegroundPid();
     if (!tid || tid != window.threadId || pid != window.processId || tid == GetCurrentThreadId() ||
-        !foregroundPid || pid == foregroundPid)
+        !effectiveForegroundPid || pid == effectiveForegroundPid)
         return ERROR_RETRY;
     SetLastError(ERROR_SUCCESS);
     if (SendMessageCallbackW(window.handle, WM_NULL, 0, 0, callback, token))

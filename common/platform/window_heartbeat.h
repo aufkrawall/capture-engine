@@ -69,7 +69,7 @@ private:
 
 // Asynchronous system-message delivery, with a fresh HWND/thread/process/focus
 // check. A successful return means queued, not that the recipient made progress.
-DWORD SendAsyncNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback);
+DWORD SendAsyncNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback, DWORD foregroundPid = 0);
 
 class Service {
 public:
