@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-08 - Library module dependency checker
+
+- The source scanner checks quoted/angle and relative includes, ignores comments/raw fixture strings,
+  and records 19 exact legacy exceptions with reasons/milestones. New edges and additions to the
+  committed exception set fail; pruning removes only obsolete entries. Sixteen behavioral fixtures pass.
+- Initial graph: 3645 edges; DX12 internal header 74 includers (2 outside), media 29 (0 outside).
+  Depth estimates are labeled; writable-global analysis stays unclaimed once runtime/frontend exist.
+- Closing gate 20261008_084914_build_7025 passes native/Python/all 32 FG checks and produces the
+  38,814,900-byte setup PE. Direct Python style/types and 16 focused fixtures pass; build wiring follows.
+
 ### 2026-10-08 - Library-first plan adopted
 
 - The committed plan moved to library/; index routes to the canonical architecture/API/milestones.

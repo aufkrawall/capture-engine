@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "modules": [
+    "frontend",
+    "runtime",
+    "captureengine",
+    "hook",
+    "mediaengine",
+    "common",
+    "include",
+    "tests",
+    "elevationservice",
+    "installer",
+    "testapp"
+  ],
+  "rules": {
+    "frontend/": [
+      "frontend/",
+      "include/cengine/"
+    ],
+    "runtime/api/": [
+      "runtime/api/",
+      "include/cengine/",
+      "runtime/core/core.h",
+      "common/logging/",
+      "common/platform/"
+    ],
+    "runtime/core/": [
+      "runtime/core/",
+      "@runtime_public",
+      "common/"
+    ],
+    "runtime/": [
+      "@own",
+      "common/"
+    ],
+    "captureengine/": [
+      "captureengine/",
+      "common/",
+      "mediaengine/engine/mediaengine.h"
+    ],
+    "hook/": [
+      "hook/",
+      "common/"
+    ],
+    "mediaengine/": [
+      "mediaengine/",
+      "common/"
+    ],
+    "common/": [
+      "common/"
+    ],
+    "include/": [
+      "include/"
+    ],
+    "tests/": [
+      "*"
+    ],
+    "elevationservice/": [
+      "elevationservice/",
+      "common/"
+    ],
+    "installer/": [
+      "installer/",
+      "common/"
+    ],
+    "testapp/": [
+      "testapp/",
+      "common/",
+      "include/"
+    ]
+  },
+  "exceptions": [
+    {
+      "source": "captureengine/app/libcaptureengine_controller.h",
+      "target": "include/libcaptureengine.h",
+      "reason": "Unpublished controller facade until its v2 replacement.",
+      "milestone": "M4"
+    },
+    {
+      "source": "captureengine/app/libcaptureengine_internal.h",
+      "target": "include/libcaptureengine.h",
+      "reason": "Unpublished controller facade until its v2 replacement.",
+      "milestone": "M4"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/d3d11_frame_submission_desc.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/video_frame_submission_desc.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/frame_submission_result.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/mux_flow_snapshot.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/injection/injection_ota_watchdog.cpp",
+      "target": "hook/ngx/ngx_ota_policy.h",
+      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
+      "milestone": "M3 / hygiene D12"
+    },
+    {
+      "source": "captureengine/media/frame_submission.h",
+      "target": "mediaengine/engine/frame_submission_result.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/media/process_loopback_worker_host.cpp",
+      "target": "mediaengine/audio/process_loopback_protocol.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/media/wgc_capture_internal.h",
+      "target": "mediaengine/video/video_format_policy.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/sensors/sensor_service.cpp",
+      "target": "hook/fg/fg_cost_probe.h",
+      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
+      "milestone": "M3 / hygiene D12"
+    },
+    {
+      "source": "common/config/config_load_ue5.cpp",
+      "target": "hook/overrides/ue5_cvar_override_policy.h",
+      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
+      "milestone": "M3 / hygiene D12"
+    },
+    {
+      "source": "elevationservice/service_internal.h",
+      "target": "captureengine/sensors/sensor_plugin.h",
+      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
+      "milestone": "M9"
+    },
+    {
+      "source": "elevationservice/service_main.cpp",
+      "target": "captureengine/sensors/sensor_bridge_host.h",
+      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
+      "milestone": "M9"
+    },
+    {
+      "source": "elevationservice/service_trace.cpp",
+      "target": "captureengine/display_timing/display_timing_etw.h",
+      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
+      "milestone": "M9"
+    },
+    {
+      "source": "hook/d3d12/dx12_hook_swapchain_tracking.cpp",
+      "target": "hook/wrappers/dxgi_swapchain_wrap_internal.h",
+      "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
+      "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "hook/runtime/main_fatal_dump.cpp",
+      "target": "hook/d3d12/dx12_hook_internal.h",
+      "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
+      "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "hook/wrappers/dxgi_swapchain_wrap_attribution.cpp",
+      "target": "hook/present/dxgi_shared_internal.h",
+      "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
+      "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "hook/wrappers/dxgi_swapchain_wrap_diagnostics.cpp",
+      "target": "hook/present/dxgi_shared_internal.h",
+      "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
+      "milestone": "Graphics D2/D12"
+    }
+  ]
+}

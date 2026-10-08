@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Library development checks:** added a module dependency checker that rejects new private-header and UI dependencies, tracks existing exceptions, and reports internal-header reach while the standalone engine is extracted.
+
 - **Library integration documentation:** adopted the standalone runtime, public API and frontend migration plan with explicit verification requirements for programs embedding CaptureEngine.
 
 - **Reusable engine library plan:** made independent runtime/library delivery and CaptureEngine as its first client part of the active refactor, with explicit API, lifecycle, packaging and standalone-client acceptance gates. This records planned work; the current API remains controller-bound.
