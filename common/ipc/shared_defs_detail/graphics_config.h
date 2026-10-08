@@ -160,7 +160,9 @@ struct SharedGraphicsConfig {
     // padding - they grow the mapping, which is what the version bump covers.
     uint8_t sharpenMode;
     uint8_t sharpenColorSpace;
-    uint16_t sharpenReserved;
+    // ce::gamma::Curve. Reuses reserved bytes with a version/signature bump.
+    uint8_t postProcessDisplayGamma;
+    uint8_t postProcessGammaSource;
     // 0..1 within each effect's own native range. Neither effect is off at 0;
     // sharpenMode is the only switch. See common/graphics/sharpen_policy.h.
     float sharpenStrength;
@@ -272,6 +274,12 @@ static_assert(offsetof(SharedGraphicsConfig, sharpenMode) == offsetof(SharedGrap
               "the sharpen fields must follow the DLSS FG target frame rate");
 static_assert(offsetof(SharedGraphicsConfig, sharpenColorSpace) == offsetof(SharedGraphicsConfig, sharpenMode) + 1,
               "the sharpen working space must share the sharpen byte pair");
+static_assert(offsetof(SharedGraphicsConfig, postProcessDisplayGamma) ==
+                  offsetof(SharedGraphicsConfig, sharpenMode) + 2,
+              "display curve must occupy the first reserved sharpen byte");
+static_assert(offsetof(SharedGraphicsConfig, postProcessGammaSource) ==
+                  offsetof(SharedGraphicsConfig, postProcessDisplayGamma) + 1,
+              "source curve must follow the display curve");
 static_assert(offsetof(SharedGraphicsConfig, sharpenStrength) == offsetof(SharedGraphicsConfig, sharpenMode) + 4,
               "the sharpen strength must keep its natural 32-bit alignment behind the two policy bytes");
 static_assert(offsetof(SharedGraphicsConfig, sharpenIntensity) ==

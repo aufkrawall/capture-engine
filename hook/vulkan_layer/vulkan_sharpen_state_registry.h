@@ -37,17 +37,17 @@ template <typename State, typename Device>
 class Registry {
 public:
     // The state for `swapchain` on `device`, default-constructed on first use.
-    State& Live(Device device, uint64_t swapchain) { return live_[Key{device, swapchain}]; }
+    State& Live(Device device, uint64_t swapchain, uint64_t queue = 0) { return live_[Key{device, {swapchain, queue}}]; }
 
-    const State* FindLive(Device device, uint64_t swapchain) const {
-        const auto it = live_.find(Key{device, swapchain});
+    const State* FindLive(Device device, uint64_t swapchain, uint64_t queue = 0) const {
+        const auto it = live_.find(Key{device, {swapchain, queue}});
         return it == live_.end() ? nullptr : &it->second;
     }
 
     // Moves the live state aside without touching its resources. The next
     // Live() for the same swapchain starts from a fresh state.
-    void Retire(Device device, uint64_t swapchain) {
-        const auto it = live_.find(Key{device, swapchain});
+    void Retire(Device device, uint64_t swapchain, uint64_t queue = 0) {
+        const auto it = live_.find(Key{device, {swapchain, queue}});
         if (it == live_.end()) {
             return;
         }
@@ -58,7 +58,7 @@ public:
     void RetireAll(Device device) {
         for (auto it = live_.begin(); it != live_.end();) {
             if (it->first.first == device) {
-                retired_.push_back(Retired{device, it->first.second, std::move(it->second)});
+                retired_.push_back(Retired{device, it->first.second.first, std::move(it->second)});
                 it = live_.erase(it);
             } else {
                 ++it;
@@ -85,10 +85,13 @@ public:
     // Every state, live or retired, built over `swapchain`: the destroy path.
     std::vector<State> TakeForSwapchain(Device device, uint64_t swapchain) {
         std::vector<State> taken;
-        const auto live = live_.find(Key{device, swapchain});
-        if (live != live_.end()) {
-            taken.push_back(std::move(live->second));
-            live_.erase(live);
+        for (auto it = live_.begin(); it != live_.end();) {
+            if (it->first.first == device && it->first.second.first == swapchain) {
+                taken.push_back(std::move(it->second));
+                it = live_.erase(it);
+            } else {
+                ++it;
+            }
         }
         for (auto it = retired_.begin(); it != retired_.end();) {
             if (it->device == device && it->swapchain == swapchain) {
@@ -140,7 +143,7 @@ public:
     }
 
 private:
-    using Key = std::pair<Device, uint64_t>;
+    using Key = std::pair<Device, std::pair<uint64_t, uint64_t>>;
     struct Retired {
         Device device;
         uint64_t swapchain;

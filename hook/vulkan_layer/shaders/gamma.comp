@@ -1,0 +1,17 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define FFX_GPU 1
+#define FFX_GLSL 1
+#define FFX_HALF 0
+#define CE_SHARPEN_COMPUTE 1
+#include "ffx_core.h"
+#include "sharpen_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    FfxInt32x2 position = FfxInt32x2(gl_GlobalInvocationID.xy);
+    if (any(greaterThan(position, ceConstants.ceMaxCoord))) {
+        return;
+    }
+    imageStore(ceTarget, position, ceApplyGamma(ceLoadSource(position), position));
+}

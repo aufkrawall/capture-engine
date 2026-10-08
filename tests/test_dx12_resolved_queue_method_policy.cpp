@@ -100,7 +100,7 @@ TEST(Dx12ResolvedQueueMethodPolicyTest, RawLoadedResolvedMethodsAreCheckedBefore
                 const size_t loadEnd = source.find(';', load);
                 if (name.empty() || loadEnd == std::string::npos)
                     continue;
-                const std::string window = source.substr(loadEnd, 3000);
+                const std::string window = source.substr(loadEnd, 4000);
                 const size_t call = FindCallWithQueueArgument(window, name);
                 if (call == std::string::npos)
                     continue;

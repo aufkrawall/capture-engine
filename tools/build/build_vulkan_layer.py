@@ -76,6 +76,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "metrics", "perf_logger.cpp"),
         # CustomOverlay system for full overlay rendering
         os.path.join(PROJECT_ROOT, "hook", "sharpen", "sharpen_constants.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "sharpen", "gamma_native_curve.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_overlay.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_cpu_raster.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_overlay_vk.cpp"),

@@ -95,6 +95,7 @@ bool CreateSourceImage(SharpenState& state, DeviceDispatch* disp) {
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = state.format;
+    imageInfo.flags = state.sourceRaw ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
     imageInfo.extent = {state.extent.width, state.extent.height, 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
@@ -125,6 +126,14 @@ bool CreateSourceImage(SharpenState& state, DeviceDispatch* disp) {
     viewInfo.image = state.sourceImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = state.format;
+    if (state.sourceRaw) {
+        switch (state.format) {
+            case VK_FORMAT_R8G8B8A8_SRGB: viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM; break;
+            case VK_FORMAT_B8G8R8A8_SRGB: viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM; break;
+            case VK_FORMAT_A8B8G8R8_SRGB_PACK32: viewInfo.format = VK_FORMAT_A8B8G8R8_UNORM_PACK32; break;
+            default: break;
+        }
+    }
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (disp->fp_vkCreateImageView(state.device, &viewInfo, nullptr, &state.sourceView) != VK_SUCCESS)
         return false;
@@ -215,7 +224,9 @@ bool CreatePipelines(SharpenState& state, DeviceDispatch* disp) {
         CreateModule(disp, state.device, g_SharpenCasFragmentShaderSpv, sizeof(g_SharpenCasFragmentShaderSpv));
     VkShaderModule rcasModule =
         CreateModule(disp, state.device, g_SharpenRcasFragmentShaderSpv, sizeof(g_SharpenRcasFragmentShaderSpv));
-    const bool modulesReady = vertexModule && casModule && rcasModule;
+    VkShaderModule gammaModule =
+        CreateModule(disp, state.device, g_GammaFragmentShaderSpv, sizeof(g_GammaFragmentShaderSpv));
+    const bool modulesReady = vertexModule && casModule && rcasModule && gammaModule;
 
     bool created = false;
     if (modulesReady) {
@@ -291,7 +302,10 @@ bool CreatePipelines(SharpenState& state, DeviceDispatch* disp) {
         stages[1].module = rcasModule;
         const bool rcasOk = disp->fp_vkCreateGraphicsPipelines(state.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
                                                                &state.rcasPipeline) == VK_SUCCESS;
-        created = casOk && rcasOk;
+        stages[1].module = gammaModule;
+        const bool gammaOk = disp->fp_vkCreateGraphicsPipelines(state.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                                               &state.gammaPipeline) == VK_SUCCESS;
+        created = casOk && rcasOk && gammaOk;
     }
 
     if (vertexModule)
@@ -300,6 +314,8 @@ bool CreatePipelines(SharpenState& state, DeviceDispatch* disp) {
         disp->fp_vkDestroyShaderModule(state.device, casModule, nullptr);
     if (rcasModule)
         disp->fp_vkDestroyShaderModule(state.device, rcasModule, nullptr);
+    if (gammaModule)
+        disp->fp_vkDestroyShaderModule(state.device, gammaModule, nullptr);
     return created;
 }
 
@@ -364,10 +380,13 @@ bool CreateCommandObjects(SharpenState& state, DeviceDispatch* disp) {
     allocateInfo.commandPool = state.commandPool;
     allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocateInfo.commandBufferCount = kSharpenSlotCount;
-    if (disp->fp_vkAllocateCommandBuffers(state.device, &allocateInfo, state.commandBuffers) != VK_SUCCESS)
+    state.commandBuffers.resize(kSharpenSlotCount, VK_NULL_HANDLE);
+    state.fences.resize(kSharpenSlotCount, VK_NULL_HANDLE);
+    state.slotSubmitted.resize(kSharpenSlotCount, false);
+    if (disp->fp_vkAllocateCommandBuffers(state.device, &allocateInfo, state.commandBuffers.data()) != VK_SUCCESS)
         return false;
 
-    for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
+    for (uint32_t slot = 0; slot < state.fences.size(); ++slot) {
         VkFenceCreateInfo fenceInfo = {};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if (disp->fp_vkCreateFence(state.device, &fenceInfo, nullptr, &state.fences[slot]) != VK_SUCCESS)
@@ -381,7 +400,7 @@ bool CreateCommandObjects(SharpenState& state, DeviceDispatch* disp) {
 
 bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
                             VkFormat format, VkExtent2D extent, uint32_t queueFamily,
-                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images) {
+                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images, bool sourceRaw) {
     if (!disp || imageCount == 0 || !images || extent.width == 0 || extent.height == 0 ||
         route == ce::vulkan_sharpen_route::Route::kNone) {
         return false;
@@ -390,6 +409,7 @@ bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice 
     state.device = device;
     state.swapchain = swapchain;
     state.format = format;
+    state.sourceRaw = sourceRaw;
     state.extent = extent;
     state.queueFamily = queueFamily;
     state.route = route;
@@ -437,7 +457,7 @@ bool SharpenStateSubmissionsRetired(const SharpenState& state, DeviceDispatch* d
     }
     // Only VK_TIMEOUT means "still in flight": after a lost device nothing will
     // ever signal, and the teardown's own waits return at once.
-    for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
+    for (uint32_t slot = 0; slot < state.fences.size(); ++slot) {
         if (state.fences[slot] != VK_NULL_HANDLE && state.slotSubmitted[slot] &&
             disp->fp_vkWaitForFences(state.device, 1, &state.fences[slot], VK_TRUE, 0) == VK_TIMEOUT) {
             return false;
@@ -454,7 +474,7 @@ void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
 
     // Nothing here may be destroyed while the GPU is still reading it, and the
     // only fences CE owns for this pass are its own submissions'.
-    for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
+    for (uint32_t slot = 0; slot < state.fences.size(); ++slot) {
         if (state.fences[slot] != VK_NULL_HANDLE && state.slotSubmitted[slot]) {
             disp->fp_vkWaitForFences(state.device, 1, &state.fences[slot], VK_TRUE, 1000ull * 1000ull * 1000ull);
         }
@@ -478,7 +498,7 @@ void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
         batch.semaphores = std::move(state.imageSemaphores);
         layer_sharpen_g_DeferredSemaphores.push_back(std::move(batch));
     }
-    for (uint32_t slot = 0; slot < kSharpenSlotCount; ++slot) {
+    for (uint32_t slot = 0; slot < state.fences.size(); ++slot) {
         if (state.fences[slot] != VK_NULL_HANDLE)
             disp->fp_vkDestroyFence(state.device, state.fences[slot], nullptr);
     }
@@ -488,6 +508,8 @@ void DestroySharpenState(SharpenState& state, DeviceDispatch* disp) {
         disp->fp_vkDestroyPipeline(state.device, state.casPipeline, nullptr);
     if (state.rcasPipeline != VK_NULL_HANDLE)
         disp->fp_vkDestroyPipeline(state.device, state.rcasPipeline, nullptr);
+    if (state.gammaPipeline != VK_NULL_HANDLE)
+        disp->fp_vkDestroyPipeline(state.device, state.gammaPipeline, nullptr);
     if (state.pipelineLayout != VK_NULL_HANDLE)
         disp->fp_vkDestroyPipelineLayout(state.device, state.pipelineLayout, nullptr);
     if (state.descriptorPool != VK_NULL_HANDLE)

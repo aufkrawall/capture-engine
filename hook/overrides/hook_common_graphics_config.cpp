@@ -11,6 +11,7 @@
 #include "common/graphics/mip_bias_limits.h"
 #include "common/ipc/shared_defs.h"
 #include "common/graphics/sharpen_policy.h"
+#include "common/graphics/gamma_policy.h"
 #include "hook/ngx/ngx_drs_override.h"
 
 // Helpers for Config Overrides
@@ -54,6 +55,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
             ce::sharpen::ConfiguredSpaceName(static_cast<ce::sharpen::ConfiguredSpace>(shmGfx.sharpenColorSpace));
         mergedConfig.sharpenStrength = ce::sharpen::ClampStrength(shmGfx.sharpenStrength);
         mergedConfig.sharpenIntensity = ce::sharpen::ClampIntensity(shmGfx.sharpenIntensity);
+        mergedConfig.postProcessDisplayGamma = ce::gamma::Name(static_cast<ce::gamma::Curve>(shmGfx.postProcessDisplayGamma));
+        mergedConfig.postProcessGammaSource = ce::gamma::Name(static_cast<ce::gamma::Curve>(shmGfx.postProcessGammaSource));
         mergedConfig.nvLodSpreadFix = shmGfx.nvLodSpreadFix;
         mergedConfig.forceRayReconstruction = shmGfx.forceRayReconstruction;
         mergedConfig.legacyD3DNativeOverlay = shmGfx.legacyD3DNativeOverlay;
@@ -204,6 +207,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
             mergedConfig.sharpenColorSpace = g_pLocalConfig->graphics.sharpenColorSpace;
             mergedConfig.sharpenStrength = g_pLocalConfig->graphics.sharpenStrength;
             mergedConfig.sharpenIntensity = g_pLocalConfig->graphics.sharpenIntensity;
+            mergedConfig.postProcessDisplayGamma = g_pLocalConfig->graphics.postProcessDisplayGamma;
+            mergedConfig.postProcessGammaSource = g_pLocalConfig->graphics.postProcessGammaSource;
         }
 
         // Apply Preset Overrides from g_pLocalConfig

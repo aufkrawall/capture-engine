@@ -652,6 +652,19 @@ sharpen_amount=1.0
 ; to a perceptual space first, because sharpening linear light rings around
 ; highlights. direct and gamma force one of the two for diagnosis.
 sharpen_color_space=auto
+; Generic SDR display-curve compensation for D3D11, native D3D12 and Vulkan.
+; Select the curve your monitor is calibrated to: default (disabled), 2.2,
+; 2.4, or srgb (the exact piecewise curve, including its shadow segment).
+; For gamma-2.2 games on a piecewise-sRGB monitor, use display_gamma=srgb.
+; Works independently of sharpening and combines with CAS/RCAS in one pass.
+; The game's HUD is included; CaptureEngine's overlay is drawn afterwards.
+; Actual HDR output keeps its HDR transfer function. Integer SDR output uses
+; subtle, spatially stable dithering to reduce added banding.
+display_gamma=default
+; The display curve the game expects: 2.2 (usual default), 2.4, or srgb.
+; An actually verified UE5 native gamma override supplies the source curve
+; automatically, preventing the two settings from correcting the image twice.
+gamma_source=2.2
 
 [UE5]
 ; UE5 overrides affect injected x64 applications only. They redirect validated
@@ -1187,6 +1200,8 @@ dx12_focus_analysis=false
 ;Video.fps=60
 ;Graphics.vsync_mode=off
 ;Graphics.nv_lod_spread_fix=on
+;Graphics.display_gamma=srgb
+;Graphics.gamma_source=2.2
 ;FpsLimiter.general_enabled=true
 ;FpsLimiter.general_fps=120
 ;DLSS.dlss_preset_quality=K

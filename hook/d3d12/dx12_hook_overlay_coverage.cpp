@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
+#include "common/graphics/post_process_present_scope.h"
 
 
 const char* DX12OverlayRenderRouteName(uint32_t route) {
@@ -89,6 +90,7 @@ struct ExactPresentVerdict {
 };
 
 thread_local OverlayPresentScope t_overlayPresentScope;
+thread_local ce::post_process_present::Scope t_postProcessScope;
 
 std::atomic<uint32_t> s_overlayRouteMaskSinceAccount{0};
 // Guarded by dx12_hook_g_OverlayCoverageLock, like the coverage tracker.
@@ -311,7 +313,16 @@ void NoteUnaccountedPhysicalPresent(IDXGISwapChain* pSwapChain) {
 }  // namespace
 
 
+bool DX12_PostProcessAlreadyRendered(IDXGISwapChain* swapchain) {
+    return t_postProcessScope.Processed(reinterpret_cast<uintptr_t>(swapchain));
+}
+
+void DX12_MarkPostProcessRendered(IDXGISwapChain* swapchain) {
+    t_postProcessScope.Mark(reinterpret_cast<uintptr_t>(swapchain));
+}
+
 void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
+    t_postProcessScope.Begin(reinterpret_cast<uintptr_t>(pSwapChain));
     OverlayPresentScope& scope = t_overlayPresentScope;
     if (scope.depth++ > 0) {
         return;
@@ -326,6 +337,7 @@ void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
 
 
 void DX12_EndOverlayPresentScope() {
+    t_postProcessScope.End();
     OverlayPresentScope& scope = t_overlayPresentScope;
     if (scope.depth <= 0) {
         return;

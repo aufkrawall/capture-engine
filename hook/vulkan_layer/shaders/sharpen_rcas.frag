@@ -25,5 +25,5 @@ void main() {
     FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0);
-    ceOutColor = ceResolveOutput(filtered, original);
+    ceOutColor = ceResolveOutput(filtered, original, FfxInt32x2(gxy));
 }

@@ -57,7 +57,7 @@ void SharpenDX11PresentedFrame(IDXGISwapChain* pSwapChain) {
         return;
 
     const ce::sharpen::Request request = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
-    if (request.mode == ce::sharpen::Mode::Off) {
+    if (!ce::sharpen::Requested(request)) {
         // Nothing is allocated and nothing is queried while the feature is off,
         // but anything already built is handed back rather than kept resident.
         if (g_SharpenEverRendered || g_SharpenView) {

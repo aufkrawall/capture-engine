@@ -342,6 +342,17 @@ void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) {
         LogInvalidConfigBoundary("Graphics", "sharpen_color_space", config.graphics.sharpenColorSpace, "auto");
         config.graphics.sharpenColorSpace = "auto";
     }
+    auto loadGammaCurve = [&](const char* key, const char* fallback, bool source) {
+        const std::string value = reader.GetStr("Graphics", key, fallback);
+        ce::gamma::Curve curve = ce::gamma::Curve::Default;
+        if (!ce::gamma::TryParse(value.c_str(), curve) || (source && curve == ce::gamma::Curve::Default)) {
+            LogInvalidConfigBoundary("Graphics", key, value, fallback);
+            return std::string(fallback);
+        }
+        return std::string(ce::gamma::Name(curve));
+    };
+    config.graphics.postProcessDisplayGamma = loadGammaCurve("display_gamma", "default", false);
+    config.graphics.postProcessGammaSource = loadGammaCurve("gamma_source", "2.2", true);
     config.graphics.cpuPrerenderLimit = reader.GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
     if (!std::isfinite(config.graphics.cpuPrerenderLimit) ||
         config.graphics.cpuPrerenderLimit != std::trunc(config.graphics.cpuPrerenderLimit) ||

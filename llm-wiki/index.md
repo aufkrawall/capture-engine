@@ -89,7 +89,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 8 | D3D11 forced AF |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
-| `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen on D3D11/D3D12/Vulkan |
+| `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
 | `ue5-cvar-overrides.md` | 55 | `[UE5]` CVar resolution, RR preset ladder, refusals |
 | `graphics-api-reporting.md` | 4 | graphics API detection and reporting |
 | `performance-priority.md` | 10 | process/queue priorities, HAGS, MMCSS |

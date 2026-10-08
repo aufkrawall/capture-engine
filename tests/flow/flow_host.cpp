@@ -125,6 +125,7 @@ FlowGame::FlowGame(const std::string& testName) {
     hostMemory_ = new SharedMemoryLayout();
     AppConfig hostConfig;
     LoadConfig(configPath, hostConfig);
+    hostConfig.graphics.postProcessDisplayGamma = "srgb";
     UpdateSharedMemoryFromConfig(hostMemory_, hostConfig);
     if (!init(configPath.c_str(), hostMemory_))
         Fail("CEFlow_Init", E_FAIL);

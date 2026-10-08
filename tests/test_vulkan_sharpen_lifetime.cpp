@@ -244,9 +244,9 @@ TEST(VulkanSharpenLifetimeSourceTest, PresentPathKeysStatesPerSwapchainAndNeverW
     ASSERT_NE(entryEnd, std::string::npos);
     const std::string present = source.substr(entry, entryEnd - entry);
     const size_t reap = present.find("ReapRetiredSharpenStatesLocked(device, disp)");
-    const size_t live = present.find("layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain))");
+    const size_t live = present.find("layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain), reinterpret_cast<uintptr_t>(queue))");
     const size_t rebuild = present.find("ce::vulkan_sharpen_route::MustRebuild(");
-    const size_t retire = present.find("layer_sharpen_g_Registry.Retire(device, SharpenSwapchainKey(swapchain))");
+    const size_t retire = present.find("layer_sharpen_g_Registry.Retire(device, SharpenSwapchainKey(swapchain), reinterpret_cast<uintptr_t>(queue))");
     ASSERT_NE(reap, std::string::npos);
     ASSERT_NE(live, std::string::npos);
     ASSERT_NE(rebuild, std::string::npos);

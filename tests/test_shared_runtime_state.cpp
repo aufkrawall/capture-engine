@@ -214,15 +214,15 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_70_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_70"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_71"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_70"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_70_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_70_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_70_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_70_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_71"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_71_1234ABCD"), 0);
 }
 
 // A consumer has to be able to tell a resolved screen time from the flip-latch
@@ -514,7 +514,8 @@ TEST(SharedDefsTest, AbiSignatureMixesThePaddingBearingStructsAndLateFields) {
                                   "offsetof(SharedGraphicsConfig, dlssFGTargetFps)",
                                   "offsetof(SharedGraphicsConfig, sharpenMode)",
                                   "offsetof(SharedGraphicsConfig, sharpenColorSpace)",
-                                  "offsetof(SharedGraphicsConfig, sharpenReserved)",
+                                  "offsetof(SharedGraphicsConfig, postProcessDisplayGamma)",
+                                  "offsetof(SharedGraphicsConfig, postProcessGammaSource)",
                                   "offsetof(SharedGraphicsConfig, sharpenStrength)",
                                   "offsetof(SharedGraphicsConfig, sharpenIntensity)",
                                   "offsetof(SharedGraphicsConfig, mipBiasMin)",
@@ -663,7 +664,7 @@ TEST(SharedDefsTest, FrameRingWindowValidationHandlesWrapAndRejectsCorruption) {
 TEST(InjectOverlayPolicyTest, WgcKeepsFullInjectionWhitelistIndependentOfVideoMethod) {
     AppConfig config;
     config.captureMethod = "wgc";
-    config.gameWhitelist.push_back({.pattern = "game.exe"});
+    config.gameWhitelist.push_back({.pattern = "game.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -676,8 +677,8 @@ TEST(InjectOverlayPolicyTest, WgcKeepsFullInjectionWhitelistIndependentOfVideoMe
 TEST(InjectOverlayPolicyTest, WgcKeepsFullAndOverlayOnlyTargetsSeparate) {
     AppConfig config;
     config.captureMethod = "wgc";
-    config.gameWhitelist.push_back({.pattern = "game.exe"});
-    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+    config.gameWhitelist.push_back({.pattern = "game.exe", .windowName = {}});
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -691,7 +692,7 @@ TEST(InjectOverlayPolicyTest, WgcKeepsFullAndOverlayOnlyTargetsSeparate) {
 TEST(InjectOverlayPolicyTest, DxgiDupKeepsFullInjectionWhitelistIndependentOfVideoMethod) {
     AppConfig config;
     config.captureMethod = "dxgi_dup";
-    config.gameWhitelist.push_back({.pattern = "game.exe"});
+    config.gameWhitelist.push_back({.pattern = "game.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -704,7 +705,7 @@ TEST(InjectOverlayPolicyTest, DxgiDupKeepsFullInjectionWhitelistIndependentOfVid
 TEST(InjectOverlayPolicyTest, AutoOverlayOnlyInjectionKeepsOverlayTargetForHooking) {
     AppConfig config;
     config.captureMethod = "auto";
-    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -717,8 +718,8 @@ TEST(InjectOverlayPolicyTest, AutoOverlayOnlyInjectionKeepsOverlayTargetForHooki
 TEST(InjectOverlayPolicyTest, AutoInjectionKeepsGameAndOverlayTargetsSeparate) {
     AppConfig config;
     config.captureMethod = "auto";
-    config.gameWhitelist.push_back({.pattern = "capture-game.exe"});
-    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+    config.gameWhitelist.push_back({.pattern = "capture-game.exe", .windowName = {}});
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -732,8 +733,8 @@ TEST(InjectOverlayPolicyTest, AutoInjectionKeepsGameAndOverlayTargetsSeparate) {
 TEST(InjectOverlayPolicyTest, CaptureMethodChangesDoNotChangeInjectionPolicyOrAutoTargets) {
     AppConfig autoConfig;
     autoConfig.captureMethod = "auto";
-    autoConfig.gameWhitelist.push_back({.pattern = "capture-game.exe"});
-    autoConfig.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+    autoConfig.gameWhitelist.push_back({.pattern = "capture-game.exe", .windowName = {}});
+    autoConfig.overlayWhitelist.push_back({.pattern = "overlay-only.exe", .windowName = {}});
 
     AppConfig screenGrabConfig = autoConfig;
     screenGrabConfig.captureMethod = "wgc";
@@ -751,7 +752,7 @@ TEST(InjectOverlayPolicyTest, CaptureMethodChangesDoNotChangeInjectionPolicyOrAu
 TEST(InjectOverlayPolicyTest, StandardInjectionKeepsGameWhitelist) {
     AppConfig config;
     config.captureMethod = "inject";
-    config.gameWhitelist.push_back({.pattern = "game.exe"});
+    config.gameWhitelist.push_back({.pattern = "game.exe", .windowName = {}});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
@@ -765,7 +766,7 @@ TEST(InjectOverlayPolicyTest, RescanTracksWhitelistAndLoggingChanges) {
     oldConfig.captureMethod = "inject";
     oldConfig.logLevel = LogLevel::Off;
     oldConfig.debugLogging = false;
-    oldConfig.gameWhitelist.push_back({.pattern = "game.exe"});
+    oldConfig.gameWhitelist.push_back({.pattern = "game.exe", .windowName = {}});
 
     AppConfig sameConfig = oldConfig;
     EXPECT_FALSE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), sameConfig,
@@ -778,7 +779,7 @@ TEST(InjectOverlayPolicyTest, RescanTracksWhitelistAndLoggingChanges) {
                                             BuildInjectorConfigState(newConfig)));
 
     newConfig = oldConfig;
-    newConfig.overlayWhitelist.push_back({.pattern = "overlay.dll"});
+    newConfig.overlayWhitelist.push_back({.pattern = "overlay.dll", .windowName = {}});
     EXPECT_TRUE(ShouldRescanForConfigChange(oldConfig, BuildInjectorConfigState(oldConfig), newConfig,
                                             BuildInjectorConfigState(newConfig)));
 }

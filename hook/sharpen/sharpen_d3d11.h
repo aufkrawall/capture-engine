@@ -43,6 +43,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> casShader_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> rcasShader_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> gammaShader_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> constantBuffer_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizerState_;
     Microsoft::WRL::ComPtr<ID3D11BlendState> blendState_;
@@ -60,6 +61,9 @@ private:
 
 // True for the formats whose views decode on load and re-encode on store.
 bool FormatAppliesSrgbConversion(DXGI_FORMAT format);
+uint32_t IntegerColorBits(DXGI_FORMAT format);
+DXGI_FORMAT RawUnormViewFormat(DXGI_FORMAT format);
+DXGI_FORMAT TypelessCopyFormat(DXGI_FORMAT format);
 
 // Presentation meaning for a DXGI target, given the swapchain's HDR contract.
 // Storage format alone never decides this, which is why `isHDR` is required.

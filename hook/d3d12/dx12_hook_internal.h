@@ -556,6 +556,8 @@ void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason);
 bool DX12_ShouldUseStreamlineFinalOutputCapture();
 // Filters the frame this Present will put on screen, before capture and before
 // the overlay draws. See hook/d3d12/dx12_hook_sharpen.cpp.
+bool DX12_PostProcessAlreadyRendered(IDXGISwapChain* swapchain);
+void DX12_MarkPostProcessRendered(IDXGISwapChain* swapchain);
 void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue,
                                bool hasBackBufferIndex, UINT backBufferIndex);
 void ReleaseDX12SharpenResources(bool releaseObjects = true);

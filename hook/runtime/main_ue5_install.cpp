@@ -1,6 +1,7 @@
 // Installing, refreshing, verifying, and restoring the persistent UE5 CVar
 // overrides. Split out of main_ue5_scan.cpp, which owns discovery only.
 #include "main_ue5_internal.h"
+#include "hook/sharpen/gamma_native_curve.h"
 
 namespace UE5::detail {
 
@@ -282,6 +283,8 @@ bool ApplyCandidate(const ModuleView& image, const Candidate& candidate, std::si
 
 VerificationCounts VerifyOverrides() {
   VerificationCounts counts;
+  float verifiedExponent = -1.0f;
+  bool verifiedSrgbDevice = false;
   for (std::size_t index = 0; index < kCVarCount; ++index) {
     OverrideState& state = g_overrides[index];
     if (!g_desired[index].enabled || !IsOverrideInstalled(state))
@@ -426,12 +429,17 @@ VerificationCounts VerifyOverrides() {
       continue;
     }
 
+    if (ce::ue5_cvar::kSpecs[index].activation == ce::ue5_cvar::Activation::DisplayGammaExponent)
+      verifiedExponent = std::bit_cast<float>(expected);
+    if (ce::ue5_cvar::kSpecs[index].activation == ce::ue5_cvar::Activation::DisplayGammaOutputDevice)
+      verifiedSrgbDevice = expected == 0;
     ++counts.verified;
     if (++state.cleanVerifications >= kDriftReportResetPasses) {
       state.cleanVerifications = 0;
       state.driftReports = 0;
     }
   }
+  ce::gamma::PublishVerifiedNativeCurve(verifiedExponent == 0.0f && !verifiedSrgbDevice ? -1.0f : verifiedExponent);
   return counts;
 }
 
@@ -451,6 +459,10 @@ void ForgetUnloadedOverrides() {
 }
 
 void RestoreOverride(std::size_t specIndex, const char* reason) {
+  const auto activation = ce::ue5_cvar::kSpecs[specIndex].activation;
+  if (activation == ce::ue5_cvar::Activation::DisplayGammaExponent ||
+      activation == ce::ue5_cvar::Activation::DisplayGammaOutputDevice)
+    ce::gamma::PublishVerifiedNativeCurve(-1.0f);
   // The recorded game value belongs to the object being handed back; a later
   // install observes it afresh.
   g_handoffGameBitsKnown[specIndex] = false;

@@ -18,6 +18,7 @@ ce::sharpen::TargetEncoding ResolveEncoding(VkFormat format, VkColorSpaceKHR col
             return (format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_B8G8R8A8_SRGB ||
                     format == VK_FORMAT_A8B8G8R8_SRGB_PACK32)
                        ? ce::sharpen::TargetEncoding::Srgb
+                       : format == VK_FORMAT_R16G16B16A16_SFLOAT ? ce::sharpen::TargetEncoding::SdrLinear
                        : ce::sharpen::TargetEncoding::Unorm;
         case ce::presentation_color::Encoding::LinearScRgb:
             return ce::sharpen::TargetEncoding::ScrgbLinear;
@@ -74,18 +75,41 @@ bool FormatIsStorageWritable(SharpenState& state, DeviceDispatch* disp, VkFormat
 // A slot whose previous submission has retired, or -1 when all are still in
 // flight. Never blocks: a wait here would be a stall inside the game's present.
 int AcquireSlot(SharpenState& state, DeviceDispatch* disp) {
-    for (uint32_t attempt = 0; attempt < kSharpenSlotCount; ++attempt) {
-        const uint32_t slot = (state.nextSlot + attempt) % kSharpenSlotCount;
+    const uint32_t slotCount = static_cast<uint32_t>(state.commandBuffers.size());
+    for (uint32_t attempt = 0; attempt < slotCount; ++attempt) {
+        const uint32_t slot = (state.nextSlot + attempt) % slotCount;
         if (!state.slotSubmitted[slot]) {
-            state.nextSlot = (slot + 1) % kSharpenSlotCount;
+            state.nextSlot = (slot + 1) % slotCount;
             return static_cast<int>(slot);
         }
         if (disp->fp_vkWaitForFences(state.device, 1, &state.fences[slot], VK_TRUE, 0) == VK_SUCCESS) {
-            state.nextSlot = (slot + 1) % kSharpenSlotCount;
+            state.nextSlot = (slot + 1) % slotCount;
             return static_cast<int>(slot);
         }
     }
-    return -1;
+    // A busy warm ring must not turn gamma correction into brightness pulses.
+    // Allocate one overflow command/fence pair and retain it for subsequent reuse.
+    VkCommandBufferAllocateInfo allocateInfo = {};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = state.commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    if (disp->fp_vkAllocateCommandBuffers(state.device, &allocateInfo, &command) != VK_SUCCESS)
+        return -1;
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    if (disp->fp_vkCreateFence(state.device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        disp->fp_vkFreeCommandBuffers(state.device, state.commandPool, 1, &command);
+        return -1;
+    }
+    state.commandBuffers.push_back(command);
+    state.fences.push_back(fence);
+    state.slotSubmitted.push_back(false);
+    if (state.commandBuffers.size() == kSharpenSlotCount + 1 || (state.commandBuffers.size() % 64) == 0)
+        LayerLog("PostProcess: Vulkan command pool grew to %zu slots for GPU backlog", state.commandBuffers.size());
+    return static_cast<int>(slotCount);
 }
 
 // Destroys the retired states on `device` whose submissions have all signalled.
@@ -128,8 +152,10 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     }
     const ce::sharpen::Request request = VulkanLayerState::Get().GetSharpenRequest();
 
-    std::unique_lock<std::mutex> lock(layer_sharpen_g_StateMutex, std::try_to_lock);
-    if (!lock.owns_lock())
+    std::unique_lock<std::mutex> lock(layer_sharpen_g_StateMutex, std::defer_lock);
+    if (ce::gamma::Requested(request.gamma))
+        lock.lock();
+    else if (!lock.try_lock())
         return false;
 
     // The dispatch table first: Live() would otherwise insert a state entry
@@ -144,7 +170,7 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     // once their own submissions have signalled - never waited for here.
     ReapRetiredSharpenStatesLocked(device, disp);
 
-    if (request.mode == ce::sharpen::Mode::Off) {
+    if (!ce::sharpen::Requested(request)) {
         // Switching the feature off hands its resources back rather than
         // leaving a full-frame image and a swapchain's worth of views resident.
         // Retired, not destroyed: the last frames' submissions may still read
@@ -160,7 +186,7 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
 
     // Each swapchain owns its own state: a second live swapchain on the same
     // device is filtered too, and its presents never touch the first one's.
-    SharpenState& state = layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain));
+    SharpenState& state = layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain), reinterpret_cast<uintptr_t>(queue));
 
     ce::sharpen::Target target;
     // The Vulkan layer only ever sees the application's own swapchain; a present
@@ -170,6 +196,9 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     target.width = extent.width;
     target.height = extent.height;
     target.viewAppliesSrgbConversion = FormatViewIsSrgb(format);
+    target.sourceRaw = target.viewAppliesSrgbConversion && ce::gamma::Requested(request.gamma);
+    target.colorBits = format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 ? 10u
+                       : format == VK_FORMAT_R16G16B16A16_SFLOAT ? 0u : 8u;
     // The copy is only legal when the swapchain was created with TRANSFER_SRC,
     // which vulkan_swapchain_usage_policy.h negotiates at creation.
     const SwapchainData* swapchainData = VulkanLayerState::Get().GetSwapchainData(swapchain);
@@ -207,12 +236,13 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     const char* reason = belowFloor ? "target_below_320x180_floor"
                          : routeRefused ? ce::vulkan_sharpen_route::RefusalReason(routeInput)
                                         : decision.reason;
-    if (state.logGate.ShouldLog(run, reason)) {
+    if (state.logGate.ShouldLog(decision, run, reason)) {
         LayerLog("Vulkan Layer: Sharpen %s reason=%s %ux%u fmt=%d srgbView=%d usage=0x%x param=%.3f route=%s "
-                 "family=%u",
+                 "family=%u gamma=%.2f->%.2f dither=%.6f",
                  run ? "running" : "idle", reason, target.width, target.height, static_cast<int>(format),
                  target.viewAppliesSrgbConversion ? 1 : 0, imageUsage, static_cast<double>(decision.effectParameter),
-                 ce::vulkan_sharpen_route::RouteName(route), queueFamily);
+                 ce::vulkan_sharpen_route::RouteName(route), queueFamily, static_cast<double>(decision.gamma.source),
+                 static_cast<double>(decision.gamma.destination), static_cast<double>(decision.gammaDitherScale));
     }
     if (!run)
         return false;
@@ -229,18 +259,19 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     current.queueFamily = queueFamily;
     current.route = route;
     SharpenState* active = &state;
-    if (state.initialized && ce::vulkan_sharpen_route::MustRebuild(SharpenStateIdentity(state), current)) {
+    if (state.initialized && (ce::vulkan_sharpen_route::MustRebuild(SharpenStateIdentity(state), current) ||
+                              state.sourceRaw != target.sourceRaw)) {
         LayerLog("Vulkan Layer: Sharpen rebuilding (swapchain %p family %u -> %u route %s -> %s) - the old state "
                  "is retired until its submissions finish",
                  swapchain, state.queueFamily, queueFamily, ce::vulkan_sharpen_route::RouteName(state.route),
                  ce::vulkan_sharpen_route::RouteName(route));
         // `state` is moved out by the retirement; continue on the fresh one.
-        layer_sharpen_g_Registry.Retire(device, SharpenSwapchainKey(swapchain));
-        active = &layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain));
+        layer_sharpen_g_Registry.Retire(device, SharpenSwapchainKey(swapchain), reinterpret_cast<uintptr_t>(queue));
+        active = &layer_sharpen_g_Registry.Live(device, SharpenSwapchainKey(swapchain), reinterpret_cast<uintptr_t>(queue));
     }
     if (!active->initialized) {
         if (!InitializeSharpenState(*active, disp, device, swapchain, format, extent, queueFamily, route, imageCount,
-                                    images)) {
+                                    images, target.sourceRaw)) {
             return false;
         }
     }
@@ -278,8 +309,9 @@ bool SubmitSharpenPass(SharpenState& state, DeviceDispatch* disp, VkQueue queue,
         return false;
 
     const ce::sharpen::ShaderConstants constants =
-        ce::sharpen::BuildShaderConstants(request.mode, decision, extent.width, extent.height);
-    const VkPipeline pipeline = request.mode == ce::sharpen::Mode::Cas ? state.casPipeline : state.rcasPipeline;
+        ce::sharpen::BuildShaderConstants(decision.mode, decision, extent.width, extent.height);
+    const VkPipeline pipeline = decision.mode == ce::sharpen::Mode::Cas ? state.casPipeline
+                                : decision.mode == ce::sharpen::Mode::Rcas ? state.rcasPipeline : state.gammaPipeline;
     if (state.route == ce::vulkan_sharpen_route::Route::kCompute) {
         RecordSharpenCompute(state, disp, cmd, image, imageIndex, pipeline, constants);
     } else {

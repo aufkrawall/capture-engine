@@ -192,9 +192,21 @@ extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
 void ApplyPrerenderLimit(IDXGISwapChain*, float) {}
 
 // Stubs for custom_overlay_dx12.cpp
-HRESULT D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**,
-                                    ID3DBlob**) {
-    return E_NOTIMPL;
+HRESULT D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, D3D_ROOT_SIGNATURE_VERSION version,
+                                    ID3DBlob** blob, ID3DBlob** errors) {
+    using Serialize = HRESULT(WINAPI*)(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION,
+                                      ID3DBlob**, ID3DBlob**);
+    const HMODULE module = GetModuleHandleW(L"d3d12.dll");
+    const auto serialize = module ? reinterpret_cast<Serialize>(GetProcAddress(module, "D3D12SerializeRootSignature"))
+                                  : nullptr;
+    return serialize ? serialize(desc, version, blob, errors) : E_NOTIMPL;
+}
+
+namespace ce::sharpen {
+void ExecutePostProcessCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
+    ID3D12CommandList* lists[] = {list};
+    queue->ExecuteCommandLists(1, lists);
+}
 }
 
 // Stubs for freeze_watchdog.cpp

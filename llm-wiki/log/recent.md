@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-08 - Generic display gamma correction
+
+- `Graphics.display_gamma`/`gamma_source` implemented in the CAS/RCAS post-process stage (D3D11, native D3D12,
+  Vulkan, FSR FG callback output). Details: `post-processing-sharpen.md` "Generic display gamma".
+- Closing gate 20261008_172*_build_7034 passes (unit, Python self-tests, 32 FG flow scenarios with `srgb`,
+  setup 0.1.7034). Fixed two source-scan tests broken by the change (Vulkan registry key now includes the
+  queue; resolved-queue scan window 3000 -> 4000 chars). Hardware run pending.
+
 ### 2026-10-08 - Child stop outcomes no longer depend on recording state
 
 - common/ipc owns the local accepted/rejected/acknowledgement-unknown type and stop-command adapter.

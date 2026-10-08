@@ -6,6 +6,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### New
 
+- **Generic display gamma correction:** added `Graphics.display_gamma` (`2.2`, `2.4`, `srgb`) and `gamma_source` for SDR games on D3D11, native D3D12 and Vulkan. Correction works without sharpening, combines with CAS/RCAS in one pass, and uses stable output dithering to reduce added banding. Verified UE5 native overrides prevent double correction; HDR retains its transfer function.
+
 - **Background borderless window heartbeat:** added opt-in `WindowHeartbeat.enabled` global/profile settings for a non-injected, asynchronous 250 ms wake-up aid. It preserves focus and limits stalled windows to one outstanding request; prevention of real game hangs remains unverified.
 
 - **Controller C API groundwork:** added opaque handles and recording, overlay, benchmark and screenshot controls for the existing controller. An independently embeddable library, custom API configuration and complete recording statistics are still pending.
@@ -119,6 +121,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **Shader rebuilds after source relayout:** shader generation now updates the headers actually consumed by the post-processing pipeline instead of writing into the retired source directory.
 
 - **Worker configuration paths:** helper processes now honor the selected `--config` INI, including paths containing spaces and active-code-page characters. Launch paths are owned explicitly so a host can select the packaged worker instead of accidentally relaunching its own executable; delegated game launch options keep their own `--config` arguments.
 

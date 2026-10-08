@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "common/graphics/gamma_policy.h"
+
 // Post-processing sharpen policy.
 //
 // CaptureEngine applies AMD FidelityFX CAS or RCAS to the frame the game is
@@ -37,6 +39,8 @@ enum class TargetEncoding : uint8_t {
     // scRGB FP16: linear light. Sharpening linear values rings badly around
     // highlights, so the filter runs in a gamma space and converts back.
     ScrgbLinear,
+    // Linear SDR transport; unlike HDR scRGB, gamma compensation is applicable.
+    SdrLinear,
 };
 
 // The user's requested working space. `Auto` resolves from the encoding.
@@ -71,6 +75,8 @@ enum class Route : uint8_t {
     // The frame-generation runtime's UI resource. This is a transparent overlay
     // texture, NOT a frame, so there is nothing here to sharpen.
     RuntimeUiResource,
+    // FSR/other runtime final output, never its interpolation input or UI texture.
+    NativeFgOutput,
 };
 
 // AMD's parameters have different native conventions - CAS sharpness rises with
@@ -206,7 +212,8 @@ inline const char* ConfiguredSpaceName(ConfiguredSpace space) {
 // an 8-bit sRGB backbuffer reaches the shader as linear light exactly like
 // scRGB does. Filtering linear values rings around highlights either way.
 inline bool ValuesReachShaderAsLinear(TargetEncoding encoding, bool viewAppliesSrgbConversion) {
-    return encoding == TargetEncoding::ScrgbLinear || viewAppliesSrgbConversion;
+    return encoding == TargetEncoding::ScrgbLinear || encoding == TargetEncoding::SdrLinear ||
+           viewAppliesSrgbConversion;
 }
 
 // Only linear values need perceptual transformation; stored sRGB, plain UNORM and PQ
@@ -227,7 +234,8 @@ inline FilterSpace ResolveFilterSpace(TargetEncoding encoding, bool viewAppliesS
     }
     if (encoding == TargetEncoding::ScrgbLinear)
         return FilterSpace::ScrgbToPq;
-    return viewAppliesSrgbConversion ? FilterSpace::LinearToGamma : FilterSpace::Direct;
+    return ValuesReachShaderAsLinear(encoding, viewAppliesSrgbConversion)
+               ? FilterSpace::LinearToGamma : FilterSpace::Direct;
 }
 
 inline FilterSpace ResolveFilterSpace(bool valuesAreLinear, ConfiguredSpace configured) {
@@ -251,6 +259,7 @@ inline bool RouteCarriesFrame(Route route) {
         case Route::OffscreenCopy:
         case Route::PostStreamline:
         case Route::InterposerOutputChain:
+        case Route::NativeFgOutput:
             return true;
         case Route::RuntimeUiResource:
         case Route::Unknown:
@@ -266,7 +275,13 @@ struct Request {
     // How much of the filtered result reaches the frame (sharpen_amount / sharpen_intensity).
     float intensity = kDefaultIntensity;
     ConfiguredSpace space = ConfiguredSpace::Auto;
+    ce::gamma::Request gamma;
 };
+
+inline bool Requested(const Request& request) {
+    return (request.mode != Mode::Off && ClampIntensity(request.intensity) > 0.0f) ||
+           ce::gamma::Requested(request.gamma);
+}
 
 struct Target {
     Route route = Route::Unknown;
@@ -276,14 +291,22 @@ struct Target {
     // The source and destination views carry an _SRGB format, so the hardware
     // decodes on every load and re-encodes on every store.
     bool viewAppliesSrgbConversion = false;
+    bool sourceRaw = false;
     // The renderer proved it can both read the frame and write the target this
     // present. Anything unproven fails closed instead of guessing.
     bool readable = false;
     bool writable = false;
+    // Integer output quantization; zero denotes floating-point output.
+    uint32_t colorBits = 0;
 };
 
 struct Decision {
     bool run = false;
+    Mode mode = Mode::Off;
+    ce::gamma::Request gamma;
+    bool gammaValuesLinear = false;
+    bool gammaOutputLinear = false;
+    float gammaDitherScale = 0.0f;
     FilterSpace filterSpace = FilterSpace::Direct;
     // CAS sharpness or RCAS attenuation, already in the effect's own units.
     float effectParameter = 0.0f;
@@ -298,21 +321,26 @@ struct Decision {
 inline Decision Decide(const Request& request, const Target& target) {
     Decision decision;
     decision.filterSpace = ResolveFilterSpace(
-        target.encoding, target.viewAppliesSrgbConversion, request.space);
+        target.encoding, target.viewAppliesSrgbConversion && !target.sourceRaw, request.space);
 
     decision.intensity = ClampIntensity(request.intensity);
 
-    if (request.mode == Mode::Off) {
-        decision.reason = "disabled";
+    const bool sharpen = request.mode != Mode::Off && decision.intensity > kMinIntensity;
+    const bool gammaRequested = ce::gamma::Requested(request.gamma);
+    const bool hdr = target.encoding == TargetEncoding::Pq || target.encoding == TargetEncoding::ScrgbLinear;
+    if (gammaRequested && !hdr) {
+        decision.gamma = request.gamma;
+        decision.gammaValuesLinear = (target.viewAppliesSrgbConversion && !target.sourceRaw) || target.encoding == TargetEncoding::SdrLinear;
+        decision.gammaOutputLinear = target.viewAppliesSrgbConversion || target.encoding == TargetEncoding::SdrLinear;
+        decision.gammaDitherScale = target.colorBits == 8 ? 1.0f / 255.0f
+                                    : target.colorBits == 10 ? 1.0f / 1023.0f : 0.0f;
+    }
+    if (!sharpen && !ce::gamma::Requested(decision.gamma)) {
+        decision.reason = gammaRequested && hdr ? "gamma_hdr_passthrough"
+                          : request.mode != Mode::Off ? "zero_intensity" : "disabled";
         return decision;
     }
-    // At zero weight the pass would read the frame and write it back unchanged.
-    // Refusing here is what keeps that from costing a full-screen pass per
-    // displayed frame, which under 4x MFG is four of them.
-    if (decision.intensity <= kMinIntensity) {
-        decision.reason = "zero_intensity";
-        return decision;
-    }
+    decision.mode = sharpen ? request.mode : Mode::Off;
     if (target.route == Route::RuntimeUiResource) {
         decision.reason = "ui_resource_route_carries_no_frame";
         return decision;
@@ -339,9 +367,11 @@ inline Decision Decide(const Request& request, const Target& target) {
     }
 
     decision.run = true;
-    decision.effectParameter = request.mode == Mode::Cas ? CasSharpnessFromStrength(request.strength)
+    decision.effectParameter = decision.mode == Mode::Cas ? CasSharpnessFromStrength(request.strength)
                                                          : RcasAttenuationFromStrength(request.strength);
-    decision.reason = request.mode == Mode::Cas ? "cas" : "rcas";
+    decision.reason = decision.mode == Mode::Off ? "gamma"
+                      : ce::gamma::Requested(decision.gamma) ? (decision.mode == Mode::Cas ? "cas_gamma" : "rcas_gamma")
+                      : decision.mode == Mode::Cas ? "cas" : "rcas";
     return decision;
 }
 

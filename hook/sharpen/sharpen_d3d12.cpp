@@ -14,10 +14,10 @@ using Microsoft::WRL::ComPtr;
 namespace ce::sharpen {
 namespace {
 
-// b0 holds ShaderConstants as root constants: 12 DWORDs, no constant buffer to
+// b0 holds ShaderConstants as root constants: 16 DWORDs, no constant buffer to
 // allocate, map or keep alive per frame.
 constexpr UINT kRootConstantCount = sizeof(ShaderConstants) / sizeof(uint32_t);
-static_assert(kRootConstantCount == 12, "Root constant count must match ShaderConstants");
+static_assert(kRootConstantCount == 16, "Root constant count must match ShaderConstants");
 
 constexpr UINT kRootParamConstants = 0;
 constexpr UINT kRootParamSourceTable = 1;
@@ -33,7 +33,7 @@ D3D12_RESOURCE_BARRIER MakeTransition(ID3D12Resource* resource, D3D12_RESOURCE_S
     return barrier;
 }
 
-ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device) {
+ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, const char*& stage, HRESULT& result) {
     D3D12_DESCRIPTOR_RANGE srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 1;
@@ -62,14 +62,18 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device) {
 
     ComPtr<ID3DBlob> serialized;
     ComPtr<ID3DBlob> errors;
-    if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors))) {
+    stage = "serialize_root_signature";
+    result = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors);
+    if (FAILED(result)) {
         HookLogImportant("Sharpen: DX12 root signature could not be serialized");
         return nullptr;
     }
 
     ComPtr<ID3D12RootSignature> rootSignature;
-    if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
-                                           IID_PPV_ARGS(&rootSignature)))) {
+    stage = "create_root_signature";
+    result = device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                                          IID_PPV_ARGS(&rootSignature));
+    if (FAILED(result)) {
         HookLogImportant("Sharpen: DX12 root signature could not be created");
         return nullptr;
     }
@@ -78,14 +82,14 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device) {
 
 }  // namespace
 
-bool D3D12Pass::EnsureDeviceObjects(ID3D12Device* device) {
+bool D3D12Pass::EnsureDeviceObjects(ID3D12Device* device, bool ownCommandObjects) {
     if (ownerDevice_ != device) {
         Shutdown();
         ownerDevice_ = device;
     }
 
     if (!rootSignature_) {
-        rootSignature_ = CreateRootSignature(device);
+        rootSignature_ = CreateRootSignature(device, lastFailure_, lastFailureCode_);
         if (!rootSignature_)
             return false;
     }
@@ -106,7 +110,13 @@ bool D3D12Pass::EnsureDeviceObjects(ID3D12Device* device) {
             return false;
     }
 
-    for (UINT slot = 0; slot < kAllocatorSlots; ++slot) {
+    if (!ownCommandObjects)
+        return true;
+    if (allocators_.empty()) {
+        allocators_.resize(kAllocatorSlots);
+        allocatorFenceValues_.resize(kAllocatorSlots, 0);
+    }
+    for (size_t slot = 0; slot < allocators_.size(); ++slot) {
         if (!allocators_[slot] &&
             FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators_[slot])))) {
             return false;
@@ -126,9 +136,7 @@ bool D3D12Pass::EnsureDeviceObjects(ID3D12Device* device) {
 }
 
 bool D3D12Pass::GpuIsIdle() const {
-    if (!fence_)
-        return true;
-    return TimelineIsIdle(fence_->GetCompletedValue(), fenceValue_);
+    return !fence_ || TimelineIsIdle(fence_->GetCompletedValue(), fenceValue_);
 }
 
 void D3D12Pass::RetireObject(ComPtr<IUnknown> object) {
@@ -201,8 +209,10 @@ bool D3D12Pass::EnsurePipelineState(ID3D12Device* device, Mode mode, DXGI_FORMAT
     desc.VS = {g_SharpenVS_5_0, sizeof(g_SharpenVS_5_0)};
     if (mode == Mode::Cas) {
         desc.PS = {g_SharpenPS_Cas_5_0, sizeof(g_SharpenPS_Cas_5_0)};
-    } else {
+    } else if (mode == Mode::Rcas) {
         desc.PS = {g_SharpenPS_Rcas_5_0, sizeof(g_SharpenPS_Rcas_5_0)};
+    } else {
+        desc.PS = {g_GammaPS_5_0, sizeof(g_GammaPS_5_0)};
     }
     desc.SampleMask = UINT_MAX;
     desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -210,10 +220,22 @@ bool D3D12Pass::EnsurePipelineState(ID3D12Device* device, Mode mode, DXGI_FORMAT
     desc.RasterizerState.DepthClipEnable = TRUE;
     // The filter replaces the frame; it never blends with what is there.
     for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
-        desc.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        auto& blend = desc.BlendState.RenderTarget[i];
+        blend.SrcBlend = D3D12_BLEND_ONE;
+        blend.DestBlend = D3D12_BLEND_ZERO;
+        blend.BlendOp = D3D12_BLEND_OP_ADD;
+        blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+        blend.DestBlendAlpha = D3D12_BLEND_ZERO;
+        blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        blend.LogicOp = D3D12_LOGIC_OP_NOOP;
+        blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     }
     desc.DepthStencilState.DepthEnable = FALSE;
+    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     desc.DepthStencilState.StencilEnable = FALSE;
+    desc.DepthStencilState.FrontFace = {D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP,
+                                       D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_ALWAYS};
+    desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
     desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     desc.NumRenderTargets = 1;
     desc.RTVFormats[0] = viewFormat;
@@ -236,21 +258,20 @@ bool D3D12Pass::EnsureSourceCopy(ID3D12Device* device, ID3D12Resource* target, D
     if (matches)
         return true;
 
-    // Replacing the source replaces the one descriptor in the shader-visible SRV
-    // heap, and a shader-visible descriptor must stay valid until every command
-    // list that referenced it has finished. There is no way to defer a descriptor
-    // write the way RetireObject defers a resource, so this waits for the GPU to
-    // drain - by skipping frames, never by blocking the present thread. The frames
-    // skipped here are the ones right after a resolution change, where the pass is
-    // rebuilding anyway.
-    if (!GpuIsIdle()) {
-        if (logGate_.ShouldLog(false, "source_rebuild_deferred"))
-            HookLog("Sharpen: DX12 source rebuild waiting for the GPU to drain");
+    // Retire both the resource AND its immutable shader-visible descriptor heap.
+    // Rewriting the old descriptor would race in-flight work; a fresh generation
+    // can start immediately without dropping corrected frames after a resize.
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> newHeap;
+    if (FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&newHeap))))
         return false;
-    }
-
-    // The drain above already proved nothing references the old resource.
+    RetireObject(sourceCopy_);
+    RetireObject(srvHeap_);
     sourceCopy_.Reset();
+    srvHeap_ = std::move(newHeap);
     copyWidth_ = 0;
     copyHeight_ = 0;
     copyFormat_ = DXGI_FORMAT_UNKNOWN;
@@ -264,6 +285,8 @@ bool D3D12Pass::EnsureSourceCopy(ID3D12Device* device, ID3D12Resource* target, D
     // copy keeps the target's storage format and only the view reinterprets it.
     D3D12_RESOURCE_DESC copyDesc = targetDesc;
     copyDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    if (viewFormat != copyDesc.Format)
+        copyDesc.Format = TypelessCopyFormat(copyDesc.Format);
     copyDesc.MipLevels = 1;
     copyDesc.DepthOrArraySize = 1;
     copyDesc.SampleDesc.Count = 1;
@@ -315,16 +338,28 @@ int D3D12Pass::AcquireAllocatorSlot() {
     CollectRetired(completed);
     if (completed == kCompletedValueDeviceRemoved)
         return -1;  // Device removal: nothing more will run on this device.
-    return SelectFreeSlot(allocatorFenceValues_, kAllocatorSlots, completed);
+    const int available = SelectFreeSlot(allocatorFenceValues_.data(), allocatorFenceValues_.size(), completed);
+    if (available >= 0)
+        return available;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    if (FAILED(ownerDevice_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))))
+        return -1;
+    const size_t slot = allocators_.size();
+    allocators_.push_back(std::move(allocator));
+    allocatorFenceValues_.push_back(0);
+    if (allocators_.size() == kAllocatorSlots + 1 || (allocators_.size() % 64) == 0)
+        HookLogImportant("PostProcess: DX12 command pool grew to %zu slots for GPU backlog", allocators_.size());
+    return static_cast<int>(slot);
 }
 
 bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* target,
                        DXGI_FORMAT viewFormat, D3D12_RESOURCE_STATES targetStateBefore, const Request& request,
                        Route route, TargetEncoding encoding) {
+    lastFailure_ = "input_or_shutdown";
     if (HookIsShuttingDown() || !device || !queue || !target)
         return false;
 
-    if (request.mode == Mode::Off) {
+    if (!Requested(request)) {
         if (logGate_.ShouldLog(false, "disabled"))
             HookLog("Sharpen: DX12 pass idle (disabled)");
         return false;
@@ -339,25 +374,34 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
     targetInfo.width = static_cast<uint32_t>(targetDesc.Width);
     targetInfo.height = targetDesc.Height;
     targetInfo.viewAppliesSrgbConversion = FormatAppliesSrgbConversion(resolvedViewFormat);
-    // A multisampled frame would need a resolve rather than a copy, and a
-    // DENY_SHADER_RESOURCE target cannot be read at all.
-    targetInfo.readable = targetDesc.SampleDesc.Count == 1 &&
-                          (targetDesc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0;
+    targetInfo.sourceRaw = targetInfo.viewAppliesSrgbConversion && ce::gamma::Requested(request.gamma);
+    targetInfo.colorBits = IntegerColorBits(resolvedViewFormat);
+    // Sampling happens on the owned copy. DENY_SHADER_RESOURCE on the game's
+    // target forbids an SRV there, not CopyResource into our sampleable texture.
+    targetInfo.readable = targetDesc.SampleDesc.Count == 1;
     targetInfo.writable = (targetDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
 
     const Decision decision = Decide(request, targetInfo);
-    if (logGate_.ShouldLog(decision.run, decision.reason)) {
-        HookLogImportant("Sharpen: DX12 %s reason=%s %ux%u view=%d srgbView=%d samples=%u route=%d param=%.3f",
+    if (logGate_.ShouldLog(decision)) {
+        HookLogImportant("Sharpen: DX12 %s reason=%s %ux%u view=%d srgbView=%d samples=%u route=%d param=%.3f gamma=%.2f->%.2f dither=%.6f",
                          decision.run ? "running" : "idle", decision.reason, targetInfo.width, targetInfo.height,
                          static_cast<int>(resolvedViewFormat), targetInfo.viewAppliesSrgbConversion ? 1 : 0,
                          targetDesc.SampleDesc.Count, static_cast<int>(route),
-                         static_cast<double>(decision.effectParameter));
+                         static_cast<double>(decision.effectParameter), static_cast<double>(decision.gamma.source),
+                         static_cast<double>(decision.gamma.destination), static_cast<double>(decision.gammaDitherScale));
     }
+    lastFailure_ = decision.reason;
     if (!decision.run)
         return false;
 
-    if (!EnsureDeviceObjects(device))
+    auto fail = [&](const char* stage) {
+        lastFailure_ = stage;
+        if (failureLogGate_.ShouldLog(false, stage))
+            HookLogImportant("PostProcess: DX12 could not prepare stage=%s", stage);
         return false;
+    };
+    if (!EnsureDeviceObjects(device))
+        return fail(lastFailure_);
     // Before anything reasons about what the GPU has finished with: `fence_` is
     // only a usable timeline once this frame's queue is ordered behind the last
     // one, and EnsurePipelineState / EnsureSourceCopy below both ask that question.
@@ -366,12 +410,12 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
         // it is the next frame's job; this one goes through unfiltered.
         return false;
     }
-    if (!EnsurePipelineState(device, request.mode, resolvedViewFormat))
-        return false;
-    if (!EnsureSourceCopy(device, target, resolvedViewFormat))
-        return false;
+    if (!EnsurePipelineState(device, decision.mode, resolvedViewFormat))
+        return fail("pipeline_state");
+    if (!EnsureSourceCopy(device, target, targetInfo.sourceRaw ? RawUnormViewFormat(resolvedViewFormat) : resolvedViewFormat))
+        return fail("source_copy");
     if (!EnsureTargetView(device, target, resolvedViewFormat))
-        return false;
+        return fail("target_view");
 
     const int slot = AcquireAllocatorSlot();
     if (slot < 0) {
@@ -387,12 +431,37 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
 
     ID3D12CommandAllocator* allocator = allocators_[static_cast<UINT>(slot)].Get();
     if (FAILED(allocator->Reset()))
-        return false;
+        return fail("allocator_reset");
     if (FAILED(commandList_->Reset(allocator, pipelineState_.Get())))
-        return false;
+        return fail("command_list_reset");
 
     ID3D12GraphicsCommandList* list = commandList_.Get();
 
+    RecordCommands(list, target, targetStateBefore, decision, targetInfo.width, targetInfo.height);
+
+    if (FAILED(list->Close()))
+        return fail("command_list_close");
+
+    ExecutePostProcessCommandList(queue, list);
+
+    const UINT64 fenceValue = ++fenceValue_;
+    if (FAILED(queue->Signal(fence_.Get(), fenceValue))) {
+        // The work IS queued; only the proof that it finished is missing. The
+        // slot is therefore retired for good rather than recycled into a list the
+        // GPU may still be reading.
+        HookLogImportant("Sharpen: DX12 queue signal failed; allocator slot %d retired conservatively", slot);
+        allocatorFenceValues_[static_cast<UINT>(slot)] =
+            SlotValueAfter(SubmissionOutcome::kUnprovable, fenceValue);
+        return false;
+    }
+    allocatorFenceValues_[static_cast<UINT>(slot)] =
+        SlotValueAfter(SubmissionOutcome::kSubmitted, fenceValue);
+    return true;
+}
+
+void D3D12Pass::RecordCommands(ID3D12GraphicsCommandList* list, ID3D12Resource* target,
+                               D3D12_RESOURCE_STATES targetStateBefore, const Decision& decision,
+                               uint32_t width, uint32_t height) {
     // A transition whose before and after states are equal is invalid, so the
     // frame's own barrier is emitted only when its incoming state differs.
     D3D12_RESOURCE_BARRIER preCopy[2] = {};
@@ -414,7 +483,7 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
     list->ResourceBarrier(2, preDraw);
 
     const ShaderConstants constants =
-        BuildShaderConstants(request.mode, decision, targetInfo.width, targetInfo.height);
+        BuildShaderConstants(decision.mode, decision, width, height);
     ID3D12DescriptorHeap* heaps[] = {srvHeap_.Get()};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(rootSignature_.Get());
@@ -422,10 +491,10 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
     list->SetGraphicsRootDescriptorTable(kRootParamSourceTable, srvHeap_->GetGPUDescriptorHandleForHeapStart());
 
     D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(targetInfo.width);
-    viewport.Height = static_cast<float>(targetInfo.height);
+    viewport.Width = static_cast<float>(width);
+    viewport.Height = static_cast<float>(height);
     viewport.MaxDepth = 1.0f;
-    D3D12_RECT scissor = {0, 0, static_cast<LONG>(targetInfo.width), static_cast<LONG>(targetInfo.height)};
+    D3D12_RECT scissor = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
 
@@ -443,25 +512,6 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
         list->ResourceBarrier(1, &restore);
     }
 
-    if (FAILED(list->Close()))
-        return false;
-
-    ID3D12CommandList* lists[] = {list};
-    queue->ExecuteCommandLists(1, lists);
-
-    const UINT64 fenceValue = ++fenceValue_;
-    if (FAILED(queue->Signal(fence_.Get(), fenceValue))) {
-        // The work IS queued; only the proof that it finished is missing. The
-        // slot is therefore retired for good rather than recycled into a list the
-        // GPU may still be reading.
-        HookLogImportant("Sharpen: DX12 queue signal failed; allocator slot %d retired conservatively", slot);
-        allocatorFenceValues_[static_cast<UINT>(slot)] =
-            SlotValueAfter(SubmissionOutcome::kUnprovable, fenceValue);
-        return false;
-    }
-    allocatorFenceValues_[static_cast<UINT>(slot)] =
-        SlotValueAfter(SubmissionOutcome::kSubmitted, fenceValue);
-    return true;
 }
 
 void D3D12Pass::Shutdown() {
@@ -485,10 +535,8 @@ void D3D12Pass::Shutdown() {
     srvHeap_.Reset();
     fence_.Reset();
     commandList_.Reset();
-    for (UINT slot = 0; slot < kAllocatorSlots; ++slot) {
-        allocators_[slot].Reset();
-        allocatorFenceValues_[slot] = 0;
-    }
+    allocators_.clear();
+    allocatorFenceValues_.clear();
     pipelineState_.Reset();
     rootSignature_.Reset();
     pipelineMode_ = Mode::Off;
@@ -516,10 +564,10 @@ void D3D12Pass::Abandon() {
     srvHeap_.Detach();
     fence_.Detach();
     commandList_.Detach();
-    for (UINT slot = 0; slot < kAllocatorSlots; ++slot) {
-        allocators_[slot].Detach();
-        allocatorFenceValues_[slot] = 0;
-    }
+    for (auto& allocator : allocators_)
+        allocator.Detach();
+    allocators_.clear();
+    allocatorFenceValues_.clear();
     pipelineState_.Detach();
     rootSignature_.Detach();
     pipelineMode_ = Mode::Off;

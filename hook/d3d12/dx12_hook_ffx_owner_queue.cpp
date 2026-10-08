@@ -1,4 +1,7 @@
 #include "dx12_hook_internal.h"
+#include "hook/sharpen/gamma_external_submission.h"
+#include "hook/sharpen/sharpen_request.h"
+#include "hook/sharpen/sharpen_d3d11.h"
 #include "dx12_hook_ffx_shared.h"
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "common/logging/log_meter.h"
@@ -344,6 +347,7 @@ bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D
     ID3D12CommandList* lists[] = {commandList};
     ScopedCEOverlayECLSubmission ceOverlayECLGuard("ffx-owner-queue");
     queue->ExecuteCommandLists(1, lists);
+    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, 1, lists);
     return true;
 }
 

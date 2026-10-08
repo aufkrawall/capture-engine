@@ -1,6 +1,7 @@
 #include "dx12_hook_ecl_forward.h"
 
 #include "hook/metrics/hook_cpu_cost.h"
+#include "hook/sharpen/gamma_external_submission.h"
 
 namespace ce::dx12_ecl_forward {
 namespace {
@@ -78,6 +79,7 @@ void TransparentNativeFSRCallback(ID3D12CommandQueue* queue, UINT numCommandList
     auto depthGuard = make_scope_guard([&]() { --recursionDepth; });
     ScopedHookForwardedCall forwardedCycles;
     target(queue, numCommandLists, commandLists);
+    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, numCommandLists, commandLists);
 }
 
 bool IsPresentedFrameForCapture(int eclSubmissionCount, const present_association::PresentFrameVerdict& verdict) {

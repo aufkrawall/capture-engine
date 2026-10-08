@@ -11,6 +11,10 @@ cbuffer SharpenConstants : register(b0) {
     int2 ceMaxCoord;
     uint ceFilterSpace;
     float ceIntensity;
+    float ceGammaSource;
+    float ceGammaDestination;
+    float ceGammaDitherScale;
+    uint ceGammaValuesLinear;
 };
 
 Texture2D<float4> ceSource : register(t0);
@@ -93,6 +97,12 @@ void ceToFilterSpace(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloa
     }
 }
 
+#define CE_GAMMA_SOURCE ceGammaSource
+#define CE_GAMMA_DESTINATION ceGammaDestination
+#define CE_GAMMA_DITHER_SCALE ceGammaDitherScale
+#define CE_GAMMA_VALUES_LINEAR ceGammaValuesLinear
+#include "gamma_common.hlsli"
+
 // Undo the working-space transform, weight the result against the original
 // pixel, and restore the source alpha.
 //
@@ -102,7 +112,7 @@ void ceToFilterSpace(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloa
 // is never filtered or mixed - a premultiplied or composition swapchain needs
 // the exact value the game wrote, and sharpening coverage produces halos of its
 // own.
-FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original) {
+FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original, FfxInt32x2 position) {
     if (ceFilterSpace == CE_FILTER_SPACE_LINEAR_TO_GAMMA) {
         filtered.r = ceDecodeGammaChannel(filtered.r);
         filtered.g = ceDecodeGammaChannel(filtered.g);
@@ -112,5 +122,5 @@ FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original) {
         filtered.g = cePqToLinearChannel(filtered.g);
         filtered.b = cePqToLinearChannel(filtered.b);
     }
-    return FfxFloat32x4(lerp(original.rgb, filtered, ceIntensity), original.a);
+    return ceApplyGamma(FfxFloat32x4(lerp(original.rgb, filtered, ceIntensity), original.a), position);
 }

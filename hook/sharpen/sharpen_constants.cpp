@@ -8,11 +8,16 @@
 // macros in a conditional.
 #include <math.h>
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-function"
+
 #define FFX_CPU 1
 #define FFX_HALF 0
 #include "../../external/fidelityfx/gpu/ffx_core.h"
 #include "../../external/fidelityfx/gpu/cas/ffx_cas.h"
 #include "../../external/fidelityfx/gpu/fsr1/ffx_fsr1.h"
+
+#pragma clang diagnostic pop
 
 namespace ce::sharpen {
 
@@ -20,6 +25,10 @@ ShaderConstants BuildShaderConstants(Mode mode, const Decision& decision, uint32
     ShaderConstants constants;
     constants.filterSpace = static_cast<uint32_t>(decision.filterSpace);
     constants.intensity = decision.intensity;
+    constants.gammaSource = decision.gamma.source;
+    constants.gammaDestination = decision.gamma.destination;
+    constants.gammaDitherScale = decision.gammaDitherScale;
+    constants.gammaValuesLinear = (decision.gammaValuesLinear ? 1u : 0u) | (decision.gammaOutputLinear ? 2u : 0u);
     constants.maxCoord[0] = width > 0 ? static_cast<int32_t>(width - 1) : 0;
     constants.maxCoord[1] = height > 0 ? static_cast<int32_t>(height - 1) : 0;
 

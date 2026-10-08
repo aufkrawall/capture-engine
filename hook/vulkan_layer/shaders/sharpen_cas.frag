@@ -26,5 +26,5 @@ void main() {
     FfxFloat32x3 filtered;
     // noScaling: the constants were built with identical input and output extents.
     ffxCasFilter(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0, ceConstants.ceConst1, true);
-    ceOutColor = ceResolveOutput(filtered, original);
+    ceOutColor = ceResolveOutput(filtered, original, FfxInt32x2(gxy));
 }

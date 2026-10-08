@@ -420,3 +420,31 @@ moved `SHARED_MEMORY_VERSION` to 61.
   `skipped a frame`, zero `could not be ordered`, and no second
   `source copy ready`, so nothing was torn down or rebuilt across the switch.
   This is the hazard the unit tests could only describe.
+
+## Generic display gamma (post-process stage)
+
+Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb`; hardware run pending).
+
+- Config: `Graphics.display_gamma` (`default`=off, `2.2`, `2.4`, `srgb`) is the monitor's calibrated curve;
+  `gamma_source` (`2.2` default, `2.4`, `srgb`) is the curve the game expects. Output =
+  `encode_display(decode_source(x))`, exact piecewise sRGB (shadow segment included); equal curves bypass.
+  Shared ABI v71 (two bytes in the former `sharpenReserved`). Math/parsing: `common/graphics/gamma_policy.h`.
+- Same pass as CAS/RCAS: `sharpen_policy.h` `Requested()` is true for sharpen OR gamma; with sharpen off a
+  gamma-only pixel shader (`hook/shaders/gamma.hlsl`, `gamma.frag/.comp`) runs, otherwise gamma is fused after
+  the sharpen mix (`gamma_common.hlsli`, `ceResolveOutput`). Shader generation: `tools/compile_sharpen_shaders.py`
+  (long arrays split into `*_partN.inl` for the 800-line ceiling).
+- Quality: float math, sRGB-view targets are read raw (`sourceRaw`) to avoid a double quantisation, final
+  8/10-bit output is dithered with spatially stable noise. HDR (PQ/scRGB) is passed through
+  (`gamma_hdr_passthrough`); `SdrLinear` distinguishes FP16 SDR from scRGB.
+- A verified UE5 native gamma override replaces `gamma_source` (`gamma_native_curve.*`, published by
+  `main_ue5_install.cpp`, invalidated on restore/module unload) so the two never correct twice.
+- Never skip a displayed frame: D3D12 command allocators and Vulkan command/fence slots grow instead of
+  skipping; the Vulkan registry is keyed per (swapchain, queue); the D3D12 source rebuild retires old
+  resource + SRV heap instead of waiting for GPU idle. `post_process_present_scope.h` prevents a second pass
+  on the same Present (normal + PostSL route).
+- FSR FG: the final-frame callback output, the suspend-overlay list and the owner-queue/topmost batch are
+  processed via `gamma_external_submission.*` (runtime-owned lists; completion proved by a per-slot fence
+  signalled after the observed ECL on the real submitting queue).
+- Cost: ~0.18 ms per 4K frame (gamma alone, `GammaGpuTiming` disabled test). Tests: `test_gamma_*.cpp`,
+  `test_config_gamma.cpp`, `tools/tests/test_sharpen_shader_generation.py`; the flow harness runs `srgb`.
+- Open: no hardware run yet (gradients, banding, FG switches in Talos/GTA); D3D9/OpenGL/DDraw not covered.

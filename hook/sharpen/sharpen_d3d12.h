@@ -26,6 +26,10 @@
 // what RetireOnQueueChange and the deferred-release list exist for.
 namespace ce::sharpen {
 
+// Product glue marks this CE-only submission so FG classification cannot count
+// a post-processing command list as new application rendering.
+void ExecutePostProcessCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* list);
+
 class D3D12Pass {
 public:
     // `target` is the resource this Present will put on screen, in
@@ -35,6 +39,13 @@ public:
                 D3D12_RESOURCE_STATES targetStateBefore, const Request& request, Route route,
                 TargetEncoding encoding);
 
+    // Records into a runtime-owned list. Caller owns an independent completion
+    // proof and must retain this pass until that submission retires.
+    bool RecordExternal(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* target,
+                        D3D12_RESOURCE_STATES stateBefore, const Request& request, TargetEncoding encoding);
+    bool SubmissionsRetired() const { return GpuIsIdle(); }
+    const char* LastFailureReason() const { return lastFailure_; }
+    HRESULT LastFailureCode() const { return lastFailureCode_; }
     void Shutdown();
 
     // Drops every reference without releasing it, for a device that is already
@@ -49,7 +60,10 @@ private:
     // frame N+1's write to it begins.
     static constexpr UINT kAllocatorSlots = 8;
 
-    bool EnsureDeviceObjects(ID3D12Device* device);
+    bool EnsureDeviceObjects(ID3D12Device* device, bool ownCommandObjects = true);
+    void RecordCommands(ID3D12GraphicsCommandList* list, ID3D12Resource* target,
+                        D3D12_RESOURCE_STATES stateBefore, const Decision& decision,
+                        uint32_t width, uint32_t height);
     bool EnsurePipelineState(ID3D12Device* device, Mode mode, DXGI_FORMAT viewFormat);
     bool EnsureSourceCopy(ID3D12Device* device, ID3D12Resource* target, DXGI_FORMAT viewFormat);
     bool EnsureTargetView(ID3D12Device* device, ID3D12Resource* target, DXGI_FORMAT viewFormat);
@@ -75,8 +89,6 @@ private:
     void RetireObject(Microsoft::WRL::ComPtr<IUnknown> object);
     // Releases everything the GPU has passed. `completed` is GetCompletedValue().
     void CollectRetired(UINT64 completed);
-    // True once the GPU has passed every submission this pass has made, which is
-    // the only point at which its single SRV descriptor may be rewritten.
     bool GpuIsIdle() const;
 
     // Identity only, never dereferenced.
@@ -89,8 +101,8 @@ private:
     Mode pipelineMode_ = Mode::Off;
     DXGI_FORMAT pipelineFormat_ = DXGI_FORMAT_UNKNOWN;
 
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocators_[kAllocatorSlots];
-    UINT64 allocatorFenceValues_[kAllocatorSlots] = {};
+    std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> allocators_;
+    std::vector<UINT64> allocatorFenceValues_;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList_;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     UINT64 fenceValue_ = 0;
@@ -118,7 +130,10 @@ private:
     };
     std::vector<RetiredObject> retired_;
 
+    const char* lastFailure_ = "none";
+    HRESULT lastFailureCode_ = S_OK;
     DecisionLogGate logGate_;
+    DecisionLogGate failureLogGate_;
 };
 
 }  // namespace ce::sharpen

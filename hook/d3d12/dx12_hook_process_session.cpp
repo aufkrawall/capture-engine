@@ -41,6 +41,11 @@ void FrameProcessSession::Run() {
     if (flow == ProcessFrameFlow::kReturn) {
         return;
     }
+    // Filtering owns its device and target independently of overlay initialization
+    // and visibility. Runtime UI/source routes are processed at their final output.
+    if (!ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(nullptr) &&
+        !PostSLOwnsThisFramesOverlayDraw(GetActiveDX12OverlayConfig(g_IPC ? g_IPC->GetSharedMem() : nullptr)))
+        SharpenDX12PresentedFrame(pSwapChain, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
     // This renderer owns an independent backbuffer/queue/completion contract. Run it before InitOverlayBackend: once the
     // transition cooldown reaches zero, InitOverlayBackend skips normal-backend initialization while runtime-owned FSR
     // presentation is active (the frame continues only for capture). The route must not depend on anything InitOverlayBackend

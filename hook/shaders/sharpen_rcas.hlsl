@@ -21,5 +21,5 @@ float4 main(float4 pos : SV_POSITION) : SV_Target {
     FfxFloat32x4 original = ceLoadSource(FfxInt32x2(gxy));
     FfxFloat32x3 filtered;
     FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConst0);
-    return ceResolveOutput(filtered, original);
+    return ceResolveOutput(filtered, original, FfxInt32x2(gxy));
 }

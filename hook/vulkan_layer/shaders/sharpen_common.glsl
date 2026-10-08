@@ -8,6 +8,10 @@ layout(push_constant) uniform SharpenConstantsBlock {
     FfxInt32x2 ceMaxCoord;
     FfxUInt32 ceFilterSpace;
     FfxFloat32 ceIntensity;
+    FfxFloat32 ceGammaSource;
+    FfxFloat32 ceGammaDestination;
+    FfxFloat32 ceGammaDitherScale;
+    FfxUInt32 ceGammaValuesLinear;
 }
 ceConstants;
 
@@ -88,12 +92,18 @@ void ceToFilterSpace(inout FfxFloat32 red, inout FfxFloat32 green, inout FfxFloa
     }
 }
 
+#define CE_GAMMA_SOURCE ceConstants.ceGammaSource
+#define CE_GAMMA_DESTINATION ceConstants.ceGammaDestination
+#define CE_GAMMA_DITHER_SCALE ceConstants.ceGammaDitherScale
+#define CE_GAMMA_VALUES_LINEAR ceConstants.ceGammaValuesLinear
+#include "../../shaders/gamma_common.hlsli"
+
 // The mix against the original happens here, in the frame's own stored space,
 // rather than inside the kernel: that is what makes intensity mean "how much
 // sharpening is visible" independently of how the kernel reacted to local
 // contrast. Alpha is never filtered or mixed - a composition swapchain needs the
 // exact value the game wrote, and sharpening coverage produces halos of its own.
-FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original) {
+FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original, FfxInt32x2 position) {
     if (ceConstants.ceFilterSpace == CE_FILTER_SPACE_LINEAR_TO_GAMMA) {
         filtered.r = ceDecodeGammaChannel(filtered.r);
         filtered.g = ceDecodeGammaChannel(filtered.g);
@@ -103,5 +113,5 @@ FfxFloat32x4 ceResolveOutput(FfxFloat32x3 filtered, FfxFloat32x4 original) {
         filtered.g = cePqToLinearChannel(filtered.g);
         filtered.b = cePqToLinearChannel(filtered.b);
     }
-    return FfxFloat32x4(mix(original.rgb, filtered, ceConstants.ceIntensity), original.a);
+    return ceApplyGamma(FfxFloat32x4(mix(original.rgb, filtered, ceConstants.ceIntensity), original.a), position);
 }

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/sharpen/gamma_external_submission.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "hook/pacing/pacing_trace.h"
@@ -27,7 +28,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             original = DX12_RealD3D12ECLForQueue(pThis, "ECL cost-probe passthrough");
 
         if (original)
-            original(pThis, NumCommandLists, ppCommandLists);
+            {
+                original(pThis, NumCommandLists, ppCommandLists);
+                ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
+            }
         return;
     }
     if (HookIsShuttingDown()) {
@@ -37,6 +41,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             {
                 ScopedHookForwardedCall forwardedCycles;
                 original(pThis, NumCommandLists, ppCommandLists);
+                ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
             }
         return;
     }
@@ -276,6 +281,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             {
                 ScopedHookForwardedCall forwardedCycles;
                 original(pThis, NumCommandLists, ppCommandLists);
+                ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
             }
         } else {
             pThis->ExecuteCommandLists(NumCommandLists, ppCommandLists);
@@ -291,12 +297,14 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         ExecuteCommandListsPtr realECL = DX12_RealD3D12ECLForQueue(pThis, "CE overlay queue");
         if (realECL && IsStreamlineLoaded() && IsActualFrameGenerationActive()) {
             realECL(pThis, NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         } else {
             ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
             if (original)
                 {
                     ScopedHookForwardedCall forwardedCycles;
                     original(pThis, NumCommandLists, ppCommandLists);
+                    ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
                 }
         }
         return;
@@ -368,6 +376,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             {
                 ScopedHookForwardedCall forwardedCycles;
                 original(pThis, NumCommandLists, ppCommandLists);
+                ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
             }
         else {
             if (real && DX12_MayCallResolvedQueueMethod(pThis, reinterpret_cast<const void*>(real),
@@ -375,6 +384,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 {
                     ScopedHookForwardedCall forwardedCycles;
                     real(pThis, NumCommandLists, ppCommandLists);
+                    ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
                 }
         }
         return;
@@ -396,6 +406,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             {
                 ScopedHookForwardedCall forwardedCycles;
                 original(pThis, NumCommandLists, ppCommandLists);
+                ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
             }
         } else {
             ExecuteCommandListsPtr real = DX12_RealD3D12ECLForQueue(pThis, "CE overlay ECL passthrough");
@@ -403,6 +414,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 {
                     ScopedHookForwardedCall forwardedCycles;
                     real(pThis, NumCommandLists, ppCommandLists);
+                    ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
                 }
 
             }
@@ -441,6 +453,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 {
                     ScopedHookForwardedCall forwardedCycles;
                     original(pThis, NumCommandLists, ppCommandLists);
+                    ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
                 }
             }
             return;
@@ -452,6 +465,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         if (probeOriginal) {
             ScopedHookForwardedCall forwardedCycles;
             probeOriginal(pThis, NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         }
         return;
     }
@@ -700,6 +714,7 @@ skip_command_queue_registration:
         {
             ScopedHookForwardedCall forwardedCycles;
             original(pThis, NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         }
         if (streamlineUiObservers) {
             ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);

@@ -73,7 +73,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGTargetFps));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenMode));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenColorSpace));
-    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenReserved));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, postProcessDisplayGamma));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, postProcessGammaSource));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenStrength));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, sharpenIntensity));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, mipBiasMin));

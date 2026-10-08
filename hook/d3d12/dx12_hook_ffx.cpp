@@ -6,6 +6,9 @@
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "hook/present/present_callback_association.h"
+#include "hook/sharpen/gamma_external_submission.h"
+#include "hook/sharpen/sharpen_d3d11.h"
+#include "hook/sharpen/sharpen_request.h"
 
 static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGenerationPresent* desc) {
     if (!desc) {
@@ -653,6 +656,18 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         ce::overlay_gpu_timing::End(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), gpuTimingSlot,
                                     PerfLogger::GetQpcUs());
     });
+    const auto postProcessRequest = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
+    if (!callbackYieldsToTopmostRoute && ce::sharpen::Requested(postProcessRequest) &&
+        desc->device && desc->commandList && desc->outputSwapChainBuffer.resource) {
+        auto* output = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
+        const auto outputDesc = output->GetDesc();
+        const bool hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(outputDesc.Format);
+        ce::sharpen::RecordRuntimePostProcess(static_cast<ID3D12Device*>(desc->device),
+            static_cast<ID3D12GraphicsCommandList*>(desc->commandList), output,
+            GetDX12StateFromFFXResourceState(desc->outputSwapChainBuffer.state), postProcessRequest,
+            ce::sharpen::ResolveDxgiEncoding(outputDesc.Format, hdr));
+    }
+    ce::sharpen::CollectRuntimePostProcess(!ce::sharpen::Requested(postProcessRequest));
     bool overlayDrawn = false;
     if (!callbackYieldsToTopmostRoute && !probeSuppressesBridgeOverlay && RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);

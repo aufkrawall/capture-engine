@@ -28,9 +28,13 @@ struct alignas(16) ShaderConstants {
     // consumes the block's former padding DWORD, so the layout and the D3D12
     // root-constant count are unchanged.
     float intensity = 1.0f;
+    float gammaSource = 2.2f;
+    float gammaDestination = -1.0f;
+    float gammaDitherScale = 0.0f;
+    uint32_t gammaValuesLinear = 0;
 };
 
-static_assert(sizeof(ShaderConstants) == 48, "Shader constant layout must match the HLSL/GLSL blocks");
+static_assert(sizeof(ShaderConstants) == 64, "Shader constant layout must match the HLSL/GLSL blocks");
 
 // `decision` must be one that ran (`Decide(...).run == true`); the caller has
 // already refused everything else.

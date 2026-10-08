@@ -36,5 +36,5 @@ void main() {
     FfxFloat32x4 original = ceLoadSource(position);
     FfxFloat32x3 filtered;
     FsrRcasF(filtered.r, filtered.g, filtered.b, gxy, ceConstants.ceConst0);
-    imageStore(ceTarget, position, ceResolveOutput(filtered, original));
+    imageStore(ceTarget, position, ceResolveOutput(filtered, original, position));
 }

@@ -36,48 +36,17 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 
 }  // namespace
 
-// g_SharpenMutex is a plain std::mutex. SharpenDX12PresentedFrame holds it for
-// the whole call, so its sharpen-off teardown has to use the unlocked body: the
-// locking entry point re-acquires and, on libc++/SRWLOCK, never returns. That
-// parked the RHI thread inside DetourPresent until UE5 declared "GameThread
-// timed out waiting for RenderThread after 120.00 secs" and terminated Talos.
-TEST(ConfigReloadReinitPolicyTest, Dx12SharpenOffPathReleasesThroughTheUnlockedBody) {
+// Post-processing no longer shares one global try-lock/pass. Drivers run
+// outside a short resource-registry lock; live disable only collects retired work.
+TEST(ConfigReloadReinitPolicyTest, Dx12GammaOffDoesNotWaitOrReenterTeardown) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
-
-    const std::string presented =
-        FunctionBody(source, "void SharpenDX12PresentedFrame(", "ID3D12Device* device = g_Device.load");
+    const std::string presented = FunctionBody(source, "void SharpenDX12PresentedFrame(",
+                                              "Microsoft::WRL::ComPtr<ID3D12Device> device");
     ASSERT_FALSE(presented.empty());
-
-    // It takes the lock for the whole call...
-    EXPECT_NE(presented.find("std::unique_lock<std::mutex> lock(g_SharpenMutex, std::try_to_lock)"),
-              std::string::npos);
-    // ...so the off-branch must call the unlocked body...
-    EXPECT_NE(presented.find("ReleaseSharpenResourcesLocked("), std::string::npos);
-    // ...and must never re-enter the locking entry point.
+    EXPECT_NE(presented.find("CollectRuntimePostProcess(true)"), std::string::npos);
     EXPECT_EQ(presented.find("ReleaseDX12SharpenResources("), std::string::npos);
-}
-
-TEST(ConfigReloadReinitPolicyTest, Dx12SharpenLockingReleaseIsOnlyAWrapper) {
-    const std::string source = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
-
-    // The public entry point is for callers that do not hold the mutex
-    // (DX12OverlayState::Cleanup). It must take the lock and do nothing else,
-    // so there is exactly one place that touches g_SharpenPass teardown.
-    const std::string release =
-        FunctionBody(source, "void ReleaseDX12SharpenResources(", "void SharpenDX12PresentedFrame(");
-    ASSERT_FALSE(release.empty());
-    EXPECT_NE(release.find("std::lock_guard<std::mutex> lock(g_SharpenMutex)"), std::string::npos);
-    EXPECT_NE(release.find("ReleaseSharpenResourcesLocked(releaseObjects)"), std::string::npos);
-    EXPECT_EQ(release.find("g_SharpenPass."), std::string::npos);
-
-    // The unlocked body owns the "nothing is allocated any more" bookkeeping,
-    // so a caller cannot release the pass and leave the flag claiming otherwise.
-    const std::string body =
-        FunctionBody(source, "void ReleaseSharpenResourcesLocked(", "}  // namespace");
-    ASSERT_FALSE(body.empty());
-    EXPECT_NE(body.find("g_SharpenPass.Shutdown()"), std::string::npos);
-    EXPECT_NE(body.find("g_SharpenPass.Abandon()"), std::string::npos);
-    EXPECT_NE(body.find("g_SharpenEverRendered = false"), std::string::npos);
+    EXPECT_EQ(source.find("std::try_to_lock"), std::string::npos);
+    EXPECT_NE(source.find("ScopedCEOverlayECLSubmission submission(\"post-process\")"), std::string::npos);
 }
 
 // The Vulkan layer had the same shape and got it right; keep it that way so the
@@ -85,8 +54,8 @@ TEST(ConfigReloadReinitPolicyTest, Dx12SharpenLockingReleaseIsOnlyAWrapper) {
 TEST(ConfigReloadReinitPolicyTest, VulkanSharpenOffPathReleasesThroughTheUnlockedBody) {
     const std::string source = ReadSource("hook/vulkan_layer/layer_sharpen.cpp");
 
-    const size_t tryLock = source.find("std::unique_lock<std::mutex> lock(layer_sharpen_g_StateMutex, std::try_to_lock)");
-    const size_t offBranch = source.find("request.mode == ce::sharpen::Mode::Off", tryLock);
+    const size_t tryLock = source.find("std::unique_lock<std::mutex> lock(layer_sharpen_g_StateMutex, std::defer_lock)");
+    const size_t offBranch = source.find("!ce::sharpen::Requested(request)", tryLock);
     const size_t destroy = source.find("DestroySharpenState(state, disp)", offBranch);
     ASSERT_NE(tryLock, std::string::npos);
     ASSERT_NE(offBranch, std::string::npos);

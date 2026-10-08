@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HLSL_DIR = ROOT / "hook" / "shaders"
 GLSL_DIR = ROOT / "hook" / "vulkan_layer" / "shaders"
 FFX_INCLUDE_DIR = ROOT / "external" / "fidelityfx" / "gpu"
-COMMON_DIR = ROOT / "hook" / "common"
+COMMON_DIR = ROOT / "hook" / "sharpen"
 DXBC_PART_DIR = COMMON_DIR / "sharpen_shader_bytecode"
 DXBC_HEADER = COMMON_DIR / "sharpen_shader_bytecode.h"
 SPIRV_PART_DIR = COMMON_DIR / "sharpen_shader_spirv"
@@ -41,6 +41,7 @@ DXBC_SHADERS = (
     ("sharpen_fullscreen.hlsl", "vs_5_0", "g_SharpenVS_5_0"),
     ("sharpen_cas.hlsl", "ps_5_0", "g_SharpenPS_Cas_5_0"),
     ("sharpen_rcas.hlsl", "ps_5_0", "g_SharpenPS_Rcas_5_0"),
+    ("gamma.hlsl", "ps_5_0", "g_GammaPS_5_0"),
 )
 
 SPIRV_SHADERS = (
@@ -50,6 +51,8 @@ SPIRV_SHADERS = (
     # Compute-only present queues (Vulkan "present from compute").
     ("sharpen_cas.comp", "comp", "g_SharpenCasComputeShaderSpv"),
     ("sharpen_rcas.comp", "comp", "g_SharpenRcasComputeShaderSpv"),
+    ("gamma.frag", "frag", "g_GammaFragmentShaderSpv"),
+    ("gamma.comp", "comp", "g_GammaComputeShaderSpv"),
 )
 
 BANNER = (
@@ -88,6 +91,24 @@ def inline_includes(path: Path, seen: list[Path] | None = None) -> bytes:
     return b"".join(out)
 
 
+def write_array_part(path: Path, array_text: str) -> None:
+    """Split long numeric initializer data without changing its byte layout."""
+    lines = array_text.strip().splitlines()
+    body = lines[1:-1]
+    prefix = list(BANNER) + ["#pragma once", "#include <cstdint>", ""]
+    if len(body) <= 700:
+        output = prefix + lines
+    else:
+        output = prefix + [lines[0]]
+        for index, offset in enumerate(range(0, len(body), 700)):
+            fragment = f"{path.stem}_part{index + 1}.inl"
+            (path.parent / fragment).write_text("\n".join(list(BANNER) + body[offset:offset + 700]) + "\n",
+                                                encoding="utf-8", newline="\n")
+            output.append(f'#include "{fragment}"')
+        output.append(lines[-1])
+    path.write_text("\n".join(output) + "\n", encoding="utf-8", newline="\n")
+
+
 def build_dxbc() -> list[str]:
     DXBC_PART_DIR.mkdir(parents=True, exist_ok=True)
     part_files: list[str] = []
@@ -96,8 +117,7 @@ def build_dxbc() -> list[str]:
         data = compile_shader(source, target, symbol)
         part_file = symbol[2:].lower() + ".h"
         part_files.append(part_file)
-        part = list(BANNER) + ["#pragma once", "#include <cstdint>", "", format_array(symbol, data)]
-        (DXBC_PART_DIR / part_file).write_text("\n".join(part).rstrip("\n") + "\n", encoding="utf-8", newline="\n")
+        write_array_part(DXBC_PART_DIR / part_file, format_array(symbol, data))
 
     umbrella = list(BANNER) + ["#pragma once", ""]
     umbrella += [f'#include "sharpen_shader_bytecode/{part_file}"' for part_file in part_files]
@@ -154,8 +174,7 @@ def build_spirv() -> list[str]:
         subprocess.run([str(validator), "--target-env", "vulkan1.2", str(output)], check=True)
         part_file = symbol[2:].lower() + ".h"
         part_files.append(part_file)
-        part = list(BANNER) + ["#pragma once", "#include <cstdint>", "", emit_spirv_array(symbol, output.read_bytes())]
-        (SPIRV_PART_DIR / part_file).write_text("\n".join(part).rstrip("\n") + "\n", encoding="utf-8", newline="\n")
+        write_array_part(SPIRV_PART_DIR / part_file, emit_spirv_array(symbol, output.read_bytes()))
 
     umbrella = list(BANNER) + ["#pragma once", ""]
     umbrella += [f'#include "sharpen_shader_spirv/{part_file}"' for part_file in part_files]

@@ -3,6 +3,7 @@
 
 #pragma once
 
-#include "hook/sharpen/sharpen_shader_bytecode/sharpenvs_5_0.h"
-#include "hook/sharpen/sharpen_shader_bytecode/sharpenps_cas_5_0.h"
-#include "hook/sharpen/sharpen_shader_bytecode/sharpenps_rcas_5_0.h"
+#include "sharpen_shader_bytecode/sharpenvs_5_0.h"
+#include "sharpen_shader_bytecode/sharpenps_cas_5_0.h"
+#include "sharpen_shader_bytecode/sharpenps_rcas_5_0.h"
+#include "sharpen_shader_bytecode/gammaps_5_0.h"

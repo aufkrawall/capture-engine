@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 
 #include "hook/ngx/rr_handoff_gate.h"
+#include "hook/sharpen/gamma_native_curve.h"
 
 namespace UE5 {
 namespace detail {
@@ -211,6 +212,10 @@ void NotifyModuleUnloaded(void* moduleBase, std::size_t moduleSize) {
   for (std::size_t index = 0; index < detail::kCVarCount; ++index) {
     HMODULE active = module;
     if (detail::g_activeModules[index].compare_exchange_strong(active, nullptr, std::memory_order_acq_rel)) {
+      const auto activation = ce::ue5_cvar::kSpecs[index].activation;
+      if (activation == ce::ue5_cvar::Activation::DisplayGammaExponent ||
+          activation == ce::ue5_cvar::Activation::DisplayGammaOutputDevice)
+        ce::gamma::PublishVerifiedNativeCurve(-1.0f);
       detail::g_activeModuleUnloaded[index].store(true, std::memory_order_release);
       retiredAny = true;
     }

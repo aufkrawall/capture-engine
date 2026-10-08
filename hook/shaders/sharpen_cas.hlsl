@@ -22,5 +22,5 @@ float4 main(float4 pos : SV_POSITION) : SV_Target {
     // noScaling: the constants were built with identical input and output
     // extents, which is the only configuration this pass ever runs in.
     ffxCasFilter(filtered.r, filtered.g, filtered.b, gxy, ceConst0, ceConst1, true);
-    return ceResolveOutput(filtered, original);
+    return ceResolveOutput(filtered, original, FfxInt32x2(gxy));
 }

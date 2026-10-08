@@ -1,4 +1,7 @@
 #include "dx12_hook_internal.h"
+#include "hook/sharpen/gamma_external_submission.h"
+#include "hook/sharpen/sharpen_request.h"
+#include "hook/sharpen/sharpen_d3d11.h"
 
 #include <array>
 
@@ -151,6 +154,7 @@ bool SubmitOverlayInsideObservedBatch(ID3D12CommandQueue* queue, ID3D12CommandLi
     combined[context->commandListCount] = overlayCommandList;
     ScopedCEOverlayECLSubmission overlaySubmission("no-callback-fsr-topmost-same-batch");
     context->original(queue, context->commandListCount + 1, combined.data());
+    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, context->commandListCount + 1, combined.data());
     context->submitted = true;
     return true;
 }

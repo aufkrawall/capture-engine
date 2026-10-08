@@ -57,6 +57,7 @@ struct SharpenState {
     // Graphics or compute pipelines, matching `route`.
     VkPipeline casPipeline = VK_NULL_HANDLE;
     VkPipeline rcasPipeline = VK_NULL_HANDLE;
+    VkPipeline gammaPipeline = VK_NULL_HANDLE;
 
     // The untouched copy of the frame the kernel reads.
     VkImage sourceImage = VK_NULL_HANDLE;
@@ -65,6 +66,7 @@ struct SharpenState {
     // False until the first copy has written it; before that its contents are
     // undefined and its layout must be transitioned from UNDEFINED.
     bool sourceInitialized = false;
+    bool sourceRaw = false;
 
     // Per presentable image.
     std::vector<VkImageView> imageViews;
@@ -76,9 +78,9 @@ struct SharpenState {
     std::vector<VkSemaphore> imageSemaphores;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer commandBuffers[kSharpenSlotCount] = {};
-    VkFence fences[kSharpenSlotCount] = {};
-    bool slotSubmitted[kSharpenSlotCount] = {};
+    std::vector<VkCommandBuffer> commandBuffers;
+    std::vector<VkFence> fences;
+    std::vector<uint8_t> slotSubmitted;
     uint32_t nextSlot = 0;
 
     ce::sharpen::DecisionLogGate logGate;
@@ -122,7 +124,7 @@ void DrainDeferredSharpenSemaphoresLocked(VkDevice device, VkSwapchainKHR destro
 // holds layer_sharpen_g_StateMutex for both.
 bool InitializeSharpenState(SharpenState& state, DeviceDispatch* disp, VkDevice device, VkSwapchainKHR swapchain,
                             VkFormat format, VkExtent2D extent, uint32_t queueFamily,
-                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images);
+                            ce::vulkan_sharpen_route::Route route, uint32_t imageCount, const VkImage* images, bool sourceRaw = false);
 
 // What `state` was built for, in the terms MustRebuild compares.
 ce::vulkan_sharpen_route::Identity SharpenStateIdentity(const SharpenState& state);

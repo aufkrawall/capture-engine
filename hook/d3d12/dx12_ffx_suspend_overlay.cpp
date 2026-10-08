@@ -1,4 +1,7 @@
 #include "dx12_ffx_suspend_overlay.h"
+#include "hook/sharpen/gamma_external_submission.h"
+#include "hook/sharpen/sharpen_request.h"
+#include "hook/sharpen/sharpen_d3d11.h"
 
 #include <algorithm>
 #include <array>
@@ -323,6 +326,13 @@ public:
             return RenderResult::kFailed;
         }
 
+        if (!clearTransparent) {
+            const auto postProcess = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
+            if (ce::sharpen::Requested(postProcess))
+                ce::sharpen::RecordRuntimePostProcess(device.Get(), slot.commandList.Get(), targetResource,
+                    targetState, postProcess, ce::sharpen::ResolveDxgiEncoding(targetDesc.Format,
+                        hdr));
+        }
         const UINT64 submitFenceValue = lastSubmittedFenceValue + 1;
         const bool writesTarget = clearTransparent || renderOverlay;
         if (writesTarget) {

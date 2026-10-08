@@ -3,8 +3,10 @@
 
 #pragma once
 
-#include "hook/sharpen/sharpen_shader_spirv/sharpenvertexshaderspv.h"
-#include "hook/sharpen/sharpen_shader_spirv/sharpencasfragmentshaderspv.h"
-#include "hook/sharpen/sharpen_shader_spirv/sharpenrcasfragmentshaderspv.h"
-#include "hook/sharpen/sharpen_shader_spirv/sharpencascomputeshaderspv.h"
-#include "hook/sharpen/sharpen_shader_spirv/sharpenrcascomputeshaderspv.h"
+#include "sharpen_shader_spirv/sharpenvertexshaderspv.h"
+#include "sharpen_shader_spirv/sharpencasfragmentshaderspv.h"
+#include "sharpen_shader_spirv/sharpenrcasfragmentshaderspv.h"
+#include "sharpen_shader_spirv/sharpencascomputeshaderspv.h"
+#include "sharpen_shader_spirv/sharpenrcascomputeshaderspv.h"
+#include "sharpen_shader_spirv/gammafragmentshaderspv.h"
+#include "sharpen_shader_spirv/gammacomputeshaderspv.h"

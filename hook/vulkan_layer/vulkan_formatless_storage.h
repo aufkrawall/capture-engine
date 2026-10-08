@@ -29,8 +29,10 @@ inline Support Query(InstanceDispatch* instDisp, VkPhysicalDevice physicalDevice
     const bool coreGuarantee = HasCoreGuarantee(format);
     VkFormatFeatureFlags2 optimalFeatures = 0;
     if (formatFeatureFlags2Available && instDisp && instDisp->fp_vkGetPhysicalDeviceFormatProperties2) {
-        VkFormatProperties3 properties3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
-        VkFormatProperties2 properties2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+        VkFormatProperties3 properties3 = {};
+        properties3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+        VkFormatProperties2 properties2 = {};
+        properties2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
         properties2.pNext = &properties3;
         instDisp->fp_vkGetPhysicalDeviceFormatProperties2(physicalDevice, format, &properties2);
         optimalFeatures = properties3.optimalTilingFeatures;

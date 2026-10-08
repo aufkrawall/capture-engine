@@ -69,6 +69,7 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
     InitializeHookLifecycleControl();
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
+    g_pLocalConfig->graphics.postProcessDisplayGamma = "srgb";
     g_LocalConfigLoaded.store(true, std::memory_order_release);
     GetActiveGraphicsConfig();
     AttachIsolatedHost(hostMemory);

@@ -129,12 +129,38 @@ bool FormatAppliesSrgbConversion(DXGI_FORMAT format) {
     }
 }
 
+DXGI_FORMAT RawUnormViewFormat(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8X8_UNORM;
+        default: return format;
+    }
+}
+
+DXGI_FORMAT TypelessCopyFormat(DXGI_FORMAT format) {
+    return MakeTypeless(format);
+}
+
+uint32_t IntegerColorBits(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R10G10B10A2_UNORM: return 10;
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return 8;
+        default: return 0;
+    }
+}
+
 TargetEncoding ResolveDxgiEncoding(DXGI_FORMAT format, bool isHDR) {
     switch (format) {
         // FP16 is linear light whether or not the swapchain declares HDR.
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
         case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-            return TargetEncoding::ScrgbLinear;
+            return isHDR ? TargetEncoding::ScrgbLinear : TargetEncoding::SdrLinear;
         // Storage format is not content metadata: the same 10-bit surface is
         // Rec.709 SDR or HDR10/PQ depending on the swapchain's color space.
         case DXGI_FORMAT_R10G10B10A2_UNORM:
@@ -209,6 +235,10 @@ bool D3D11Pass::EnsureDeviceObjects(ID3D11Device* device) {
         return false;
     }
 
+    if (!gammaShader_ &&
+        FAILED(device->CreatePixelShader(g_GammaPS_5_0, sizeof(g_GammaPS_5_0), nullptr, &gammaShader_))) {
+        return false;
+    }
     if (!constantBuffer_) {
         D3D11_BUFFER_DESC bufferDesc = {};
         bufferDesc.ByteWidth = sizeof(ShaderConstants);
@@ -281,7 +311,7 @@ bool D3D11Pass::Render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D1
         return false;
 
     // The cheapest refusal first: an off switch must not cost a resource query.
-    if (request.mode == Mode::Off) {
+    if (!Requested(request)) {
         if (logGate_.ShouldLog(false, "disabled"))
             HookLog("Sharpen: DX11 pass idle (disabled)");
         return false;
@@ -315,6 +345,8 @@ bool D3D11Pass::Render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D1
     target.width = targetDesc.Width;
     target.height = targetDesc.Height;
     target.viewAppliesSrgbConversion = FormatAppliesSrgbConversion(viewFormat);
+    target.sourceRaw = target.viewAppliesSrgbConversion && ce::gamma::Requested(request.gamma);
+    target.colorBits = IntegerColorBits(viewFormat);
     // A multisampled target cannot be copied into a single-sample source, and a
     // resolve would be a different pass with different cost.
     target.readable = targetDesc.SampleDesc.Count == 1;
@@ -322,26 +354,28 @@ bool D3D11Pass::Render(ID3D11Device* device, ID3D11DeviceContext* context, ID3D1
                       viewDesc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
 
     const Decision decision = Decide(request, target);
-    if (logGate_.ShouldLog(decision.run, decision.reason)) {
-        HookLogImportant("Sharpen: DX11 %s reason=%s %ux%u view=%d srgbView=%d samples=%u route=%d param=%.3f",
+    if (logGate_.ShouldLog(decision)) {
+        HookLogImportant("Sharpen: DX11 %s reason=%s %ux%u view=%d srgbView=%d samples=%u route=%d param=%.3f gamma=%.2f->%.2f dither=%.6f",
                          decision.run ? "running" : "idle", decision.reason, target.width, target.height,
                          static_cast<int>(viewFormat), target.viewAppliesSrgbConversion ? 1 : 0,
                          targetDesc.SampleDesc.Count, static_cast<int>(route),
-                         static_cast<double>(decision.effectParameter));
+                         static_cast<double>(decision.effectParameter), static_cast<double>(decision.gamma.source),
+                         static_cast<double>(decision.gamma.destination), static_cast<double>(decision.gammaDitherScale));
     }
     if (!decision.run)
         return false;
 
     if (!EnsureDeviceObjects(device))
         return false;
-    if (!EnsureSourceCopy(device, targetDesc, viewFormat))
+    if (!EnsureSourceCopy(device, targetDesc, target.sourceRaw ? RawUnormViewFormat(viewFormat) : viewFormat))
         return false;
 
-    ID3D11PixelShader* pixelShader = request.mode == Mode::Cas ? casShader_.Get() : rcasShader_.Get();
+    ID3D11PixelShader* pixelShader = decision.mode == Mode::Cas ? casShader_.Get()
+                                     : decision.mode == Mode::Rcas ? rcasShader_.Get() : gammaShader_.Get();
     if (!pixelShader)
         return false;
 
-    const ShaderConstants constants = BuildShaderConstants(request.mode, decision, target.width, target.height);
+    const ShaderConstants constants = BuildShaderConstants(decision.mode, decision, target.width, target.height);
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     if (FAILED(context->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
         return false;
@@ -403,6 +437,7 @@ void D3D11Pass::Abandon() {
     depthState_.Detach();
     blendState_.Detach();
     rasterizerState_.Detach();
+    gammaShader_.Detach();
     rcasShader_.Detach();
     casShader_.Detach();
     vertexShader_.Detach();
@@ -420,6 +455,7 @@ void D3D11Pass::Shutdown() {
     depthState_.Reset();
     blendState_.Reset();
     rasterizerState_.Reset();
+    gammaShader_.Reset();
     rcasShader_.Reset();
     casShader_.Reset();
     vertexShader_.Reset();

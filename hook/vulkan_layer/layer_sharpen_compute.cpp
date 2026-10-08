@@ -26,7 +26,8 @@ bool CreateComputeDescriptors(SharpenState& state, DeviceDispatch* disp) {
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = 2;
     layoutInfo.pBindings = bindings;
     if (disp->fp_vkCreateDescriptorSetLayout(state.device, &layoutInfo, nullptr, &state.setLayout) != VK_SUCCESS)
@@ -35,7 +36,8 @@ bool CreateComputeDescriptors(SharpenState& state, DeviceDispatch* disp) {
     const uint32_t imageCount = static_cast<uint32_t>(state.imageViews.size());
     VkDescriptorPoolSize poolSizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageCount},
                                          {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount}};
-    VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = imageCount;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
@@ -44,7 +46,8 @@ bool CreateComputeDescriptors(SharpenState& state, DeviceDispatch* disp) {
 
     std::vector<VkDescriptorSetLayout> layouts(imageCount, state.setLayout);
     state.imageDescriptorSets.assign(imageCount, VK_NULL_HANDLE);
-    VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    VkDescriptorSetAllocateInfo setInfo = {};
+    setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     setInfo.descriptorPool = state.descriptorPool;
     setInfo.descriptorSetCount = imageCount;
     setInfo.pSetLayouts = layouts.data();
@@ -79,14 +82,16 @@ bool CreateComputeDescriptors(SharpenState& state, DeviceDispatch* disp) {
 
 bool CreateComputePipeline(SharpenState& state, DeviceDispatch* disp, const uint32_t* code, size_t byteSize,
                            VkPipeline* pipeline) {
-    VkShaderModuleCreateInfo moduleInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    VkShaderModuleCreateInfo moduleInfo = {};
+    moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     moduleInfo.codeSize = byteSize;
     moduleInfo.pCode = code;
     VkShaderModule module = VK_NULL_HANDLE;
     if (disp->fp_vkCreateShaderModule(state.device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
         return false;
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - Vulkan structs require zero initialization before their enum fields are assigned
-    VkComputePipelineCreateInfo pipelineInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkComputePipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipelineInfo.stage.module = module;
@@ -100,7 +105,8 @@ bool CreateComputePipeline(SharpenState& state, DeviceDispatch* disp, const uint
 
 VkImageMemoryBarrier MakeBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
                                  VkAccessFlags srcAccess, VkAccessFlags dstAccess) {
-    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcAccessMask = srcAccess;
     barrier.dstAccessMask = dstAccess;
     barrier.oldLayout = oldLayout;
@@ -125,7 +131,8 @@ bool CreateSharpenComputeObjects(SharpenState& state, DeviceDispatch* disp) {
     VkPushConstantRange pushRange = {};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.size = sizeof(ce::sharpen::ShaderConstants);
-    VkPipelineLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layoutInfo.setLayoutCount = 1;
     layoutInfo.pSetLayouts = &state.setLayout;
     layoutInfo.pushConstantRangeCount = 1;
@@ -136,7 +143,9 @@ bool CreateSharpenComputeObjects(SharpenState& state, DeviceDispatch* disp) {
     return CreateComputePipeline(state, disp, g_SharpenCasComputeShaderSpv, sizeof(g_SharpenCasComputeShaderSpv),
                                  &state.casPipeline) &&
            CreateComputePipeline(state, disp, g_SharpenRcasComputeShaderSpv, sizeof(g_SharpenRcasComputeShaderSpv),
-                                 &state.rcasPipeline);
+                                 &state.rcasPipeline) &&
+           CreateComputePipeline(state, disp, g_GammaComputeShaderSpv, sizeof(g_GammaComputeShaderSpv),
+                                 &state.gammaPipeline);
 }
 
 void RecordSharpenCompute(SharpenState& state, DeviceDispatch* disp, VkCommandBuffer cmd, VkImage image,

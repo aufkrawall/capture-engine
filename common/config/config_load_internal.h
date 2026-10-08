@@ -8,6 +8,7 @@
 
 #include "common/graphics/mip_bias_limits.h"
 #include "common/graphics/sharpen_policy.h"
+#include "common/graphics/gamma_policy.h"
 
 constexpr const char* kMissingConfigValue = "\x1d";
 
