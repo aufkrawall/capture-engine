@@ -4,7 +4,8 @@
 
 - Session 20261008_220437: 11466 `Official UI tag record opportunity` + ~11.5k tag lines (85% of hook_debug.log) although the lines were already
   gated. W3 sends single-tag `slSetTagForFrame` calls cycling 13 buffer types, all one stream, so each call was a "change". Tag types now key the
-  stream, 64 slots, per-stream heartbeat (details in `regression-testing-and-logging.md`). 0.1.7052; compare a fresh W3 log's `LOG FLOOD` section.
+  stream, 64 slots, per-stream heartbeat (details in `regression-testing-and-logging.md`). 0.1.7052 cut it to 1915 lines of 4438 (20261008_221807):
+  types 0/1 alternate set (1280x720) / clear (null resource) calls; 0.1.7053 adds "has a resource" to the stream. Expect ~15 tag records per session.
 - Same session confirmed dynamic MFG end to end (all five DRS keys answered by `sl.common`, multiplier 2x/3x/4x at ~138 fps on 144 Hz, no dump).
 
 ### 2026-10-08 - Dynamic MFG, second cause: cached NvAPI pointers in sl.common

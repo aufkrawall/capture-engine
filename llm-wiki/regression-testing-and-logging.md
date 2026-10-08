@@ -135,7 +135,10 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   shape alone put all 13 into one stream and every call logged (20261008_220437: 21k of 25k lines). The tag
   types are now part of the stream (`ce::streamline_ui_tag_log::Stream`), the gate has 64 slots, and the heartbeat
   is counted per stream (`StreamChangeGate::ObserveOrEveryPerStream`, `kHeartbeatStride`) because a shared index
-  runs N times faster with N streams.
+  runs N times faster with N streams. Types alone were not enough (20261008_221807, 0.1.7052: 1915 of 4438
+  lines left): W3 sends types 0 and 1 twice per frame, once with the 1280x720 resource and once with a null
+  resource (clearing the tag), and those alternate inside one stream. `TagKinds` therefore also folds in
+  "has a resource". Lesson: check the residue of a fixed flood against the raw lines, not only the template count.
 - **Once per key**: `ce::log_meter::KeyedOnce<N>` for "once per module/handle" lines
   (Steam overlay detection, late-loaded CreateProcess patching, FFX modules without exports).
 - **Narrative to one line**: a multi-step operation logs one summary line (inline-hook

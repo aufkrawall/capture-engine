@@ -266,48 +266,63 @@ TEST(LogMeterTest, StreamlineUiTagCallShapesAreSeparateStreams) {
 
 // The Witcher 3 Remastered tags ONE resource per slSetTagForFrame call and cycles the buffer role, so every call
 // has the same api, feature, viewport and numTags (20261008_220437: 11466 of 25k lines, plus a line per tag).
-TEST(LogMeterTest, StreamlineSingleTagCallsAreSeparateStreamsPerBufferType) {
+TEST(LogMeterTest, StreamlineSingleTagCallsAreSeparateStreamsPerBufferKind) {
+    struct TagCall {
+        uint32_t type;
+        bool hasResource;
+        uint32_t width;
+        uint32_t height;
+    };
+    // One frame as the title sends it (20261008_221807): types 0 and 1 twice, once with the real 1280x720 resource
+    // and once with none (the tag is cleared), the other eleven once.
+    std::vector<TagCall> frame = {{0, true, 1280, 720}, {1, true, 1280, 720}, {0, false, 0, 0}, {1, false, 0, 0}};
+    for (uint32_t type : {2u, 69u, 14u, 42u, 7u, 8u, 3u, 4u, 40u, 58u, 68u})
+        frame.push_back({type, true, 3840, 2160});
+    constexpr int kFrames = 150;
     const char* api = "slSetTagForFrame";
-    const uint32_t types[] = {0, 1, 2, 69, 14, 42, 7, 8, 3, 4, 40, 58, 68};
-    constexpr uint32_t kTypes = sizeof(types) / sizeof(types[0]);
-    constexpr uint32_t kCalls = 13u * 150u;  // 150 frames, one call per type
 
-    // Without the type in the stream every call reads as a change of the one stream: the old behaviour.
-    {
+    auto run = [&](bool typeInStream, bool resourceInStream) {
         ce::log_meter::StreamChangeGate<64> gate;
-        const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 348957, 1, 0);
         int logged = 0;
-        for (uint32_t call = 0; call < kCalls; ++call) {
-            logged += gate.ObserveOrEveryPerStream(stream, ce::log_meter::FieldKey(1u, 0u, types[call % kTypes]),
-                                                   ce::streamline_ui_tag_log::kHeartbeatStride)
-                          ? 1
-                          : 0;
+        for (int i = 0; i < kFrames; ++i) {
+            for (const TagCall& call : frame) {
+                const uint64_t kinds = typeInStream ? ce::streamline_ui_tag_log::TagKinds(
+                                                          ce::log_meter::FieldKey(1u), call.type,
+                                                          resourceInStream && call.hasResource)
+                                                    : 0;
+                const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 348957, 1, 0, kinds);
+                const uint64_t tagSet = ce::log_meter::FieldKey(1u, 0u, 0u, call.type, 1, 0u, 0u, call.width, call.height);
+                logged += gate.ObserveOrEveryPerStream(stream, tagSet, ce::streamline_ui_tag_log::kHeartbeatStride) ? 1 : 0;
+            }
         }
-        EXPECT_EQ(logged, static_cast<int>(kCalls));
-    }
+        return logged;
+    };
 
+    const int calls = kFrames * static_cast<int>(frame.size());
+    // The shape alone: every alternation is a change (the 0.1.7051 behaviour in 20261008_220437).
+    EXPECT_EQ(run(false, false), calls);
+    // Type only: the clear/set pair of types 0 and 1 still alternated inside one stream (0.1.7052, 20261008_221807).
+    EXPECT_EQ(run(true, false), 11 + 2 * 2 * kFrames);
+    // Type and resource: one line per kind (13 types, two of them in two kinds), nothing else.
+    EXPECT_EQ(run(true, true), 13 + 2);
+}
+
+TEST(LogMeterTest, StreamlineARealTagChangeStillLogsOncePerKind) {
+    const char* api = "slSetTagForFrame";
     ce::log_meter::StreamChangeGate<64> gate;
+    const uint64_t stream = ce::streamline_ui_tag_log::Stream(
+        api, UINT32_MAX, 348957, 1, 0,
+        ce::streamline_ui_tag_log::TagKinds(ce::log_meter::FieldKey(1u), 69, true));
     int logged = 0;
-    for (uint32_t call = 0; call < kCalls; ++call) {
-        const uint32_t type = types[call % kTypes];
-        const uint64_t tagTypes = ce::log_meter::FieldKey(ce::log_meter::FieldKey(1u), type);
-        const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 348957, 1, 0, tagTypes);
-        const uint64_t tagSet = ce::log_meter::FieldKey(1u, 0u, 0u, type, 1, 0u, 0u, 3840u, 2160u);
-        logged += gate.ObserveOrEveryPerStream(stream, tagSet, ce::streamline_ui_tag_log::kHeartbeatStride) ? 1 : 0;
-    }
-    EXPECT_EQ(logged, static_cast<int>(kTypes)) << "each buffer type logs once; 150 calls each is below the heartbeat";
-
-    // A real change of one buffer's tag (here: a resize) still logs, exactly once.
-    const uint32_t resized = 69;
-    const uint64_t resizedStream = ce::streamline_ui_tag_log::Stream(
-        api, UINT32_MAX, 348957, 1, 0, ce::log_meter::FieldKey(ce::log_meter::FieldKey(1u), resized));
-    int logsAfterResize = 0;
-    for (int i = 0; i < 50; ++i) {
-        logsAfterResize +=
-            gate.ObserveOrEveryPerStream(resizedStream, ce::log_meter::FieldKey(1u, 0u, 0u, resized, 1, 0u, 0u, 2560u, 1440u),
-                                         ce::streamline_ui_tag_log::kHeartbeatStride)
-                ? 1
-                : 0;
-    }
-    EXPECT_EQ(logsAfterResize, 1);
+    for (int i = 0; i < 40; ++i)
+        logged += gate.ObserveOrEveryPerStream(stream, ce::log_meter::FieldKey(1u, 69u, 3840u, 2160u),
+                                               ce::streamline_ui_tag_log::kHeartbeatStride)
+                      ? 1
+                      : 0;
+    for (int i = 0; i < 40; ++i)  // a resize
+        logged += gate.ObserveOrEveryPerStream(stream, ce::log_meter::FieldKey(1u, 69u, 2560u, 1440u),
+                                               ce::streamline_ui_tag_log::kHeartbeatStride)
+                      ? 1
+                      : 0;
+    EXPECT_EQ(logged, 2);
 }

@@ -255,14 +255,14 @@ uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken
     static ce::log_meter::StreamChangeGate<64> s_uiTagSetGate;
     const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     uint64_t tagSet = ce::log_meter::FieldKey(numTags, numInputs, localTagSignature);
-    uint64_t tagTypes = ce::log_meter::FieldKey(numTags);
+    uint64_t tagKinds = ce::log_meter::FieldKey(numTags);
     for (uint32_t i = 0; tags && i < numTags; ++i) {
-        tagTypes = ce::log_meter::FieldKey(tagTypes, tags[i].type);
+        tagKinds = ce::streamline_ui_tag_log::TagKinds(tagKinds, tags[i].type, tags[i].resource != nullptr);
         tagSet = ce::log_meter::FieldKey(tagSet, tags[i].type, tags[i].lifecycle, tags[i].extent.left, tags[i].extent.top,
                                          tags[i].extent.width, tags[i].extent.height);
     }
     const auto verdict = s_uiTagSetGate.ObserveOrEveryPerStream(
-        ce::streamline_ui_tag_log::Stream(tagApi, feature, viewportKey, numTags, numInputs, tagTypes), tagSet,
+        ce::streamline_ui_tag_log::Stream(tagApi, feature, viewportKey, numTags, numInputs, tagKinds), tagSet,
         ce::streamline_ui_tag_log::kHeartbeatStride);
     if (!verdict) {
         return 0;
