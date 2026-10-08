@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Device removal after a DirectX 12 swapchain switch with display gamma or sharpen on:** the post-process pass cached its render-target view by the back buffer's address, so when a replaced swapchain's new buffer landed on the address of the destroyed one, the pass recorded against a view of a released resource and the graphics device was removed (intermittent when switching DLSS frame generation off to native and back on). The view is now written for every frame.
 
+- **Overlay colors for a moment after start (The Witcher 3 DX12):** when the game switched its swapchain from `R8G8B8A8` to `R10G10B10A2` with HDR10 output and back during start-up, the overlay kept drawing through pipelines built for the old format, so its text showed garbled, oversaturated colors until the game switched back. The overlay now follows the format of the back buffer it writes, keeping one pipeline pair per format instead of rebuilding, and the HDR10 contract of those frames is applied to it.
+
 - **One-frame 200 ms hitch when DLSS frame generation turns off (The Witcher 3 DX12):** opening the game menu rebuilt the overlay behind a wait on the whole game queue, which can only finish once the Streamline present thread returns, so it ran its full 200 ms timeout and held the previous frame on screen that long. It now waits only for the overlay's own submissions.
 
 - **Shader rebuilds after source relayout:** shader generation now updates the headers actually consumed by the post-processing pipeline instead of writing into the retired source directory.

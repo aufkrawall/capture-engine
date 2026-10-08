@@ -653,6 +653,27 @@ inline bool IsPresentationContractDependentFormat(int dxgiFormat) {
            dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_TYPELESS);
 }
 
+// The format the overlay must draw in is the one of the back buffer it is about to write, not the one CE tracked
+// at initialization: a game can change its back buffers' format without CE seeing a resize (a foreign overlay
+// that owns the ResizeBuffers entry leaves CE no site), and a pipeline built for another format than the
+// render-target view is undefined to draw through (garbled colors on NVIDIA, an error in the debug layer).
+inline int ResolveOverlayTargetFormat(int trackedFormat, int liveBackBufferFormat) {
+    return liveBackBufferFormat != static_cast<int>(DXGI_FORMAT_UNKNOWN) ? liveBackBufferFormat : trackedFormat;
+}
+
+enum class DescFreeBackendAction {
+    kReuse,     // same device and format: the warm backend draws as is
+    kRetarget,  // same device, other format: select (or add) the pipelines of that format, keep the backend
+    kRebuild,   // other device: every device-scoped object is stale
+};
+
+inline DescFreeBackendAction DecideDescFreeBackendAction(bool deviceMatches, bool formatMatches) {
+    if (!deviceMatches) {
+        return DescFreeBackendAction::kRebuild;
+    }
+    return formatMatches ? DescFreeBackendAction::kReuse : DescFreeBackendAction::kRetarget;
+}
+
 inline bool IsHDRColorSpace(int colorSpace) {
     switch (colorSpace) {
         case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:

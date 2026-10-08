@@ -97,6 +97,27 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
     offscreenCompositeRequired = false;
     {
         auto* dev = g_Device.load();
+        // The overlay's pipelines, the offscreen target and the HDR contract all follow the format of the back
+        // buffer written NOW. The format tracked at init goes stale when the game changes it without a resize CE
+        // can see (a foreign overlay owns the ResizeBuffers entry): drawing through pipelines of the old format
+        // into the new one garbled the overlay colors for the frames in between (Witcher 3 flips its swapchain
+        // R8G8B8A8 -> R10G10B10A2 + HDR10 -> R8G8B8A8 while starting).
+        if (bb) {
+            const DXGI_FORMAT trackedFormat = dx12_hook_g_State.format;
+            const DXGI_FORMAT liveFormat = static_cast<DXGI_FORMAT>(ce::dx12_overlay_policy::ResolveOverlayTargetFormat(
+                static_cast<int>(trackedFormat), static_cast<int>(bb->GetDesc().Format)));
+            if (liveFormat != trackedFormat) {
+                static std::atomic<int> s_targetFormatLog{0};
+                const int logN = s_targetFormatLog.fetch_add(1, std::memory_order_relaxed);
+                if (logN < 32 || (logN % 600) == 0) {
+                    HookLogImportant("DX12: Back buffer format changed without a resize CE saw (%d->%d, bufIdx=%u, "
+                                     "change #%d) — overlay retargets",
+                                     static_cast<int>(trackedFormat), static_cast<int>(liveFormat), bufferIdx,
+                                     logN + 1);
+                }
+                dx12_hook_g_State.format = liveFormat;
+            }
+        }
     #if defined(_WIN64)
         constexpr bool kIs32BitProcess = false;
     #else

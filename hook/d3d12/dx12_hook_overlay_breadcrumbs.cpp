@@ -57,7 +57,10 @@ if (backend) {
 // Lazily (re)builds the device-scoped descriptor-free overlay backend for the
 // requested device/format pair. A live backend is reused as-is when both
 // match (the warm path that closes the first-present blank after FG
-// transitions); a device or format change is the only rebuild trigger.
+// transitions); a device change is the rebuild trigger. A format change on
+// the same device only selects the pipelines of that format (a game can
+// switch its back buffers between formats, and the GPU may still read the
+// previous frame's pipelines and upload buffers, so nothing is torn down).
 // Returns true when a ready backend is bound to (device, format).
 
 
@@ -65,11 +68,27 @@ bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORMAT form
 if (!dev) {
     return dx12_hook_g_DescFreeBackend != nullptr && dx12_hook_g_D3D11On12Adapter.IsInitialized();
 }
-if (dx12_hook_g_DescFreeBackend && (dx12_hook_g_DescFreeBackendDevice != dev || dx12_hook_g_DescFreeBackendFormat != format)) {
-    HookLogImportant("DX12: DescFree backend stale (device %p->%p fmt %d->%d) — rebuilding (%s)",
-                     dx12_hook_g_DescFreeBackendDevice, dev, static_cast<int>(dx12_hook_g_DescFreeBackendFormat),
-                     static_cast<int>(format), context ? context : "unknown");
-    ShutdownDescFreeBackend(context);
+if (dx12_hook_g_DescFreeBackend) {
+    const DXGI_FORMAT previousFormat = dx12_hook_g_DescFreeBackendFormat;
+    const auto action = ce::dx12_overlay_policy::DecideDescFreeBackendAction(
+        dx12_hook_g_DescFreeBackendDevice == dev, previousFormat == format);
+    bool rebuild = action == ce::dx12_overlay_policy::DescFreeBackendAction::kRebuild;
+    if (action == ce::dx12_overlay_policy::DescFreeBackendAction::kRetarget) {
+        if (dx12_hook_g_DescFreeBackend->SetTargetFormat(format)) {
+            dx12_hook_g_DescFreeBackendFormat = format;
+            HookLogImportant("DX12: DescFree backend retargeted fmt %d->%d on the warm backend (%s)",
+                             static_cast<int>(previousFormat), static_cast<int>(format),
+                             context ? context : "unknown");
+        } else {
+            rebuild = true;
+        }
+    }
+    if (rebuild) {
+        HookLogImportant("DX12: DescFree backend stale (device %p->%p fmt %d->%d) — rebuilding (%s)",
+                         dx12_hook_g_DescFreeBackendDevice, dev, static_cast<int>(previousFormat),
+                         static_cast<int>(format), context ? context : "unknown");
+        ShutdownDescFreeBackend(context);
+    }
 }
 if (!dx12_hook_g_DescFreeBackend) {
     auto* backend = new DX12DescFreeBackend();

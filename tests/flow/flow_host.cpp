@@ -93,6 +93,8 @@ FlowGame::FlowGame(const std::string& testName) {
         reinterpret_cast<CEFlow_GetPostSLLifecycle_t>(GetProcAddress(hook_, "CEFlow_GetPostSLLifecycle"));
     tryConfirmPostSLEpoch_ =
         reinterpret_cast<CEFlow_TryConfirmPostSLEpoch_t>(GetProcAddress(hook_, "CEFlow_TryConfirmPostSLEpoch"));
+    probeDescFreeTargetFormats_ = reinterpret_cast<CEFlow_ProbeDescFreeTargetFormats_t>(
+        GetProcAddress(hook_, "CEFlow_ProbeDescFreeTargetFormats"));
     shutdown_ = reinterpret_cast<CEFlow_Shutdown_t>(GetProcAddress(hook_, "CEFlow_Shutdown"));
     trackQueue_ = reinterpret_cast<CEFlow_TrackQueue_t>(GetProcAddress(hook_, "CEFlow_TrackQueue"));
     resetQueueBindings_ = reinterpret_cast<CEFlow_ResetQueueBindings_t>(GetProcAddress(hook_, "CEFlow_ResetQueueBindings"));
@@ -116,7 +118,7 @@ FlowGame::FlowGame(const std::string& testName) {
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
         !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_ ||
-        !releasePresentVTableHooks_ || !installPresentVTableHooks_) {
+        !releasePresentVTableHooks_ || !installPresentVTableHooks_ || !probeDescFreeTargetFormats_) {
         Fail("resolving the CEFlow_* exports", E_NOINTERFACE);
         return;
     }
@@ -313,6 +315,29 @@ bool FlowGame::UseSwapchain(SwapchainKind kind) {
     return CreateSwapchain(kind);
 }
 
+bool FlowGame::SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace) {
+    if (!error_.empty() || !swapchain_ || kind_ != SwapchainKind::kNative)
+        return false;
+    WaitForGpu();
+    for (auto& buffer : backBuffers_)
+        buffer.Reset();
+    HRESULT hr = swapchain_->ResizeBuffers(kBufferCount, width_, height_, format, 0);
+    if (FAILED(hr))
+        return Fail("ResizeBuffers", hr);
+    hr = swapchain_->SetColorSpace1(colorSpace);
+    if (FAILED(hr))
+        return Fail("SetColorSpace1", hr);
+    for (UINT i = 0; i < kBufferCount; ++i) {
+        hr = swapchain_->GetBuffer(i, IID_PPV_ARGS(&backBuffers_[i]));
+        if (FAILED(hr))
+            return Fail("GetBuffer", hr);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
+        rtv.ptr += static_cast<SIZE_T>(i) * rtvStride_;
+        device_->CreateRenderTargetView(backBuffers_[i].Get(), nullptr, rtv);
+    }
+    return true;
+}
+
 bool FlowGame::RenderFrame(PresentMethod method) {
     if (!error_.empty() || !swapchain_)
         return false;
@@ -372,6 +397,18 @@ bool FlowGame::RenderFrames(int count, PresentMethod method) {
             return false;
     }
     return true;
+}
+
+FlowGame::DescFreeProbeResult FlowGame::ProbeOverlayBackendFormats(const std::vector<DXGI_FORMAT>& formats) {
+    DescFreeProbeResult result;
+    if (!error_.empty() || !device_ || !queue_ || formats.empty())
+        return result;
+    std::vector<int> raw(formats.begin(), formats.end());
+    result.firstPixels.assign(formats.size(), 0);
+    result.ok = probeDescFreeTargetFormats_(device_.Get(), queue_.Get(), raw.data(),
+                                            static_cast<uint32_t>(raw.size()), result.firstPixels.data(),
+                                            &result.pipelineFormats);
+    return result;
 }
 
 CEFlowOverlayCoverage FlowGame::Coverage() const {

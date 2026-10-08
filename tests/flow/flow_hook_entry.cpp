@@ -18,7 +18,11 @@
 #include "tests/flow/flow_api.h"
 #include "tests/flow/runtime_output_frame_tracker.h"
 
+#include <wrl/client.h>
+
+#include <cstring>
 #include <mutex>
+#include <vector>
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -194,6 +198,142 @@ extern "C" __declspec(dllexport) void CEFlow_GetPublishedFG(CEFlowPublishedFG* o
         out->type = metrics->GetFGType();
         out->multiplier = metrics->GetFGMultiplier();
     }
+}
+
+// The descriptor-free overlay backend (the one an x64 game's overlay draws with) drawing one opaque red quad into a
+// fresh render target of each requested format on the game's device. The backend is built for formats[0] and then
+// follows every other format by SetTargetFormat, as EnsureDescFreeBackendForDeviceAndFormat makes it follow a game
+// that changes its back buffers' format. The host's debug layer validates that the pipelines agree with every
+// render target; `firstPixels` receives each target's first texel as stored.
+extern "C" __declspec(dllexport) bool CEFlow_ProbeDescFreeTargetFormats(ID3D12Device* device, ID3D12CommandQueue* queue,
+                                                                          const int* formats, uint32_t count,
+                                                                          uint32_t* firstPixels,
+                                                                          uint32_t* pipelineFormats) {
+    constexpr UINT kSize = 16;
+    constexpr uint32_t kMaxTargets = 8;  // one upload-ring slot each, so no slot is reused
+    constexpr uint32_t kRed = 0xFF0000FF;  // ABGR
+    if (!device || !queue || !formats || !firstPixels || !pipelineFormats || count == 0 ||
+        count > kMaxTargets) {
+        return false;
+    }
+    ID3D12Fence* const savedFence = dx12_hook_s_descFreeSlotFence;
+    const UINT64 savedGuard = dx12_hook_s_descFreeSlotGuardValue;
+    dx12_hook_s_descFreeSlotFence = nullptr;
+    dx12_hook_s_descFreeSlotGuardValue = 0;
+    bool ok = false;
+    {
+        DX12DescFreeBackend backend;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+        const D3D12_DESCRIPTOR_HEAP_DESC heapDesc{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        D3D12_HEAP_PROPERTIES readbackHeap{};
+        readbackHeap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC readbackDesc{};
+        readbackDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        readbackDesc.Width = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * kSize;
+        readbackDesc.Height = 1;
+        readbackDesc.DepthOrArraySize = 1;
+        readbackDesc.MipLevels = 1;
+        readbackDesc.SampleDesc.Count = 1;
+        readbackDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        const uint8_t font[8 * 8 * 4] = {};
+        HANDLE done = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        bool setup = done && backend.InitDevice(device, static_cast<DXGI_FORMAT>(formats[0])) &&
+                     backend.Initialize(8, 8, font) &&
+                     SUCCEEDED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap))) &&
+                     SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) &&
+                     SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                                         IID_PPV_ARGS(&list))) &&
+                     SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) &&
+                     SUCCEEDED(device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+                                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                               IID_PPV_ARGS(&readback)));
+        if (setup) {
+            list->Close();
+            const std::vector<CustomOverlay::DrawVertex> vertices = {{0, 0, 0, 0, kRed},
+                                                                      {float(kSize), 0, 0, 0, kRed},
+                                                                      {float(kSize), float(kSize), 0, 0, kRed},
+                                                                      {0, float(kSize), 0, 0, kRed}};
+            const std::vector<uint16_t> indices = {0, 1, 2, 0, 2, 3};
+            const std::vector<CustomOverlay::DrawCommand> commands = {{0, 4, 0, 6, false}};
+            const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            UINT64 fenceValue = 0;
+            ok = true;
+            for (uint32_t i = 0; ok && i < count; ++i) {
+                const DXGI_FORMAT format = static_cast<DXGI_FORMAT>(formats[i]);
+                D3D12_HEAP_PROPERTIES defaultHeap{};
+                defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+                D3D12_RESOURCE_DESC targetDesc{};
+                targetDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                targetDesc.Width = kSize;
+                targetDesc.Height = kSize;
+                targetDesc.DepthOrArraySize = 1;
+                targetDesc.MipLevels = 1;
+                targetDesc.Format = format;
+                targetDesc.SampleDesc.Count = 1;
+                targetDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                Microsoft::WRL::ComPtr<ID3D12Resource> target;
+                ok = SUCCEEDED(device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &targetDesc,
+                                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                               IID_PPV_ARGS(&target))) &&
+                     (i == 0 || backend.SetTargetFormat(format));
+                if (!ok)
+                    break;
+                device->CreateRenderTargetView(target.Get(), nullptr, rtv);
+                allocator->Reset();
+                list->Reset(allocator.Get(), nullptr);
+                dx12_hook_s_descFreeCmdList = list.Get();
+                dx12_hook_s_descFreeRtv = rtv;
+                backend.SetNextUploadSlot(static_cast<int>(i));
+                backend.Render(vertices, indices, commands, kSize, kSize);
+                dx12_hook_s_descFreeCmdList = nullptr;
+                D3D12_RESOURCE_BARRIER toCopy{};
+                toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                toCopy.Transition.pResource = target.Get();
+                toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &toCopy);
+                D3D12_TEXTURE_COPY_LOCATION source{};
+                source.pResource = target.Get();
+                source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                D3D12_TEXTURE_COPY_LOCATION destination{};
+                destination.pResource = readback.Get();
+                destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                destination.PlacedFootprint.Footprint = {format, kSize, kSize, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT};
+                list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+                ok = SUCCEEDED(list->Close());
+                if (!ok)
+                    break;
+                ID3D12CommandList* lists[] = {list.Get()};
+                queue->ExecuteCommandLists(1, lists);
+                ok = SUCCEEDED(queue->Signal(fence.Get(), ++fenceValue)) &&
+                     SUCCEEDED(fence->SetEventOnCompletion(fenceValue, done)) &&
+                     WaitForSingleObject(done, 10000) == WAIT_OBJECT_0;
+                void* mapped = nullptr;
+                const D3D12_RANGE readRange{0, sizeof(uint32_t)};
+                if (ok && SUCCEEDED(readback->Map(0, &readRange, &mapped)) && mapped) {
+                    std::memcpy(&firstPixels[i], mapped, sizeof(uint32_t));
+                    const D3D12_RANGE written{0, 0};
+                    readback->Unmap(0, &written);
+                } else {
+                    ok = false;
+                }
+            }
+            *pipelineFormats = static_cast<uint32_t>(backend.PipelineFormatCount());
+            HookLogImportant("CEFlow: descriptor-free target format probe %s (targets=%u pipelineFormats=%u)",
+                             ok ? "ok" : "FAILED", count, *pipelineFormats);
+        }
+        if (done)
+            CloseHandle(done);
+    }
+    dx12_hook_s_descFreeCmdList = nullptr;
+    dx12_hook_s_descFreeSlotFence = savedFence;
+    dx12_hook_s_descFreeSlotGuardValue = savedGuard;
+    return ok;
 }
 
 extern "C" __declspec(dllexport) void CEFlow_AdvanceClock(int64_t microseconds) {

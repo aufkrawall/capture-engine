@@ -87,6 +87,18 @@ public:
     // Non-virtual: create device-dependent resources (root sig, PSOs)
 bool InitDevice(ID3D12Device* dev, DXGI_FORMAT rtvFormat);
 
+    // Non-virtual: selects the pipelines of the render-target format the next Render draws into, creating them on
+    // first use. A pipeline built for another format than the RTV is undefined to draw through, and a game can
+    // switch its back buffers between formats at runtime; pipelines of earlier formats stay alive (the GPU may
+    // still read them) so a switch costs one pipeline pair per format, never a backend rebuild.
+bool SetTargetFormat(DXGI_FORMAT rtvFormat);
+DXGI_FORMAT TargetFormat() const {
+    return activePipelines_ >= 0 ? pipelines_[activePipelines_].format : DXGI_FORMAT_UNKNOWN;
+}
+int PipelineFormatCount() const {
+    return pipelineCount_;
+}
+
     // RendererBackend: stage font atlas for a descriptor-free structured uint buffer.
     // The pixel shader samples from a DEFAULT-heap buffer; reading a UPLOAD heap
     // directly in the text draw has proven fragile on the x86 NVIDIA path.
@@ -101,7 +113,13 @@ void Shutdown() override;
 private:
 bool CreateRootSignature();
 
-bool CreatePSOs();
+struct FormatPipelines {
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    ID3D12PipelineState* textured = nullptr;
+    ID3D12PipelineState* solid = nullptr;
+};
+
+bool CreatePipelines(DXGI_FORMAT rtvFormat, FormatPipelines& out);
 
 bool CreateBuffers();
 
@@ -113,13 +131,16 @@ bool IsUploadSlotReusable(int slot);
     static constexpr size_t kInitVBBytes = 4096 * 20;  // 4096 vertices * 20 bytes
     static constexpr size_t kInitIBBytes = 8192 * 2;   // 8192 indices * 2 bytes
 
+    // R8G8B8A8, B8G8R8A8, R10G10B10A2 and R16G16B16A16F cover every swapchain format a game presents in.
+    static constexpr int kMaxPipelineFormats = 4;
+
     ID3D12Device* device_ = nullptr;
-    DXGI_FORMAT rtvFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
     bool deviceReady_ = false;
 
     ID3D12RootSignature* rootSig_ = nullptr;
-    ID3D12PipelineState* psoTextured_ = nullptr;
-    ID3D12PipelineState* psoSolid_ = nullptr;
+    FormatPipelines pipelines_[kMaxPipelineFormats];
+    int pipelineCount_ = 0;
+    int activePipelines_ = -1;
 
     ID3D12Resource* fontBuffer_ = nullptr;
     ID3D12Resource* fontUploadBuffer_ = nullptr;

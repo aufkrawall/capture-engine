@@ -9,6 +9,7 @@
 #include <cstdint>
 
 struct ID3D12CommandQueue;
+struct ID3D12Device;
 struct IDXGISwapChain;
 struct SharedMemoryLayout;  // common/ipc/shared_defs.h
 
@@ -83,6 +84,10 @@ using CEFlow_RetainRealSwapchain_t = IDXGISwapChain* (*)(IDXGISwapChain*);
 using CEFlow_ReleasePresentVTableHooks_t = void (*)();
 using CEFlow_InstallPresentVTableHooks_t = bool (*)(IDXGISwapChain*);
 using CEFlow_GetPostSLLifecycle_t = void (*)(CEFlowPostSLLifecycle* out);
+// The descriptor-free overlay backend drawing an opaque red quad into a fresh render target per format (the first
+// builds the backend, the rest retarget it); `firstPixels` gets each target's first texel as stored.
+using CEFlow_ProbeDescFreeTargetFormats_t = bool (*)(ID3D12Device*, ID3D12CommandQueue*, const int* formats,
+                                                     uint32_t count, uint32_t* firstPixels, uint32_t* pipelineFormats);
 using CEFlow_TryConfirmPostSLEpoch_t = bool (*)(uint32_t epoch);
 // The hook runs on a virtual clock (hook/runtime/hook_clock.h) that only these move.
 using CEFlow_AdvanceClock_t = void (*)(int64_t microseconds);

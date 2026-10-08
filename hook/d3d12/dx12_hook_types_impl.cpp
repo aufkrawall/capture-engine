@@ -8,8 +8,7 @@ bool DX12DescFreeBackend::InitDevice(ID3D12Device* dev, DXGI_FORMAT rtvFormat) {
     if (deviceReady_)
         return true;
     device_ = dev;
-    rtvFormat_ = rtvFormat;
-    if (!CreateRootSignature() || !CreatePSOs()) {
+    if (!CreateRootSignature() || !SetTargetFormat(rtvFormat)) {
         Shutdown();
         return false;
     }
@@ -18,6 +17,43 @@ bool DX12DescFreeBackend::InitDevice(ID3D12Device* dev, DXGI_FORMAT rtvFormat) {
         return false;
     }
     deviceReady_ = true;
+    return true;
+}
+
+bool DX12DescFreeBackend::SetTargetFormat(DXGI_FORMAT rtvFormat) {
+    if (!device_ || !rootSig_ || rtvFormat == DXGI_FORMAT_UNKNOWN)
+        return false;
+    for (int i = 0; i < pipelineCount_; ++i) {
+        if (pipelines_[i].format != rtvFormat)
+            continue;
+        if (activePipelines_ != i) {
+            static std::atomic<int> s_retargetLog{0};
+            const int logN = s_retargetLog.fetch_add(1, std::memory_order_relaxed);
+            if (logN < 32 || (logN % 600) == 0) {
+                HookLogImportant("DescFree: render target fmt %d->%d (cached pipelines, formats=%d, switch #%d)",
+                                 static_cast<int>(TargetFormat()), static_cast<int>(rtvFormat), pipelineCount_,
+                                 logN + 1);
+            }
+            activePipelines_ = i;
+        }
+        return true;
+    }
+    if (pipelineCount_ >= kMaxPipelineFormats) {
+        static std::atomic<int> s_fullLog{0};
+        if (s_fullLog.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("DescFree: no pipeline slot left for render target fmt %d (formats=%d)",
+                             static_cast<int>(rtvFormat), pipelineCount_);
+        }
+        return false;
+    }
+    const DXGI_FORMAT previousFormat = TargetFormat();
+    FormatPipelines created;
+    if (!CreatePipelines(rtvFormat, created))
+        return false;
+    pipelines_[pipelineCount_] = created;
+    activePipelines_ = pipelineCount_++;
+    HookLogImportant("DescFree: render target fmt %d->%d (pipelines created, formats=%d)",
+                     static_cast<int>(previousFormat), static_cast<int>(rtvFormat), pipelineCount_);
     return true;
 }
 
@@ -97,7 +133,7 @@ void DX12DescFreeBackend::SetNextUploadSlot(int allocatorSlot) {
 void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices,
             const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH)  {
     auto* cmdList = dx12_hook_s_descFreeCmdList;
-    if (!cmdList || !deviceReady_ || !fontBuffer_ || vertices.empty())
+    if (!cmdList || !deviceReady_ || !fontBuffer_ || vertices.empty() || activePipelines_ < 0)
         return;
     if (fontUploadPending_ && !fontUploadBuffer_)
         return;
@@ -218,6 +254,7 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
 
     // Draw
     ID3D12PipelineState* lastPSO = nullptr;
+    const FormatPipelines& targetPipelines = pipelines_[activePipelines_];
     {
         static std::atomic<int> s_commandDetailLog{0};
         const int logFrame = s_commandDetailLog.fetch_add(1, std::memory_order_relaxed);
@@ -233,7 +270,7 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
         }
     }
     for (const auto& cmd : commands) {
-        auto* pso = cmd.useTexture ? psoTextured_ : psoSolid_;
+        auto* pso = cmd.useTexture ? targetPipelines.textured : targetPipelines.solid;
         if (pso != lastPSO) {
             cmdList->SetPipelineState(pso);
             lastPSO = pso;
@@ -287,14 +324,15 @@ void DX12DescFreeBackend::Shutdown()  {
         fontUploadBuffer_->Release();
         fontUploadBuffer_ = nullptr;
     }
-    if (psoTextured_) {
-        psoTextured_->Release();
-        psoTextured_ = nullptr;
+    for (FormatPipelines& pipelines : pipelines_) {
+        if (pipelines.textured)
+            pipelines.textured->Release();
+        if (pipelines.solid)
+            pipelines.solid->Release();
+        pipelines = FormatPipelines{};
     }
-    if (psoSolid_) {
-        psoSolid_->Release();
-        psoSolid_ = nullptr;
-    }
+    pipelineCount_ = 0;
+    activePipelines_ = -1;
     if (rootSig_) {
         rootSig_->Release();
         rootSig_ = nullptr;
@@ -354,7 +392,7 @@ bool DX12DescFreeBackend::CreateRootSignature() {
     return true;
 }
 
-bool DX12DescFreeBackend::CreatePSOs() {
+bool DX12DescFreeBackend::CreatePipelines(DXGI_FORMAT rtvFormat, FormatPipelines& out) {
     D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -385,26 +423,31 @@ bool DX12DescFreeBackend::CreatePSOs() {
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = rtvFormat_;
+    psoDesc.RTVFormats[0] = rtvFormat;
     psoDesc.SampleDesc.Count = 1;
+
+    FormatPipelines created;
+    created.format = rtvFormat;
 
     // Textured PSO — uses StructuredBuffer<uint> (descriptor-free)
     psoDesc.PS = {g_PS_Textured_DescFree_5_0, sizeof(g_PS_Textured_DescFree_5_0)};
-    HRESULT hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTextured_));
+    HRESULT hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&created.textured));
     if (FAILED(hr)) {
-        HookLogImportant("DescFree: CreatePSO(textured) failed hr=0x%08X", hr);
+        HookLogImportant("DescFree: CreatePSO(textured) fmt=%d failed hr=0x%08X", static_cast<int>(rtvFormat), hr);
         return false;
     }
 
     // Solid PSO — no texture, uses same root sig (t0 unused)
     psoDesc.PS = {g_PS_Solid_5_0, sizeof(g_PS_Solid_5_0)};
-    hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoSolid_));
+    hr = device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&created.solid));
     if (FAILED(hr)) {
-        HookLogImportant("DescFree: CreatePSO(solid) failed hr=0x%08X", hr);
+        HookLogImportant("DescFree: CreatePSO(solid) fmt=%d failed hr=0x%08X", static_cast<int>(rtvFormat), hr);
+        created.textured->Release();
         return false;
     }
 
-    HookLogImportant("DescFree: PSOs created (fmt=%d)", rtvFormat_);
+    HookLogImportant("DescFree: PSOs created (fmt=%d)", static_cast<int>(rtvFormat));
+    out = created;
     return true;
 }
 

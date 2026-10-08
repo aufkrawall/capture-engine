@@ -13,6 +13,7 @@
 #include <wrl/client.h>
 
 #include <string>
+#include <vector>
 
 #include "tests/flow/flow_api.h"
 
@@ -93,6 +94,10 @@ public:
     // contexts go with it), as a game does when its frame generation setting changes runtime.
     bool UseSwapchain(SwapchainKind kind);
 
+    // ResizeBuffers to `format` at the same size, then SetColorSpace1(colorSpace), as a game does when it moves its
+    // swapchain between SDR and HDR10 output at runtime.
+    bool SetBackBufferFormat(DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE colorSpace);
+
     // slDLSSGSetOptions(eOn/eOff), as a game's menu toggle sends it; the proxy stays alive while off.
     bool SetDLSSFrameGeneration(bool enabled, uint32_t framesToGenerate = 1);
 
@@ -107,6 +112,16 @@ public:
     enum class PresentMethod { kPresent, kPresent1 };
     bool RenderFrame(PresentMethod method = PresentMethod::kPresent);
     bool RenderFrames(int count, PresentMethod method = PresentMethod::kPresent);
+
+    // The overlay backend's render-target format handling on the game's device and queue (flow_hook_entry.cpp):
+    // draws into one render target per entry of `formats`, in order. False when a step failed (Error() names none:
+    // the hook's log does).
+    struct DescFreeProbeResult {
+        bool ok = false;
+        std::vector<uint32_t> firstPixels;  // each target's first texel as stored in its format
+        uint32_t pipelineFormats = 0;       // pipeline pairs the backend holds afterwards
+    };
+    DescFreeProbeResult ProbeOverlayBackendFormats(const std::vector<DXGI_FORMAT>& formats);
 
     CEFlowOverlayCoverage Coverage() const;
     CEFlowPostProcess PostProcess() const;
@@ -196,6 +211,7 @@ private:
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;
     CEFlow_Shutdown_t shutdown_ = nullptr;
     CEFlow_GetPostSLLifecycle_t getPostSLLifecycle_ = nullptr;
+    CEFlow_ProbeDescFreeTargetFormats_t probeDescFreeTargetFormats_ = nullptr;
     CEFlow_TryConfirmPostSLEpoch_t tryConfirmPostSLEpoch_ = nullptr;
     CEFlow_AdvanceClock_t advanceClock_ = nullptr;
     CEFlow_ClockMicroseconds_t clockMicroseconds_ = nullptr;
