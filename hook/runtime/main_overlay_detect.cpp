@@ -426,25 +426,48 @@ void PatchLoadedDlssDrsConsumers(const char *source) {
 
   struct Sweep {
     const char *source;
+    void *queryInterfaceDetour;
     uint32_t patched;
-  } sweep{source, 0};
+    uint32_t retargetedQueryInterface;
+    uint32_t retargetedDrsGetter;
+  } sweep{source, nullptr, 0, 0, 0};
+#if REFLEX_IAT_HOOK_AVAILABLE
+  sweep.queryInterfaceDetour = g_ReflexLimiter.QueryInterfaceDetourIfReady();
+#endif
   const uint32_t found = ce::ngx_drs::ForEachLoadedDlssDrsConsumer(
       [](void *module, const char *path, void *context) {
         auto *state = static_cast<Sweep *>(context);
+        const char *name = ce::overlay_compat::detail::ExtractBaseName(path);
         char via[96];
         snprintf(via, sizeof(via), "startup sweep (%s)", state->source ? state->source : "?");
-        if (PatchDlssDrsConsumerImport(static_cast<HMODULE>(module),
-                                       ce::overlay_compat::detail::ExtractBaseName(path), via)) {
+        if (PatchDlssDrsConsumerImport(static_cast<HMODULE>(module), name, via)) {
           ++state->patched;
+        }
+
+        // A core that initialised NvAPI before CE attached never asks the patched import
+        // again: it holds the driver's nvapi_QueryInterface in static data.
+        const ce::ngx_drs::CachedNvApiRetarget retargeted =
+            ce::ngx_drs::RetargetCachedNvApiPointers(module, state->queryInterfaceDetour);
+        state->retargetedQueryInterface += retargeted.queryInterface;
+        state->retargetedDrsGetter += retargeted.drsGetSetting;
+        if (retargeted.queryInterface != 0 || retargeted.drsGetSetting != 0) {
+          HookLogImportant("NGX DRS: %s had already cached the driver's NvAPI entry points; retargeted "
+                           "nvapi_QueryInterface x%u and NvAPI_DRS_GetSetting x%u to CE (%s)",
+                           name, retargeted.queryInterface, retargeted.drsGetSetting, via);
         }
       },
       &sweep);
 
   static ce::log_meter::ChangeGate s_sweepGate;
-  if (const auto verdict = s_sweepGate.Observe((static_cast<uint64_t>(found) << 32) | sweep.patched)) {
+  const uint64_t sweepKey = (static_cast<uint64_t>(found) << 48) | (static_cast<uint64_t>(sweep.patched) << 32) |
+                            (static_cast<uint64_t>(sweep.retargetedQueryInterface) << 16) |
+                            sweep.retargetedDrsGetter;
+  if (const auto verdict = s_sweepGate.Observe(sweepKey)) {
     HookLogImportant("NGX DRS: startup sweep from %s visited %u already-loaded consumer module(s), "
-                     "%u GetProcAddress import(s) patched (repeats suppressed=%llu)",
-                     source ? source : "?", found, sweep.patched,
+                     "%u GetProcAddress import(s) patched, cached NvAPI pointers retargeted: query=%u getter=%u "
+                     "(detour %s; repeats suppressed=%llu)",
+                     source ? source : "?", found, sweep.patched, sweep.retargetedQueryInterface,
+                     sweep.retargetedDrsGetter, sweep.queryInterfaceDetour ? "ready" : "not ready",
                      static_cast<unsigned long long>(verdict.suppressed));
   }
 }

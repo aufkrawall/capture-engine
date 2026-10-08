@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -189,6 +190,120 @@ uint32_t ForEachLoadedDlssDrsConsumer(DlssDrsConsumerVisitor visitor, void* cont
         FreeLibrary(retained);
     }
     return visited;
+}
+
+namespace {
+
+struct RetargetedSlot {
+    void** slot;
+    void* from;
+    void* to;
+};
+std::mutex g_RetargetedMutex;
+std::vector<RetargetedSlot> g_RetargetedSlots;
+
+bool IsWritableCommittedRegion(const MEMORY_BASIC_INFORMATION& region) {
+    return region.State == MEM_COMMIT && (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0 &&
+           (region.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
+}
+
+using PfnNvApiQueryInterface = void*(__cdecl*)(uint32_t);
+
+}  // namespace
+
+uint32_t RetargetCachedPointers(void* module, const void* from, void* to) {
+    if (!module || !from || !to || from == to)
+        return 0;
+
+    auto* const base = static_cast<uint8_t*>(module);
+    MEMORY_BASIC_INFORMATION region = {};
+    if (VirtualQuery(base, &region, sizeof(region)) != sizeof(region) || region.State != MEM_COMMIT ||
+        (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return 0;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return 0;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return 0;
+
+    uint32_t replaced = 0;
+    const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
+    for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section) {
+        const DWORD flags = section->Characteristics;
+        if ((flags & IMAGE_SCN_MEM_WRITE) == 0 || (flags & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_DISCARDABLE)) != 0)
+            continue;
+        const size_t size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+        uint8_t* cursor = base + section->VirtualAddress;
+        uint8_t* const end = cursor + size;
+        while (cursor < end) {
+            if (VirtualQuery(cursor, &region, sizeof(region)) != sizeof(region))
+                break;
+            uint8_t* const regionEnd =
+                (std::min)(end, static_cast<uint8_t*>(region.BaseAddress) + region.RegionSize);
+            if (IsWritableCommittedRegion(region)) {
+                const uintptr_t aligned = (reinterpret_cast<uintptr_t>(cursor) + sizeof(void*) - 1) & ~(sizeof(void*) - 1);
+                for (void** slot = reinterpret_cast<void**>(aligned);
+                     reinterpret_cast<uint8_t*>(slot + 1) <= regionEnd; ++slot) {
+                    if (*slot != from)
+                        continue;
+                    if (InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), to,
+                                                          const_cast<void*>(from)) == from) {
+                        std::lock_guard<std::mutex> lock(g_RetargetedMutex);
+                        g_RetargetedSlots.push_back({slot, const_cast<void*>(from), to});
+                        ++replaced;
+                    }
+                }
+            }
+            cursor = regionEnd;
+        }
+    }
+    return replaced;
+}
+
+CachedNvApiRetarget RetargetCachedNvApiPointers(void* module, void* queryInterfaceDetour) {
+    CachedNvApiRetarget result;
+    if (!module || !queryInterfaceDetour || HookIsShuttingDown())
+        return result;
+
+    const HMODULE nvapi = GetModuleHandleW(L"nvapi64.dll");
+    if (!nvapi)
+        return result;
+    const auto driverQueryInterface =
+        reinterpret_cast<PfnNvApiQueryInterface>(GetProcAddress(nvapi, "nvapi_QueryInterface"));
+    if (!driverQueryInterface || reinterpret_cast<void*>(driverQueryInterface) == queryInterfaceDetour)
+        return result;
+
+    result.queryInterface =
+        RetargetCachedPointers(module, reinterpret_cast<void*>(driverQueryInterface), queryInterfaceDetour);
+
+    // The getter itself, for a core that has already read a driver setting. Only while
+    // something is configured: unconfigured, the wrapper would answer nothing.
+    if (IsArmed()) {
+        void* const driverGetter = driverQueryInterface(kNvApiIdDrsGetSetting);
+        if (driverGetter && driverGetter != reinterpret_cast<void*>(&Detour_NvApiDrsGetSetting)) {
+            // Published before any slot can point at the detour, which forwards to it.
+            PfnNvApiDrsGetSetting expected = nullptr;
+            g_OriginalGetSetting.compare_exchange_strong(expected,
+                                                         reinterpret_cast<PfnNvApiDrsGetSetting>(driverGetter),
+                                                         std::memory_order_acq_rel);
+            result.drsGetSetting = RetargetCachedPointers(module, driverGetter,
+                                                          reinterpret_cast<void*>(&Detour_NvApiDrsGetSetting));
+        }
+    }
+    return result;
+}
+
+void RestoreRetargetedPointers() {
+    std::lock_guard<std::mutex> lock(g_RetargetedMutex);
+    for (const RetargetedSlot& entry : g_RetargetedSlots) {
+        MEMORY_BASIC_INFORMATION region = {};
+        if (VirtualQuery(entry.slot, &region, sizeof(region)) != sizeof(region) || !IsWritableCommittedRegion(region))
+            continue;
+        InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry.slot), entry.from, entry.to);
+    }
+    g_RetargetedSlots.clear();
 }
 
 void* MaybeWrapQueryInterface(uint32_t functionId, void* resolved, const void* callerAddress) {

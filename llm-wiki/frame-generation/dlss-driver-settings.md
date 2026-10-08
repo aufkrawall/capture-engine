@@ -159,6 +159,21 @@ notification arms without sweeping because it holds the loader lock. nvapi64.dll
 `sl.common` calls `GetProcAddress(nvapi_QueryInterface)`. A consumer that already cached that pointer before CE
 arrived cannot be recovered without patching `nvapi64.dll` code, which stays forbidden.
 
+**The import patch alone was not enough (session `20261008_214202`, 0.1.7050).** `sl.common` was patched at 07.159 and
+still logged no routed lookup, no wrap, no answers: the `nvapi64=0 nvapi=0` line only prints when an NvAPI module IS
+loaded, so NvAPI was up at config time and `sl.common`'s static NvAPI layer had already called
+`GetProcAddress(nvapi_QueryInterface)` during `slInit`. That layer (`sl.common` +0x1240 init, per-function cache
+table at +0xc3b78, QI pointer at +0xc3b58; `sl.dlss_g` and `sl.interposer` carry their own copies of the stubs) keeps the
+driver's pointer in `.data` and never asks again, so every later `NvAPI_DRS_GetSetting` lookup bypassed CE.
+`sl.dlss_g!readSingleDRSKey` only calls function pointers of the context `sl.common` owns (`[ctx+0]` global,
+`[ctx+0x20]` app profile), so the reads happen in `sl.common`'s code after `sl.dlss_g` loads (~4 s after the sweep).
+Fix: `RetargetCachedNvApiPointers` scans each swept consumer's writable, non-executable sections for the driver's
+`nvapi_QueryInterface` (and, when armed, `NvAPI_DRS_GetSetting`) address and compare-exchanges in CE's
+`ReflexDetour_QueryInterface` (resp. the DRS wrapper), recording each slot; `ShutdownIATHooks` restores them.
+The detour is handed out only once the limiter knows the driver export (`QueryInterfaceDetourIfReady`), because it
+returns null for every id before that. No offsets are hard-coded. Order inside a visit is IAT patch first, then scan,
+so a core that initialises between the two already holds CE's pointer. Hardware run pending.
+
 Diagnostics: `NGX DRS: GetProcAddress import patch on <module> installed ... via=startup sweep (<source>)` is logged
 once per module and outcome (the old shared 4-line budget was spent on `nvngx_dlssg.dll` alone), then
 `NGX DRS: startup sweep ... visited N`, then `NGX DRS: nvapi_QueryInterface resolved by DLSS driver-settings consumer

@@ -478,6 +478,146 @@ TEST(NgxDrsStartupSweepTest, WithoutAVisitorThereIsNothingToDo) {
     EXPECT_EQ(ce::ngx_drs::ForEachLoadedDlssDrsConsumer(nullptr, nullptr), 0u);
 }
 
+struct ImageSection {
+    uint8_t* begin = nullptr;
+    size_t size = 0;
+};
+
+// First section of `module` that is (or is not) writable, never executable.
+ImageSection FindSection(HMODULE module, bool writable) {
+    auto* base = reinterpret_cast<uint8_t*>(module);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+        const bool isWritable = (section->Characteristics & IMAGE_SCN_MEM_WRITE) != 0;
+        const bool isExecutable = (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+        const size_t size = section->Misc.VirtualSize;
+        if (isWritable == writable && !isExecutable && size >= 64)
+            return {base + section->VirtualAddress, size};
+    }
+    return {};
+}
+
+// Plants `value` in the last slots of the module's data section and puts the old contents back.
+class PlantedSlots {
+public:
+    PlantedSlots(HMODULE module, void* value, size_t count) {
+        const ImageSection data = FindSection(module, /*writable=*/true);
+        if (!data.begin)
+            return;
+        const uintptr_t end = reinterpret_cast<uintptr_t>(data.begin) + data.size;
+        const uintptr_t first = (end - count * sizeof(void*)) & ~(sizeof(void*) - 1);
+        for (size_t i = 0; i < count; ++i) {
+            auto** slot = reinterpret_cast<void**>(first) + i;
+            slots_.push_back(slot);
+            saved_.push_back(*slot);
+            *slot = value;
+        }
+    }
+    ~PlantedSlots() {
+        for (size_t i = 0; i < slots_.size(); ++i)
+            *slots_[i] = saved_[i];
+    }
+    bool ok() const { return !slots_.empty(); }
+    void** slot(size_t i) const { return slots_[i]; }
+
+private:
+    std::vector<void**> slots_;
+    std::vector<void*> saved_;
+};
+
+TEST(NgxDrsCachedPointerRetargetTest, ReplacesCachedCopiesInWritableDataAndPutsThemBack) {
+    MappedModuleCopy core("sl.common.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+    // Distinct, never dereferenced addresses standing in for the driver export and CE's detour.
+    void* const driverExport = reinterpret_cast<void*>(0x00007FF6DEAD0010ull);
+    void* const detour = reinterpret_cast<void*>(0x00007FF6BEEF0020ull);
+
+    PlantedSlots planted(core.module(), driverExport, 2);
+    ASSERT_TRUE(planted.ok());
+
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), driverExport, detour), 2u);
+    EXPECT_EQ(*planted.slot(0), detour);
+    EXPECT_EQ(*planted.slot(1), detour);
+
+    // Idempotent: nothing equals the driver export any more.
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), driverExport, detour), 0u);
+
+    ce::ngx_drs::RestoreRetargetedPointers();
+    EXPECT_EQ(*planted.slot(0), driverExport);
+    EXPECT_EQ(*planted.slot(1), driverExport);
+}
+
+TEST(NgxDrsCachedPointerRetargetTest, RestoreLeavesASlotAnotherPartyHasChangedSince) {
+    MappedModuleCopy core("sl.common.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+    void* const driverExport = reinterpret_cast<void*>(0x00007FF6DEAD0030ull);
+    void* const detour = reinterpret_cast<void*>(0x00007FF6BEEF0040ull);
+    void* const foreign = reinterpret_cast<void*>(0x00007FF6CAFE0050ull);
+
+    PlantedSlots planted(core.module(), driverExport, 1);
+    ASSERT_TRUE(planted.ok());
+    ASSERT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), driverExport, detour), 1u);
+
+    *planted.slot(0) = foreign;
+    ce::ngx_drs::RestoreRetargetedPointers();
+    EXPECT_EQ(*planted.slot(0), foreign);
+}
+
+TEST(NgxDrsCachedPointerRetargetTest, OnlyWritableNonExecutableDataIsScanned) {
+    MappedModuleCopy core("sl.common.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+    void* const detour = reinterpret_cast<void*>(0x00007FF6BEEF0060ull);
+
+    // A value that really occurs in the module's read-only data (its first non-zero, non-trivial
+    // qword) must be left alone, even though it equals the search value.
+    const ImageSection readOnly = FindSection(core.module(), /*writable=*/false);
+    ASSERT_NE(readOnly.begin, nullptr);
+    void* readOnlyValue = nullptr;
+    void** readOnlySlot = nullptr;
+    for (size_t offset = 0; offset + sizeof(void*) <= readOnly.size; offset += sizeof(void*)) {
+        auto** slot = reinterpret_cast<void**>(readOnly.begin + offset);
+        const auto bits = reinterpret_cast<uintptr_t>(*slot);
+        if (bits > 0xFFFFFFFFull && bits < 0x00007FFFFFFFFFFFull) {
+            readOnlyValue = *slot;
+            readOnlySlot = slot;
+            break;
+        }
+    }
+    if (!readOnlySlot)
+        GTEST_SKIP() << "no pointer-like qword in the donor module's read-only data";
+
+    // The writable data must not hold the same value, or the expectation below would be wrong.
+    const ImageSection data = FindSection(core.module(), /*writable=*/true);
+    ASSERT_NE(data.begin, nullptr);
+    for (size_t offset = 0; offset + sizeof(void*) <= data.size; offset += sizeof(void*)) {
+        if (*reinterpret_cast<void**>(data.begin + offset) == readOnlyValue)
+            GTEST_SKIP() << "donor module holds the probe value in writable data too";
+    }
+
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), readOnlyValue, detour), 0u);
+    EXPECT_EQ(*readOnlySlot, readOnlyValue);
+}
+
+TEST(NgxDrsCachedPointerRetargetTest, DegenerateRequestsChangeNothing) {
+    MappedModuleCopy core("sl.common.dll");
+    ASSERT_NE(core.module(), nullptr) << "GetLastError=" << GetLastError();
+    void* const value = reinterpret_cast<void*>(0x00007FF6DEAD0070ull);
+    PlantedSlots planted(core.module(), value, 1);
+    ASSERT_TRUE(planted.ok());
+
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(nullptr, value, value), 0u);
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), nullptr, value), 0u);
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), value, nullptr), 0u);
+    EXPECT_EQ(ce::ngx_drs::RetargetCachedPointers(core.module(), value, value), 0u);
+    EXPECT_EQ(*planted.slot(0), value);
+
+    // Without a usable detour the NvAPI form must not touch the module either.
+    const ce::ngx_drs::CachedNvApiRetarget none = ce::ngx_drs::RetargetCachedNvApiPointers(core.module(), nullptr);
+    EXPECT_EQ(none.queryInterface, 0u);
+    EXPECT_EQ(none.drsGetSetting, 0u);
+}
+
 // The sweep is only worth anything if the two startup paths that can reach already-mapped
 // modules actually call it, and the loader notification (which runs under the loader lock and
 // must not pin modules) does not.
@@ -502,6 +642,16 @@ TEST(NgxDrsStartupSweepTest, IsWiredIntoTheHookThreadAndKeptOutOfTheLoaderNotifi
               std::string::npos);
     EXPECT_EQ(overlayDetect.find("ArmNgxDrsOverridesIfConfigured(baseName);"), std::string::npos);
     EXPECT_NE(overlayDetect.find("ArmNgxDrsOverridesIfConfigured(baseName, false);"), std::string::npos);
+
+    // Every swept consumer also gets its cached NvAPI pointers retargeted, and the redirected data
+    // slots are undone together with the import patches.
+    EXPECT_NE(overlayDetect.find("ce::ngx_drs::RetargetCachedNvApiPointers(module, state->queryInterfaceDetour)"),
+              std::string::npos);
+    EXPECT_NE(overlayDetect.find("g_ReflexLimiter.QueryInterfaceDetourIfReady()"), std::string::npos);
+    const std::string iatInit =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "hooking" / "iat_hook_init.cpp");
+    ASSERT_FALSE(iatInit.empty());
+    EXPECT_NE(iatInit.find("ce::ngx_drs::RestoreRetargetedPointers();"), std::string::npos);
 }
 
 }  // namespace

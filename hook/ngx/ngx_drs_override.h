@@ -51,4 +51,31 @@ using DlssDrsConsumerVisitor = void (*)(void* module, const char* modulePath, vo
 // number of consumers visited.
 uint32_t ForEachLoadedDlssDrsConsumer(DlssDrsConsumerVisitor visitor, void* context);
 
+// Replaces every pointer-sized value in `module`'s writable, non-executable image
+// sections that equals `from` with `to` (one atomic compare-exchange per slot) and
+// remembers each slot so RestoreRetargetedPointers can undo it. Returns the number of
+// slots replaced. A cached copy of a function pointer is replaced by a wrapper with the
+// same signature that forwards, so the module cannot tell.
+uint32_t RetargetCachedPointers(void* module, const void* from, void* to);
+
+struct CachedNvApiRetarget {
+    uint32_t queryInterface = 0;
+    uint32_t drsGetSetting = 0;
+};
+
+// Streamline's NvAPI layer resolves `nvapi_QueryInterface` once and keeps it, and keeps
+// each NvAPI function it has used, in static data. A core that initialised NvAPI before
+// CE attached therefore never asks the patched GetProcAddress import again and reads its
+// driver settings straight from the driver (Witcher 3 Remastered, 20261008_214202: the
+// import patch was in place and logged nothing, because the question had been answered
+// ~100 ms earlier). This points those cached copies at CE's query-interface detour (and
+// at the DRS getter wrapper when the getter itself is already cached) inside one consumer
+// module. `queryInterfaceDetour` must be usable immediately: null or equal to the
+// driver's own export leaves the module untouched.
+CachedNvApiRetarget RetargetCachedNvApiPointers(void* module, void* queryInterfaceDetour);
+
+// Puts every slot RetargetCachedPointers changed back to its original value, skipping any
+// slot another party has changed since or whose module is gone.
+void RestoreRetargetedPointers();
+
 }  // namespace ce::ngx_drs

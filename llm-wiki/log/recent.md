@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-08 - Dynamic MFG, second cause: cached NvAPI pointers in sl.common
+
+- Session 20261008_214202 (0.1.7050): the startup sweep patched `sl.common`'s `GetProcAddress` import, yet no lookup was routed and
+  `NvAPI_DRS_GetSetting` was still wrapped only for `nvngx_dlssg`. Disassembly: `sl.common`'s static NvAPI layer caches the driver's
+  `nvapi_QueryInterface` in `.data` from `slInit`, before CE attached. 0.1.7051 retargets such cached copies (`RetargetCachedNvApiPointers`,
+  restored in `ShutdownIATHooks`); details in `frame-generation/dlss-driver-settings.md`. Hardware run pending; expect
+  `had already cached the driver's NvAPI entry points; retargeted nvapi_QueryInterface x1` for `sl.common.dll`, then
+  `wrapping NvAPI_DRS_GetSetting for ...sl.common.dll (streamlinePlugin=1` and `answered` lines for 0x10562D0F / 0x10CF4125.
+
 ### 2026-10-08 - Dynamic MFG never reached Witcher 3 Remastered's own Streamline core
 
 - Session 20261008_211749 (0.1.7049, `dlss_fg_mode=dynamic`, native SL 2.14.1): only `nvngx_dlssg.dll` was wrapped, so the preset and forced

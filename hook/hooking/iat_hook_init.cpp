@@ -476,6 +476,10 @@ void ShutdownIATHooks() {
 
     g_PatchedEntries.clear();
 
+    // Cached NvAPI pointers CE redirected inside Streamline cores are data, not imports, and are
+    // undone on the same terms: only slots still holding CE's value in a module still mapped.
+    ce::ngx_drs::RestoreRetargetedPointers();
+
     // CRITICAL FIX: Clear dynamic hooks map to prevent memory leak
     // and stale pointers on DLL unload
     {

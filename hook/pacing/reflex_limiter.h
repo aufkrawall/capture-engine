@@ -297,6 +297,15 @@ public:
         return origSleep_;
     }
 
+#if REFLEX_IAT_HOOK_AVAILABLE
+    // The address consumers should call instead of the driver's nvapi_QueryInterface, or null
+    // while that detour has nothing to forward to (it returns null for every id then, so it must
+    // never be handed out before the driver export is known).
+    void* QueryInterfaceDetourIfReady() const {
+        return origQueryInterface_ ? reinterpret_cast<void*>(&ReflexDetour_QueryInterface) : nullptr;
+    }
+#endif
+
     void EnsureNvAPIHooksInstalled();
 
     // Detour for NvAPI_D3D_SetSleepMode — detects game activation.
