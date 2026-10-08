@@ -3,157 +3,19 @@
 Last source audit: 2026-10-05; next-wave inventory started 2026-10-06 at `3563155d`.
 Core implementation baseline: `e83eabd2` / product 0.1.6989.
 The subsequent privacy workflow commit `6b8249e8` adds commit checks, not product architecture.
-Canonical version: this wiki page. `temp/refactor.md` is an identical working copy of this revision.
+Canonical debt-track reference: this wiki page. Library delivery is specified in `library/README.md`.
 This document supersedes the completed sections 1-10 of the old temporary refactor plan.
 
-## Library delivery target (2026-10-07)
+## Library delivery authority (2026-10-08)
 
-The refactor now delivers a reusable engine library (working name `libcengine`) and makes the
-shipping CaptureEngine application its first full client. Library extraction is part of this plan,
-not a separate future rewrite. This expands scope; completed ownership work remains useful.
-Implement it through verified vertical slices rather than one replacement of the working engine.
+[Library-first plan](library/README.md) supersedes D8/D9/D13 and the old library delivery
+ordering. M0-M9 deliver an x64 runtime library and CaptureEngine as its first public-API client;
+M10-M11 are optional. The unpublished v1 attachment facade is replaced without a compatibility
+shim. Global hotkeys and desktop overlay become optional runtime features, as specified there.
+Graphics/media/build debt remains in this document as parallel tracks, not library prerequisites.
 
-The library owns engine initialization/shutdown, validated configuration, target control, recording,
-overlay/override commands and helper-process supervision. The frontend owns tray/hotkey/CLI interaction
-and presentation, using commands and observed outcomes instead of engine globals. Preserve every
-existing feature; a smaller frontend does not mean removing existing UI or runtime capabilities.
-Injected hooks, media, sensor/logging workers, Vulkan layers and privilege boundaries retain their
-necessary process/DLL topology. One public library can depend on a packaged runtime; it is not one
-physical DLL containing every component. No extra capture copies or hot-path abstraction tax.
-
-Reuse the existing public C ABI and private C++ owners. The current facade only attaches to a bound
-controller: create does not initialize a runtime, and destroy does not stop it. Preserve those v1
-contracts; independently owned runtime creation/destruction needs an explicit versioned contract.
-Do not export STL, FFmpeg/SDK objects, mutable Config, shared mappings or locks to clients.
-Start with honest explicit concurrency limits and reject competing ownership; opaque handles alone
-do not make process-global mappings, injected configuration or device state independently instanced.
-
-D13 defines the deliverable and acceptance tests. D0 inventories client/runtime dependencies; D8
-extracts runtime/configuration/child ownership; D5-D6 keep media and finalization library-owned; D9
-keeps the client API small. Library milestones begin as those boundaries become usable, not after
-all graphics debt is closed. Events beyond required status/notices, preview/packet output, arbitrary
-parallel instances and a plugin framework remain separate features.
-
-## Execution status (2026-10-08)
-
-- D8/D13 runtime package path slice verified: executable/module defaults and explicit INI paths
-  have one owner; helpers accept a copied runtime executable and WinMain honors --config. Active-code-
-  page paths no longer pass through UTF-8 decoding. Eleven path/option cases plus an actual renamed
-  helper in a different directory protect launch/configuration handoff; delegated game options are
-  excluded. A fifth registered fuzz harness has six safe UTF-16 argument seeds. Focused IPC/config/
-  owner tests and five product TUs pass. All five fuzz targets pass a bounded 10-second-per-target
-  run (runtime options: 579,654 units). Strict-clean 20261007_205639_build_7024 compiled all products
-  and passed native/Python/ASan/all 32 FG checks; an unnecessary string copy then blocked lint.
-  After fixing it, resumed verify 20261008_081425_build_7024 passes all gates and produces the
-  38,814,820-byte setup PE. Accepted warnings stay 706 across 1011 TUs; four formatting advisories
-  remain. Full library bootstrap, resource resolution, public runtime descriptors and independent
-  client delivery stay open; hardware/game and full codec/multitrack A/V validation are not claimed.
-- Requested recording-recovery branch integration verified: 21956184/087452a3 add a versioned
-  48-byte mux-flow snapshot, byte-capacity-aware CFR fresh/repeat admission and overflow timeline
-  accounting. Source merges cleanly; changelog/journal conflicts preserve both ownership and media work.
-  Focused budget/audio/loader/configuration tests pass. Strict-clean 20261007_194219_build_7023
-  passes products/native/Python/ASan/all 32 FG checks; test rounding fixes close resumed verification
-  20261007_200539_build_7023 and the 38,787,412-byte setup. Direct built-DLL checks prove 48-byte/8-aligned
-  snapshot storage, invalid-argument rejection and unavailable counters without an engine. Baseline
-  stays 706 across 1009 TUs; 28 formatting advisories remain. The closed-loop
-  incident model does not prove arbitrary storage stalls or uninterrupted audio after data already lost;
-  real overloaded-output and codec/multitrack A/V validation remain D5/D6 evidence requirements.
-- D8/D13 configuration slice verified: one settings scope owns the snapshot, startup file identity,
-  debounce/coherent replacement and deadlines; the mutable main_g_Config is removed. Frontend effects
-  consume published changes. Eight transaction cases and two actual headless/native INI scope cases
-  pass, with existing reload/sensor/hotkey checks (38 focused tests). Six mutations detect missed startup
-  edits, unvalidated publication, premature commit, file replacement, recursive reload and ignored timing.
-  Product syntax covers eight TUs. Strict-clean 20261007_190950_build_7022 compiled all products and
-  passed native/Python/ASan/all 32 FG checks; explicit test optional guards then close resumed verify
-  20261007_192804_build_7022 and package (38,775,318-byte PE). Accepted warnings stay 706; full scope is
-  1007 TUs. Eight formatting advisories remain. Initial INI/default fallback stays compatible; transactional startup
-  validation, complete resource resolution and programmatic settings remain D8/D13 work before a public library API.
-- D8/D13 child ownership slice verified: one headless-constructible host child owner replaces six
-  writable process/client globals. The production lifecycle retains old media finalizers across
-  immediate restart, cancels reentrant readiness by generation and owns shutdown collection.
-  Ten lifecycle cases, three native empty-scope cases and focused recording/API/IPC checks pass.
-  Capability/bootstrap/path inputs are in [library-delivery.md](library-delivery.md). All five mutations detect the expected defects;
-  Strict-clean product compilation and native/Python/ASan/32 FG checks pass at 20261007_171441_build_7021.
-  That run stopped at test-vptr analyzer false positives; after comment-only annotations, final resumed
-  verification 20261007_180216_build_7021 passes all gates/package. Accepted warnings tighten 712->706.
-  Installer 0.1.7021 is 38,760,346 bytes. Full engine initialization and library delivery remain open.
-  Next resume: finish D8 bootstrap/configuration and D13 lifecycle/API/path contracts before publishing
-  a runtime library. Auxiliary shutdown-event failures/setup versus sensor recovery and D5 old/new
-  media observation attribution need focused traces. Independent packaging, external-client proof and
-  frontend conversion are still required; full D0-D13 phase exits remain as specified below.
-  C++ formatting still reports advisory issues (16 files in the final gate); retain targeted D12 cleanup.
-- D1/D2 Present vtable forwarding slice: foreign layers installed before CE's physical claim now
-  receive Present and Present1 instead of being skipped by the inline trampoline. One private owner
-  retains separate typed predecessors and scopes forwarding to the method/receiver; inline reentry
-  cannot reuse the active vtable link. Two real-hook cases keep inline hooks active, exercise nested
-  probes and handoff/removal, with exact physical coverage and no debug-layer errors. Six native
-  argument/result/reentry/receiver/caller/identity cases and the read-only repair/detach cases pass.
-  All six forwarding/scope/caller/identity mutations fail; restored production passes 539 focused
-  native cases and all 32 FG flows. Closing 0.1.7020 passes native/Python/all 32 FG flows, x64/x86 products and setup packaging.
-  Original SDK caller provenance and legacy shared-original publication are preserved; D3 aliases remain. This tests physical vtable
-  installation order, not foreign inline hooks installed before CE DLL loading. Full D1/D2 stay open.
-- D1 Present coexistence slice: a controlled foreign layer above the real DXGI Present chain covers
-  repair, nested status probes and removal with an admitted callback. Native/wrapper Present and
-  Present1 probes exposed false output accounting (16 ledger entries for 10 actual presents); their
-  entry boundaries now forward before frame side effects. Three cases and four deliberate guard
-  mutations pass. Remaining inline/DLL installation orders, actual nested physical outputs, CE removal with
-  active Present callbacks and external provider unload remain pending; D1 is still partial.
-  Closing 0.1.7018 passes native/Python/all 30 FG flows, x64/x86 products and the setup package.
-- D0 active: every first-party subsystem inventoried; bounded operation traces and repeated coupling
-  evidence recorded in [architecture-inventory.md](architecture-inventory.md). Remaining full lifecycle
-  audits and child replacement/finalization traces are explicit there; clean/IPC fuzz gates passed.
-- D1 partial: four NGX lifecycle/OFF/ON cases and four distinct queue-vtable scenarios pass through
-  production hooks; NGX and queue mutations detect five and four defects respectively. Queue coverage
-  includes exact ECL/Signal forwarding, duplicate capture and reset recovery; four queue cases pass.
-  Contracts: [NGX lifecycle](frame-generation/ngx-flow-lifecycle.md) and
-  [queue dispatch](dx12-queue-dispatch.md). Controlled foreign interposer, wrapper/native combinations,
-  SDK unload/retirement and cold-FG startup coverage remain required. Apply D9/D12 inside each slice.
-- D7 publication slice verified: one private NGX creation/evaluation boundary owns multiplier selection,
-  accepted-OFF precedence and compatibility/shared publication. Four focused cases, five production
-  mutations and closing 0.1.7008 (native/Python/all 19 FG flows, x64/x86 products/package) pass.
-  Full SDK settings concurrency/generation and module/feature/context retirement remain pending.
-- D2 partial: private queue dispatch owns installation/predecessor publication, coherent thread-local
-  cache pairs and invalidation. Install, resolution, passive probes and reset now use operations/value
-  snapshots instead of writable map/cache aliases; the unrelated global ECL fallback is removed.
-  Nine native registry cases, four real-hook queue cases and four production mutations pass. Physical
-  slot recovery remains allocation-checked in VTableHook; callback/code lifetime, hook detachment,
-  native candidate lifetime still require further work. Signal uses the same private transaction and
-  exact-slot recovery; its writable map/lock/global-original aliases are removed. D2 exit remains open.
-  Final closing 0.1.7015 passes native/Python/all 23 FG flows, x64/x86 products and the setup package.
-- D1/D2 follower-retirement slice: real Signal interposers cover CE above/below a foreign provider,
-  removal/reset with a retained follower and an admitted callback across removal. The follower case
-  reproduced a stack overflow after reset; ResolveInterception now owns saved-binding -> exact retained
-  interception -> untracked live-slot priority for ECL, Signal and device tracing. Established bindings
-  consult no cold readers. Eleven native registry cases and six dispatch mutations pass; physical
-  restoration/Remove success do not prove callback drain or provider-code retirement. Remaining Present
-  orders, provider unload, scoped code holds and D2 retirement still need implementation.
-  Closing 0.1.7017 passes native/Python/all 27 FG flows, x64/x86 products and the setup package.
-- D0/D10 device tracing slice: fixed the first-global creation-target crash under CE_DX12_TRACE=1.
-  One private module owns exact-vtable installation, dispatch, reset recovery and tracing detours for
-  queue/descriptor-heap/resource creation. Removed global targets, aliases and exposed detour prototypes.
-  Native/debug-device creation, typed output checks and reset recovery pass through real hooks; the
-  Signal case now runs with the production trace switch and queue installer. Both deliberate device
-  mutations fail the expected crash/assertion; restored production passes. Provider lifetime, hook
-  detachment and the rest of D10 remain pending; this does not close D2/D10.
-  Closing 0.1.7016 passes native/Python/all 24 FG flows, x64/x86 products and the setup package.
-- D9/D12 acceptance slice: removed unused factory detours and duplicate wrapper IDs from the touched
-  queue installer, and moved Vulkan/ledger source protection to the actual wired factory hooks. The
-  pacing fixture now installs the existing ClockSource; its deadline regression deterministically
-  rejects missing clock wiring instead of letting host load saturate a supposedly virtual budget.
-- Additional defect fixed: third-party startup transport passes skipped overlay admission/accounting.
-  Transport selection is preserved while rendering proceeds; the first output is covered with RTSS
-  present in the controlled WARP runs. This does not establish the real-game compatibility matrix.
-- Baseline no-build reuse refused the stale unit-test link manifest at 0.1.7004; no native test ran.
-  D0 clean verification 0.1.7005 passed products, native/15 FG flows, Python, ASan/UBSan and lint ratchets.
-  All four parser fuzz targets passed a bounded 10-second-per-target run; hardware/application checks remain pending.
-- Temporary directory literally inventoried: only this working copy remains. The earlier 32-file
-  cleanup is already complete; do not repeat it or treat future diagnostic files as disposable.
-
-- Additional pending findings from this slice: status-query entry guards skip frame processing,
-  but CallOriginalPresent/Present1 still invoke flip-queue pacing when backbuffer override/provenance
-  enables it. A waitable-query regression and correction remain required. Native test linking also
-  reports duplicate FontAtlas/VulkanBackend definitions from source-including test units; the build
-  currently accepts these. Investigate their test seams/link ownership separately from this slice.
+Historical execution evidence is preserved in [log/archive-2026-W41c.md](log/archive-2026-W41c.md).
+Current library milestone status is maintained only in [library/README.md](library/README.md).
 
 ## Scope and evidence
 
@@ -194,8 +56,9 @@ Production anchors include [recording_session.h](../captureengine/app/recording_
 
 The new DLL exports are `MediaEngine_SubmitFrameWithResultV1`,
 `MediaEngine_SubmitFrameD3D11WithResultV1`, and `MediaEngine_RepeatLastFrameWithResultV1`.
-Their result layout is 40 bytes, aligned to 8. Preserve legacy positional/descriptor exports,
-descriptor layouts and the deferred query. Acceptance does not promise packet emission or GPU completion.
+Their result layout is 40 bytes, aligned to 8. Existing internal callers still require legacy
+exports/layouts; library DR-12 permits removal after migration and a package identity check.
+Acceptance does not promise packet emission or GPU completion.
 
 The final core gate passed x64/x86 product compilation, binary/package checks, native units and all
 15 FG flow scenarios and produced the 0.1.6989 installer. Later documentation gates are recorded in
@@ -502,51 +365,13 @@ Reject: a giant SDK manager containing the same externally writable state or get
 
 ## D8 - Finish controller application and configuration boundaries
 
-Anchors: [main_internal.h](../captureengine/app/main_internal.h),
-[main_controller.cpp](../captureengine/app/main_controller.cpp),
-[controller_recording.h](../captureengine/app/controller_recording.h),
-[libcaptureengine_controller.cpp](../captureengine/app/libcaptureengine_controller.cpp),
-[process_ipc.cpp](../common/ipc/process_ipc.cpp).
-
-1. Audit child supervision/replacement, configuration loading/publication, injection control, overlay
-   settings, screenshot, benchmark and application shutdown. Preserve the completed recording owner.
-2. Own child lifecycle with explicit start/readiness/exit/replacement observations and cancellation.
-   A child identity must bind command/health evidence; do not attribute old observations to a new child.
-3. Separate validated settings from UI presentation and process effects. Publish complete supported
-   configuration operations; retain atomic/layout/generation barriers in the existing IPC contract.
-4. Migrate remaining low-frequency control mapping sequences to specific validated IPC operations.
-   Keep frame/ring snapshots and leases separate; no universal channel framework or mapped-pointer API.
-5. Extract runtime bootstrap/service/shutdown from UI effects for D13; make headless ownership possible.
-   Narrow frontend/C facade effects contracts and remove direct mutation/cycles. Define programmatic
-   settings producers without exposing mutable Config/IPC. Preserve unsupported results until an API
-   capability has a real implementation; migrate existing features through completed operations.
-
-Tests: readiness cancellation, replacement/old health, partial startup, command failure, reconnect,
-invalid configuration/layout/target, publication ordering, reentrant shutdown and exactly-once notices.
-Use isolated Windows mappings and production validation. Parser/untrusted-boundary changes require
-fuzz harnesses and committed safe corpus; new shared ABI/layout changes require clean verification.
-Commits: child lifecycle; settings publication; remaining validated control operations/frontend cleanup.
-Exit: frontends invoke domain commands and consume observations without child/IPC bookkeeping.
-Reject: calling the current controller-bound facade independently embeddable. D13 must prove actual
-runtime creation and ownership without ControllerMain or tray initialization.
+**Superseded by [library/README.md](library/README.md)**: M3-M5 (runtime ownership and settings).
+Use its architecture, decisions, milestone order and acceptance criteria.
 
 ## D9 - Shrink interfaces as ownership becomes real
 
-Apply inside D2-D8 rather than delaying all include cleanup until the end.
-
-1. After a lifecycle cluster is owned, define a small caller contract with commands, outcomes and
-   necessary identities. Keep mutable state, locks, SDK types, COM resources and phase helpers private.
-2. Replace umbrella includes in migrated consumers. Avoid exposing an implementation header through
-   another nominally small header or exporting mutable references to bypass the contract.
-3. Add strong types only at demonstrated unit/identity/lifetime boundaries. Preserve ABI fixed layouts;
-   internal types must not silently alter exported calling conventions, field offsets or descriptor sizes.
-4. Check dependency cycles, include fan-out and caller decisions after migration. Remove temporary
-   forwarders and duplicated input validation where the owner now guarantees it.
-
-Tests: relevant production behavior, header/ABI build checks and existing layout assertions. No test
-should merely mirror a private field or accessor. Confirm x86/x64 consumers compile where applicable.
-Exit: a caller needs only the small contract to use the module correctly; private changes stay local.
-Reject: opaque heap handles everywhere, excessive tiny headers or an interface per internal function.
+**Superseded by [library/README.md](library/README.md)**: M1 boundary enforcement and interface review per milestone.
+Use its architecture, decisions, milestone order and acceptance criteria.
 
 ## D10 - Audit and migrate remaining graphics/capture/override lifecycles
 
@@ -619,55 +444,8 @@ Reject: deleting source tests wholesale, packing files to satisfy line limits or
 
 ## D13 - Ship the engine library and consume it from CaptureEngine
 
-Anchors: [libcaptureengine.h](../include/libcaptureengine.h),
-[libcaptureengine.cpp](../captureengine/app/libcaptureengine.cpp),
-[main_controller.cpp](../captureengine/app/main_controller.cpp),
-[main_entry.cpp](../captureengine/app/main_entry.cpp), D5-D6/D8-D9 and the declared build targets.
-
-1. Before extraction, inventory every supported frontend action and runtime dependency. Record the
-   API operation/outcome, owning process/thread, settings producer, startup/shutdown obligations,
-   singleton/IPC conflicts, resource paths and verification. Include recording/audio-only/streaming,
-   injection/discovery, overlay/overrides, screenshots, benchmark/status and current compatibility modes.
-   Pure presentation stays in the client; an unsupported stub is not migration of a working feature.
-2. Specify the versioned runtime lifecycle and C ABI before publishing it: opaque ownership, descriptor
-   sizes, strings/buffers, errors, threading/reentry, command acceptance versus live/finalized state,
-   status/notice delivery and shutdown completion. Preserve current facade/media exports and layouts.
-   Initially document/enforce one active owner where required; test competing clients explicitly.
-   New runtime operations must not silently change legacy attach/detach semantics.
-3. Extract EngineRuntime bootstrap, command ownership, configuration publication, target/child service
-   and shutdown from controller/UI effects. Own needed message pumping and COM/thread affinity without
-   borrowing the client's tray HWND or requiring its executable entry point. No tray/hotkey dependency
-   in headless startup. Keep cancellation, asynchronous media finalization and callback/GPU drain rules.
-4. Build the independent x64/x86 library/runtime package with the pinned toolchain and explicit source
-   ownership. Package public headers, import artifacts and required existing helpers/DLLs/licenses.
-   Resolve runtime resources from the package/module or explicit paths, not an unrelated client's
-   executable/CWD. Use existing secure loaders and privilege boundaries; heavy startup stays out of
-   DllMain. Build-target/shared-ABI changes require clean and verify-clean gates.
-5. Migrate the shipping frontend in capability slices. Its recording, overlay, settings, screenshot,
-   benchmark and target commands use the same supported API as external clients; engine lifecycle and
-   policy stay private. Tray/hotkeys/CLI/desktop presentation adapt outcomes, including finalizing/error.
-   Preserve legacy launch/worker roles through internal runtime hosts or explicit compatibility paths.
-   Remove the old controller-bound backend/global routes once each client action has migrated.
-6. Add a separately built headless client using only public headers and shipped library artifacts.
-   It must create/configure a runtime without ControllerMain, use migrated recording/overlay operations,
-   stop/finalize, shut down and recreate. Verify a deployment outside the repo with another executable
-   name/CWD. Compare frontend and headless behavior through production orchestration, not mock APIs.
-   C compilation/link/export tests protect the ABI; cross-compiler consumption requires a declared,
-   discovered compiler and recorded evidence, never shared C++ runtime types or a substituted toolchain.
-7. Test partial startup, missing/incompatible helpers, invalid configuration/ABI, competing ownership,
-   stale target/child, reentry, repeated stop, active-recording shutdown and retained callbacks. Prove
-   bounded process cleanup and no notices into a destroyed client. Re-run existing native/FG/media
-   gates and the real hardware/A/V matrix for changed paths; a smoke client does not replace them.
-
-Milestones: capability/ABI inventory -> owned headless runtime -> packaged library/standalone client
--> first migrated shipping feature -> all supported engine actions consumed through the API.
-D8/bootstrap and selected D5-D6 contracts are dependencies; existing stable graphics owners can remain
-private implementation. Full D2-D7 migration is not a prerequisite to the first library milestone.
-Exit: the installed app is a client of the same independently usable runtime/API; a second client
-uses it without controller initialization, private includes, copied policy or engine-global access.
-All current features/package behavior remain available and lifecycle/ABI/integration evidence passes.
-Reject: renaming the executable, exporting its globals, wrapping ControllerMain, creating an empty
-facade, shipping unimplemented operations or flattening helper/injected components into the client.
+**Superseded by [library/README.md](library/README.md)**: M2-M9 (public API, runtime, frontend, SDK and external-client proof).
+Use its architecture, decisions, milestone order and acceptance criteria.
 
 ## Verification matrix and commands
 

@@ -216,7 +216,8 @@ reference count negative) stay open, likely the game resizing before `ffxDestroy
 
 Direction updated 2026-10-07: independent engine/runtime packaging and the shipping app as its first
 client are now part of the active refactor. [architecture-debt-plan.md](architecture-debt-plan.md),
-D13, is the current delivery/acceptance authority. Implement in verified slices; no one-shot rewrite.
+D13 now routes to [library/README.md](library/README.md), the delivery/acceptance authority.
+The library plan replaces the unpublished v1 facade and owns optional hotkeys/desktop overlay in runtime.
 
 - Current implementation (verified against sources, 2026-10-05): `include/libcaptureengine.h` is
   controller-bound API groundwork, linked into `captureengine.exe`; there is no independent engine DLL
@@ -248,7 +249,7 @@ D13, is the current delivery/acceptance authority. Implement in verified slices;
 - CE is several processes (controller, inject child, media, logger, sensor bridge) plus injected DLLs. A
   library keeps that topology: a client loads one engine DLL that owns the helper processes.
 - The public API must be a C ABI with opaque handles for runtime lifecycle, recording, overlay/override settings,
-  screenshots and required outcomes. Preserve v1 attach/detach semantics through versioned additions. CE builds with MSYS2 clang64 and libc++; a client built
+  screenshots and required outcomes. The unpublished v1 attach/detach facade is replaced at M4 (library DR-2). CE builds with MSYS2 clang64 and libc++; a client built
   with MSVC cannot share C++ types across the boundary.
 - Configuration needs a programmatic model. Today `common/config/` parses INI into `Config`; the INI loader
   becomes one producer of that model, and the shared-memory publication (`common/ipc/`) stays internal.

@@ -21,9 +21,10 @@ Depth metrics (07) are recorded in the status table at the end of each milestone
 ## M0 - Adopt the plan
 
 Commits:
-1. `docs: adopt library-first plan` - move `temp/libcengine/*.md` to `llm-wiki/library/`, add index
+1. `docs: adopt library-first plan` - move the committed `llm-wiki/libcengine-refactor/*.md` to `llm-wiki/library/`, add index
    rows, mark D8/D9/D13 of `architecture-debt-plan.md` superseded (link), move its "Execution status"
-   prose to `llm-wiki/log/recent.md`, delete `temp/refactor.md` and this temp folder.
+   prose into `llm-wiki/log/` (recent entry routes to an archive), delete `temp/refactor.md` and the
+   source plan folder.
 
 Acceptance: one canonical copy; index routes to it; no contradictions with `library-delivery.md`
 (merge that page's capability inventory into `library/04` or link it).

@@ -418,3 +418,5 @@ register the removal with whatever handler exists **(verify)**.
 | `WindowHeartbeat` | `UpdateProfiles`, `Stop` | `common/platform/window_heartbeat` | **(verify)** purpose before deciding feature gating |
 | `Setup` | `Request(action) → async result`, `Status()` | `captureengine/elevation/startup_control.*`, `captureengine/sensors/pawnio_*` | Must stop sensors via `ChildSupervisor::StopSensorsForSetup` before PawnIO uninstall (today's tray callback). Split app autostart (client exe path) from the elevation service; **(verify)** `Bootstrap(controller)` semantics (it may relaunch elevated — that stays frontend/role-host policy) |
 | `SessionClaim` | RAII mutex `Local\CaptureEngine_Instance_Mutex` | `WinMain` | No retry loop with `Sleep(50)`: claim once and return `CE_E_BUSY`. The frontend's restart flow waits on the prior PID first (it already does) |
+
+Source-backed existing prerequisites: [library-delivery.md](../library-delivery.md).

@@ -32,7 +32,7 @@ This is an initial capability map, not a completed inventory of every config key
 supports one handle. `ce_engine_destroy` releases that handle while the controller/recording continue.
 Custom config values and recording statistics return unsupported. Polling pumps the controller's
 thread messages and allows supported hotkey dispatch, but rejects nested pumps/destruction.
-Keep these v1 contracts honest. A versioned owned-runtime API must define its own creation/shutdown,
+Until M4 replaces this unpublished facade, describe its current behavior accurately. The owned-runtime API defines creation/shutdown,
 threading, descriptor/string ownership, command acceptance, live/finalized state and failure behavior.
 The C ABI must not expose STL, mutable AppConfig, IPC mappings or renderer/SDK resources.
 
@@ -85,25 +85,10 @@ Anchors: [settings transaction](../captureengine/app/configuration_state.h),
 [package paths](../common/platform/runtime_package_paths.h),
 [path/helper handoff tests](../tests/test_runtime_package_paths.cpp).
 
-## Remaining extraction order
+## Delivery authority
 
-1. Finish startup/configuration/child replacement traces, including auxiliary shared-event and setup
-   interactions. Define the complete supported capability matrix and one-active-owner conflicts.
-2. Move runtime bootstrap/service/shutdown out of `ControllerMain`: recording scope, child scope,
-   window heartbeat, Vulkan residency and configuration must have engine-owned lifetimes. Tray,
-   hotkey registration and UI callbacks become client effects. Preserve reentry and cancellation.
-3. Resolve process-wide effects before embedding: WinMain currently installs crash handling, log
-   directories/cleanup, process power policy, console handling and startup/elevation behavior. A DLL
-   must not silently impose those policies on an unrelated client process.
-4. RuntimePackagePaths now owns executable-anchored defaults/module helper selection and explicit INI
-   overrides; the child owner copies an explicit worker executable. A renamed helper outside the client
-   directory loads the requested INI in the native probe. Complete resource/loader/module lifetime,
-   public descriptors and outside-repo library deployment still require D13 work.
-5. Specify and build the independent runtime/C ABI with explicit module/source ownership; package
-   x64/x86 public headers/import artifacts/helpers. Then migrate frontend capability slices onto it
-   and prove standalone public-header-only consumption, failure cleanup and shutdown/recreate.
-
-Open risks: full engine scope still uses main_internal.h and frontend bootstrap; setup can race sensor
-recovery; IPC active/retired media observation attribution needs D5 traces; process-global discovery
-and injected settings require explicit ownership conflict handling. No parallel-instance, provider
-unload, cross-compiler ABI, real-game or end-to-end recording claim follows from this slice.
+The [library-first plan](library/README.md) supersedes this page's former extraction order.
+Its [module inventory](library/04-runtime-modules.md) and [frontend/role-host plan](library/05-frontend-and-role-host.md)
+route to this source-backed prerequisite evidence. The unpublished v1 attachment facade will be
+replaced (DR-2); hotkeys and the desktop overlay become optional runtime features (DR-8).
+Milestone status lives only in library/README.md. This page records existing implementation contracts.

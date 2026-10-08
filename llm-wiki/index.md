@@ -24,8 +24,16 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `repo-map.md` | 12 | where each subsystem lives, binaries to sources, build units, high-risk areas |
 | `refactor-roadmap.md` | 9 | refactor rules (mechanical vs behavioral waves, fingerprint proof), wave status, controller C API and media DLL ABI contracts (2026-10-05), library plan, log-volume evidence |
 | `refactor-contracts.md` | 45 | implemented core ownership, glossary, source/test anchors, locality comparison and pending validation (2026-10-05) |
-| `architecture-debt-plan.md` | 42 | current architecture debt, verified evidence, D0-D13 implementation/verification and library delivery sequence and independent deferred features (2026-10-05) |
-| `library-delivery.md` | 8 | D13 capability/API/bootstrap/path inventory, child ownership prerequisite and remaining independent runtime/frontend extraction (2026-10-07) |
+| `architecture-debt-plan.md` | 42 | parallel graphics/media/build debt and hardware validation; D8/D9/D13 superseded by library plan (2026-10-08) |
+| `library/README.md` | 4 | canonical library-first plan and M0-M11 milestone status (adopted 2026-10-08) |
+| `library/02-target-architecture.md` | 17 | runtime/client topology, deep module boundaries, threading and process effects |
+| `library/03-public-api.md` | 26 | versioned C API and C++ wrapper specification; design, not shipped API |
+| `library/04-runtime-modules.md` | 24 | runtime module contracts, migrations and interface tests |
+| `library/05-frontend-and-role-host.md` | 8 | frontend conversion, role dispatch and migration hazards |
+| `library/06-milestones.md` | 15 | ordered commit series, acceptance criteria and gates |
+| `library/07-testing-and-verification.md` | 8 | interface/ABI/external-client tests and depth metrics |
+| `library/08-decisions-and-open-questions.md` | 10 | library decisions, rejected options and prerequisite evidence questions |
+| `library-delivery.md` | 8 | source-backed v1/child/config prerequisites; delivery order superseded by library plan (2026-10-08) |
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
 | `dx12-queue-dispatch.md` | 7 | private queue/device/Present-vtable dispatch, publication/reset/forwarding, real-hook regressions and pending provider/callback lifetime work (2026-10-07) |

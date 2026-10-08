@@ -1,9 +1,9 @@
 # libcengine: library-first refactor plan
 
-Status: **proposal**, written 2026-10-07 at `644219f2`. Nothing in this folder is implemented yet.
+Status: **adopted** 2026-10-08 at implementation baseline `7ebebd43`; design written 2026-10-07.
 It covers the library goal (D8/D9/D13) of `llm-wiki/architecture-debt-plan.md`, and reorders that
 plan so the library is the critical path. The graphics/media debt waves continue as separate tracks.
-`temp/refactor.md` is a copy of that wiki page.
+This directory is the canonical library plan; the old temporary plan copy is removed.
 
 ## Goal
 
@@ -40,15 +40,14 @@ plan so the library is the critical path. The graphics/media debt waves continue
   it there (date, evidence, new decision) before writing code.
 - Keep the status table below current at the end of every commit series. It is the only status
   record for this plan; don't add narrative status elsewhere in these files.
-- Once adopted, move these pages into `llm-wiki/library/` (one canonical copy), update
-  `llm-wiki/index.md`, mark D8/D9/D13 in `architecture-debt-plan.md` as superseded with a link, and
-  delete this temp folder. Never keep two maintained copies.
+- Maintain these pages only in `llm-wiki/library/`; index.md routes here. D8/D9/D13 in
+  architecture-debt-plan.md are superseded. Keep historical evidence in llm-wiki/log/, not a second plan.
 
 ## Status
 
 | Milestone | State | Last commit | Notes |
 | --- | --- | --- | --- |
-| M0 Adopt plan, move docs into the wiki | not started | | |
+| M0 Adopt plan, move docs into the wiki | complete | adoption commit | Canonical plan; old D8/D9/D13 superseded; historical evidence archived; links and changelog validated. |
 | M1 Module boundary checker | not started | | |
 | M2 Public header v2 + ABI tests (unshipped) | not started | | |
 | M3 Runtime core inside the exe | not started | | |

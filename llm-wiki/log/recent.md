@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-08 - Library-first plan adopted
+
+- The committed plan moved to library/; index routes to the canonical architecture/API/milestones.
+  D8/D9/D13 are superseded; the unpublished v1 facade is replaced and hotkeys/desktop overlay are
+  optional runtime features. Previous execution evidence is preserved in archive-2026-W41c.md.
+- Documentation-only adoption: relative links, canonical-copy checks and changelog validation pass;
+  no product behavior changes or new hardware/A/V claim. Milestone status lives only in library/README.md.
+
 ### 2026-10-08 - Runtime package paths and helper configuration handoff
 
 - WinMain now consumes explicit configuration arguments; workers previously ignored the INI path
@@ -210,18 +218,3 @@
   71.7 fps base and 142.4 fps output. That is one application frame behind the newest, not the 3-4 that counting
   produced. `scanout=` was logged. `markerOnPresentingThread=` equalled every paired marker
   (`markerOnOtherThread=0`): Talos brackets its Present.
-
-### 2026-10-06 - PC latency: FSR frame identity, scanout, measured FG rates
-
-- Talos `20261006_194753` (0.1.7009) review: input retrieval now arrives (26255 retrievals); DLSS-G Base/Display
-  froze at `66.6/133.2` and `33.3/133.2` (also in `20261006_150600`) because the `g_FGCompat` frame history is not fed
-  on the PostSL route; the first DLSS FG 2x period ran at ~52 fps output with VRAM at 11.49/11.94 GB and 139 W at 98 %
-  load (likely a VRAM spill, not CE's); Reflex-on 6 ms readings coincided with GPU 4-10 % (menus/light scenes).
-- FSR FG 91-142 ms looked extreme: `appQueue=3-4` came from conservation. AMD's side conserved exactly in the trace
-  (1309 IDs x one real + one generated, 2613 displays); the game blocked 6 ms per frame in the proxy Present at a
-  145 Hz-pinned output, so the queue may be real. Now measured by identity: ffxConfigure frameID -> application
-  Present, callback frameID -> runtime Present (`idQueue=`).
-- Both latency paths add half the scanout (ABI 70 `refreshPeriodUs`); FG Base/Display is measured; PresentStart-marker
-  thread and marker-to-Present span logged to settle whether Talos's Reflex markers bracket its Present.
-- Tests: `test_system_latency_generator_identity.cpp` (9), association token, refresh period publication. Hardware
-  run pending: read `idQueue=`, `scanout=`, `markerOnPresentingThread=`, `fps=`/`gpu=` on the sample line.
