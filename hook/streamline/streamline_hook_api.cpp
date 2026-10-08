@@ -239,9 +239,10 @@ bool TryRecordOfficialUiResourceTag(const void* frameToken,  const slResourceTag
 }
 
 
-// Logs a UI-tag opportunity (and its tags) on the first call, whenever the tag set changes and on every
-// 300th call; returns the opportunity number when it logged, 0 otherwise. The tag set is the api,
-// feature, viewport and each tag's type/lifecycle/extent (resources and frame tokens rotate per frame;
+// Logs a UI-tag opportunity (and its tags) on the first call of each stream, whenever the stream's tag set
+// changes and on every kHeartbeatStride-th call of that stream; returns the opportunity number when it
+// logged, 0 otherwise. A stream is the api, feature, viewport, call shape and the tags' types; the tag
+// set is each tag's type/lifecycle/extent (resources and frame tokens rotate per frame;
 // `localTagSignature` carries the same for tags a caller passes as evaluate inputs).
 uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken,  uint32_t viewportKey, 
                                      const slResourceTag* tags,  uint32_t numTags,  void* streamline_hook_commandBuffer, 
@@ -249,15 +250,20 @@ uint32_t LogOfficialUiTagOpportunity(const char* tagApi,  const void* frameToken
     static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
     // Games interleave slSetTagForFrame and slEvaluateFeature calls (and features/viewports) every frame;
     // each of those is its own stream, or every alternation reads as a tag-set change.
-    static ce::log_meter::StreamChangeGate<16> s_uiTagSetGate;
+    // One stream per tag type: The Witcher 3 Remastered alone tags 13 different buffer roles, so 16 slots
+    // left no room for a second feature or viewport and the overflow logged every call.
+    static ce::log_meter::StreamChangeGate<64> s_uiTagSetGate;
     const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     uint64_t tagSet = ce::log_meter::FieldKey(numTags, numInputs, localTagSignature);
+    uint64_t tagTypes = ce::log_meter::FieldKey(numTags);
     for (uint32_t i = 0; tags && i < numTags; ++i) {
+        tagTypes = ce::log_meter::FieldKey(tagTypes, tags[i].type);
         tagSet = ce::log_meter::FieldKey(tagSet, tags[i].type, tags[i].lifecycle, tags[i].extent.left, tags[i].extent.top,
                                          tags[i].extent.width, tags[i].extent.height);
     }
-    const auto verdict = s_uiTagSetGate.ObserveOrEvery(
-        ce::streamline_ui_tag_log::Stream(tagApi, feature, viewportKey, numTags, numInputs), tagSet, opportunity, 300);
+    const auto verdict = s_uiTagSetGate.ObserveOrEveryPerStream(
+        ce::streamline_ui_tag_log::Stream(tagApi, feature, viewportKey, numTags, numInputs, tagTypes), tagSet,
+        ce::streamline_ui_tag_log::kHeartbeatStride);
     if (!verdict) {
         return 0;
     }

@@ -130,6 +130,12 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   hook log ring dropped 1412 lines; the protected-FFX ECL pass-through
   (`hook/d3d12/dx12_hook_ecl.cpp`, game and runtime queues) wrote 3k. `log_digest.py`
   now reports any template with >=5000 lines and >=20% of a file as `LOG FLOOD`.
+  The stream must also contain whatever the game cycles per call: The Witcher 3 Remastered sends one tag per
+  slSetTagForFrame call and cycles the buffer type (13 types, same api/feature/viewport/numTags), so the call
+  shape alone put all 13 into one stream and every call logged (20261008_220437: 21k of 25k lines). The tag
+  types are now part of the stream (`ce::streamline_ui_tag_log::Stream`), the gate has 64 slots, and the heartbeat
+  is counted per stream (`StreamChangeGate::ObserveOrEveryPerStream`, `kHeartbeatStride`) because a shared index
+  runs N times faster with N streams.
 - **Once per key**: `ce::log_meter::KeyedOnce<N>` for "once per module/handle" lines
   (Steam overlay detection, late-loaded CreateProcess patching, FFX modules without exports).
 - **Narrative to one line**: a multi-step operation logs one summary line (inline-hook

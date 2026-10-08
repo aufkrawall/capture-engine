@@ -126,22 +126,35 @@ class StreamChangeGate {
 
 public:
     ChangeGate::Verdict Observe(uint64_t stream, uint64_t key, uint64_t nowMs = 0) noexcept {
-        ChangeGate* gate = SlotFor(stream);
-        return gate ? gate->Observe(key, nowMs) : ChangeGate::Verdict{true, 0};
+        Slot* slot = SlotFor(stream);
+        return slot ? slot->gate.Observe(key, nowMs) : ChangeGate::Verdict{true, 0};
     }
 
     ChangeGate::Verdict ObserveOrEvery(uint64_t stream, uint64_t key, uint32_t callIndex, uint32_t stride) noexcept {
-        ChangeGate* gate = SlotFor(stream);
-        return gate ? gate->ObserveOrEvery(key, callIndex, stride) : ChangeGate::Verdict{true, 0};
+        Slot* slot = SlotFor(stream);
+        return slot ? slot->gate.ObserveOrEvery(key, callIndex, stride) : ChangeGate::Verdict{true, 0};
+    }
+
+    // ObserveOrEvery with the heartbeat counted per stream instead of by a caller-supplied index. A shared
+    // index counts every stream's calls, so with N streams the heartbeat comes round N times as often as
+    // `stride` says; this one logs on the stream's first call, on every key change and on each stride-th
+    // call of that stream.
+    ChangeGate::Verdict ObserveOrEveryPerStream(uint64_t stream, uint64_t key, uint32_t stride) noexcept {
+        Slot* slot = SlotFor(stream);
+        if (!slot)
+            return {true, 0};
+        const uint32_t callIndex = slot->calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        return slot->gate.ObserveOrEvery(key, callIndex, stride);
     }
 
 private:
     struct Slot {
         std::atomic<uint64_t> owner{UINT64_MAX};  // unowned; FieldKey never yields UINT64_MAX
+        std::atomic<uint32_t> calls{0};           // ObserveOrEveryPerStream's call count
         ChangeGate gate;
     };
 
-    ChangeGate* SlotFor(uint64_t stream) noexcept {
+    Slot* SlotFor(uint64_t stream) noexcept {
         if (stream == UINT64_MAX)
             return nullptr;  // reserved empty owner; raw stream keys must also fail toward logging
         const size_t idx0 = ((stream * 0x9E3779B97F4A7C15ull) >> 32) % Capacity;
@@ -149,11 +162,11 @@ private:
             Slot& slot = slots_[(idx0 + probe) % Capacity];
             uint64_t owner = slot.owner.load(std::memory_order_acquire);
             if (owner == stream) {
-                return &slot.gate;
+                return &slot;
             }
             if (owner == UINT64_MAX &&
                 (slot.owner.compare_exchange_strong(owner, stream, std::memory_order_acq_rel) || owner == stream)) {
-                return &slot.gate;
+                return &slot;
             }
         }
         return nullptr;

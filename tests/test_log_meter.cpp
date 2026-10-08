@@ -211,6 +211,32 @@ TEST(LogMeterStreamChangeGateTest, HeartbeatStrideCountsAllStreams) {
     EXPECT_EQ(logged, 4) << "first line of each stream plus the heartbeats at calls 300 and 600";
 }
 
+TEST(LogMeterStreamChangeGateTest, PerStreamHeartbeatCountsEachStreamsOwnCalls) {
+    log_meter::StreamChangeGate<16> gate;
+    const uint64_t key = log_meter::FieldKey(3);
+    int logged[4] = {};
+    for (uint32_t call = 1; call <= 1200; ++call) {
+        const uint64_t stream = call % 4;
+        logged[stream] += gate.ObserveOrEveryPerStream(stream, key, 100).log ? 1 : 0;
+    }
+    // Each stream makes 300 calls of its own: its first line plus the heartbeats at its 100th, 200th, 300th.
+    // A shared index would have produced a heartbeat every 100 calls across all four streams instead.
+    for (int count : logged)
+        EXPECT_EQ(count, 4);
+}
+
+TEST(LogMeterStreamChangeGateTest, PerStreamHeartbeatStillLogsEveryKeyChangeWithItsSuppressedCount) {
+    log_meter::StreamChangeGate<4> gate;
+    const uint64_t a = log_meter::FieldKey(1);
+    const uint64_t b = log_meter::FieldKey(2);
+    EXPECT_TRUE(gate.ObserveOrEveryPerStream(7, a, 1000).log);
+    for (int i = 0; i < 9; ++i)
+        EXPECT_FALSE(gate.ObserveOrEveryPerStream(7, a, 1000).log);
+    const auto changed = gate.ObserveOrEveryPerStream(7, b, 1000);
+    EXPECT_TRUE(changed.log);
+    EXPECT_EQ(changed.suppressed, 9u);
+}
+
 TEST(LogMeterChangeGateTest, ForceLogsAnUnchangedLineWithItsSwallowedRepeats) {
     log_meter::ChangeGate gate;
     const uint64_t key = log_meter::FieldKey(5);
@@ -236,4 +262,52 @@ TEST(LogMeterTest, StreamlineUiTagCallShapesAreSeparateStreams) {
         logged += gate.ObserveOrEvery(stream, ce::log_meter::FieldKey(numTags, 7u), call, 300) ? 1 : 0;
     }
     EXPECT_EQ(logged, 6);  // three first appearances, three heartbeats (calls 300, 600, 900)
+}
+
+// The Witcher 3 Remastered tags ONE resource per slSetTagForFrame call and cycles the buffer role, so every call
+// has the same api, feature, viewport and numTags (20261008_220437: 11466 of 25k lines, plus a line per tag).
+TEST(LogMeterTest, StreamlineSingleTagCallsAreSeparateStreamsPerBufferType) {
+    const char* api = "slSetTagForFrame";
+    const uint32_t types[] = {0, 1, 2, 69, 14, 42, 7, 8, 3, 4, 40, 58, 68};
+    constexpr uint32_t kTypes = sizeof(types) / sizeof(types[0]);
+    constexpr uint32_t kCalls = 13u * 150u;  // 150 frames, one call per type
+
+    // Without the type in the stream every call reads as a change of the one stream: the old behaviour.
+    {
+        ce::log_meter::StreamChangeGate<64> gate;
+        const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 348957, 1, 0);
+        int logged = 0;
+        for (uint32_t call = 0; call < kCalls; ++call) {
+            logged += gate.ObserveOrEveryPerStream(stream, ce::log_meter::FieldKey(1u, 0u, types[call % kTypes]),
+                                                   ce::streamline_ui_tag_log::kHeartbeatStride)
+                          ? 1
+                          : 0;
+        }
+        EXPECT_EQ(logged, static_cast<int>(kCalls));
+    }
+
+    ce::log_meter::StreamChangeGate<64> gate;
+    int logged = 0;
+    for (uint32_t call = 0; call < kCalls; ++call) {
+        const uint32_t type = types[call % kTypes];
+        const uint64_t tagTypes = ce::log_meter::FieldKey(ce::log_meter::FieldKey(1u), type);
+        const uint64_t stream = ce::streamline_ui_tag_log::Stream(api, UINT32_MAX, 348957, 1, 0, tagTypes);
+        const uint64_t tagSet = ce::log_meter::FieldKey(1u, 0u, 0u, type, 1, 0u, 0u, 3840u, 2160u);
+        logged += gate.ObserveOrEveryPerStream(stream, tagSet, ce::streamline_ui_tag_log::kHeartbeatStride) ? 1 : 0;
+    }
+    EXPECT_EQ(logged, static_cast<int>(kTypes)) << "each buffer type logs once; 150 calls each is below the heartbeat";
+
+    // A real change of one buffer's tag (here: a resize) still logs, exactly once.
+    const uint32_t resized = 69;
+    const uint64_t resizedStream = ce::streamline_ui_tag_log::Stream(
+        api, UINT32_MAX, 348957, 1, 0, ce::log_meter::FieldKey(ce::log_meter::FieldKey(1u), resized));
+    int logsAfterResize = 0;
+    for (int i = 0; i < 50; ++i) {
+        logsAfterResize +=
+            gate.ObserveOrEveryPerStream(resizedStream, ce::log_meter::FieldKey(1u, 0u, 0u, resized, 1, 0u, 0u, 2560u, 1440u),
+                                         ce::streamline_ui_tag_log::kHeartbeatStride)
+                ? 1
+                : 0;
+    }
+    EXPECT_EQ(logsAfterResize, 1);
 }

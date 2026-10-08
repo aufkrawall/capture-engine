@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-08 - Streamline UI-tag log flood (Witcher 3 Remastered)
+
+- Session 20261008_220437: 11466 `Official UI tag record opportunity` + ~11.5k tag lines (85% of hook_debug.log) although the lines were already
+  gated. W3 sends single-tag `slSetTagForFrame` calls cycling 13 buffer types, all one stream, so each call was a "change". Tag types now key the
+  stream, 64 slots, per-stream heartbeat (details in `regression-testing-and-logging.md`). 0.1.7052; compare a fresh W3 log's `LOG FLOOD` section.
+- Same session confirmed dynamic MFG end to end (all five DRS keys answered by `sl.common`, multiplier 2x/3x/4x at ~138 fps on 144 Hz, no dump).
+
 ### 2026-10-08 - Dynamic MFG, second cause: cached NvAPI pointers in sl.common
 
 - Session 20261008_214202 (0.1.7050): the startup sweep patched `sl.common`'s `GetProcAddress` import, yet no lookup was routed and
