@@ -118,10 +118,6 @@ private:
     DXGI_FORMAT copyFormat_ = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
 
-    // The resource the current RTV descriptor was written for.
-    ID3D12Resource* viewedTarget_ = nullptr;
-    DXGI_FORMAT viewedFormat_ = DXGI_FORMAT_UNKNOWN;
-
     // Objects the pass has replaced but the GPU may still be reading, each held
     // until `fence_` passes the last value that could reference it.
     struct RetiredObject {

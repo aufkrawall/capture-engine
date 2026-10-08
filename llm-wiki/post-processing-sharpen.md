@@ -448,6 +448,15 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
 - Cost: ~0.18 ms per 4K frame (gamma alone, `GammaGpuTiming` disabled test). Tests: `test_gamma_*.cpp`,
   `test_config_gamma.cpp`, `tools/tests/test_sharpen_shader_generation.py`; the flow harness runs `srgb`.
 - Open: no hardware run yet (gradients, banding, FG switches in Talos/GTA); D3D9/OpenGL/DDraw not covered.
+- **The D3D12 target view is written for every recording** (`D3D12Pass::EnsureTargetView`). It used to skip the write when the
+  target pointer equalled the previous one; once a swapchain was replaced under a live pass, a new back buffer on the destroyed
+  buffer's address kept a view of a released resource and `OMSetRenderTargets` removed the device (D3D12 error 1042, then 613 on
+  the null RTV; `FlowDLSS.NativeReturnRejectsDepartedEpochConfirmationAndReactivationRemainsCovered`, frame 1333, about 1 run in 12
+  under 4-way parallel load, present in HEAD before the fix; 0 of 40 plain + 20 mixed-load runs after). Holding a reference to the
+  target instead is not an option (FSR FG watches back buffer refcounts). The descriptor is consumed while the list records, so
+  rewriting it per frame is a CPU copy that cannot disturb in-flight work. No deterministic flow probe exists: under the debug
+  layer the allocator never returned the destroyed object's address to a new resource (512 candidates tried), so
+  `DX12PostProcessTargetViewTest` is a source-scan guard and the flow scenario above is the stress evidence.
 - **Do not run the normal-route pass ahead of the overlay routing.** An early call at the top of
   `FrameProcessSession::Run()` (to decouple gamma from overlay init) ignored `skipOverlayDraw`; the first
   DLSS FG off in Witcher 3 (build 0.1.7034, session `20261008_172629`) then hit a real GPU fault (CreateRTVs

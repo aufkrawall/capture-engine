@@ -319,15 +319,15 @@ bool D3D12Pass::EnsureSourceCopy(ID3D12Device* device, ID3D12Resource* target, D
 }
 
 bool D3D12Pass::EnsureTargetView(ID3D12Device* device, ID3D12Resource* target, DXGI_FORMAT viewFormat) {
-    if (viewedTarget_ == target && viewedFormat_ == viewFormat)
-        return true;
-
+    // Written for every recording. A view skipped because the previous target "was the same pointer" is
+    // stale whenever that resource was destroyed and a new back buffer landed on its address (a swapchain
+    // replaced under a live pass): OMSetRenderTargets then reads a descriptor of a released resource and the
+    // device is removed. The write is a CPU-side copy into a descriptor the command list consumes while it
+    // records, so doing it per frame costs nothing and cannot touch a list the GPU is executing.
     D3D12_RENDER_TARGET_VIEW_DESC viewDesc = {};
     viewDesc.Format = viewFormat;
     viewDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     device->CreateRenderTargetView(target, &viewDesc, rtvHeap_->GetCPUDescriptorHandleForHeapStart());
-    viewedTarget_ = target;
-    viewedFormat_ = viewFormat;
     return true;
 }
 
@@ -545,8 +545,6 @@ void D3D12Pass::Shutdown() {
     copyHeight_ = 0;
     copyFormat_ = DXGI_FORMAT_UNKNOWN;
     copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
-    viewedTarget_ = nullptr;
-    viewedFormat_ = DXGI_FORMAT_UNKNOWN;
     fenceValue_ = 0;
     ownerDevice_ = nullptr;
     lastQueue_ = nullptr;
@@ -576,8 +574,6 @@ void D3D12Pass::Abandon() {
     copyHeight_ = 0;
     copyFormat_ = DXGI_FORMAT_UNKNOWN;
     copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
-    viewedTarget_ = nullptr;
-    viewedFormat_ = DXGI_FORMAT_UNKNOWN;
     fenceValue_ = 0;
     ownerDevice_ = nullptr;
     lastQueue_ = nullptr;
