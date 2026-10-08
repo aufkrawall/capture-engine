@@ -8,9 +8,9 @@
   disabled the flow probe gets D3D12 error 613 from the debug layer. In-game re-test pending.
 - Also fixed (pre-existing, found as a ~1/12 flake of `FlowDLSS.NativeReturn...` under load, identical on HEAD): the post-process pass cached its RTV
   by back buffer pointer, stale after a swapchain replacement (`post-processing-sharpen.md`). Always rewritten now.
-- Found on the way, not fixed: the DX12 post-process ledger counts HDR10/scRGB frames of a gamma-only config as `pass-failed`
-  (`SharpenDX12PresentedFrame` maps the deliberate `gamma_hdr_passthrough` idle to `PassResult::Failed`). Log noise + gap counting only;
-  `ExpectPostProcessAccounted` would fail an HDR scenario, so `FlowOverlayFormat.OverlayCoversEveryPresentAcrossSdrHdr10SdrBackBufferFlips` asserts coverage only.
+- HDR10/scRGB frames of a gamma-only config were `pass-failed` in the DX12 post-process ledger (`SharpenDX12PresentedFrame` mapped the
+  deliberate `gamma_hdr_passthrough` idle to `PassResult::Failed`). Fixed with `RequestHasWork` (`post-processing-sharpen.md`);
+  the SDR/HDR10/SDR flow scenario asserts the full ledger again.
 
 ### 2026-10-08 - Gamma build crashed Witcher 3 on DLSS FG off
 

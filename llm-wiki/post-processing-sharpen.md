@@ -436,6 +436,10 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
 - Quality: float math, sRGB-view targets are read raw (`sourceRaw`) to avoid a double quantisation, final
   8/10-bit output is dithered with spatially stable noise. HDR (PQ/scRGB) is passed through
   (`gamma_hdr_passthrough`); `SdrLinear` distinguishes FP16 SDR from scRGB.
+  A gamma-only request on an HDR target is a deliberate no-op, not a failure: `RequestHasWork(request, encoding)`
+  (`sharpen_policy.h`, the same predicate `Decide` uses) is asked before every DX12 call (`SharpenDX12PresentedFrame`, FSR
+  callback, FSR overlay output) and a frame without work returns `PassResult::NotRequested`, which neither the frame ledger nor a
+  route tally records. Before 2026-10-08 these frames were `pass-failed` (log noise, gap counting, flow `failed == 0` red).
 - A verified UE5 native gamma override replaces `gamma_source` (`gamma_native_curve.*`, published by
   `main_ue5_install.cpp`, invalidated on restore/module unload) so the two never correct twice.
 - Never skip a displayed frame: D3D12 command allocators and Vulkan command/fence slots grow instead of

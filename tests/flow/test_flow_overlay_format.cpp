@@ -50,14 +50,9 @@ TEST(FlowOverlayFormat, OverlayCoversEveryPresentAcrossSdrHdr10SdrBackBufferFlip
     ASSERT_TRUE(game.RenderFrames(30)) << game.Error();
 
     EXPECT_EQ(game.PhysicalPresents(), 90u);
-    // The overlay's own contract only: the post-process ledger (ExpectPostProcessAccounted) counts every HDR10
-    // frame of a gamma-only configuration as `pass-failed` although the pass idles on purpose
-    // (`gamma_hdr_passthrough`), which is not what this scenario is about.
-    const CEFlowOverlayCoverage coverage = game.Coverage();
-    EXPECT_EQ(coverage.presents, game.PhysicalPresents()) << "logs: " << game.LogDirectory();
-    EXPECT_EQ(coverage.uncovered, 0u) << "longest uncovered streak " << coverage.longestUncoveredStreak
-                                      << "; logs: " << game.LogDirectory();
-    EXPECT_EQ(coverage.doubleDraws, 0u) << "logs: " << game.LogDirectory();
+    // The harness runs display gamma on every frame: the HDR10 frames are a deliberate passthrough, so the
+    // post-process ledger must not count them as failures (ExpectPostProcessAccounted: failed == 0).
+    ce::flow::ExpectEveryPresentCoveredOnce(game);
     ce::flow::ExpectNoDebugLayerErrors();
 }
 

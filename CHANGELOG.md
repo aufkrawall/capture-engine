@@ -124,6 +124,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **False post-process failures on HDR games with display gamma on (DirectX 12):** HDR10 and scRGB frames, where gamma is deliberately left alone, were logged as `pass-failed` and counted as uncorrected frames. They are now treated as not requested, so the frame ledger and the per-route failure counts only show real failures.
+
 - **Device removal after a DirectX 12 swapchain switch with display gamma or sharpen on:** the post-process pass cached its render-target view by the back buffer's address, so when a replaced swapchain's new buffer landed on the address of the destroyed one, the pass recorded against a view of a released resource and the graphics device was removed (intermittent when switching DLSS frame generation off to native and back on). The view is now written for every frame.
 
 - **Overlay colors for a moment after start (The Witcher 3 DX12):** when the game switched its swapchain from `R8G8B8A8` to `R10G10B10A2` with HDR10 output and back during start-up, the overlay kept drawing through pipelines built for the old format, so its text showed garbled, oversaturated colors until the game switched back. The overlay now follows the format of the back buffer it writes, keeping one pipeline pair per format instead of rebuilding, and the HDR10 contract of those frames is applied to it.

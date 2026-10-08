@@ -283,6 +283,22 @@ inline bool Requested(const Request& request) {
            ce::gamma::Requested(request.gamma);
 }
 
+inline bool IsHdrEncoding(TargetEncoding encoding) {
+    return encoding == TargetEncoding::Pq || encoding == TargetEncoding::ScrgbLinear;
+}
+
+// Sharpening configured at an intensity that changes pixels.
+inline bool SharpenActive(const Request& request) {
+    return request.mode != Mode::Off && ClampIntensity(request.intensity) > kMinIntensity;
+}
+
+// Whether the request leaves any work for a target of this encoding: sharpening, or a gamma curve on an SDR
+// target. An HDR target keeps its transfer function, so a gamma-only request is a deliberate no-op there
+// (Decide's `gamma_hdr_passthrough`), not a pass that failed; callers account such frames as not requested.
+inline bool RequestHasWork(const Request& request, TargetEncoding encoding) {
+    return SharpenActive(request) || (ce::gamma::Requested(request.gamma) && !IsHdrEncoding(encoding));
+}
+
 struct Target {
     Route route = Route::Unknown;
     TargetEncoding encoding = TargetEncoding::Unknown;
@@ -325,9 +341,9 @@ inline Decision Decide(const Request& request, const Target& target) {
 
     decision.intensity = ClampIntensity(request.intensity);
 
-    const bool sharpen = request.mode != Mode::Off && decision.intensity > kMinIntensity;
+    const bool sharpen = SharpenActive(request);
     const bool gammaRequested = ce::gamma::Requested(request.gamma);
-    const bool hdr = target.encoding == TargetEncoding::Pq || target.encoding == TargetEncoding::ScrgbLinear;
+    const bool hdr = IsHdrEncoding(target.encoding);
     if (gammaRequested && !hdr) {
         decision.gamma = request.gamma;
         decision.gammaValuesLinear = (target.viewAppliesSrgbConversion && !target.sourceRaw) || target.encoding == TargetEncoding::SdrLinear;

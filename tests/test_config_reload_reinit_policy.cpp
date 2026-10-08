@@ -237,3 +237,28 @@ TEST(ConfigReloadReinitPolicyTest, WhitelistCacheIsIndependentOfResolvedTargetCo
     EXPECT_EQ(populate.find("resolvedTargetConfigs"), std::string::npos);
     EXPECT_EQ(populate.find("ResolveTargetConfig"), std::string::npos);
 }
+
+// Gamma alone on an HDR target idles on purpose (`gamma_hdr_passthrough`). Every DX12 route must ask the policy before
+// calling the pass, so those frames reach neither the frame ledger nor a route's failure tally as `pass-failed`.
+TEST(ConfigReloadReinitPolicyTest, Dx12PostProcessRoutesSkipFramesWithNoWorkInsteadOfCountingFailures) {
+    const std::string normal = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
+    const std::string callback = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
+    const std::string suspended = ReadSource("hook/d3d12/dx12_ffx_suspend_overlay.cpp");
+    ASSERT_FALSE(normal.empty());
+    ASSERT_FALSE(callback.empty());
+    ASSERT_FALSE(suspended.empty());
+
+    const size_t gate = normal.find("!ce::sharpen::RequestHasWork(request, targetEncoding)");
+    const size_t render = normal.find("RenderPresentedPostProcess(");
+    ASSERT_NE(gate, std::string::npos);
+    ASSERT_NE(render, std::string::npos);
+    EXPECT_LT(gate, render);
+    EXPECT_NE(normal.find("return PassResult::NotRequested;", gate), std::string::npos);
+
+    const size_t callbackGate = callback.find("RequestHasWork(postProcessRequest, outputEncoding)");
+    ASSERT_NE(callbackGate, std::string::npos);
+    EXPECT_LT(callbackGate, callback.find("RecordRuntimePostProcess(", callbackGate));
+    const size_t suspendGate = suspended.find("RequestHasWork(postProcess, targetEncoding)");
+    ASSERT_NE(suspendGate, std::string::npos);
+    EXPECT_LT(suspendGate, suspended.find("RecordRuntimePostProcess(", suspendGate));
+}

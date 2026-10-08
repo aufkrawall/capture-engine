@@ -354,3 +354,55 @@ TEST(SharpenConstants, IntensityReachesTheShaderBlock) {
     const ShaderConstants constants = BuildShaderConstants(Mode::Cas, decision, 1920, 1080);
     EXPECT_FLOAT_EQ(constants.intensity, 0.375f);
 }
+
+// A gamma-only request on an HDR target is a deliberate passthrough. The DX12 post-process accounting treats such
+// frames as not requested (neither corrected nor failed), so RequestHasWork must say exactly when Decide has work.
+TEST(SharpenPolicyRequestHasWork, GammaAloneHasNoWorkOnAnHdrTargetButDoesOnSdr) {
+    Request gammaOnly = MakeRequest(Mode::Off);
+    gammaOnly.gamma.source = 2.2f;
+    gammaOnly.gamma.destination = 2.4f;
+    ASSERT_TRUE(ce::gamma::Requested(gammaOnly.gamma));
+
+    EXPECT_TRUE(RequestHasWork(gammaOnly, TargetEncoding::Unorm));
+    EXPECT_TRUE(RequestHasWork(gammaOnly, TargetEncoding::Srgb));
+    EXPECT_TRUE(RequestHasWork(gammaOnly, TargetEncoding::SdrLinear));
+    EXPECT_FALSE(RequestHasWork(gammaOnly, TargetEncoding::Pq));
+    EXPECT_FALSE(RequestHasWork(gammaOnly, TargetEncoding::ScrgbLinear));
+}
+
+TEST(SharpenPolicyRequestHasWork, SharpeningKeepsWorkOnHdrAndZeroIntensityHasNone) {
+    EXPECT_TRUE(RequestHasWork(MakeRequest(Mode::Cas), TargetEncoding::Pq));
+    EXPECT_TRUE(RequestHasWork(MakeRequest(Mode::Rcas), TargetEncoding::ScrgbLinear));
+    EXPECT_FALSE(RequestHasWork(MakeRequest(Mode::Off), TargetEncoding::Srgb));
+    EXPECT_FALSE(RequestHasWork(MakeRequest(Mode::Cas, kDefaultStrength, 0.0f), TargetEncoding::Srgb));
+    // Between 0 and the minimum: Requested() is true but Decide refuses with zero_intensity - not a failure either.
+    const Request tiny = MakeRequest(Mode::Cas, kDefaultStrength, kMinIntensity * 0.5f);
+    EXPECT_FALSE(RequestHasWork(tiny, TargetEncoding::Srgb));
+}
+
+TEST(SharpenPolicyRequestHasWork, AgreesWithDecideOnEveryBenignRefusal) {
+    Request gammaOnly = MakeRequest(Mode::Off);
+    gammaOnly.gamma.source = 2.2f;
+    gammaOnly.gamma.destination = 2.4f;
+    const Request requests[] = {MakeRequest(Mode::Off),
+                                MakeRequest(Mode::Cas),
+                                MakeRequest(Mode::Rcas, kDefaultStrength, 0.0f),
+                                MakeRequest(Mode::Cas, kDefaultStrength, kMinIntensity * 0.5f),
+                                gammaOnly};
+    const TargetEncoding encodings[] = {TargetEncoding::Unorm, TargetEncoding::Srgb, TargetEncoding::SdrLinear,
+                                        TargetEncoding::Pq, TargetEncoding::ScrgbLinear};
+    for (const Request& request : requests) {
+        for (const TargetEncoding encoding : encodings) {
+            Target target = MakeUsableTarget();
+            target.encoding = encoding;
+            const Decision decision = Decide(request, target);
+            const bool benign = std::strcmp(decision.reason, "disabled") == 0 ||
+                                std::strcmp(decision.reason, "zero_intensity") == 0 ||
+                                std::strcmp(decision.reason, "gamma_hdr_passthrough") == 0;
+            // A usable target means Decide refuses only because there is nothing to do.
+            EXPECT_EQ(RequestHasWork(request, encoding), decision.run)
+                << "encoding " << static_cast<int>(encoding) << " reason " << decision.reason;
+            EXPECT_EQ(!decision.run, benign) << "reason " << decision.reason;
+        }
+    }
+}

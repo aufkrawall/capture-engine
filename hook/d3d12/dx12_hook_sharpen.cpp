@@ -84,9 +84,12 @@ ce::post_process_route::PassResult SharpenDX12PresentedFrame(IDXGISwapChain* pSw
     // writing through the storage format keeps the filter in the stored
     // perceptual space instead of paying for a decode/encode round trip.
     const D3D12_RESOURCE_DESC resourceDesc = backBuffer->GetDesc();
+    const ce::sharpen::TargetEncoding targetEncoding = ce::sharpen::ResolveDxgiEncoding(resourceDesc.Format, isHDR);
+    // Gamma alone on an HDR target is a deliberate passthrough: neither a corrected frame nor a failed one.
+    if (!ce::sharpen::RequestHasWork(request, targetEncoding))
+        return PassResult::NotRequested;
     if (!ce::sharpen::RenderPresentedPostProcess(device.Get(), queue, backBuffer.Get(), resourceDesc.Format,
-                                                 request, route,
-                                                 ce::sharpen::ResolveDxgiEncoding(resourceDesc.Format, isHDR)))
+                                                 request, route, targetEncoding))
         return PassResult::Failed;
     DX12_MarkPostProcessRendered(pSwapChain);
     return PassResult::Applied;

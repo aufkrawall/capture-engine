@@ -329,11 +329,12 @@ public:
 
         if (!clearTransparent) {
             const auto postProcess = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
-            if (ce::sharpen::Requested(postProcess))
+            const ce::sharpen::TargetEncoding targetEncoding = ce::sharpen::ResolveDxgiEncoding(targetDesc.Format, hdr);
+            if (ce::sharpen::Requested(postProcess) && ce::sharpen::RequestHasWork(postProcess, targetEncoding))
                 NotePostProcessRouteResult(
                     ce::post_process_route::RuntimeRoute::FsrOverlayOutput,
                     ce::sharpen::RecordRuntimePostProcess(device.Get(), slot.commandList.Get(), targetResource,
-                        targetState, postProcess, ce::sharpen::ResolveDxgiEncoding(targetDesc.Format, hdr))
+                        targetState, postProcess, targetEncoding)
                         ? ce::post_process_route::PassResult::Applied
                         : ce::post_process_route::PassResult::Failed);
         }
