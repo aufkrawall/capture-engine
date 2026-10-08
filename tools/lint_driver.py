@@ -17,6 +17,35 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from tools.clang_tidy_cache import analyze_warning_output, run_cached_clang_tidy
+from tools.check_module_boundaries import summary_lines
+
+
+def _check_module_boundaries(env, build_module) -> None:
+    """Architecture regressions are fatal even when style checks are advisory."""
+    b = build_module
+    started = time.time()
+    command = [sys.executable, os.path.join(b.PROJECT_ROOT, "tools", "check_module_boundaries.py"),
+               "--json", "--prune-exceptions"]
+    report: Dict[str, Any] = {}
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", env=env,
+                                cwd=b.PROJECT_ROOT, timeout=60)
+        b.write_process_diagnostics_artifact("module_boundary_diagnostics", "module_boundaries.log", command, result)
+        report = json.loads(result.stdout)
+        passed = result.returncode == 0 and report["success"] is True
+        lines = summary_lines(report)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        passed = False
+        lines = [f"Module boundaries: FAILED ({error})"]
+    for line in lines:
+        b.log(line)
+    b.record_verification_step(
+        "module_boundaries", "passed" if passed else "failed",
+        duration_seconds=time.time() - started, details=report,
+    )
+    if not passed:
+        b.log("ERROR: Module dependency rules regressed; inspect module_boundaries.log. No new exceptions are allowed.")
+        raise SystemExit(1)
 
 
 def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
@@ -28,6 +57,7 @@ def run_lint(env, *, advisory: bool = False, build_module=None) -> bool:
     b = build_module
 
     b.log("=== Running Linting ===")
+    _check_module_boundaries(env, b)
     lint_start = time.time()
     checks_ok = True
     lint_details: Dict[str, Any] = {}

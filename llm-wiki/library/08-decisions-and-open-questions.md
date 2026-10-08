@@ -92,8 +92,13 @@ today).
 | Q10 | **Self-exclusion:** how do the injector and screen-grab privacy recognize CE's own processes and windows? `screen_grab_privacy.cpp:141` matches `captureengine.exe` by name | A third-party client process hosts the runtime (and maybe the desktop overlay): CE could inject into it, or record its overlay windows | Read the injection exclusion policy (`injection_policy.h`, `injection_path_policy.h`) and privacy rules; replace names with PID-based identity published by the runtime | M7 (blocker for third parties) |
 | Q11 | `log_level=none` today creates no `logs/` tree at all | The library must keep that guarantee for `data_dir` | Test: create with log_level none → no directory | M3 |
 | Q12 | Redistribution obligations for third parties (LGPL FFmpeg corresponding source, licenses) | The SDK package must carry them | `build_corresponding_source.py`, license staging | M8 |
+| Q13 | M3's initial mechanical moves turn 12 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` and `hotkey_input_hook.cpp` still include `main_internal.h`, and `child_recording_stop.h` remains in the app | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves | M3 commit 1 |
 
 ## Evidence log for this plan
+
+- 2026-10-08, after `f76aa68e`: the M3 mechanical path mapping over the 3645-edge graph produces
+  12 new forbidden edges, including controller recording/hotkey accesses to main_internal.h.
+  Q13 records this staging constraint; the boundary rules are not relaxed to hide the coupling.
 
 - 2026-10-07, at `644219f2`: initial facts from `include/libcaptureengine.h`,
   `captureengine/app/{libcaptureengine*.cpp,main_entry.cpp,main_controller.cpp,main_recording.cpp,

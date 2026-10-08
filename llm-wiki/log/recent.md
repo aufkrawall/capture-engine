@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-08 - Module boundaries enforced by verification
+
+- Lint fails architecture regressions even in advisory mode; unfiltered Python gates run policy/gate
+  fixtures, the live tree scan and depth report. Manifest details preserve complete includer counts.
+- Clean transaction 20261008_085706_build_7026 exposed fixtures inheriting the enclosing Git approval
+  set. The checker now requires the exact repository root; a focused regression protects isolation.
+  Resumed verify 20261008_090850_build_7026 passes native/Python/ASan/all 32 FG and lint ratchets;
+  setup is a fresh 38,815,186-byte PE. Accepted warnings remain 706 across 1011 TUs.
+- Actual temporary hook include of app/main_internal.h fails; restored source scan passes. Twenty-three
+  boundary/gate cases (31 with existing lint cases) pass. Q13 documents 12 M3 move-time couplings;
+  no new waiver is added. No runtime/frontend/library binary or hardware/A/V delivery is claimed.
+
 ### 2026-10-08 - Library module dependency checker
 
 - The source scanner checks quoted/angle and relative includes, ignores comments/raw fixture strings,
@@ -213,18 +225,3 @@
   less effectively through AMD's leftover proxy, and the one-frame modelled anchor understates UE without Reflex.
 - Open: the measured FG base read 138.4 at 20:51:21 while the markers said 28.9 ms. It agreed again at 20:51:29.
   Not traced.
-
-### 2026-10-06 - Talos 20261006_203030 (0.1.7010): "Reflex 60 instead of 30" after switching
-
-- Reflex was off from 20:32:29 to 20:34:38: Talos switches it off for FSR FG and leaves it off afterwards. The ~46 ms
-  "Latency est." after FSR FG was switched off (refresh-pinned menu, GPU 7 %) is AMD's proxy swapchain, which stays in
-  place: 32 ms from present to display, against 18 ms before FSR in the same menu. The game was blocked 5.3 ms per
-  frame in the proxy Present. At 75 fps gameplay the readings match before and after the switch. No CE regression
-  was found; the 15 s cadence missed whatever the user saw.
-- Fixed: the sample is now also logged when the value changes band. `idUnmatched` no longer counts the proxy's
-  passthrough outputs while FG is off. Tests: `APassthroughProxyWithoutFrameGenerationOffersNoIdentity` (fails
-  without the fix), `LogBandSeparatesAVisibleJumpButNotJitter`.
-- First FSR FG run by frame identity: `idQueue=1 idMatched=2029 idUnmatched=6`, at 62.6 ms (median 65.1) with a
-  71.7 fps base and 142.4 fps output. That is one application frame behind the newest, not the 3-4 that counting
-  produced. `scanout=` was logged. `markerOnPresentingThread=` equalled every paired marker
-  (`markerOnOtherThread=0`): Talos brackets its Present.

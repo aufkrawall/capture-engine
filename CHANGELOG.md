@@ -12,6 +12,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Enforced library dependency rules:** lint and unfiltered verification now reject module boundary regressions, including during advisory lint, and retain dependency/depth counts in verification reports.
+
 - **Library development checks:** added a module dependency checker that rejects new private-header and UI dependencies, tracks existing exceptions, and reports internal-header reach while the standalone engine is extracted.
 
 - **Library integration documentation:** adopted the standalone runtime, public API and frontend migration plan with explicit verification requirements for programs embedding CaptureEngine.

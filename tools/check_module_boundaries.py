@@ -166,6 +166,18 @@ def evaluate(root: Path, config: dict[str, Any], approved: dict[str, Any] | None
 
 def committed_policy(root: Path, path: Path) -> dict[str, Any] | None:
     """Compare against the checked-out approval set; never add an exception via CLI."""
+    repository = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=root,
+        capture_output=True, text=True, encoding="utf-8", timeout=10,
+    )
+    if repository.returncode != 0:
+        if (root / ".git").exists():
+            raise ValueError("Cannot identify module boundary repository")
+        return None
+    if Path(repository.stdout.strip()).resolve() != root.resolve():
+        # Build self-tests place standalone fixtures under build/tmp. They must
+        # not accidentally inherit the enclosing project's approval set.
+        return None
     relative = path.resolve().relative_to(root.resolve()).as_posix()
     result = subprocess.run(
         ["git", "show", f"HEAD:{relative}"], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=10,
@@ -181,12 +193,7 @@ def committed_policy(root: Path, path: Path) -> dict[str, Any] | None:
     if tracked.returncode == 0 and tracked.stdout.strip():
         raise ValueError("Cannot read committed module boundary approval set")
     if tracked.returncode != 0:
-        repository = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"], cwd=root,
-            capture_output=True, text=True, encoding="utf-8", timeout=10,
-        )
-        if repository.returncode == 0:
-            raise ValueError("Cannot verify committed module boundary approval set")
+        raise ValueError("Cannot verify committed module boundary approval set")
     return None
 
 

@@ -76,11 +76,26 @@ def run_python_tool_self_tests(env):
     )
     ok = True
     for result in results:
+        result_ok = result.returncode == 0
+        details = {"exit_code": result.returncode, "command": result.command}
+        if result_ok and result.name in {"module_boundary_tree", "module_depth"}:
+            try:
+                report = json.loads(result.stdout)
+                details["metrics"] = report
+                if result.name == "module_boundary_tree":
+                    from tools.check_module_boundaries import summary_lines
+
+                    result_ok = report["success"] is True
+                    for line in summary_lines(report):
+                        log(line)
+            except (ValueError, KeyError, TypeError) as error:
+                log(f"ERROR: Invalid {result.name} report: {error}")
+                result_ok = False
         record_verification_step(
             f"python_tool_self_test.{result.name}",
-            "passed" if result.returncode == 0 else "failed",
+            "passed" if result_ok else "failed",
             duration_seconds=result.elapsed,
-            details={"exit_code": result.returncode, "command": result.command},
+            details=details,
         )
         if result.stdout:
             log(f"[python_tool_self_test:{result.name}:stdout]\n{result.stdout.rstrip()}", detail=True)
@@ -89,7 +104,7 @@ def run_python_tool_self_tests(env):
                 f"[python_tool_self_test:{result.name}:stderr]\n{result.stderr.rstrip()}",
                 detail=result.returncode == 0,
             )
-        if result.returncode != 0:
+        if not result_ok:
             log(f"Python tool self-test failed: {result.name} (exit code {result.returncode})")
             ok = False
     if ok:

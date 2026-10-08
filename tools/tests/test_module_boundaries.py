@@ -6,9 +6,11 @@ import contextlib
 import copy
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tools import check_module_boundaries as boundaries
 from tools.analysis.module_depth import measure
@@ -173,6 +175,14 @@ auto source = R"fixture(
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(boundaries.main(["--root", str(self.root), "--prune-exceptions"]), 1)
         self.assertEqual(path.read_bytes(), original)
+
+    def test_fixture_cannot_inherit_the_enclosing_repository_approval_set(self) -> None:
+        path = self.write("tools/module_boundaries.json", json.dumps(self.config))
+        outer = str(Path(__file__).resolve().parents[2])
+        with patch("tools.check_module_boundaries.subprocess.run", return_value=subprocess.CompletedProcess(
+                [], 0, stdout=outer, stderr="")) as run:
+            self.assertIsNone(boundaries.committed_policy(self.root, path))
+        self.assertEqual(run.call_args.args[0], ["git", "rev-parse", "--show-toplevel"])
 
     def test_invalid_policy_and_undocumented_exceptions_fail_closed(self) -> None:
         mutations = (

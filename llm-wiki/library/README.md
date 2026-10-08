@@ -48,7 +48,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | Milestone | State | Last commit | Notes |
 | --- | --- | --- | --- |
 | M0 Adopt plan, move docs into the wiki | complete | `a50d1600` | Canonical plan; old D8/D9/D13 superseded; historical evidence archived; links and changelog validated. |
-| M1 Module boundary checker | in progress | checker commit | 19 exact exceptions; 3645 edges; 16 fixtures. Depth: DX12 internal 74 includers (2 outside), media internal 29 (0 outside); runtime/frontend absent. Build integration remains. |
+| M1 Module boundary checker | complete | `f76aa68e` + gate integration commit | 19 exact exceptions; 3645 edges; 23 boundary/gate fixtures (31 with lint tests). Lint and unfiltered close enforce rules; native/Python/ASan/32 FG checks and setup 0.1.7026 pass. Internal reach: DX12 74 (2 outside), media 29 (0 outside); runtime/frontend absent. |
 | M2 Public header v2 + ABI tests (unshipped) | not started | | |
 | M3 Runtime core inside the exe | not started | | |
 | M4 C ABI implemented; frontend on the API; v1 removed | not started | | |

@@ -186,6 +186,14 @@ is in tools/tests/test_build_flags.py; do not report cached resume as strict cle
 
 ### Ratchets: what each one actually measures
 
+The library module boundary checker runs in lint and in the unfiltered Python tool self-tests.
+`tools/module_boundaries.json` records exact legacy include edges with reasons/milestones; new
+violations or additions to the committed exception set fail even under advisory lint. Lint's
+`--prune-exceptions` can only remove obsolete edges. Complete internal-header includer counts and
+initial depth measurements are retained in verification step details; the build log shows the
+largest headers. `tools/analysis/module_depth.py` labels declaration/depth estimates and does not
+claim scope-aware writable-global counts after runtime/frontend code exists. See library/02 and 07.
+
 `tools/clang_tidy_baseline.json` records accepted counts per check over the translation units they were measured
 over. It covers **compiler** diagnostics as well as clang-tidy checks: the lint pass used to run with
 `-extra-arg=-w`, which switched every `-Wall`/`-Wextra`/`-Wshadow`/`-Wformat=2` warning off, and with no `-Werror`
