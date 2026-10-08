@@ -88,6 +88,7 @@ FlowGame::FlowGame(const std::string& testName) {
     getOverlayCoverage_ =
         reinterpret_cast<CEFlow_GetOverlayCoverage_t>(GetProcAddress(hook_, "CEFlow_GetOverlayCoverage"));
     getPublishedFG_ = reinterpret_cast<CEFlow_GetPublishedFG_t>(GetProcAddress(hook_, "CEFlow_GetPublishedFG"));
+    getPostProcess_ = reinterpret_cast<CEFlow_GetPostProcess_t>(GetProcAddress(hook_, "CEFlow_GetPostProcess"));
     getPostSLLifecycle_ =
         reinterpret_cast<CEFlow_GetPostSLLifecycle_t>(GetProcAddress(hook_, "CEFlow_GetPostSLLifecycle"));
     tryConfirmPostSLEpoch_ =
@@ -111,7 +112,7 @@ FlowGame::FlowGame(const std::string& testName) {
     advanceClock_ = reinterpret_cast<CEFlow_AdvanceClock_t>(GetProcAddress(hook_, "CEFlow_AdvanceClock"));
     clockMicroseconds_ =
         reinterpret_cast<CEFlow_ClockMicroseconds_t>(GetProcAddress(hook_, "CEFlow_ClockMicroseconds"));
-    if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !shutdown_ || !advanceClock_ ||
+    if (!init || !pumpHookThread_ || !getOverlayCoverage_ || !getPublishedFG_ || !getPostProcess_ || !shutdown_ || !advanceClock_ ||
         !clockMicroseconds_ || !getPostSLLifecycle_ || !tryConfirmPostSLEpoch_ || !trackQueue_ || !queueOriginal_ ||
         !forwardQueue_ || !resetQueueBindings_ || !trackSignalQueue_ || !signalOriginal_ || !forwardSignal_ ||
         !resetDeviceTrace_ || !removeSignalQueue_ || !repairPresentHooks_ || !retainRealSwapchain_ ||
@@ -378,6 +379,13 @@ CEFlowOverlayCoverage FlowGame::Coverage() const {
     if (getOverlayCoverage_)
         getOverlayCoverage_(&coverage);
     return coverage;
+}
+
+CEFlowPostProcess FlowGame::PostProcess() const {
+    CEFlowPostProcess postProcess;
+    if (getPostProcess_)
+        getPostProcess_(&postProcess);
+    return postProcess;
 }
 
 uint64_t FlowGame::PhysicalPresents() const {

@@ -31,6 +31,20 @@ struct CEFlowOverlayCoverage {
     uint64_t outputOwnerViolations = 0;
 };
 
+// What CE's DX12 frame transaction did with the post-process pass (sharpen + display gamma) per normal-route frame.
+struct CEFlowPostProcess {
+    uint64_t frames = 0;
+    uint64_t corrected = 0;
+    uint64_t covered = 0;  // another route (PostSL, runtime output) corrects these frames itself
+    uint64_t uncorrected = 0;
+    uint64_t gapRuns = 0;
+    uint64_t failed = 0;
+    uint64_t unclassified = 0;
+    uint64_t leftBeforeDecision = 0;
+    uint64_t routeApplied = 0;  // corrected by a route outside the frame transaction (PostSL, FSR output)
+    uint64_t routeFailed = 0;
+};
+
 struct CEFlowPostSLLifecycle {
     uint32_t epoch = 0;
     uint32_t callbacksInFlight = 0;
@@ -55,6 +69,7 @@ using CEFlow_PumpHookThread_t = void (*)();
 using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);
 using CEFlow_GetPublishedFG_t = void (*)(CEFlowPublishedFG* out);
+using CEFlow_GetPostProcess_t = void (*)(CEFlowPostProcess* out);
 using CEFlow_Shutdown_t = void (*)();
 using CEFlow_TrackQueue_t = void (*)(ID3D12CommandQueue*);
 using CEFlow_ResetQueueBindings_t = void (*)();

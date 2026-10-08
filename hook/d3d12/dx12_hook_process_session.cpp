@@ -32,6 +32,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicat
 
 void FrameProcessSession::Run() {
     auto metricsCompletion = ce::make_scope_guard([&] { if (metricsGuardArmed) LogFrameMetrics(); });
+    auto postProcessLedger = ce::make_scope_guard([&] { NotePostProcessOutcome(); });
     ProcessFrameFlow flow = ProcessFrameFlow::kContinue;
     flow = PrepareFrame();
     if (flow == ProcessFrameFlow::kReturn) {
@@ -50,12 +51,17 @@ void FrameProcessSession::Run() {
         independentFSRTopmostCompositedThisPresent =
             TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR();
     }
+    // The post-process pass does not need the overlay. While overlay init is deferred or backing off
+    // (startup grace, resume settle, repeated init failures) it keeps correcting frames, but only in
+    // states where CE work on the game queue is as safe as in a plain game.
     flow = InitOverlayBackend();
     if (flow == ProcessFrameFlow::kReturn) {
+        RunPostProcessWhileOverlayUnavailable();
         return;
     }
     flow = InitOverlaySyncAndFocusHold();
     if (flow == ProcessFrameFlow::kReturn) {
+        RunPostProcessWhileOverlayUnavailable();
         return;
     }
     flow = HandleOuterFGTransition();

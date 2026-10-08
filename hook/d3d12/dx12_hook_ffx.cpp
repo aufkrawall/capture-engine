@@ -662,10 +662,14 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
         auto* output = static_cast<ID3D12Resource*>(desc->outputSwapChainBuffer.resource);
         const auto outputDesc = output->GetDesc();
         const bool hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(outputDesc.Format);
-        ce::sharpen::RecordRuntimePostProcess(static_cast<ID3D12Device*>(desc->device),
-            static_cast<ID3D12GraphicsCommandList*>(desc->commandList), output,
-            GetDX12StateFromFFXResourceState(desc->outputSwapChainBuffer.state), postProcessRequest,
-            ce::sharpen::ResolveDxgiEncoding(outputDesc.Format, hdr));
+        NotePostProcessRouteResult(
+            ce::post_process_route::RuntimeRoute::FsrCallback,
+            ce::sharpen::RecordRuntimePostProcess(static_cast<ID3D12Device*>(desc->device),
+                static_cast<ID3D12GraphicsCommandList*>(desc->commandList), output,
+                GetDX12StateFromFFXResourceState(desc->outputSwapChainBuffer.state), postProcessRequest,
+                ce::sharpen::ResolveDxgiEncoding(outputDesc.Format, hdr))
+                ? ce::post_process_route::PassResult::Applied
+                : ce::post_process_route::PassResult::Failed);
     }
     ce::sharpen::CollectRuntimePostProcess(!ce::sharpen::Requested(postProcessRequest));
     bool overlayDrawn = false;

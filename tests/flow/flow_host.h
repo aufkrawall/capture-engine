@@ -109,6 +109,7 @@ public:
     bool RenderFrames(int count, PresentMethod method = PresentMethod::kPresent);
 
     CEFlowOverlayCoverage Coverage() const;
+    CEFlowPostProcess PostProcess() const;
     // Presents on real swapchains, counted where they happen (the game's native swapchain, the fake
     // runtimes' presenters) - independent of what CE saw.
     uint64_t PhysicalPresents() const;
@@ -191,6 +192,7 @@ private:
     CEFlow_InstallPresentVTableHooks_t installPresentVTableHooks_ = nullptr;
     CEFlow_PumpHookThread_t pumpHookThread_ = nullptr;
     CEFlow_GetOverlayCoverage_t getOverlayCoverage_ = nullptr;
+    CEFlow_GetPostProcess_t getPostProcess_ = nullptr;
     CEFlow_GetPublishedFG_t getPublishedFG_ = nullptr;
     CEFlow_Shutdown_t shutdown_ = nullptr;
     CEFlow_GetPostSLLifecycle_t getPostSLLifecycle_ = nullptr;

@@ -168,6 +168,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                     // FG pipeline still warming up — don't fall back to pre-SL.
                     // Just skip rendering until PostSL stabilizes.
                     skipOverlayDraw = true;
+                    skipCause = ce::post_process_route::SkipCause::PostSlWarmup;
                     if (stableFrames > 0 && stallCount > kPostSLStallThreshold &&
                         (stallCount == kPostSLStallThreshold + 1 || (stallCount % 30) == 0)) {
                         const bool serviced = DX12_TryInvokePostSLStartupActivationCallback(
@@ -192,6 +193,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                     }
                 } else if (stallCount <= kPostSLStallThreshold) {
                     skipOverlayDraw = true;  // PostSL recently active — suppress pre-SL
+                    skipCause = ce::post_process_route::SkipCause::PostSlRecent;
                 } else {
                     // PostSL has stalled — SL FG is nominally on but not generating
                     // frames.  Allow pre-SL rendering as fallback.
@@ -354,9 +356,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
     // Before capture and before the overlay: the recording and the screen both
     // show the filtered frame, and CE's own overlay pixels are written after the
     // filter has already run so they are never sharpened.
-    if (!skipOverlayDraw && !ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(nullptr)) {
-        SharpenDX12PresentedFrame(pSwapChain, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
-    }
+    RunPostProcessOnNormalRoute();
 
     if (captureBeforeOverlay) {
         captureBeforeOverlayPublished = true;

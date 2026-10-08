@@ -19,6 +19,8 @@
 
 namespace {
 }
+#include "common/graphics/post_process_route_policy.h"
+#include "dx12_post_process_routes.h"
 #include <combaseapi.h>
 #include <d3d11.h>
 #include <d3d11on12.h>
@@ -558,8 +560,22 @@ bool DX12_ShouldUseStreamlineFinalOutputCapture();
 // the overlay draws. See hook/d3d12/dx12_hook_sharpen.cpp.
 bool DX12_PostProcessAlreadyRendered(IDXGISwapChain* swapchain);
 void DX12_MarkPostProcessRendered(IDXGISwapChain* swapchain);
-void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue,
-                               bool hasBackBufferIndex, UINT backBufferIndex);
+// What the DX12 frame transaction did with the post-process pass, per normal-route frame (testing and diagnostics).
+struct DX12PostProcessSnapshot {
+    uint64_t frames = 0;
+    uint64_t corrected = 0;  // the pass ran in this frame's transaction
+    uint64_t covered = 0;    // another route (PostSL, runtime output) runs it for these frames
+    uint64_t uncorrected = 0;
+    uint64_t gapRuns = 0;
+    uint64_t failed = 0;
+    uint64_t unclassified = 0;
+    uint64_t leftBeforeDecision = 0;
+    uint64_t routeApplied = 0;  // frames corrected by a route outside the frame transaction (PostSL, FSR output)
+    uint64_t routeFailed = 0;
+};
+DX12PostProcessSnapshot GetPostProcessSnapshot();
+ce::post_process_route::PassResult SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue,
+                                                             bool hasBackBufferIndex, UINT backBufferIndex);
 void ReleaseDX12SharpenResources(bool releaseObjects = true);
 
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_overlay_shared.h"
 
@@ -599,11 +600,39 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     }
 
     if (dx12_hook_g_State.fence && queueToFlush) {
-        UINT64 waitValue = dx12_hook_g_State.currentFenceValue + 1;
-        if (SUCCEEDED(queueToFlush->Signal(dx12_hook_g_State.fence, waitValue))) {
-            if (dx12_hook_g_State.fence->GetCompletedValue() < waitValue) {
-                dx12_hook_g_State.fence->SetEventOnCompletion(waitValue, dx12_hook_g_State.fenceEvent);
-                WaitForSingleObject(dx12_hook_g_State.fenceEvent, 200);
+        // What must be done before the overlay's allocators, list and fence go away is the overlay's own
+        // submissions, and the overlay fence already says when they finished (currentFenceValue is the value
+        // signalled behind the last of them). A fresh Signal on the game queue instead waits for EVERYTHING ahead
+        // of it on that queue, the game's and Streamline's included: after DLSS FG off the primary queue can sit
+        // behind work that only completes once this very Present thread returns, so the wait ran its whole 200 ms
+        // timeout on every menu open (Witcher 3 session 20261008_181746: ProcessFrame 202.9/203.0/203.4 ms, the
+        // frame in front of it on screen for that long). A signal that was deferred past the last submit is not in
+        // the fence yet, so that rare state keeps the full-queue flush.
+        const bool deferredSignalPending = dx12_hook_g_deferredSignalValue.load(std::memory_order_acquire) != 0;
+        UINT64 waitValue = dx12_hook_g_State.currentFenceValue;
+        bool flushed = true;
+        if (deferredSignalPending) {
+            waitValue = dx12_hook_g_State.currentFenceValue + 1;
+            flushed = SUCCEEDED(queueToFlush->Signal(dx12_hook_g_State.fence, waitValue));
+        }
+        if (flushed && waitValue > 0 && dx12_hook_g_State.fence->GetCompletedValue() < waitValue) {
+            const int64_t waitStartUs = PerfLogger::GetQpcUs();
+            dx12_hook_g_State.fence->SetEventOnCompletion(waitValue, dx12_hook_g_State.fenceEvent);
+            const DWORD waitResult = WaitForSingleObject(dx12_hook_g_State.fenceEvent, 200);
+            static ce::log_meter::ChangeGate s_cleanupWaitGate;
+            static std::atomic<uint32_t> s_cleanupWaitCount{0};
+            const auto verdict = s_cleanupWaitGate.ObserveOrEvery(
+                ce::log_meter::FieldKey(waitResult, deferredSignalPending),
+                s_cleanupWaitCount.fetch_add(1, std::memory_order_relaxed) + 1, 60);
+            if (verdict) {
+                HookLogImportant(
+                    "DX12: CleanupOverlay waited %.1f ms for the overlay fence (value=%llu completed=%llu result=%s "
+                    "deferredSignal=%d)%s",
+                    static_cast<double>(PerfLogger::GetQpcUs() - waitStartUs) / 1000.0,
+                    static_cast<unsigned long long>(waitValue),
+                    static_cast<unsigned long long>(dx12_hook_g_State.fence->GetCompletedValue()),
+                    waitResult == WAIT_OBJECT_0 ? "completed" : "TIMEOUT", deferredSignalPending ? 1 : 0,
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
         }
     }

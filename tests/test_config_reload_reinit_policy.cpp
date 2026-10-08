@@ -40,7 +40,7 @@ std::string FunctionBody(const std::string& source, const std::string& signature
 // outside a short resource-registry lock; live disable only collects retired work.
 TEST(ConfigReloadReinitPolicyTest, Dx12GammaOffDoesNotWaitOrReenterTeardown) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_sharpen.cpp");
-    const std::string presented = FunctionBody(source, "void SharpenDX12PresentedFrame(",
+    const std::string presented = FunctionBody(source, "SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain,",
                                               "Microsoft::WRL::ComPtr<ID3D12Device> device");
     ASSERT_FALSE(presented.empty());
     EXPECT_NE(presented.find("CollectRuntimePostProcess(true)"), std::string::npos);
@@ -52,17 +52,78 @@ TEST(ConfigReloadReinitPolicyTest, Dx12GammaOffDoesNotWaitOrReenterTeardown) {
 // The post-process pass submits CE work on the game's queue. During DLSS-G transitions (FG off settling,
 // warmup, keep-alive) the routing sets skipOverlayDraw precisely because such pre-SL submissions on the game
 // queue hang the device. A call placed ahead of that routing (session 20261008_172629: GPU crash on the first
-// DLSS FG off) must not exist; the normal route runs the pass only behind the same gate as the overlay draw.
-TEST(ConfigReloadReinitPolicyTest, Dx12PostProcessOnTheNormalRouteIsGatedByTheOverlayRouting) {
+// DLSS FG off) must not exist; every call goes through the policy in post_process_route_policy.h.
+TEST(ConfigReloadReinitPolicyTest, Dx12PostProcessRoutesAreGatedByTheirPolicy) {
     const std::string session = ReadSource("hook/d3d12/dx12_hook_process_session.cpp");
     ASSERT_FALSE(session.empty());
     EXPECT_EQ(session.find("SharpenDX12PresentedFrame"), std::string::npos);
+    // Only overlay-init returns may fall back to the overlay-independent call, and both do.
+    size_t fallbacks = 0;
+    for (size_t at = session.find("RunPostProcessWhileOverlayUnavailable();"); at != std::string::npos;
+         at = session.find("RunPostProcessWhileOverlayUnavailable();", at + 1))
+        ++fallbacks;
+    EXPECT_EQ(fallbacks, 2u);
+    const size_t init = session.find("flow = InitOverlayBackend();");
+    const size_t sync = session.find("flow = InitOverlaySyncAndFocusHold();");
+    const size_t transition = session.find("flow = HandleOuterFGTransition();");
+    const size_t firstFallback = session.find("RunPostProcessWhileOverlayUnavailable();");
+    ASSERT_NE(init, std::string::npos);
+    ASSERT_NE(sync, std::string::npos);
+    ASSERT_NE(transition, std::string::npos);
+    EXPECT_GT(firstFallback, init);
+    EXPECT_LT(session.rfind("RunPostProcessWhileOverlayUnavailable();"), transition);
+
     const std::string draw = ReadSource("hook/d3d12/dx12_hook_process_session_draw_main.cpp");
-    const size_t call = draw.find("SharpenDX12PresentedFrame(");
-    ASSERT_NE(call, std::string::npos);
-    const size_t gate = draw.rfind("if (!skipOverlayDraw", call);
-    ASSERT_NE(gate, std::string::npos);
-    EXPECT_LT(call - gate, 160u);
+    EXPECT_EQ(draw.find("SharpenDX12PresentedFrame"), std::string::npos);
+    EXPECT_NE(draw.find("RunPostProcessOnNormalRoute();"), std::string::npos);
+
+    const std::string route = ReadSource("hook/d3d12/dx12_hook_process_session_postprocess.cpp");
+    const size_t normal = route.find("void FrameProcessSession::RunPostProcessOnNormalRoute()");
+    const size_t unavailable = route.find("void FrameProcessSession::RunPostProcessWhileOverlayUnavailable()");
+    ASSERT_NE(normal, std::string::npos);
+    ASSERT_NE(unavailable, std::string::npos);
+    const size_t normalGate = route.find("NormalRouteMayPostProcess(", normal);
+    const size_t normalCall = route.find("SharpenDX12PresentedFrame(", normal);
+    EXPECT_LT(normalGate, normalCall);
+    const size_t quietGate = route.find("MayPostProcessWithoutOverlay(", unavailable);
+    const size_t quietCall = route.find("SharpenDX12PresentedFrame(", unavailable);
+    EXPECT_LT(quietGate, quietCall);
+}
+
+// Every place that sets skipOverlayDraw must say why: the post-process routing tells frames another route
+// corrects (PostSL) from frames that stay uncorrected by that cause.
+TEST(ConfigReloadReinitPolicyTest, Dx12EverySkipOverlayDrawSiteNamesItsCause) {
+    for (const char* unit : {"hook/d3d12/dx12_hook_process_session_draw_main.cpp",
+                             "hook/d3d12/dx12_hook_process_session_draw_transition.cpp"}) {
+        const std::string source = ReadSource(unit);
+        size_t sites = 0;
+        for (size_t at = source.find("skipOverlayDraw = true;"); at != std::string::npos;
+             at = source.find("skipOverlayDraw = true;", at + 1)) {
+            ++sites;
+            const std::string tail = source.substr(at, 320);
+            EXPECT_NE(tail.find("skipCause"), std::string::npos) << unit << " site " << sites;
+        }
+        EXPECT_GE(sites, 2u) << unit;
+    }
+}
+
+// FG off: the overlay cleanup on the Streamline present thread ran its whole 200 ms wait on every menu open
+// (session 20261008_181746), because it queued a fresh Signal on the game queue and so waited for everything
+// ahead of it there, Streamline's work included. The overlay fence already says when its own submissions are
+// done; the full-queue flush stays only for a signal that was deferred past the last submit.
+TEST(ConfigReloadReinitPolicyTest, Dx12OverlayCleanupWaitsOnItsOwnFenceNotTheWholeGameQueue) {
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_overlay.cpp");
+    const std::string body = FunctionBody(source, "void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend)",
+                                          "void CleanupRTVs()");
+    ASSERT_FALSE(body.empty());
+    const size_t deferred = body.find("if (deferredSignalPending)");
+    const size_t signal = body.find("queueToFlush->Signal(");
+    ASSERT_NE(deferred, std::string::npos);
+    ASSERT_NE(signal, std::string::npos);
+    EXPECT_LT(deferred, signal);
+    EXPECT_NE(body.find("UINT64 waitValue = dx12_hook_g_State.currentFenceValue;"), std::string::npos);
+    EXPECT_EQ(body.find("queueToFlush->Signal(", signal + 1), std::string::npos);
+    EXPECT_NE(body.find("CleanupOverlay waited"), std::string::npos) << "a wait that is not instant must be logged";
 }
 
 // The Vulkan layer had the same shape and got it right; keep it that way so the

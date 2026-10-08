@@ -174,6 +174,20 @@ extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCov
     out->outputOwnerViolations = g_OutputFrames.ownerViolations;
 }
 
+extern "C" __declspec(dllexport) void CEFlow_GetPostProcess(CEFlowPostProcess* out) {
+    const DX12PostProcessSnapshot snapshot = GetPostProcessSnapshot();
+    out->frames = snapshot.frames;
+    out->corrected = snapshot.corrected;
+    out->covered = snapshot.covered;
+    out->uncorrected = snapshot.uncorrected;
+    out->gapRuns = snapshot.gapRuns;
+    out->failed = snapshot.failed;
+    out->unclassified = snapshot.unclassified;
+    out->leftBeforeDecision = snapshot.leftBeforeDecision;
+    out->routeApplied = snapshot.routeApplied;
+    out->routeFailed = snapshot.routeFailed;
+}
+
 extern "C" __declspec(dllexport) void CEFlow_GetPublishedFG(CEFlowPublishedFG* out) {
     *out = {};
     if (PerformanceMetrics* metrics = DXGIShared::GetPerformanceMetrics()) {

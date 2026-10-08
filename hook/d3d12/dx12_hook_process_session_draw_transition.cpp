@@ -558,6 +558,7 @@ skipOverlayDraw = false;
 preSLDrawKeptThroughDLSSToggleOn = false;
 if (holdFocusLossBackbufferWork) {
     skipOverlayDraw = true;
+    skipCause = ce::post_process_route::SkipCause::FocusLossHold;
     NoteDX12OverlayCoverageGate("focus-loss-hold");
 }
 if (dx12_hook_g_FGTransitionCooldown > 0) {
@@ -700,6 +701,8 @@ if (dx12_hook_g_FGTransitionCooldown > 0) {
             }
         }
         skipOverlayDraw = true;
+        if (skipCause == ce::post_process_route::SkipCause::None)
+            skipCause = ce::post_process_route::SkipCause::FgTransitionCooldown;
     }
 }
 

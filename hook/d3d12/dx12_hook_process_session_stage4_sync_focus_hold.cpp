@@ -224,60 +224,7 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
 
     currentBackBufferIdx = 0;
     hasCurrentBackBufferIdx = false;
-    pendingFocusLossBackbufferWorkHold = ShouldHoldOverlayDrawForPendingFocusLossFence();
-    focusLossBackgroundDeviceLost = false;
-    {
-        auto* focusLossDev = g_Device.load(std::memory_order_acquire);
-        if (focusLossDev) {
-            focusLossBackgroundDeviceLost = FAILED(focusLossDev->GetDeviceRemovedReason());
-        }
-    }
-    focusLossBackgroundUsingDedicatedQueue = dx12_hook_g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
-    focusLossBackgroundRuntimeOwnedPresentation =
-        dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() || DXGIShared::DoesFGRuntimeOwnSwapchain();
-    focusLossBackgroundSteamDeferredSubmit =
-        false;  // Steam-ECL deferred submit retired in c4a93a44
-    focusLossBackgroundFrameGenerationActive =
-        g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
-    // v8 visibility-gated backbuffer hold.
-    //
-    // Hold CE backbuffer overlay/capture work ONLY when the swapchain is not
-    // presentable (DXGI Present returned OCCLUDED, or the window is minimized /
-    // zero-sized). In that state the overlay is not visible to the user anyway,
-    // and it is also where the single-monitor Alt+Tab device-hung historically
-    // occurred (DXGI tearing down the iflip surfaces). A merely-unfocused but
-    // still-visible window (borderless background window, or a window on another
-    // monitor) keeps presenting S_OK and MUST keep showing the overlay — that is
-    // the behavior a proper inject overlay provides and what the user expects. Focus is no longer a
-    // reason to hide the overlay.
-    swapchainOccluded = dx12_hook_g_SwapchainPresentOccluded.load(std::memory_order_acquire);
-    // The first predicate arg means "we have a reliable present-result occlusion signal",
-    // which is now true for both the wrapped path (context valid) and the vtable DetourPresent
-    // path (g_HaveD3D12PresentResultSignal). This lets vtable-hooked apps engage the
-    // invisible-safe not-presentable hold during the Alt+Tab mode switch instead of hanging.
-    haveReliablePresentResultSignal =
-        dx12_hook_s_WrappedPresentFocusLossContext.valid || dx12_hook_g_HaveD3D12PresentResultSignal.load(std::memory_order_acquire);
-    const ce::dx12_overlay_policy::D3D12NonPresentableSwapchainHoldDesc holdDesc{
-        haveReliablePresentResultSignal,
-        !frameDesc.Windowed,
-        swapchainOccluded,
-        iconicWindow,
-        zeroSizedSwapchain,
-        focusLossBackgroundFrameGenerationActive,
-        focusLossBackgroundRuntimeOwnedPresentation,
-        focusLossBackgroundUsingDedicatedQueue,
-        focusLossBackgroundSteamDeferredSubmit,
-        focusLossBackgroundDeviceLost,
-        gameQueue != nullptr};
-    focusLossBackgroundBackbufferHold =
-        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(holdDesc);
-    if (focusLossBackgroundBackbufferHold) {
-        // Keep the device-removal dump window open across the not-presentable
-        // period and the following presentable transition (the risky DXGI
-        // iflip<->composited mode switch).
-        dx12_hook_g_FocusLossRecentTransitionPresentWindow.store(dx12_hook_kFocusLossRecentTransitionDumpWindowFrames,
-                                                       std::memory_order_release);
-    }
+    UpdateFocusLossHoldState();
     // v13: do NOT hold the overlay on focus change — it renders EVERY frame so it
     // never disappears (the user's firm requirement). v10's transition hold both hid
     // the overlay (rejected) and still froze (the hold expired mid-thrash under rapid
@@ -298,7 +245,6 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         dx12_hook_g_FocusLossRecentTransitionPresentWindow.store(dx12_hook_kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
-    holdFocusLossBackbufferWork = pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
     {
         static bool s_focusTransitionHoldActive = false;
         static std::atomic<int> s_focusTransitionHoldLogCount{0};
@@ -581,4 +527,65 @@ ProcessFrameFlow FrameProcessSession::InitOverlaySyncAndFocusHold() {
         }
     }
     return ProcessFrameFlow::kContinue;
+}
+
+// Whether CE must keep its GPU work off a swapchain that cannot be presented right now (occluded,
+// minimized, zero-sized, device lost). Shared by the overlay draw chain and the post-process pass so
+// both stop at exactly the same moment.
+void FrameProcessSession::UpdateFocusLossHoldState() {
+    pendingFocusLossBackbufferWorkHold = ShouldHoldOverlayDrawForPendingFocusLossFence();
+    focusLossBackgroundDeviceLost = false;
+    {
+        auto* focusLossDev = g_Device.load(std::memory_order_acquire);
+        if (focusLossDev) {
+            focusLossBackgroundDeviceLost = FAILED(focusLossDev->GetDeviceRemovedReason());
+        }
+    }
+    focusLossBackgroundUsingDedicatedQueue = dx12_hook_g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
+    focusLossBackgroundRuntimeOwnedPresentation =
+        dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() || DXGIShared::DoesFGRuntimeOwnSwapchain();
+    focusLossBackgroundSteamDeferredSubmit =
+        false;  // Steam-ECL deferred submit retired in c4a93a44
+    focusLossBackgroundFrameGenerationActive =
+        g_FGCompat.IsFGActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    // v8 visibility-gated backbuffer hold.
+    //
+    // Hold CE backbuffer overlay/capture work ONLY when the swapchain is not
+    // presentable (DXGI Present returned OCCLUDED, or the window is minimized /
+    // zero-sized). In that state the overlay is not visible to the user anyway,
+    // and it is also where the single-monitor Alt+Tab device-hung historically
+    // occurred (DXGI tearing down the iflip surfaces). A merely-unfocused but
+    // still-visible window (borderless background window, or a window on another
+    // monitor) keeps presenting S_OK and MUST keep showing the overlay — that is
+    // the behavior a proper inject overlay provides and what the user expects. Focus is no longer a
+    // reason to hide the overlay.
+    swapchainOccluded = dx12_hook_g_SwapchainPresentOccluded.load(std::memory_order_acquire);
+    // The first predicate arg means "we have a reliable present-result occlusion signal",
+    // which is now true for both the wrapped path (context valid) and the vtable DetourPresent
+    // path (g_HaveD3D12PresentResultSignal). This lets vtable-hooked apps engage the
+    // invisible-safe not-presentable hold during the Alt+Tab mode switch instead of hanging.
+    haveReliablePresentResultSignal =
+        dx12_hook_s_WrappedPresentFocusLossContext.valid || dx12_hook_g_HaveD3D12PresentResultSignal.load(std::memory_order_acquire);
+    const ce::dx12_overlay_policy::D3D12NonPresentableSwapchainHoldDesc holdDesc{
+        haveReliablePresentResultSignal,
+        !frameDesc.Windowed,
+        swapchainOccluded,
+        iconicWindow,
+        zeroSizedSwapchain,
+        focusLossBackgroundFrameGenerationActive,
+        focusLossBackgroundRuntimeOwnedPresentation,
+        focusLossBackgroundUsingDedicatedQueue,
+        focusLossBackgroundSteamDeferredSubmit,
+        focusLossBackgroundDeviceLost,
+        gameQueue != nullptr};
+    focusLossBackgroundBackbufferHold =
+        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(holdDesc);
+    if (focusLossBackgroundBackbufferHold) {
+        // Keep the device-removal dump window open across the not-presentable
+        // period and the following presentable transition (the risky DXGI
+        // iflip<->composited mode switch).
+        dx12_hook_g_FocusLossRecentTransitionPresentWindow.store(dx12_hook_kFocusLossRecentTransitionDumpWindowFrames,
+                                                       std::memory_order_release);
+    }
+    holdFocusLossBackbufferWork = pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
 }

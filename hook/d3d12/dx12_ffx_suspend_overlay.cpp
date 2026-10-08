@@ -1,4 +1,5 @@
 #include "dx12_ffx_suspend_overlay.h"
+#include "dx12_post_process_routes.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/sharpen_d3d11.h"
@@ -329,9 +330,12 @@ public:
         if (!clearTransparent) {
             const auto postProcess = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
             if (ce::sharpen::Requested(postProcess))
-                ce::sharpen::RecordRuntimePostProcess(device.Get(), slot.commandList.Get(), targetResource,
-                    targetState, postProcess, ce::sharpen::ResolveDxgiEncoding(targetDesc.Format,
-                        hdr));
+                NotePostProcessRouteResult(
+                    ce::post_process_route::RuntimeRoute::FsrOverlayOutput,
+                    ce::sharpen::RecordRuntimePostProcess(device.Get(), slot.commandList.Get(), targetResource,
+                        targetState, postProcess, ce::sharpen::ResolveDxgiEncoding(targetDesc.Format, hdr))
+                        ? ce::post_process_route::PassResult::Applied
+                        : ce::post_process_route::PassResult::Failed);
         }
         const UINT64 submitFenceValue = lastSubmittedFenceValue + 1;
         const bool writesTarget = clearTransparent || renderOverlay;

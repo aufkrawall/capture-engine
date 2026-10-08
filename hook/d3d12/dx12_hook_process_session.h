@@ -76,8 +76,8 @@ private:
     ID3D12CommandQueue* gameQueue;
     bool currentSwapchainProvenOnOriginalQueue;
     bool startupOverlayPresent;
-    UINT currentBackBufferIdx;
-    bool hasCurrentBackBufferIdx;
+    UINT currentBackBufferIdx = 0;
+    bool hasCurrentBackBufferIdx = false;
     bool pendingFocusLossBackbufferWorkHold;
     bool focusLossBackgroundDeviceLost;
     bool focusLossBackgroundUsingDedicatedQueue;
@@ -89,7 +89,7 @@ private:
     bool focusLossBackgroundBackbufferHold;
     int focusTransitionHoldRemaining;
     bool focusTransitionActive;
-    bool holdFocusLossBackbufferWork;
+    bool holdFocusLossBackbufferWork = false;
     SharedMemoryLayout* captureShm;
     OverlayConfig captureOverlayCfg;
     bool captureWantsOverlay;
@@ -115,7 +115,13 @@ private:
     bool fgChanged;
     bool runtimeModeChanged;
     bool slSignalChanged;
-    bool skipOverlayDraw;
+    bool skipOverlayDraw = false;
+    // Why the routing set skipOverlayDraw; the post-process pass reads it to tell frames another route
+    // corrects (PostSL) from frames that stay uncorrected.
+    ce::post_process_route::SkipCause skipCause = ce::post_process_route::SkipCause::None;
+    // What happened to this frame's post-process pass, reported to the frame ledger when Run() ends.
+    ce::post_process_route::Outcome postProcessOutcome = ce::post_process_route::Outcome::NotReached;
+    bool postProcessNotRequested = false;
     // The FG transition cooldown holds PostSL bookkeeping (skipOverlayDraw stays set) but the pre-SL
     // draw still runs: DLSS-G toggle-ON before the first confirmed PostSL render.
     bool preSLDrawKeptThroughDLSSToggleOn = false;
@@ -150,6 +156,11 @@ private:
     ProcessFrameFlow TrackSwapchainAndSelectQueue();
     ProcessFrameFlow InitOverlayBackend();
     ProcessFrameFlow InitOverlaySyncAndFocusHold();
+    void UpdateFocusLossHoldState();
+    void RunPostProcessOnNormalRoute();
+    void RunPostProcessWhileOverlayUnavailable();
+    void NotePostProcessOutcome();
+    void RecordPostProcessResult(ce::post_process_route::PassResult result, bool withoutOverlay);
     ProcessFrameFlow HandleOuterFGTransition();
     ProcessFrameFlow DrawOverlayFrame();
     ProcessFrameFlow DrawFrameTransition();

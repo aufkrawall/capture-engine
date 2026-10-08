@@ -457,3 +457,24 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
   `Dx12PostProcessOnTheNormalRouteIsGatedByTheOverlayRouting`. Cause inferred from timing and the documented
   hazard, not proven by a GPU capture; hardware re-test of FG off in Witcher 3 pending.
   Consequence: gamma (like sharpen) is not applied on frames the routing suppresses (transitions, hidden-overlay init).
+
+### Where the pass runs, and the frame ledger (2026-10-08)
+
+- Policy and accounting are pure (`common/graphics/post_process_route_policy.h`, tests `test_post_process_route_policy.cpp`);
+  the DX12 glue is `hook/d3d12/dx12_hook_process_session_postprocess.cpp`. Three places run the pass, none of them ahead of
+  the routing: (1) `RunPostProcessOnNormalRoute` in the draw chain (`!skipOverlayDraw`, or DLSS-G toggle-ON where the overlay
+  itself still draws pre-SL, never under a focus-loss hold); (2) `RunPostProcessWhileOverlayUnavailable` when overlay init is
+  deferred or backing off (startup grace, resume settle, init back-off), only in a quiescent plain state (no FG runtime,
+  cooldown, Streamline off-grace, PostSL route/keep-alive, ECL re-entry, lost device, held swapchain); (3) the route sites
+  (PostSL render, FSR callback, FSR overlay output), tallied per route (`NotePostProcessRouteResult`).
+- Every normal-route frame is noted: corrected / covered by PostSL or a runtime route / uncorrected with a reason. Log lines:
+  `PostProcess: DX12 N frame(s) not corrected reason=... route-corrected-meanwhile=...` (end of the first 16 runs, then every
+  64th), a progress line every 1200 frames of one endless run, and a summary with per-route applied/failed while gaps keep
+  appearing. Flow harness: `CEFlow_GetPostProcess`, asserted per scenario (never failed, never unclassified, ran at all).
+- Evidence 20261008_181746 (0.1.7037, Witcher 3, menu = DLSS FG off): the frame in front of the FG-off teardown was left
+  uncorrected (`left-before-decision`) and held 203 ms. The 203 ms was `CleanupOverlay` queueing a fresh Signal on the game
+  queue and waiting for everything ahead of it (DLSS-G work that only completes after the SL present thread returns);
+  every menu open ran the 200 ms timeout (also an overlay gap, `gate=overlay-backend-uninitialized`). It now waits for the
+  overlay fence value only (`CleanupOverlay`, logs `CleanupOverlay waited ...`). The FG-off edge present itself can still go
+  out uncorrected for one display frame when it entered DetourPresent before the keep-alive latch (no pass is submitted in
+  the teardown frame: the early-call crash showed that zone is unsafe). Open: hardware re-test.

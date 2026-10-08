@@ -14,6 +14,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Sharpen/gamma frame accounting:** the DirectX 12 post-process pass now counts every frame it corrects, leaves to another route (DLSS PostSL, FSR output) or cannot correct, and logs the reason and length of each uncorrected run plus per-route totals, so a brief brightness step at a frame generation switch can be traced from the log. DLSS-G toggle-ON frames, where the overlay itself still draws on the game queue, are corrected too.
+
 - **Recording stop command contract:** child supervision now shares a self-contained IPC result contract while preserving the distinction between accepted stops, explicit rejections and missing acknowledgements. This removes controller-state dependencies from the reusable supervisor.
 
 - **Reusable hotkey delivery:** the keyboard hook now receives an explicit host thread/message route instead of importing controller state. Invalid routes and attempts to retarget an active hook are rejected; recording, screenshot and overlay key delivery keep their existing behavior.
@@ -121,6 +123,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
 
 ### Fixed
+
+- **One-frame 200 ms hitch when DLSS frame generation turns off (The Witcher 3 DX12):** opening the game menu rebuilt the overlay behind a wait on the whole game queue, which can only finish once the Streamline present thread returns, so it ran its full 200 ms timeout and held the previous frame on screen that long. It now waits only for the overlay's own submissions.
 
 - **Shader rebuilds after source relayout:** shader generation now updates the headers actually consumed by the post-processing pipeline instead of writing into the retired source directory.
 

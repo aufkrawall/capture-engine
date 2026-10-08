@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 #include "tests/flow/flow_host.h"
@@ -18,6 +19,28 @@ inline std::string CurrentTestName() {
 
 // The inject overlay's contract: on every presented frame, drawn once. CE must also account every physical
 // present: one its ledger never saw would show no overlay without counting as uncovered.
+// The harness enables the display-gamma pass: it must have run (or been run by the frame's own route) for the
+// scenario's frames, never failed and never skipped a frame for a reason the routing cannot name. The frames it
+// leaves uncorrected (FG switches, DLSS-G start-up) are reported, not forbidden: the harness exercises exactly
+// the transitions where CE keeps its work off the game queue.
+inline void ExpectPostProcessAccounted(const FlowGame& game) {
+    const CEFlowPostProcess postProcess = game.PostProcess();
+    EXPECT_GT(postProcess.corrected + postProcess.covered + postProcess.routeApplied, 0u)
+        << "the post-process pass never ran or was covered in " << postProcess.frames << " frames; logs: "
+        << game.LogDirectory();
+    EXPECT_EQ(postProcess.failed + postProcess.routeFailed, 0u) << "logs: " << game.LogDirectory();
+    EXPECT_EQ(postProcess.unclassified, 0u) << "logs: " << game.LogDirectory();
+    std::printf("[  FLOW  ] post-process frames=%llu corrected=%llu covered=%llu uncorrected=%llu runs=%llu "
+                "left-before-decision=%llu route-corrected=%llu\n",
+                static_cast<unsigned long long>(postProcess.frames),
+                static_cast<unsigned long long>(postProcess.corrected),
+                static_cast<unsigned long long>(postProcess.covered),
+                static_cast<unsigned long long>(postProcess.uncorrected),
+                static_cast<unsigned long long>(postProcess.gapRuns),
+                static_cast<unsigned long long>(postProcess.leftBeforeDecision),
+                static_cast<unsigned long long>(postProcess.routeApplied));
+}
+
 inline void ExpectEveryPresentCoveredOnce(const FlowGame& game) {
     const CEFlowOverlayCoverage coverage = game.Coverage();
     EXPECT_EQ(coverage.presents, game.PhysicalPresents()) << "logs: " << game.LogDirectory();
@@ -28,6 +51,7 @@ inline void ExpectEveryPresentCoveredOnce(const FlowGame& game) {
         << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
     EXPECT_EQ(coverage.outputOwnerViolations, 0u)
         << "of " << coverage.outputFrameChecks << " runtime outputs; logs: " << game.LogDirectory();
+    ExpectPostProcessAccounted(game);
 }
 
 // Debug-layer failures ExpectNoDebugLayerErrors already reported: the teardown check (flow_test_environment.cpp)

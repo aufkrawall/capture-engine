@@ -34,20 +34,23 @@ void ReleaseDX12SharpenResources(bool releaseObjects) {
         ce::sharpen::CollectRuntimePostProcess(true);
 }
 
-void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue, bool hasBackBufferIndex,
-                               UINT backBufferIndex) {
-    if (HookIsShuttingDown() || !pSwapChain || !queue || DX12_PostProcessAlreadyRendered(pSwapChain))
-        return;
+ce::post_process_route::PassResult SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* queue,
+                                                             bool hasBackBufferIndex, UINT backBufferIndex) {
+    using ce::post_process_route::PassResult;
+    if (HookIsShuttingDown() || !pSwapChain || !queue)
+        return PassResult::Unavailable;
+    if (DX12_PostProcessAlreadyRendered(pSwapChain))
+        return PassResult::AlreadyApplied;
 
     const ce::sharpen::Request request = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
     if (!ce::sharpen::Requested(request)) {
         ce::sharpen::CollectRuntimePostProcess(true);
-        return;
+        return PassResult::NotRequested;
     }
 
     Microsoft::WRL::ComPtr<ID3D12Device> device;
     if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&device))))
-        return;
+        return PassResult::Failed;
 
     UINT bufferIndex = backBufferIndex;
     if (!hasBackBufferIndex) {
@@ -61,7 +64,7 @@ void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* q
 
     Microsoft::WRL::ComPtr<ID3D12Resource> backBuffer;
     if (FAILED(pSwapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer))) || !backBuffer)
-        return;
+        return PassResult::Failed;
 
     DXGI_SWAP_CHAIN_DESC desc = {};
     const bool haveDesc = SUCCEEDED(pSwapChain->GetDesc(&desc));
@@ -81,7 +84,10 @@ void SharpenDX12PresentedFrame(IDXGISwapChain* pSwapChain, ID3D12CommandQueue* q
     // writing through the storage format keeps the filter in the stored
     // perceptual space instead of paying for a decode/encode round trip.
     const D3D12_RESOURCE_DESC resourceDesc = backBuffer->GetDesc();
-    if (ce::sharpen::RenderPresentedPostProcess(device.Get(), queue, backBuffer.Get(), resourceDesc.Format,
-                                           request, route, ce::sharpen::ResolveDxgiEncoding(resourceDesc.Format, isHDR)))
-        DX12_MarkPostProcessRendered(pSwapChain);
+    if (!ce::sharpen::RenderPresentedPostProcess(device.Get(), queue, backBuffer.Get(), resourceDesc.Format,
+                                                 request, route,
+                                                 ce::sharpen::ResolveDxgiEncoding(resourceDesc.Format, isHDR)))
+        return PassResult::Failed;
+    DX12_MarkPostProcessRendered(pSwapChain);
+    return PassResult::Applied;
 }
