@@ -181,6 +181,7 @@ private:
 
     CustomOverlay::Renderer* renderer = nullptr;
     CustomOverlay::RendererBackend* backend = nullptr;
+    CustomOverlay::DX12Backend* textureDX12Backend = nullptr;
     OverlayBackendType backendType = OverlayBackendType::None;
 
     PerformanceMetrics* metrics = nullptr;

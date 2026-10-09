@@ -148,6 +148,9 @@ bool OverlayAdapter::InitializeBackendLocked(CustomOverlay::RendererBackend* new
     renderer = newRenderer.release();
     backend = newBackend;
     backendType = type;
+    textureDX12Backend = type == OverlayBackendType::DX12 ? newBackend->AsTextureDX12Backend() : nullptr;
+    if (type == OverlayBackendType::DX12)
+        HookLogImportant("[Overlay] DX12 renderer binding: backend=%p textureBackend=%p", backend, textureDX12Backend);
     initialized.store(true, std::memory_order_release);
     HookLogImportant("[Overlay] %s backend initialized successfully (dpiScale=%.2f)", backendName, dpiScale);
     return true;
@@ -170,8 +173,7 @@ void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {
     ApplyShutdownModeLocked(skipDeviceRelease);
 
 #ifndef VK_LAYER_CE_OVERLAY
-    auto* retiringDX12 = backend && backendType == OverlayBackendType::DX12 && !IsProcessTerminating()
-                            ? static_cast<CustomOverlay::DX12Backend*>(backend) : nullptr;
+    auto* retiringDX12 = !IsProcessTerminating() ? textureDX12Backend : nullptr;
     if (retiringDX12 && !retiringDX12->HasInlineUploadsInFlight())
         retiringDX12 = nullptr;
     if (retiringDX12 && renderer)
@@ -193,6 +195,7 @@ void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {
 #endif
         delete backend;
         backend = nullptr;
+        textureDX12Backend = nullptr;
     }
 }
 
@@ -412,11 +415,10 @@ void OverlayAdapter::Shutdown() {
 void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (backendType == OverlayBackendType::DX12 && backend) {
-        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
+    if (textureDX12Backend) {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv;
         rtv.ptr = (SIZE_T)rtvHandle;
-        dx12Backend->SetRenderTarget((ID3D12GraphicsCommandList*)cmdList, rtv);
+        textureDX12Backend->SetRenderTarget((ID3D12GraphicsCommandList*)cmdList, rtv);
     }
 #endif
 }
@@ -424,9 +426,8 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 void OverlayAdapter::SetDX12UploadSlotFence(void* fence, uint64_t guardValue) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (backendType == OverlayBackendType::DX12 && backend) {
-        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
-        dx12Backend->SetUploadSlotFence(static_cast<ID3D12Fence*>(fence), guardValue);
+    if (textureDX12Backend) {
+        textureDX12Backend->SetUploadSlotFence(static_cast<ID3D12Fence*>(fence), guardValue);
     }
 #endif
 }
@@ -443,9 +444,8 @@ void OverlayAdapter::SetDX12NextUploadSlot(int slot) {
 bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (backendType == OverlayBackendType::DX12 && backend) {
-        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
-        return dx12Backend->PrimeResources(static_cast<ID3D12GraphicsCommandList*>(cmdList));
+    if (textureDX12Backend) {
+        return textureDX12Backend->PrimeResources(static_cast<ID3D12GraphicsCommandList*>(cmdList));
     }
 #endif
     return false;
@@ -454,9 +454,8 @@ bool OverlayAdapter::PrimeDX12Resources(void* cmdList) {
 bool OverlayAdapter::HasPendingDX12Resources() const {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (backendType == OverlayBackendType::DX12 && backend) {
-        auto dx12Backend = static_cast<CustomOverlay::DX12Backend*>(backend);
-        return dx12Backend->HasPendingResources();
+    if (textureDX12Backend) {
+        return textureDX12Backend->HasPendingResources();
     }
 #endif
     return false;

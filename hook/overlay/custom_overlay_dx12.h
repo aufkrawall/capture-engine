@@ -33,6 +33,7 @@ class DX12Backend : public RendererBackend {
 public:
     DX12Backend(ID3D12Device* device, ID3D12CommandQueue* queue, DXGI_FORMAT rtvFormat);
     virtual ~DX12Backend();
+    DX12Backend* AsTextureDX12Backend() override { return this; }
 
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;

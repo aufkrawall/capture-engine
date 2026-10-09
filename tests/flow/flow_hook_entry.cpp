@@ -333,6 +333,29 @@ extern "C" __declspec(dllexport) bool CEFlow_ProbeDescFreeTargetFormats(ID3D12De
     dx12_hook_s_descFreeCmdList = nullptr;
     dx12_hook_s_descFreeSlotFence = savedFence;
     dx12_hook_s_descFreeSlotGuardValue = savedGuard;
+    // Exercise the real descriptor-free renderer through the adapter's generic
+    // DX12 label, including replacement after its GPU resources were created.
+    for (int iteration = 0; ok && iteration < 2; ++iteration) {
+        OverlayAdapter adapter;
+        ok = adapter.InitDX12(device, queue, DXGI_FORMAT_R8G8B8A8_UNORM) && adapter.HasPendingDX12Resources();
+        adapter.Shutdown();
+        if (!ok)
+            break;
+        auto backend = std::make_unique<DX12DescFreeBackend>();
+        ok = backend->InitDevice(device, DXGI_FORMAT_R8G8B8A8_UNORM);
+        if (!ok)
+            break;
+        ok = adapter.InitCustom(backend.release());
+        if (!ok)
+            break;
+        adapter.SetDX12RenderTarget(nullptr, nullptr);
+        adapter.SetDX12UploadSlotFence(nullptr, 17);
+        adapter.SetDX12NextUploadSlot(0);
+        ok = !adapter.HasPendingDX12Resources() && !adapter.PrimeDX12Resources(nullptr);
+        adapter.Shutdown();
+        ok = ok && !adapter.IsInitialized() && adapter.GetBackend() == nullptr;
+    }
+    HookLogImportant("CEFlow: descriptor-free adapter lifecycle %s", ok ? "ok" : "FAILED");
     return ok;
 }
 

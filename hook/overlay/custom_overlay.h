@@ -19,6 +19,7 @@ namespace CustomOverlay {
 
 // Forward declarations
 class RendererBackend;
+class DX12Backend;
 
 // Text alignment
 enum class TextAlign { Left, Center, Right };
@@ -200,6 +201,9 @@ public:
     // Explicit APIs can couple persistently mapped upload storage to the
     // command allocator whose completion was proved by the caller.
     virtual void SetNextUploadSlot(int) {}
+
+    // API identity alone does not imply the texture renderer's concrete type.
+    virtual DX12Backend* AsTextureDX12Backend() { return nullptr; }
 
 protected:
     int hdrMode = 0;

@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-09 - Witcher 3 DX12/ReShade startup renderer type confusion
+
+- Session 20261009_093652 (0.1.7053): second Present switches between a ReShade device view and the native view,
+  causing descriptor-free backend replacement. The manual dump has no exception stream, but CE's first-chance
+  slot retains the render thread's access violation in `OverlayAdapter::DestroyResourcesLocked`, inlined
+  `DX12Backend::HasInlineUploadsInFlight`: it reads a noncanonical glyph-data pointer as a completion buffer.
+  x64 CDB verified the archived CE PDB GUID/age and loaded matching Microsoft ntdll symbols.
+- `DX12DescFreeBackend` derives from `RendererBackend`, not `DX12Backend`. The shared DX12 label was used as
+  proof for five unsafe casts, including retirement. Adapter binding now caches an explicitly advertised texture
+  interface; descriptor-free resources and generic virtual upload-slot dispatch remain intact.
+- A native custom-renderer regression fails before the fix because texture helper calls overwrite unrelated
+  storage. Added poisoned-storage shutdown/rebind checks and real WARP texture/custom lifecycle coverage to the
+  descriptor-free format probe. Closing build 0.1.7056 passes the full native suite, Python tool self-tests and all
+  34 FG scenarios; fresh installer is 39057612 bytes. The real-game cold-start check after installation remains pending.
+
 ### 2026-10-08 - Streamline UI-tag log flood (Witcher 3 Remastered)
 
 - Session 20261008_220437: 11466 `Official UI tag record opportunity` + ~11.5k tag lines (85% of hook_debug.log) although the lines were already

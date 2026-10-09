@@ -124,6 +124,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **The Witcher 3 Remastered (DX12) startup with ReShade:** fixed an invalid renderer cast during overlay replacement that could crash inside CE and leave the game hung. Custom DX12 renderers now keep their own resource handling through startup and device changes.
+
 - **Pre-release lint and test reliability:** resolved Python lint and type annotations in test generators, fixed implicit pointer conversions and enum initialization warnings in hook and test sources, and decoupled the window heartbeat test from the host foreground window state so headless release verification and background test runs succeed reliably.
 
 - **Log flood from Streamline UI-tag diagnostics (The Witcher 3 Remastered):** the game tags one buffer per call and cycles the buffer type, so every call was logged as a change and about 85% of `hook_debug.log` (21k of 25k lines per minute of play) was tag lines. Each buffer type, and whether the call sets or clears the tag, is now its own metered stream with a per-stream heartbeat: one line per kind, plus a line when that buffer's tag really changes.
