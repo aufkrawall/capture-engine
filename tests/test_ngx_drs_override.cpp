@@ -654,4 +654,58 @@ TEST(NgxDrsStartupSweepTest, IsWiredIntoTheHookThreadAndKeptOutOfTheLoaderNotifi
     EXPECT_NE(iatInit.find("ce::ngx_drs::RestoreRetargetedPointers();"), std::string::npos);
 }
 
+// 20261009_110607 (Witcher 3 + ReShade): CE's own preload mapped an override sl.common while the
+// game's interposer was still starting, the game then mapped its live sl.common during the window
+// after the startup sweeps and before CE's LdrLoadDll hook existed, and neither
+// NotifyHookModuleLoaded nor a sweep ever saw it. Its DRS reads went to the driver, so the
+// dynamic-MFG answers were never delivered and the in-game factor won. The only observer that
+// sees every mapping is the loader notification.
+TEST(NgxDrsStartupSweepTest, LoaderNotificationPatchesAConsumerNoCeLoadHookSaw) {
+    namespace fs = std::filesystem;
+    const std::string overlayDetect =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_overlay_detect.cpp");
+    const std::string hookThread =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
+    ASSERT_FALSE(overlayDetect.empty());
+    ASSERT_FALSE(hookThread.empty());
+
+    const size_t callback = overlayDetect.find("OverlayDllNotificationCallback(ULONG reason,");
+    const size_t callbackEnd = overlayDetect.find("void RefreshThirdPartyOverlayIdentityCache()");
+    ASSERT_NE(callback, std::string::npos);
+    ASSERT_NE(callbackEnd, std::string::npos);
+    const std::string body = overlayDetect.substr(callback, callbackEnd - callback);
+
+    // The consumer test and the patch are in the callback, ordered after the shutdown early-return,
+    // and use the module the loader handed over rather than a lookup that takes the loader lock.
+    const size_t shutdownGuard = body.find("if (HookIsShuttingDown())");
+    const size_t consumerTest = body.find("ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(base, data->DllBase)");
+    const size_t importPatch = body.find(
+        "PatchDlssDrsConsumerImport(static_cast<HMODULE>(data->DllBase), base, \"loader notification\");");
+    ASSERT_NE(shutdownGuard, std::string::npos);
+    ASSERT_NE(consumerTest, std::string::npos);
+    ASSERT_NE(importPatch, std::string::npos);
+    EXPECT_LT(shutdownGuard, consumerTest);
+    EXPECT_LT(consumerTest, importPatch);
+    // Unarmed (config not read yet) is not a reason to forget the load: the sweep flag is set
+    // either way, and the arming sweep covers whatever was mapped before the arm.
+    EXPECT_NE(body.find("if (ce::ngx_drs::IsArmed()) {\n        PatchDlssDrsConsumerImport("), std::string::npos);
+    EXPECT_NE(body.find("g_DlssDrsConsumerSweepNeeded.store(true, std::memory_order_release);"),
+              std::string::npos);
+
+    // Under the loader lock: no module pinning, no process-wide sweep.
+    EXPECT_EQ(body.find("PatchLoadedDlssDrsConsumers("), std::string::npos);
+    EXPECT_EQ(body.find("ForEachLoadedDlssDrsConsumer("), std::string::npos);
+    EXPECT_EQ(body.find("ArmNgxDrsOverridesIfConfigured("), std::string::npos);
+
+    // The follow-up runs once per batch, on the hook thread, from the service pass the
+    // notification already wakes.
+    EXPECT_NE(overlayDetect.find("void ServiceDlssDrsConsumerSweep() {\n"
+                                 "  if (!g_DlssDrsConsumerSweepNeeded.exchange(false, std::memory_order_acq_rel))\n"
+                                 "    return;"),
+              std::string::npos);
+    EXPECT_NE(overlayDetect.find("PatchLoadedDlssDrsConsumers(\"loader notification\");"), std::string::npos);
+    const size_t refresh = hookThread.find("RefreshThirdPartyOverlayIdentityCache();\n      ServiceDlssDrsConsumerSweep();");
+    EXPECT_NE(refresh, std::string::npos);
+}
+
 }  // namespace

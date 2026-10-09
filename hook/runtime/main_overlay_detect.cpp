@@ -7,6 +7,8 @@
 
 static PVOID g_DllNotificationCookie = nullptr;
 static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
+// Set by the loader notification when a DLSS driver-settings consumer appeared; serviced by the hook thread.
+static std::atomic<bool> g_DlssDrsConsumerSweepNeeded{false};
 
 static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
                                                     PCLDR_DLL_NOTIFICATION_DATA data,
@@ -90,6 +92,22 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
       // Which physical image provides the Streamline core decides whether CE's
       // override may still be applied to the remaining plugins at all.
       NoteRuntimeModuleLoadedForOverridePolicy(narrowPath);
+    }
+    // Every image the loader maps reaches this notification, unlike NotifyHookModuleLoaded,
+    // which only sees loads that pass through CE's LoadLibrary/LdrLoadDll hooks. A Streamline
+    // core the title maps while CE's startup is still running (before the LdrLoadDll hook and
+    // after the startup sweeps) was never offered the GetProcAddress import patch, so its
+    // DRS reads went to the driver and the configured multi-frame answers were never
+    // delivered (Witcher 3 + ReShade, 20261009_110607: a second sl.common copy was mapped by
+    // CE's own preload and the game's live one slipped through). Patching the import here, on
+    // the loading thread before its LoadLibrary returns, is ordered ahead of any resolution
+    // that module can make; the cached-pointer retarget (which pins modules) stays with the
+    // hook thread.
+    if (ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(base, data->DllBase)) {
+      if (ce::ngx_drs::IsArmed()) {
+        PatchDlssDrsConsumerImport(static_cast<HMODULE>(data->DllBase), base, "loader notification");
+      }
+      g_DlssDrsConsumerSweepNeeded.store(true, std::memory_order_release);
     }
     if (ce::graphics_runtime::IsRuntimeModuleBaseName(base) ||
         (hasPath && ce::graphics_runtime::IsNgxModelRepositoryPath(narrowPath))) {
@@ -470,6 +488,14 @@ void PatchLoadedDlssDrsConsumers(const char *source) {
                      sweep.retargetedDrsGetter, sweep.queryInterfaceDetour ? "ready" : "not ready",
                      static_cast<unsigned long long>(verdict.suppressed));
   }
+}
+
+void ServiceDlssDrsConsumerSweep() {
+  if (!g_DlssDrsConsumerSweepNeeded.exchange(false, std::memory_order_acq_rel))
+    return;
+  // Retargets NvAPI pointers a consumer cached before its import was patched and reports the
+  // consumer count; idempotent for modules the notification already patched.
+  PatchLoadedDlssDrsConsumers("loader notification");
 }
 
 void ArmNgxDrsOverridesIfConfigured(const char *source, bool sweepLoadedModules) {

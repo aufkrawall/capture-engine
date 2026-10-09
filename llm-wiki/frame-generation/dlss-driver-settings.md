@@ -1,6 +1,6 @@
 # DLSS Frame Generation Driver Settings
 
-Last cross-checked: 2026-09-19 (dynamic MFG validated on hardware; `vsync_mode` answered over the same channel)
+Last cross-checked: 2026-10-09 (loader-notification patch for consumers no CE load hook saw; hardware run pending). Dynamic MFG validated on hardware 2026-09-19; `vsync_mode` answered over the same channel.
 
 Primary sources:
 - `hook/ngx/ngx_drs_override{,_policy}.{h,cpp}`
@@ -173,6 +173,28 @@ Fix: `RetargetCachedNvApiPointers` scans each swept consumer's writable, non-exe
 The detour is handed out only once the limiter knows the driver export (`QueryInterfaceDetourIfReady`), because it
 returns null for every id before that. No offsets are hard-coded. Order inside a visit is IAT patch first, then scan,
 so a core that initialises between the two already holds CE's pointer. Hardware run pending.
+
+**A consumer mapped after the sweeps but before CE's LdrLoadDll hook was still missed (session `20261009_110607`,
+0.1.7057, Witcher 3 + ReShade).** Same config, same build: 105819 and 105938 answered all six keys, 110158 and 110607
+answered two (preset + forced mode, both from `nvngx_dlssg`) and `capabilityMax` was 5 instead of 3. Cause is a startup
+race, not ReShade. The hook thread's "Streamline use observed (sl.interposer.dll)" can win against the game thread's
+first `sl.common` request; then `PlaceStreamlinePluginSet` preloads CE's own override `sl.common`/`sl.dlss`/`sl.dlss_g`/
+`sl.dlss_d` (`Runtime preload: ... loaded`), and the game maps ITS `sl.common` from the game folder ~17 ms later (the
+interposer loads by full path, so the preloaded name is not reused). That second image was mapped after the three
+startup sweeps and ~60 ms before `Installed LdrLoadDll hook`, so `NotifyHookModuleLoaded` never saw it; only the
+loader notification did, and it merely logged `Loader: runtime module loaded`. No sweep re-ran, so the live core kept
+the driver's `nvapi_QueryInterface`. In the passing runs the game thread simply won the race, the hook thread logged
+"override disabled" immediately and the sweep patched the game's copy.
+Fix: the loader notification now calls `PatchDlssDrsConsumerImport` (`via=loader notification`) for any consumer,
+on the loading thread before its `LoadLibrary` returns (ordered ahead of any `GetProcAddress` it can make; no module
+pinning), and sets a flag; `ServiceDlssDrsConsumerSweep` (hook thread, next to `RefreshThirdPartyOverlayIdentityCache`)
+then runs `PatchLoadedDlssDrsConsumers("loader notification")` for the cached-pointer retarget. Source-contract test
+`NgxDrsStartupSweepTest.LoaderNotificationPatchesAConsumerNoCeLoadHookSaw` (fails without the change). Hardware run
+pending. **Open, not fixed:** in the losing order CE still ends up with an orphan override `sl.common` that owns its
+single `slGetPluginFunction` forward pointer, so the hook thread logs `Refusing to retarget slGetPluginFunction` x10
+and re-hooks `sl.common` reloaded x66 in the first 2 s (log churn; feature hooks still resolve). Placing the override
+set while the interposer is mapped but the core is not yet is the root; changing that policy touches the Vulkan present
+path rule in `ShouldPlaceStreamlinePluginSet`, so it was left alone.
 
 Diagnostics: `NGX DRS: GetProcAddress import patch on <module> installed ... via=startup sweep (<source>)` is logged
 once per module and outcome (the old shared 4-line budget was spent on `nvngx_dlssg.dll` alone), then

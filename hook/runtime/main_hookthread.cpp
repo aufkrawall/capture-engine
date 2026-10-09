@@ -470,6 +470,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       }
       // Event signaled or periodic tick - run detection
       RefreshThirdPartyOverlayIdentityCache();
+      ServiceDlssDrsConsumerSweep();
       CheckAndInstallHooks();
       passCost.Observe(ce::HookThreadStage::kHookScan, stageEnterUs);
     }

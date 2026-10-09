@@ -454,6 +454,10 @@ bool PatchDlssDrsConsumerImport(HMODULE module, const char *name, const char *vi
 // neither the loader notification nor the Streamline-skipping IAT sweep offered it.
 void PatchLoadedDlssDrsConsumers(const char *source);
 
+// Hook-thread follow-up for a consumer the loader notification saw appear: runs the sweep above
+// once per batch of such loads, outside the loader lock.
+void ServiceDlssDrsConsumerSweep();
+
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName);

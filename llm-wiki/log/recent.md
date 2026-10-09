@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-09 - Dynamic MFG factor lost to a startup race (Witcher 3 + ReShade)
+
+- Session `20261009_110607` (0.1.7057): the in-game factor won. DRS answers were 2 (preset, forced mode) instead of 6;
+  `sl.common` of the game was never wrapped. Passing neighbours (105819, 105938) had identical config/build.
+  Race: CE preloaded override `sl.common` (hook thread, 13.984) while the game mapped its own (game thread, 14.001),
+  between the startup sweeps and the LdrLoadDll hook (14.062); the loader notification saw it but did not patch.
+- Fix: loader notification patches the `GetProcAddress` import of any DRS consumer inline + hook-thread sweep flag.
+  Details and the open orphan-`sl.common` observation: `frame-generation/dlss-driver-settings.md`. Hardware run pending.
+
 ### 2026-10-09 - DLSS OFF lost overlay ownership behind distinct device views
 
 - Session `20261009_101805` (0.1.7056, Witcher 3 with ReShade): two queue-derived device views alternated
