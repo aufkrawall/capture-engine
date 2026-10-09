@@ -226,7 +226,17 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             ce::audio::ComputeStartupAwarePacketTimelineAdjustment(
                                 packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
                                 targetFmt.sampleRate / 1000, (targetFmt.sampleRate * 150) / 1000,
-                                targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
+                                targetFmt.sampleRate / 250, targetFmt.sampleRate / 200, firstTimelinePacket);
+                        if (firstTimelinePacket && timelineAdjustment.gapSamples > 0 &&
+                            timelineAdjustment.gapSamples < targetFmt.sampleRate / 200) {
+                            // Larger gaps are reported by the packet timeline adjust line below.
+                            DLL_Log(
+                                "[AudioLoop] Startup first-packet gap placed at the start src=%d track=%d gap=%lld "
+                                "samples (%.2fms); the startup slop would have deferred it to the %lld ms boundary "
+                                "as a hard silence insertion",
+                                (int)srcIdx, src.track, (long long)timelineAdjustment.gapSamples,
+                                (double)timelineAdjustment.gapSamples * 1000.0 / targetFmt.sampleRate, 150LL);
+                        }
                         const size_t packetTimelineFadeSamples =
                             static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
                         const bool steadyPlacementSeam = !firstTimelinePacket && !lateJoin.joinLive &&

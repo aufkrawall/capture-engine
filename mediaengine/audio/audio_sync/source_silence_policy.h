@@ -263,9 +263,17 @@ inline double ComputePlacementClockMismatchPpm(const SteadyPlacementCorrectionSt
     return net * 1000000.0 / static_cast<double>(timelineSamples);
 }
 
+// `firstTimelinePacket`: the source's first packet inside the startup window. Its offset from the recording
+// start is the source's QPC phase (process loopback adds a half-period bias), typically 1-4 ms. The startup
+// slop used to leave that gap unplaced, so the content ran early until the startup window ended; the steady
+// slop then inserted the whole gap as hard silence in the middle of the signal (a 2-3 ms dropout with only a
+// fade-in, at exactly 150 ms; session 20261009_190736 Track 1, and the same sequence in 20261009_181916:
+// first packet placed at +136/+144 samples, gapTotal 0 until 150 ms). A first-packet gap above the steady slop
+// is placed immediately instead, as leading silence before the signal begins.
 inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     int64_t packetStartSamples, int64_t writtenTimelineSamples, int64_t steadyStateSlopSamples,
-    int64_t startupWindowSamples, int64_t startupSlopSamples, int64_t startupOverlapTrimThresholdSamples) {
+    int64_t startupWindowSamples, int64_t startupSlopSamples, int64_t startupOverlapTrimThresholdSamples,
+    bool firstTimelinePacket = false) {
     const int64_t startupBoundarySamples =
         std::max(std::max<int64_t>(0, packetStartSamples), std::max<int64_t>(0, writtenTimelineSamples));
     const bool startupSettling = startupBoundarySamples < std::max<int64_t>(0, startupWindowSamples);
@@ -275,6 +283,11 @@ inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     if (startupSettling && adjustment.overlapSamples > 0 &&
         adjustment.overlapSamples < std::max<int64_t>(0, startupOverlapTrimThresholdSamples)) {
         adjustment.overlapSamples = 0;
+    }
+    if (startupSettling && firstTimelinePacket && adjustment.gapSamples == 0) {
+        adjustment.gapSamples =
+            ComputePacketTimelineAdjustment(packetStartSamples, writtenTimelineSamples, steadyStateSlopSamples)
+                .gapSamples;
     }
 
     return adjustment;
