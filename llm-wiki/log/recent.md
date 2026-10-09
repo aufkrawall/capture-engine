@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-09 - Track 1 crackle at 150 ms: first-packet gap deferred by the startup slop
+
+- Evidence: the user heard crackle early in Track 1 of 20261009_190736. Decoding it read-only (small libav helper,
+  not shipped) found one defect in the first 6 s: Track 1 drops from +0.0197 to ~0 at sample 7200 (150.000 ms), 141
+  samples of silence, then a 64-sample cosine fade-in; Track 2 is smooth there. Track 1 vs Track 2 (same Fortnite
+  audio, corr 0.84) is uncorrelated before 150 ms because Track 1 runs 176 samples early (best lag +3.67 ms), and
+  41 samples after it. Logs showed nothing at that instant; the only trace is `AppDiag place src=5` placed=136 with
+  gapTotal=0 at the first packet and gapTotal=136 one second later (same in 181916: placed=144, then 144).
+- Root cause: `ComputeStartupAwarePacketTimelineAdjustment` tolerates a 192-sample offset during the first 150 ms,
+  so a first packet starting 49-192 samples late (process loopback phase + half-period bias; varies per recording; both sessions seen so far had it) was written without its leading gap; at the 150 ms boundary the 48-sample steady slop inserted the whole
+  gap as hard silence mid-signal. A replay of the placement with perfect cadence lands the gap at exactly sample
+  7200. Code dates from 0d9cbfbf (2026-04-05); not related to the drift lane (app sources are excluded from it).
+- Fix: `firstTimelinePacket` argument; a first-packet gap above the steady slop is placed immediately as leading
+  silence (before the signal, under the 64-sample fade-in). Overlap handling unchanged (a first packet cannot
+  overlap). Tests `tests/test_audio_startup_first_packet_gap.cpp`. Hardware run pending: expect `Startup
+  first-packet gap placed at the start` once per affected source, `AppDiag place` gapTotal equal to it from the
+  first line, no near-zero run at 150 ms, Track 1/Track 2 lag ~constant from the start.
+
 ### 2026-10-09 - Audit of recording 20261009_181916; steady-state seam cuts replaced by a drift lane
 
 - Audit result: lengths exact (video 290 641 667 us = both AAC tracks 13 950 800 samples; post-mux probe within
