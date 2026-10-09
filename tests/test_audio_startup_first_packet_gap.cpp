@@ -99,3 +99,123 @@ TEST(StartupFirstPacketGapTest, SourcesStartingOnTheGridNeedNoGapAnywhere) {
     EXPECT_TRUE(ReplayPlacement(0, true, 400).empty());
     EXPECT_TRUE(ReplayPlacement(kSteadySlop, true, 400).empty());
 }
+
+namespace {
+
+struct PreStartReplay {
+    std::vector<GapInsertion> gaps;
+    std::vector<GapInsertion> overlaps;
+};
+
+// Replays a source whose first packet starts `lead` samples BEFORE the recording start and whose later packets
+// keep a perfect cadence. `equalizationDelay` is the A/V equalization delay the source is placed with.
+// Legacy: the first packet bypassed stitching and was written raw. Fixed: its head is trimmed and the rest is
+// placed as a first packet that starts at the origin.
+PreStartReplay ReplayPreStartFirstPacket(int64_t lead, int64_t equalizationDelay, bool trimHead, int packets) {
+    PreStartReplay replay;
+    int64_t written = 0;
+    if (trimHead) {
+        const auto first = Adjust(equalizationDelay, 0, true);
+        if (first.gapSamples > 0) {
+            replay.gaps.push_back({0, 0, first.gapSamples});
+            written += first.gapSamples;
+        }
+        written += kPacket - lead;
+    } else {
+        written = kPacket;
+    }
+    for (int k = 1; k < packets; ++k) {
+        const int64_t start = static_cast<int64_t>(k) * kPacket - lead + equalizationDelay;
+        const auto adjustment = Adjust(start, written, false);
+        if (adjustment.gapSamples > 0) {
+            replay.gaps.push_back({k, written, adjustment.gapSamples});
+            written += adjustment.gapSamples;
+        }
+        if (adjustment.overlapSamples > 0) {
+            replay.overlaps.push_back({k, written, adjustment.overlapSamples});
+            written -= adjustment.overlapSamples;
+        }
+        written += kPacket;
+    }
+    return replay;
+}
+
+}  // namespace
+
+TEST(PreStartHeadTrimTest, LeadIsConvertedAtTheTargetRate) {
+    constexpr int64_t kStart = 5'000'000;
+    // 49583 x 100 ns = 4.958 ms = 238 samples at 48 kHz (session 20261009_201855, Fortnite).
+    const auto trim = ce::audio::ComputePreStartHeadTrim(kStart - 49583, kStart, 48000, kPacket);
+    EXPECT_EQ(trim.trimSamples, 238);
+    EXPECT_FALSE(trim.wholePacket);
+}
+
+TEST(PreStartHeadTrimTest, PacketsAtOrAfterTheStartAreUntouched) {
+    constexpr int64_t kStart = 5'000'000;
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(kStart, kStart, 48000, kPacket).trimSamples, 0);
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(kStart + 1, kStart, 48000, kPacket).trimSamples, 0);
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(kStart + 40000, kStart, 48000, kPacket).trimSamples, 0);
+}
+
+TEST(PreStartHeadTrimTest, UnusableInputsTrimNothing) {
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(100, 0, 48000, kPacket).trimSamples, 0);
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(100, -5, 48000, kPacket).trimSamples, 0);
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(100, 5'000'000, 0, kPacket).trimSamples, 0);
+    EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(100, 5'000'000, 48000, 0).trimSamples, 0);
+}
+
+TEST(PreStartHeadTrimTest, LeadReachingTheWholePacketDropsItAndKeepsTheTimelineUnstarted) {
+    constexpr int64_t kStart = 5'000'000;
+    // A 2.5 ms packet that started 4.958 ms before the start lies entirely before it.
+    const auto whole = ce::audio::ComputePreStartHeadTrim(kStart - 49583, kStart, 48000, 120);
+    EXPECT_EQ(whole.trimSamples, 120);
+    EXPECT_TRUE(whole.wholePacket);
+    // Exactly one packet length of lead is also entirely before the start.
+    const auto exact = ce::audio::ComputePreStartHeadTrim(kStart - 100000, kStart, 48000, 480);
+    EXPECT_EQ(exact.trimSamples, 480);
+    EXPECT_TRUE(exact.wholePacket);
+}
+
+TEST(PreStartFirstPacketReplayTest, LegacyRawWriteDeletedTheLeadAsOneSpliceAtExactlyOneHundredFiftyMilliseconds) {
+    // Session 20261009_201855: Fortnite's first packet placed at +242 with the write cursor at 480 (overlap 238
+    // samples, below the 5 ms startup trim threshold); overlapTotal 238 appeared once and the decoded Track 1 / 2
+    // alignment stepped by 238 samples at sample 7200 with the strongest click of the first 1.5 s.
+    const auto legacy = ReplayPreStartFirstPacket(238, 0, /*trimHead=*/false, 400);
+    EXPECT_TRUE(legacy.gaps.empty());
+    ASSERT_EQ(legacy.overlaps.size(), 1u);
+    EXPECT_EQ(legacy.overlaps[0].outputPosition, kStartupWindow);
+    EXPECT_EQ(legacy.overlaps[0].samples, 238);
+    EXPECT_EQ(legacy.overlaps[0].packetIndex, 15);
+}
+
+TEST(PreStartFirstPacketReplayTest, TrimmingTheHeadLeavesNothingToDeleteLater) {
+    for (int64_t lead : {int64_t{49}, int64_t{109}, int64_t{238}, int64_t{288}}) {
+        const auto fixed = ReplayPreStartFirstPacket(lead, 0, /*trimHead=*/true, 400);
+        EXPECT_TRUE(fixed.gaps.empty()) << "lead=" << lead;
+        EXPECT_TRUE(fixed.overlaps.empty()) << "lead=" << lead;
+    }
+}
+
+TEST(PreStartFirstPacketReplayTest, SmallLeadsWithinTheSteadySlopNeverProducedAnEvent) {
+    const auto legacy = ReplayPreStartFirstPacket(40, 0, /*trimHead=*/false, 400);
+    EXPECT_TRUE(legacy.gaps.empty());
+    EXPECT_TRUE(legacy.overlaps.empty());
+}
+
+TEST(PreStartFirstPacketReplayTest, EqualizedMicrophoneGetsItsDelayAsLeadingSilenceNotInsideTheSignal) {
+    // The same log: microphone src=1, equalization delay 1500 samples, first packet 109 samples before the start.
+    // The raw first packet left a 1391-sample silence between its 480 samples and the second packet
+    // ("Packet timeline adjust src=1 gap=1391 written=1871").
+    const auto legacy = ReplayPreStartFirstPacket(109, 1500, /*trimHead=*/false, 400);
+    ASSERT_EQ(legacy.gaps.size(), 1u);
+    EXPECT_EQ(legacy.gaps[0].samples, 1391);
+    EXPECT_EQ(legacy.gaps[0].outputPosition, kPacket);
+    EXPECT_TRUE(legacy.overlaps.empty());
+
+    const auto fixed = ReplayPreStartFirstPacket(109, 1500, /*trimHead=*/true, 400);
+    ASSERT_EQ(fixed.gaps.size(), 1u);
+    EXPECT_EQ(fixed.gaps[0].packetIndex, 0);
+    EXPECT_EQ(fixed.gaps[0].outputPosition, 0);
+    EXPECT_EQ(fixed.gaps[0].samples, 1500);
+    EXPECT_TRUE(fixed.overlaps.empty());
+}

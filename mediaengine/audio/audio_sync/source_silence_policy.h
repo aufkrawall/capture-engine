@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "mediaengine/audio/audio_time_utils.h"
 #include "packet_clamp_and_drift.h"
 
 // When a started-but-quiet audio source counts as silence, and CFR pull/resync rules.
@@ -291,6 +292,34 @@ inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     }
 
     return adjustment;
+}
+
+struct PreStartHeadTrim {
+    int64_t trimSamples = 0;  // leading samples of the packet that precede the recording start
+    bool wholePacket = false;  // nothing of the packet lies at or after the recording start
+};
+
+// A source's first packet may start up to ~5 ms BEFORE the recording start (the pre-start discard keeps any
+// packet whose millisecond timestamp is within 5 ms of it, and process loopback's QPC phase is arbitrary).
+// Stitching only handles packets at or after the start, so such a packet used to be written raw, leaving the
+// source's write cursor `lead` samples ahead of its QPC position. The startup slop hid the resulting overlap
+// (below the 5 ms trim threshold) until the window ended; the steady slop then deleted it in one piece, a
+// hard splice at exactly 150 ms (session 20261009_201855 Track 1: first packet placed at +242 with the cursor
+// at 480, overlapTotal 238, the Track 1/Track 2 alignment stepping by 238 samples at sample 7200). The head
+// before the origin carries no timeline position, so it is dropped up front and the remainder is placed as a
+// packet that starts exactly at the origin.
+inline PreStartHeadTrim ComputePreStartHeadTrim(uint64_t packetQpc100ns, int64_t startQpc100ns, int sampleRate,
+                                                int64_t packetSamples) {
+    PreStartHeadTrim trim;
+    if (startQpc100ns <= 0 || sampleRate <= 0 || packetSamples <= 0 ||
+        packetQpc100ns >= static_cast<uint64_t>(startQpc100ns)) {
+        return trim;
+    }
+    const int64_t leadSamples = static_cast<int64_t>(
+        HundredNanosecondsToSamples(static_cast<uint64_t>(startQpc100ns) - packetQpc100ns, sampleRate));
+    trim.trimSamples = std::min(leadSamples, packetSamples);
+    trim.wholePacket = leadSamples >= packetSamples;
+    return trim;
 }
 
 // Smooth soft-knee limiter for the final per-track mix. Samples with magnitude

@@ -102,9 +102,42 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                     size_t writeSamples = static_cast<size_t>(outSamples);
                     const int64_t startQpc100ns =
                         recordingStartSystemQpc100ns.load(std::memory_order_acquire);
-                    if (startQpc100ns > 0 && packet.qpcPosition >= static_cast<uint64_t>(startQpc100ns)) {
+                    // A first packet that starts before the recording start (kept when within 5 ms of it)
+                    // carries samples with no timeline position: drop that head and place the rest at the
+                    // origin. Written raw instead, the source ran `lead` samples late until the 150 ms
+                    // startup window ended and the steady slop then deleted them as one hard splice.
+                    uint64_t placementQpc100ns = packet.qpcPosition;
+                    bool packetEntirelyBeforeStart = false;
+                    if (firstTimelinePacket && startQpc100ns > 0) {
+                        const ce::audio::PreStartHeadTrim headTrim = ce::audio::ComputePreStartHeadTrim(
+                            packet.qpcPosition, startQpc100ns, targetFmt.sampleRate,
+                            static_cast<int64_t>(writeSamples));
+                        if (headTrim.trimSamples > 0) {
+                            const size_t trimSamples = static_cast<size_t>(headTrim.trimSamples);
+                            writeFloats += trimSamples * targetFmt.channels;
+                            writeSamples -= trimSamples;
+                            placementQpc100ns = static_cast<uint64_t>(startQpc100ns);
+                            packetEntirelyBeforeStart = headTrim.wholePacket;
+                            if (writeSamples > 0) {
+                                src.packetBoundaryFadeInSamplesRemaining =
+                                    static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                            }
+                            DLL_Log(
+                                "[AudioLoop] Startup pre-start head trimmed src=%d track=%d lead=%lld samples "
+                                "(%.2fms)%s; the packet started before the recording start",
+                                (int)srcIdx, src.track, (long long)headTrim.trimSamples,
+                                (double)headTrim.trimSamples * 1000.0 / targetFmt.sampleRate,
+                                packetEntirelyBeforeStart ? ", whole packet dropped, next packet starts the timeline"
+                                                          : "");
+                            if (packetEntirelyBeforeStart) {
+                                sourceTimestamps[srcIdx] = 0;
+                            }
+                        }
+                    }
+                    if (startQpc100ns > 0 && !packetEntirelyBeforeStart &&
+                        placementQpc100ns >= static_cast<uint64_t>(startQpc100ns)) {
                         const uint64_t packetStartDelta100ns =
-                            packet.qpcPosition - static_cast<uint64_t>(startQpc100ns);
+                            placementQpc100ns - static_cast<uint64_t>(startQpc100ns);
                         int64_t packetStartSamples =
                             static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(
                                 packetStartDelta100ns, targetFmt.sampleRate));
