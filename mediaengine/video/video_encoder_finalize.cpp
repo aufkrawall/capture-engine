@@ -216,6 +216,8 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
 
     std::vector<uint32_t> terminalDiscardSamples(probeCtx->nb_streams, 0);
     std::vector<int64_t> terminalPacketPts(probeCtx->nb_streams, INT64_MIN);
+    std::vector<int64_t> terminalPacketDurationSamples(probeCtx->nb_streams, 0);
+    std::vector<int64_t> maxPacketDurationSamples(probeCtx->nb_streams, 0);
     bool tailScanComplete = false;
     int tailPacketsRead = 0;
     const int64_t tailSeekUs = std::max<int64_t>(0, finalDurationUs - 5000000);
@@ -236,6 +238,14 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
                     packetStream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
                     terminalPacketPts[pkt->stream_index] = pkt->pts;
                     terminalDiscardSamples[pkt->stream_index] = GetPacketTerminalDiscardSamples(pkt);
+                    const int packetSampleRate = packetStream->codecpar->sample_rate;
+                    const int64_t durationSamples =
+                        pkt->duration > 0 && packetSampleRate > 0 && packetStream->time_base.den > 0
+                            ? av_rescale_q(pkt->duration, packetStream->time_base, AVRational{1, packetSampleRate})
+                            : 0;
+                    terminalPacketDurationSamples[pkt->stream_index] = durationSamples;
+                    maxPacketDurationSamples[pkt->stream_index] =
+                        std::max(maxPacketDurationSamples[pkt->stream_index], durationSamples);
                 }
             }
             av_packet_unref(pkt);
@@ -270,7 +280,11 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             const int sampleRate = probedStream->codecpar->sample_rate;
             const uint64_t initialPaddingSamples =
                 static_cast<uint64_t>(std::max(0, probedStream->codecpar->initial_padding));
-            const uint64_t endPaddingSamples = tailScanComplete ? terminalDiscardSamples[i] : 0;
+            const uint64_t endPaddingSamples =
+                tailScanComplete ? ce::mux::ComputeResidualTerminalDiscardSamples(
+                                       terminalDiscardSamples[i], terminalPacketDurationSamples[i],
+                                       maxPacketDurationSamples[i])
+                                 : 0;
             const int64_t presentationStartUs =
                 hasStreamStart ? std::max<int64_t>(0, GetStreamStartUs(probedStream)) : 0;
             const int64_t decodedDurationUs = ce::mux::ComputeDecodedAudioDurationUs(

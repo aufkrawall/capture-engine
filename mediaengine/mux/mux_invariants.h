@@ -222,6 +222,19 @@ inline int64_t ComputeDecodedAudioDurationUs(int64_t packetCoverageDurationUs, i
     return std::max<int64_t>(0, packetCoverageDurationUs - paddingUs);
 }
 
+// The container duration of a stream is the end of its last packet (pts + duration). A drained tail packet that
+// is shorter than the codec frame (libopus marks it with its real-sample count and an end skip of
+// frame - duration) therefore already excludes that part, so only the skip beyond it still has to come off the
+// duration. Full-length packets carry their whole skip.
+inline uint64_t ComputeResidualTerminalDiscardSamples(uint64_t endSkipSamples, int64_t terminalPacketDurationSamples,
+                                                      int64_t frameSamples) {
+    if (terminalPacketDurationSamples <= 0 || frameSamples <= terminalPacketDurationSamples) {
+        return endSkipSamples;
+    }
+    const uint64_t impliedByDuration = static_cast<uint64_t>(frameSamples - terminalPacketDurationSamples);
+    return endSkipSamples > impliedByDuration ? endSkipSamples - impliedByDuration : 0;
+}
+
 inline int64_t ComputeCfrAudioLatticeFrameQuantum(int fps, const std::vector<int>& sampleRates) {
     if (fps <= 0) {
         return 0;

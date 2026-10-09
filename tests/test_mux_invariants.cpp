@@ -11,6 +11,7 @@ using ce::mux::ComputeAudioPaddingDurationUs;
 using ce::mux::ComputeCfrAudioLatticeExtensionFrames;
 using ce::mux::ComputeCfrAudioLatticeFrameQuantum;
 using ce::mux::ComputeDecodedAudioDurationUs;
+using ce::mux::ComputeResidualTerminalDiscardSamples;
 using ce::mux::ComputeDurationDeltaUs;
 using ce::mux::ComputePacketEndUs;
 using ce::mux::HeaderValidationIssue;
@@ -250,4 +251,22 @@ TEST(MuxInvariantTest, WriterFinalizeStallsOnlyAfterNoProgressForTheStallTimeout
 TEST(MuxInvariantTest, WriterFinalizeStallTimeoutOutlastsTheOutputIoDeadline) {
     EXPECT_GT(ce::mux::kWriterFinalizeStallTimeoutMs, ce::mux::kLocalOutputIoTimeoutMs);
     EXPECT_GT(ce::mux::kWriterFinalizeStallTimeoutMs, ce::mux::kLiveOutputIoTimeoutMs);
+}
+
+// libopus marks its drained tail packet with its real-sample count and an end skip of frame - duration, so
+// pts + duration already excludes that part; subtracting the whole skip again made the post-mux probe report a
+// 13.5 ms shortfall on files that decode to the exact target.
+TEST(MuxInvariantTest, ResidualTerminalDiscardCountsOnlyTheSkipBeyondTheShortTailPacket) {
+    // Opus: 960-sample frame, 312-sample tail packet, encoder skip 648 plus 160 added by the recorder.
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(808, 312, 960), 160u);
+    // Tail packet that needs no additional trim.
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(648, 312, 960), 0u);
+    // A full-length final packet (AAC, or the Opus packet before a dropped tail) carries its whole skip.
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(320, 1024, 1024), 320u);
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(488, 960, 960), 488u);
+    // Unknown durations fall back to the signalled skip.
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(808, 0, 960), 808u);
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(808, 312, 0), 808u);
+    // A skip smaller than the shortfall the duration already implies cannot go negative.
+    EXPECT_EQ(ComputeResidualTerminalDiscardSamples(100, 312, 960), 0u);
 }
