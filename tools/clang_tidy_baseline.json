@@ -54,7 +54,7 @@
   },
   "total": 670,
   "scope": {
-    "entries": 1030,
+    "entries": 1031,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -724,6 +724,7 @@
       "tests/test_audio_capture_source.cpp",
       "tests/test_audio_drain_target_hold.cpp",
       "tests/test_audio_encoder.cpp",
+      "tests/test_audio_encoder_final_packet.cpp",
       "tests/test_audio_fade_policy.cpp",
       "tests/test_audio_fault_accounting.cpp",
       "tests/test_audio_late_app_join.cpp",
