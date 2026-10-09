@@ -1,16 +1,17 @@
 # llm-wiki Log
 
-### 2026-10-09 - Varying A/V offsets: what was measured, one tried fix not shipped
+### 2026-10-09 - Varying A/V offsets measured; WGC probe over-correction fixed (queue compensation)
 
-- Asked to find the cause of the 28-52 ms inject offset spread and to fix the WGC probe over-correction.
-  Findings and numbers in `cfr-capture-sync.md` (2026-10-09 offset investigation). Not queue depth (capping the
-  stimulus changed the mean, not the spread); engine-period phase, WGC `selectionOffsetUs` and the hook add noise.
-- Tried: subtract the ETW present-to-screen latency (hooked game) from the probe delay for WGC/DXGI sessions.
-  Estimator and tests worked (median 20.0 / ~7-11 / 0.35 ms by mode) but the A/V result moved +3.7 ms (n=4 vs
-  4) instead of ~+20, and a manual delay sweep showed the 300 ms reservoir regime is about 20 ms audio-early
-  even at ~0 anchor delay. Reverted; no product change. The next step is the reservoir regime, not Q.
-- Test-environment note: the user's background audio was active during these runs (affects the system track,
-  not the per-process app track).
+- Cause of the per-session spread (sd ~6 ms): not flip-queue depth (capping the stimulus changed the mean only);
+  WASAPI engine-period phase, the WGC start contract's `selectionOffsetUs` and the hook add noise. WGC video
+  stamps are composition times and trail the Present by the flip queue (ETW present-to-screen median 20.0 /
+  7.6-11.5 / 0.35 ms uncapped / windowed / capped); only a hooked game has display timing.
+- Fix: subtract that latency from the probe correction on the encoder's video delay AND the engine's audio
+  anchor (`MediaEngine_SetScreenGrabLatencyReductionQpc`). The first, session-only attempt looked like a
+  failure (+3.7 ms) because the engine anchors audio from the per-source latency itself. Wired both:
+  uncapped -30.2 -> -10.7 ms, windowed -22.0 -> -14.6, capped/no-hook unchanged. Details in `wgc-capture.md`
+  (`screen_grab_queue_compensation`) and `cfr-capture-sync.md`. Real-game hardware run pending.
+- Test-environment note: the user's background audio was active during these runs (system track only).
 
 ### 2026-10-09 - Opus tracks ran up to a frame longer than the video
 

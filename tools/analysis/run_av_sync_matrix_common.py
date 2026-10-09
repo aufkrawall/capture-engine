@@ -254,7 +254,7 @@ def restore_config(snapshot):
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
                           audio_capture_latency_ms=0.0, app_capture_latency_ms=None,
                           wgc_smoothness_floor_ms=None, audio_latency_autodetect=False,
-                          overlay_enabled=False):
+                          overlay_enabled=False, screen_grab_queue_compensation=True):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +300,7 @@ capture_method={scenario.capture_method}
 [AudioSync]
 audio_capture_latency_ms={audio_capture_latency_ms}
 audio_latency_autodetect={'true' if audio_latency_autodetect else 'false'}
+screen_grab_queue_compensation={'true' if screen_grab_queue_compensation else 'false'}
 
 [Logging]
 log_level=trace

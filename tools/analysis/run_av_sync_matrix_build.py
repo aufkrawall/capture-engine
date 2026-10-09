@@ -426,6 +426,13 @@ def build_parser():
         "constants, which encode the capture timing of one OS/driver/product state. 'off' keeps the constants.",
     )
     parser.add_argument(
+        "--screen-grab-queue-compensation",
+        choices=("on", "off"),
+        default="on",
+        help="[AudioSync] screen_grab_queue_compensation in the scenario config (product default on). 'off' "
+        "applies the full probe latency to screen-grab recordings, for A/B runs.",
+    )
+    parser.add_argument(
         "--overlay-enabled",
         action="store_true",
         help="Enable the in-game overlay hook ([Overlay] enabled=true plus dll_injection=always for the stimulus "
