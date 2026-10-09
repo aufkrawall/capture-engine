@@ -133,6 +133,8 @@ if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
     return false;
 
 bool runtimeOwnershipJustActivated = false;
+// Retire replaced references after the queue lock below has been released.
+DX12RetiredQueueBinding retiredBinding;
 
 // Diagnostic: log the queue's device to detect cross-device issues
 ID3D12Device* queueDev = nullptr;
@@ -147,6 +149,12 @@ if (SUCCEEDED(pQueue->GetDevice(IID_PPV_ARGS(&queueDev)))) {
 }
 
 std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+// Only a completed creation binds presentation; staged FFX queues retain their
+// activation path. Publish the device before its proofs so migration cannot
+// clear the new exact association. ECL discovery cannot replace this binding.
+if (associatedSwapchain) {
+    retiredBinding = DX12_AdoptCommandQueue(pQueue);
+}
 dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(associatedSwapchain, std::memory_order_release);
 if (associatedSwapchain && dx12_hook_g_OriginalGameQueue && pQueue != dx12_hook_g_OriginalGameQueue) {
     IDXGISwapChain* expectedOriginalSwapchain = associatedSwapchain;

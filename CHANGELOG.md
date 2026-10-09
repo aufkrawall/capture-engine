@@ -124,6 +124,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay after DLSS FG off with ReShade:** fixed auxiliary command submissions replacing the live queue/device binding and clearing the confirmed overlay route. Queue discovery now preserves that binding; completed swapchain creation still supports queue and device replacement.
+
 - **Missing automatic dumps for CE faults caught by a game:** hardware faults inside Capture Engine are now captured with their original thread and registers before the game's exception handler can consume them and leave a hang or clean exit. This closes the missing-dump path seen during The Witcher 3 Remastered's ReShade startup failure.
 
 - **The Witcher 3 Remastered (DX12) startup with ReShade:** fixed an invalid renderer cast during overlay replacement that could crash inside CE and leave the game hung. Custom DX12 renderers now keep their own resource handling through startup and device changes.

@@ -25,23 +25,19 @@
 // shares, so a queue CE never registers still reaches the hook.
 namespace ce::dx12_overlay_policy {
 
-// Submission is evidence that a queue executes work, not that it owns presentation. Preserve an
-// established queue on the same device; an explicit binding or a proven device migration may replace it.
+// Submission proves execution, not presentation ownership or device migration. An auxiliary queue
+// may expose a different native/interposer device view while the live presentation route is unchanged.
+// Discovery is fallback-only; explicit bindings replace the established pair, including across devices.
 inline bool ShouldAdoptDiscoveredCommandQueue(bool fromExecuteCommandLists, bool hasCurrentQueue,
-                                             bool incomingDeviceKnown, bool currentDeviceKnown,
-                                             bool sameDevice) {
-    if (!incomingDeviceKnown)
-        return false;
-    if (!hasCurrentQueue || !fromExecuteCommandLists)
-        return true;
-    return currentDeviceKnown && !sameDevice;
+                                             bool incomingDeviceKnown) {
+    return incomingDeviceKnown && (!hasCurrentQueue || !fromExecuteCommandLists);
 }
 
 inline bool ShouldRegisterCommandQueueFromExecuteCommandLists(bool frameGenerationActive, bool hasPrimaryGameQueue,
                                                               bool runtimeOwnedPresentPath = false) {
     // No frame generation, or the game's queue not yet discovered: registration is
     // the discovery mechanism and must run. Adoption separately preserves an
-    // established same-device queue even when another DIRECT queue submits work.
+    // established queue even when another device's DIRECT queue submits work.
     // Disabling generation does not destroy the FFX presenter or its queues.
     // Discovery resumes when presentation ownership actually returns to the game.
     if ((!frameGenerationActive && !runtimeOwnedPresentPath) || !hasPrimaryGameQueue) {

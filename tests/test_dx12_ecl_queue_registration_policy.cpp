@@ -15,28 +15,43 @@ using ce::dx12_overlay_policy::ShouldAdoptDiscoveredCommandQueue;
 using ce::dx12_overlay_policy::IsPresentedFrameForCapture;
 
 TEST(Dx12EclQueueRegistrationPolicyTest, SameDeviceAuxiliaryExecutionNeverReplacesEstablishedQueue) {
-    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, true));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true));
     // Arbitrary interleaving of auxiliary queues cannot change the established selection.
     int selected = 1;
     for (const int candidate : {2, 3, 2, 4, 3, 2}) {
-        if (ShouldAdoptDiscoveredCommandQueue(true, selected != 0, true, true, true))
+        if (ShouldAdoptDiscoveredCommandQueue(true, selected != 0, true))
             selected = candidate;
     }
     EXPECT_EQ(selected, 1);
 }
 
-TEST(Dx12EclQueueRegistrationPolicyTest, DiscoveryStillSupportsInitialQueueAndDeviceReplacement) {
-    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(true, false, true, false, false));
-    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, false));
-    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, false, false));
-    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, false, false, false, false));
+TEST(Dx12EclQueueRegistrationPolicyTest, DifferentDeviceExecutionCannotRevokePresentationOwnership) {
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(true, false, true));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true))
+        << "a different device view on an executing auxiliary queue is not a presentation migration";
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, false));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, false, false));
 }
 
-TEST(Dx12EclQueueRegistrationPolicyTest, ExplicitBindingsCanReplaceSameDeviceQueues) {
-    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, true, true));
-    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, true, false));
-    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true, false, false));
-    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(false, true, false, true, false));
+TEST(Dx12EclQueueRegistrationPolicyTest, ExplicitBindingsCanReplaceQueuesAndDevices) {
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, true, true));
+    EXPECT_TRUE(ShouldAdoptDiscoveredCommandQueue(false, false, true));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(false, true, false));
+    EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(false, false, false));
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, DiscoveryCannotUndoAnExplicitDeviceReplacement) {
+    int selected = 0;
+    for (const bool explicitBinding : {false, true}) {
+        const int replacement = explicitBinding ? 3 : 1;
+        if (ShouldAdoptDiscoveredCommandQueue(!explicitBinding, selected != 0, true))
+            selected = replacement;
+        for (const int auxiliary : {2, 4, 2, 5}) {
+            if (ShouldAdoptDiscoveredCommandQueue(true, selected != 0, true))
+                selected = auxiliary;
+        }
+        EXPECT_EQ(selected, replacement);
+    }
 }
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
