@@ -21,4 +21,5 @@
 #include "common/capture/capture_policy/cfr_repeat_metrics.h"
 #include "common/capture/capture_policy/cfr_nearest_playout.h"
 #include "common/capture/capture_policy/final_output_timing.h"
+#include "common/capture/capture_policy/present_to_screen_latency.h"
 #include "common/capture/capture_policy/inject_lineage.h"
