@@ -124,6 +124,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Missing automatic dumps for CE faults caught by a game:** hardware faults inside Capture Engine are now captured with their original thread and registers before the game's exception handler can consume them and leave a hang or clean exit. This closes the missing-dump path seen during The Witcher 3 Remastered's ReShade startup failure.
+
 - **The Witcher 3 Remastered (DX12) startup with ReShade:** fixed an invalid renderer cast during overlay replacement that could crash inside CE and leave the game hung. Custom DX12 renderers now keep their own resource handling through startup and device changes.
 
 - **Pre-release lint and test reliability:** resolved Python lint and type annotations in test generators, fixed implicit pointer conversions and enum initialization warnings in hook and test sources, and decoupled the window heartbeat test from the host foreground window state so headless release verification and background test runs succeed reliably.

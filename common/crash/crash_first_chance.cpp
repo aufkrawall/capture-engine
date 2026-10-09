@@ -33,6 +33,25 @@ struct AddressRange {
 AddressRange g_DispatcherRanges[2];
 std::atomic<bool> g_DispatcherRangesResolved{false};
 std::atomic<bool> g_Installed{false};
+std::atomic<uintptr_t> g_HandlerModuleBegin{0};
+std::atomic<size_t> g_HandlerModuleSize{0};
+
+void ResolveHandlerModuleRange() {
+    if (g_HandlerModuleSize.load(std::memory_order_acquire) != 0)
+        return;
+    MEMORY_BASIC_INFORMATION memory{};
+    if (!VirtualQuery(reinterpret_cast<const void*>(&Install), &memory, sizeof(memory)) || !memory.AllocationBase)
+        return;
+    const auto* dos = static_cast<const IMAGE_DOS_HEADER*>(memory.AllocationBase);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+        reinterpret_cast<const uint8_t*>(dos) + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return;
+    g_HandlerModuleBegin.store(reinterpret_cast<uintptr_t>(dos), std::memory_order_relaxed);
+    g_HandlerModuleSize.store(nt->OptionalHeader.SizeOfImage, std::memory_order_release);
+}
 
 AddressRange ResolveFunctionRange(HMODULE ntdll, const char* exportName) {
     AddressRange range;
@@ -177,11 +196,19 @@ bool IsCurrentThreadInsideExceptionDispatch() {
 }
 
 void Install() {
+    ResolveHandlerModuleRange();
     ResolveDispatcherRanges();
     bool expected = false;
     if (!g_Installed.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return;
     AddVectoredContinueHandler(1, FirstChanceContinueHandler);
+}
+
+bool IsAddressInHandlerModule(const void* address) {
+    const size_t size = g_HandlerModuleSize.load(std::memory_order_acquire);
+    const uintptr_t begin = g_HandlerModuleBegin.load(std::memory_order_relaxed);
+    const uintptr_t value = reinterpret_cast<uintptr_t>(address);
+    return size != 0 && value >= begin && value - begin < size;
 }
 
 Statistics GetStatistics() {

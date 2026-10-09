@@ -5,13 +5,14 @@
 // A first-chance hardware fault is not a crash: managed and JIT runtimes,
 // emulators and anti-tamper code raise and handle them as control flow (see
 // ce::crash_dump_policy::ClassifyFirstChanceException). The handler therefore
-// only records the fault's record and context here - into fixed static slots,
+// records foreign faults' records and contexts here - into fixed static slots,
 // with no allocation, lock or I/O - and the dump is taken when the process
 // actually dies of it. That happens either through the unhandled filter or
 // through a termination that follows the fault
 // (ce::crash_dump_policy::IsTerminationFollowingUnresolvedFault). The latter
 // is where the recorded context is used, so the dump still names the faulting
-// instruction.
+// instruction. Hardware faults in the module hosting CE's handler instead
+// dump immediately: application SEH can consume them without a crash exit.
 
 #include <windows.h>
 
@@ -40,6 +41,10 @@ bool IsCurrentThreadInsideExceptionDispatch();
 // any handler resolves the exception by continuing execution, and caches the
 // dispatcher address ranges. Called once from InstallCrashHandler.
 void Install();
+
+// Tests the immutable image range cached at installation, with no loader walk
+// or locks on the exception path. Only faults in CE's own code qualify.
+bool IsAddressInHandlerModule(const void* address);
 
 struct Statistics {
     uint64_t recorded = 0;

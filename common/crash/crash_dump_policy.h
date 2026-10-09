@@ -632,10 +632,18 @@ enum class FirstChanceAction : uint8_t {
     kQuickAssertDump,  // Unreal assertion (0x4000): the assert dump, then the engine's own reporter
 };
 
-inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent) {
+inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent,
+                                                      bool faultInCaptureEngine = false) {
     if (forceDump) {
         return FirstChanceAction::kDumpNow;
     }
+    // CE does not use hardware faults as control flow. A game's SEH handler
+    // can consume one and leave it hung without ever reaching our exit hooks.
+    if (faultInCaptureEngine && !debuggerPresent &&
+        (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR ||
+         code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ||
+         code == EXCEPTION_INT_DIVIDE_BY_ZERO))
+        return FirstChanceAction::kDumpNow;
     switch (code) {
         case 0x406D1388UL:  // thread naming (VS debugger)
         case 0x40010006UL:  // OutputDebugString

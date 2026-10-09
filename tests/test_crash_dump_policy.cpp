@@ -401,6 +401,23 @@ TEST(CrashDumpPolicyTest, InherentlyFatalCodesStillDumpImmediately) {
     EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true), Action::kIgnore);
 }
 
+TEST(CrashDumpPolicyTest, OnlyCaptureEngineHardwareFaultsGainImmediateCapture) {
+    using Action = policy::FirstChanceAction;
+    for (const DWORD code : {static_cast<DWORD>(EXCEPTION_ACCESS_VIOLATION),
+                             static_cast<DWORD>(EXCEPTION_IN_PAGE_ERROR),
+                             static_cast<DWORD>(EXCEPTION_ILLEGAL_INSTRUCTION),
+                             static_cast<DWORD>(EXCEPTION_PRIV_INSTRUCTION),
+                             static_cast<DWORD>(EXCEPTION_INT_DIVIDE_BY_ZERO)}) {
+        EXPECT_EQ(policy::ClassifyFirstChanceException(code, false, false, true), Action::kDumpNow);
+        EXPECT_EQ(policy::ClassifyFirstChanceException(code, false, false, false), Action::kRecordFault);
+        EXPECT_EQ(policy::ClassifyFirstChanceException(code, false, true, true), Action::kRecordFault);
+    }
+    EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, false, true), Action::kRecordFault);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xE06D7363UL, false, false, true), Action::kIgnore);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0x20474343UL, false, false, true), Action::kIgnore);
+    EXPECT_EQ(policy::ClassifyFirstChanceException(0xE0434352UL, false, false, true), Action::kIgnore);
+}
+
 // A recorded fault becomes a dump when the process dies of it: the terminating
 // thread is still inside that exception's dispatch (a game's own unhandled
 // filter or crash reporter calling TerminateProcess), or it recorded a fault no

@@ -83,6 +83,16 @@ TEST(CrashFirstChanceTest, RecordFromAnotherStackIsNotThisThreadsFault) {
     ce::crash_first_chance::ResetForTesting();
 }
 
+TEST(CrashFirstChanceTest, HandlerModuleIdentityIsExactAndRejectsForeignAddresses) {
+    ce::crash_first_chance::Install();
+    EXPECT_TRUE(ce::crash_first_chance::IsAddressInHandlerModule(
+        reinterpret_cast<const void*>(&ce::crash_first_chance::Install)));
+    EXPECT_FALSE(ce::crash_first_chance::IsAddressInHandlerModule(nullptr));
+    EXPECT_FALSE(ce::crash_first_chance::IsAddressInHandlerModule(reinterpret_cast<const void*>(-1)));
+    EXPECT_FALSE(ce::crash_first_chance::IsAddressInHandlerModule(
+        reinterpret_cast<const void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlRaiseException"))));
+}
+
 TEST(CrashFirstChanceTest, DispatchIsDetectedOnlyWhileAnExceptionIsBeingDispatched) {
     EXPECT_FALSE(ce::crash_first_chance::IsCurrentThreadInsideExceptionDispatch());
 

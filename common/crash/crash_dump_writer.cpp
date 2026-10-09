@@ -301,8 +301,10 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     // Nothing above this line may allocate, lock or write a file: it runs for
     // every exception the host raises, including the thousands a managed or
     // JIT runtime handles itself. See ClassifyFirstChanceException.
-    const auto action =
-        ce::crash_dump_policy::ClassifyFirstChanceException(code, forceDump, IsDebuggerPresent() != FALSE);
+    const bool faultInCaptureEngine = ce::crash_first_chance::IsAddressInHandlerModule(
+        pExceptionPointers->ExceptionRecord->ExceptionAddress);
+    const auto action = ce::crash_dump_policy::ClassifyFirstChanceException(
+        code, forceDump, IsDebuggerPresent() != FALSE, faultInCaptureEngine);
     switch (action) {
         case ce::crash_dump_policy::FirstChanceAction::kIgnore:
             return EXCEPTION_CONTINUE_SEARCH;
@@ -311,6 +313,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             return EXCEPTION_CONTINUE_SEARCH;
         case ce::crash_dump_policy::FirstChanceAction::kQuickAssertDump:
         case ce::crash_dump_policy::FirstChanceAction::kDumpNow:
+            if (faultInCaptureEngine && action == ce::crash_dump_policy::FirstChanceAction::kDumpNow)
+                ce::crash_first_chance::RecordFault(pExceptionPointers);
             break;
     }
 
@@ -464,6 +468,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
 
     // Ensure trace log goes to the correct dir
     TraceCrash("CrashHandlerExceptionFilter entered");
+    if (faultInCaptureEngine && !forceDump)
+        TraceCrash("Capture Engine hardware fault - capturing before application exception handling");
 
     char bufCode[64];
     snprintf(bufCode, sizeof(bufCode), "Exception Code: 0x%08lX", code);
@@ -705,6 +711,9 @@ void InstallCrashHandler() {
     // it via SEM_NOGPFAULTERRORBOX; see RegisterWithWER for why.
     RegisterWithWER();
 
+    // Cache our image range and dispatcher evidence before the VEH can run.
+    ce::crash_first_chance::Install();
+
     // Install Vectored Exception Handler (catches exceptions before SEH)
     PVOID vehHandle = AddVectoredExceptionHandler(1, CrashHandlerExceptionFilter);
     if (vehHandle) {
@@ -720,8 +729,6 @@ void InstallCrashHandler() {
     //
     // The continue handler clears a recorded first-chance fault once any
     // handler resumes execution after it.
-    ce::crash_first_chance::Install();
-
     // Also install Unhandled Exception Filter as backup
     // (some games might install their own handlers that preempt VEH)
     g_OldUnhandledFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterCallback);

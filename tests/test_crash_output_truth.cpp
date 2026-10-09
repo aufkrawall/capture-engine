@@ -11,6 +11,7 @@
 #include "common/crash/crash_dump_policy.h"
 #include "common/crash/crash_first_chance.h"
 #include "common/crash/crash_handler.h"
+#include "common/crash/crash_handler_internal.h"
 #include "common/logging/log_privacy.h"
 #include "source_fragment_reader.h"
 
@@ -66,6 +67,9 @@ int CountFilesWithPrefix(const std::filesystem::path& dir, const std::string& pr
 }
 
 int g_ExternalCaptureCalls = 0;
+EXCEPTION_RECORD g_ExternalFaultRecord{};
+CONTEXT g_ExternalFaultContext{};
+DWORD g_ExternalFaultThread = 0;
 std::vector<std::string> g_ExternalCaptureHints;
 std::vector<policy::ExternalDumpScope> g_ExternalCaptureScopes;
 
@@ -78,6 +82,16 @@ bool RecordExternalCapture(const char* dumpFileNameHint, policy::ExternalDumpSco
 }
 
 bool ForeignOverlayLoadedStub() {
+    return true;
+}
+
+bool RecordExternalFault(const char*, policy::ExternalDumpScope scope, const ExternalDumpException* exception) {
+    ++g_ExternalCaptureCalls;
+    if (scope != policy::ExternalDumpScope::kRich || !exception || !exception->pointers)
+        return false;
+    g_ExternalFaultThread = exception->threadId;
+    g_ExternalFaultRecord = *exception->pointers->ExceptionRecord;
+    g_ExternalFaultContext = *exception->pointers->ContextRecord;
     return true;
 }
 
@@ -116,6 +130,53 @@ protected:
 };
 
 }  // namespace
+
+TEST_F(CrashOutputTruthTest, CaptureEngineHardwareFaultDumpsBeforeTheGameCanHandleIt) {
+    ce::crash_first_chance::Install();
+    struct RestoreDumpState {
+        bool previous = g_DumpSuccessfullyWritten.exchange(false);
+        ~RestoreDumpState() { g_DumpSuccessfullyWritten.store(previous); }
+    } restoreDumpState;
+    struct ScopedDbgHelp {
+        HMODULE module = LoadLibraryExW(L"dbghelp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        MINIDUMPWRITEDUMP previous = g_pMiniDumpWriteDump;
+        ~ScopedDbgHelp() {
+            g_pMiniDumpWriteDump = previous;
+            if (module)
+                FreeLibrary(module);
+        }
+    } dbgHelp;
+    ASSERT_NE(dbgHelp.module, nullptr);
+    g_pMiniDumpWriteDump = reinterpret_cast<MINIDUMPWRITEDUMP>(GetProcAddress(dbgHelp.module, "MiniDumpWriteDump"));
+    ASSERT_NE(g_pMiniDumpWriteDump, nullptr);
+    g_ExternalCaptureCalls = 0;
+    g_ExternalFaultThread = 0;
+    CrashDumpEnvironmentHooks hooks;
+    hooks.captureWithExternalHelper = &RecordExternalFault;
+    hooks.foreignOverlayLoaded = &ForeignOverlayLoadedStub;
+    RegisterCrashDumpEnvironmentHooks(hooks);
+    EXCEPTION_RECORD record;
+    CONTEXT context;
+    auto pointers = MakeSyntheticException(record, context, EXCEPTION_ACCESS_VIOLATION);
+    record.ExceptionAddress = reinterpret_cast<void*>(&CrashHandlerExceptionFilterForTesting);
+    RtlCaptureContext(&context);
+    record.NumberParameters = 2;
+    record.ExceptionInformation[1] = static_cast<ULONG_PTR>(-1);
+
+    EXPECT_EQ(CrashHandlerExceptionFilterForTesting(&pointers), EXCEPTION_CONTINUE_SEARCH);
+    EXPECT_EQ(g_ExternalCaptureCalls, 1);
+    EXPECT_EQ(g_ExternalFaultThread, GetCurrentThreadId());
+    EXPECT_EQ(g_ExternalFaultRecord.ExceptionCode, record.ExceptionCode);
+    EXPECT_EQ(g_ExternalFaultRecord.ExceptionAddress, record.ExceptionAddress);
+    EXPECT_EQ(g_ExternalFaultRecord.ExceptionInformation[1], record.ExceptionInformation[1]);
+#ifdef _WIN64
+    EXPECT_EQ(g_ExternalFaultContext.Rip, context.Rip);
+#else
+    EXPECT_EQ(g_ExternalFaultContext.Eip, context.Eip);
+#endif
+    EXPECT_NE(ReadCrashLog(dir_).find("Capture Engine hardware fault"), std::string::npos);
+    ce::crash_first_chance::ClearFaultForCurrentThread();
+}
 
 // crash.log is shared in support workflows like every other log, so it follows
 // the same privacy contract (log_privacy.h): no Windows account component may
