@@ -262,7 +262,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
     write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track,
                           args.video_encoder, args.audio_capture_latency_ms, args.app_capture_latency_ms,
                           getattr(args, "wgc_smoothness_floor_ms", None),
-                          getattr(args, "audio_latency_autodetect", False))
+                          getattr(args, "audio_latency_autodetect", False),
+                          getattr(args, "overlay_enabled", False))
 
     delay_ms = args.delay_ms
     scenario_duration_sec = scenario.duration_sec if scenario.duration_sec is not None else args.duration_sec

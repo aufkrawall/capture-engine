@@ -426,6 +426,14 @@ def build_parser():
         "constants, which encode the capture timing of one OS/driver/product state. 'off' keeps the constants.",
     )
     parser.add_argument(
+        "--overlay-enabled",
+        action="store_true",
+        help="Enable the in-game overlay hook ([Overlay] enabled=true plus dll_injection=always for the stimulus "
+        "profile; never composited into the recording). Screen-grab recordings of a hooked game then have the "
+        "display timing service that supplies present-to-screen latency; without it WGC/DXGI duplication "
+        "runs have no hook at all.",
+    )
+    parser.add_argument(
         "--audio-latency-autodetect",
         action="store_true",
         help="Enable the product's own render-to-loopback latency probe ([AudioSync] "

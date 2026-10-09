@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-09 - Varying A/V offsets: what was measured, one tried fix not shipped
+
+- Asked to find the cause of the 28-52 ms inject offset spread and to fix the WGC probe over-correction.
+  Findings and numbers in `cfr-capture-sync.md` (2026-10-09 offset investigation). Not queue depth (capping the
+  stimulus changed the mean, not the spread); engine-period phase, WGC `selectionOffsetUs` and the hook add noise.
+- Tried: subtract the ETW present-to-screen latency (hooked game) from the probe delay for WGC/DXGI sessions.
+  Estimator and tests worked (median 20.0 / ~7-11 / 0.35 ms by mode) but the A/V result moved +3.7 ms (n=4 vs
+  4) instead of ~+20, and a manual delay sweep showed the 300 ms reservoir regime is about 20 ms audio-early
+  even at ~0 anchor delay. Reverted; no product change. The next step is the reservoir regime, not Q.
+- Test-environment note: the user's background audio was active during these runs (affects the system track,
+  not the per-process app track).
+
 ### 2026-10-09 - Opus tracks ran up to a frame longer than the video
 
 - Codec-finalization pass of the A/V matrix: Opus failed on WGC, inject and dxgi_dup (`audio_timeline`), every other

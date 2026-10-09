@@ -253,7 +253,8 @@ def restore_config(snapshot):
 
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
                           audio_capture_latency_ms=0.0, app_capture_latency_ms=None,
-                          wgc_smoothness_floor_ms=None, audio_latency_autodetect=False):
+                          wgc_smoothness_floor_ms=None, audio_latency_autodetect=False,
+                          overlay_enabled=False):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -308,7 +309,7 @@ container=mkv
 output_dir={output_dir}
 
 [Overlay]
-enabled=false
+enabled={'true' if overlay_enabled else 'false'}
 capture_include_overlay=false
 screenshot_include_overlay=false
 
@@ -350,7 +351,7 @@ track={system_tracks}
 [Profile.1]
 Process={PROCESS_NAME}
 video_capture=inherit
-audio_enabled=true
+{'dll_injection=always' + chr(10) if overlay_enabled else ''}audio_enabled=true
 audio_track={app_tracks}
 audio_capture_latency_ms={app_capture_latency_ms}
 {secondary_app_section}
