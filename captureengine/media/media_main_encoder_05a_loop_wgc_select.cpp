@@ -136,7 +136,7 @@ if (!drainedScreenGrabFrames.empty()) {
         }
 
         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
-            wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
+            wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart, drainedFrame.sourceFrameSpan);
             // Monotonic bounded-deviation smoothing of the raw compositor timestamp.
             // WGC/DXGI timestamps are DWM composition times and arrive quantized
             // under VRR/composed presentation even when the game presents perfectly
@@ -144,7 +144,8 @@ if (!drainedScreenGrabFrames.empty()) {
             // source into constant single-tick repeats (fortistutter root cause).
             // The raw timestamp stays untouched for sync validation/diagnostics.
             drainedFrame.selectionTimestamp =
-                wgcInputPredictor.SmoothMonotonicTimestamp(drainedFrame.timestamp, targetIntervalTicks);
+                wgcInputPredictor.SmoothMonotonicTimestamp(drainedFrame.timestamp, targetIntervalTicks,
+                                                           drainedFrame.sourceFrameSpan);
             observeCaptureSyncPhaseSource(
                 "screen_grab", wgcCfrPhaseLock, GetFrameSelectionTimestamp(drainedFrame));
             if (drainedFrame.selectionTimestamp > 0 && qpcFreq.QuadPart > 0) {

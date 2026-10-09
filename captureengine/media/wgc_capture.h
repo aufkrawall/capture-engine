@@ -28,6 +28,9 @@ struct WGCCapturedFrame {
     int32_t captureLeft = 0;
     int32_t captureTop = 0;
     bool duplicateSourceTimestamp = false;
+    // Source frames this delivery represents: 1 plus those dropped before it since the previous
+    // delivered frame (ingress metering, pool pressure). Lets cadence estimators see the true source rate.
+    uint32_t sourceFrameSpan = 1;
     // Stable identity of the WGCCapture instance/source that produced this
     // frame. It is captured at delivery time and never inferred from a global
     // coordinator epoch, so retired callbacks cannot be relabeled as the new
@@ -146,7 +149,8 @@ public:
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
     void SetDirectFrameCallback(
         std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
-                           const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&)>
+                           const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&,
+                           uint32_t)>
             callback);
     // QPC-stamped DXGI hardware-pointer updates are independent of desktop
     // content frames and must reach the cursor timeline even during source

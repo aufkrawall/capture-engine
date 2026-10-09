@@ -239,7 +239,7 @@ void SubmitWgcQueuedFrame(QueuedFrame&& frame);
 
 void QueueWgcCursorObservation(const ce::cursor::SourcePointerObservation& observation, int32_t captureLeft, int32_t captureTop, uint32_t captureWidth, uint32_t captureHeight, uint64_t sourceEpoch);
 
-void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp, int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp, const ce::cursor::SourcePointerObservation& cursorObservation, int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease);
+void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp, int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp, const ce::cursor::SourcePointerObservation& cursorObservation, int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease, uint32_t sourceFrameSpan);
 
 QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame);
 

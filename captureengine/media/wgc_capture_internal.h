@@ -359,6 +359,7 @@ public:
     int64_t qpcFreq_ = 0;
     std::atomic<int64_t> lastDeliveredSourceQpc_{0};
     std::atomic<int64_t> lastDeliveredRawSourceQpc_{0};
+    std::atomic<uint32_t> lastDeliveredSourceSeq_{0};
     std::atomic<int64_t> lastObservedRawSourceQpc_{0};
     std::atomic<int64_t> lastAssignedSourceQpc_{0};
     std::atomic<uint64_t> sourceEpoch_{0};
@@ -370,7 +371,7 @@ public:
     // and the main thread (writer during start/stop recording).
     using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
                                            const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t,
-                                           WgcPoolSlotLease&&);
+                                           WgcPoolSlotLease&&, uint32_t);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     using DirectCursorCallbackFn = void (*)(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t,
                                             uint32_t, uint64_t);
@@ -545,6 +546,7 @@ public:
     std::mutex ingressAdmissionMutex_;
     int64_t ingressCreditLastQpc_ = 0;
     double ingressCreditFrames_ = 1.0;
+    double ingressBudgetCreditFrames_ = 1.0;
     std::mutex resetReasonMutex_;
     std::string resetReason_;
     winrt::event_token itemClosedToken_{};
@@ -627,6 +629,8 @@ public:
         int64_t sourceFrameQpc = 0;
         bool duplicateSourceTimestamp = false;
         bool accepted = false;
+        // Ordinal of this callback among every source frame the capture saw (admitted or not).
+        uint32_t sourceFrameSeq = 0;
     };
     SourceFramePreflight PreflightSourceFrame(int64_t rawSourceFrameQpc);
 

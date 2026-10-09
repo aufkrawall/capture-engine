@@ -562,6 +562,89 @@ TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampRemovesCompositorQuantization
     EXPECT_EQ(predictor.SmoothingSnapCount(), 0u);
 }
 
+namespace {
+
+struct ThinnedSourceFrame {
+    int64_t rawUs = 0;
+    uint32_t span = 1;
+};
+
+// A steady source thinned by a credit meter that refills at budgetFps (what WGC ingress does for a
+// source faster than its reservoir budget): the first frame is kept, later ones when a credit is due.
+std::vector<ThinnedSourceFrame> ThinSteadySource(int64_t startUs, size_t sourceFrames, double sourceIntervalUs,
+                                                 double budgetFps) {
+    std::vector<ThinnedSourceFrame> kept;
+    double credit = 1.0;
+    size_t lastKept = 0;
+    for (size_t i = 0; i < sourceFrames; ++i) {
+        if (i > 0) {
+            credit = std::min(4.0, credit + sourceIntervalUs / 1e6 * budgetFps);
+        }
+        if (credit < 1.0) {
+            continue;
+        }
+        credit -= 1.0;
+        ThinnedSourceFrame frame;
+        frame.rawUs = startUs + static_cast<int64_t>(std::llround(static_cast<double>(i) * sourceIntervalUs));
+        frame.span = kept.empty() ? 1u : static_cast<uint32_t>(i - lastKept);
+        lastKept = i;
+        kept.push_back(frame);
+    }
+    return kept;
+}
+
+double MeanSmoothingLagUs(const std::vector<ThinnedSourceFrame>& frames, bool tellSpan, int64_t outputIntervalUs,
+                          size_t warmup, int64_t* snapCount) {
+    constexpr int64_t kQpcFreq = 1000000;
+    InputFrameRatePredictor predictor;
+    double lagSum = 0.0;
+    size_t lagSamples = 0;
+    for (size_t i = 0; i < frames.size(); ++i) {
+        const uint32_t span = tellSpan ? frames[i].span : 1u;
+        predictor.Update(frames[i].rawUs, kQpcFreq, span);
+        const int64_t smoothed = predictor.SmoothMonotonicTimestamp(frames[i].rawUs, outputIntervalUs, span);
+        if (i >= warmup) {
+            lagSum += static_cast<double>(frames[i].rawUs - smoothed);
+            ++lagSamples;
+        }
+    }
+    if (snapCount) {
+        *snapCount = static_cast<int64_t>(predictor.SmoothingSnapCount());
+    }
+    return lagSamples ? lagSum / static_cast<double>(lagSamples) : 0.0;
+}
+
+}  // namespace
+
+TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampStaysOnTheSourceGridWhenIngressThinsTheStream) {
+    constexpr int64_t kOutputIntervalUs = 16667;  // 60 fps CFR
+    constexpr double kSourceIntervalUs = 1000000.0 / 144.0;
+    constexpr double kBudgetFps = 75.0;  // 60 fps * 1.25 reservoir budget
+
+    const auto frames = ThinSteadySource(2000000, 2000, kSourceIntervalUs, kBudgetFps);
+    ASSERT_GT(frames.size(), 900u);
+    ASSERT_LT(frames.size(), 1100u);
+    bool sawThinnedSpan = false;
+    for (const auto& frame : frames) {
+        sawThinnedSpan = sawThinnedSpan || frame.span > 1;
+    }
+    ASSERT_TRUE(sawThinnedSpan);
+
+    int64_t snapsWithSpan = 0;
+    int64_t snapsWithoutSpan = 0;
+    const double lagWithSpan = MeanSmoothingLagUs(frames, true, kOutputIntervalUs, 32, &snapsWithSpan);
+    const double lagWithoutSpan = MeanSmoothingLagUs(frames, false, kOutputIntervalUs, 32, &snapsWithoutSpan);
+
+    // Told how many source frames each kept frame stands for, the smoothed time tracks the raw time.
+    EXPECT_LT(std::abs(lagWithSpan), 1500.0);
+    EXPECT_EQ(snapsWithSpan, 0);
+    // Regression anchor: fed only the thinned deliveries, the cadence estimate lags the source and the
+    // smoothed time sits on the deviation bound (about 3/4 of an interval behind), a constant ~9 ms
+    // content shift that the recording would inherit.
+    EXPECT_GT(lagWithoutSpan, 6000.0);
+    EXPECT_EQ(snapsWithoutSpan, 0);
+}
+
 TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampKeepsRealStallsVisible) {
     constexpr int64_t kQpcFreq = 1000000;
     constexpr int64_t kOutputIntervalUs = 8333;

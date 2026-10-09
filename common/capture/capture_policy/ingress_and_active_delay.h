@@ -48,10 +48,18 @@ inline bool IsWgcIngressSourceAtOrAboveCfrTarget(uint32_t outputFps, uint32_t re
     return true;
 }
 
+// Refill of the budget-rate ingress meter after elapsedSeconds of source time.
+inline double AdvanceWgcIngressBudgetCredit(double creditFrames, double elapsedSeconds, uint32_t outputFps) {
+    const double refillFrames =
+        std::max(0.0, elapsedSeconds) * static_cast<double>(GetWgcSmoothnessBudgetFps(outputFps));
+    return std::min(kWgcIngressBudgetCreditCapFrames, creditFrames + refillFrames);
+}
+
 inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(
     uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames, bool recovering, uint32_t outputFps,
     uint32_t recentInputMin250Fps, uint32_t recentInputMin500Fps, double admissionCreditFrames, uint32_t freeCopySlots,
-    uint32_t reservedFreeCopySlots, bool uniformPlayoutOwnsSurplus = false) {
+    uint32_t reservedFreeCopySlots, bool uniformPlayoutOwnsSurplus = false,
+    double budgetCreditFrames = kWgcIngressBudgetCreditCapFrames) {
     WgcIngressAdmissionDecision decision{};
     if (retainedFrameCap == 0) {
         decision.reason = "uncapped";
@@ -86,6 +94,18 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(
     }
     if (IsWgcIngressSourceBelowCfrTarget(outputFps, recentInputMin250Fps, recentInputMin500Fps)) {
         decision.reason = "source_below_cfr_target";
+        return decision;
+    }
+    // The reservoir is sized for window * (output fps * budget permille) source frames. A source
+    // faster than that budget (e.g. 144+ Hz into 60 fps CFR) would otherwise fill it with
+    // unthinned frames, run into the reserved-slot pressure above and the newest-frame trim, and
+    // starve the live edge. Meter ingestion at the budget rate instead; bursts up to the credit cap
+    // and the low-water/recovery paths above are unaffected, and a source at or below the budget
+    // never exhausts the credit.
+    if (budgetCreditFrames < 1.0) {
+        decision.accept = false;
+        decision.decimated = true;
+        decision.reason = "wgc_ingress_decimated_credit";
         return decision;
     }
 

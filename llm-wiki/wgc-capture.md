@@ -218,6 +218,39 @@ WGC and DXGI now share a proactive overload repeat pacer with recovery hysteresi
 
 Final WGC/DXGI causality now preserves recording history instead of trusting only terminal state. A degraded recording remains `encoder_timeline_debt`, `mux_timeline_debt`, or the combined cause after hardware recovers only when CFR-debt growth observed during capacity pressure dominates overall peak debt; a larger later source-only outage therefore remains an independent limiter instead of being absorbed by the earlier capacity event. Retained-cap trimming and soft ingress decimation alone are reservoir-management evidence, not copy-pool saturation; pool pressure requires hard evidence such as saturated safe drops, hard overflow, or zero-free-slot exhaustion. Consequently, source-delivery and soft-pool symptoms that appear downstream of proven dominant capacity debt are reported as context rather than replacing the causal limiter. This is diagnostic attribution only and does not change frame retention, selection, pacing, CFR, or audio behavior.
 
+### Ingress budget meter and thinned-stream cadence (2026-10-09)
+
+Invariant: the retained reservoir holds at most `window * budget rate` source frames, where the budget rate is
+`GetWgcSmoothnessBudgetFps` = output fps * 1.25 (`kWgcSmoothnessBufferSourceRatePermille`). 300 ms at 60 fps is 23
+frames, pool 41, retained cap 35. A source above that budget used to be admitted unthinned (`DecideWgcIngressAdmission`
+only throttled at `retainedHigh`, which sits at the same level as the reserved-slot soft pressure), so a 144 Hz window
+into 60 fps CFR admitted ~152 frames/s, hit the cap within ~250 ms, was decimated wholesale by the soft reserve and
+had its newest frames trimmed (`trimBufferedWgcForPoolPressure`): 820 trims, 46% repeated frames, 8-frame runs.
+Reproduced by the A/V matrix (WGC ALAC/60, 144 Hz stimulus) with both a 229 ms jitter floor and the product default
+331 ms audio-latency reservoir (40.6% duplicates).
+
+Fix: (1) a second admission credit refills at the budget rate (`AdvanceWgcIngressBudgetCredit`, cap
+`kWgcIngressBudgetCreditCapFrames` = 4); below one credit the frame is decimated with the existing reason
+`wgc_ingress_decimated_credit`. It sits after the low-water, recovery and source-below-target exits, so catch-up bursts
+and slow sources are untouched, and a source at or below the budget never exhausts it. (2) Every delivered frame
+carries `sourceFrameSpan` (difference of the callback ordinals `PreflightSourceFrame` assigns to every source frame,
+`lastDeliveredSourceSeq_`, capped by `kWgcMaxSourceFrameSpan`); `InputFrameRatePredictor::Update` and
+`SmoothMonotonicTimestamp` take it, so the cadence estimate and the smoothed selection time stay on the source grid.
+Without (2) the thinned deliveries pinned the smoothed time to its deviation bound, a constant +9.2 ms content shift
+(`wgc_av_sync_delay_residual`, `rawMinusPredicted` = +9244 us in `[WGC CFR SMOOTHNESS DELAY]`).
+
+Also: the end-of-session smoothness deficit is judged against `GetWgcSmoothnessRequestedDelayQpc` (the floor when only
+a floor was requested), not the 300 ms reservoir; the old comparison flagged a clean 22 ms floor as a 279 ms
+"startup underfilled" visual fault.
+
+Evidence (2026-10-09, 0.1.7064, matrix quick gate): WGC ALAC/60 duplicates 40.6% -> 0%, pool trims 722 -> 0,
+`rawMinusPredicted` 9.2 ms -> ~0, A/V offsets +1/+3 ms; WGC AAC/120 unchanged. Tests:
+`WgcIngressBudget*` (policy), `SmoothMonotonicTimestampStaysOnTheSourceGridWhenIngressThinsTheStream`,
+`WgcSmoothnessRequestedDelayIsTheFloorWhenOnlyAFloorWasRequested`. Real-game hardware run pending.
+Open: the soft reserve is still touched ~10 times per 10 s run (`ingress_soft`) and the newest-frame trim is
+unchanged; the meter thins permanently whenever the source exceeds 1.25 * output, so nearest-frame selection works on
+at most the budget rate there.
+
 ### CFR Source Coverage Limits
 
 At ~140fps source -> 120fps CFR output, repeats are not the theoretical minimum by themselves. A regular source above the output rate should mostly produce source drops, because each 120 fps output slot can choose a suitable unique source frame and discard surplus. Repeats are the CFR coverage-limit signal: they appear when an output slot has no sync-safe fresh source frame, which can happen with source frame-time spikes, brief source FPS below target, WGC/DWM callback or delivery gaps, or safety rejection of too-new candidates. Under 100% GPU load, WGC is more exposed than inject because the DWM/WGC frame-pool delivery layer can batch or gap frames even when the game presents reasonably smoothly. The inject capture path (no DWM intermediary) is less exposed to that WGC delivery layer, but any CFR path can repeat under actual source coverage holes.

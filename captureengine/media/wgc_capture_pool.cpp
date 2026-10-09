@@ -421,23 +421,30 @@ bool WGCCapture::Impl::ShouldAdmitFrameToPool(int64_t sourceFrameQpc,  int64_t r
             std::lock_guard<std::mutex> lock(ingressAdmissionMutex_);
             if (timingQpc > 0 && qpcFreq_ > 0 && outputFps > 0) {
                 if (ingressCreditLastQpc_ > 0 && timingQpc > ingressCreditLastQpc_) {
-                    const double elapsedFrames =
-                        (static_cast<double>(timingQpc - ingressCreditLastQpc_) * static_cast<double>(outputFps)) /
-                        static_cast<double>(qpcFreq_);
+                    const double elapsedSeconds =
+                        static_cast<double>(timingQpc - ingressCreditLastQpc_) / static_cast<double>(qpcFreq_);
+                    const double elapsedFrames = elapsedSeconds * static_cast<double>(outputFps);
                     ingressCreditFrames_ = std::min(2.0, ingressCreditFrames_ + std::max(0.0, elapsedFrames));
+                    ingressBudgetCreditFrames_ = ce::capture_policy::AdvanceWgcIngressBudgetCredit(
+                        ingressBudgetCreditFrames_, elapsedSeconds, outputFps);
                 } else if (ingressCreditLastQpc_ == 0 || timingQpc < ingressCreditLastQpc_) {
                     ingressCreditFrames_ = std::max(ingressCreditFrames_, 1.0);
+                    ingressBudgetCreditFrames_ = std::max(ingressBudgetCreditFrames_, 1.0);
                 }
                 ingressCreditLastQpc_ = timingQpc;
             } else {
                 ingressCreditFrames_ = std::max(ingressCreditFrames_, 1.0);
+                ingressBudgetCreditFrames_ = std::max(ingressBudgetCreditFrames_, 1.0);
             }
 
             decision = ce::capture_policy::DecideWgcIngressAdmission(
                 pressureRetainedFrames, retainedFrameCap, lowWaterFrames, recovering, outputFps, inputMin250Fps,
                 inputMin500Fps, ingressCreditFrames_, freeCopySlots, smoothnessReservedFreeSlots_,
-                uniformPlayoutOwnsSurplus);
+                uniformPlayoutOwnsSurplus, ingressBudgetCreditFrames_);
             reasonCode = WgcIngressReasonCodeFromText(decision.reason);
+            if (decision.accept && outputFps > 0) {
+                ingressBudgetCreditFrames_ = std::max(0.0, ingressBudgetCreditFrames_ - 1.0);
+            }
             if (decision.accept && outputFps > 0 &&
                 !ce::capture_policy::IsWgcIngressSourceBelowCfrTarget(outputFps, inputMin250Fps, inputMin500Fps)) {
                 ingressCreditFrames_ = std::max(0.0, ingressCreditFrames_ - 1.0);

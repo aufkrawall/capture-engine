@@ -12,6 +12,7 @@ void WGCCapture::Impl::ResetStats() {
         }
         callbackFrameCount_.store(0, std::memory_order_relaxed);
         inputFrameCount_.store(0, std::memory_order_relaxed);
+        lastDeliveredSourceSeq_.store(0, std::memory_order_relaxed);
         lastCallbackStartQpc_.store(0, std::memory_order_relaxed);
         callbackGapAvgUs_.store(0, std::memory_order_relaxed);
         callbackGapMaxUs_.store(0, std::memory_order_relaxed);
@@ -72,6 +73,7 @@ void WGCCapture::Impl::ResetStats() {
             std::lock_guard<std::mutex> ingressLock(ingressAdmissionMutex_);
             ingressCreditLastQpc_ = 0;
             ingressCreditFrames_ = 1.0;
+            ingressBudgetCreditFrames_ = 1.0;
         }
         if (poolLeaseState_) {
             const uint32_t current = poolLeaseState_->leasedCurrent.load(std::memory_order_relaxed);

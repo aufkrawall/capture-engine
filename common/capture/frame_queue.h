@@ -85,6 +85,8 @@ struct QueuedFrame {
             other.isHDR = false;
             duplicateSourceTimestamp = other.duplicateSourceTimestamp;
             other.duplicateSourceTimestamp = false;
+            sourceFrameSpan = other.sourceFrameSpan;
+            other.sourceFrameSpan = 1;
             wgcCursorEmbedded = other.wgcCursorEmbedded;
             other.wgcCursorEmbedded = false;
             captureLeft = other.captureLeft;
@@ -135,6 +137,9 @@ struct QueuedFrame {
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
     bool isHDR = false;         // New: Signals Rec.2100 PQ content
     bool duplicateSourceTimestamp = false;
+    // Source frames this WGC frame stands for (1 + frames dropped before it since the previous kept
+    // frame); keeps cadence estimation on the source rate when ingress thins the stream.
+    uint32_t sourceFrameSpan = 1;
     bool wgcCursorEmbedded = false;
     int32_t captureLeft = 0;  // Screen-space origin for partial-capture cursor overlay
     int32_t captureTop = 0;

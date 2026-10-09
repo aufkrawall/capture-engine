@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **WGC recording of a high-refresh window at a lower frame rate:** a 60 fps recording of a 144 Hz or faster window repeated about 40% of its frames (runs of up to 8 identical frames) because the smoothing buffer was filled with every source frame, overflowed its pool and then threw away the newest frames. Ingestion is now metered to the rate the buffer is sized for, and the frame-time estimator is told how many source frames each kept frame stands for, so selection stays on the source grid. A live 60 fps scene went from 40.6% to 0% repeated frames with no discarded frames; 120 fps recording is unchanged.
+
 - **False "startup smoothing underfilled" fault on clean WGC recordings:** when only a small jitter buffer (about 22 ms) was requested, the end-of-recording summary compared it with the full 300 ms reservoir, reported a 279 ms deficit and flagged a visual timeline fault. The deficit is now judged against the delay that was actually requested.
 
 - **Audio/video validation after source relayout:** the recording test matrix finds the built Capture Engine and stimulus app from the repository root again, including when launched from another working directory. The per-recording triage step now uses the same FFmpeg/FFprobe as the content analysis instead of looking for them on `PATH`, so a run no longer fails after a clean capture. A dry-run regression checks the installed layout and the forwarded tool paths before recordings are started.

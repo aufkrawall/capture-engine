@@ -343,7 +343,8 @@ void QueueWgcCursorObservation(const ce::cursor::SourcePointerObservation& obser
 void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
                           int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp,
                           const ce::cursor::SourcePointerObservation& cursorObservation, int32_t captureLeft,
-                          int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease) {
+                          int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease,
+                          uint32_t sourceFrameSpan) {
     const uint64_t activeEpoch = media_main_g_WgcSourceEpoch.load(std::memory_order_acquire);
     if (sourceEpoch != activeEpoch) {
         static std::atomic<uint64_t> s_staleEpochDrops{0};
@@ -367,6 +368,7 @@ void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, in
     qf.rawTimestamp = rawTimestamp;
     qf.selectionTimestamp = timestamp;
     qf.duplicateSourceTimestamp = duplicateSourceTimestamp;
+    qf.sourceFrameSpan = sourceFrameSpan > 0 ? sourceFrameSpan : 1u;
     qf.wgcPoolSlot = poolLease.Slot();
     qf.wgcPoolGeneration = poolLease.Generation();
     qf.wgcSourceEpoch = sourceEpoch;
@@ -411,6 +413,7 @@ QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     qf.timestamp = frame.timestamp;
     qf.rawTimestamp = frame.rawTimestamp;
     qf.selectionTimestamp = frame.timestamp;
+    qf.sourceFrameSpan = frame.sourceFrameSpan > 0 ? frame.sourceFrameSpan : 1u;
     qf.wgcPoolSlot = frame.poolSlot;
     qf.wgcPoolGeneration = frame.poolGeneration;
     qf.wgcSourceEpoch = frame.sourceEpoch;

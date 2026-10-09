@@ -100,6 +100,13 @@ constexpr uint32_t kWgcSmoothnessBufferPoolHeadroomSlots = 8;
 // (e.g. 140/144 Hz VRR into 120 fps CFR), otherwise a "300 ms" reservoir is only
 // about 250 ms of 144 Hz source history.
 constexpr uint32_t kWgcSmoothnessBufferSourceRatePermille = 1250;
+// Ingress admission is metered at that same budget rate (output fps * the permille above) so the
+// retained reservoir holds at most window * budget-rate source frames, the amount it was sized for.
+// The cap bounds how many frames a delivery burst may admit back to back before the meter throttles.
+constexpr double kWgcIngressBudgetCreditCapFrames = 4.0;
+// Largest gap (in source frames) between two delivered frames that is still treated as thinning
+// rather than a stall when estimating the source cadence.
+constexpr uint32_t kWgcMaxSourceFrameSpan = 16;
 // WGC smoothness FLOOR: a baseline jitter-buffer delay that engages the active-delay
 // smoothness machinery (nearest-target playout + reservoir) even when there is NO
 // audio-latency content delay -- i.e. video-only capture, or a low-confidence loopback

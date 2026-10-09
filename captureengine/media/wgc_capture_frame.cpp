@@ -67,6 +67,18 @@ bool WGCCapture::Impl::DeliverSourceTexture(ID3D11Texture2D* texture,  const D3D
         if (pre.rawSourceFrameQpc > 0) {
             lastDeliveredRawSourceQpc_.store(pre.rawSourceFrameQpc, std::memory_order_relaxed);
         }
+        // How many source frames this delivered frame stands for (itself plus the ones ingress
+        // metering, pacing or pool pressure dropped since the previous delivery), so downstream
+        // cadence estimation keeps seeing the source rate rather than the thinned delivery rate.
+        uint32_t sourceFrameSpan = 1;
+        if (pre.sourceFrameSeq != 0) {
+            const uint32_t previousSeq =
+                lastDeliveredSourceSeq_.exchange(pre.sourceFrameSeq, std::memory_order_relaxed);
+            const uint32_t delta = pre.sourceFrameSeq - previousSeq;
+            if (previousSeq != 0 && delta > 0 && delta <= ce::capture_policy::kWgcMaxSourceFrameSpan) {
+                sourceFrameSpan = delta;
+            }
+        }
         RecordDeliveredFrameEvent();
         RequestHDRRecheckIfDue();
 
@@ -91,6 +103,7 @@ bool WGCCapture::Impl::DeliverSourceTexture(ID3D11Texture2D* texture,  const D3D
             outputFrame->captureLeft = captureLeft;
             outputFrame->captureTop = captureTop;
             outputFrame->duplicateSourceTimestamp = pre.duplicateSourceTimestamp;
+            outputFrame->sourceFrameSpan = sourceFrameSpan;
             outputFrame->sourceEpoch = sourceEpoch;
             outputFrame->poolSlot = poolSlot;
             outputFrame->poolGeneration = poolGeneration;
@@ -100,7 +113,7 @@ bool WGCCapture::Impl::DeliverSourceTexture(ID3D11Texture2D* texture,  const D3D
             if (cb) {
                 cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, pre.rawSourceFrameQpc, captureIsHDR_,
                    cursorEmbedded, pre.duplicateSourceTimestamp, cursorObservation, captureLeft, captureTop,
-                   sourceEpoch, std::move(poolLease));
+                   sourceEpoch, std::move(poolLease), sourceFrameSpan);
             } else {
                 SafeRelease(copiedTexture);
             }
@@ -360,7 +373,7 @@ WGCCapture::Impl::SourceFramePreflight WGCCapture::Impl::PreflightSourceFrame(in
         SourceFramePreflight pre;
         pre.rawSourceFrameQpc = rawSourceFrameQpc;
 
-        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        pre.sourceFrameSeq = inputFrameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
         RecordInputFrameEvent();
 
         if (IsOutOfOrderRawSourceFrameQpc(rawSourceFrameQpc)) {

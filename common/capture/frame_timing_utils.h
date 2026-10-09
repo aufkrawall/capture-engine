@@ -283,7 +283,9 @@ public:
 
     // Called each time a new source frame arrives.  Returns the smoothed
     // interval in QPC ticks (0 if not yet calibrated).
-    int64_t Update(int64_t frameQpc, int64_t qpcFreq) {
+    // sourceFramesSincePrevious > 1 says the previous frame this predictor saw was that many source
+    // frames ago (ingress thinned the stream), so the interval is per source frame, not per delivery.
+    int64_t Update(int64_t frameQpc, int64_t qpcFreq, uint32_t sourceFramesSincePrevious = 1) {
         if (qpcFreq <= 0) {
             return 0;
         }
@@ -309,7 +311,8 @@ public:
             return 0;
         }
 
-        const int64_t rawInterval = frameQpc - lastInputQpc_;
+        const int64_t sourceSpan = static_cast<int64_t>(std::max<uint32_t>(1u, sourceFramesSincePrevious));
+        const int64_t rawInterval = (frameQpc - lastInputQpc_ + sourceSpan / 2) / sourceSpan;
         lastInputQpc_ = frameQpc;
         ++frameCount_;
 
@@ -394,7 +397,10 @@ public:
     // Quantization noise is zero-mean by construction, so the smoothed stream
     // advances at the true source rate and a surplus source is consumed as
     // pure surplus drops again instead of drop+repeat churn.
-    int64_t SmoothMonotonicTimestamp(int64_t rawQpc, int64_t outputIntervalQpc) {
+    // sourceFramesSincePrevious: see Update(); the prediction and the stall threshold then span that
+    // many source intervals, so a thinned-but-steady stream is not pinned to the deviation bound.
+    int64_t SmoothMonotonicTimestamp(int64_t rawQpc, int64_t outputIntervalQpc,
+                                     uint32_t sourceFramesSincePrevious = 1) {
         if (rawQpc <= 0) {
             return rawQpc;
         }
@@ -407,6 +413,7 @@ public:
             return lastSmoothedQpc_;
         }
 
+        const int64_t sourceSpan = static_cast<int64_t>(std::max<uint32_t>(1u, sourceFramesSincePrevious));
         const int64_t rawGapQpc = rawQpc - lastSmoothedRawQpc_;
         if (rawGapQpc == 0) {
             // Compositor timestamp collision: content time did not advance, so
@@ -415,7 +422,7 @@ public:
             lastSmoothedQpc_ += 1;
             return lastSmoothedQpc_;
         }
-        if (rawGapQpc > intervalQpc * 2 + maxDeviationQpc) {
+        if (rawGapQpc > intervalQpc * (sourceSpan + 1) + maxDeviationQpc) {
             // Genuine delivery stall / regime change: relock to the raw time so
             // post-stall content is not shown early by a stale prediction.
             ++smoothingSnapCount_;
@@ -424,7 +431,7 @@ public:
             return lastSmoothedQpc_;
         }
 
-        const int64_t predictedQpc = lastSmoothedQpc_ + intervalQpc;
+        const int64_t predictedQpc = lastSmoothedQpc_ + intervalQpc * sourceSpan;
         int64_t smoothedQpc = std::clamp(predictedQpc, rawQpc - maxDeviationQpc, rawQpc + maxDeviationQpc);
         smoothedQpc = std::max(smoothedQpc, lastSmoothedQpc_ + 1);
         lastSmoothedQpc_ = smoothedQpc;
