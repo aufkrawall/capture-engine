@@ -1,4 +1,4 @@
-if False:
+def _self_test_syncdelay(make_session):
 
         wgc_sync_delay_20260620_173427_split_smoothness = make_session(
             "wgc_sync_delay_20260620_173427_split_smoothness",

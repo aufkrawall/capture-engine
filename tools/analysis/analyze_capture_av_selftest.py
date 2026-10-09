@@ -703,3 +703,10 @@ def self_test():
         assert "wgc_av_sync_delay_residual" in single_backend_report["verdicts"]
         assert "wgc_active_delay_realized_delay_unstable" in single_backend_report["verdicts"]
         assert "ce_visual_timeline_fault" in single_backend_report["verdicts"]
+
+        _self_test_sessions(make_session, dxgi_variable_fps_source_limited)
+        _self_test_encoder(make_session)
+        _self_test_syncdelay(make_session)
+        _self_test_audio(make_session, root)
+        _self_test_correlation()
+    print("self-test: PASS (6 groups)")

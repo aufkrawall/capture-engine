@@ -1,4 +1,4 @@
-if False:
+def _self_test_encoder(make_session):
 
         wgc_encoder_judder = make_session(
             "wgc_encoder_judder",

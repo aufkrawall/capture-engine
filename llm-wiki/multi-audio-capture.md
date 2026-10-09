@@ -284,6 +284,7 @@ Focused regression coverage lives in:
 - `tools/analysis/run_av_sync_matrix.py`
   - Runtime matrix for WGC/inject, AAC/ALAC/FLAC/Opus/PCM, and 60/120 fps cases. It rewrites/restores `installed/captureengine/config.ini` per run, records system/app/mixed/mic tracks, snapshots CE logs into each scenario folder, and stores analyzer plus triage reports per scenario.
   - The repository root is two levels above `tools/analysis`, independent of cwd. A CLI dry-run fixture copies the runner into that layout with installed assets and launches it from an unrelated directory; it catches the relayout regression that searched under `tools/installed`. `build_triage_command` forwards `--ffmpeg`/`--ffprobe` to the per-scenario `analyze_capture_av.py` triage (it fell back to a bare `ffprobe` on PATH and failed after a passing capture); the matrix self-test asserts the forwarding. Verified 2026-10-09.
+  - `analyze_capture_av --self-test` executes six groups. Five split fixture files previously started with `if False`, so their 393 assertions were not executed. They now define callable groups dispatched within the shared temporary-session scope. `test_capture_av_self_test_dispatch` replaces each group with a failure sentinel and proves the CLI self-test reaches it; it is registered in the Python tool gate. Verified 2026-10-09.
 
 Verified on 2026-06-04:
 

@@ -67,6 +67,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("log_digest", self_test_command("log_digest.py")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
+        ("capture_av_self_test_dispatch", unittest_command("test_capture_av_self_test_dispatch")),
         ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),
         (
             "vulkan_layer_participation_runner",

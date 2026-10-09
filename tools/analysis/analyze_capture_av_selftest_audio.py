@@ -1,4 +1,4 @@
-if False:
+def _self_test_audio(make_session, root):
 
         multi_app_stall = make_session(
             "multi_app_stall",

@@ -1,4 +1,4 @@
-if False:
+def _self_test_correlation():
     signature_rate = 100.0
     signature_duration_s = 260
     signal_start_s = 180
@@ -53,5 +53,3 @@ if False:
     assert short_stride == 192
     assert math.ceil(7200 * 48000 / long_stride) <= 500000
     assert long_stride > short_stride
-
-    print("self-test: PASS")

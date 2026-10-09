@@ -1,4 +1,4 @@
-if False:
+def _self_test_sessions(make_session, dxgi_variable_fps_source_limited):
 
         dxgi_desktop_source_limited = make_session(
             "dxgi_desktop_source_limited",
