@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-09 - Track 1 crackle at 150 ms, mirror case: first packet leading the recording start
+
+- Evidence: after the first-packet gap fix (e8bc40fc) the user heard nothing in a quick test, but session 20261009_201855 still carried the
+  same event in the opposite direction. Fortnite (src 5) first packet started 238 samples (4.96 ms) BEFORE the recording start
+  (`Batched pre-start discard ... nextPacket` 5 ms before `start`): `AppDiag place src=5 placed=242 writeCursor=480`, `overlapTotal` 0 -> 238 once.
+  Decoded Track 1 vs Track 2 (read-only): best lag -307 samples for 1.5-7 000 samples, -69 from 7500 on (a 238-sample step at exactly
+  sample 7200); Track 1's strongest click of the first 1.5 s is at 7200 (score 14.7, |d2| 0.0078 on 0.009 RMS), Track 2's worst is 4.3. Quiet content,
+  so it was easy to miss. Final lengths were exact (322400 = expected on both tracks), health healthy.
+- Root cause: `AudioLoopCommitSource` only stitched packets with `qpcPosition >= start`; an earlier first packet was written raw and consumed the
+  first-packet status, the startup slop hid the 238-sample overlap (< 240 trim threshold), the steady slop deleted it at 150 ms. The same bypass gave the
+  equalized microphone (delay 1500) a 1391-sample silence right after its first 10 ms packet. Loopback/mic without equalization were masked by the drift lane.
+- Fix: `ComputePreStartHeadTrim` drops the pre-start head of a first packet and places the rest at the origin; whole-packet case keeps the timeline
+  unstarted. Tests: `PreStartHeadTrimTest`, `PreStartFirstPacketReplayTest` (legacy replay yields one 238-sample overlap at 7200; fixed replay none;
+  mic replay reproduces `gap=1391`). Hardware run pending: expect `Startup pre-start head trimmed` once per leading source, no `overlapTotal`.
+
 ### 2026-10-09 - Track 1 crackle at 150 ms: first-packet gap deferred by the startup slop
 
 - Evidence: the user heard crackle early in Track 1 of 20261009_190736. Decoding it read-only (small libav helper,
