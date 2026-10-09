@@ -54,7 +54,7 @@
   },
   "total": 670,
   "scope": {
-    "entries": 1028,
+    "entries": 1030,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -713,6 +713,7 @@
       "tests/flow/test_flow_ngx.cpp",
       "tests/flow/test_flow_overlay_format.cpp",
       "tests/flow/test_flow_present_interposer.cpp",
+      "tests/flow/test_flow_queue_binding.cpp",
       "tests/flow/test_flow_queue_dispatch.cpp",
       "tests/flow/test_flow_queue_signal.cpp",
       "tests/flow/test_flow_signal_interposer.cpp",
@@ -949,6 +950,7 @@
       "tests/test_ngx_ota_policy.cpp",
       "tests/test_nv_lod_spread_override.cpp",
       "tests/test_output_completion_notification.cpp",
+      "tests/test_overlay_adapter_backend_identity.cpp",
       "tests/test_overlay_compat.cpp",
       "tests/test_overlay_composite_route_growth.cpp",
       "tests/test_overlay_cpu_raster.cpp",
