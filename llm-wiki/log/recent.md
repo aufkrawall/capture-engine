@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-09 - First-packet placement validated (build 0.1.7076, session 20261009_203546)
+
+- 23.6 s WGC recording, health healthy, both tracks 1133200 = expected samples. Leading first packets trimmed (`src=1` 63, `src=5` 170, `src=6` 93
+  samples), `src=0` first-packet gap 209 placed at the start, mic equalization gap 1310 at the start. App sources: `gapTotal=0 overlapTotal=0` at stop
+  and in every `AppDiag place`; `STOP AUDIO PLACEMENT` shows no gap/overlap events, lane not engaged (no seam > slop in 23 s).
+- Decoded read-only: Track 1 vs Track 2 best lag stays 72-76 samples from 1.5 s on (no step at sample 7200; before the fix it jumped by 238),
+  |d2| at 7200 is 0.0002 (was 0.0078), top click scores in the first 1.5 s are 4.4 on both tracks (noise floor).
+
 ### 2026-10-09 - Track 1 crackle at 150 ms, mirror case: first packet leading the recording start
 
 - Evidence: after the first-packet gap fix (e8bc40fc) the user heard nothing in a quick test, but session 20261009_201855 still carried the
