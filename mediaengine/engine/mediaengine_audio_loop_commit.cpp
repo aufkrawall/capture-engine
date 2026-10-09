@@ -62,6 +62,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
         }
         if (needReinit) {
             src.resampler->Init(inputFmt, targetFmt);
+            ce::audio::NotePlacementDriftResamplerReset(src.placementDrift);
         }
 
         uint8_t** resampledData = nullptr;
@@ -133,6 +134,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             trackCursorSnapshot =
                                 trackCursorIt != trackTimelineSamples.end() ? trackCursorIt->second : 0;
                         }
+                        bool writeCursorPinnedToExport = false;
                         if (srcIdx < encodedSamplesPerSource.size()) {
                             const int64_t encodedCursorSamples =
                                 ce::audio::ResolveSourceTimelineWriteCursor(
@@ -148,6 +150,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                                     encodedCursorSamples -
                                     static_cast<int64_t>(src.qpcAlignedWrittenSamples);
                                 src.qpcAlignedWrittenSamples = static_cast<uint64_t>(encodedCursorSamples);
+                                writeCursorPinnedToExport = true;
                                 if (cursorAdvance >= targetFmt.sampleRate / 200) {
                                     const uint64_t nowTick = GetTickCount64();
                                     if (nowTick - src.lastPacketTimelineAdjustWarnTick >= 1000) {
@@ -219,17 +222,59 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                                 (long long)lateJoin.preservedGapSamples,
                                 (unsigned long long)packet.qpcPosition);
                         }
-                        const auto timelineAdjustment =
+                        auto timelineAdjustment =
                             ce::audio::ComputeStartupAwarePacketTimelineAdjustment(
                                 packetStartSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples),
                                 targetFmt.sampleRate / 1000, (targetFmt.sampleRate * 150) / 1000,
                                 targetFmt.sampleRate / 250, targetFmt.sampleRate / 200);
                         const size_t packetTimelineFadeSamples =
                             static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                        const bool steadyPlacementSeam = !firstTimelinePacket && !lateJoin.joinLive &&
+                                                         packetStartSamples >= (targetFmt.sampleRate * 150) / 1000;
+                        // Device-clock drift (system loopback, microphone) is removed by bending the intake
+                        // resampler's rate, not by deleting a packet's leading samples every ~1 ms of drift.
+                        // App sources keep the cut/insert path: their gaps are real silence, not clock drift.
+                        const uint64_t driftNowMs = GetTickCount64();
+                        const int64_t seamErrorSamples =
+                            packetStartSamples - static_cast<int64_t>(src.qpcAlignedWrittenSamples);
+                        const ce::audio::PlacementDriftPlan driftPlan = ce::audio::PlanPlacementDrift(
+                            src.placementDrift,
+                            src.sourceType != AudioConfig::AppAudio && !writeCursorPinnedToExport &&
+                                src.resampler && src.resampler->IsReady(),
+                            steadyPlacementSeam, seamErrorSamples, static_cast<int64_t>(writeSamples),
+                            targetFmt.sampleRate, driftNowMs);
+                        if (driftPlan.absorbSeam) {
+                            timelineAdjustment = {};
+                        }
+                        if (driftPlan.applyCompensation) {
+                            const int compRet =
+                                swr_set_compensation(src.resampler->GetSwrContext(), driftPlan.compensationDelta,
+                                                     static_cast<int>(ce::audio::PlacementDriftHorizonSamples(
+                                                         targetFmt.sampleRate)));
+                            if (compRet < 0) {
+                                src.placementDrift.disabled = true;
+                                DLL_Log(
+                                    "[AudioLoop] WARNING: placement drift lane src=%d track=%d could not set resampler "
+                                    "compensation (ret=%d); falling back to packet-seam cuts for this source",
+                                    (int)srcIdx, src.track, compRet);
+                            } else if (ce::audio::PlacementDriftLogDue(src.placementDrift, driftPlan.justEngaged,
+                                                                       driftNowMs)) {
+                                DLL_Log(
+                                    "[AudioLoop] Placement drift lane %s src=%d track=%d seamErr=%lld (%.2fms) "
+                                    "delta10s=%d (%+.1fppm) overSlopPackets=%llu hardSeams=%llu",
+                                    driftPlan.justEngaged ? "engaged" : "update", (int)srcIdx, src.track,
+                                    (long long)seamErrorSamples,
+                                    (double)seamErrorSamples * 1000.0 / targetFmt.sampleRate,
+                                    driftPlan.compensationDelta,
+                                    ce::audio::PlacementDriftDeltaToPpm(driftPlan.compensationDelta,
+                                                                        targetFmt.sampleRate),
+                                    (unsigned long long)src.placementDrift.overSlopPackets,
+                                    (unsigned long long)src.placementDrift.hardSeams);
+                            }
+                        }
                         ce::audio::ObserveSteadyPlacementCorrection(
                             src.steadyPlacement, timelineAdjustment.gapSamples, timelineAdjustment.overlapSamples,
-                            !firstTimelinePacket && !lateJoin.joinLive &&
-                                packetStartSamples >= (targetFmt.sampleRate * 150) / 1000);
+                            steadyPlacementSeam);
                         if (timelineAdjustment.gapSamples > 0) {
                             // Defense-in-depth: bound the leading-silence gap to what the ring
                             // buffer can actually retain. WriteRetainNew drops the oldest samples

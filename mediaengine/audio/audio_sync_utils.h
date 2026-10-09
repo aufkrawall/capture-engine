@@ -7,3 +7,4 @@
 #include "mediaengine/audio/audio_sync/timeline_constants.h"
 #include "mediaengine/audio/audio_sync/packet_clamp_and_drift.h"
 #include "mediaengine/audio/audio_sync/source_silence_policy.h"
+#include "mediaengine/audio/audio_sync/placement_drift_policy.h"

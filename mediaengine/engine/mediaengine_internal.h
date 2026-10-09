@@ -144,6 +144,7 @@ public:
         uint64_t packetTimelineGapSamples = 0;     // Silence inserted to preserve packet-QPC continuity
         uint64_t packetTimelineOverlapSamples = 0;  // Packet-leading samples trimmed to avoid time overlap
         ce::audio::SteadyPlacementCorrectionStats steadyPlacement;  // Post-startup seam corrections
+        ce::audio::PlacementDriftLane placementDrift;  // Device-clock drift absorbed by the intake resampler, not cuts
         uint64_t startupRebasedGapSamples = 0;      // Persistent startup packet-QPC offset suppressed after sync reset
         uint64_t lateAppJoinSuppressedGapSamples = 0;  // First app packet gap suppressed to join live timeline
         uint64_t lateAppJoinPreservedGapSamples = 0;   // Small live-join cushion retained for click-free fade-in

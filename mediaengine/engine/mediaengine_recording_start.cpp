@@ -266,6 +266,7 @@ bool MediaEngine::StartRecording() {
                 src.packetTimelineGapSamples = 0;
                 src.packetTimelineOverlapSamples = 0;
                 src.steadyPlacement = {};
+                src.placementDrift = {};
                 src.startupRebasedGapSamples = 0;
                 src.lateAppJoinSuppressedGapSamples = 0;
                 src.lateAppJoinPreservedGapSamples = 0;
