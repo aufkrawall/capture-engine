@@ -92,9 +92,19 @@ def resolve_app_fps(app_fps_arg, capture_method, output_fps):
     return value
 
 
+# Raw capture offset (audio late > 0, ms) measured on this machine per capture method by
+# calibrate_stimulus_audio_leads(); replaces the hand-tuned base leads below for that method.
+CALIBRATED_APP_AUDIO_LEAD_MS = {}
+
+
 def resolve_app_audio_lead_ms(app_audio_lead_arg, capture_method, output_fps, app_fps):
     text = str(app_audio_lead_arg).strip().lower()
     if text in ("", "auto"):
+        calibrated = CALIBRATED_APP_AUDIO_LEAD_MS.get(capture_method)
+        if calibrated is not None:
+            if capture_method != "inject" and int(app_fps) < int(output_fps):
+                return calibrated + WGC_BELOW_TARGET_EXTRA_AUDIO_LEAD_FRAMES * (1000.0 / max(1, int(output_fps)))
+            return calibrated
         # Stimulus-side calibration for the default tear-free oracle path.
         # WGC sees DWM-composed video timing; inject sees app Present timing but still
         # gains the same tear-free presentation offset when the app avoids DXGI tearing.
@@ -243,7 +253,7 @@ def restore_config(snapshot):
 
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
                           audio_capture_latency_ms=0.0, app_capture_latency_ms=None,
-                          wgc_smoothness_floor_ms=None):
+                          wgc_smoothness_floor_ms=None, audio_latency_autodetect=False):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -288,7 +298,7 @@ capture_method={scenario.capture_method}
 
 [AudioSync]
 audio_capture_latency_ms={audio_capture_latency_ms}
-audio_latency_autodetect=false
+audio_latency_autodetect={'true' if audio_latency_autodetect else 'false'}
 
 [Logging]
 log_level=trace

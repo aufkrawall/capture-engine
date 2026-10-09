@@ -32,8 +32,29 @@ def self_test():
     assert triage_command[triage_command.index("--session-dir") + 1] == "session"
     assert triage_command[triage_command.index("--json-out") + 1] == "triage.json"
 
+    # Measured raw offsets replace the fixed leads per capture method, keeping the below-target extra.
+    assert derive_calibrated_lead_ms([]) is None
+    assert derive_calibrated_lead_ms([0.6, 0.2, -0.8]) == 0.0
+    assert derive_calibrated_lead_ms([52.6, 51.7]) == 52.2
+    assert lead_baseline_drift({"wgc": 0.4, "inject": 50.0}, {"wgc": 70.0, "inject": 52.0}) == {"wgc": 69.6}
+    assert lead_baseline_drift(None, {"wgc": 70.0}) == {}
+    assert lead_calibration_applies(parse_args(["--fast-zero-drift"])) is True
+    assert lead_calibration_applies(parse_args(["--fast-zero-drift", "--lead-calibration", "off"])) is False
+    assert lead_calibration_applies(parse_args(["--fast-zero-drift", "--app-audio-lead-ms", "12"])) is False
+    assert lead_calibration_applies(parse_args(["--fast-zero-drift", "--dry-run"])) is False
+    assert lead_calibration_applies(parse_args(["--raw-offset-gate"])) is False
+    CALIBRATED_APP_AUDIO_LEAD_MS.update({"wgc": 0.4, "inject": 51.0})
+    try:
+        assert resolve_app_audio_lead_ms("auto", "wgc", 60, 240) == 0.4
+        assert resolve_app_audio_lead_ms("auto", "inject", 120, 144) == 51.0
+        assert abs(resolve_app_audio_lead_ms("auto", "wgc", 120, 90) - (0.4 + 2.0 * (1000.0 / 120))) < 0.001
+        assert resolve_app_audio_lead_ms("auto", "dxgi_dup", 60, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
+        assert resolve_app_audio_lead_ms("7", "wgc", 60, 240) == 7.0
+    finally:
+        CALIBRATED_APP_AUDIO_LEAD_MS.clear()
+
     quick = parse_args(["--fast-zero-drift", "--dry-run"])
-    quick_names =[scenario.name for scenario in build_scenarios(quick)]
+    quick_names = [scenario.name for scenario in build_scenarios(quick)]
     assert len(quick_names) == 8
     assert quick_names == [
         "dxgi_dup_alac_60fps_quick_lossless_60",
@@ -383,7 +404,10 @@ def main(argv=None):
     snapshot = read_config_snapshot()
     results = []
     adaptive_overload = args.profile == "wgc-overload"
+    lead_calibration = None
     try:
+        if lead_calibration_applies(args):
+            lead_calibration = calibrate_stimulus_audio_leads(args, scenarios, run_root, ce_exe, app_exe)
         for scenario in scenarios:
             scenario_args = args
             latency_info = None
@@ -491,6 +515,7 @@ def main(argv=None):
     matrix_report = {
         "schema": "ce-avsync-matrix-report-v1",
         "run_root": str(run_root),
+        "lead_calibration": lead_calibration,
         "results": results,
         "passed": bool(results) and (any(result["passed"] for result in results)
                                      if adaptive_overload else all(result["passed"] for result in results)),

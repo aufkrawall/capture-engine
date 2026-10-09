@@ -1,5 +1,97 @@
 
 
+LEAD_BASELINE_PATH = CAPTURE_BIN / "avsync_runs" / "stimulus_lead_baseline.json"
+LEAD_DRIFT_WARN_MS = 15.0
+
+
+def lead_calibration_applies(args):
+    return (
+        getattr(args, "lead_calibration", "auto") == "auto"
+        and str(args.app_audio_lead_ms).strip().lower() in ("", "auto")
+        and not args.dry_run
+    )
+
+
+def derive_calibrated_lead_ms(strict_track_offsets_ms):
+    values = [float(value) for value in strict_track_offsets_ms]
+    return round(sum(values) / len(values), 1) if values else None
+
+
+def lead_baseline_drift(baseline, measured, limit_ms=LEAD_DRIFT_WARN_MS):
+    """Per capture method: measured raw offset minus the last recorded one, for moves above limit_ms."""
+    drift = {}
+    for method, value in measured.items():
+        previous = (baseline or {}).get(method)
+        if previous is not None and abs(float(value) - float(previous)) > limit_ms:
+            drift[method] = round(float(value) - float(previous), 1)
+    return drift
+
+
+def calibrate_stimulus_audio_leads(args, scenarios, run_root, ce_exe, app_exe):
+    """Measure the raw (lead 0) capture offset of each capture method in this run.
+
+    The stimulus plays its audio early by the offset the capture path adds, so a recording is judged
+    on staying in sync rather than on a constant tuned for some earlier OS/driver/product state. The
+    measured values are compared with the previous run on this machine, and a move is reported as
+    drift because a constant offset change is a capture-timing change, not a pass.
+    """
+    measured = {}
+    shots = []
+    for scenario in scenarios:
+        if scenario.capture_method in measured:
+            continue
+        calibration_args = copy.copy(args)
+        calibration_args.profile = "lead-calibration"
+        calibration_args.app_audio_lead_ms = "0"
+        calibration_args.audio_capture_latency_ms = 0.0
+        calibration_args.app_capture_latency_ms = None
+        calibration_args.audio_latency_autodetect = False
+        calibration_args.max_av_offset_ms = 500.0
+        calibration_args.max_mean_av_offset_ms = 500.0
+        calibration_args.max_track_spread_ms = max(args.max_track_spread_ms, 50.0)
+        calibration_args.max_offset_slope_ms_per_min = max(args.max_offset_slope_ms_per_min, 120.0)
+        calibration_args.min_offset_slope_excursion_ms = max(args.min_offset_slope_excursion_ms, 50.0)
+        calibration_args.max_longest_repeat = max(args.max_longest_repeat, 1000)
+        calibration_args.max_motion_stall = max(args.max_motion_stall, 1000)
+        calibration_args.max_motion_error_frames = max(args.max_motion_error_frames, 100000)
+        calibration_scenario = copy.copy(scenario)
+        calibration_scenario.label = "lead_calibration"
+        calibration_scenario.duration_sec = min(scenario.duration_sec or args.duration_sec, 10)
+        calibration_scenario.include_source_stall = False
+        calibration_scenario.source_stall = None
+        calibration_scenario.secondary_app_audio = False
+        calibration_scenario.audio_layout = ""
+        # Only the offset is read here; cadence or triage faults of this shot are not this run's verdict.
+        result = run_scenario(calibration_args, calibration_scenario, run_root, ce_exe, app_exe)
+        analyzer_path = result.get("paths", {}).get("analyzer_json")
+        analyzer_report = load_json_file(Path(analyzer_path)) if analyzer_path else None
+        offsets = strict_audio_mean_offsets_by_ordinal_ms(analyzer_report) if analyzer_report else {}
+        lead = derive_calibrated_lead_ms(offsets.values())
+        if lead is None:
+            fail(f"lead calibration for {scenario.capture_method} could not measure strict audio offsets: "
+                 f"{result.get('failure')}")
+        measured[scenario.capture_method] = lead
+        shots.append({"capture_method": scenario.capture_method, "lead_ms": lead,
+                      "strict_track_offsets_ms": {str(k): round(v, 1) for k, v in sorted(offsets.items())},
+                      "scenario": calibration_scenario.name})
+        print(f"  stimulus lead calibration {scenario.capture_method}: raw offset {lead:.1f} ms "
+              f"(tracks {', '.join(f'a:{k}={v:.1f}' for k, v in sorted(offsets.items()))})")
+    baseline = load_json_file(LEAD_BASELINE_PATH) if LEAD_BASELINE_PATH.exists() else None
+    drift = lead_baseline_drift((baseline or {}).get("lead_ms"), measured)
+    for method, delta in drift.items():
+        print(f"  WARNING: raw {method} capture offset moved {delta:+.1f} ms since the last calibrated run on "
+              f"this machine (limit {LEAD_DRIFT_WARN_MS:.0f} ms): a capture-timing change, not a harness constant.")
+    try:
+        LEAD_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        merged = dict((baseline or {}).get("lead_ms") or {})
+        merged.update(measured)
+        LEAD_BASELINE_PATH.write_text(json.dumps({"lead_ms": merged}, indent=2), encoding="utf-8")
+    except OSError as error:
+        print(f"  note: could not record the lead baseline: {error}")
+    CALIBRATED_APP_AUDIO_LEAD_MS.update(measured)
+    return {"measured_lead_ms": measured, "shots": shots, "drift_ms": drift}
+
+
 def run_sync_smoothness_preflight(args, scenario, run_root, ce_exe, app_exe):
     preflight_args = copy.copy(args)
     preflight_args.profile = "sync-smoothness-preflight"
@@ -324,6 +416,21 @@ def build_parser():
         help="CE-side loopback audio capture latency compensation written to the scenario config "
         "([AudioSync] audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
         "the raw capture differential, the measured value drives it toward 0.",
+    )
+    parser.add_argument(
+        "--lead-calibration",
+        choices=("auto", "off"),
+        default="auto",
+        help="With --app-audio-lead-ms auto, measure each capture method's raw A/V offset with a short lead-0 "
+        "shot and use it as the stimulus lead (reporting drift against the last run) instead of the fixed "
+        "constants, which encode the capture timing of one OS/driver/product state. 'off' keeps the constants.",
+    )
+    parser.add_argument(
+        "--audio-latency-autodetect",
+        action="store_true",
+        help="Enable the product's own render-to-loopback latency probe ([AudioSync] "
+        "audio_latency_autodetect=true) instead of a fixed compensation. Pair with --app-audio-lead-ms 0 "
+        "to measure the end-to-end offset a real capture gets from CE's own compensation.",
     )
     parser.add_argument(
         "--wgc-smoothness-floor-ms",
