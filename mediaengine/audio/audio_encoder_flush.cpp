@@ -356,6 +356,71 @@ void AudioEncoder::Flush() {
         flushedPackets.push_back(pkt);
     }
 
+    // A fixed-frame codec with encoder delay (libopus: 312 samples of lookahead, 960-sample frames) drains one
+    // packet more than the padded input needs whenever the target end falls early in its last input frame: the
+    // drained tail frame then starts at or after the target. Container end discard can only trim inside the last
+    // packet, so keeping that frame made the signalled padding (e.g. 648 from the encoder plus 800 here = 1448)
+    // exceed the packet (960); decoders ignored it and the track ended up to a frame longer than the video.
+    // Drop whole packets that start at or after the target and size the discard from the last kept packet. Each
+    // packet's first decoded sample is its pts (priming is the negative pts of the first packet) and it spans one
+    // codec frame; the encoder's own end skip on that packet (libopus marks frame - duration) is already part of
+    // the total and only the difference is added.
+    if (!canSendShortFrame && fixedFrameSize > 0 && targetSamples != INT64_MAX && recordingEndUs > 0 &&
+        !flushedPackets.empty()) {
+        int droppedPastTarget = 0;
+        while (flushedPackets.size() > 1) {
+            AVPacket* tail = flushedPackets.back();
+            if (!tail || tail->size <= 0 || tail->pts == AV_NOPTS_VALUE || tail->pts < targetSamples) {
+                break;
+            }
+            if (finalizationReport.packetCount > 0) {
+                --finalizationReport.packetCount;
+            }
+            finalizationReport.packetBytes -= std::min<uint64_t>(finalizationReport.packetBytes, tail->size);
+            av_packet_free(&tail);
+            flushedPackets.pop_back();
+            ++droppedPastTarget;
+        }
+        AVPacket* keptLast = flushedPackets.back();
+        if (keptLast && keptLast->pts != AV_NOPTS_VALUE) {
+            size_t skipSize = 0;
+            const uint8_t* skipData = av_packet_get_side_data(keptLast, AV_PKT_DATA_SKIP_SAMPLES, &skipSize);
+            const int64_t existingEndSkip = (skipData && skipSize >= 10) ? static_cast<int64_t>(AV_RL32(skipData + 4)) : 0;
+            const int64_t neededEndSkip = keptLast->pts + fixedFrameSize - targetSamples;
+            const int64_t addEndSkip = neededEndSkip - existingEndSkip;
+            if (neededEndSkip >= 0 && neededEndSkip < fixedFrameSize && addEndSkip >= 0 &&
+                addEndSkip != discardPaddingSamples) {
+                DLL_Log(
+                    "[AudioEncoder] Final packet end discard from packet timeline: stream=%d add=%lld (was %lld) "
+                    "total=%lld existing=%lld droppedPastTarget=%d lastPts=%lld frame=%d target=%lld",
+                    streamIndex, static_cast<long long>(addEndSkip), static_cast<long long>(discardPaddingSamples),
+                    static_cast<long long>(neededEndSkip), static_cast<long long>(existingEndSkip), droppedPastTarget,
+                    static_cast<long long>(keptLast->pts), fixedFrameSize, static_cast<long long>(targetSamples));
+                discardPaddingSamples = addEndSkip;
+                codecCtx->trailing_padding = static_cast<int>(addEndSkip);
+            } else if (droppedPastTarget > 0 || neededEndSkip < 0 || neededEndSkip >= fixedFrameSize ||
+                       addEndSkip < 0) {
+                DLL_Log(
+                    "[AudioEncoder] Final packet end discard kept: stream=%d add=%lld total=%lld existing=%lld "
+                    "droppedPastTarget=%d lastPts=%lld frame=%d target=%lld",
+                    streamIndex, static_cast<long long>(discardPaddingSamples), static_cast<long long>(neededEndSkip),
+                    static_cast<long long>(existingEndSkip), droppedPastTarget, static_cast<long long>(keptLast->pts),
+                    fixedFrameSize, static_cast<long long>(targetSamples));
+            }
+        }
+        if (droppedPastTarget > 0) {
+            int64_t keptEnd = std::numeric_limits<int64_t>::min();
+            for (const AVPacket* kept : flushedPackets) {
+                if (kept && kept->pts != AV_NOPTS_VALUE && kept->duration > 0) {
+                    keptEnd = std::max<int64_t>(keptEnd, kept->pts + kept->duration);
+                }
+            }
+            if (keptEnd != std::numeric_limits<int64_t>::min()) {
+                finalizationReport.packetEndpointSamples = keptEnd;
+            }
+        }
+    }
+
     if (discardPaddingSamples > 0 && !finalDiscardSideDataAttached && !flushedPackets.empty()) {
         AVPacket* lastPkt = flushedPackets.back();
         attachEndSkipSideData(lastPkt, discardPaddingSamples);

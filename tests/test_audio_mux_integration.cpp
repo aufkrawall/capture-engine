@@ -244,7 +244,7 @@ namespace {
 // Encodes the same signal once per codec into one file of `muxer`, then decodes every
 // stream back and requires the exact recording endpoint and aligned content.
 void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extension,
-                                      const std::vector<const char*>& codecs) {
+                                      const std::vector<const char*>& codecs, int kTargetSamples = 4800) {
     TemporaryMka file(extension);
     ASSERT_FALSE(file.path.empty());
     AVFormatContext* format = nullptr;
@@ -292,7 +292,6 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
 
     ASSERT_GE(avio_open(&format->pb, file.path.string().c_str(), AVIO_FLAG_WRITE), 0);
     ASSERT_GE(avformat_write_header(format, nullptr), 0) << muxer;
-    constexpr int kTargetSamples = 4800;
     const std::vector<float> source = MakeDeterministicStereoSignal(kTargetSamples, 48000);
     uint64_t generation = 1;
     for (auto& track : tracks) {
@@ -301,7 +300,7 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
                                                           static_cast<int>(source.size() * sizeof(float)), 2, 48000, 32,
                                                           32, 8, true, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, 0);
         ASSERT_FALSE(result.failed) << track->codec;
-        track->encoder->SetRecordingEndUs(100000);
+        track->encoder->SetRecordingEndUs(static_cast<int64_t>(kTargetSamples) * 1000000 / 48000);
         track->encoder->Stop();
         EXPECT_FALSE(track->writeFailed) << track->codec;
         EXPECT_FALSE(track->encoder->GetFinalizationReport().protocolError) << track->codec;
@@ -329,6 +328,18 @@ void ExpectExactEndpointsThroughMuxer(const char* muxer, const wchar_t* extensio
 
 TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatroska) {
     ExpectExactEndpointsThroughMuxer("matroska", L".mka", {"aac", "alac", "flac", "opus", "pcm"});
+}
+
+// The recording end rarely lands on a codec frame boundary. For Opus (960-sample frames, 312 samples of
+// lookahead) an end in the first 648 samples of a frame leaves the drained tail frame wholly past the end;
+// that used to signal more end discard than one packet holds and the decoded track ran long. Cover both
+// sides of that boundary (multiples of 48 samples so the end is a whole millisecond).
+TEST(AudioMuxIntegrationTest, CodecsDecodeToTheExactEndpointForEndsAtEveryPositionInTheFinalFrame) {
+    for (const int target : {4848, 5232, 5424, 5472, 5568, 5760}) {
+        SCOPED_TRACE(::testing::Message() << "target samples " << target);
+        ExpectExactEndpointsThroughMuxer("matroska", L".mka", {"aac", "alac", "flac", "opus", "pcm"}, target);
+        ExpectExactEndpointsThroughMuxer("mp4", L".mp4", {"aac", "alac", "flac", "opus"}, target);
+    }
 }
 
 // The output container is config.video.container handed to FFmpeg by extension, so

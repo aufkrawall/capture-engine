@@ -406,9 +406,58 @@ TEST_F(AudioEncoderTest, OpusFlushPreservesPreSkipAndSignalsTerminalDiscard) {
     EXPECT_EQ(endReason, 0);
     const auto& report = encoder.GetFinalizationReport();
     EXPECT_EQ(report.timelineTargetSamples, kTargetSamples);
-    EXPECT_EQ(report.terminalPaddingSamples, 720);
+    // The drained tail frame starts at pts 1608, past the 1200-sample end, so it is dropped and the last
+    // kept packet (pts 648, 960 samples) carries the whole 408-sample discard.
+    EXPECT_EQ(report.terminalPaddingSamples, 408);
     EXPECT_TRUE(report.drainReachedEof);
     EXPECT_FALSE(report.protocolError);
+}
+
+// Whatever fraction of its last frame the recording end falls in, no packet may start at or after the end,
+// and the last packet's frame minus its total end discard (the encoder's own plus ours) must land on the
+// end exactly, with the discard inside that one packet.
+TEST_F(AudioEncoderTest, FinalPacketTimelineLandsOnTheTargetAtEveryPositionInTheLastFrame) {
+    for (const char* codec : {"opus", "aac"}) {
+        for (const int64_t targetSamples : {2400, 2448, 2976, 3024, 3072, 3120, 3360, 3840}) {
+            SCOPED_TRACE(::testing::Message() << codec << " target " << targetSamples);
+            for (AVPacket* pkt : receivedPackets) {
+                av_packet_free(&pkt);
+            }
+            receivedPackets.clear();
+            AudioEncoder local;
+            AudioConfig config;
+            config.codec = codec;
+            config.bitrate = 192;
+            config.sampleRate = "48000";
+            config.outputChannels = 2;
+            config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+            ASSERT_TRUE(local.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+            local.SetStreamIndex(1);
+            ASSERT_TRUE(local.ResetForRecordingStart(0, 1));
+            const int64_t targetUs = targetSamples * 1000000 / 48000;
+            auto data = CreateDummyFloatAudio(static_cast<int>(targetUs / 1000), 48000, 2);
+            local.EncodeSamples(data.data(), static_cast<int>(data.size()), 2, 48000, 32, 32, 8, true,
+                                config.outputChannelMask, 0);
+            local.SetRecordingEndUs(targetUs);
+            const int frameSize = local.GetCodecContext()->frame_size;
+            local.Stop();
+
+            const int64_t target = local.GetFinalizationReport().timelineTargetSamples;
+            ASSERT_FALSE(receivedPackets.empty());
+            const AVPacket* last = receivedPackets.back();
+            for (const AVPacket* pkt : receivedPackets) {
+                EXPECT_LT(pkt->pts, target) << "packet wholly past the recording end";
+            }
+            size_t skipSize = 0;
+            const uint8_t* skipData = av_packet_get_side_data(last, AV_PKT_DATA_SKIP_SAMPLES, &skipSize);
+            const int64_t endSkip =
+                (skipData && skipSize >= 10) ? static_cast<int64_t>(AV_RL32(skipData + 4)) : 0;
+            EXPECT_GE(endSkip, 0);
+            EXPECT_LT(endSkip, frameSize) << "end discard larger than the packet that carries it";
+            EXPECT_EQ(last->pts + frameSize - endSkip, target);
+            EXPECT_FALSE(local.GetFinalizationReport().protocolError);
+        }
+    }
 }
 
 TEST_F(AudioEncoderTest, SilenceFlushIsBoundedForEveryAudioCodec) {
