@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-09 - Opus tracks ran up to a frame longer than the video
+
+- Codec-finalization pass of the A/V matrix: Opus failed on WGC, inject and dxgi_dup (`audio_timeline`), every other
+  codec passed. Decoded Opus was `target + 1448` samples (e.g. 394248 vs 392800) and CE's own post-mux probe warned
+  `Post-mux audio duration mismatch maxDelta=13500`. Cause: for `target % 960` in 1..648 libopus drains a final packet
+  that starts after the target; its own end skip (648) plus CE's 800 exceeded the packet, so decoders ignored it.
+  The mux test only used `target % 960 == 0`. Fix and tests in `multi-audio-capture.md` (Opus final packet).
+- The probe double-counted the short tail packet's implied skip; fixed separately
+  (`ComputeResidualTerminalDiscardSamples`). 0.1.7067 live: all Opus tracks `delta=+0`, zero mismatch warnings.
+- Open: inject raw offset varies 28-52 ms per recording; a marginal inject mean offset (17 ms vs 15) after
+  self-calibration is run noise, not the Opus fix.
+
 ### 2026-10-09 - WGC 60 fps from a 144 Hz window starved; A/V matrix leads were stale
 
 - Release-readiness audio audit. The matrix quick gate failed WGC (inject passed). Two findings, one product, one
