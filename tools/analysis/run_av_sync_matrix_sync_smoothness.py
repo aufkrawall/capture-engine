@@ -226,6 +226,25 @@ def clamp_sync_smoothness_latency_ms(value):
     return round(min(500.0, max(0.0, float(value))), 3)
 
 
+def build_triage_command(args, session_dir, capture, triage_json):
+    # The triage analyzer probes the capture itself; without the matrix's tool paths it falls back
+    # to a bare "ffprobe" on PATH, which is absent on machines using the pinned toolchain.
+    return [
+        sys.executable,
+        SCRIPT_DIR / "analyze_capture_av.py",
+        "--session-dir",
+        session_dir,
+        "--capture",
+        capture,
+        "--ffmpeg",
+        args.ffmpeg,
+        "--ffprobe",
+        args.ffprobe,
+        "--json-out",
+        triage_json,
+    ]
+
+
 def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None):
     scenario_dir = run_root / scenario.name
     captures_dir = scenario_dir / "captures"
@@ -536,16 +555,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
         analyzer_rc = run_analyzer(analyzer_cmd, analyzer_stdout)
         result["analyzer_exit_code"] = analyzer_rc
         if analysis_session_dir:
-            triage_cmd = [
-                sys.executable,
-                SCRIPT_DIR / "analyze_capture_av.py",
-                "--session-dir",
-                analysis_session_dir,
-                "--capture",
-                capture,
-                "--json-out",
-                triage_json,
-            ]
+            triage_cmd = build_triage_command(args, analysis_session_dir, capture, triage_json)
             result["triage_exit_code"] = run_analyzer(triage_cmd, triage_stdout)
         result["passed"] = analyzer_rc == 0 and result["triage_exit_code"] in (None, 0)
         if analyzer_rc != 0:

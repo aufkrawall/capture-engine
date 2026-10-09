@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Audio/video validation after source relayout:** the recording test matrix finds the built Capture Engine and stimulus app from the repository root again, including when launched from another working directory. The per-recording triage step now uses the same FFmpeg/FFprobe as the content analysis instead of looking for them on `PATH`, so a run no longer fails after a clean capture. A dry-run regression checks the installed layout and the forwarded tool paths before recordings are started.
+
 - **Overlay after DLSS FG off with ReShade:** fixed auxiliary command submissions replacing the live queue/device binding and clearing the confirmed overlay route. Queue discovery now preserves that binding; completed swapchain creation still supports queue and device replacement.
 
 - **Missing automatic dumps for CE faults caught by a game:** hardware faults inside Capture Engine are now captured with their original thread and registers before the game's exception handler can consume them and leave a hang or clean exit. This closes the missing-dump path seen during The Witcher 3 Remastered's ReShade startup failure.

@@ -1,8 +1,39 @@
 
 
 def self_test():
+    # Exercise the real entry point from an unrelated cwd after the tools/analysis relayout.
+    with tempfile.TemporaryDirectory(prefix="ce_matrix_paths_") as temporary_root:
+        fixture_root = Path(temporary_root) / "fixture repo"
+        fixture_scripts = fixture_root / "tools" / "analysis"
+        fixture_scripts.mkdir(parents=True)
+        for source in SCRIPT_DIR.glob("run_av_sync_matrix*.py"):
+            shutil.copy2(source, fixture_scripts / source.name)
+        for relative_path in ("installed/captureengine/captureengine.exe",
+                              "installed/testapp/dx12_av_sync_test.exe"):
+            asset = fixture_root / relative_path
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            asset.write_bytes(b"dry-run fixture; never executed")
+        unrelated_cwd = Path(temporary_root) / "unrelated cwd"
+        unrelated_cwd.mkdir()
+        dry_run = subprocess.run(
+            [sys.executable, str(fixture_scripts / "run_av_sync_matrix.py"), "--dry-run"],
+            cwd=unrelated_cwd, capture_output=True, text=True, timeout=10,
+        )
+        assert dry_run.returncode == 0, dry_run.stderr
+        expected_run_root = fixture_root / "installed" / "captureengine" / "avsync_runs"
+        assert dry_run.stdout.startswith(f"run_root={expected_run_root}"), dry_run.stdout
+        assert "wgc_alac_60fps_quick_lossless_60" in dry_run.stdout
+
+    # The triage step must probe with the matrix's own tools, not the analyzer's PATH defaults.
+    tool_args = parse_args(["--dry-run", "--ffmpeg", "tool dir/ffmpeg.exe", "--ffprobe", "tool dir/ffprobe.exe"])
+    triage_command = [str(part) for part in build_triage_command(tool_args, "session", "capture.mp4", "triage.json")]
+    assert triage_command[triage_command.index("--ffmpeg") + 1] == str(Path("tool dir/ffmpeg.exe"))
+    assert triage_command[triage_command.index("--ffprobe") + 1] == str(Path("tool dir/ffprobe.exe"))
+    assert triage_command[triage_command.index("--session-dir") + 1] == "session"
+    assert triage_command[triage_command.index("--json-out") + 1] == "triage.json"
+
     quick = parse_args(["--fast-zero-drift", "--dry-run"])
-    quick_names = [scenario.name for scenario in build_scenarios(quick)]
+    quick_names =[scenario.name for scenario in build_scenarios(quick)]
     assert len(quick_names) == 8
     assert quick_names == [
         "dxgi_dup_alac_60fps_quick_lossless_60",

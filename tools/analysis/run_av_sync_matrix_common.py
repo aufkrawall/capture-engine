@@ -10,6 +10,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +19,7 @@ from typing import Optional, Union
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parents[1]
 CAPTURE_BIN = PROJECT_ROOT / "installed" / "captureengine"
 TESTAPP_BIN = PROJECT_ROOT / "installed" / "testapp"
 CAPTURE_CONFIG = CAPTURE_BIN / "config.ini"
