@@ -1,7 +1,9 @@
 #include "test_fps_limiter_shared.h"
 #include "test_fps_limiter_sleep_mode_recorder.h"
+#include "source_fragment_reader.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -413,6 +415,52 @@ TEST(ReflexFpsLimiterPolicyTest, NvApiReflexWrapperIsOnlyReturnedForManualGameCa
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(true, false, true, false, false));
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(true, false, false, true, false));
     EXPECT_FALSE(ce::fps_limiter_policy::ShouldReturnNvApiReflexWrapper(true, false, false, false, true));
+}
+
+// witcher3windownotappear (0.1.7058): nvapi64.dll was mapped before the hook thread armed, so CE inline-hooked
+// the export and published the trampoline; NGX's later LoadLibrary("nvapi64.dll") ran Init() on the game
+// thread, which stored the (now patched) export over the trampoline. The detour then forwarded to itself
+// through its own patch: the game's main thread and the hook thread both spun there and no window appeared.
+TEST(ReflexFpsLimiterPolicyTest, ExportedQueryInterfaceNeverReplacesAPublishedTrampoline) {
+    const int trampoline = 0, exported = 0, staleRaw = 0;
+    using ce::fps_limiter_policy::ShouldAdoptExportedNvApiQueryInterface;
+
+    EXPECT_TRUE(ShouldAdoptExportedNvApiQueryInterface(nullptr, &exported, false));    // first resolution
+    EXPECT_FALSE(ShouldAdoptExportedNvApiQueryInterface(&exported, &exported, false));  // nothing to change
+    EXPECT_TRUE(ShouldAdoptExportedNvApiQueryInterface(&staleRaw, &exported, false));   // export moved, no hook
+    // The regression: a published trampoline is not replaced by the export, which is CE's own patched entry.
+    EXPECT_FALSE(ShouldAdoptExportedNvApiQueryInterface(&trampoline, &exported, true));
+    EXPECT_FALSE(ShouldAdoptExportedNvApiQueryInterface(&exported, &exported, true));
+    // No export to adopt: keep whatever is stored (the old code nulled it and then reported failure).
+    EXPECT_FALSE(ShouldAdoptExportedNvApiQueryInterface(&trampoline, nullptr, false));
+    EXPECT_FALSE(ShouldAdoptExportedNvApiQueryInterface(nullptr, nullptr, false));
+}
+
+// Init() is the one writer of origQueryInterface_ that used to be unconditional; keep it routed through the
+// policy, and the store a compare-exchange so a trampoline another thread publishes in between survives.
+TEST(ReflexFpsLimiterPolicyTest, InitStoresTheExportedQueryInterfaceOnlyThroughThePolicy) {
+    namespace fs = std::filesystem;
+    const std::string init =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "pacing" / "reflex_limiter_detail" / "nvapi_hooks.h");
+    ASSERT_FALSE(init.empty());
+    const size_t initBody = init.find("inline bool ReflexLimiter::Init() {");
+    const size_t initEnd = init.find("inline void ReflexLimiter::EnsureNvAPIHooksInstalled()");
+    ASSERT_NE(initBody, std::string::npos);
+    ASSERT_NE(initEnd, std::string::npos);
+    const std::string body = init.substr(initBody, initEnd - initBody);
+
+    EXPECT_EQ(body.find("origQueryInterface_ =\n"), std::string::npos);
+    EXPECT_EQ(body.find("origQueryInterface_ = reinterpret_cast"), std::string::npos);
+    const size_t policy = body.find("ShouldAdoptExportedNvApiQueryInterface(");
+    const size_t store = body.find("__atomic_compare_exchange_n(&origQueryInterface_");
+    const size_t firstUse = body.find("origQueryInterface_(NVAPI_ID_D3D_SetSleepMode)");
+    ASSERT_NE(policy, std::string::npos);
+    ASSERT_NE(store, std::string::npos);
+    ASSERT_NE(firstUse, std::string::npos);
+    EXPECT_LT(policy, store);
+    EXPECT_LT(store, firstUse);
+    // The trampoline is recognised by identity, which is published before origQueryInterface_ itself.
+    EXPECT_NE(body.find("observed == directQueryInterfaceTrampoline_"), std::string::npos);
 }
 
 TEST(ReflexFpsLimiterPolicyTest, ManualReflexConfigCanArmQueryHookBeforeNvApiLoads) {

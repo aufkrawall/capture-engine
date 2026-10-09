@@ -29,11 +29,30 @@ inline bool ReflexLimiter::Init() {
         return false;
     }
 
-    origQueryInterface_ =
+    const auto exportedQueryInterface =
         reinterpret_cast<PFN_NvAPI_QueryInterface>(GetProcAddress(hNvApi, "nvapi_QueryInterface"));
-    if (!origQueryInterface_) {
+    if (!exportedQueryInterface) {
         HookLogImportant("ReflexLimiter: nvapi64.dll loaded but nvapi_QueryInterface not found in exports");
         return false;
+    }
+    // This runs on every LoadLibrary("nvapi64.dll") while the limiter is not yet available, possibly after
+    // the hook thread inline-hooked the export and published its trampoline. The compare-exchange keeps a
+    // value another thread publishes between the decision and the store; see
+    // ShouldAdoptExportedNvApiQueryInterface for what the clobbered pointer did.
+    PFN_NvAPI_QueryInterface observed = origQueryInterface_;
+    if (ce::fps_limiter_policy::ShouldAdoptExportedNvApiQueryInterface(
+            reinterpret_cast<const void*>(observed), reinterpret_cast<const void*>(exportedQueryInterface),
+            observed && observed == directQueryInterfaceTrampoline_)) {
+        __atomic_compare_exchange_n(&origQueryInterface_, &observed, exportedQueryInterface, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    } else if (observed != exportedQueryInterface) {
+        static std::atomic<int> s_keptTrampolineLogs{0};
+        if (s_keptTrampolineLogs.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLogImportant("ReflexLimiter: Init kept the published nvapi_QueryInterface trampoline %p; the export "
+                             "%p is CE's own patched entry",
+                             reinterpret_cast<const void*>(observed),
+                             reinterpret_cast<const void*>(exportedQueryInterface));
+        }
     }
 
     // Resolve original function pointers

@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-09 - Game window never appeared: nvapi_QueryInterface detour forwarded to itself
+
+- Report `logs/witcher3windownotappear` (0.1.7058, Witcher 3 + ReShade, second launch p13924, manual dump
+  `witcher3_13924_*.dmp`): no window, `FreezeWatchdog` silent (`monitoredTid=0`, no present in flight). Dump: the
+  game main thread (`slInit` -> sl.dlss DllMain -> `nvngx_dlss` -> `LoadLibraryExW` -> `HookedLdrLoadDll` ->
+  `NotifyHookModuleLoaded` -> `ReflexLimiter::Init`) and the hook thread (loader-notification sweep ->
+  `RetargetCachedNvApiPointers` -> `driverQueryInterface(...)`) both sat at `ReflexDetour_QueryInterface+0x73`, two
+  frames deep, constant stack. `g_ReflexLimiter.origQueryInterface_` was `nvapi64!nvapi_QueryInterface+0` itself: a
+  tail-jump loop through the inline patch, not a lock.
+- Cause: nvapi64 was already mapped when the hook thread armed (`Inline hook installed on NvAPI_QueryInterface ...
+  orig=<trampoline>`), so `origQueryInterface_` held the trampoline; `Init()` (run on every `LoadLibrary("nvapi64.dll")`
+  while `available_` is false) then re-stored `GetProcAddress` = the patched entry. In the healthy launch p28376 nvapi64
+  loaded after the arm, so `Init()` ran first and no inline hook existed. Racy by load order, not by timing.
+- Fix: `ce::fps_limiter_policy::ShouldAdoptExportedNvApiQueryInterface` + compare-exchange in `Init()`; the trampoline is
+  recognised by identity (`directQueryInterfaceTrampoline_` is published before `origQueryInterface_`). The earlier
+  loader-notification sweep (same day) was only a victim here, not the cause. Hardware run pending.
+
 ### 2026-10-09 - Dynamic MFG factor lost to a startup race (Witcher 3 + ReShade)
 
 - Session `20261009_110607` (0.1.7057): the in-game factor won. DRS answers were 2 (preset, forced mode) instead of 6;

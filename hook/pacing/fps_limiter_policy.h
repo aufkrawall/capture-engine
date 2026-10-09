@@ -61,6 +61,24 @@ inline bool ShouldReturnNvApiReflexWrapper(bool manualReflexLimiterConfiguredOrA
            !callerIsSystemModule && !callerIsCaptureHookModule;
 }
 
+// Whether ReflexLimiter::Init may store the exported nvapi_QueryInterface as the function the detour
+// forwards to. Once CE has inline-hooked that export, `stored` is the hook's trampoline and the export is
+// the patched entry: storing the export again makes ReflexDetour_QueryInterface forward to itself through
+// its own patch, forever and without growing the stack. Witcher 3 + ReShade (nvapi64 mapped before the
+// hook thread armed, then NGX re-loading it on the game thread): the game's main thread inside slInit and
+// the hook thread both spun in the detour and no window ever appeared. A stale raw pointer (no inline
+// hook, export moved) is still refreshed.
+inline bool ShouldAdoptExportedNvApiQueryInterface(const void* stored, const void* exported,
+                                                   bool storedIsInlineTrampoline) {
+    if (!exported) {
+        return false;
+    }
+    if (!stored) {
+        return true;
+    }
+    return !storedIsInlineTrampoline && stored != exported;
+}
+
 inline bool IsManualReflexLimiterConfigured(bool generalEnabled, int generalFps, uint32_t generalMode,
                                             bool captureSyncEnabled, uint32_t captureSyncMode,
                                             uint32_t nativeModeValue) {
