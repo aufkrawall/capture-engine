@@ -54,7 +54,7 @@
   },
   "total": 670,
   "scope": {
-    "entries": 1031,
+    "entries": 1032,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -982,6 +982,7 @@
       "tests/test_present_stage_cost.cpp",
       "tests/test_present_stage_cost_source.cpp",
       "tests/test_present_thread_bounded_waits.cpp",
+      "tests/test_present_to_screen_latency.cpp",
       "tests/test_present_vtable_dispatch.cpp",
       "tests/test_process_identity.cpp",
       "tests/test_process_ipc.cpp",
