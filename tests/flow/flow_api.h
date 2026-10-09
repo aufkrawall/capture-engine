@@ -53,6 +53,17 @@ struct CEFlowPostSLLifecycle {
     bool confirmedInEpoch = false;
 };
 
+struct CEFlowQueueBinding {
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12Device* device = nullptr;
+    IDXGISwapChain* successfulPostSLSwapchain = nullptr;
+    IDXGISwapChain* capturedSwapchain = nullptr;
+};
+
+using CEFlow_GetQueueBinding_t = void (*)(CEFlowQueueBinding* out);
+using CEFlow_AdoptQueue_t = void (*)(ID3D12CommandQueue*, bool discovery);
+using CEFlow_BindSwapchainQueue_t = void (*)(ID3D12CommandQueue*, IDXGISwapChain*);
+
 struct CEFlowPublishedFG {
     int type = 0;        // 0 none, 1 DLSS FG, 2 FSR FG, 3 NVIDIA Smooth Motion (PerformanceMetrics::GetFGType)
     int multiplier = 0;  // below 2: frame generation shown as off

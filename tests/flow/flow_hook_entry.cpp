@@ -389,6 +389,22 @@ extern "C" __declspec(dllexport) bool CEFlow_TryConfirmPostSLEpoch(uint32_t epoc
 extern "C" __declspec(dllexport) void CEFlow_TrackQueue(ID3D12CommandQueue* queue) {
     DX12_HookQueueVTable(queue);
 }
+
+extern "C" __declspec(dllexport) void CEFlow_GetQueueBinding(CEFlowQueueBinding* out) {
+    if (!out) return;
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    *out = {g_CommandQueue.load(std::memory_order_acquire), g_Device.load(std::memory_order_acquire),
+            dx12_hook_g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire),
+            dx12_hook_g_LastSwapchainQueueCaptureSwapchain.load(std::memory_order_acquire)};
+}
+
+extern "C" __declspec(dllexport) void CEFlow_AdoptQueue(ID3D12CommandQueue* queue, bool discovery) {
+    DX12_AdoptCommandQueue(queue, discovery);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_BindSwapchainQueue(ID3D12CommandQueue* queue, IDXGISwapChain* swapchain) {
+    DX12_SetSwapchainQueue(queue, false, false, true, swapchain, false);
+}
 extern "C" __declspec(dllexport) void* CEFlow_QueueOriginal(ID3D12CommandQueue* queue) {
     return reinterpret_cast<void*>(GetOriginalExecuteCommandLists(queue));
 }

@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-09 - DLSS OFF lost overlay ownership behind distinct device views
+
+- Session `20261009_101805` (0.1.7056, Witcher 3 with ReShade): two queue-derived device views alternated
+  while the physical presentation route stayed live. ECL adoption treated pointer inequality as migration
+  and cleared exact PostSL/normal/capture identities. First OFF at 10:20:05.637 blanked 97 presents;
+  final OFF initially rendered, then discovery resumed after its 600-frame grace and blanked at 10:20:28.026.
+  Device removal stayed zero and the confirmed queue remained retained; this is an ownership failure.
+- Discovery is now fallback-only before GetDevice. Completed swapchain captures explicitly bind the
+  queue/device before publishing exact proofs; replaced references retire outside the queue lock. No
+  game/module special case, delayed recovery, backbuffer copy or weakened ownership gate is added.
+- The native policy regression and both new real-hook flows fail on the original implementation. `FlowQueueBinding` adds
+  distinct WARP COM device views, repeated DLSS ON/OFF beyond teardown grace, both Present methods,
+  native return, explicit binding replacement and reference-balance checks. Closing build 0.1.7057 passes
+  the full native suite, Python tool self-tests, all 36 FG flows and binary/privacy checks; its fresh installer
+  is 39060080 bytes. Real-game ReShade retest remains pending. Current invariant: `overlay-rendering.md` queue ownership.
+
 ### 2026-10-09 - Automatic dump missed a CE fault consumed by game handling
 
 - The same Witcher 3 startup session retained one unresolved CE access violation in its first-chance slot, but

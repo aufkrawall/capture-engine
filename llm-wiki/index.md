@@ -64,7 +64,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), DirectDraw/D3D7 paths, HDR |
+| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
 | `dx12-overlay-third-party-coexistence.md` | 132 | foreign hook chains (Steam, RTSS, ReShade...), deep/bypass interception, FSR topmost ordering |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
 | `overlay-fg-status.md` | 24 | visible FG status publication across DX11/DX12/Vulkan |

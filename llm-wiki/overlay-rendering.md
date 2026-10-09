@@ -617,16 +617,23 @@ Do not conflate that deterministic uncapped test-app cost with the random Talos 
 and last bad start, while only the physical cadence after PresentStart changes. `0x8000` also prevents the whole
 adoption block, so a production queue rewrite still needs a role/lifetime proof.
 
-2026-09-07 ownership correction: `dx12_hook_queue_adoption.cpp` distinguishes ECL discovery from
-explicit wrapper bindings. A different queue's submission on the same device no longer replaces
-the established global queue. Initial discovery, proven device migration and explicit bindings
-still work; the separate exact swapchain/FSR/Streamline queues retain their rendering roles.
-Incoming GetDevice failure leaves the old pair intact. New queue/device references are acquired
-before publication and replaced references are released after the queue mutex unlocks. This removes
-the pre-FSR last-submitter-wins state and COM/publication churn observed across two Talos threads.
-`Dx12EclQueueRegistrationPolicyTest` covers interleaved auxiliary submissions, explicit rebinding,
-unknown identity and device migration. The older probe's performance gain and the random pacing
-failure are not yet proven to be caused by this defect; hardware validation remains required.
+2026-10-09 ownership correction: `dx12_hook_queue_adoption.cpp` makes ECL discovery fallback-only.
+The 2026-09-07 same-device protection was insufficient: auxiliary queues can expose distinct
+native/interposer device pointers without presentation migrating. Witcher 3 session
+`20261009_101805` (0.1.7056, ReShade active) alternated those views, clearing exact swapchain proofs
+at the first DLSS-OFF present and again once its 600-frame grace expired. The healthy PostSL queue
+remained retained, but `postsl-off-normal-ownership-unproven` blanked the overlay.
+An established binding now rejects passive discovery before GetDevice or publication. Explicit
+bindings, including completed `DX12_SetSwapchainQueue` captures, still replace the queue/device;
+device replacement clears old proofs before the new exact association is stored under the same
+queue mutex. Staged FFX queues have no completed swapchain and retain their activation path.
+`DX12RetiredQueueBinding` keeps replaced COM references alive until the caller's queue lock is
+released. Failed incoming GetDevice leaves the pair intact. `[DX12QueueBinding]` logs retention
+on changes of the selected queue, so alternating auxiliary queues do not flood logs.
+`Dx12EclQueueRegistrationPolicyTest` covers discovery/binding precedence. `FlowQueueBinding`
+uses distinct COM views over WARP, repeated OFF/ON, Present/Present1, 720 OFF frames, native return,
+explicit view replacement and reference balance. Real-game ReShade retesting remains required.
+The older probe's performance gain and random pacing failure remain unproven consequences.
 
 **A real defect found on the way, fixed.** Under FSR FG the ECL detour re-ran full command-queue registration on
 **1290 of 1290 submissions per second**: the "known queue" fast path compares against four pointers CE knows, and a
