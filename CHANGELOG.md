@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Audio early by up to 30 ms in WGC and desktop-duplication recordings of a hooked game:** the audio-latency correction delayed video by the full measured audio latency, but a screen-grab video timestamp already trails the game's Present by the frames queued before they are shown (about 20 ms for an uncapped game on a 144 Hz display, 7 ms windowed, none when frame-capped). The measured present-to-screen latency is now taken off that correction for both the audio anchor and the video delay. Uncapped test scene: audio early by 30.2 ms -> 10.7 ms; windowed 22.0 -> 14.6 ms; frame-capped and recordings without the in-game overlay unchanged. `[AudioSync] screen_grab_queue_compensation=false` restores the previous behavior.
+
 - **Opus audio running up to 30 ms longer than the video:** when a recording ended in the first two thirds of an Opus frame (about two thirds of all recordings), the encoder's final padded packet lay entirely after the end and the end trim signalled for it was larger than the packet, so players ignored it and every Opus track ended up to a frame late. Packets wholly past the end are now dropped and the trim is sized from the last kept packet. Decoding through Matroska and MP4 now returns the exact length for six end positions across the frame; WGC, inject and desktop-duplication recordings were re-checked live.
 
 - **False "audio duration mismatch" warning for Opus recordings:** the post-recording check subtracted the encoder's own tail trim twice and reported a 13.5 ms shortfall on files that decode to the exact length.

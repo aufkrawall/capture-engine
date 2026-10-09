@@ -11,6 +11,7 @@ MediaEngine_Init_t MediaEngine_Init = nullptr;
 MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
 MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab = nullptr;
 MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
+MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
 MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame = nullptr;
 MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame = nullptr;
 MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline = nullptr;
@@ -70,6 +71,8 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab, resolve);
     success &=
         GetFunc(module, "MediaEngine_SetWgcStartupExtraDelayQpc", &MediaEngine_SetWgcStartupExtraDelayQpc, resolve);
+    success &= GetFunc(module, "MediaEngine_SetScreenGrabLatencyReductionQpc",
+                       &MediaEngine_SetScreenGrabLatencyReductionQpc, resolve);
     success &= GetFunc(module, "MediaEngine_SubmitFrame", &MediaEngine_ProcessFrame, resolve);
     success &= GetFunc(module, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame, resolve);
     success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithTimeline",
@@ -162,6 +165,7 @@ void MediaEngine_Unload() {
     MediaEngine_ReloadConfig = nullptr;
     MediaEngine_SetActiveScreenGrab = nullptr;
     MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
+    MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
     MediaEngine_ProcessFrame = nullptr;
     MediaEngine_RepeatLastFrame = nullptr;
     MediaEngine_RepeatLastFrameWithTimeline = nullptr;

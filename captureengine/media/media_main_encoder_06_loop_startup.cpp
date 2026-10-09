@@ -99,6 +99,10 @@ void MediaEncoderSession::LoopStartup() {
             pendingLiveActivation = false;
             recordingOutputLive = true;
             recordingLiveTick = GetTickCount64();
+            if (MediaEngine_SetScreenGrabLatencyReductionQpc) {
+                // Before the first frame commits: the engine anchors the audio timeline from it.
+                MediaEngine_SetScreenGrabLatencyReductionQpc(useScreenGrab ? screenGrabLatencyReductionQpc : 0);
+            }
             if (MediaEngine_SetWgcStartupExtraDelayQpc) {
                 const int64_t startupSmoothExtraDelayQpc = useScreenGrab ? wgcSmoothnessActiveDelayQpc : 0;
                 MediaEngine_SetWgcStartupExtraDelayQpc(startupSmoothExtraDelayQpc);

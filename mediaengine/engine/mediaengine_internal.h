@@ -317,6 +317,9 @@ public:
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
     std::atomic<int64_t> recordingStartSystemQpc100ns{0};      // Start time in 100-ns QPC units for packet stitching
+    // Present-to-screen latency the screen-grab path takes off the render-loopback latency when it anchors
+    // the audio timeline: the video timestamp already trails the application's Present by that much.
+    std::atomic<int64_t> screenGrabLatencyReductionQpc{0};
     std::atomic<int64_t> wgcStartupExtraDelayQpc{0};           // WGC smoothness delay used for startup preservation
     std::atomic<bool> preservePendingStartupAudioPackets{false};
 
@@ -465,6 +468,7 @@ public:
     double GetMaxAudioCaptureLatencyMs() const;
     int64_t GetMaxAudioCaptureLatencyQpc() const;
     void SetWgcStartupExtraDelayQpc(int64_t delayQpc);
+    void SetScreenGrabLatencyReductionQpc(int64_t reductionQpc);
     bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)

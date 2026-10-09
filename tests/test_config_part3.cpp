@@ -350,6 +350,7 @@ TEST_F(ConfigTest, CaptureLatencyIsPerDeviceDomain) {
     EXPECT_FLOAT_EQ(config.audioCaptureLatencyMs, 46.0f);
     EXPECT_FLOAT_EQ(config.micCaptureLatencyMs, 0.0f);
     EXPECT_TRUE(config.audioLatencyAutodetect);
+    EXPECT_TRUE(config.screenGrabQueueCompensation);
 
     bool sawSystem = false, sawSystemNumbered = false, sawApp = false, sawMic = false, sawMicNumbered = false;
     for (const auto& src : config.audioSources) {

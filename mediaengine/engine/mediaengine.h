@@ -46,6 +46,11 @@ MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab);
 // while keeping the audio anchor at the normal render-loopback delay.
 MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc);
 
+// Part of the render-loopback latency that a screen-grab video timestamp already contains (its measured
+// present-to-screen latency). The media engine takes it off the startup audio anchor delay; the encoder
+// session takes the same amount off its video delay. 0 keeps the full latency. Reset on recording start.
+MEDIAENGINE_API void MediaEngine_SetScreenGrabLatencyReductionQpc(int64_t reductionQpc);
+
 // Enable audio-only recording mode (no video capture/encoding).
 // Must be called before MediaEngine_Init to take effect.
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);

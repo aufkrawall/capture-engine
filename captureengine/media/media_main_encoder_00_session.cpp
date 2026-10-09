@@ -644,6 +644,38 @@ void MediaEncoderSession::InitState() {
             maxAudioCaptureLatencyMs = audioSrc.captureLatencyMs;
         }
     }
+    screenGrabLatencyReductionQpc = 0;
+    if (IsActiveScreenGrab() && maxAudioCaptureLatencyMs > 0.0f && config.screenGrabQueueCompensation) {
+        // A screen-grab video timestamp is a composition/screen time: it already trails the application's
+        // Present by the flip-queue latency, which the render->loopback probe knows nothing about. Moving
+        // audio and video apart by the full probe latency then over-corrects (audio early by the queue
+        // depth, measured 0-30 ms). Take the measured present-to-screen latency off the delay on BOTH sides:
+        // here for the video delay, and through the media engine for the audio anchor it computes from the
+        // per-source latency. Held for the session; without a hooked game's display timing the probe
+        // latency stands.
+        const double probeLatencyMs = static_cast<double>(maxAudioCaptureLatencyMs);
+        ce::capture_policy::PresentToScreenLatency presentToScreen;
+        if (media_main_g_pSharedMem) {
+            presentToScreen =
+                ce::capture_policy::EstimatePresentToScreenLatency(media_main_g_pSharedMem->displayTiming);
+        }
+        const double reductionMs =
+            ce::capture_policy::ComputeScreenGrabLatencyReductionMs(probeLatencyMs, presentToScreen);
+        if (reductionMs > 0.0 && qpcFreq.QuadPart > 0) {
+            screenGrabLatencyReductionQpc = static_cast<int64_t>(
+                std::llround(reductionMs / 1000.0 * static_cast<double>(qpcFreq.QuadPart)));
+        }
+        maxAudioCaptureLatencyMs = static_cast<float>(probeLatencyMs - reductionMs);
+        LogInfo(
+            "[AVSyncApply] screen_grab_queue_compensation: source=%s probeMs=%.3f presentToScreenMedianMs=%.3f "
+            "min=%.3f max=%.3f samples=%u reductionMs=%.3f effectiveMs=%.3f",
+            presentToScreen.valid ? "display_timing"
+                                  : (media_main_g_pSharedMem ? "display_timing_unavailable" : "no_hook"),
+            probeLatencyMs, static_cast<double>(presentToScreen.medianUs) / 1000.0,
+            static_cast<double>(presentToScreen.minUs) / 1000.0,
+            static_cast<double>(presentToScreen.maxUs) / 1000.0, presentToScreen.samples, reductionMs,
+            probeLatencyMs - reductionMs);
+    }
     avContentDelayQpc =
         (maxAudioCaptureLatencyMs > 0.0f && qpcFreq.QuadPart > 0)
             ? static_cast<int64_t>(std::llround(static_cast<double>(maxAudioCaptureLatencyMs) / 1000.0 *

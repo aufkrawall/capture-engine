@@ -226,6 +226,7 @@ private:
     bool wgcStartupSelectedByDelayReserve;
     std::string wgcStartupReserveReason;
     int64_t wgcSmoothnessActiveDelayQpc;
+    int64_t screenGrabLatencyReductionQpc = 0;
     ce::capture_policy::CfrTimelineStartContract pendingWgcStartContract{};
     uint64_t pendingWgcStartContractGeneration;
     uint64_t committedWgcStartContractGeneration;

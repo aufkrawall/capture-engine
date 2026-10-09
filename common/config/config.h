@@ -553,6 +553,13 @@ struct AppConfig {
     // manual audioCaptureLatencyMs > 0 disables measurement for the render domain. Default true.
     bool audioLatencyAutodetect = true;
 
+    // Screen-grab (WGC / DXGI duplication) video timestamps are composition/screen times that already trail
+    // the application's Present by the flip-queue latency. When display timing is available for the
+    // followed game, take that measured latency off the audio-latency delay on both the audio anchor and
+    // the video delay instead of applying the full probe latency. Default true; false restores the plain
+    // probe delay.
+    bool screenGrabQueueCompensation = true;
+
     // Runtime-only A/V sync diagnosis populated by captureengine after config load. These are not
     // parsed from config.ini: the product must auto-detect, apply a manual override only when the
     // user explicitly configured one, or report low confidence instead of guessing.

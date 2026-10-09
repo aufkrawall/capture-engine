@@ -241,6 +241,10 @@ int64_t MediaEngine::GetMaxAudioCaptureLatencyQpc() const {
 }
 
 
+void MediaEngine::SetScreenGrabLatencyReductionQpc(int64_t reductionQpc) {
+    screenGrabLatencyReductionQpc.store(std::max<int64_t>(0, reductionQpc), std::memory_order_release);
+}
+
 void MediaEngine::SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
 
 
@@ -312,8 +316,12 @@ FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmission
         bool firstPreservePendingPackets = false;
         if (commitsFirstVideoFrame) {
             if (IsWgcCfrRecording()) {
-                const double renderDelayMs = GetMaxAudioCaptureLatencyMs();
-                const int64_t renderDelayQpc = GetMaxAudioCaptureLatencyQpc();
+                const int64_t renderDelayQpc = std::max<int64_t>(
+                    0, GetMaxAudioCaptureLatencyQpc() -
+                           std::max<int64_t>(0, screenGrabLatencyReductionQpc.load(std::memory_order_acquire)));
+                const double renderDelayMs =
+                    qpcFreq > 0 ? (static_cast<double>(renderDelayQpc) * 1000.0) / static_cast<double>(qpcFreq)
+                                : GetMaxAudioCaptureLatencyMs();
                 const int64_t smoothExtraDelayQpc =
                     std::max<int64_t>(0, wgcStartupExtraDelayQpc.load(std::memory_order_acquire));
                 const bool delayWouldOverflow =

@@ -218,6 +218,7 @@ bool MediaEngine::StartRecording() {
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
             recordingStartSystemQpc100ns.store(0);
             wgcStartupExtraDelayQpc.store(0, std::memory_order_release);
+            screenGrabLatencyReductionQpc.store(0, std::memory_order_release);
 
             // PULL MODEL: Reset audio encoding state for new recording.
             ResetAudioPullStateForRecording();

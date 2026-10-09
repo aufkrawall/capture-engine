@@ -185,6 +185,8 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
         reader.GetFloatCompat("AudioSync", "mic_capture_latency_ms", "General", "mic_capture_latency_ms", 0.0f);
     config.audioLatencyAutodetect = reader.GetBoolCompat("AudioSync", "audio_latency_autodetect", "General",
                                                   "audio_latency_autodetect", true);
+    config.screenGrabQueueCompensation = reader.GetBoolCompat(
+        "AudioSync", "screen_grab_queue_compensation", "General", "screen_grab_queue_compensation", true);
 
     // Performance (Priority Settings)
     config.processPriority =

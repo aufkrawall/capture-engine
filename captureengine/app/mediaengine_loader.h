@@ -24,6 +24,7 @@ typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
 typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
 typedef void (*MediaEngine_SetActiveScreenGrab_t)(bool activeScreenGrab);
 typedef void (*MediaEngine_SetWgcStartupExtraDelayQpc_t)(int64_t delayQpc);
+typedef void (*MediaEngine_SetScreenGrabLatencyReductionQpc_t)(int64_t reductionQpc);
 typedef bool (*MediaEngine_ProcessFrame_t)(const VideoFrameSubmissionDesc* desc);
 typedef bool (*MediaEngine_RepeatLastFrame_t)(int64_t timestamp, const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int64_t timelineElapsedUs,
@@ -75,6 +76,7 @@ extern MediaEngine_Init_t MediaEngine_Init;
 extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
 extern MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab;
 extern MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc;
+extern MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc;
 extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
 extern MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame;
 extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline;

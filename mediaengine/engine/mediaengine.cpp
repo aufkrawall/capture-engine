@@ -128,6 +128,12 @@ MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
         mediaengine_g_Engine->SetWgcStartupExtraDelayQpc(delayQpc);
 }
 
+MEDIAENGINE_API void MediaEngine_SetScreenGrabLatencyReductionQpc(int64_t reductionQpc) {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    if (mediaengine_g_Engine)
+        mediaengine_g_Engine->SetScreenGrabLatencyReductionQpc(reductionQpc);
+}
+
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     mediaengine_g_PendingAudioOnly = audioOnly;

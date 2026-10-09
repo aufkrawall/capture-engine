@@ -1089,6 +1089,10 @@ gpu_scheduling_priority=auto
 ; device. A positive value is a manual delay in milliseconds and skips that test.
 audio_latency_autodetect=true
 audio_capture_latency_ms=0
+; WGC and DXGI duplication video times are screen times that already trail the game's frames
+; by its frame queue. When the game's display timing is available, that measured queue is
+; taken off the audio delay so audio is not pulled early. false applies the full amount.
+screen_grab_queue_compensation=true
 ; Manual microphone timing adjustment in milliseconds. 0 leaves it unchanged.
 mic_capture_latency_ms=0
 
