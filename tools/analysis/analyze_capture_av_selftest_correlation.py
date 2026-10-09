@@ -1,4 +1,24 @@
 def _self_test_correlation():
+    short_signature_rate = 100.0
+    short_signal = array.array("f")
+    noise_state = 0x4C5D
+    for _ in range(1600):
+        noise_state = (1103515245 * noise_state + 12345) & 0x7FFFFFFF
+        short_signal.append(noise_state / 0x7FFFFFFF)
+    delayed_short_signal = array.array("f", [0.0]) * 4 + short_signal[:-4]
+    short_tracks = [
+        {"audio_ordinal": 0, "signature": short_signal, "signature_rate": short_signature_rate},
+        {"audio_ordinal": 1, "signature": delayed_short_signal, "signature_rate": short_signature_rate},
+    ]
+    short_correlations = analyze_inter_track_correlations(short_tracks, max_offset_ms=200)
+    assert len(short_correlations) == 1
+    assert short_correlations[0]["analyzed_window_count"] == 2
+    assert short_correlations[0]["content_offset_detected"]
+    assert short_correlations[0]["supporting_window_count"] == 2
+    assert abs(short_correlations[0]["detected_offset_ms"] - 40.0) < 1e-6
+    aligned_short_tracks = [short_tracks[0], dict(short_tracks[0])]
+    assert not analyze_inter_track_correlations(aligned_short_tracks)[0]["content_offset_detected"]
+
     signature_rate = 100.0
     signature_duration_s = 260
     signal_start_s = 180

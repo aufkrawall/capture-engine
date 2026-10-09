@@ -130,6 +130,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Recording-audit regression coverage:** restored five disabled analyzer test groups covering missing audio, frame pacing, synchronization delay, finalization and track correlation. A dispatch regression prevents a partial self-test from silently reporting success again.
 
+- **Audio sync checks on short recordings:** the completed-file analyzer now compares two independent content windows when a clip is long enough for both, so a repeatable track offset can be detected in short recordings. Delayed and aligned 16-second clips protect the check without lowering its confidence thresholds.
+
 - **Overlay after DLSS FG off with ReShade:** fixed auxiliary command submissions replacing the live queue/device binding and clearing the confirmed overlay route. Queue discovery now preserves that binding; completed swapchain creation still supports queue and device replacement.
 
 - **Missing automatic dumps for CE faults caught by a game:** hardware faults inside Capture Engine are now captured with their original thread and registers before the game's exception handler can consume them and leave a hang or clean exit. This closes the missing-dump path seen during The Witcher 3 Remastered's ReShade startup failure.

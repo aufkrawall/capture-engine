@@ -53,6 +53,10 @@ def select_signature_correlation_windows(
     length = min(len(left), len(right))
     window_points = max(64, int(round(window_seconds * signature_rate)))
     minimum_points = max(32, int(round(min(5.0, window_seconds) * signature_rate)))
+    # Short recordings still need independent support for a persistent track offset.
+    # Keep both windows above the existing activity-evidence floor.
+    if length >= 2 * minimum_points:
+        window_points = min(window_points, length // 2)
     windows = []
     for start in range(0, length, window_points):
         end = min(length, start + window_points)
