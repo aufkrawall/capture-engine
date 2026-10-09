@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-09 - Audit of recording 20261009_181916; steady-state seam cuts replaced by a drift lane
+
+- Audit result: lengths exact (video 290 641 667 us = both AAC tracks 13 950 800 samples; post-mux probe within
+  1 us), healthy, no overload/backpressure/PTS anomalies, flat A/V drift. The only CE-attributable audio defect:
+  `[STOP AUDIO PLACEMENT]` loopback -28.10 ppm / mic -24.59 ppm absorbed as 12 deletions of 1-1.7 ms (49 mic,
+  79-82 loopback samples) + 1.3 ms fade-in. Video repeats (1071, 3.0 %) and the Fortnite app-track gaps
+  (11 events, 343 ms) were source stalls (CE counters clean); a 364 ms source stall ~1.8 s after recording
+  start had no attributable CE cause.
+- Fix: `placement_drift_policy.h` + `AudioLoopCommitSource` (details and invariants in
+  `multi-audio-capture.md`, "Placement drift lane"). Tests `tests/test_audio_placement_drift.cpp` (policy,
+  closed-loop model incl. quantised timestamps/stall/over-budget, real FFmpeg resampler sign/count/click).
+  Hardware run pending: expect `overlapEvents=0`, `laneEngaged=1`, `lanePpm` ~ -28/-25, `laneHardSeams=0`.
+
 ### 2026-10-09 - Varying A/V offsets measured; WGC probe over-correction fixed (queue compensation)
 
 - Cause of the per-session spread (sd ~6 ms): not flip-queue depth (capping the stimulus changed the mean only);
