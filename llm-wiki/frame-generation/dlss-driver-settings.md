@@ -190,11 +190,14 @@ on the loading thread before its `LoadLibrary` returns (ordered ahead of any `Ge
 pinning), and sets a flag; `ServiceDlssDrsConsumerSweep` (hook thread, next to `RefreshThirdPartyOverlayIdentityCache`)
 then runs `PatchLoadedDlssDrsConsumers("loader notification")` for the cached-pointer retarget. Source-contract test
 `NgxDrsStartupSweepTest.LoaderNotificationPatchesAConsumerNoCeLoadHookSaw` (fails without the change). Hardware run
-pending. **Open, not fixed:** in the losing order CE still ends up with an orphan override `sl.common` that owns its
-single `slGetPluginFunction` forward pointer, so the hook thread logs `Refusing to retarget slGetPluginFunction` x10
-and re-hooks `sl.common` reloaded x66 in the first 2 s (log churn; feature hooks still resolve). Placing the override
-set while the interposer is mapped but the core is not yet is the root; changing that policy touches the Vulkan present
-path rule in `ShouldPlaceStreamlinePluginSet`, so it was left alone.
+pending. **Orphan copies, fixed the same day:** in the losing order CE had also preloaded an override `sl.common` that owned
+its single `slGetPluginFunction` forward pointer, so the hook thread logged `Refusing to retarget slGetPluginFunction` x10
+and re-hooked `sl.common` reloaded x66 in the first 2 s (feature hooks still resolved). `PlaceStreamlinePluginSet` now stands
+down for good when a `sl.interposer.dll` is resident from anywhere but the configured override path
+(`IsForeignStreamlineInterposer`): that interposer owns the stack, a name-registered copy is never reused by a path-keyed
+load, and only the loader redirect can substitute a request. Log: `Runtime preload: sl.* plugin set not placed - sl.interposer.dll
+is already resident from <path>`. Not evidenced and left alone: a shipped-but-not-yet-mapped interposer (CE places the
+override interposer first, which is the intended mechanism). Hardware run pending.
 
 Diagnostics: `NGX DRS: GetProcAddress import patch on <module> installed ... via=startup sweep (<source>)` is logged
 once per module and outcome (the old shared 4-line budget was spent on `nvngx_dlssg.dll` alone), then

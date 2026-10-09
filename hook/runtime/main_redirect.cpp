@@ -113,6 +113,19 @@ std::string BuildOverridePath(const std::string &overridePath, const std::string
   return filename;
 }
 
+// BuildOverridePath, canonicalized. The loader reports a canonical path; a configured override may be
+// relative or carry ".." segments, so a spelling difference must not make CE's own copy look foreign.
+// GetFullPathNameA is pure string work.
+std::string CanonicalOverridePath(const std::string &overridePath, const std::string &filename) {
+  std::string path = BuildOverridePath(overridePath, filename);
+  char canonical[MAX_PATH] = {};
+  const DWORD length = GetFullPathNameA(path.c_str(), MAX_PATH, canonical, nullptr);
+  if (length > 0 && length < MAX_PATH) {
+    path.assign(canonical);
+  }
+  return path;
+}
+
 // Streamline generation of the interposer this process is actually running, taken from the
 // loaded module's own file so it is available before CE has hooked anything.
 // The implementation is shared: the ngx_ota slInit route needs the same answer
@@ -275,15 +288,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
   if (!resolvedStreamlineName || !ce::graphics_runtime::IsStreamlineCoreProvidedDllName(providedName)) {
     return;
   }
-  std::string expected = BuildOverridePath(overridePath, providedName);
-  // The loader reports a canonical path; a configured override may be relative or
-  // carry ".." segments. Canonicalize before comparing so a spelling difference
-  // cannot latch CE's own copy as foreign. GetFullPathNameA is pure string work.
-  char canonicalExpected[MAX_PATH] = {};
-  const DWORD canonicalLength = GetFullPathNameA(expected.c_str(), MAX_PATH, canonicalExpected, nullptr);
-  if (canonicalLength > 0 && canonicalLength < MAX_PATH) {
-    expected.assign(canonicalExpected);
-  }
+  const std::string expected = CanonicalOverridePath(overridePath, providedName);
   if (ce::graphics_runtime::EqualsModulePathIgnoreCase(resolvedPath, expected.c_str())) {
     return;  // CE's own override copy is the core: the override owns the stack.
   }
@@ -559,7 +564,23 @@ bool PlaceStreamlinePluginSet() {
     return true;  // Foreign core / active bridge: already logged, and final.
   }
 
-  const ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
+  ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
+  char residentInterposer[MAX_PATH] = {};
+  if (const HMODULE resident = GetModuleHandleA("sl.interposer.dll")) {
+    const DWORD length = GetModuleFileNameA(resident, residentInterposer, MAX_PATH);
+    evidence.foreignInterposerResident = ce::graphics_runtime::IsForeignStreamlineInterposer(
+        length > 0 && length < MAX_PATH ? residentInterposer : "",
+        CanonicalOverridePath(gfx.streamlineDllPath, "sl.interposer.dll").c_str());
+  }
+  if (evidence.foreignInterposerResident) {
+    // Final: that interposer already chose the stack it loads (see IsForeignStreamlineInterposer), so the
+    // loader redirect stays the only way an override reaches it and no orphan copy is mapped beside it.
+    HookLogImportant("Runtime preload: sl.* plugin set not placed - sl.interposer.dll is already resident from %s, "
+                     "not from the configured override; it owns its core and plugins, which only the loader "
+                     "redirect can substitute",
+                     residentInterposer[0] ? residentInterposer : "an unresolved path");
+    return true;
+  }
   if (!ce::graphics_runtime::ShouldPlaceStreamlinePluginSet(true, false, evidence)) {
     static std::atomic<bool> loggedOnce{false};
     if (!loggedOnce.exchange(true, std::memory_order_relaxed)) {

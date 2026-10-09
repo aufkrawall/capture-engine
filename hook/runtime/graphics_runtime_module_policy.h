@@ -354,7 +354,31 @@ struct StreamlineUseEvidence {
     bool coreShippedWithApplication = false;
     // A sl.* load or load request has been observed at runtime.
     bool loadObserved = false;
+    // The mapped sl.interposer.dll is not the configured override copy. See
+    // IsForeignStreamlineInterposer.
+    bool foreignInterposerResident = false;
 };
+
+// Whether the sl.interposer.dll this process has mapped is somebody else's: `residentInterposerPath` is
+// null when none is mapped and empty when it is mapped but its path could not be read (fail closed).
+//
+// A resident interposer owns the Streamline stack: it has already chosen the distribution and maps
+// sl.common and the plugins itself. Windows keys module identity on the resolved path, so a name-registered
+// override copy is not reused when that load names the game's own path; it only becomes a second,
+// orphaned image next to it. Witcher 3 + ReShade, 20261009_110607: CE preloaded an override sl.common
+// beside the game's resident interposer, the interposer then mapped its own from the game folder, and CE's
+// single slGetPluginFunction forward pointer stayed on the orphan (10 refused retargets, 66 re-hook
+// attempts in the first two seconds). Only the loader redirect can substitute such a request, so nothing
+// is placed by name.
+inline bool IsForeignStreamlineInterposer(const char* residentInterposerPath, const char* overrideInterposerPath) {
+    if (!residentInterposerPath) {
+        return false;
+    }
+    if (!residentInterposerPath[0]) {
+        return true;
+    }
+    return !EqualsModulePathIgnoreCase(residentInterposerPath, overrideInterposerPath);
+}
 
 // Whether CE may MAP its configured sl.* override copies into this process.
 //
@@ -372,7 +396,8 @@ struct StreamlineUseEvidence {
 // the first real request, and this placement follows it.
 inline bool ShouldPlaceStreamlinePluginSet(bool overrideConfigured, bool foreignCoreObserved,
                                            const StreamlineUseEvidence& evidence) {
-    if (!ShouldApplyStreamlineOverrideRedirect(overrideConfigured, foreignCoreObserved)) {
+    if (!ShouldApplyStreamlineOverrideRedirect(overrideConfigured, foreignCoreObserved) ||
+        evidence.foreignInterposerResident) {
         return false;
     }
     return evidence.coreAlreadyMapped || evidence.coreShippedWithApplication || evidence.loadObserved;

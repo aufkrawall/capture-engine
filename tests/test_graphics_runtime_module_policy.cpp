@@ -15,6 +15,7 @@ using ce::graphics_runtime::IsStreamlineCoreProvidedDllName;
 using ce::graphics_runtime::ModelSegmentToDllName;
 using ce::graphics_runtime::NgxModelSegment;
 using ce::graphics_runtime::ResolveStreamlineProvidedDllName;
+using ce::graphics_runtime::IsForeignStreamlineInterposer;
 using ce::graphics_runtime::ShouldApplyStreamlineOverrideRedirect;
 using ce::graphics_runtime::ShouldPlaceStreamlinePluginSet;
 using ce::graphics_runtime::ShouldRetireLegacyBridgeNgxFeatureModule;
@@ -262,6 +263,73 @@ TEST(GraphicsRuntimeModulePolicy, StreamlinePluginSetIsPlacedOnlyForAProcessThat
     // that would turn the placement into a version-mixed stack.
     EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(false, false, observed));
     EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(true, true, observed));
+}
+
+// 20261009_110607: CE preloaded override sl.common/sl.dlss/... beside the game's resident interposer; the
+// interposer then mapped its own core from the game folder and the preloaded copies were orphans (they
+// held CE's single slGetPluginFunction forward pointer). A resident interposer that is not the override
+// copy owns the stack, so nothing is placed by name - whatever else says Streamline is in use.
+TEST(GraphicsRuntimeModulePolicy, ResidentGameInterposerOwnsTheStackAndSuppressesPlacement) {
+    const char* const overrideInterposer = "C:\\npi\\sl\\sl.interposer.dll";
+    const char* const gameInterposer = "H:\\game\\bin\\sl.interposer.dll";
+
+    EXPECT_FALSE(IsForeignStreamlineInterposer(nullptr, overrideInterposer));  // none mapped
+    EXPECT_TRUE(IsForeignStreamlineInterposer(gameInterposer, overrideInterposer));
+    // CE's own copy, however the loader spells the path, is not foreign.
+    EXPECT_FALSE(IsForeignStreamlineInterposer(overrideInterposer, overrideInterposer));
+    EXPECT_FALSE(IsForeignStreamlineInterposer("c:/NPI/sl/SL.INTERPOSER.DLL", overrideInterposer));
+    // Mapped but unreadable, or no override path to compare with: fail closed, never place beside it.
+    EXPECT_TRUE(IsForeignStreamlineInterposer("", overrideInterposer));
+    EXPECT_TRUE(IsForeignStreamlineInterposer(gameInterposer, nullptr));
+
+    for (const bool mapped : {false, true}) {
+        for (const bool shipped : {false, true}) {
+            for (const bool observed : {false, true}) {
+                ce::graphics_runtime::StreamlineUseEvidence evidence = {};
+                evidence.coreAlreadyMapped = mapped;
+                evidence.coreShippedWithApplication = shipped;
+                evidence.loadObserved = observed;
+                evidence.foreignInterposerResident = true;
+                EXPECT_FALSE(ShouldPlaceStreamlinePluginSet(true, false, evidence))
+                    << mapped << shipped << observed;
+            }
+        }
+    }
+
+    // CE's own interposer (placed earlier, or served by the redirect) leaves the existing rules untouched.
+    ce::graphics_runtime::StreamlineUseEvidence ours = {};
+    ours.coreAlreadyMapped = true;
+    ours.foreignInterposerResident = false;
+    EXPECT_TRUE(ShouldPlaceStreamlinePluginSet(true, false, ours));
+}
+
+// The probe has to run before the first placement and end the evaluation for good; the policy is only as
+// good as the call site that feeds it.
+TEST(GraphicsRuntimeModulePolicy, PlacementConsultsTheResidentInterposerBeforeMappingAnything) {
+    namespace fs = std::filesystem;
+    const std::string redirect = ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
+    ASSERT_FALSE(redirect.empty());
+
+    const size_t placement = redirect.find("bool PlaceStreamlinePluginSet()");
+    ASSERT_NE(placement, std::string::npos);
+    const size_t probe = redirect.find("GetModuleHandleA(\"sl.interposer.dll\")", placement);
+    const size_t verdict = redirect.find("IsForeignStreamlineInterposer(", placement);
+    const size_t finalReturn = redirect.find("evidence.foreignInterposerResident) {", placement);
+    const size_t interposerPreload =
+        redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")", placement);
+    ASSERT_NE(probe, std::string::npos);
+    ASSERT_NE(verdict, std::string::npos);
+    ASSERT_NE(finalReturn, std::string::npos);
+    ASSERT_NE(interposerPreload, std::string::npos);
+    EXPECT_LT(probe, verdict);
+    EXPECT_LT(verdict, finalReturn);
+    EXPECT_LT(finalReturn, interposerPreload);
+    // Final, not "held back": the caller must stop re-evaluating, and the reason is logged once.
+    const size_t returnTrue = redirect.find("return true;", finalReturn);
+    ASSERT_NE(returnTrue, std::string::npos);
+    EXPECT_LT(returnTrue, interposerPreload);
+    EXPECT_NE(redirect.find("Runtime preload: sl.* plugin set not placed - sl.interposer.dll is already resident", placement),
+              std::string::npos);
 }
 
 // Both redirect decisions in GetRedirectedPath must consult the duplicate check: the NGX

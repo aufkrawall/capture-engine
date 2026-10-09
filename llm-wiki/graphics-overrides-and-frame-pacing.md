@@ -520,6 +520,11 @@ Reflex handoff rules.
   (`PlaceConfiguredStreamlinePluginSetIfObserved`), never under the loader lock. The loader redirect is unchanged
   and still serves the first real request, so a Streamline title gets the same copies it always did; the held-back
   case logs `Runtime preload: sl.* plugin set held back ...` with the three evidence bits.
+- **A foreign resident interposer ends the placement (2026-10-09).** `StreamlineUseEvidence::foreignInterposerResident`
+  (probe in `PlaceStreamlinePluginSet`, verdict `IsForeignStreamlineInterposer`) makes `ShouldPlaceStreamlinePluginSet`
+  false and the placement final: the interposer already chose the distribution and maps its own core by path, so
+  name-registered copies were only ever orphans (Witcher 3 + ReShade `20261009_110607`). The loader redirect still
+  serves any request it sees. Log: `Runtime preload: sl.* plugin set not placed - sl.interposer.dll is already resident`.
 - **Ownership: the preload and the redirect belong to exactly one process per game.** Both sit behind
   `CurrentProcessOwnsProcessLocalRuntimeOverrides()`, which stands down when the Vulkan layer has published an
   inherited-renderer claim naming a direct child renderer of *this* client - the split-renderer titles, e.g.

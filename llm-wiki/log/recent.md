@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-09 - Orphan override Streamline copies beside a resident game interposer
+
+- Follow-up of the entry below: when the game's `sl.interposer.dll` is resident, `PlaceStreamlinePluginSet` no longer
+  preloads override `sl.common`/`sl.dlss*` (`IsForeignStreamlineInterposer`, final, logged once). The orphan had
+  captured CE's single `slGetPluginFunction` forward pointer in `20261009_110607`. Details in
+  `graphics-overrides-and-frame-pacing.md` and `frame-generation/dlss-driver-settings.md`. Hardware run pending.
+
 ### 2026-10-09 - Game window never appeared: nvapi_QueryInterface detour forwarded to itself
 
 - Report `logs/witcher3windownotappear` (0.1.7058, Witcher 3 + ReShade, second launch p13924, manual dump
