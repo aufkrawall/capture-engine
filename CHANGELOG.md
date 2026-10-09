@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **False "startup smoothing underfilled" fault on clean WGC recordings:** when only a small jitter buffer (about 22 ms) was requested, the end-of-recording summary compared it with the full 300 ms reservoir, reported a 279 ms deficit and flagged a visual timeline fault. The deficit is now judged against the delay that was actually requested.
+
 - **Audio/video validation after source relayout:** the recording test matrix finds the built Capture Engine and stimulus app from the repository root again, including when launched from another working directory. The per-recording triage step now uses the same FFmpeg/FFprobe as the content analysis instead of looking for them on `PATH`, so a run no longer fails after a clean capture. A dry-run regression checks the installed layout and the forwarded tool paths before recordings are started.
 
 - **Recording-audit regression coverage:** restored five disabled analyzer test groups covering missing audio, frame pacing, synchronization delay, finalization and track correlation. A dispatch regression prevents a partial self-test from silently reporting success again.

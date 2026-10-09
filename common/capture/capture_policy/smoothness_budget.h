@@ -89,6 +89,17 @@ inline int64_t ClampWgcSmoothnessFloorDelayQpc(int64_t requestedFloorQpc, int64_
     return std::clamp(requestedFloorQpc, minFloorQpc, capQpc);
 }
 
+// Delay (QPC) the smoothness buffer was actually asked to realize. The audio-latency path asks for the
+// full reservoir target; a video-only floor asks only for its own (clamped) delay, so the end-of-session
+// deficit must be judged against that, not against the unused reservoir headroom.
+inline int64_t GetWgcSmoothnessRequestedDelayQpc(int64_t reservoirTargetQpc, bool floorConfigured,
+                                                 bool avContentDelayActive, int64_t floorDelayQpc) {
+    if (!floorConfigured || avContentDelayActive) {
+        return reservoirTargetQpc;
+    }
+    return std::min(reservoirTargetQpc, std::max<int64_t>(0, floorDelayQpc));
+}
+
 // Auto-derive a smoothness floor delay (QPC) from measured startup WGC delivery jitter. It sizes
 // the floor to absorb the worst observed delivery burst beyond one frame interval (and the worst
 // source-present jitter), with a structural minimum of kWgcSmoothnessFloorMinFrames, clamped to

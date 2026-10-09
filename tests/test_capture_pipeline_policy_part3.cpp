@@ -196,6 +196,20 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionAcceptsLowWaterAndRecovery) {
     EXPECT_STREQ(recovery.reason, "recovery");
 }
 
+TEST(CapturePipelinePolicyTest, WgcSmoothnessRequestedDelayIsTheFloorWhenOnlyAFloorWasRequested) {
+    constexpr int64_t kReservoirQpc = 3000000;  // 300 ms at 10 MHz
+    constexpr int64_t kFloorQpc = 224840;       // 22.5 ms
+    // Video-only floor: the end-of-session deficit is judged against the floor, not the 300 ms headroom.
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, false, kFloorQpc), kFloorQpc);
+    // An audio-latency delay takes the whole reservoir target, with or without a floor configured.
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, true, kFloorQpc), kReservoirQpc);
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, false, false, 0), kReservoirQpc);
+    // A floor can never ask for more than the reservoir can hold, and a floor that was never armed asks for none.
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kFloorQpc, true, false, kReservoirQpc), kFloorQpc);
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, false, 0), 0);
+    EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, false, -5), 0);
+}
+
 TEST(CapturePipelinePolicyTest, WgcPoolPressureTrimKeepsDelayTargetButProtectsFreeSlots) {
     EXPECT_EQ(policy::GetWgcPoolPressureRetainedTrimTarget(/*currentFreeCopySlots=*/0,
                                                            /*reservedFreeCopySlots=*/6,

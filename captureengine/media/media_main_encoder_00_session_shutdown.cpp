@@ -286,10 +286,12 @@ void MediaEncoderSession::Shutdown() {
             const uint32_t wgcSummaryDuplicateTimestampsSkipped =
                 std::max(media_main_g_WgcRuntimeLogSnapshot.duplicateTimestampsSkipped.load(std::memory_order_relaxed),
                          media_main_g_WgcCap ? media_main_g_WgcCap->GetDuplicateTimestampSkipCount() : 0u);
-            const int64_t wgcSummarySmoothTargetDelayUs =
-                qpcToUs(ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
-                    wgcSmoothnessRetainedFrames, targetIntervalTicks, wgcSummaryOutputFps,
-                    config.wgcSmoothnessBufferMaxMs));
+            const int64_t wgcSummarySmoothTargetDelayUs = qpcToUs(
+                ce::capture_policy::GetWgcSmoothnessRequestedDelayQpc(
+                    ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
+                        wgcSmoothnessRetainedFrames, targetIntervalTicks, wgcSummaryOutputFps,
+                        config.wgcSmoothnessBufferMaxMs),
+                    wgcSmoothnessFloorConfigured, avContentDelayActive, wgcSmoothnessFloorDelayQpc));
             const int64_t wgcSummarySmoothActualDelayUs = qpcToUs(wgcSmoothnessActiveDelayQpc);
             const int64_t wgcSummarySmoothDelayDeficitUs =
                 std::max<int64_t>(0, wgcSummarySmoothTargetDelayUs - wgcSummarySmoothActualDelayUs);
