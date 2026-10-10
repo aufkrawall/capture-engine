@@ -102,7 +102,7 @@ Gate::~Gate() { Release(); }
 
 bool WaitForCreator(DWORD childPid, DWORD timeout) {
     HandleGuard snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-    if (!snapshot) return false;
+    if (!snapshot) return true;  // Without a parent identity we must never deny injection.
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
     DWORD parent = 0;
@@ -116,11 +116,24 @@ bool WaitForCreator(DWORD childPid, DWORD timeout) {
     }
     if (!parent) return true;
     HandleGuard ready(OpenEventW(SYNCHRONIZE, FALSE, ObjectName(Object::Ready, parent).c_str()));
-    if (!ready && !HasRole(parent)) return true;
-    if (!ready || WaitForSingleObject(ready.get(), timeout) != WAIT_OBJECT_0) return false;
-    HandleGuard mutex(OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, ObjectName(Object::Gate, parent).c_str()));
-    Gate gate(mutex.get(), timeout);
-    return gate.Acquired();
+    if (!ready && !HasRole(parent)) return true;  // Not a creator: nothing to serialize with.
+    // A creator signals Ready once its creation hook (and gate) is installed.
+    // Wait bounded for that; it is synchronization with a possible import
+    // transaction, never an injection delay.
+    if (ready && WaitForSingleObject(ready.get(), timeout) == WAIT_OBJECT_0) {
+        HandleGuard mutex(OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, ObjectName(Object::Gate, parent).c_str()));
+        if (!mutex) return true;  // No gate: no creation transaction can run here.
+        Gate gate(mutex.get(), timeout);
+        // Only a gate still held after the timeout means a transaction is
+        // actively rewriting this child right now, where concurrent injection
+        // could corrupt it. That, and only that, refuses the child.
+        return gate.Acquired();
+    }
+    // Readiness never arrived within the bound: the parent never installed its
+    // creation hook (retired/dormant creator, or a failed creation-only attach),
+    // so there is no transaction to serialize with. Proceed; a creator that will
+    // never become ready must not deny its children injection.
+    return true;
 }
 
 }  // namespace ce::startup_launch

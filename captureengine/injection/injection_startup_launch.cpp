@@ -62,6 +62,14 @@ bool InjectionManager::AttachStartupLaunchHost(DWORD pid, const std::string& nam
     if (!IsAlreadyInjectedLocked(pid)) {
         if (!InjectImpl(pid, name, true)) {
             LogError("[StartupImport] Creation-only attachment failed for %s PID=%lu", name.c_str(), pid);
+            // Release the creator's first-resume handshake immediately: the
+            // launcher must not stall behind an attachment that will never
+            // complete. It proceeds unintercepted and its children fall back to
+            // ordinary discovery (WaitForCreator treats a creator without a gate
+            // as dormant). Signalling Ready is that release.
+            ce::HandleGuard release(OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                ce::startup_launch::ObjectName(ce::startup_launch::Object::Ready, pid).c_str()));
+            if (release) SetEvent(release.get());
             return true;
         }
     }

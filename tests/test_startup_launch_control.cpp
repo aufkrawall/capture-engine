@@ -141,6 +141,37 @@ TEST(StartupLaunchControl, DiscoveryWaitsForTheActualCreatorsTransaction) {
     EXPECT_EQ(WaitForSingleObject(child.get(), 5000), WAIT_OBJECT_0);
 }
 
+TEST(StartupLaunchControl, DiscoveryProceedsWhenTheCreatorNeverBecomesReady) {
+    using ce::startup_launch::Object;
+    const DWORD pid = GetCurrentProcessId();
+    // A creator role whose hook never became ready (for example a failed
+    // creation-only attach) must not refuse its children: they proceed ungated.
+    // Regression: WaitForCreator used to return false here and deny injection to
+    // every child of a dormant creator (this broke launchers such as a 32-bit
+    // Battle.net whose creation-only attach cannot complete).
+    ce::HandleGuard role(CreateEventW(nullptr, TRUE, FALSE, ce::startup_launch::ObjectName(Object::Role, pid).c_str()));
+    ce::HandleGuard ready(CreateEventW(nullptr, TRUE, FALSE, ce::startup_launch::ObjectName(Object::Ready, pid).c_str()));
+    ASSERT_TRUE(role && ready);
+    ResetEvent(ready.get());  // Dormant even if an earlier test left the shared event signalled.
+    CE_SCOPE_EXIT(SetEvent(ready.get()));  // Later tests assume a ready creator; restore it.
+    const auto exe = ce::ansi_path::ModulePathW(nullptr);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    ASSERT_TRUE(CreateProcessW(exe.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                               nullptr, nullptr, &startup, &process));
+    ce::HandleGuard child(process.hProcess);
+    ce::HandleGuard primary(process.hThread);
+    CE_SCOPE_EXIT({
+        if (WaitForSingleObject(child.get(), 0) != WAIT_OBJECT_0) {
+            TerminateProcess(child.get(), 0);
+            WaitForSingleObject(child.get(), 5000);
+        }
+    });
+    // timeout 0: readiness is absent, so this must neither block nor refuse.
+    EXPECT_TRUE(ce::startup_launch::WaitForCreator(process.dwProcessId, 0));
+}
+
 TEST(StartupLaunchControl, RoleBootstrapPrecedesGraphicsAndCreatorWaitPrecedesRemoteInjection) {
     const auto dllmain = ce::test_source::ReadFile(ce::test_source::FindSource("hook", "main_dllmain.cpp"));
     ASSERT_FALSE(dllmain.empty());
