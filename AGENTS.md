@@ -33,6 +33,7 @@ avoid maintaining the same detailed rule in both places. Preserve project-specif
 - Every bug fix or feature gets new or adjusted regression tests and high-signal, rate-limited debug logging where it helps diagnose transitions, failures or regressions (no unconditional hot-path noise).
 - Tell the user whenever the harness's auto-approval denied a step or forced extra steps. Under managed sandboxes (e.g. Codex), MSYS2 children need elevation to create prefix files: request scoped escalation for the exact `build.py` invocation on the first attempt (never blanket approval) and report denials without skipping verification.
 - Tools and test programs you run must run long enough but not longer, and leave no lingering processes.
+- Note: Gate needs more than 300s!
 
 ## Engineering rules
 
