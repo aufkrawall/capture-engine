@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Streamline overrides during game startup:** native core loads are now intercepted at the start of the hook worker, before configuration I/O and runtime/tool preloads, so the configured override can reach loads missed by the initial import hooks. Existing protection against mixed generations and duplicate runtimes remains active; a native-loader flow regression verifies the configured image is used before full hook installation.
+
 - **Application-audio backlog warnings:** intentional video-buffer delay above 250 ms no longer produces false latency warnings. Warnings now measure backlog at least 50 ms above the current target, report suppressed repeats, and reset on recovery and recording boundaries. Audio processing and integrity checks retain their existing behavior.
 
 - **Recording-log analysis across midnight:** fixed live/stop attribution and recording windows by retaining the calendar date, and stopped counting the same ingress-drop counter twice when both log fields are present. Overnight recordings and older single-field logs are covered by regression tests.

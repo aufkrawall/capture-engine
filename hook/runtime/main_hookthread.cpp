@@ -34,10 +34,6 @@ std::string ResolveSessionLogDirectory(const std::string& dllDirectory) {
   return sessionLogsDir;
 }
 
-void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
-  OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
-}
-
 // Disjoint ~10 s service-cost windows for the monitor loop passes (the pass
 // cadence is ~10 Hz), owned by the single hook thread.
 ce::HookThreadStageCostWindow<100> s_hookThreadStageCostWindow;
@@ -54,6 +50,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   const bool inheritedRenderer =
       g_InheritedRendererProcess.load(std::memory_order_acquire);
   InitializeHookLifecycleControl();
+  if (main_g_ProcessCategory != ProcessCategory::Launcher &&
+      main_g_ProcessCategory != ProcessCategory::Blacklisted) {
+    InstallLowLevelLoaderHook("early hook thread");
+  }
 
   // Fast D3D-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
   // hook-thread work (module scans, IPC waits, periodic passes). A game that initializes D3D12
@@ -675,6 +675,7 @@ bool IsServiceProcess(const char *name) {
 // dynamic FFX/Remix hooks, optional loader/termination/registry hooks, then the graphics hooks. The
 // flow-test entry (tests/flow/flow_hook_entry.cpp) runs the same sequence without a host.
 void InstallHookThreadHooks() {
+  InstallLowLevelLoaderHook("hook thread retry");
   // Use IAT patching for kernel32/advapi32 hooks.
   //
   // DllMain already ran this once (see InstallKernel32LoaderHooks). Repeating it
@@ -707,28 +708,6 @@ void InstallHookThreadHooks() {
   // native WSI present path. The monitor loop below places it when that
   // evidence arrives.
   PreloadConfiguredGraphicsRuntimeDlls();
-
-  // Install the low-level loader observer before optional diagnostic hooks.
-  // FFX/Streamline can initialize on another thread while HookThread is still
-  // bootstrapping; module observation must already be live during any later
-  // entry-patch transaction so their first exported calls cannot escape.
-  if (NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) {
-    if (!OriginalLdrLoadDll.load(std::memory_order_acquire)) {
-      if (HMODULE hNtdll = GetModuleHandleA("ntdll.dll")) {
-        if (void *pLdrLoadDll = (void *)GetProcAddress(hNtdll, "LdrLoadDll")) {
-          void *trampoline = nullptr;
-          if (InlineHook::InstallPublished(pLdrLoadDll, (void *)&HookedLdrLoadDll,
-                                           &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
-            HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection");
-          } else {
-            HookLog("Failed to install LdrLoadDll hook");
-          }
-        }
-      }
-    }
-  } else {
-    HookLog("Skipping LdrLoadDll hook (no DLL redirection overrides configured)");
-  }
 
   // GTA and some middleware can terminate with fail-fast style status codes
   // before VEH/UEF crash filters get control. Keep this narrow and passive:

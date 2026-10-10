@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-10 - Native Streamline core load missed the startup redirect
+
+- Session `20261009_203546`: the configured redirect was armed in DllMain, but the game's core mapped
+  at 01:01:47.748 / 01:03:43.062; native LdrLoadDll interception arrived at .826 / .162, 78-100 ms later.
+  Streamline's original kernel32 imports bypass the initial IAT sweep, and its first core load could
+  run during configuration/tool preloads. The coherent-stack guard correctly refused subsequent plugins.
+- `InstallLowLevelLoaderHook` now runs first on the game hook worker outside DllMain's loader lock,
+  reuses published configuration, and retries before the full install's preloads. Launchers/blacklisted
+  processes retain their prior scope; duplicate/core/generation protections remain intact.
+- The new native-loader flow probe requests a vendor-path fake core before full hook installation and
+  proves the configured physical image maps. Production source-order and trampoline-publication checks
+  enforce the contract, including the adjusted existing observer-order test.
+- Closing build 0.1.7077: full native suite, Python self-tests and all 37 FG scenarios pass; the fresh
+  setup is 39,092,738 bytes. Original logs also verify the analyzer's corrected midnight/counter results.
+  Actual game cold-start/other-overlay verification remains pending after installation; see
+  `../dx12-injection-bootstrap.md` for the current invariant and diagnostics.
+
 ### 2026-10-10 - App-audio warnings distinguish intentional buffering from excess
 
 - Session `20261009_203546`: 2,984 of 3,019 app-latency warnings had `excessMs=0`. The absolute

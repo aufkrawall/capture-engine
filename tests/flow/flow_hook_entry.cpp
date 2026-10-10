@@ -67,16 +67,37 @@ void AttachIsolatedHost(SharedMemoryLayout* memory) {
 
 // What DllMain and the hook thread do before the hook thread's service loop, minus threads and the IPC
 // connection (main_dllmain.cpp, then main_hookthread.cpp up to InstallHookThreadHooks).
-extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, SharedMemoryLayout* hostMemory) {
+extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, SharedMemoryLayout* hostMemory,
+                                                CEFlowEarlyLoaderProbe* earlyLoaderProbe) {
     if (!hostMemory)
         return false;
     InitializeHookLifecycleControl();
+    InstallLowLevelLoaderHook("early flow bootstrap");
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
+    if (earlyLoaderProbe) {
+        g_pLocalConfig->graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
+    }
     g_pLocalConfig->graphics.postProcessDisplayGamma = "srgb";
     g_LocalConfigLoaded.store(true, std::memory_order_release);
     GetActiveGraphicsConfig();
     AttachIsolatedHost(hostMemory);
+    // A native core load during bootstrap, before the full hook installation
+    // or a kernel32 IAT refresh, must already reach the configured override.
+    if (earlyLoaderProbe) {
+        const int length = MultiByteToWideChar(CP_UTF8, 0, earlyLoaderProbe->requestedPath, -1, nullptr, 0);
+        if (length <= 0)
+            return false;
+        std::wstring requested(static_cast<size_t>(length), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, earlyLoaderProbe->requestedPath, -1, requested.data(), length);
+        UNICODE_STRING name{};
+        name.Buffer = requested.data();
+        name.Length = static_cast<USHORT>((requested.size() - 1) * sizeof(wchar_t));
+        name.MaximumLength = static_cast<USHORT>(requested.size() * sizeof(wchar_t));
+        const auto load = reinterpret_cast<LdrLoadDll_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrLoadDll"));
+        if (!load || !NT_SUCCESS(load(nullptr, nullptr, &name, reinterpret_cast<void**>(&earlyLoaderProbe->loadedModule))))
+            return false;
+    }
     InstallKernel32LoaderHooks("DllMain");
     InitializeWrapperHooks();
     InstallGlobalVTableHooks();

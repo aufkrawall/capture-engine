@@ -18,6 +18,7 @@ Primary sources:
 - `common/ipc/shared_defs.h`
 - `hook/runtime/main.cpp`
 - `hook/runtime/main_hookthread.cpp`
+- `hook/runtime/main_injection.cpp`, `tests/test_early_loader_bootstrap.cpp`, `tests/flow/test_flow_loader_bootstrap.cpp`
 - `hook/runtime/main_install.cpp`
 - `hook/runtime/main_host_lifecycle.cpp`
 - `hook/runtime/ipc_client.cpp`
@@ -101,6 +102,18 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   19:53:39.520 - 330 ms of DXGI/D3D10/D3D11/D3D12 patching stood in between. DllMain safety is the
   same argument the graphics IAT hooks already rely on: it resolves addresses in an already-loaded
   kernel32 and writes import slots, loading nothing, so it cannot re-enter the loader.
+- **The native loader hook precedes config I/O and all worker preloads** (verified 2026-10-10).
+  `InstallLowLevelLoaderHook` in `main_injection.cpp` runs at the beginning of `HookThread`, outside
+  DllMain's loader lock, with a retry at the beginning of `InstallHookThreadHooks`. Trampoline publication
+  uses `InlineHook::InstallPublished`; an installed route is reused. The early redirect reads the
+  injector's published configuration until local config is loaded. Streamline/runtime modules retain
+  their original kernel32 imports, so the DllMain IAT sweep does not cover their native core loads.
+  In session `20261009_203546` both cores loaded 78-100 ms before the old Ldr hook; every configured
+  sl.* redirect was then refused to avoid mixing versions. `EarlyLoaderBootstrapTest` checks the
+  production ordering; `FlowLoaderBootstrap` loads a vendor-path fake core through native LdrLoadDll
+  before full hook installation and verifies that only the configured physical image maps.
+  Already-mapped foreign cores, cross-generation redirects and duplicate-runtime refusals remain
+  protected. Actual cold-start Witcher/other-overlay verification is still required after installation.
 - **Every IAT slot write must hold `g_PatchLock` across VirtualProtect/write/restore, because page
   protection is process-wide state.** `PatchIAT` changes a page to `PAGE_READWRITE`, writes one
   pointer with `InterlockedCompareExchangePointer`, and puts the old protection back. Two of those

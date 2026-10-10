@@ -164,16 +164,22 @@ TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoi
 
 TEST(InjectLifecycleSourceTest, GraphicsModuleObserverPrecedesDiagnosticEntryHooks) {
     const std::string hookThread = ReadSource("hook/runtime/main_hookthread.cpp");
+    const std::string injection = ReadSource("hook/runtime/main_injection.cpp");
     ASSERT_FALSE(hookThread.empty());
+    ASSERT_FALSE(injection.empty());
 
-    const size_t runtimePreload = hookThread.find("PreloadConfiguredGraphicsRuntimeDlls();");
-    const size_t loaderObserver = hookThread.find("InlineHook::InstallPublished(pLdrLoadDll");
+    const size_t install = hookThread.find("void InstallHookThreadHooks()");
+    ASSERT_NE(install, std::string::npos);
+    const size_t runtimePreload = hookThread.find("PreloadConfiguredGraphicsRuntimeDlls();", install);
+    const size_t loaderObserver = hookThread.find("InstallLowLevelLoaderHook(\"hook thread retry\")", install);
     const size_t fatalHooks = hookThread.find("TryInstallFatalTerminationDumpHooks();");
     ASSERT_NE(runtimePreload, std::string::npos);
     ASSERT_NE(loaderObserver, std::string::npos);
     ASSERT_NE(fatalHooks, std::string::npos);
-    EXPECT_LT(runtimePreload, loaderObserver);
+    EXPECT_LT(loaderObserver, runtimePreload);
     EXPECT_LT(loaderObserver, fatalHooks);
+    EXPECT_NE(injection.find("InlineHook::InstallPublished(target"), std::string::npos);
+    EXPECT_NE(injection.find("OriginalLdrLoadDll.store("), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, AgilityBootstrapEvidenceSuppressesSpeculativeLegacyHooks) {

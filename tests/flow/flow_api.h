@@ -76,7 +76,13 @@ constexpr const char* kCEFlowFrameIntervalVariable = "CE_FLOW_FRAME_INTERVAL_US"
 
 // `hostMemory` is the inject host's shared memory, published by the test game as CaptureEngine publishes it
 // (UpdateSharedMemoryFromConfig); CE uses it as a connected host's.
-using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostMemory);
+struct CEFlowEarlyLoaderProbe {
+    const char* requestedPath = nullptr;
+    const char* overrideDirectory = nullptr;
+    HMODULE loadedModule = nullptr;
+};
+using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostMemory,
+                              CEFlowEarlyLoaderProbe* earlyLoaderProbe);
 using CEFlow_PumpHookThread_t = void (*)();
 using CEFlow_SetForegroundWindow_t = void (*)(HWND window);
 using CEFlow_GetOverlayCoverage_t = void (*)(CEFlowOverlayCoverage* out);

@@ -70,7 +70,7 @@ ComPtr<ID3D12Resource> CreateFlowTexture(ID3D12Device* device, UINT width, UINT 
     return texture;
 }
 
-FlowGame::FlowGame(const std::string& testName) {
+FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoaderProbe) {
     const std::string directory = ExecutableDirectory();
     CreateDirectoryA((directory + "\\logs").c_str(), nullptr);
     logDirectory_ = directory + "\\logs\\" + testName;
@@ -129,8 +129,10 @@ FlowGame::FlowGame(const std::string& testName) {
     AppConfig hostConfig;
     LoadConfig(configPath, hostConfig);
     hostConfig.graphics.postProcessDisplayGamma = "srgb";
+    if (earlyLoaderProbe)
+        hostConfig.graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
     UpdateSharedMemoryFromConfig(hostMemory_, hostConfig);
-    if (!init(configPath.c_str(), hostMemory_))
+    if (!init(configPath.c_str(), hostMemory_, earlyLoaderProbe))
         Fail("CEFlow_Init", E_FAIL);
     clockOrigin_ = clockMicroseconds_();
 }

@@ -80,7 +80,7 @@ class FlowGame {
 public:
     // Loads build/flow_tests/capture_hook_x64.dll next to the executable, logging into logs/<testName>
     // beside it, and runs CE's hook installation with the flow config.
-    explicit FlowGame(const std::string& testName);
+    explicit FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoaderProbe = nullptr);
     ~FlowGame();
 
     FlowGame(const FlowGame&) = delete;

@@ -3,6 +3,33 @@
 #include "child_inject_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 
+namespace {
+void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
+  OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
+}
+}  // namespace
+
+// Install on the worker, outside DllMain's loader lock, before config I/O,
+// graphics scans or preloads. Streamline keeps its original kernel32 imports,
+// so the DllMain IAT pass alone cannot redirect its first native core load.
+void InstallLowLevelLoaderHook(const char *phase) {
+  if (!(NeedsLoaderRedirectionHook() || NeedsLowLevelModuleLoadObservationHook()) ||
+      OriginalLdrLoadDll.load(std::memory_order_acquire)) {
+    return;
+  }
+  HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+  void *target = ntdll ? reinterpret_cast<void*>(GetProcAddress(ntdll, "LdrLoadDll")) : nullptr;
+  void *trampoline = nullptr;
+  if (target && InlineHook::InstallPublished(target, reinterpret_cast<void*>(&HookedLdrLoadDll),
+                                             &trampoline, PublishLdrLoadDllTrampoline, nullptr)) {
+    HookLogImportant("Installed LdrLoadDll hook for module-load observation and optional DLL redirection "
+                     "(phase=%s)", phase ? phase : "unspecified");
+  } else {
+    HookLogImportant("LdrLoadDll hook unavailable (phase=%s); the hook-thread install retries before preloads",
+                     phase ? phase : "unspecified");
+  }
+}
+
 // Installs (or re-installs) CE's kernel32 loader and process-creation hooks
 // across every module currently mapped.
 //
