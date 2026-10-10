@@ -132,6 +132,10 @@ private:
   void ScanStartupLaunchHosts();
   bool AttachStartupLaunchHost(DWORD pid, const std::string& name);
   void ServiceStartupLaunchHosts();
+  // Removes the creation-only role from every creator again (no substitution
+  // configured any more): the creator's own worker uninstalls its hooks and
+  // leaves the process clean. Failing removal keeps the safe pass-through.
+  void DetachStartupLaunchHosts(const char* reason);
   std::map<DWORD, std::string> pendingStartupLaunchHosts;
 
   struct FailedInjection {

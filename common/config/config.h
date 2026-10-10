@@ -328,6 +328,10 @@ struct GraphicsConfig {
     std::string dlssRrDllPath;
     std::string dlssFgDllPath;
     std::string streamlineDllPath;
+    // The config file assigns a non-empty streamline_dll_path anywhere (base or
+    // any [Profile.*] section): some target may need the pre-import interposer
+    // substitution, which is the only reason creator processes are touched.
+    bool streamlineDllPathConfigured = false;
     // Run the streamline_dll_path runtime as a SECOND, CE-owned Streamline instead of
     // substituting the game's DLLs, so a 1.x title can drive a 2.x runtime (DLSS-G / MFG).
     // Off by default: it is more invasive than the path overrides and carries the same
@@ -462,6 +466,7 @@ struct AppConfig {
     std::string copyQueuePriority;      // low, normal, high (D3D12 overlay DIRECT queue priority)
     int fenceWaitMode = 1;              // 0=always, 1=first_only, 2=never (debug)
     bool useGameQueue = false;          // Use game's command queue for capture (reduces GPU contention)
+    std::string startupCreatorHosts = "auto";  // auto | storefronts | off
     std::vector<WhitelistEntry> gameWhitelist;
     std::vector<WhitelistEntry> overlayWhitelist;
     std::vector<WhitelistEntry> wgcWindowTitles;

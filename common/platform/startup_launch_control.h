@@ -9,9 +9,17 @@ struct AppConfig;
 
 namespace ce::startup_launch {
 
-enum class Object { Role, Ready, Gate, Active, ResumeRequested };
+enum class Object { Role, Ready, Gate, Active, ResumeRequested, Detach, Detached };
 std::wstring ObjectName(Object object, DWORD pid);
 bool IsLaunchHost(const std::string& name);
+bool IsDesktopShell(const std::string& name);
+
+// [Injection] startup_creator_hosts: which creators may carry the creation-only
+// role. Storefronts keeps the launcher chain coverage but never touches the
+// desktop shells; off keeps every parent process untouched.
+enum class CreatorScope { Auto, Storefronts, Off };
+CreatorScope ParseCreatorScope(const std::string& value);
+bool HostInCreatorScope(const std::string& name, CreatorScope scope);
 
 // Classification of a child image before its creation is committed. Anything
 // that is neither a capture/overlay target nor a launch host must take the

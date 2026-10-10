@@ -19,6 +19,7 @@
 #include <mutex>
 #include <memory>
 #include <vector>
+#include <tlhelp32.h>
 #include <winternl.h>
 
 namespace {
@@ -38,6 +39,13 @@ HANDLE g_LaunchRole = nullptr;
 HANDLE g_LaunchReady = nullptr;
 HANDLE g_LaunchGate = nullptr;
 HANDLE g_LaunchActive = nullptr;
+HANDLE g_LaunchDetach = nullptr;
+HANDLE g_LaunchDetached = nullptr;
+bool g_WorkerReference = false;
+void* g_CreateEntryTarget = nullptr;
+void* g_ResumeEntryTarget = nullptr;
+std::atomic<bool> g_CreateEntryInstalled{false};
+std::atomic<bool> g_ResumeEntryInstalled{false};
 
 struct PendingLauncher {
     DWORD threadId = 0;
@@ -378,12 +386,85 @@ void PublishResume(void* trampoline, void*) {
     g_ResumeNativeThread.store(reinterpret_cast<ResumeNativeThread>(trampoline), std::memory_order_release);
 }
 
+// Removes the creation hooks again. Returns true only when neither entry patch
+// is CE's to manage any more; a removal that cannot quiesce peer threads keeps
+// the hook installed and pass-through, which is always safe.
+bool UninstallStartupCreationHook() {
+    bool complete = true;
+    if (g_ResumeEntryInstalled.load(std::memory_order_acquire)) {
+        if (InlineHook::Remove(g_ResumeEntryTarget)) g_ResumeEntryInstalled.store(false, std::memory_order_release);
+        else complete = false;
+    }
+    if (g_CreateEntryInstalled.load(std::memory_order_acquire)) {
+        if (InlineHook::Remove(g_CreateEntryTarget)) g_CreateEntryInstalled.store(false, std::memory_order_release);
+        else complete = false;
+    }
+    EarlyLog("[StartupImport] Creation-only hook PID=%lu %s", static_cast<unsigned long>(GetCurrentProcessId()),
+             complete ? "removed" : "removal incomplete; retained pass-through");
+    return complete;
+}
+
+// True when no peer thread executes inside this DLL, so the module can leave
+// the process. Unknown peers fail closed.
+bool ModuleQuiescedForUnload() {
+    if (!g_LaunchModule) return false;
+    const auto* base = reinterpret_cast<const uint8_t*>(g_LaunchModule);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(base);
+    const uintptr_t end = begin + headers->OptionalHeader.SizeOfImage;
+    ce::HandleGuard snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snapshot) return false;
+    const DWORD self = GetCurrentThreadId();
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    if (!Thread32First(snapshot.get(), &entry)) return false;
+    do {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == self) continue;
+        ce::HandleGuard thread(OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                          FALSE, entry.th32ThreadID));
+        if (!thread || SuspendThread(thread.get()) == static_cast<DWORD>(-1)) return false;
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_CONTROL;
+        const bool known = GetThreadContext(thread.get(), &context) != FALSE;
+#ifdef _WIN64
+        const uintptr_t instruction = known ? static_cast<uintptr_t>(context.Rip) : 0;
+#else
+        const uintptr_t instruction = known ? static_cast<uintptr_t>(context.Eip) : 0;
+#endif
+        ResumeThread(thread.get());
+        if (!known || (instruction >= begin && instruction < end)) return false;
+    } while (Thread32Next(snapshot.get(), &entry));
+    return true;
+}
+
 DWORD WINAPI CreationThread(void*) {
     // Host activation is an explicit event, including after replacement-host
     // adoption. A failed patch transaction is retried only on a new request.
-    while (WaitForSingleObject(g_LaunchRole, INFINITE) == WAIT_OBJECT_0) {
-        ResetEvent(g_LaunchRole);
-        InstallStartupCreationHook();
+    wchar_t stoppingName[64]{};
+    GenerateInjectHostStoppingEventName(stoppingName, _countof(stoppingName));
+    ce::HandleGuard stopping(OpenEventW(SYNCHRONIZE, FALSE, stoppingName));
+    for (;;) {
+        HANDLE waits[] = {g_LaunchRole, g_LaunchDetach, stopping.get()};
+        DWORD count = 3;
+        if (!g_LaunchDetach) { waits[1] = waits[2]; waits[2] = nullptr; --count; }
+        if (!stopping) --count;
+        const DWORD wait = WaitForMultipleObjects(count, waits, FALSE, INFINITE);
+        if (wait == WAIT_OBJECT_0) {
+            ResetEvent(g_LaunchRole);
+            InstallStartupCreationHook();
+            continue;
+        }
+        // Detach request or host stopping: take the creation hooks out again so
+        // the creator process carries no interception at all. A removal that is
+        // not safe right now keeps the pass-through hooks and the mapping, which
+        // is exactly the previous behaviour.
+        if (!UninstallStartupCreationHook()) return 0;
+        if (g_LaunchDetached) SetEvent(g_LaunchDetached);
+        if (!ModuleQuiescedForUnload()) continue;  // Keep the worker: a later activation may reinstall.
+        HMODULE self = g_LaunchModule;
+        if (g_WorkerReference) FreeLibrary(self);  // The injector's remote LoadLibrary reference.
+        FreeLibraryAndExitThread(self, 0);         // Our own reference: unloads the module and ends this thread.
     }
     return 0;
 }
@@ -405,15 +486,30 @@ bool InstallStartupCreationHook() {
     void* resumeTrampoline = nullptr;
     InlineHook::PublishedHookSpec hooks[2]{};
     size_t count = 0;
-    if (!g_ResumeNativeThread.load(std::memory_order_acquire))
+    const size_t noIndex = static_cast<size_t>(-1);
+    size_t resumeIndex = noIndex;
+    size_t createIndex = noIndex;
+    if (!g_ResumeEntryInstalled.load(std::memory_order_acquire)) {
+        resumeIndex = count;
         hooks[count++] = {reinterpret_cast<void*>(GetProcAddress(ntdll, "NtResumeThread")),
                           reinterpret_cast<void*>(&HookResumeNativeThread), &resumeTrampoline, PublishResume};
-    if (!g_CreateUserProcess.load(std::memory_order_acquire))
+    }
+    if (!g_CreateEntryInstalled.load(std::memory_order_acquire)) {
+        createIndex = count;
         hooks[count++] = {reinterpret_cast<void*>(GetProcAddress(ntdll, "NtCreateUserProcess")),
                           reinterpret_cast<void*>(&HookCreateUserProcess), &createTrampoline, PublishCreate};
+    }
     if (count) InlineHook::InstallPublishedBatch(hooks, count);
-    const bool installed = g_CreateUserProcess.load(std::memory_order_acquire) &&
-        g_ResumeNativeThread.load(std::memory_order_acquire);
+    if (resumeIndex != noIndex && hooks[resumeIndex].installed) {
+        g_ResumeEntryTarget = hooks[resumeIndex].target;
+        g_ResumeEntryInstalled.store(true, std::memory_order_release);
+    }
+    if (createIndex != noIndex && hooks[createIndex].installed) {
+        g_CreateEntryTarget = hooks[createIndex].target;
+        g_CreateEntryInstalled.store(true, std::memory_order_release);
+    }
+    const bool installed = g_CreateEntryInstalled.load(std::memory_order_acquire) &&
+        g_ResumeEntryInstalled.load(std::memory_order_acquire);
     if (installed) SetEvent(g_LaunchReady);
     EarlyLog("[StartupImport] Creation-only hook PID=%lu installed=%d", static_cast<unsigned long>(pid), installed);
     return installed;
@@ -433,14 +529,32 @@ bool StartCreationOnlyLauncher(HMODULE module) {
 #endif
     g_LaunchActive = OpenEventW(SYNCHRONIZE, FALSE,
         ce::startup_launch::ObjectName(ce::startup_launch::Object::Active, GetCurrentProcessId()).c_str());
-    HMODULE pinned = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                       reinterpret_cast<LPCWSTR>(module), &pinned);
+    const DWORD pid = GetCurrentProcessId();
+    // The detach handshake lets the injector retire the creation-only role again:
+    // the injector signals Detach, the worker confirms on Detached after removing
+    // its hooks, and then the whole module leaves the creator process.
+    g_LaunchDetach = CreateEventW(nullptr, TRUE, FALSE,
+                                  ce::startup_launch::ObjectName(ce::startup_launch::Object::Detach, pid).c_str());
+    g_LaunchDetached = CreateEventW(nullptr, TRUE, FALSE,
+                                    ce::startup_launch::ObjectName(ce::startup_launch::Object::Detached, pid).c_str());
+    // A plain reference, never a pin: the creation-only role must be able to
+    // leave the process again. The worker owns this reference and releases it
+    // together with the injector's remote LoadLibrary reference.
+    HMODULE referenced = nullptr;
+    g_WorkerReference = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                           reinterpret_cast<LPCWSTR>(module), &referenced) != FALSE;
     if (HANDLE worker = CreateThread(nullptr, 0, CreationThread, nullptr, 0, nullptr)) CloseHandle(worker);
     return true;
 }
 
 #ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) bool CEFlow_DisableCreation() { return UninstallStartupCreationHook(); }
+
+extern "C" __declspec(dllexport) int CEFlow_GetCreationHookState() {
+    return (g_CreateEntryInstalled.load(std::memory_order_acquire) ? 1 : 0) +
+           (g_ResumeEntryInstalled.load(std::memory_order_acquire) ? 2 : 0);
+}
+
 extern "C" __declspec(dllexport) void CEFlow_SetHandshakeTimeout(DWORD timeoutMs) {
     g_HandshakeTimeoutMs.store(timeoutMs, std::memory_order_release);
 }

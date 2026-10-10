@@ -1,5 +1,6 @@
 #include "injection_internal.h"
 
+#include "common/platform/startup_launch_control.h"
 #include "injection_path_policy.h"
 
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
@@ -75,8 +76,23 @@ void InjectionManager::SetOnInjectCallback(std::function<void(DWORD, const std::
 }
 
 void InjectionManager::UpdateConfig(const AppConfig& newConfig) {
-    std::lock_guard<std::mutex> lock(configMutex);
-    if (config.gameWhitelist != newConfig.gameWhitelist || config.overlayWhitelist != newConfig.overlayWhitelist)
-        startupLaunchScanPending.store(true, std::memory_order_release);
-    config = newConfig;
+    bool detachCreators = false;
+    {
+        std::lock_guard<std::mutex> lock(configMutex);
+        const auto creatorsUsable = [](const AppConfig& target) {
+            return target.graphics.streamlineDllPathConfigured &&
+                   ce::startup_launch::ParseCreatorScope(target.startupCreatorHosts) !=
+                       ce::startup_launch::CreatorScope::Off;
+        };
+        const bool wasUsable = creatorsUsable(config);
+        const bool nowUsable = creatorsUsable(newConfig);
+        if (config.gameWhitelist != newConfig.gameWhitelist || config.overlayWhitelist != newConfig.overlayWhitelist ||
+            wasUsable != nowUsable)
+            startupLaunchScanPending.store(true, std::memory_order_release);
+        detachCreators = wasUsable && !nowUsable;
+        config = newConfig;
+    }
+    // Outside configMutex: the detach path takes injectMutex and waits for the
+    // creators' own confirmation.
+    if (detachCreators) DetachStartupLaunchHosts("no substitution configured any more");
 }

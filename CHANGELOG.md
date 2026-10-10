@@ -14,6 +14,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Creator processes are only touched when a game profile actually needs it:** the creation-only hook in launchers and the desktop shell is now installed only while some configured profile sets a Streamline runtime override (`streamline_dll_path` anywhere in the config). With none configured, explorer.exe, Steam and launchers never receive any CaptureEngine code at all. The new `[Injection] startup_creator_hosts=storefronts` / `off` settings additionally exclude the desktop shells from the creator role or disable it entirely (desktop-launched override games then fall back to runtime loading).
+
+- **Creator processes are cleaned up again:** when CaptureEngine exits, or when no profile needs the runtime substitution any more, the creator's hook removes its process-creation hooks and the module leaves the creator process entirely. Only when a safe removal is not possible (a peer thread inside the hook) does the previous pass-through retention apply. After shutdown, explorer.exe and Steam no longer carry dormant CaptureEngine hooks.
+
 - **DLSS-off overlay regression checks:** added controlled device-view coexistence tests covering repeated FG toggles, both Present methods, native swapchain return, explicit queue/device replacement and failed device queries. The checks detect the original ownership loss and verify continuous overlay coverage with balanced resources.
 
 - **Sharpen/gamma frame accounting:** the DirectX 12 post-process pass now counts every frame it corrects, leaves to another route (DLSS PostSL, FSR output) or cannot correct, and logs the reason and length of each uncorrected run plus per-route totals, so a brief brightness step at a frame generation switch can be traced from the log. DLSS-G toggle-ON frames, where the overlay itself still draws on the game queue, are corrected too.

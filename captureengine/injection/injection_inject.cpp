@@ -520,7 +520,20 @@ void InjectionManager::EjectWithDeadline(DWORD pid, ULONGLONG deadline) {
         CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
         if (hProcess) CloseHandle(hProcess);
         injectedProcesses.erase(it);
-        LogInfo("[StartupImport] Creator PID=%lu is pass-through; retained hook addresses stay valid", pid);
+        // The creator's own worker removes the creation hooks and leaves the
+        // process clean; a creator whose removal cannot be confirmed safely
+        // keeps the old pass-through behaviour on its own side.
+        ce::HandleGuard detach(OpenEventW(EVENT_MODIFY_STATE, FALSE,
+            ce::startup_launch::ObjectName(ce::startup_launch::Object::Detach, pid).c_str()));
+        if (!detach || !SetEvent(detach.get())) {
+            LogInfo("[StartupImport] Creator PID=%lu detach unavailable; hooks stay pass-through", pid);
+            return;
+        }
+        ce::HandleGuard detached(OpenEventW(SYNCHRONIZE, FALSE,
+            ce::startup_launch::ObjectName(ce::startup_launch::Object::Detached, pid).c_str()));
+        const DWORD wait = detached ? WaitForSingleObject(detached.get(), 2000) : WAIT_FAILED;
+        LogInfo("[StartupImport] Creator PID=%lu detach %s", pid,
+                wait == WAIT_OBJECT_0 ? "completed; creation hook removed" : "requested; hook stays pass-through");
         return;
     }
 

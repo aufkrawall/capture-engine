@@ -11,6 +11,31 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& p
     // newline-separated entries
     std::string cfgText;
     if (ReadTextFile(path, cfgText)) {
+        // The pre-import interposer substitution is the only feature that ever
+        // touches creator processes, so the injector must know whether any
+        // section could ask for it. A key anywhere (base or profile) counts;
+        // when none does, creators are never injected.
+        config.graphics.streamlineDllPathConfigured = false;
+        std::stringstream mentionScan(cfgText);
+        std::string mentionLine;
+        while (std::getline(mentionScan, mentionLine)) {
+            std::string trimmedMention = Trim(mentionLine);
+            if (trimmedMention.empty() || trimmedMention[0] == ';' || trimmedMention[0] == '#' ||
+                trimmedMention[0] == '[')
+                continue;
+            const size_t equals = trimmedMention.find('=');
+            if (equals == std::string::npos)
+                continue;
+            std::string key = Trim(trimmedMention.substr(0, equals));
+            std::transform(key.begin(), key.end(), key.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (key != "streamline_dll_path")
+                continue;
+            if (!Trim(trimmedMention.substr(equals + 1)).empty()) {
+                config.graphics.streamlineDllPathConfigured = true;
+                break;
+            }
+        }
         std::stringstream cfgFile(cfgText);
         std::string line;
         bool inInjection = false;
@@ -111,7 +136,9 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& p
             }
 
             if (inInjection) {
-                if (trimmed.find("whitelist=") == 0) {
+                if (trimmed.find("startup_creator_hosts=") == 0) {
+                    config.startupCreatorHosts = Trim(trimmed.substr(22));
+                } else if (trimmed.find("whitelist=") == 0) {
                     std::string rest = trimmed.substr(10);
                     rest = Trim(rest);
                     if (!rest.empty() && rest != "(" && rest != ")") {

@@ -10,6 +10,15 @@ bool InjectionManager::AttachStartupLaunchHost(DWORD pid, const std::string& nam
     {
         std::lock_guard<std::mutex> lock(configMutex);
         if (config.gameWhitelist.empty() && config.overlayWhitelist.empty()) return true;
+        // Creator processes are touched only while some target could actually
+        // need the pre-import interposer substitution: without a configured
+        // streamline override there is nothing the creation hook would ever do,
+        // so explorer, storefront clients and launchers stay completely clean.
+        const auto scope = ce::startup_launch::ParseCreatorScope(config.startupCreatorHosts);
+        if (!config.graphics.streamlineDllPathConfigured ||
+            scope == ce::startup_launch::CreatorScope::Off ||
+            !ce::startup_launch::HostInCreatorScope(name, scope))
+            return true;
         for (const auto& entry : config.gameWhitelist) if (MatchesProcessName(entry, name)) return false;
         for (const auto& entry : config.overlayWhitelist) if (MatchesProcessName(entry, name)) return false;
     }
@@ -95,6 +104,19 @@ void InjectionManager::ServiceStartupLaunchHosts() {
         }
     }
     for (const auto& [pid, name] : ready) AttachStartupLaunchHost(pid, name);
+}
+
+void InjectionManager::DetachStartupLaunchHosts(const char* reason) {
+    std::vector<DWORD> creators;
+    {
+        std::lock_guard<std::mutex> lock(injectMutex);
+        for (const auto& process : injectedProcesses)
+            if (process.creationOnly) creators.push_back(process.pid);
+    }
+    if (creators.empty()) return;
+    LogInfo("[StartupImport] Detaching %zu creation-only creator(s) (%s)", creators.size(),
+            reason ? reason : "unspecified");
+    for (DWORD pid : creators) EjectWithDeadline(pid, GetTickCount64() + 5000);
 }
 
 void InjectionManager::ScanStartupLaunchHosts() {

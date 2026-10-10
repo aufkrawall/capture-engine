@@ -3,10 +3,14 @@
 #include "common/platform/startup_launch_control.h"
 #include "common/config/config.h"
 #include "common/platform/ansi_path.h"
+#include "common/platform/raii_helpers.h"
 #include "tests/source_fragment_reader.h"
 
 #include <gtest/gtest.h>
+#include <filesystem>
+#include <fstream>
 #include <thread>
+#include <vector>
 
 TEST(StartupLaunchControl, CreatorRolesDoNotIncludeGamesOrCriticalServices) {
     for (const auto& name : {"Steam.exe", "explorer.exe", "pwsh.exe", "vendor_launcher.exe"})
@@ -34,6 +38,50 @@ TEST(StartupLaunchControl, ChildrenAreClassifiedBeforeTheirCreationIsCommitted) 
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "protected_game.exe"),
               ce::startup_launch::ChildKind::Passthrough);
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, ""), ce::startup_launch::ChildKind::Passthrough);
+}
+
+TEST(StartupLaunchControl, CreatorScopeLimitsWhichCreatorsAreTouched) {
+    using ce::startup_launch::CreatorScope;
+    EXPECT_EQ(ce::startup_launch::ParseCreatorScope("auto"), CreatorScope::Auto);
+    EXPECT_EQ(ce::startup_launch::ParseCreatorScope("storefronts"), CreatorScope::Storefronts);
+    EXPECT_EQ(ce::startup_launch::ParseCreatorScope("off"), CreatorScope::Off);
+    EXPECT_EQ(ce::startup_launch::ParseCreatorScope(""), CreatorScope::Auto);
+    // Storefronts keeps the launcher chain coverage (a game's own launcher) but
+    // never touches the desktop shells; off keeps every parent untouched.
+    EXPECT_TRUE(ce::startup_launch::HostInCreatorScope("steam.exe", CreatorScope::Storefronts));
+    EXPECT_TRUE(ce::startup_launch::HostInCreatorScope("vendor_launcher.exe", CreatorScope::Storefronts));
+    EXPECT_FALSE(ce::startup_launch::HostInCreatorScope("explorer.exe", CreatorScope::Storefronts));
+    EXPECT_FALSE(ce::startup_launch::HostInCreatorScope("pwsh.exe", CreatorScope::Storefronts));
+    EXPECT_TRUE(ce::startup_launch::HostInCreatorScope("explorer.exe", CreatorScope::Auto));
+    EXPECT_FALSE(ce::startup_launch::HostInCreatorScope("steam.exe", CreatorScope::Off));
+    EXPECT_FALSE(ce::startup_launch::HostInCreatorScope("game.exe", CreatorScope::Auto));
+}
+
+TEST(StartupLaunchControl, CreatorsAreOnlyWantedWhenSomeSectionNeedsSubstitution) {
+    const auto directory = std::filesystem::temp_directory_path();
+    std::vector<std::filesystem::path> files;
+    const auto write = [&](const char* text) {
+        static unsigned counter = 0;
+        const auto path = directory / ("ce_startup_scope_" + std::to_string(GetCurrentProcessId()) + "_" +
+                                       std::to_string(counter++) + ".ini");
+        std::ofstream(path) << text;
+        files.push_back(path);
+        return path.string();
+    };
+    CE_SCOPE_EXIT({ for (const auto& file : files) std::filesystem::remove(file); });
+    AppConfig config;
+    LoadConfig(write("[Injection]\nwhitelist=game.exe\n"), config);
+    EXPECT_FALSE(config.graphics.streamlineDllPathConfigured);
+    EXPECT_EQ(config.startupCreatorHosts, "auto");
+    LoadConfig(write("[Graphics]\nstreamline_dll_path=C:\\override\n"), config);
+    EXPECT_TRUE(config.graphics.streamlineDllPathConfigured);
+    // A profile-only override counts too: the creator hook must already be in
+    // place when that game is created.
+    LoadConfig(write("[Graphics]\nstreamline_dll_path=\n[Profile.X]\nProcess=game.exe\n"
+                     "streamline_dll_path=C:\\override\n"), config);
+    EXPECT_TRUE(config.graphics.streamlineDllPathConfigured);
+    LoadConfig(write("[Injection]\nstartup_creator_hosts=storefronts\n"), config);
+    EXPECT_EQ(config.startupCreatorHosts, "storefronts");
 }
 
 TEST(StartupLaunchControl, OnlyProcessesThatCanLoadAndPatchTheCreationHookAreEligible) {

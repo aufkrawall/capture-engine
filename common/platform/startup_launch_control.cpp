@@ -14,7 +14,8 @@ namespace ce::startup_launch {
 
 std::wstring ObjectName(Object object, DWORD pid) {
     const wchar_t* tag = object == Object::Role ? L"Role" : object == Object::Ready ? L"Ready" :
-        object == Object::Active ? L"Active" : object == Object::ResumeRequested ? L"ResumeRequested" : L"Gate";
+        object == Object::Active ? L"Active" : object == Object::ResumeRequested ? L"ResumeRequested" :
+        object == Object::Detach ? L"Detach" : object == Object::Detached ? L"Detached" : L"Gate";
     wchar_t name[80]{};
     swprintf(name, _countof(name), L"Local\\CE_Startup_%s_%08lX", tag, static_cast<unsigned long>(pid));
     return name;
@@ -42,6 +43,27 @@ ChildKind ClassifyChild(const AppConfig& config, const std::string& name) {
     for (const auto& entry : config.overlayWhitelist)
         if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
     return IsLaunchHost(name) ? ChildKind::LaunchHost : ChildKind::Passthrough;
+}
+
+bool IsDesktopShell(const std::string& name) {
+    for (const char* candidate : {"explorer.exe", "cmd.exe", "powershell.exe", "pwsh.exe"})
+        if (_stricmp(name.c_str(), candidate) == 0) return true;
+    return false;
+}
+
+CreatorScope ParseCreatorScope(const std::string& value) {
+    std::string normalized;
+    std::transform(value.begin(), value.end(), std::back_inserter(normalized),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (normalized == "storefronts") return CreatorScope::Storefronts;
+    if (normalized == "off" || normalized == "none") return CreatorScope::Off;
+    return CreatorScope::Auto;
+}
+
+bool HostInCreatorScope(const std::string& name, CreatorScope scope) {
+    if (scope == CreatorScope::Off) return false;
+    if (scope == CreatorScope::Storefronts && IsDesktopShell(name)) return false;
+    return IsLaunchHost(name);
 }
 
 bool CanHostCreationHook(HANDLE process) {

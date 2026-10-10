@@ -297,3 +297,62 @@ TEST(FlowStartupImports, PartialDescriptorWriteRollsBackToGameInterposer) { RunP
 TEST(FlowStartupImports, UnrecoverableWriteIsReportedAndChildNeverRuns) { RunProbe(Mode::FatalRollback); }
 TEST(FlowStartupImports, NewlyCreatedLauncherIsReadyBeforeItsGameLaunch) { RunProbe(Mode::Launcher); }
 TEST(FlowStartupImports, MissedLauncherHandshakeResumesInsteadOfStoppingIt) { RunProbe(Mode::LauncherTimeout); }
+
+TEST(FlowStartupImports, CreationHooksDetachCompletelyWhenTheInjectorReleasesThem) {
+    const auto directory = std::filesystem::path(ce::ansi_path::ModulePathW(nullptr)).parent_path();
+    const auto root = directory / "logs" / ce::flow::CurrentTestName();
+    std::filesystem::create_directories(root);
+    const auto configPath = root / "creation.ini";
+    {
+        std::ofstream config(configPath);
+        config << "[Injection]\nwhitelist=other.exe\n";
+    }
+    HMODULE hook = LoadLibraryW((directory / "capture_hook_x64.dll").c_str());
+    ASSERT_NE(hook, nullptr);
+    const auto configure =
+        reinterpret_cast<bool (*)(const char*, bool)>(GetProcAddress(hook, "CEFlow_ConfigureCreation"));
+    const auto disable = reinterpret_cast<bool (*)()>(GetProcAddress(hook, "CEFlow_DisableCreation"));
+    const auto state = reinterpret_cast<int (*)()>(GetProcAddress(hook, "CEFlow_GetCreationHookState"));
+    const auto policy =
+        reinterpret_cast<bool (*)(DWORD*, char*, size_t, int*, int*)>(GetProcAddress(hook, "CEFlow_GetLastCreationPolicy"));
+    ASSERT_NE(configure, nullptr);
+    ASSERT_NE(disable, nullptr);
+    ASSERT_NE(state, nullptr);
+    ASSERT_NE(policy, nullptr);
+    bool exact = false;
+    const auto path = ce::ansi_path::CompatiblePath(configPath.wstring(), &exact);
+    ASSERT_TRUE(exact);
+    ASSERT_TRUE(configure(path.c_str(), true));
+    EXPECT_EQ(state(), 3);
+
+    const auto createChild = [&directory](DWORD& pid) {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW((directory / "static_import_probe.exe").c_str(), nullptr, nullptr, nullptr, FALSE,
+                            CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, directory.c_str(), &startup, &process))
+            return false;
+        pid = process.dwProcessId;
+        CloseHandle(process.hThread);
+        TerminateProcess(process.hProcess, 0);
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hProcess);
+        return true;
+    };
+    DWORD first = 0;
+    ASSERT_TRUE(createChild(first));
+    DWORD recordedPid = 0;
+    char name[64]{};
+    int kind = -1;
+    int forcedSuspension = -1;
+    ASSERT_TRUE(policy(&recordedPid, name, sizeof(name), &kind, &forcedSuspension));
+    EXPECT_EQ(recordedPid, first);  // the live creation hook recorded this creation
+
+    ASSERT_TRUE(disable());
+    EXPECT_EQ(state(), 0);  // neither entry patch belongs to CE any more
+
+    DWORD second = 0;
+    ASSERT_TRUE(createChild(second));
+    ASSERT_TRUE(policy(&recordedPid, name, sizeof(name), &kind, &forcedSuspension));
+    EXPECT_EQ(recordedPid, first);  // unchanged: no hook runs in this process any more
+}
