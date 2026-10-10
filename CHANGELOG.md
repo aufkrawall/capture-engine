@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Application-audio backlog warnings:** intentional video-buffer delay above 250 ms no longer produces false latency warnings. Warnings now measure backlog at least 50 ms above the current target, report suppressed repeats, and reset on recovery and recording boundaries. Audio processing and integrity checks retain their existing behavior.
+
 - **Recording-log analysis across midnight:** fixed live/stop attribution and recording windows by retaining the calendar date, and stopped counting the same ingress-drop counter twice when both log fields are present. Overnight recordings and older single-field logs are covered by regression tests.
 
 - **Second crackle 150 ms into the application-audio track when the first packet led the recording start:** the mirror case of the entry below. A source's first packet may start up to 5 ms before the recording start, and such a packet bypassed placement entirely and was written whole, so the source ran up to 5 ms late for the first 150 ms and the lead was then deleted in one piece. The decoded Track 1 of a quick test recording showed it: a 238-sample step in the alignment to the system track at exactly sample 7200 and the strongest click of the first 1.5 s there. The part of that first packet before the recording start is now dropped up front and the rest is placed at the start, so nothing is cut later. This also stops a microphone with a latency-equalization delay from getting its delay as 29 ms of silence right after its first 10 ms packet instead of as leading silence. Marked by the new log line `[AudioLoop] Startup pre-start head trimmed`.

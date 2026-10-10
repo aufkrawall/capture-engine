@@ -12,6 +12,7 @@ class MediaEngine;
 #include "common/capture/capture_policy/recording_health.h"
 
 #include "common/logging/logging.h"
+#include "common/logging/log_meter.h"
 
 #include "common/logging/log_privacy.h"
 
@@ -186,9 +187,8 @@ public:
         uint64_t lastAppPlaceDiagTick = 0;    // Throttle app-source placement-divergence diagnostics
         uint64_t lastAppConsumeDiagTick = 0;  // Throttle app-source consume/drain diagnostics
         uint64_t lastCaptureGroupDivergenceWarnTick = 0;
-        // App-audio latency observability: the ring backlog at consume time IS the audio-behind-video
-        // delay. Sampled every pull so the recording-wide distribution (and any elevated/variable
-        // latency) is obvious in the logs instead of needing manual reconstruction.
+        // Ring backlog includes the deliberate video/reservoir delay. Sample it
+        // every pull, but judge excessive backlog relative to the current target.
         uint32_t appLatencyBuckets[5] = {0, 0, 0, 0, 0};  // <50, 50-150, 150-300, 300-600, >600 ms
         uint64_t appLatencySampleCount = 0;
         uint64_t appLatencySumMs = 0;
@@ -202,7 +202,8 @@ public:
         uint32_t appLatencyStopDrainMaxMs = 0;
         uint64_t appLatencyDrainTransitions = 0;
         uint32_t appLatencyMaxAbsCompDelta = 0;
-        uint64_t lastAppLatencyWarnTick = 0;  // throttle the elevated-latency warning
+        std::unique_ptr<ce::log_meter::ChangeGate> appLatencyWarningLog =
+            std::make_unique<ce::log_meter::ChangeGate>(5000);
         bool appLatencyWarnActive = false;
         bool appAudioBacklogDrainInitialized = false;
         ce::audio::TrailingPeakHold appAudioDrainTargetHold;  // drain target peak over its window

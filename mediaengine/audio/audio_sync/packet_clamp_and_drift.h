@@ -156,6 +156,14 @@ inline int64_t ResolveAudioTargetBufferLagMs(bool isCfrRecording, bool isScreenG
     return isScreenGrabCfrRecording ? std::max<int64_t>(0, screenGrabTargetLagMs) : 0;
 }
 
+// Intentional video/reservoir delay may itself exceed 250 ms. Only backlog
+// beyond the current target is evidence that a route is falling behind.
+inline bool ShouldWarnAppAudioLatency(int64_t bufferedSamples, int64_t targetSamples,
+                                       int64_t warningExcessSamples) {
+    return warningExcessSamples > 0 && bufferedSamples > std::max<int64_t>(0, targetSamples) &&
+           bufferedSamples - std::max<int64_t>(0, targetSamples) >= warningExcessSamples;
+}
+
 enum class CfrAppAudioBacklogDrainReason : uint8_t {
     Active = 0,
     NotCfr,

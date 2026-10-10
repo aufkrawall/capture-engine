@@ -32,10 +32,8 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                     src.appLatencyMaxAbsCompDelta = std::max<uint32_t>(
                         src.appLatencyMaxAbsCompDelta, static_cast<uint32_t>(std::abs(src.currentRateDelta)));
 
-                    // Latency observability: the ring backlog at consume time IS the audio-behind-video
-                    // delay (buffered audio waiting to be emitted). Sample it EVERY pull so the
-                    // recording-wide distribution and any elevated/variable latency are obvious in the
-                    // logs rather than needing manual reconstruction from raw cursor values.
+                    // Buffered lead includes intentional video delay. Keep the distribution,
+                    // while warnings measure only excess above that moving target.
                     const uint32_t appDelayMs =
                         static_cast<uint32_t>(static_cast<uint64_t>(rbAvailSamples) * 1000ull / SAMPLE_RATE);
                     if (forceDrain) {
@@ -66,11 +64,10 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                             src.appLatencyDrainingSamples++;
                         }
 
-                        // Flag clearly-elevated latency loudly WHILE it happens (the signal that was missing).
-                        // Post-fix the drain should keep this rare; frequent firing means latency is not draining.
-                        constexpr uint32_t kAppLatencyWarnMs = 250;
                         const bool appLatencyElevated =
-                            appExcessSamples >= kAppAudioLatencyWarnExcessSamples || appDelayMs >= kAppLatencyWarnMs;
+                            ce::audio::ShouldWarnAppAudioLatency(
+                                static_cast<int64_t>(rbAvailSamples), appTargetSamples,
+                                kAppAudioLatencyWarnExcessSamples);
                         const bool appLatencyWarnChanged = appLatencyElevated != src.appLatencyWarnActive;
                         if (appLatencyWarnChanged) {
                             ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
@@ -91,8 +88,14 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                                 static_cast<unsigned long long>(queueOverrunPackets),
                                 static_cast<unsigned long long>(queueOverrunFrames), src.ringBufferUnderrunCount);
                             src.appLatencyWarnActive = appLatencyElevated;
+                            if (!appLatencyElevated) {
+                                src.appLatencyWarningLog->Reset();
+                            }
                         }
-                        if (appLatencyElevated && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
+                        const auto warningLog = appLatencyElevated
+                            ? src.appLatencyWarningLog->Observe(1, nowConsumeTick)
+                            : ce::log_meter::ChangeGate::Verdict{};
+                        if (warningLog.log) {
                             ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                             const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
                             const uint64_t queueOverrunPackets =
@@ -102,15 +105,15 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                             DLL_Log(
                                 "[AppLatency] WARNING: app audio src=%zu track=%d delayMs=%u targetMs=%u excessMs=%u "
                                 "rbAvail=%zu drain=%d reason=%s compDelta=%d comp=%.4f%% rateCompActive=%d "
-                                "underruns=%u queuePending=%zu queueOverrun=%llu/%llu. Content backlog should drain "
-                                "toward the video target without trims.",
+                                "underruns=%u queuePending=%zu queueOverrun=%llu/%llu unchangedPulls=%llu. "
+                                "Excess above the video target should drain without trims.",
                                 srcIdx, track, appDelayMs, appTargetMs, appExcessMs, rbAvailSamples,
                                 src.appAudioBacklogDrainActive ? 1 : 0,
                                 ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
                                 appCompPct, src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount, pendingPackets,
                                 static_cast<unsigned long long>(queueOverrunPackets),
-                                static_cast<unsigned long long>(queueOverrunFrames));
-                            src.lastAppLatencyWarnTick = nowConsumeTick;
+                                static_cast<unsigned long long>(queueOverrunFrames),
+                                static_cast<unsigned long long>(warningLog.suppressed));
                         }
                     }
 

@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-10 - App-audio warnings distinguish intentional buffering from excess
+
+- Session `20261009_203546`: 2,984 of 3,019 app-latency warnings had `excessMs=0`. The absolute
+  >=250 ms predicate flagged the deliberately delayed 300 ms video reservoir as stalled audio.
+- `ShouldWarnAppAudioLatency` evaluates the existing 50 ms excess threshold relative to the current
+  target. Rate compensation, packet placement, mixing, exported lengths and integrity failures are unchanged.
+  A per-source `ChangeGate` retains immediate warning onset and 5 s heartbeats with `unchangedPulls`;
+  recovery and all recording/timeline reset paths reset the gate.
+- `AppAudioLatencyWarningTest` replays real within-target observations, checks the exact threshold,
+  short absolute-delay excess, heartbeat/recovery and production wiring. Full native and Python gates
+  pass in 0.1.7077. Current diagnostic semantics: `../multi-audio-capture.md`.
+
 ### 2026-10-10 - Recording-log chronology and ingress accounting
 
 - The overnight recording in session `20261009_203546` had 1,280 live app warnings, but the analyzer
